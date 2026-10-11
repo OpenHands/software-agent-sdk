@@ -165,6 +165,8 @@ Preconditions:
 
   from fastmcp import FastMCP
 
+  # Own session: `map run` stops each bullet's process group when the bullet ends.
+  os.setsid()
   port, mode, ttl, alive_url = int(sys.argv[1]), sys.argv[2], float(sys.argv[3]), sys.argv[4]
   auth = None
   if mode == "bearer":
@@ -429,7 +431,7 @@ Preconditions:
   control-agent-server api POST /api/settings/mcp/qa-env --expect 201 \
     --json "$(jq -nc --argjson s "$TOOLS_SRV" '$s + {env: {QA_F19_TOKEN: "qa-f19-env-secret"}}')" \
     --check agent_settings.mcp_config.qa-env.env.QA_F19_TOKEN eq '**********'
-  ENC=$(control-agent-server api GET /api/settings --header 'X-Expose-Secrets: encrypted' --field agent_settings.mcp_config.qa-env.env.QA_F19_TOKEN)
+  ENC=$(control-agent-server api GET /api/settings --header 'X-Expose-Secrets: encrypted' --field agent_settings.mcp_config.qa-env.env.QA_F19_TOKEN --unsafe-unredacted)
   test "${ENC#gAAAA}" != "$ENC"
   control-agent-server api POST /api/mcp/test --expect 200 --save F19.test-encrypted-env/decrypted \
     --json "$(jq -nc --argjson s "$TOOLS_SRV" --arg enc "$ENC" '{server: ($s + {env: {QA_F19_TOKEN: $enc}}), timeout: 30, tool_call: {name: "qa_env", arguments: {name: "QA_F19_TOKEN"}}}')" \
@@ -624,7 +626,7 @@ Preconditions:
   it so only the MCP connection happens. No server with this URL is in the
   settings yet.
   ```sh
-  ISTATE=$(control-agent-server api GET "/api/mcp/oauth/status/$JV" --check oauth_state.tokens.refresh_token exists --field oauth_state)
+  ISTATE=$(control-agent-server api GET "/api/mcp/oauth/status/$JV" --check oauth_state.tokens.refresh_token exists --field oauth_state --unsafe-unredacted)
   INLINE=$(jq -nc --argjson s "$OAUTH_SRV" --argjson st "$ISTATE" '$s | .auth.state = ($st | .token_expires_at = 1) | .transport = .type | del(.type)')
   IBODY=$(jq -nc --argjson srv "$INLINE" '{agent_settings: {agent_kind: "openhands", llm: {model: "openai/qa-placeholder", api_key: "qa-placeholder", base_url: "http://127.0.0.1:9/v1", num_retries: 0}, tools: [], mcp_config: {"qa-inline": $srv}}, secrets_encrypted: true}')
   control-agent-server sink read --path /mcp-oauth-state --expect-max 0
@@ -648,7 +650,7 @@ Preconditions:
 - **Stored OAuth state (`F19.oauth-stored-state`).** Reuse the state from
   `F19.oauth-flow` for a test, a start, and a stored server.
   ```sh
-  STATE=$(control-agent-server api GET "/api/mcp/oauth/status/$J" --field oauth_state)
+  STATE=$(control-agent-server api GET "/api/mcp/oauth/status/$J" --field oauth_state --unsafe-unredacted)
   OSTATE_SRV=$(jq -nc --argjson s "$OAUTH_SRV" --argjson st "$STATE" '$s | .auth.state = $st')
   control-agent-server api POST /api/mcp/test --expect 200 --save F19.oauth-stored-state/test \
     --json "$(jq -nc --argjson s "$OSTATE_SRV" '{server: $s, timeout: 15, tool_call: {name: "read_subject", arguments: {subject: "again"}}}')" \
@@ -850,6 +852,10 @@ Preconditions:
   in plaintext. Without a webhook in the config it lives only in memory for
   that conversation.
 - The HTTP fixtures are recipe-local background processes, not CLI fixtures:
-  `control-agent-server stop` does not stop them. They exit after 25 minutes,
+  `control-agent-server stop` does not stop them. `map run` stops every
+  process left in a bullet's process group when the bullet ends, so the
+  fixture script calls `os.setsid()` first to outlive the Preconditions
+  bullet that starts it (without it every later HTTP bullet fails with
+  `Client failed to connect`). They exit after 25 minutes,
   60 seconds after the run's `/alive` stops answering, or when the last bullet
   kills them; their logs are under `fixtures/f19/`.

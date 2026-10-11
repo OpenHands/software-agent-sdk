@@ -570,12 +570,19 @@ def start_server(run: Run, timeout: float) -> dict[str, Any]:
                 raise CliError(
                     f"Server exited with code {process.returncode} during startup.",
                     exit_code=3,
-                    hint=f"Read the log: `{CLI} logs --tail 80`.",
+                    hint=f"Read the log: `{CLI} logs --tail 80` (a port another "
+                    "process took first shows as `address already in use`).",
                     data={"log": str(run.log_path)},
                 )
             try:
                 response = client.get(run.url + ready_path)
-                if response.status_code == 200:
+                # A parallel launch can be handed the same free port; only our
+                # own listener counts as ready (unknown owners are accepted).
+                owners = listening_pids(int(run.data["port"]))
+                ours = not owners or any(
+                    _pgid(pid) == run.data["pgid"] for pid in owners
+                )
+                if response.status_code == 200 and ours:
                     return {
                         "ready_ms": int((time.monotonic() - started) * 1000),
                         "ready_path": ready_path,

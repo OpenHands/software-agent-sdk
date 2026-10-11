@@ -263,8 +263,9 @@ Preconditions:
 
 - `/ready` returns 503 `{"status": "initializing"}` until startup finished (tool
   preload, VS Code); `launch` waits for it, so a 503 on a launched run means
-  something is wrong. In deferred-init mode `/ready` stays 503 until
-  `POST /api/init` (see the deferred init family).
+  something is wrong. In deferred-init mode `/ready` is 200 while the pod is
+  still dormant (placeable); `GET /api/init` reports the real state (see the
+  deferred init family).
 - `idle_time` resets on conversation events (except state updates), bash
   command start, execute and stop, file uploads, downloads, directory creation
   and archives, and the git changes and diff routes; not on status probes or

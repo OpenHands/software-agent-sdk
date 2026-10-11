@@ -565,9 +565,9 @@ Preconditions:
 - There is no conditional-request support: `If-None-Match` with the current
   `ETag` still returns 200 with the body, and `HEAD` is 405 (FastAPI GET
   routes do not add HEAD).
-- The workspace routes are mounted outside the dormant gate's router; in
-  deferred-init mode they answer 503 through the missing conversation service
-  (see F03). In Docker runtime mode `workspace/{file_path}` is proxied into the
+- The workspace routes are mounted on their own router (header or cookie
+  auth), which carries the dormant gate too; in deferred-init mode they answer
+  503 with the gate's reason before any auth (see F03). In Docker runtime mode `workspace/{file_path}` is proxied into the
   conversation's container and the `Conversation workspace is not local`
   branch of the local handler is unreachable (the local registry only accepts
   `LocalWorkspace`).

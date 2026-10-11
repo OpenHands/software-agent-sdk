@@ -23,7 +23,7 @@ Routes: `GET /api/llm/subscription/openai/models`,
 
 ## Sub-features
 
-- `F24.models`: `GET /api/llm/subscription/openai/models` answers `vendor: openai` and the Codex ACP registry's model ids, sorted.
+- `F24.models`: `GET /api/llm/subscription/openai/models` answers `vendor: openai` and the SDK's subscription allowlist (`OPENAI_CODEX_MODELS`), sorted.
 - `F24.status-disconnected`: with no stored login, status answers 200 `connected: false` with `account_email` and `expires_at` null, without network, and tightens the `auth/` directory to mode 700 without creating a credentials file.
 - `F24.status-connected`: a stored, unexpired login shows `connected: true` with its `expires_at`; neither token appears in the response and `account_email` stays null.
 - `F24.auth-required`: all five routes answer 401 without a key or with a wrong key, and a refused logout leaves the stored login in place.
@@ -103,7 +103,8 @@ Preconditions:
   `qa-f24-refresh-token`) expiring `OFFSET_MS` from now, exactly as a
   completed device login would leave it, and prints its `expires_at`.
   `ts_subscription.mjs` is the TypeScript-client program.
-  `EXPECTED_MODELS` is the Codex ACP registry the models route mirrors.
+  `EXPECTED_MODELS` is the SDK's `OPENAI_CODEX_MODELS`, the allowlist the
+  models route returns and subscription profiles are checked against.
 - The offline bullets launch their own second run with
   `HTTPS_PROXY=https_proxy=http://127.0.0.1:9` (nothing listens there) and
   stop it when the bullet ends.
@@ -217,7 +218,7 @@ Preconditions:
   done
   exit 1
   SH
-  EXPECTED_MODELS=$(OPENHANDS_SUPPRESS_BANNER=1 .venv/bin/python -c 'import json; from openhands.sdk.settings.acp_providers import get_acp_provider; print(json.dumps(sorted(m.id for m in get_acp_provider("codex").available_models)))')
+  EXPECTED_MODELS=$(OPENHANDS_SUPPRESS_BANNER=1 .venv/bin/python -c 'import json; from openhands.sdk.llm.auth import OPENAI_CODEX_MODELS; print(json.dumps(sorted(OPENAI_CODEX_MODELS)))')
   test "$EXPECTED_MODELS" != '[]'
   ```
 
@@ -227,8 +228,8 @@ Preconditions:
   control-agent-server api GET /api/llm/subscription/openai/models --expect 200 --check vendor eq openai \
     --check models len-ge 1 --check models eq "$EXPECTED_MODELS" --save F24.models/models
   ```
-  `models` equals the sorted ids of the `codex` ACP provider
-  (`gpt-5.5`, `gpt-5.6-luna`, ... at the time of writing).
+  `models` equals the sorted `OPENAI_CODEX_MODELS` (`gpt-5.5`, ...,
+  `gpt-6.1-sol` at the time of writing).
 - **Status with no login (`F24.status-disconnected`).** Loosen the `auth/`
   directory first, so the read shows the server tightening it.
   ```sh
@@ -398,7 +399,7 @@ Preconditions:
   control-agent-server api GET /api/llm/subscription/openai/status --expect 200 --check connected eq false
   control-agent-server state ls 'home/.openhands/auth/*' --expect-count 0
   ```
-  The program prints `QA_F24_TS_OK`: the models equal the registry, status
+  The program prints `QA_F24_TS_OK`: the models equal the allowlist, status
   is disconnected, a started login polls as `connected: false`, logout
   answers disconnected, the logged-out token rejects with `HttpError` status
   404 and a wrong key with 401.
@@ -528,6 +529,11 @@ Preconditions:
 
 ## Gotchas
 
+- The models route returns `OPENAI_CODEX_MODELS`
+  (`openhands-sdk/openhands/sdk/llm/auth/openai.py`), not the `codex` ACP
+  provider's deprecated `available_models`. The two lists matched until #5436
+  added `gpt-6-sol`, `gpt-6-luna` and `gpt-6.1-sol` to the allowlist only;
+  derive the expectation from the allowlist, never from a pasted list.
 - These routes call `https://auth.openai.com` from the server process:
   `device/start` and every poll of a pending token always, status only when
   the stored login expires within 60 seconds. On a machine without outbound

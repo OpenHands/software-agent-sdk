@@ -4,8 +4,15 @@ A warm-pool agent server can boot *dormant*: with `OH_DEFERRED_INIT` set, the
 lifespan starts the stateless services (VS Code, tool preload, telemetry on the
 base config) and marks `/ready` ready, but never enters the conversation, event
 or bash services. Until `POST /api/init` delivers the per-user runtime config,
-every `/api/*` route (except `/api/init`) answers 503, while `/alive`,
-`/health` and `/ready` stay 200 so an orchestrator can place the pod. `GET
+the dormant gate closes every ingress that reaches user state: every `/api/*`
+route except `/api/init` (the workspace static-file routes included), the
+OpenAI-compatible `/v1` routes and `/app-backends` answer 503 with the gate's
+reason, and every WebSocket (`/sockets/events`, `/sockets/session`,
+`/sockets/bash-events`) is refused at the handshake. The gate runs before
+authentication, so a dormant pod answers 503 even to a request without a key.
+Only `/api/init`, `GET /`, `/static`, the docs and OpenAPI routes and the
+status routes stay open: `/alive`, `/health`, `/ready` and `/server_info`
+stay 200 so an orchestrator can place the pod. `GET
 /api/init` reports the dormant/initializing/ready state without a key; `POST
 /api/init` is gated by `X-Init-API-Key` (the dormant `secret_key`, open when
 the pod has none) and, in one shot, applies env, rebuilds telemetry, enters a
@@ -29,8 +36,10 @@ Routes: `GET /api/init`, `POST /api/init`
 
 ## Sub-features
 
-- `F03.dormant-boot`: a deferred server boots healthy, answers `/alive` and `/ready` 200, and reports `{"state":"dormant","error":null}` on `GET /api/init`.
-- `F03.dormant-gates-api`: every `/api/*` route except `/api/init` returns 503 while dormant (reads, mutations and the separately mounted workspace file routes), with the 5xx-rewritten body (`detail` = `Internal Server Error`, `exception` carries the reason).
+- `F03.dormant-boot`: a deferred server boots healthy, answers `/alive`, `/ready`, `/server_info`, `GET /` and the OpenAPI document with 200, and reports `{"state":"dormant","error":null}` on `GET /api/init`.
+- `F03.dormant-gates-api`: every `/api/*` route except `/api/init` returns 503 while dormant (reads, mutations and the separately mounted workspace file routes), and the body carries the gate's own reason (`exception` = `503: server is in deferred-init state 'dormant'; call POST /api/init first`; `detail` is rewritten to `Internal Server Error` by the 5xx handler).
+- `F03.dormant-gates-sockets`: while dormant the bash-events, conversation events and session WebSockets refuse the handshake (the gate closes with 1013 before accept, which the client sees as HTTP 403), so no auth frame is ever read.
+- `F03.dormant-gates-v1`: while dormant the OpenAI-compatible `GET /v1/models` and `POST /v1/chat/completions` answer 503 with the gate's reason, as does the Canvas app-backend bridge (`/app-backends/...`).
 - `F03.init-key-auth`: `POST /api/init` requires `X-Init-API-Key` equal to the dormant `secret_key`; a missing or wrong key is 401, checked before the body is validated, and leaves the state dormant.
 - `F03.init-validation`: an unknown field or an out-of-range value is a 422 (`extra_forbidden` / constraint) and the state stays dormant.
 - `F03.init-redacts-secret-input`: a 422 whose echoed input carries a secret-bearing key (`Authorization` header) redacts it to `<redacted>` and the raw value appears nowhere in the response.
@@ -40,14 +49,16 @@ Routes: `GET /api/init`, `POST /api/init`
 - `F03.init-enforces-session-keys`: after init, `/api/*` rejects a missing or wrong key with 401 and accepts the delivered session key with 200, on a pod that booted without keys.
 - `F03.init-applies-env`: `env` entries delivered at init reach `os.environ` and therefore the bash subprocesses, and the delivered `bash_events_dir` receives the events.
 - `F03.init-keys-gate-bash-socket`: after init, `/sockets/bash-events` closes with 4001 for a client without the delivered key and runs commands for one with it.
+- `F03.init-opens-events-socket-and-v1`: after init, the conversation events socket that was refused while dormant opens and replays the conversation's state with the delivered key (4001 without it), and `GET /v1/models` answers 401 without a key and 200 with the delivered key as a Bearer token.
 - `F03.init-web-url-root-path`: a delivered `web_url` with a path becomes the root path: prefixed URLs serve and the OpenAPI document advertises the prefix.
 - `F03.init-delivered-worktree-root`: a `worktree: true` conversation on a git workspace created after init gets its worktree under the delivered `conversation_worktree_root`, not the boot root.
 - `F03.init-delivered-max-runs`: a delivered `max_concurrent_runs` of 1 replaces the boot default (10): a second conversation's `/run` is 429 while another run holds the slot, and is accepted once the slot is free.
 - `F03.init-delivered-cors-origins`: an origin delivered in `allow_cors_origins` must pass a CORS preflight after init, as the field promises (reproduces a real bug; see Gotchas).
 - `F03.init-second-call-400`: a second `POST /api/init` after `ready` is rejected with 400 and the state is unchanged; the init key is now the delivered `secret_key`, so the dormant bootstrap key is 401.
 - `F03.init-open-without-secret`: a pod booted with neither a secret key nor session keys accepts `POST /api/init` without `X-Init-API-Key`; afterwards the first delivered session key is the init key (a keyless retry is 401, a retry with it is 400).
-- `F03.init-state-not-persisted`: the init state lives in memory only, so after a restart a deferred pod is dormant again (delivered keys gone) and must be re-initialized.
-- `F03.auth-before-gate`: when the dormant config already has session keys, a missing key is 401 *before* the 503 dormant gate.
+- `F03.init-state-not-persisted`: the init state lives in memory only, so after a restart a deferred pod is dormant again (the previously delivered key gets the dormant 503 too) and must be re-initialized.
+- `F03.auth-before-gate`: retired by #5700. It asserted that a dormant pod with boot session keys answered 401 to a missing key before the 503 gate; readiness is now checked first, see `F03.gate-before-auth`.
+- `F03.gate-before-auth`: when the dormant config already has session keys, readiness is checked before authentication: a missing, wrong or valid key all get the 503 dormant gate (never 401), on HTTP and on WebSockets.
 - `F03.not-deferred-404`: on a non-deferred server both `/api/init` routes return 404, and `POST` still authenticates the init key before the 404.
 
 ## How to get to it (agent POV)
@@ -70,9 +81,17 @@ Routes: `GET /api/init`, `POST /api/init`
   probes `/api/settings`, `/api/conversations/search`,
   `/api/bash/bash_events/search`, `POST /api/bash/execute_bash_command` and the
   workspace file route `/api/conversations/{id}/workspace` (mounted on its own
-  router, 503 because no conversation service exists yet).
-- WebSocket: `/sockets/bash-events` is mounted outside the `/api` dormant gate;
-  after init the recipes drive it to show the delivered keys gate it.
+  router, which carries the same `require_initialized` gate). The `/v1`
+  OpenAI-compatible router and the `/app-backends` bridge carry it too; the
+  recipe probes `GET /v1/models`, `POST /v1/chat/completions` and
+  `GET /app-backends/{name}/{path}`.
+- WebSocket: the sockets router (`/sockets/events/{id}`, `/sockets/session/{id}`,
+  `/sockets/bash-events`) carries the gate as a router dependency, so a dormant
+  socket is refused before `accept()`; after init the recipes drive the bash
+  and events sockets to show they open and that the delivered keys gate them.
+- Open while dormant: `GET /api/init`, `POST /api/init`, the status routes,
+  `GET /` (the `server_info` alias), `/static` (static-files mode only), and
+  `/openapi.json`, `/docs`, `/redoc`.
 - REST (after init, as observers of delivered fields; the routes belong to
   their own families): `POST /api/conversations` with `worktree: true`
   (worktree root), `POST /api/conversations/{id}/run` and `/interrupt` (run
@@ -125,9 +144,12 @@ Preconditions:
     --check state eq dormant --check error missing --save F03.dormant-boot/status
   control-agent-server logs --grep 'Server started in deferred-init mode' --expect-min 1
   control-agent-server api GET /openapi.json --auth none --max-chars 200 --check servers missing
+  control-agent-server api GET /server_info --auth none --expect 200 --check version exists
+  control-agent-server api GET / --auth none --expect 200 --check version exists
   ```
   `/ready` is 200 although the conversation service is not entered, `GET
-  /api/init` is `{"state":"dormant","error":null}`, and the log carries
+  /api/init` is `{"state":"dormant","error":null}`, `/server_info` and its
+  `GET /` alias answer outside the gate, and the log carries
   `Server started in deferred-init mode; awaiting POST /api/init` (wrapped
   over two lines by the log formatter, hence the shorter pattern). The OpenAPI
   document has no `servers` yet (the before view for
@@ -142,12 +164,45 @@ Preconditions:
   control-agent-server api POST /api/bash/execute_bash_command --auth none --json '{"command":"true"}' --expect 503 \
     --check exception contains 'call POST /api/init first'
   control-agent-server api GET /api/conversations/00000000-0000-0000-0000-0000000000f3/workspace --auth none --expect 503 \
-    --check exception contains 'Conversation service is not available'
+    --check exception eq "503: server is in deferred-init state 'dormant'; call POST /api/init first" \
+    --save F03.dormant-gates-api/workspace
   ```
-  All five answer 503. The real 503 detail is rewritten by the 5xx handler, so
-  assert on the status and on `exception`, which still carries the reason. The
-  workspace file route is mounted on its own `/api` router without the gate;
-  it is 503 only because no conversation service exists before init.
+  All five answer 503 with the gate's reason. The real 503 detail is
+  rewritten by the 5xx handler, so assert on the status and on `exception`,
+  which carries `server is in deferred-init state 'dormant'; call POST
+  /api/init first`. The workspace file route is mounted on its own `/api`
+  router (cookie auth), which carries the same gate since #5700, so it no
+  longer reaches the missing conversation service.
+- **Dormant sockets (`F03.dormant-gates-sockets`).** Every WebSocket is refused at the handshake while dormant.
+  ```sh
+  F03_ZERO=00000000-0000-0000-0000-0000000000f3
+  control-agent-server ws listen /sockets/bash-events --auth none --duration 5 --expect-reject 403 \
+    --save F03.dormant-gates-sockets/bash-events
+  control-agent-server ws listen "/sockets/events/$F03_ZERO" --auth none --duration 5 --expect-reject 403 \
+    --save F03.dormant-gates-sockets/events
+  control-agent-server ws listen "/sockets/session/$F03_ZERO" --auth none --duration 5 --expect-reject 403
+  control-agent-server api GET /api/init --auth none --check state eq dormant
+  ```
+  `require_initialized` raises `WebSocketException(1013)` from the sockets
+  router's dependency, before `accept()`, so the ASGI server answers the
+  upgrade with HTTP 403 and the socket never opens (`opened: false`); on this
+  keyless pod an open socket would have taken the first frame. A 403 also
+  answers an unknown socket path, so the positive control is the same events
+  and bash sockets opening after init (`F03.init-keys-gate-bash-socket`,
+  `F03.init-opens-events-socket-and-v1`).
+- **Dormant /v1 and app backends (`F03.dormant-gates-v1`).** The OpenAI-compatible gateway and the app-backend bridge are gated too.
+  ```sh
+  control-agent-server api GET /v1/models --auth none --expect 503 \
+    --check exception contains "deferred-init state 'dormant'" --save F03.dormant-gates-v1/models
+  control-agent-server api POST /v1/chat/completions --auth none \
+    --json '{"model":"qa-f03","messages":[{"role":"user","content":"hi"}]}' --expect 503 \
+    --check exception contains 'call POST /api/init first'
+  control-agent-server api GET /app-backends/qa-f03-app/index.html --auth none --expect 503 \
+    --check exception contains 'call POST /api/init first' --save F03.dormant-gates-v1/app-backends
+  ```
+  All three answer 503 with the gate's reason before any key, body or
+  extension lookup; on this keyless pod `/v1/models` would otherwise be an
+  open 200 (the after-init view is `F03.init-opens-events-socket-and-v1`).
 - **Init key auth (`F03.init-key-auth`).** The bootstrap key is required, before the body is looked at; a bad one is 401 and the state is unchanged.
   ```sh
   control-agent-server api POST /api/init --auth none --json '{}' --expect 401 --save F03.init-key-auth/no-header
@@ -258,7 +313,25 @@ Preconditions:
   Without a key the command frame is taken as a failed first-frame auth and
   the socket closes with 4001 before anything runs; with `qa-user-key` the
   same kind of frame produces `BashCommand` and `BashOutput` (`exit_code` 0)
-  and writes the file.
+  and writes the file. The same socket was refused at the handshake while
+  dormant (`F03.dormant-gates-sockets`).
+- **Events socket and /v1 open after init (`F03.init-opens-events-socket-and-v1`).** The positive control for the dormant socket and `/v1` gates.
+  Requires: `F03.init-success`
+  ```sh
+  control-agent-server ws listen "/sockets/events/$F03_CID" --auth key --key qa-user-key --query resend_mode=all \
+    --until-kind ConversationStateUpdateEvent --duration 15 --expect-kind ConversationStateUpdateEvent \
+    --save F03.init-opens-events-socket-and-v1/events-socket
+  control-agent-server ws listen "/sockets/events/$F03_CID" --auth none \
+    --send '{"role":"user","content":[{"type":"text","text":"hi"}],"run":false}' --duration 5 --expect-close 4001
+  control-agent-server api GET /v1/models --auth none --expect 401
+  control-agent-server api GET /v1/models --auth none --header 'Authorization: Bearer qa-user-key' --expect 200 \
+    --check object eq list --save F03.init-opens-events-socket-and-v1/models
+  ```
+  With the delivered key the events socket for `$F03_CID` opens and replays
+  its `ConversationStateUpdateEvent`; without a key the first frame is taken
+  as a failed auth and the socket closes with 4001 (no longer a handshake
+  403). `/v1/models` is now behind the delivered keys: 401 without one, and
+  `{"object": "list", ...}` for the delivered key sent the OpenAI way.
 - **Delivered web URL sets the root path (`F03.init-web-url-root-path`).** The init body carried `web_url` `http://qa-f03.invalid/rt/qa-f03`.
   ```sh
   PREFIX=/rt/qa-f03
@@ -367,19 +440,31 @@ Preconditions:
   control-agent-server restart
   control-agent-server api GET /api/init --auth none --check state eq dormant --check error missing --save F03.init-state-not-persisted/after-restart
   control-agent-server api GET /api/settings --auth none --expect 503
+  control-agent-server api GET /api/settings --auth none --header 'X-Session-API-Key: qa-user-key' --expect 503 \
+    --check exception contains "deferred-init state 'dormant'"
   ```
   The transition lives only in memory, so a re-launched warm pod is dormant
-  again and must be re-initialized; the keyless request is 503, not 401, so the
-  delivered `qa-user-key` is gone too.
-- **Auth precedes the gate (`F03.auth-before-gate`).** This bullet restarts the run with a boot session key, still deferred.
+  again and must be re-initialized; even the previously delivered
+  `qa-user-key` meets the dormant 503.
+- **Readiness precedes auth (`F03.gate-before-auth`).** This bullet restarts the run with a boot session key, still deferred. It replaces the retired `F03.auth-before-gate` (401 before the gate), whose order #5700 reversed.
   ```sh
   control-agent-server restart --env OH_SESSION_API_KEYS_0=qa-boot-key
-  control-agent-server api GET /api/settings --auth none --expect 401 --save F03.auth-before-gate/no-key
+  control-agent-server api GET /api/init --auth none --expect 200 --check state eq dormant
+  control-agent-server api GET /api/settings --auth none --expect 503 \
+    --check exception contains 'call POST /api/init first' --save F03.gate-before-auth/no-key
+  control-agent-server api GET /api/settings --auth none --header 'X-Session-API-Key: qa-wrong-key' --expect 503 \
+    --check exception contains 'call POST /api/init first' --save F03.gate-before-auth/wrong-key
   control-agent-server api GET /api/settings --auth none --header 'X-Session-API-Key: qa-boot-key' --expect 503
+  control-agent-server api GET /v1/models --auth none --header 'Authorization: Bearer qa-wrong-key' --expect 503
+  control-agent-server ws listen /sockets/bash-events --auth bad --duration 5 --expect-reject 403 \
+    --save F03.gate-before-auth/socket-bad-key
   ```
-  When the dormant config has session keys, `check_session_api_key` runs before
-  `require_initialized`: a missing key is 401, and only a valid key reaches the
-  503 dormant gate.
+  `require_initialized` is listed before `check_session_api_key` on the `/api`
+  router, and the `/v1` and sockets routers gate before their own auth, so
+  while dormant a missing, wrong or valid boot key all get the same 503 (and a
+  bad-key socket the handshake 403, not the 4001 close of a ready server): a
+  dormant pod reveals nothing about which keys it holds. After init the keys
+  are enforced as usual (`F03.init-enforces-session-keys`).
 - **Not deferred is 404 (`F03.not-deferred-404`).** This bullet restarts the run with deferred mode off (the boot key from the previous bullet stays).
   ```sh
   control-agent-server restart --config-json '{"deferred_init": false}'
@@ -401,6 +486,15 @@ Preconditions:
   exception handler; the reason survives only in `exception`. Key on the status
   code, not the `detail` text. The same handler puts the init failure's
   exception string (paths included) in the 500 body.
+- A dormant WebSocket is closed with 1013 before `accept()`, which reaches the
+  client as an HTTP 403 handshake rejection (`ws listen --expect-reject 403`),
+  not as a 1013 close frame. An unknown socket path is also a 403, so pair
+  the dormant check with the same socket opening after init.
+- The gate precedes every auth check since #5700 (`F03.gate-before-auth`), so
+  while dormant a 503 says nothing about the key; prove a key only after init.
+  Before #5700 the workspace static-file routes, the sockets, `/v1` and
+  `/app-backends` were outside the gate (#5661, #5700 closed them); a baseline
+  checkout older than those PRs answers those recipes differently.
 - The bootstrap `X-Init-API-Key` is the dormant `secret_key`, which defaults to
   the first session key when `OH_SECRET_KEY` is unset and is **open to anyone**
   when neither is set (`F03.init-open-without-secret`). `control-agent-server
