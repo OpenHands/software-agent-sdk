@@ -284,6 +284,52 @@ class BashEventService:
         task.add_done_callback(self._tasks.discard)
         return command, task
 
+    async def get_command_output(self, command_id: UUID) -> BashOutput | None:
+        """Assemble the complete output of a command from its stored slices.
+
+        Output is stored as sequential ``BashOutput`` events, each holding at
+        most ``MAX_CONTENT_CHAR_LENGTH`` characters, so a command producing
+        more output spans multiple events (possibly more than one search
+        page). Pages through them via ``next_page_id``, joins ``stdout`` and
+        ``stderr`` separately in ``order`` and returns a single ``BashOutput``
+        carrying the final exit code. Returns None when the command has no
+        stored output events.
+        """
+        outputs: list[BashOutput] = []
+        page_id: str | None = None
+        while True:
+            page = await self.search_bash_events(
+                kind__eq="BashOutput", command_id__eq=command_id, page_id=page_id
+            )
+            outputs.extend(
+                event for event in page.items if isinstance(event, BashOutput)
+            )
+            if page.next_page_id is None:
+                break
+            page_id = page.next_page_id
+
+        if not outputs:
+            return None
+
+        outputs.sort(key=lambda output: output.order)
+        stdout = "".join(output.stdout for output in outputs if output.stdout)
+        stderr = "".join(output.stderr for output in outputs if output.stderr)
+        exit_code = next(
+            (
+                output.exit_code
+                for output in reversed(outputs)
+                if output.exit_code is not None
+            ),
+            None,
+        )
+        return outputs[-1].model_copy(
+            update={
+                "stdout": stdout or None,
+                "stderr": stderr or None,
+                "exit_code": exit_code,
+            }
+        )
+
     async def _execute_bash_command(self, command: BashCommand) -> None:
         """Execute the bash event and create an observation event."""
         try:

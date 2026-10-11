@@ -3,7 +3,7 @@
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import (
@@ -119,8 +119,12 @@ async def execute_bash_command(
     _validate_cwd(request, bash_event_service)
     command, task = await bash_event_service.start_bash_command(request)
     await task
-    page = await bash_event_service.search_bash_events(command_id__eq=command.id)
-    result = cast(BashOutput, page.items[-1])
+    result = await bash_event_service.get_command_output(command.id)
+    if result is None:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "Command finished without producing any output events",
+        )
     return result
 
 
