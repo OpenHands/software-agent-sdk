@@ -56,15 +56,18 @@ def get_supported_llm_models(
     aws_access_key_id: SecretStr | None = None,
     aws_secret_access_key: SecretStr | None = None,
 ) -> list[str]:
-    """Get all models supported by LiteLLM.
+    """Get models from LiteLLM, verified OpenRouter routes, and Bedrock.
 
-    This function combines models from litellm and Bedrock, removing any
-    error-prone Bedrock models.
+    Bedrock models are excluded unless AWS credentials are configured.
 
     Returns:
-        list[str]: A sorted list of unique model names.
+        list[str]: Available model identifiers.
     """
-    litellm_model_list = litellm.model_list + list(litellm.model_cost.keys())
+    litellm_model_list = (
+        litellm.model_list
+        + list(litellm.model_cost.keys())
+        + [f"openrouter/{model}" for model in VERIFIED_MODELS["openrouter"]]
+    )
     litellm_model_list_without_bedrock = list(
         filter(lambda m: not m.startswith("bedrock"), litellm_model_list)
     )
