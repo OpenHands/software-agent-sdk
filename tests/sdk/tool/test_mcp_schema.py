@@ -26,6 +26,13 @@ class MCPComplexAction(Action):
     string_list: list[str] = Field(default_factory=list, description="List of strings")
 
 
+class CustomAliasedAction(Action):
+    mcp_schema_alias_specs: ClassVar[dict[str, dict[str, Any]]] = {
+        "extra_field": {"type": "string"}
+    }
+    mcp_schema_alias_required: ClassVar[set[str]] = {"extra_field"}
+
+
 class MCPSchemaTestObservation(Observation):
     """Test observation class for MCP schema testing."""
 
@@ -499,13 +506,6 @@ def test_schema_mcp_aliases_use_declared_class_apis():
     assert issubclass(model, Schema)
     assert model.mcp_schema_alias_specs == {}
     assert model.mcp_schema_alias_required == set()
-
-    # Dynamic model with alias specs
-    class CustomAliasedAction(Action):
-        mcp_schema_alias_specs: ClassVar[dict[str, dict[str, Any]]] = {
-            "extra_field": {"type": "string"}
-        }
-        mcp_schema_alias_required: ClassVar[set[str]] = {"extra_field"}
 
     exported = CustomAliasedAction.to_mcp_schema()
     assert "extra_field" in exported.get("properties", {})

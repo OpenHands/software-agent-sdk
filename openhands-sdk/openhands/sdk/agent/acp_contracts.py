@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from openhands.sdk.agent.acp_models import ACPModelInfo
 
@@ -132,6 +132,27 @@ class ACPSessionModelsResponseProtocol(Protocol):
     """Protocol for session responses exposing the UNSTABLE models block."""
 
     models: Any | None
+
+
+class ACPLegacyModelInfo(BaseModel):
+    """One entry of the UNSTABLE ``models`` block, as servers send it."""
+
+    model_config = ConfigDict(populate_by_name=True, protected_namespaces=())
+
+    model_id: str = Field(alias="modelId")
+    name: str | None = None
+    description: str | None = None
+
+
+class ACPLegacySessionModels(BaseModel):
+    """The UNSTABLE ``models`` block, which the ACP 0.12 schema no longer models."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    current_model_id: str | None = Field(default=None, alias="currentModelId")
+    available_models: list[ACPLegacyModelInfo] = Field(
+        default_factory=list, alias="availableModels"
+    )
 
 
 @runtime_checkable
