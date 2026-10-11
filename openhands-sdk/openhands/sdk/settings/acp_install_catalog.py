@@ -20,6 +20,7 @@ bump only needs to happen here.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -36,6 +37,10 @@ class ACPPackagePin:
     def pinned(self) -> str:
         """The ``name@version`` token passed to ``npm``/``npx``."""
         return f"{self.name}@{self.version}"
+
+
+ACP_VERSION_RE = re.compile(r"v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)")
+_ACP_VERSION_RE = ACP_VERSION_RE
 
 
 @dataclass(frozen=True)
@@ -74,6 +79,11 @@ class ACPInstallSpec:
     only as a cryptic mid-handshake error from the CLI's own dependencies —
     which is what this field exists to name.
     """
+
+    @property
+    def primary_version(self) -> str | None:
+        """Version of the primary package for this ACP provider."""
+        return self.packages[0].version if self.packages else None
 
     def npx_command(self) -> tuple[str, ...]:
         """The default ``npx``-based launch command for this provider.
@@ -222,6 +232,12 @@ def render_docker_install_plan(
                 packages.append(pkg.pinned)
         wrapper_bins.append(spec.binary_name)
     return packages, wrapper_bins
+
+
+def get_acp_pinned_version(provider_key: str) -> str | None:
+    """Get the pinned version for an ACP provider from the install catalog."""
+    spec = ACP_INSTALL_CATALOG.get(provider_key)
+    return spec.primary_version if spec else None
 
 
 def _main(argv: list[str] | None = None) -> int:
