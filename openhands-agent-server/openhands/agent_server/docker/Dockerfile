@@ -8,7 +8,7 @@ ARG USERNAME=openhands
 ARG UID=10001
 ARG GID=10001
 ARG PORT=8000
-ARG NPM_VERSION=11.19.1
+ARG NPM_VERSION=11.21.0
 # Opt-in build flag for the Vertex AI extra (`openhands-sdk[vertex]`). Off by
 # default to keep the published image lean. Pass `--build-arg ENABLE_VERTEX=1`
 # to bundle google-cloud-aiplatform so the resulting binary supports
@@ -26,6 +26,7 @@ ARG INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli
 # join this list later (see OpenHands/software-agent-sdk#4645) — the parsing
 # below is written so that's a one-case addition, not a signature change.
 ARG INSTALL_CAPABILITIES=vscode,browser,docker
+ARG ENABLE_VSCODE=true
 
 ####################################################################################
 # Canonical Python + Node runtime
@@ -40,7 +41,7 @@ FROM python:3.13.15-slim-trixie AS python-runtime
 FROM node:24.21.0-trixie-slim AS node-runtime
 FROM debian:trixie-slim AS python-node-runtime
 ARG NPM_VERSION
-ARG DEBIAN_SNAPSHOT=20260920T000000Z
+ARG DEBIAN_SNAPSHOT=20261004T000000Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
@@ -241,8 +242,8 @@ RUN set -eux; \
 # and Git APIs. Development tools and optional capabilities live in base-image.
 ####################################################################################
 FROM ${BASE_IMAGE} AS base-image-minimal
-ARG USERNAME UID GID PORT
-
+ARG USERNAME UID GID PORT ENABLE_VSCODE
+ENV OH_ENABLE_VSCODE=${ENABLE_VSCODE}
 
 ARG OPENHANDS_BUILD_GIT_SHA=unknown
 ARG OPENHANDS_BUILD_GIT_REF=unknown

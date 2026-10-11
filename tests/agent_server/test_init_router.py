@@ -6,12 +6,16 @@ Background: https://github.com/OpenHands/software-agent-sdk/issues/2523
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import Request, Response, status
 from fastapi.testclient import TestClient
+from fastapi.websockets import WebSocketDisconnect
 from pydantic import SecretStr
 
 from openhands.agent_server.api import api_lifespan, create_app
@@ -19,7 +23,9 @@ from openhands.agent_server.config import Config
 from openhands.agent_server.init_router import (
     InitRequest,
     InitService,
+    InitState,
     _build_initialized_config,
+    require_initialized,
 )
 from openhands.agent_server.vscode_service import VSCodeService
 
@@ -397,6 +403,184 @@ class TestInitServiceTransitions:
 class TestEndToEndOverLifespan:
     """Drive the whole flow through the FastAPI lifespan + TestClient."""
 
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        (
+            ("GET", "/api/conversations/count"),
+            ("GET", "/v1/models"),
+            (
+                "GET",
+                "/api/conversations/00000000-0000-0000-0000-000000000000/"
+                "workspace/index.html",
+            ),
+            ("POST", "/app-backends/test-extension/session"),
+        ),
+    )
+    def test_dormant_readiness_precedes_authentication(
+        self, tmp_path: Path, method: str, path: str
+    ) -> None:
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=True,
+            session_api_keys=["dormant-key"],
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        with TestClient(create_app(cfg)) as client:
+            try:
+                assert client.request(method, path).status_code == 503
+            finally:
+                _reset_conversation_singleton()
+
+    @pytest.mark.parametrize("init_state", ("dormant", "initializing"))
+    def test_app_backend_http_requires_ready_state(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        init_state: InitState,
+    ) -> None:
+        async def accept_app_backend_http(
+            _request: Request, _extension_name: str, _path: str
+        ) -> Response:
+            return Response(status_code=200)
+
+        monkeypatch.setattr(
+            "openhands.agent_server.canvas_extensions_bridge_router."
+            "proxy_app_backend_http",
+            accept_app_backend_http,
+        )
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        app = create_app(cfg)
+        with TestClient(app) as client:
+            try:
+                init_service: InitService = app.state.init_service
+                init_service._state = init_state
+                assert client.get("/api/init").json()["state"] == init_state
+                assert client.get("/app-backends/test-extension").status_code == 503
+            finally:
+                _reset_conversation_singleton()
+
+    @pytest.mark.parametrize(
+        (
+            "path",
+            "dormant_keys",
+            "request_headers",
+            "expected_status",
+            "ready_headers",
+        ),
+        (
+            (
+                "/api/conversations/count",
+                [],
+                {},
+                401,
+                {"X-Session-API-Key": "ready-key"},
+            ),
+            (
+                "/api/conversations/count",
+                ["dormant-key"],
+                {"X-Session-API-Key": "dormant-key"},
+                401,
+                {"X-Session-API-Key": "ready-key"},
+            ),
+            (
+                "/api/conversations/count",
+                [],
+                {"X-Session-API-Key": "ready-key"},
+                200,
+                {"X-Session-API-Key": "ready-key"},
+            ),
+            (
+                "/v1/models",
+                [],
+                {},
+                401,
+                {"Authorization": "Bearer ready-key"},
+            ),
+            (
+                "/v1/models",
+                ["dormant-key"],
+                {"Authorization": "Bearer dormant-key"},
+                401,
+                {"Authorization": "Bearer ready-key"},
+            ),
+            (
+                "/v1/models",
+                [],
+                {"Authorization": "Bearer ready-key"},
+                200,
+                {"Authorization": "Bearer ready-key"},
+            ),
+        ),
+    )
+    def test_request_crossing_init_uses_ready_credentials(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        path: str,
+        dormant_keys: list[str],
+        request_headers: dict[str, str],
+        expected_status: int,
+        ready_headers: dict[str, str],
+    ) -> None:
+        class EmptyProfileStore:
+            def list_summaries(self) -> list[dict[str, object]]:
+                return []
+
+        monkeypatch.setattr(
+            "openhands.agent_server.openai.service.get_llm_profile_store",
+            EmptyProfileStore,
+        )
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=True,
+            session_api_keys=dormant_keys,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        app = create_app(cfg)
+        readiness_reached = Event()
+        continue_request = Event()
+
+        def pause_at_readiness(request: Request) -> None:
+            readiness_reached.set()
+            assert continue_request.wait(timeout=5)
+            require_initialized(request)
+
+        app.dependency_overrides[require_initialized] = pause_at_readiness
+        with TestClient(app) as client:
+            try:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    pending = executor.submit(
+                        client.get,
+                        path,
+                        headers=request_headers,
+                    )
+                    try:
+                        assert readiness_reached.wait(timeout=5)
+                        initialized = client.post(
+                            "/api/init",
+                            json={
+                                "session_api_keys": ["ready-key"],
+                                "conversations_path": str(tmp_path / "u" / "convs"),
+                                "bash_events_dir": str(tmp_path / "u" / "bash"),
+                            },
+                        )
+                        assert initialized.status_code == 200
+                    finally:
+                        continue_request.set()
+                    crossed = pending.result(timeout=5)
+
+                assert crossed.status_code == expected_status
+                assert client.get(path, headers=ready_headers).status_code == 200
+            finally:
+                _reset_conversation_singleton()
+
     def test_dormant_503s_api_routes_until_init(self, tmp_path):
         _reset_conversation_singleton()
         cfg = Config(
@@ -438,6 +622,68 @@ class TestEndToEndOverLifespan:
                 # /api/* now works (200, not 503).
                 resp = client.get("/api/conversations/count")
                 assert resp.status_code == 200
+            finally:
+                _reset_conversation_singleton()
+
+    def test_dormant_refuses_bash_socket_until_init(self, tmp_path):
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        marker = tmp_path / "marker"
+        with TestClient(create_app(cfg)) as client:
+            try:
+                with pytest.raises(WebSocketDisconnect) as excinfo:
+                    with client.websocket_connect("/sockets/bash-events") as ws:
+                        ws.send_json({"command": f"touch {marker}"})
+                assert excinfo.value.code == status.WS_1013_TRY_AGAIN_LATER
+                assert not marker.exists()
+
+                resp = client.post(
+                    "/api/init",
+                    json={
+                        "conversations_path": str(tmp_path / "u" / "convs"),
+                        "bash_events_dir": str(tmp_path / "u" / "bash"),
+                    },
+                )
+                assert resp.status_code == 200
+
+                with client.websocket_connect("/sockets/bash-events"):
+                    pass
+            finally:
+                _reset_conversation_singleton()
+
+    def test_dormant_503s_openai_routes_until_init(self, tmp_path, monkeypatch):
+        class EmptyProfileStore:
+            def list_summaries(self) -> list[dict[str, object]]:
+                return []
+
+        monkeypatch.setattr(
+            "openhands.agent_server.openai.service.get_llm_profile_store",
+            EmptyProfileStore,
+        )
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        with TestClient(create_app(cfg)) as client:
+            try:
+                assert client.get("/v1/models").status_code == 503
+
+                resp = client.post(
+                    "/api/init",
+                    json={
+                        "conversations_path": str(tmp_path / "u" / "convs"),
+                        "bash_events_dir": str(tmp_path / "u" / "bash"),
+                    },
+                )
+                assert resp.status_code == 200
+
+                assert client.get("/v1/models").status_code == 200
             finally:
                 _reset_conversation_singleton()
 
@@ -544,16 +790,22 @@ class TestEndToEndOverLifespan:
                 )
                 assert resp.status_code == 200
 
-                # NOTE: session_api_keys configured at /api/init time take effect
-                # on the *config object*, but the FastAPI session-key
-                # dependency was bound to the original (dormant) config when
-                # the routes were mounted. Documenting this trade-off:
-                # in production, set OH_SESSION_API_KEYS_0 at pod start so
-                # auth is in place from the moment routes go live, and use
-                # /api/init only to deliver workspace + per-user runtime config.
-                # The dormant gate ensures no traffic reaches gated routes
-                # before /api/init regardless.
                 assert app.state.config.session_api_keys == ["user-session-key"]
+                assert client.get("/api/conversations/count").status_code == 401
+                assert (
+                    client.get(
+                        "/api/conversations/count",
+                        headers={"X-Session-API-Key": "wrong-key"},
+                    ).status_code
+                    == 401
+                )
+                assert (
+                    client.get(
+                        "/api/conversations/count",
+                        headers={"X-Session-API-Key": "user-session-key"},
+                    ).status_code
+                    == 200
+                )
             finally:
                 _reset_conversation_singleton()
 

@@ -2,6 +2,7 @@
 
 import re
 import time
+import uuid
 from enum import Enum
 
 from openhands.sdk.logger import get_logger
@@ -25,6 +26,7 @@ from openhands.tools.terminal.terminal.interface import (
 from openhands.tools.terminal.timeout_policy import foreground_timeout_rejection_for
 from openhands.tools.terminal.utils.command import (
     escape_bash_special_chars,
+    needs_heredoc_completion_boundary,
     split_bash_commands,
 )
 from openhands.tools.terminal.utils.escape_filter import TerminalQueryFilter
@@ -43,8 +45,51 @@ class TerminalCommandStatus(Enum):
     HARD_TIMEOUT = "hard_timeout"
 
 
+def _normalize_echo_line(line: str) -> str:
+    """Collapse an echoed line for comparison against what was sent.
+
+    Different backends alter the echo: readline drops leading tabs (tmux) or
+    substitutes a BEL for each of them (subprocess). Ignore whitespace and
+    control characters so the comparison still recognizes the echo.
+    """
+    return re.sub(r"[\x00-\x1f\x7f]", "", line).strip()
+
+
 def _remove_command_prefix(command_output: str, command: str) -> str:
-    return command_output.lstrip().removeprefix(command.lstrip()).lstrip()
+    """Strip the terminal's echo of `command` from the front of the output.
+
+    readline consumes or rewrites leading tabs when echoing a line, so the echo
+    can differ from the text that was sent by whitespace alone. An exact prefix
+    match then fails and the whole wrapper (plus both halves of the completion
+    marker) leaks into the observation, so fall back to comparing line by line
+    with whitespace and control characters normalized.
+    """
+    stripped = command_output.lstrip()
+    cmd = command.lstrip()
+    if stripped.startswith(cmd):
+        return stripped[len(cmd) :].lstrip()
+
+    if not cmd:
+        return stripped
+    out_lines = stripped.split("\n")
+    cmd_lines = cmd.split("\n")
+    for index, cmd_line in enumerate(cmd_lines):
+        if index >= len(out_lines) or _normalize_echo_line(
+            out_lines[index]
+        ) != _normalize_echo_line(cmd_line):
+            # Not an echo of this command; leave the output untouched.
+            return stripped
+    return "\n".join(out_lines[len(cmd_lines) :]).lstrip()
+
+
+def _remove_echoed_line(command_output: str, command: str) -> str:
+    """Remove one generated command echo wherever it appears in the output."""
+    target = _normalize_echo_line(command)
+    return "".join(
+        line
+        for line in command_output.splitlines(keepends=True)
+        if _normalize_echo_line(line) != target
+    )
 
 
 def _remove_powershell_echo(command_output: str, command: str) -> str:
@@ -91,6 +136,11 @@ class TerminalSession(TerminalSessionBase):
         # Store the last command for interactive input handling
         self.prev_status = None
         self.prev_output = ""
+        # Completion suffix for a heredoc script. Keep it on the session so a
+        # timeout or follow-up poll can recognize and strip it too.
+        self._boundary_marker: re.Pattern[str] | None = None
+        self._boundary_echo: str | None = None
+        self._wrapper_echo: str | None = None
         # Stateful filter for terminal query sequences (handles split sequences)
         self._query_filter = TerminalQueryFilter()
 
@@ -192,15 +242,18 @@ class TerminalSession(TerminalSessionBase):
         command: str,
         terminal_content: str,
         ps1_matches: list[re.Match],
+        echoed_command: str | None = None,
+        boundary_exit_code: int | None = None,
     ) -> TerminalObservation:
         """Handle a completed command."""
         is_special_key = self._is_special_key(command)
+        output_command = echoed_command or command
 
         # When PS1 metadata markers are missing (e.g., corrupted by TUI/ANSI
         # output or scrolled off-screen), fall back gracefully instead of
         # crashing. The command likely completed but we can't extract the
         # exit code or working directory.
-        if len(ps1_matches) == 0:
+        if len(ps1_matches) == 0 and boundary_exit_code is None:
             logger.warning(
                 "No PS1 metadata found in terminal output. "
                 "Command output may have overwritten the markers "
@@ -213,7 +266,7 @@ class TerminalSession(TerminalSessionBase):
                 "PS1 metadata markers.]"
             )
             command_output = self._get_command_output(
-                command,
+                output_command,
                 terminal_content,
                 metadata,
                 is_final=True,
@@ -232,35 +285,36 @@ class TerminalSession(TerminalSessionBase):
                 exit_code=metadata.exit_code,
             )
 
-        metadata = CmdOutputMetadata.from_ps1_match(ps1_matches[-1])
-
-        # Special case where the previous command output is truncated
-        # due to history limit
-        get_content_before_last_match = bool(len(ps1_matches) == 1)
-
-        # Update the current working directory if it has changed
-        if metadata.working_dir != self._cwd and metadata.working_dir:
-            self._cwd: str = metadata.working_dir
+        if boundary_exit_code is not None:
+            metadata = CmdOutputMetadata(
+                exit_code=boundary_exit_code, working_dir=self._cwd
+            )
+            get_content_before_last_match = False
+            raw_command_output = self._combine_outputs_between_matches(
+                terminal_content, ps1_matches
+            )
+        else:
+            metadata = CmdOutputMetadata.from_ps1_match(ps1_matches[-1])
+            get_content_before_last_match = bool(len(ps1_matches) == 1)
+            if metadata.working_dir != self._cwd and metadata.working_dir:
+                self._cwd = metadata.working_dir
+            raw_command_output = self._combine_outputs_between_matches(
+                terminal_content,
+                ps1_matches,
+                get_content_before_last_match=get_content_before_last_match,
+            )
+            if get_content_before_last_match:
+                num_lines = len(raw_command_output.splitlines())
+                metadata.prefix = (
+                    f"[Previous command outputs are truncated. "
+                    f"Showing the last {num_lines} lines of the output below.]\n"
+                )
 
         logger.debug(
             "Parsed terminal output (previous_ps1_not_matched=%s, content_length=%s)",
             get_content_before_last_match,
             len(terminal_content),
         )
-        # Extract the command output between the two PS1 prompts
-        raw_command_output = self._combine_outputs_between_matches(
-            terminal_content,
-            ps1_matches,
-            get_content_before_last_match=get_content_before_last_match,
-        )
-
-        if get_content_before_last_match:
-            # Count the number of lines in the truncated output
-            num_lines = len(raw_command_output.splitlines())
-            metadata.prefix = (
-                f"[Previous command outputs are truncated. "
-                f"Showing the last {num_lines} lines of the output below.]\n"
-            )
 
         metadata.suffix = (
             f"\n[The command completed with exit code {metadata.exit_code}.]"
@@ -271,7 +325,7 @@ class TerminalSession(TerminalSessionBase):
             )
         )
         command_output = self._get_command_output(
-            command,
+            output_command,
             raw_command_output,
             metadata,
             is_final=True,  # Command completed, flush filter state
@@ -296,6 +350,7 @@ class TerminalSession(TerminalSessionBase):
         command: str,
         terminal_content: str,
         ps1_matches: list[re.Match],
+        echoed_command: str | None = None,
     ) -> TerminalObservation:
         """Handle a command that timed out due to no output change."""
         self.prev_status = TerminalCommandStatus.NO_CHANGE_TIMEOUT
@@ -315,7 +370,7 @@ class TerminalSession(TerminalSessionBase):
             f"{self.no_change_timeout_seconds} seconds. {TIMEOUT_MESSAGE_TEMPLATE}]"
         )
         command_output = self._get_command_output(
-            command,
+            echoed_command or command,
             raw_command_output,
             metadata,
             continue_prefix="[Below is the output of the previous command.]\n",
@@ -336,6 +391,7 @@ class TerminalSession(TerminalSessionBase):
         terminal_content: str,
         ps1_matches: list[re.Match],
         timeout: float,
+        echoed_command: str | None = None,
     ) -> TerminalObservation:
         """Handle a command that timed out due to hard timeout."""
         self.prev_status = TerminalCommandStatus.HARD_TIMEOUT
@@ -355,7 +411,7 @@ class TerminalSession(TerminalSessionBase):
             f"{TIMEOUT_MESSAGE_TEMPLATE}]"
         )
         command_output = self._get_command_output(
-            command,
+            echoed_command or command,
             raw_command_output,
             metadata,
             continue_prefix="[Below is the output of the previous command.]\n",
@@ -374,6 +430,24 @@ class TerminalSession(TerminalSessionBase):
         """Reset the content buffer for a new command."""
         # Clear the current content
         self.terminal.clear_screen()
+
+    def _strip_boundary_wrapper(self, terminal_content: str) -> str:
+        """Remove the heredoc completion suffix from a raw screen read."""
+        if self._boundary_marker is not None:
+            terminal_content = self._boundary_marker.sub("", terminal_content)
+            terminal_content = terminal_content.replace("\x1b[?2004l", "").replace(
+                "\x1b[?2004h", ""
+            )
+        if self._boundary_echo:
+            terminal_content = terminal_content.replace(self._boundary_echo, "")
+            terminal_content = _remove_echoed_line(
+                terminal_content, self._boundary_echo
+            )
+        if self._wrapper_echo:
+            terminal_content = _remove_command_prefix(
+                terminal_content, self._wrapper_echo
+            )
+        return terminal_content
 
     def _combine_outputs_between_matches(
         self,
@@ -494,6 +568,7 @@ class TerminalSession(TerminalSessionBase):
             and not is_input
             and command != ""
         ):
+            last_terminal_output = self._strip_boundary_wrapper(last_terminal_output)
             _ps1_matches = CmdOutputMetadata.matches_ps1_metadata(last_terminal_output)
             # Use initial_ps1_matches if _ps1_matches is empty,
             # otherwise use _ps1_matches. This handles the case where
@@ -533,6 +608,32 @@ class TerminalSession(TerminalSessionBase):
             )
             return obs
 
+        command_to_send = command
+        boundary_command: str | None = None
+        command_boundary_marker: re.Pattern[str] | None = None
+        if command and not is_input:
+            self._boundary_marker = None
+            self._boundary_echo = None
+            self._wrapper_echo = None
+        if command and not is_input and not self.terminal.is_powershell():
+            if needs_heredoc_completion_boundary(command_to_send):
+                marker_id = uuid.uuid4().hex
+                marker_start = f"__OH_COMMAND_FINISHED_{marker_id}_"
+                marker_end = "__"
+                command_boundary_marker = re.compile(
+                    rf"{re.escape(marker_start)}(?P<exit_code>\d+){marker_end}"
+                )
+                boundary_command = (
+                    "(__openhands_status=$?; printf '\\n%s%s%s\\n' "
+                    f"'{marker_start}' \"$__openhands_status\" '{marker_end}' "
+                    '> /dev/tty; exit "$__openhands_status")'
+                )
+                self._boundary_marker = command_boundary_marker
+            command_to_send = escape_bash_special_chars(command_to_send)
+            if boundary_command is not None:
+                self._boundary_echo = boundary_command
+                self._wrapper_echo = command_to_send
+
         # Send actual command/inputs to the terminal
         sent_command = command != ""
         if command != "":
@@ -546,15 +647,15 @@ class TerminalSession(TerminalSessionBase):
                     enter=not is_special_key,
                 )
             else:
-                # convert command to raw string (for bash terminals)
-                if not self.terminal.is_powershell():
-                    # Only escape for bash terminals, not PowerShell
-                    command = escape_bash_special_chars(command)
-                logger.debug("Sending command (command_length=%s)", len(command))
+                logger.debug(
+                    "Sending command (command_length=%s)", len(command_to_send)
+                )
                 self.terminal.send_keys(
-                    command,
+                    command_to_send,
                     enter=not is_special_key,
                 )
+                if boundary_command is not None:
+                    self.terminal.send_keys(boundary_command)
 
         # Loop until the command completes or times out
         while True:
@@ -572,25 +673,47 @@ class TerminalSession(TerminalSessionBase):
             output_changed_since_command = (
                 cur_terminal_output != initial_terminal_output
             )
+            active_boundary_marker = command_boundary_marker or self._boundary_marker
+            boundary_match = (
+                active_boundary_marker.search(cur_terminal_output)
+                if active_boundary_marker is not None
+                else None
+            )
+            command_reached_boundary = (
+                active_boundary_marker is None or boundary_match is not None
+            )
 
             if cur_terminal_output != last_terminal_output:
                 last_terminal_output = cur_terminal_output
                 last_change_time = time.time()
                 logger.debug(f"CONTENT UPDATED DETECTED at {last_change_time}")
 
-            # 1) Execution completed:
-            # Condition 1: A new prompt has appeared since the command started.
-            # Condition 2: The prompt count hasn't increased (potentially because the
-            # initial one scrolled off), BUT the *current* visible terminal ends with a
-            # prompt, indicating completion.
-            if (not sent_command or output_changed_since_command) and (
-                current_ps1_count > initial_ps1_count
-                or cur_terminal_output.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip())
+            # 1) Execution completed when a prompt appears, or when a heredoc
+            # suffix reaches its tty boundary after stdout has been redirected.
+            prompt_reached = current_ps1_count > initial_ps1_count or (
+                cur_terminal_output.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip())
+            )
+            if (
+                command_reached_boundary
+                and (not sent_command or output_changed_since_command)
+                and (prompt_reached or boundary_match is not None)
             ):
+                completed_terminal_output = cur_terminal_output
+                boundary_exit_code = None
+                if active_boundary_marker is not None:
+                    completed_terminal_output = self._strip_boundary_wrapper(
+                        completed_terminal_output
+                    )
+                    if not prompt_reached and boundary_match is not None:
+                        boundary_exit_code = int(boundary_match.group("exit_code"))
+                completed_ps1_matches = CmdOutputMetadata.matches_ps1_metadata(
+                    completed_terminal_output
+                )
                 obs = self._handle_completed_command(
                     command,
-                    terminal_content=cur_terminal_output,
-                    ps1_matches=ps1_matches,
+                    terminal_content=completed_terminal_output,
+                    ps1_matches=completed_ps1_matches,
+                    boundary_exit_code=boundary_exit_code,
                 )
                 return obs
 
@@ -610,10 +733,14 @@ class TerminalSession(TerminalSessionBase):
                 and self.no_change_timeout_seconds is not None
                 and time_since_last_change >= self.no_change_timeout_seconds
             ):
+                stripped_output = self._strip_boundary_wrapper(cur_terminal_output)
                 obs = self._handle_nochange_timeout_command(
                     command,
-                    terminal_content=cur_terminal_output,
-                    ps1_matches=ps1_matches,
+                    terminal_content=stripped_output,
+                    ps1_matches=CmdOutputMetadata.matches_ps1_metadata(stripped_output),
+                    echoed_command=(
+                        command_to_send if command_boundary_marker is not None else None
+                    ),
                 )
                 return obs
 
@@ -626,11 +753,19 @@ class TerminalSession(TerminalSessionBase):
             if action.timeout is not None:
                 time_since_start = time.time() - start_time
                 if time_since_start >= action.timeout:
+                    stripped_output = self._strip_boundary_wrapper(cur_terminal_output)
                     obs = self._handle_hard_timeout_command(
                         command,
-                        terminal_content=cur_terminal_output,
-                        ps1_matches=ps1_matches,
+                        terminal_content=stripped_output,
+                        ps1_matches=CmdOutputMetadata.matches_ps1_metadata(
+                            stripped_output
+                        ),
                         timeout=action.timeout,
+                        echoed_command=(
+                            command_to_send
+                            if command_boundary_marker is not None
+                            else None
+                        ),
                     )
                     return obs
 

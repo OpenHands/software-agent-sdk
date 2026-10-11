@@ -1,9 +1,11 @@
 import asyncio
 import contextlib
+import io
 import json
 import shutil
 import threading
 import time
+import zipfile
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,10 +15,12 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from pydantic import SecretStr
 
 from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService, RunSlot
+from openhands.agent_server.file_router import _create_zip_from_directory
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
     EventPage,
@@ -51,9 +55,11 @@ from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.mcp.config import coerce_mcp_config
+from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.subagent.schema import AgentDefinition
-from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
+from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal import TerminalAction, TerminalObservation
 from tests.agent_server.stress.scripts import (
@@ -1987,6 +1993,46 @@ class TestEventServiceRun:
         event_service._publish_state_update.assert_called()
 
 
+class _PausingWriter:
+    """Text file handle that runs ``pause`` halfway through each write.
+
+    The first half is flushed to disk before ``pause`` runs, so ``pause`` sees
+    the file as a concurrent reader would in the middle of the write.
+    """
+
+    def __init__(self, handle, pause):
+        self._handle = handle
+        self._pause = pause
+
+    def __enter__(self):
+        self._handle.__enter__()
+        return self
+
+    def __exit__(self, *exc_info):
+        return self._handle.__exit__(*exc_info)
+
+    def write(self, data):
+        half = len(data) // 2
+        written = self._handle.write(data[:half])
+        self._handle.flush()
+        self._pause()
+        return written + self._handle.write(data[half:])
+
+    def __getattr__(self, name):
+        return getattr(self._handle, name)
+
+
+def _pause_text_writes_halfway(monkeypatch, pause) -> None:
+    """Run ``pause`` halfway through every text-mode write (``mode="w"``)."""
+    original_open = io.open
+
+    def open_(file, mode="r", *args, **kwargs):
+        handle = original_open(file, mode, *args, **kwargs)
+        return _PausingWriter(handle, pause) if mode == "w" else handle
+
+    monkeypatch.setattr(io, "open", open_)
+
+
 class TestEventServiceSaveMeta:
     """Test cases for EventService.save_meta method."""
 
@@ -2052,6 +2098,68 @@ class TestEventServiceSaveMeta:
         env = loaded.agent_definitions[0].mcp_config["tavily"].env
         assert env is not None
         assert env["TAVILY_API_KEY"].get_secret_value() == "${TAVILY_API_KEY}"
+
+    @pytest.mark.asyncio
+    async def test_save_meta_never_exposes_a_partial_meta_json(
+        self, event_service, tmp_path, monkeypatch
+    ):
+        """A reader of meta.json during a save sees the previous complete file."""
+        event_service.conversations_dir = tmp_path
+        event_service.conversation_dir.mkdir()
+        meta_file = event_service.conversation_dir / "meta.json"
+        await event_service.save_meta()
+        previous = meta_file.read_bytes()
+        seen_mid_save: list[bytes] = []
+        _pause_text_writes_halfway(
+            monkeypatch, lambda: seen_mid_save.append(meta_file.read_bytes())
+        )
+
+        event_service.stored.title = "renamed"
+        await event_service.save_meta()
+
+        assert seen_mid_save == [previous]
+        saved = StoredConversation.model_validate_json(meta_file.read_text())
+        assert saved.title == "renamed"
+
+    @pytest.mark.asyncio
+    async def test_trajectory_zip_built_during_save_meta_has_no_partial_meta_json(
+        self, sample_stored_conversation, tmp_path, monkeypatch
+    ):
+        """A trajectory zip built mid-save holds a complete, redacted meta.json.
+
+        Partial JSON does not parse, so the zip cannot redact it, and the
+        encrypted secrets in it would be archived as they are.
+        """
+        sample_stored_conversation.secrets = {
+            "GITHUB_TOKEN": StaticSecret(value=SecretStr("ghp_zip_during_save"))
+        }
+        service = EventService(
+            stored=sample_stored_conversation,
+            conversations_dir=tmp_path,
+            cipher=Cipher("trajectory-zip-during-save-meta"),
+        )
+        service.conversation_dir.mkdir()
+        await service.save_meta()
+        meta_file = service.conversation_dir / "meta.json"
+        assert FERNET_TOKEN_PREFIX in meta_file.read_text()
+        archive_path = tmp_path / "trajectory.zip"
+        _pause_text_writes_halfway(
+            monkeypatch,
+            lambda: _create_zip_from_directory(service.conversation_dir, archive_path),
+        )
+
+        service.stored.title = "renamed"
+        await service.save_meta()
+
+        with zipfile.ZipFile(archive_path) as archive:
+            members = {name: archive.read(name) for name in archive.namelist()}
+        assert not [
+            name
+            for name, data in members.items()
+            if FERNET_TOKEN_PREFIX.encode() in data
+        ]
+        meta = json.loads(members[f"{service.stored.id.hex}/meta.json"])
+        assert meta["secrets"]["GITHUB_TOKEN"]["value"] == REDACTED_SECRET_VALUE
 
     @pytest.mark.asyncio
     async def test_switch_acp_model_persists_via_conversation(self, tmp_path):

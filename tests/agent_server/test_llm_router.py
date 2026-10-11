@@ -1,5 +1,6 @@
 """Tests for LLM router."""
 
+import litellm
 import pytest
 from fastapi.testclient import TestClient
 
@@ -54,27 +55,35 @@ async def test_list_models_filtered_by_provider():
     assert len(response.models) < len(all_models_response.models)
 
 
-@pytest.mark.asyncio
-async def test_list_models_filtered_by_openrouter_provider():
-    """OpenRouter's verified entries are namespaced ids (the ``openrouter/``
-    prefix stripped, e.g. ``deepseek/deepseek-chat``). Those same strings are
-    also genuine LiteLLM catalog models routed to their upstream provider, so a
-    naive verified-list match would leak the upstream-direct models into the
-    OpenRouter response. Every returned model must be an ``openrouter/`` route.
-    """
-    response = await list_models(provider="openrouter")
-    assert len(response.models) > 0
-    assert all(m.startswith("openrouter/") for m in response.models), (
-        "OpenRouter response must only contain openrouter/-prefixed routes, "
-        f"got non-prefixed entries: "
-        f"{[m for m in response.models if not m.startswith('openrouter/')]}"
+@pytest.mark.parametrize("openrouter_in_catalog", [False, True])
+def test_list_models_filtered_by_openrouter_provider(
+    client, monkeypatch, openrouter_in_catalog
+):
+    """Verified routes survive catalog removal without leaking direct models."""
+    catalog = [
+        "deepseek/deepseek-chat",
+        "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v4-flash",
+    ]
+    if openrouter_in_catalog:
+        catalog.append("openrouter/deepseek/deepseek-chat")
+    monkeypatch.setattr(litellm, "model_list", catalog)
+    monkeypatch.setattr(
+        litellm,
+        "model_cost",
+        {"openrouter/custom/model": {}} if openrouter_in_catalog else {},
     )
-    # A namespaced entry that collides with a deepseek-direct catalog model must
-    # resolve to the OpenRouter route, not the DeepSeek-direct model.
-    assert "openrouter/deepseek/deepseek-chat" in response.models
-    assert "deepseek/deepseek-chat" not in response.models
-    assert "deepseek/deepseek-v4-pro" not in response.models
-    assert "deepseek/deepseek-v4-flash" not in response.models
+
+    response = client.get("/api/llm/models?provider=openrouter")
+
+    assert response.status_code == 200
+    models = response.json()["models"]
+    assert "openrouter/deepseek/deepseek-chat" in models
+    assert all(model.startswith("openrouter/") for model in models)
+    assert models == sorted(set(models))
+    if openrouter_in_catalog:
+        assert "openrouter/custom/model" in models
+    assert set(models) <= set(client.get("/api/llm/models").json()["models"])
 
 
 @pytest.mark.asyncio
