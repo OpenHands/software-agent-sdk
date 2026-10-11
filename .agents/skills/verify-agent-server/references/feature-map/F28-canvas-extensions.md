@@ -974,8 +974,8 @@ Preconditions:
   forced install stays refused with 409, and only `stop` followed by `start`
   recovers. While the bug lasts the backend is left running; the next bullet
   stops it first.
-- **Status hangs after the leader exits (`F28.status-exit-hang`), known bug.**
-  The backend forks a child that inherits its stdout, then its leader exits.
+- **Status after the leader exits (`F28.status-exit-hang`).** The backend
+  forks a child that inherits its stdout, then its leader exits.
   ```sh
   control-agent-server api POST /api/canvas-extensions/install --json "{\"source\": \"$F28FX/qa-f28-flaky\"}" --expect 200,409 --quiet
   FREV=$(control-agent-server api GET /api/canvas-extensions/installed/qa-f28-flaky/backend --field revision)
@@ -992,23 +992,21 @@ Preconditions:
   if kill -0 "$FPID" 2>/dev/null; then false; fi
   kill -0 "$CHILD"
   control-agent-server api GET /api/canvas-extensions/installed/qa-f28-flaky/backend --until-ok 10 --timeout 10 \
-    --check state eq unhealthy --check detail eq 'Backend exited with code 0' --save F28.status-exit-hang/status  # bug
+    --check state eq unhealthy --check detail eq 'Backend exited with code 0' --save F28.status-exit-hang/status
   control-agent-server api POST /api/canvas-extensions/installed/qa-f28-flaky/backend/stop --timeout 10 --expect 200 --check state eq stopped
-  if kill -0 "$CHILD" 2>/dev/null; then false; fi  # bug
+  if kill -0 "$CHILD" 2>/dev/null; then false; fi
   ```
   The leader is gone (the server reaped it) while the forked `/bin/sleep`
-  child still runs. Expected: the status reports the exit (`unhealthy`,
-  `Backend exited with code 0`) at once and `stop` kills the leftover child.
+  child still runs. The status reports the exit (`unhealthy`, `Backend
+  exited with code 0`) at once and `stop` kills the leftover child.
   `--until-ok` covers a status call that lands before the server noticed the
-  exit (it would read `Backend health probe failed` once). An `api` call that
-  times out ends the retries, so the hang fails the `# bug` line with
-  `timed out`. Actual: the status call waits for the child to close the
-  pipes (here up to 300 s) while it holds the app's lock, so `stop`, `logs`,
-  `prepare`, `start` and the data route for that app all time out behind it
-  and the child keeps running. The last line is marked too: a fix that only
-  stops the status call from waiting but leaves the child alive after `stop`
-  is still this bug. An exit trap kills the bullet's own child, which
-  releases the lock.
+  exit (it would read `Backend health probe failed` once); an `api` call
+  that times out ends the retries. Before #5689 the status call waited for
+  the child to close the pipes (up to 300 s) while it held the app's lock,
+  so `stop`, `logs`, `prepare`, `start` and the data route for that app
+  timed out behind it and the child kept running (baseline `3dcb27b2`
+  reproduced it twice, #5689 passed twice). The exit trap kills the
+  bullet's own child if a regression leaves it behind.
 - **Backend outlives a crash (`F28.hard-restart-orphan`), known bug.** Start a
   backend, SIGKILL the server and restart it on the same state.
   ```sh
@@ -1098,10 +1096,10 @@ Preconditions:
 - Every `GET .../backend` of a `ready` backend probes its health path with a
   1 s timeout. One slow answer latches `unhealthy` until `stop` and `start`
   (`F28.status-probe-latch`), so fixture backends must answer `/health` from
-  a threaded server, never behind a slow request. A backend whose children
-  keep its stdout open after the leader dies wedges that app's lifecycle
-  routes (`F28.status-exit-hang`); `exec` into the real server or redirect
-  children's output.
+  a threaded server, never behind a slow request. Before #5689 a backend
+  whose children kept its stdout open after the leader died wedged that
+  app's lifecycle routes; the server now reaps them
+  (`F28.status-exit-hang`).
 - A pending `start` that another command must observe runs as a
   backgrounded `api` call (`... &`, then `START_JOB=$!`) and is collected
   with `wait "$START_JOB"`, so its own `--expect`/`--check` still fail the
