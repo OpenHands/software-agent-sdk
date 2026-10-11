@@ -14,6 +14,12 @@ on:
 jobs:
     create-version-bump-prs:
         runs-on: ubuntu-24.04
+        # The enterprise-dispatcher App key is stored in the
+        # `enterprise-sdk-bump` Environment (branch policy: main only, no
+        # required reviewers) rather than as an org secret, so the weak
+        # enterprise-write credential can only be read from a main run. See
+        # saas-deploy/scripts/create-enterprise-dispatcher.
+        environment: enterprise-sdk-bump
         env:
             GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
             SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -480,95 +486,66 @@ jobs:
                     echo "✅ PR created for $REPO"
                   fi
 
-            - name: Create PR for enterprise repo
+            # Enterprise lives in a separate trust domain. Instead of minting a
+            # token here and pushing into OpenHands/enterprise ourselves (which
+            # would require a credential broad enough to write to enterprise and
+            # intermingle the two trust domains), ask enterprise to open the bump
+            # PR itself: fire a `repository_dispatch` and let a receiver workflow
+            # in enterprise do the clone/commit/push/PR with enterprise's own
+            # credentials. The credential this job holds is therefore only the
+            # weak `enterprise-dispatcher-sdk` App (contents:write, installed on
+            # enterprise alone, not a ruleset bypass actor) created by
+            # saas-deploy's scripts/create-enterprise-dispatcher (PR saas-deploy
+            # #1296). Its key is branch-gated in the `enterprise-sdk-bump`
+            # Environment of this repo (main only), never an org secret.
+            - name: Mint enterprise-dispatcher App token (scoped to OpenHands/enterprise)
+              id: enterprise-dispatcher-token
+              # continue-on-error: if the enterprise-sdk-bump Environment or its
+              # ENTERPRISE_DISPATCHER_APP_* secrets aren't provisioned yet,
+              # actions/create-github-app-token fails here. Without continue-on-error
+              # that would abort the job before the Summary / Slack / gate steps run,
+              # losing the aggregated outcome and the alert. Mirror the other bump
+              # steps: let the dispatch step below surface the failure via its own
+              # continue-on-error so the Summary can report enterprise FAILED.
+              continue-on-error: true
+              uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+              with:
+                  app-id: ${{ secrets.ENTERPRISE_DISPATCHER_APP_ID }}
+                  private-key: ${{ secrets.ENTERPRISE_DISPATCHER_APP_PRIVATE_KEY }}
+                  owner: OpenHands
+                  repositories: enterprise
+                  permission-contents: write
+
+            - name: Dispatch enterprise SDK bump
               id: enterprise_pr
               continue-on-error: true
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
+                  # Scope the weak dispatcher token to enterprise so the dispatch
+                  # posts as the App (the only capability it has), not the
+                  # job-level PAT, which has no write access to enterprise.
+                  GH_TOKEN: ${{ steps.enterprise-dispatcher-token.outputs.token }}
               run: |
                   set -euo pipefail
 
-                  REPO="OpenHands/enterprise"
-                  BRANCH="bump-sdk-$VERSION"
+                  echo "🔄 Dispatching bump-sdk ($VERSION) to OpenHands/enterprise..."
 
-                  echo "🔄 Creating PR for $REPO..."
+                  # The receiver workflow in enterprise (on: repository_dispatch:
+                  # types: [bump-sdk]) performs the clone, pin edit, uv.lock
+                  # regen, push and `gh pr create` with enterprise's own
+                  # credentials. The payload is treated as untrusted there.
+                  gh api /repos/OpenHands/enterprise/dispatches \
+                    -f event_type=bump-sdk \
+                    -F "client_payload[version]=$VERSION" \
+                    -F "client_payload[source-repo]=$GITHUB_REPOSITORY" \
+                    -F "client_payload[source-sha]=$GITHUB_SHA"
 
-                  # Clone the repo
-                  git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" enterprise-repo
-                  cd enterprise-repo
-
-                  # Configure git
-                  git config user.name "github-actions[bot]"
-                  git config user.email "github-actions[bot]@users.noreply.github.com"
-
-                  # Check if branch already exists on remote
-                  if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
-                    echo "⚠️ Branch $BRANCH already exists, checking out existing branch"
-                    git fetch origin "$BRANCH"
-                    git checkout "$BRANCH"
-                  else
-                    # Create branch
-                    git checkout -b "$BRANCH"
-                  fi
-
-                  # enterprise pins openhands-sdk + openhands-agent-server + openhands-tools as
-                  # exact PEP 621 dependencies and keeps a uv.lock. Update the pins with
-                  # sed (exact, no normalization), then regenerate the lock, keeping the
-                  # project's own [tool.uv] table (exclude-newer + exclude-newer-package)
-                  # intact so the regenerated lock still satisfies `uv sync --locked`in CI.
-
-                  echo "📝 Updating pyproject.toml SDK pins..."
-                  sed -i -E 's/"openhands-sdk==[^"]*"/"openhands-sdk=='"$VERSION"'"/' pyproject.toml
-                  sed -i -E 's/"openhands-agent-server==[^"]*"/"openhands-agent-server=='"$VERSION"'"/' pyproject.toml
-                  sed -i -E 's/"openhands-tools==[^"]*"/"openhands-tools=='"$VERSION"'"/' pyproject.toml
-
-                  # --no-cache avoids stale index data from the just-published packages.
-
-                  echo "📝 Regenerating uv.lock..."
-                  uv lock --no-cache
-
-                  # Check if there are changes
-                  if git diff --quiet; then
-                    echo "⚠️ No changes detected in $REPO - versions may already be up to date"
-                    exit 0
-                  fi
-
-                  # Commit and push. Use a Conventional Commit `chore(deps):` subject so the
-                  # target repo's release-please does not cut a release from these bumps
-                  # (the manual bump this replaces, #484, used the same convention).
-                  git add pyproject.toml uv.lock
-                  git commit -m "chore(deps): bump SDK to $VERSION" \
-                    -m "Bump openhands-sdk, openhands-agent-server, openhands-tools to $VERSION (regenerated uv.lock)." \
-                    -m "Automated version bump after PyPI release." \
-                    -m "Co-authored-by: openhands <openhands@all-hands.dev>"
-                  git push -u origin "$BRANCH"
-
-                  # Check if PR already exists
-                  EXISTING_PR=$(gh pr list --repo "$REPO" --head "$BRANCH" --json number --jq '.[0].number')
-                  if [ -n "$EXISTING_PR" ]; then
-                    echo "✅ PR #$EXISTING_PR already exists for $REPO"
-                  else
-                    # Create PR with a `chore:` title to match the bump-PR convention.
-
-                    gh pr create \
-                      --repo "$REPO" \
-                      --title "chore: bump SDK to $VERSION" \
-                      --body "## Automated Version Bump
-
-                  This PR updates the following packages to version **$VERSION**:
-                  - \`openhands-sdk\`
-                  - \`openhands-agent-server\`
-                  - \`openhands-tools\`
-
-                  **Triggered by:** Release of [software-agent-sdk v$VERSION](https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION)
-
-                  ---
-                  _This PR was automatically created by the version-bump-prs workflow._" \
-                      --base main \
-                      --head "$BRANCH"
-
-                    echo "✅ PR created for $REPO"
-                  fi
+                  # repository_dispatch returns 204 even when no receiver is
+                  # listening, so a success here only confirms the event was
+                  # accepted — not that enterprise opened a bump PR. The actual
+                  # bump PR is created by enterprise's bump-sdk receiver workflow;
+                  # confirm it on OpenHands/enterprise after a release run.
+                  echo "✅ Dispatched bump-sdk ($VERSION) to OpenHands/enterprise (receiver opens the bump PR)"
 
             - name: Summary
               id: summary
@@ -597,7 +574,7 @@ jobs:
                     local outcome="$2"
                     local link="$3"
                     if [ "$outcome" = "failure" ]; then
-                      echo "- ⚠️ **$name PR creation FAILED** — see the \"Create PR for $name repo\" step logs" >> $GITHUB_STEP_SUMMARY
+                      echo "- ⚠️ **$name PR creation FAILED** — see the $name step logs above" >> $GITHUB_STEP_SUMMARY
                       FAILED_COUNT=$((FAILED_COUNT + 1))
                       if [ -n "$FAILED_REPOS" ]; then FAILED_REPOS="$FAILED_REPOS, "; fi
                       FAILED_REPOS="$FAILED_REPOS$name"
