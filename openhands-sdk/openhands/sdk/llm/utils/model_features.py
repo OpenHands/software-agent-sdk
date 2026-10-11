@@ -279,8 +279,9 @@ RESPONSES_API_MODELS: list[str] = [
 # Models that require string serializer for tool messages
 # These models don't support structured content format [{"type":"text","text":"..."}]
 # and need plain strings instead
-# NOTE: model_matches uses case-insensitive substring matching, not globbing.
-#       Keep these entries as bare substrings without wildcards.
+# NOTE: evaluated with apply_ordered_model_rules, which uses case-insensitive
+#       substring matching (not globbing) and honors "!" exclude rules with
+#       last-match-wins semantics. Keep entries as bare substrings.
 FORCE_STRING_SERIALIZER_MODELS: list[str] = [
     # Only the legacy DeepSeek v3.2 family needs string-only content. Newer
     # v4/v4.1 ids accept structured list content, and matching a bare
@@ -312,13 +313,28 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
 VISION_MODEL_OVERRIDES: dict[str, str] = {}
 
 
+# Vision-capable models that LiteLLM's live registry does not report as
+# vision-capable (no entry, or `supports_vision` absent/false). These ids are
+# vouched for in VERIFIED_MODELS, so assert the capability here rather than
+# silently treating them as text-only. Keep this minimal and remove an entry
+# once LiteLLM starts reporting the model correctly. See issue #5523; the
+# broader fix for outsourcing capabilities is tracked in #4880.
+VISION_CAPABLE_MODELS: list[str] = [
+    # OpenHands-verified (see #4940); LiteLLM has no `deepseek-v4.1-flash`
+    # entry, only `baseten/deepseek-ai/DeepSeek-V4.1-Flash` (vision=true).
+    "deepseek-v4.1-flash",
+]
+
+
 @cache
 def _model_supports_vision(model: str | None) -> bool:
-    """Return whether LiteLLM marks the model as visual."""
+    """Return whether LiteLLM or our verified list marks the model as visual."""
     normalized = _normalize_model_for_litellm(model)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return bool(normalized and litellm_supports_vision(normalized))
+        if normalized and litellm_supports_vision(normalized):
+            return True
+    return model_matches(model, VISION_CAPABLE_MODELS)
 
 
 # Models whose API rejects http(s) image URLs and only accepts base64
@@ -485,7 +501,9 @@ def get_features(
             fallback=not model_matches(model, SUPPORTS_STOP_WORDS_FALSE_MODELS),
         ),
         supports_responses_api=_supports_responses_api(model, model_info, overrides),
-        force_string_serializer=model_matches(model, FORCE_STRING_SERIALIZER_MODELS),
+        force_string_serializer=apply_ordered_model_rules(
+            model, FORCE_STRING_SERIALIZER_MODELS
+        ),
         send_reasoning_content=model_matches(model, SEND_REASONING_CONTENT_MODELS),
         # Extended prompt_cache_retention support follows ordered include/exclude rules.
         supports_prompt_cache_retention=_resolved_bool(
