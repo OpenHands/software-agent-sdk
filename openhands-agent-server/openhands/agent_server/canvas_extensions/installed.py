@@ -87,7 +87,7 @@ def _tracked_names(installed_dir: Path) -> set[str]:
     """
     if not installed_dir.exists():
         return set()
-    metadata = InstallationMetadata.load_from_dir(installed_dir)
+    metadata = InstallationMetadata.read(installed_dir)
     return {info.name for info in metadata.validate_tracked(installed_dir)}
 
 

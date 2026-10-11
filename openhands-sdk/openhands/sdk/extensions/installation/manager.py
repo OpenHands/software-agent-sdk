@@ -281,7 +281,7 @@ class InstallationManager[T: ExtensionProtocol]:
         """
         validate_extension_name(name)
 
-        metadata = InstallationMetadata.load_from_dir(self.installation_dir)
+        metadata = InstallationMetadata.read(self.installation_dir)
         info = metadata.extensions.get(name)
 
         if info is not None:
