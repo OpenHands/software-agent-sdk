@@ -42,6 +42,7 @@ from openhands.sdk.agent.acp_agent import (
     _mask_json_value,
     _maybe_set_session_model,
     _mcp_config_to_acp_servers,
+    _NewSessionResponse,
     _npx_packages,
     _OpenHandsACPBridge,
     _preconfigured_credentials,
@@ -6380,7 +6381,7 @@ class TestACPSessionIdPersistence:
         )
         stack.enter_context(
             patch(
-                "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                "openhands.sdk.agent.acp_agent._ACPClientConnection",
                 return_value=conn,
             )
         )
@@ -7511,7 +7512,7 @@ class TestACPSecretsEnvInjection:
             )
             stack.enter_context(
                 patch(
-                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    "openhands.sdk.agent.acp_agent._ACPClientConnection",
                     return_value=conn,
                 )
             )
@@ -7668,7 +7669,7 @@ class TestACPSecretRegistryEnvInjection:
             )
             stack.enter_context(
                 patch(
-                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    "openhands.sdk.agent.acp_agent._ACPClientConnection",
                     return_value=conn,
                 )
             )
@@ -7901,7 +7902,7 @@ class TestACPEnvConflictSuppression:
             )
             stack.enter_context(
                 patch(
-                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    "openhands.sdk.agent.acp_agent._ACPClientConnection",
                     return_value=conn,
                 )
             )
@@ -8491,21 +8492,29 @@ class TestDetectionAgainstRealSessionResponses:
             "gpt-5.5",
         ]
 
-    def test_gemini_046_uses_set_session_model(self):
-        # agent-client-protocol 0.12.1 bumped the ACP schema to v1.19.0, which
-        # dropped the UNSTABLE ``models`` extension from ``NewSessionResponse``.
-        # gemini-cli 0.46.0 selected its model via that legacy ``models`` block
-        # and advertises no ``model`` ``configOptions`` select, so once parsed
-        # through the 0.12.1 schema the block is no longer visible: the SDK
-        # detects no model-selection mechanism (current/available both absent,
-        # mechanism falls back to the legacy default) rather than hallucinating
-        # a model. ``_apply_acp_model`` then no-ops the legacy branch because
-        # ``ClientSideConnection.set_session_model`` was removed alongside it.
-        resp = NewSessionResponse.model_validate(_GEMINI_046_SESSION)
+    def test_gemini_046_models_block_needs_the_extended_response(self):
+        # agent-client-protocol 0.12.1 dropped the UNSTABLE ``models`` block
+        # from ``NewSessionResponse``; gemini-cli reports its models only there.
+        plain = NewSessionResponse.model_validate(_GEMINI_046_SESSION)
+        assert _extract_session_models(plain) == (None, None, False)
+
+        resp = _NewSessionResponse.model_validate(_GEMINI_046_SESSION)
         cur, avail, via = _extract_session_models(resp)
         assert via is False
-        assert cur is None
-        assert avail is None
+        assert cur == "gemini-3-flash-preview"
+        assert avail is not None
+        assert [m.model_id for m in avail][:3] == [
+            "auto",
+            "gemini-3-pro-preview",
+            "gemini-3-flash-preview",
+        ]
+
+    def test_malformed_models_block_is_ignored(self):
+        resp = _NewSessionResponse.model_validate(
+            {"sessionId": "s", "models": {"availableModels": [{"name": "no id"}]}}
+        )
+        assert resp.session_id == "s"
+        assert resp.models is None
 
 
 class TestApplyAcpModelNoFallback:
@@ -8961,7 +8970,7 @@ class TestACPFileSecretMaterialisation:
             )
             stack.enter_context(
                 patch(
-                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    "openhands.sdk.agent.acp_agent._ACPClientConnection",
                     return_value=conn,
                 )
             )
