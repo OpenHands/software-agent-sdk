@@ -131,7 +131,16 @@ JWKS_CACHE_TTL_SECONDS = 3600  # 1 hour
 
 # Models available via ChatGPT subscription (not API).
 OPENAI_CODEX_MODELS = frozenset(
-    {"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"}
+    {
+        "gpt-6.1-sol",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-6-astra",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+    }
 )
 
 
