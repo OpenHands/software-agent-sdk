@@ -29,7 +29,11 @@ The map has **935 sub-features**.
 - Start every family from the baseline unless its `Preconditions:` say
   otherwise; run its bullets top to bottom in one shell.
 - Capture per-run values into shell variables (`--print-id`, `--field`,
-  `--print-path`); never paste ids from an earlier run.
+  `--print-path`); never paste ids from an earlier run. A bullet that reads
+  another bullet's variables or files names it on a `Requires:` line, and a
+  bullet that alone needs a machine capability names it on a `Needs:` line.
+- Start background processes that later bullets use with `helper start`;
+  a plain `cmd &` ends with its bullet.
 - Treat every command as literal. Keep quoted JSON and flags unchanged.
 - Prefix fixtures and names with `qa-` or `QA_`; restore shared state (active
   profile, settings) after a mutation unless a later bullet needs it.
@@ -62,7 +66,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | ID | Family | What it covers | Entry points | Needs | Sub-features |
 |---|---|---|---|---|---|
 | F01 | [Server status, info and contract](F01-server-status.md) | liveness, health, readiness, server info and its `/` alias, uptime and idle time, OpenAPI document, the static-files mode, DEBUG tracebacks, tool preloading | `GET /alive`, `/health`, `/ready`, `/server_info`, `/`, `/openapi.json` | baseline | 11 |
-| F02 | [Authentication and workspace sessions](F02-auth-and-sessions.md) | session keys on HTTP and on WebSockets (first frame, deprecated query and header forms, close codes), several and rotated keys, no-auth and legacy modes, the default bind address, the workspace session cookie, CORS | `X-Session-API-Key`, `POST`/`DELETE /api/auth/workspace-session`, WebSocket auth on every socket | tmux | 21 |
+| F02 | [Authentication and workspace sessions](F02-auth-and-sessions.md) | session keys on HTTP and on WebSockets (first frame, deprecated query and header forms, close codes), several and rotated keys, no-auth and legacy modes, the default bind address, the workspace session cookie, CORS | `X-Session-API-Key`, `POST`/`DELETE /api/auth/workspace-session`, WebSocket auth on every socket | recipes: tmux | 21 |
 | F03 | [Deferred init (warm-pool dormant mode)](F03-deferred-init.md) | warm-pool dormant mode: the gate on `/api`, `/v1`, `/app-backends` and every socket (checked before auth), init key auth, validation and redaction, rollback, one-shot init, and every field the init body delivers (keys, secret key, paths, worktree root, run limit, CORS, webhooks, env, web URL) | `GET`/`POST /api/init`, `X-Init-API-Key` | git; launch `--no-auth --deferred-init` | 24 |
 | F04 | [Conversation lifecycle and catalog](F04-conversation-lifecycle.md) | create from settings, an agent profile or an inline agent; client ids, parents, worktrees, start-time secrets, 422 redaction; get, batch get, search, count; PATCH; final response; DELETE; restart | `POST`/`GET`/`PATCH`/`DELETE /api/conversations[/{id}]`, `/search`, `/count`, `/agent_final_response` | llm, git | 32 |
 | F05 | [Run, pause, interrupt and status transitions](F05-run-pause-interrupt.md) | run, pause and interrupt during model and tool calls; status transitions on every view; stuck detection and max_iterations stops; 409 and 429; graceful and SIGKILL restarts | `POST /api/conversations/{id}/run`, `/pause`, `/interrupt` | llm, tmux; launch `--config-json '{"max_concurrent_runs": 1}'` | 31 |
@@ -85,7 +89,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | F22 | [Meta-profiles (model router)](F22-meta-profiles.md) | meta-profiles (model router): save, read, activate, delete, settings reflection, routing in a conversation | `/api/meta-profiles[/{name}]`, `/activate` | llm, node | 24 |
 | F23 | [LLM catalog and provider connections](F23-llm-catalog-and-connections.md) | provider and model catalogs, verified models, provider connections (create, rotate, delete, references from profiles), ACP discovery errors | `GET /api/llm/providers`, `/api/llm/models[/verified]`, `/api/llm/provider-connections[/{id}]`, `POST /api/acp/models` | llm, node, network | 27 |
 | F24 | [OpenAI ChatGPT subscription device flow](F24-openai-subscription.md) | the ChatGPT subscription device flow: models, status, device start and poll, logout, upstream failures | `/api/llm/subscription/openai/*` | node, network | 20 |
-| F25 | [Skills catalog, install and marketplace](F25-skills.md) | the merged skill catalog, public-repo sync, installed skills (install, enable, refresh, uninstall), marketplace, trigger-word activation in a conversation | `POST /api/skills`, `/api/skills/sync`, `/api/skills/install`, `/api/skills/installed[/{name}]`, `/api/skills/marketplace` | llm, git, network, node | 33 |
+| F25 | [Skills catalog, install and marketplace](F25-skills.md) | the merged skill catalog, public-repo sync, installed skills (install, enable, refresh, uninstall), marketplace, trigger-word activation in a conversation | `POST /api/skills`, `/api/skills/sync`, `/api/skills/install`, `/api/skills/installed[/{name}]`, `/api/skills/marketplace` | git; recipes: llm, network, node | 33 |
 | F26 | [Plugins catalog, install and marketplace](F26-plugins.md) | plugin catalog, install from a path or git source, enable, refresh, uninstall, marketplace, loading a plugin into a conversation | `POST /api/plugins`, `/api/plugins/install`, `/api/plugins/installed[/{name}]`, `/api/plugins/marketplace` | llm, git, node, network | 25 |
 | F27 | [Hooks, sub-agents and tool catalogs](F27-hooks-subagents-tools.md) | hooks and sub-agent catalogs, blocking hooks in a conversation, the tool registry and catalog, client tools, forwarded agent definitions, custom tool modules | `POST /api/hooks`, `POST /api/sub-agents`, `GET /api/tools/`, `/api/tools/catalog` | llm, git, tmux, chromium | 31 |
 | F28 | [Canvas apps: install, catalog and backend lifecycle](F28-canvas-extensions.md) | Canvas app install, catalog, enable, uninstall, bundle and icon; backend approval, prepare, start, stop, logs, data, failure states, restart | `/api/canvas-extensions/install`, `/api/canvas-extensions/installed[/{name}][/backend...]` | git, node; launch `--env TZ=UTC` | 29 |

@@ -254,6 +254,8 @@ Preconditions:
   recreated directory is served at once.
 - **Deleted conversation (`F16.deleted-conversation`).** Delete the
   conversation from the previous bullet and request its workspace.
+
+  Requires: `F16.workspace-dir-missing`
   ```sh
   control-agent-server api DELETE "/api/conversations/$GID" --expect 200
   control-agent-server api GET "/api/conversations/$GID" --expect 404
@@ -390,6 +392,8 @@ Preconditions:
   (no `message`) and the server is otherwise healthy.
 - **URL shape (`F16.vscode-url-shape`).** Global and scoped URLs, with and
   without overrides, then with a base path.
+
+  Requires: `F16.vscode-enabled-status`
   ```sh
   KEY=$(cat "$AGENT_SERVER_VERIFY_RUN/private/session_api_key")
   control-agent-server api GET /api/vscode/url --expect 200 --check url eq "http://localhost:$VPORT/?tkn=$KEY&folder=workspace" --save F16.vscode-url-shape/global
@@ -446,6 +450,8 @@ Preconditions:
   `F16.vscode-url-not-running` (see Gotchas).
 - **No key, no URL (`F16.vscode-url-no-key`).** A second server without
   session keys, VS Code enabled on the port the sink still holds.
+
+  Requires: `F16.vscode-enabled-status`
   ```sh
   NK=$(control-agent-server launch --new --no-auth --vscode --name f16-nokey --config-json '{"vscode_port": '"$VPORT"'}' --print-run)
   trap 'control-agent-server stop --run "$NK" >/dev/null' EXIT
@@ -462,6 +468,8 @@ Preconditions:
 - **Key delivered by init, no URL (`F16.vscode-url-after-init`).** A
   deferred-init server booted without keys, VS Code enabled on the held port,
   then initialized with a session key, as a warm pool does.
+
+  Requires: `F16.vscode-enabled-status`
   ```sh
   DI=$(control-agent-server launch --new --no-auth --deferred-init --vscode --name f16-deferred --config-json '{"vscode_port": '"$VPORT"'}' --print-run)
   trap 'control-agent-server stop --run "$DI" >/dev/null' EXIT

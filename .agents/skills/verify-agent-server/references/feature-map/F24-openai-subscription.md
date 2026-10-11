@@ -255,6 +255,8 @@ Preconditions:
   unexpired login.
 - **Key required (`F24.auth-required`).** Every route without a key and with
   a wrong one, while the login from the previous bullet is stored.
+
+  Requires: `F24.status-connected`
   ```sh
   control-agent-server api GET /api/llm/subscription/openai/models --auth none --expect 401 --check detail eq Unauthorized
   control-agent-server api GET /api/llm/subscription/openai/models --auth bad --expect 401 --check detail eq Unauthorized
@@ -274,6 +276,8 @@ Preconditions:
   reads the login, so the refused logouts deleted nothing.
 - **Login across a restart (`F24.status-restart`).** Restart and read the
   status again.
+
+  Requires: `F24.status-connected`
   ```sh
   control-agent-server restart
   control-agent-server api GET /api/llm/subscription/openai/status --expect 200 --check connected eq true \
@@ -360,6 +364,8 @@ Preconditions:
   stored and status is still disconnected.
 - **Pending login (`F24.device-poll-pending`).** Poll twice, waiting the
   interval the server returned in between, as the protocol asks.
+
+  Requires: `F24.device-start`
   ```sh
   control-agent-server api POST /api/llm/subscription/openai/device/poll --json "{\"device_code\": \"$DC\"}" --expect 200 \
     --check connected eq false --check expires_at eq null --save F24.device-poll-pending/first
@@ -372,6 +378,8 @@ Preconditions:
   token was put back after the first one; no credentials appear.
 - **Logout cancels pending logins (`F24.logout-cancels-pending`).** Log out
   while `DC` is pending.
+
+  Requires: `F24.device-start`
   ```sh
   control-agent-server api POST /api/llm/subscription/openai/logout --expect 200 --check connected eq false
   control-agent-server api POST /api/llm/subscription/openai/device/poll --json "{\"device_code\": \"$DC\"}" --expect 404 \

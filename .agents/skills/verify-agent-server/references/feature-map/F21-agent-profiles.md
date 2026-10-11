@@ -240,6 +240,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   list summary and the file agree.
 - **Overwrite (`F21.save-overwrite`).** Save the same name again with a
   different body and a client `revision`.
+
+  Requires: `F21.save-create`
   ```sh
   control-agent-server api POST /api/agent-profiles/qa-f21-coder --expect 201 \
     --json '{"llm_profile_ref": "deepseek-pro", "tools": [], "mcp_server_refs": [], "persona": "QA F21 persona", "revision": 41}'
@@ -286,6 +288,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   gives only `Invalid agent profile`), and no `qa-f21-bad` file exists.
 - **Name rules (`F21.name-rules`).** The boundary and the bad shapes, on
   every route that takes a name.
+
+  Requires: `F21.save-create`
   ```sh
   L64=qa-f21-$(printf 'n%.0s' $(seq 1 57))
   test ${#L64} -eq 64
@@ -317,6 +321,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   as is a bad or missing `new_name`. Activate takes an id with no pattern,
   only a 128-character limit. `qa-f21-coder` is untouched.
 - **Unknown names and ids (`F21.not-found`).**
+
+  Requires: `F21.lazy-seed`
   ```sh
   control-agent-server api GET /api/agent-profiles/qa-f21-nope --expect 404 \
     --check detail eq "Agent profile 'qa-f21-nope' not found" --save F21.not-found/get
@@ -338,6 +344,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   idempotent and the pointer is untouched.
 - **Activate by id (`F21.activate`).** Point at `qa-f21-coder`, whose LLM
   (`deepseek-pro`), tools and persona differ from the live settings.
+
+  Requires: `F21.save-create`
   ```sh
   BEFORE=$(control-agent-server api GET /api/settings --field agent_settings | jq -S -c .)
   control-agent-server api POST "/api/agent-profiles/$CODER/activate" --expect 200 --check id eq "$CODER" \
@@ -353,6 +361,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
 - **Activate over a corrupt settings file (`F21.activate-corrupt-settings`).**
   The settings file is replaced with text that is not JSON (as a crash or a
   bad edit would leave it), then restored.
+
+  Requires: `F21.save-create`
   ```sh
   SETTINGS="$AGENT_SERVER_VERIFY_RUN/home/.openhands/settings.json"
   KEEP="$AGENT_SERVER_VERIFY_RUN/private/qa-f21-settings.json"
@@ -375,6 +385,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   it with defaults. With the original file back, activation is 200 again
   and the settings, key included, are intact.
 - **Rename (`F21.rename`).** Rename the active profile, then the edge cases.
+
+  Requires: `F21.save-create`, `F21.acp-kind`
   ```sh
   control-agent-server api POST /api/agent-profiles/qa-f21-coder/rename --json '{"new_name": "qa-f21-coder2"}' --expect 200 \
     --check name eq qa-f21-coder2 --check message eq "Agent profile 'qa-f21-coder' renamed to 'qa-f21-coder2'" --save F21.rename/rename
@@ -397,6 +409,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   same-name rename is a no-op, and a taken name is 409 with both profiles
   intact. The profile is renamed back for later bullets.
 - **Delete (`F21.delete`).** A profile that is not active, then one that is.
+
+  Requires: `F21.save-create`
   ```sh
   control-agent-server api POST /api/agent-profiles/qa-f21-tmp --json '{"llm_profile_ref": "deepseek-flash"}' --expect 201
   control-agent-server api DELETE /api/agent-profiles/qa-f21-tmp --expect 200 --check message eq "Agent profile 'qa-f21-tmp' deleted" \
@@ -420,6 +434,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   goes back to `qa-f21-coder`.
 - **Active ACP reset (`F21.delete-active-acp-reset`).** Live settings on
   ACP with one MCP server, then the active profile is deleted.
+
+  Requires: `F21.save-create`
   ```sh
   control-agent-server api PATCH /api/settings --json '{"agent_settings_diff": {"agent_kind": "acp", "acp_server": "codex"}}' \
     --expect 200 --check agent_settings.agent_kind eq acp
@@ -444,6 +460,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   `deepseek-flash` LLM profile and `qa-f21-coder` restores the run.
 - **Materialize a resolvable profile (`F21.materialize-valid`).** A stored
   profile that names the active LLM profile, `qa-f21-mcp` and a secret.
+
+  Requires: `F21.save-create`
   ```sh
   control-agent-server api POST /api/agent-profiles/qa-f21-preview --expect 201 \
     --json '{"llm_profile_ref": "deepseek-flash", "tools": [], "mcp_server_refs": ["qa-f21-mcp"], "secret_refs": ["QA_F21_ALLOWED"], "system_message_suffix": "QA F21 suffix"}'
@@ -596,6 +614,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   its revision but not the conversation's record or model.
 - **Secret scope (`F21.secret-scope`).** The same two start-time secrets on
   a scoped and an unscoped profile; neither conversation runs.
+
+  Requires: `F21.conversation-start`
   ```sh
   control-agent-server api POST /api/agent-profiles/qa-f21-scoped --expect 201 \
     --json '{"llm_profile_ref": "deepseek-flash", "tools": [], "mcp_server_refs": [], "secret_refs": ["QA_F21_ALLOWED"]}'
@@ -668,6 +688,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
 - **TypeScript client (`F21.ts-client`).** Every `AgentProfilesClient`
   method from the built client (built here when missing), plus the same
   client reached through `AgentServerClient.agentProfiles`.
+
+  Requires: `F21.save-create`
   ```sh
   test -f clients/typescript/dist/clients.js || (cd clients/typescript && npm ci && npm run build)
   F21TS="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f21-ts"
@@ -732,6 +754,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   previewing it rejects with an `HttpError` 404 and an invalid name with
   422. The REST list afterwards agrees.
 - **Restart (`F21.restart`).**
+
+  Requires: `F21.lazy-seed`, `F21.save-create`, `F21.acp-kind`
   ```sh
   control-agent-server restart
   control-agent-server api GET /api/agent-profiles --check active_agent_profile_id eq "$CODER" --save F21.restart/list
@@ -748,6 +772,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   profile `qa-f21-acp` and an OpenHands draft, previewed under the default
   `native` sourcing, under `openhands_managed`, and under the default again.
   No ACP binary is needed: materialize builds the agent without starting it.
+
+  Requires: `F21.acp-kind`
   ```sh
   OH_DRAFT='{"profile": {"llm_profile_ref": "deepseek-flash", "tools": [], "mcp_server_refs": []}}'
   control-agent-server api POST /api/agent-profiles/qa-f21-skills/materialize --expect 200 --quiet --json "$OH_DRAFT" \
@@ -782,6 +808,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   store's file lock (`flock` on file descriptor 9, opened on the lock file
   the server uses), as another process sharing the persistence directory
   would.
+
+  Requires: `F21.save-create`
   ```sh
   LOCK="$AGENT_SERVER_VERIFY_RUN/home/.openhands/agent-profiles/.agent-profiles.lock"
   exec 9>>"$LOCK"
@@ -802,6 +830,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   held lock, this time against a profile-backed `POST /api/conversations`
   (sent with the id: `conversation start --agent-profile` would resolve the
   name through the list route, which waits on the same lock).
+
+  Requires: `F21.save-create`
   ```sh
   W="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f21-busy"
   mkdir -p "$W"

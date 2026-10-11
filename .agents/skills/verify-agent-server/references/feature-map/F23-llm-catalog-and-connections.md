@@ -270,6 +270,8 @@ Preconditions:
   creation order with `api_key_set: true` and no key field.
 - **Key hidden and encrypted (`F23.conn-key-encrypted`).** Read the list and
   the store at rest.
+
+  Requires: `F23.conn-create`
   ```sh
   control-agent-server api GET /api/llm/provider-connections --check . not-contains "$DEEPSEEK_API_KEY" \
     --check . not-contains sk-qa-f23-default --check 0.api_key missing --save F23.conn-key-encrypted/list
@@ -387,6 +389,8 @@ Preconditions:
   `finish` tool, whichever the model chose).
 - **Update (`F23.conn-update`).** Rename `CONN` and point it at a
   `base_url`, re-activate, then clear the `base_url` and restore the name.
+
+  Requires: `F23.conn-create`
   ```sh
   CREATED=$(control-agent-server api GET /api/llm/provider-connections --field 0.created_at)
   control-agent-server api PATCH "/api/llm/provider-connections/$CONN" --expect 200 \
@@ -410,6 +414,8 @@ Preconditions:
   current `base_url` (set, then `null`) together with the unchanged key.
 - **Update validation (`F23.conn-update-validation`).** Bodies and ids the
   `PATCH` refuses.
+
+  Requires: `F23.conn-create`
   ```sh
   BEFORE=$(control-agent-server api GET /api/llm/provider-connections --field .)
   control-agent-server api PATCH "/api/llm/provider-connections/$CONN" --json '{}' --expect 422 \
@@ -432,6 +438,8 @@ Preconditions:
   probe profile to `DEF` (key `sk-qa-f23-default`), then for an empty, a
   whitespace-only and the placeholder key: `PATCH`, activate the probe,
   record the applied key, and put the original key back.
+
+  Requires: `F23.conn-create`
   ```sh
   trap 'control-agent-server api PATCH "/api/llm/provider-connections/$DEF" --json "{\"api_key\": \"sk-qa-f23-default\"}" --quiet > /dev/null 2>&1 || true
     control-agent-server api POST /api/profiles/qa-f23-linked/activate --quiet > /dev/null 2>&1 || true
@@ -472,6 +480,8 @@ Preconditions:
 - **Rotate the key (`F23.conn-rotate-key`).** Rotate `CONN` to a key
   DeepSeek rejects, check that active settings keep the old key until the
   next activation, run a conversation on the rotated key, then rotate back.
+
+  Requires: `F23.conn-create`
   ```sh
   control-agent-server api PATCH "/api/llm/provider-connections/$CONN" --json '{"api_key": "sk-qa-f23-rotated-QA23"}' --expect 200 \
     --check api_key_set eq true --save F23.conn-rotate-key/rotate
@@ -498,6 +508,8 @@ Preconditions:
 - **Validate a linked draft (`F23.validate-linked-draft`), known bug.**
   Pre-flight the same DeepSeek model with the key inline (positive
   control), then as a draft linked to `CONN`.
+
+  Requires: `F23.conn-create`
   ```sh
   printf '{"llm": {"model": "deepseek/deepseek-flash", "api_key": "%s", "num_retries": 0}}' "$DEEPSEEK_API_KEY" \
     | control-agent-server api POST /api/profiles/qa-f23-draft/validate --stdin --timeout 120 --expect 200 --check valid eq true
@@ -514,6 +526,8 @@ Preconditions:
   routes never return it.
 - **Restart (`F23.persist-restart`).** Restart the run and read everything
   back.
+
+  Requires: `F23.conn-create`
   ```sh
   BEFORE=$(control-agent-server api GET /api/llm/provider-connections --field .)
   control-agent-server restart
@@ -528,6 +542,8 @@ Preconditions:
   restart still decrypts and applies the DeepSeek key.
 - **Secret key changed (`F23.strict-decrypt`).** Restart with a new
   `OH_SECRET_KEY`, try every connection route, then restore the old key.
+
+  Requires: `F23.conn-create`
   ```sh
   SUM=$(sha256sum "$CF" | cut -d' ' -f1)
   control-agent-server restart --rotate-secret-key
@@ -553,6 +569,8 @@ Preconditions:
   resolves.
 - **Corrupted file (`F23.corrupt-file`).** Truncate the store, then give it
   a newer schema, then put the original back.
+
+  Requires: `F23.conn-create`
   ```sh
   cp "$CF" "$F23/connections-backup.json"
   printf '{"schema_version": 1, "connections": [' > "$CF"
@@ -635,6 +653,8 @@ Preconditions:
 - **Delete guard (`F23.delete-guard`).** Try to delete `CONN` while
   `qa-f23-linked` and the active settings use it, while only the profile
   does, and while only the settings do.
+
+  Requires: `F23.conn-create`
   ```sh
   control-agent-server api DELETE "/api/llm/provider-connections/$CONN" --expect 409 --save F23.delete-guard/profile-and-settings \
     --check detail eq 'Provider connection cannot be deleted while it is referenced by LLM profile(s): qa-f23-linked and referenced by the active agent settings. Update those references before deleting it.'
@@ -655,6 +675,8 @@ Preconditions:
   `agent_settings.llm`, which still blocks the delete until another profile
   is activated.
 - **Delete (`F23.conn-delete`).** Delete both connections, now unreferenced.
+
+  Requires: `F23.conn-create`
   ```sh
   control-agent-server api DELETE "/api/llm/provider-connections/$CONN" --expect 200 --check id eq "$CONN" \
     --check display_name eq qa-f23-deepseek --check provider eq deepseek --check api_key_set eq false --save F23.conn-delete/delete

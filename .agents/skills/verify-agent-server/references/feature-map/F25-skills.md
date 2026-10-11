@@ -14,7 +14,7 @@ installable entries of the public repository with a fresh `installed` flag.
 
 Source: `openhands-agent-server/openhands/agent_server/skills_router.py`, `openhands-agent-server/openhands/agent_server/skills_service.py`, `openhands-sdk/openhands/sdk/skills/`, `openhands-sdk/openhands/sdk/extensions/`, `openhands-sdk/openhands/sdk/marketplace/`, `openhands-sdk/openhands/sdk/git/cached_repo.py`, `openhands-sdk/openhands/sdk/context/agent_context.py`, `openhands-sdk/openhands/sdk/workspace/remote/base.py`, `clients/typescript/src/client/skills-client.ts`
 
-Needs: `llm`, `git`, `network`, `node`
+Needs: `git`
 
 Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
 `GET /api/skills/installed`, `GET /api/skills/installed/{skill_name}`,
@@ -116,7 +116,10 @@ Preconditions:
   to github.com is needed by `F25.public-repo` and `F25.install-github`, which
   arrange the network state for the two known-bug bullets after them
   (`F25.marketplace-public`, `F25.install-documented-sources`); every other
-  bullet runs offline (apart from the DeepSeek calls). `F25.ts-client` builds
+  bullet runs offline (apart from the DeepSeek calls). Each of these recipes
+  declares what it needs on its own `Needs:` line (the two known-bug bullets
+  inherit `network` through `Requires:`), so a machine without a model key,
+  network or `node` reports just those recipes blocked and drives the rest. `F25.ts-client` builds
   `clients/typescript/dist` with `npm ci && npm run build` only when it is
   missing (that build needs the npm registry).
 - The block below creates the run-owned fixtures
@@ -177,6 +180,8 @@ Preconditions:
 - **The real public repository (`F25.public-repo`).** Sync against
   `github.com/OpenHands/extensions` (network), which clones it into the public
   cache, then load the public tier from that clone.
+
+  Needs: `network`
   ```sh
   control-agent-server api POST /api/skills/sync --timeout 240 --expect 200 --check status eq success --save F25.public-repo/sync
   test -d "$PUB/.git"
@@ -193,6 +198,8 @@ Preconditions:
 - **Public marketplace catalog (`F25.marketplace-public`), known bug.** Read
   the catalog against the clone of the real `OpenHands/extensions`
   repository that `F25.public-repo` made.
+
+  Requires: `F25.public-repo`
   ```sh
   control-agent-server api GET /api/skills/marketplace --timeout 180 --expect 200 --check skills len-ge 1 --save F25.marketplace-public/catalog  # bug
   ```
@@ -391,6 +398,8 @@ Preconditions:
 - **Install from GitHub (`F25.install-github`).** Install the public
   `skills/github` skill from github.com (network) in the form that works, read
   it back, uninstall it.
+
+  Needs: `network`
   ```sh
   control-agent-server api POST /api/skills/install --json '{"source": "github:OpenHands/extensions", "repo_path": "skills/github"}' \
     --timeout 240 --expect 200 --check name eq github --check source eq github:OpenHands/extensions \
@@ -408,6 +417,8 @@ Preconditions:
 - **Documented install sources (`F25.install-documented-sources`), known bug.**
   Install the same skill in each GitHub form the OpenAPI description of
   `InstallSkillRequest.source` still advertises.
+
+  Requires: `F25.install-github`
   ```sh
   DOC=$(control-agent-server api GET /openapi.json --auth none --field components.schemas.InstallSkillRequest.properties.source.description)
   for SRC in github:OpenHands/extensions/skills/github https://github.com/OpenHands/extensions/tree/main/skills/github; do
@@ -454,6 +465,8 @@ Preconditions:
   refresh (it is enabled again afterwards).
 - **Install at a ref (`F25.install-ref`).** Reinstall the git skill pinned to
   the first commit, then refresh it.
+
+  Requires: `F25.refresh`
   ```sh
   control-agent-server api POST /api/skills/install --json '{"source": "file://'"$G"'", "repo_path": "skills/qa-f25-src-skill", "ref": "'"$H1"'", "force": true}' \
     --expect 200 --check resolved_ref eq "$H1" --check enabled eq true --save F25.install-ref/pinned
@@ -572,6 +585,8 @@ Preconditions:
   `qa-f25-pub-new` stays out.
 - **Sync without a reachable origin (`F25.sync-offline`), known bug.** Point
   the clone's origin at a missing path, sync, restore it on exit.
+
+  Requires: `F25.sync`
   ```sh
   trap 'git -C "$PUB" remote set-url origin "$E"' EXIT
   git -C "$PUB" remote set-url origin "$F/qa-f25-unreachable"
@@ -588,6 +603,8 @@ Preconditions:
 - **Registered marketplace skills (`F25.catalog-registered-marketplace`).**
   Register the `qa-f25-mk` fixture in the request (the public tier is the
   offline stand-in now).
+
+  Requires: `F25.sync`
   ```sh
   control-agent-server api POST /api/skills --json '{"load_public": true, "load_user": false, "load_project": false, "load_org": false, "registered_marketplaces": [{"name": "qa-f25-mk", "source": "'"$M"'", "auto_load": true}]}' \
     --expect 200 --check sources.registered_marketplaces eq 3 --check skills contains '"name": "qa-f25-mk-skill"' \
@@ -610,6 +627,7 @@ Preconditions:
   the installed skill's trigger word.
 
   Requires: `F25.install-local`
+  Needs: `llm`
   ```sh
   control-agent-server llm preset deepseek
   CID=$(control-agent-server conversation start --tools none --no-autotitle \
@@ -631,6 +649,8 @@ Preconditions:
 - **Skill invoked through `invoke_skill` (`F25.invoke-skill`).** Install an
   AgentSkill without triggers, then ask a DeepSeek conversation to invoke it
   by name; uninstall it afterwards.
+
+  Needs: `llm`
   ```sh
   control-agent-server llm preset deepseek
   mkdir -p "$F/qa-f25-invoke"
@@ -662,6 +682,8 @@ Preconditions:
   installed location, and the conversation records the skill in
   `invoked_skills` only. The model's reply is not asserted.
 - **Restart (`F25.restart-persist`).** Restart with one skill disabled.
+
+  Requires: `F25.refresh`
   ```sh
   control-agent-server api PATCH /api/skills/installed/qa-f25-src-skill --json '{"enabled": false}' --expect 200
   control-agent-server restart
@@ -705,6 +727,8 @@ Preconditions:
 - **Marketplace catalog (`F25.marketplace-catalog`).** Translated: the public
   clone is the local stand-in, which has `marketplaces/default.json`. Read the
   catalog, install its entry, read it again.
+
+  Requires: `F25.sync`
   ```sh
   control-agent-server api GET /api/skills/marketplace --expect 200 --check skills len-eq 1 --check skills.0.name eq qa-f25-pub \
     --check skills.0.description eq 'QA public stand-in skill' --check skills.0.source eq "$PUB/skills/qa-f25-pub" \
@@ -719,6 +743,8 @@ Preconditions:
 - **TypeScript client (`F25.ts-client`).** `SkillsClient` from the built
   client in `clients/typescript/dist` (built here when missing) walks the
   installed-skill lifecycle on its own git source, then REST reads the result.
+
+  Needs: `node`
   ```sh
   test -f clients/typescript/dist/clients.js || (cd clients/typescript && npm ci && npm run build)
   G3=$(control-agent-server fixture git-source --name qa-f25-ts --print-path)
@@ -774,6 +800,8 @@ Preconditions:
   `apiKey` gets 401.
 - **Catalog after a sync (`F25.marketplace-stale-cache`), known bug.** Warm
   the catalog, list a second entry upstream, sync, read the catalog.
+
+  Requires: `F25.sync`
   ```sh
   control-agent-server api GET /api/skills/marketplace --expect 200 --check skills not-contains qa-f25-pub-extra
   mkdir -p "$E/skills/qa-f25-pub-extra"
@@ -880,8 +908,9 @@ Preconditions:
   `skill_name` before looking for the body text.
 - Network: only `F25.public-repo` and `F25.install-github` reach github.com.
   They are normal bullets so that the two known-bug bullets after them start
-  from a proven clone or install; without network the run fails at them
-  rather than reporting a misleading `xfail`.
+  from a proven clone or install, and those bullets `Require` them; without
+  network all four are reported `blocked` rather than failing or reporting a
+  misleading `xfail`.
 - `conversation events --contains` fails when no selected event contains the
   text, so it asserts content on its own. `ws listen` has no content filter;
   `--until-kind K --until FIELD=VALUE` fails unless a frame of kind `K` with

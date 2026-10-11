@@ -108,9 +108,10 @@ Preconditions:
   the MCP handshake, an HTTP FastMCP server in three modes (`none`, `bearer`
   with the static token `qa-f19-bearer`, and `oauth` with FastMCP's
   `InMemoryOAuthProvider`, which approves every authorization request), and an
-  SDK program. The three HTTP servers run in the background on free ports; each
-  exits after 25 minutes or 60 seconds after the run's `/alive` stops
-  answering, and the last bullet kills them.
+  SDK program. The three HTTP servers run as `helper`s on free ports, so they
+  outlive the Preconditions bullet that starts them; each exits after 25
+  minutes or 60 seconds after the run's `/alive` stops answering, the last
+  bullet stops them, and `stop` ends any that remain.
   ```sh
   control-agent-server llm preset deepseek
   MCP=$(control-agent-server fixture mcp-server --name qa-f19 | jq -c .mcp_server)
@@ -165,8 +166,6 @@ Preconditions:
 
   from fastmcp import FastMCP
 
-  # Own session: `map run` stops each bullet's process group when the bullet ends.
-  os.setsid()
   port, mode, ttl, alive_url = int(sys.argv[1]), sys.argv[2], float(sys.argv[3]), sys.argv[4]
   auth = None
   if mode == "bearer":
@@ -234,12 +233,12 @@ Preconditions:
   OAUTH_PORT=$(free_port)
   NONE_PORT=$(free_port)
   DEAD_PORT=$(free_port)
-  nohup "$PY" "$F19/qa_f19_http.py" "$BEARER_PORT" bearer 1500 "$RUN_URL/alive" </dev/null >"$F19/http-bearer.log" 2>&1 &
-  BEARER_PID=$!
-  nohup "$PY" "$F19/qa_f19_http.py" "$OAUTH_PORT" oauth 1500 "$RUN_URL/alive" </dev/null >"$F19/http-oauth.log" 2>&1 &
-  OAUTH_PID=$!
-  nohup "$PY" "$F19/qa_f19_http.py" "$NONE_PORT" none 1500 "$RUN_URL/alive" </dev/null >"$F19/http-none.log" 2>&1 &
-  NONE_PID=$!
+  control-agent-server helper start --name qa-f19-http-bearer --log "$F19/http-bearer.log" \
+    -- "$PY" "$F19/qa_f19_http.py" "$BEARER_PORT" bearer 1500 "$RUN_URL/alive" >/dev/null
+  control-agent-server helper start --name qa-f19-http-oauth --log "$F19/http-oauth.log" \
+    -- "$PY" "$F19/qa_f19_http.py" "$OAUTH_PORT" oauth 1500 "$RUN_URL/alive" >/dev/null
+  control-agent-server helper start --name qa-f19-http-none --log "$F19/http-none.log" \
+    -- "$PY" "$F19/qa_f19_http.py" "$NONE_PORT" none 1500 "$RUN_URL/alive" >/dev/null
   for port in "$BEARER_PORT" "$OAUTH_PORT" "$NONE_PORT"; do
     for i in $(seq 1 80); do curl -s --noproxy '*' -o /dev/null "http://127.0.0.1:$port/mcp" && break; sleep 0.25; done
   done
@@ -521,6 +520,8 @@ Preconditions:
   finished; the `# bug` line asserts the correct behavior, a handled answer
   (the job's status, or a 4xx such as 409), and the last that the job is
   unchanged.
+
+  Requires: `F19.oauth-flow`
   ```sh
   control-agent-server api GET "/api/mcp/oauth/status/$J" --check status eq succeeded --check callback_ready eq true
   RBODY=$(jq -nc --arg u "$CALLBACK" '{callback_url: $u}')
@@ -625,6 +626,8 @@ Preconditions:
   with a placeholder model and that server, queueing a prompt without running
   it so only the MCP connection happens. No server with this URL is in the
   settings yet.
+
+  Requires: `F19.oauth-callback-validation`
   ```sh
   ISTATE=$(control-agent-server api GET "/api/mcp/oauth/status/$JV" --check oauth_state.tokens.refresh_token exists --field oauth_state --unsafe-unredacted)
   INLINE=$(jq -nc --argjson s "$OAUTH_SRV" --argjson st "$ISTATE" '$s | .auth.state = ($st | .token_expires_at = 1) | .transport = .type | del(.type)')
@@ -649,6 +652,8 @@ Preconditions:
   is expected to encrypt what it persists.
 - **Stored OAuth state (`F19.oauth-stored-state`).** Reuse the state from
   `F19.oauth-flow` for a test, a start, and a stored server.
+
+  Requires: `F19.oauth-flow`
   ```sh
   STATE=$(control-agent-server api GET "/api/mcp/oauth/status/$J" --field oauth_state --unsafe-unredacted)
   OSTATE_SRV=$(jq -nc --argjson s "$OAUTH_SRV" --argjson st "$STATE" '$s | .auth.state = $st')
@@ -662,7 +667,7 @@ Preconditions:
     --json "$(jq -nc --argjson s "$OSTATE_SRV" '$s | .transport = .type | del(.type)')" \
     --check agent_settings.mcp_config.qa-oauth.auth.state.tokens.access_token eq '**********' \
     --check agent_settings.mcp_config.qa-oauth.auth.state.client_info.client_id exists
-  TOKEN=$(control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --field agent_settings.mcp_config.qa-oauth.auth.state.tokens.access_token)
+  TOKEN=$(control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --field agent_settings.mcp_config.qa-oauth.auth.state.tokens.access_token --unsafe-unredacted)
   test -n "$TOKEN"
   test "${TOKEN#gAAAA}" = "$TOKEN"
   control-agent-server state cat home/.openhands/settings.json --not-contains "$TOKEN" \
@@ -729,7 +734,7 @@ Preconditions:
   control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --until-ok 15 --save F19.oauth-refresh-writeback/refreshed \
     --check agent_settings.mcp_config.qa-oauth.auth.state.tokens.access_token ne "$TOKEN" \
     --check agent_settings.mcp_config.qa-oauth.auth.state.token_expires_at gt "$(date +%s)"
-  TOKEN=$(control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --field agent_settings.mcp_config.qa-oauth.auth.state.tokens.access_token)
+  TOKEN=$(control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --field agent_settings.mcp_config.qa-oauth.auth.state.tokens.access_token --unsafe-unredacted)
   test -n "$TOKEN"
   control-agent-server state cat home/.openhands/settings.json --not-contains "$TOKEN" \
     --check agent_settings.mcp_config.qa-oauth.auth.state.tokens.access_token matches '^gAAAA' \
@@ -747,6 +752,8 @@ Preconditions:
 - **Credentials at rest (`F19.conversation-secrets-at-rest`).**
   A new conversation from the current settings (`qa-f19`, disabled `qa-env` with its `env` secret, `qa-oauth` with
   its tokens), then a search of everything the server wrote.
+
+  Requires: `F19.oauth-refresh-writeback`
   ```sh
   SCID=$(control-agent-server conversation start --tools none --no-autotitle --prompt 'Say hi' --no-run --print-id)
   control-agent-server api GET "/api/conversations/$SCID/events/search" --query limit=1 --max-chars 300 --until-ok 30 \
@@ -772,6 +779,8 @@ Preconditions:
   OAuth token values used in this family reached the server
   log (which does hold the OAuth job lines).
 - **Restart (`F19.restart`).** Settings are durable, OAuth jobs are not.
+
+  Requires: `F19.oauth-flow`, `F19.oauth-refresh-writeback`
   ```sh
   control-agent-server restart
   control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --save F19.restart/after-restart \
@@ -781,7 +790,7 @@ Preconditions:
     --check agent_settings.mcp_config.qa-f19.command eq "$PY"
   control-agent-server exec --expect-output 'SDK_MCP_ENV_OK=True' --save F19.restart/sdk -- "$PY" "$F19/sdk_mcp_config.py"
   control-agent-server api GET "/api/mcp/oauth/status/$J" --expect 404 --check detail eq 'MCP OAuth job not found'
-  kill "$BEARER_PID" "$OAUTH_PID" "$NONE_PID" 2>/dev/null || true
+  control-agent-server helper stop qa-f19-http-bearer qa-f19-http-oauth qa-f19-http-none >/dev/null
   for key in qa-f19 qa-env qa-oauth; do control-agent-server api DELETE "/api/settings/mcp/$key" --expect 200 >/dev/null; done
   control-agent-server api GET /api/settings --check agent_settings.mcp_config.qa-oauth missing --check agent_settings.mcp_config.qa-f19 missing
   ```
@@ -851,11 +860,10 @@ Preconditions:
   webhooks (`/mcp-oauth-state`, two posts per refresh: tokens, then expiry)
   in plaintext. Without a webhook in the config it lives only in memory for
   that conversation.
-- The HTTP fixtures are recipe-local background processes, not CLI fixtures:
-  `control-agent-server stop` does not stop them. `map run` stops every
-  process left in a bullet's process group when the bullet ends, so the
-  fixture script calls `os.setsid()` first to outlive the Preconditions
-  bullet that starts it (without it every later HTTP bullet fails with
-  `Client failed to connect`). They exit after 25 minutes,
-  60 seconds after the run's `/alive` stops answering, or when the last bullet
-  kills them; their logs are under `fixtures/f19/`.
+- The HTTP fixtures are recipe-local `helper`s, not CLI fixtures:
+  `helper start` runs each in its own session and registers it with the run,
+  so it outlives the Preconditions bullet (a plain `cmd &` would end with
+  that bullet's process group). The last bullet's `helper stop` or
+  `control-agent-server stop` ends them, and each also exits after 25
+  minutes or 60 seconds after the run's `/alive` stops answering; their logs
+  are under `fixtures/f19/`.

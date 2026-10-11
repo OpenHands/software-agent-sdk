@@ -316,6 +316,8 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   `api OPTIONS` on these routes.
 - **Session key required (`F29.session-key-required`).** The bootstrap takes
   only the control header.
+
+  Requires: `F29.session-bootstrap`
   ```sh
   control-agent-server api POST /app-backends/qa-backend/session --header 'Origin: http://localhost:3000' --expect 200 \
     --check-header set-cookie contains oh_app_backend_session=
@@ -332,6 +334,8 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   token and an app session cookie each answer 401 and set no cookie.
 - **Ingress host (`F29.session-ingress-host`).** The bootstrap and the proxy
   must arrive on the ingress host.
+
+  Requires: `F29.session-bootstrap`
   ```sh
   control-agent-server api POST /app-backends/qa-backend/session --header 'Origin: http://localhost:3000' --header "Host: localhost:$P" \
     --expect 421 --check detail eq 'Canvas App request must use the configured ingress origin' \
@@ -391,6 +395,8 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   without a cookie; another loopback port is accepted.
 - **Backend not ready (`F29.session-backend-not-ready`).** An app with no
   running backend, and a malformed name.
+
+  Requires: `F29.session-bootstrap`
   ```sh
   control-agent-server api POST /app-backends/qa-nope/session --header 'Origin: http://localhost:3000' --expect 503 \
     --check exception eq '503: Canvas App backend is not ready' --check-header set-cookie missing \
@@ -405,6 +411,8 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   outside `^[a-z0-9]+(?:-[a-z0-9]+)*$` is 422. A stopped installed backend
   is covered by `F29.backend-lifecycle-revokes`.
 - **Proxied safe methods (`F29.proxy-get`).** Only the cookie, no key.
+
+  Requires: `F29.session-bootstrap`
   ```sh
   control-agent-server api GET /app-backends/qa-backend/echo --auth none --cookie "oh_app_backend_session=$TOKEN" \
     --query view=main --expect 200 --check app eq qa-backend --check method eq GET --check path eq /echo \
@@ -430,6 +438,8 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   routes; `GET /session` is the backend's.
 - **Cookie required (`F29.proxy-cookie-required`).** The cookie is the only
   credential the proxy takes, and it is bound to one app.
+
+  Requires: `F29.session-bootstrap`
   ```sh
   control-agent-server api GET /app-backends/qa-backend/echo --auth none --expect 401 --check detail eq Unauthorized \
     --save F29.proxy-cookie-required/none
@@ -445,6 +455,8 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   own app.
 - **Unsafe methods (`F29.proxy-unsafe-methods`).** The ingress `Origin` is a
   CSRF guard for anything but GET, HEAD and OPTIONS.
+
+  Requires: `F29.session-bootstrap`
   ```sh
   control-agent-server api POST /app-backends/qa-backend/echo --auth none --cookie "oh_app_backend_session=$TOKEN" \
     --header "Origin: $S" --json '{"qa": "f29"}' --expect 200 --check method eq POST --check path eq /echo \
@@ -476,6 +488,8 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   with the Canvas control origin, it is 403, and that check runs before the
   cookie check (a bogus cookie and no `Origin` is 403, not 401).
 - **App root (`F29.proxy-root`).** The route without a sub-path.
+
+  Requires: `F29.session-bootstrap`
   ```sh
   control-agent-server api GET /app-backends/qa-backend --auth none --cookie "oh_app_backend_session=$TOKEN" --expect 200 \
     --check method eq GET --check path eq / --save F29.proxy-root/get
@@ -533,6 +547,8 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   traversal check, so the impact is limited to links that drop the slash.
 - **Credentials stripped (`F29.proxy-credentials-stripped`).** `qa-headers`
   echoes every header it receives.
+
+  Requires: `F29.session-bootstrap`
   ```sh
   control-agent-server api POST /app-backends/qa-headers/echo --cookie "oh_app_backend_session=$T2; qa_other=1" \
     --header "Origin: $S" --header 'Authorization: Bearer qa-f29-bearer' --header 'X-QA-Custom: kept' \
@@ -578,6 +594,8 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   which reads `Content-Length`) sees an empty body.
 - **Response filter (`F29.proxy-response-filter`).** Direct calls to the
   backend's loopback port are the control.
+
+  Requires: `F29.session-bootstrap`
   ```sh
   HPORT=$(control-agent-server api GET /api/canvas-extensions/installed/qa-headers/backend --field port)
   test "$(curl -s -o /dev/null -w '%{http_code}' --noproxy '*' "http://127.0.0.1:$HPORT/redirect")" = 302
@@ -614,6 +632,8 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   `Date`; the second `Server` also discloses the backend stack).
 - **Path traversal (`F29.proxy-path-traversal`).** Checked first, so no
   credential is needed to see it.
+
+  Requires: `F29.session-bootstrap`
   ```sh
   control-agent-server api GET '/app-backends/qa-backend/%2e%2e/secret' --auth none --expect 400 \
     --check detail eq 'Invalid backend path' --save F29.proxy-path-traversal/dotdot
@@ -633,6 +653,8 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   forwarded.
 - **WebSocket bridge (`F29.ws-bridge`).** Cookie and ingress `Origin` on the
   handshake.
+
+  Requires: `F29.session-bootstrap`
   ```sh
   control-agent-server ws listen /app-backends/qa-backend/ws --auth none --header "Origin: $S" \
     --header "Cookie: oh_app_backend_session=$TOKEN" --send qa-f29-hello --until-kind str --until .=echo:qa-f29-hello \
@@ -655,6 +677,8 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   no frame, as does any sub-path the backend does not upgrade.
 - **Handshake rejections (`F29.ws-handshake-rejections`).** Each refused
   before accept (server close 1008, which the client sees as HTTP 403).
+
+  Requires: `F29.session-bootstrap`
   ```sh
   control-agent-server ws listen /app-backends/qa-backend/ws --auth none --header "Cookie: oh_app_backend_session=$TOKEN" \
     --duration 5 --expect-reject 403 --save F29.ws-handshake-rejections/no-origin

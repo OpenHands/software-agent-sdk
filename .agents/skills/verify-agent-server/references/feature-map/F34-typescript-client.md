@@ -660,6 +660,8 @@ Preconditions:
   conversation once the agent starts (checked in the next bullet).
 - **Send and run (`F34.conversation-run`).** A second program reattaches by
   id, sends one tiny task and runs it on deepseek-flash.
+
+  Requires: `F34.conversation-create`
   ```sh
   cat > "$F34/run.mjs" <<'JS'
   import { writeFileSync } from 'node:fs';
@@ -735,6 +737,8 @@ Preconditions:
   no effect`.
 - **Events list (`F34.events-list`).** Count, filters, pages and lookups
   against the stored log.
+
+  Requires: `F34.conversation-create`
   ```sh
   TOTAL=$(control-agent-server api GET "/api/conversations/$CID/events/count" --field .)
   cat > "$F34/events.mjs" <<'JS'
@@ -829,6 +833,8 @@ Preconditions:
   and a count of 0.
 - **Event stream on Node's WebSocket (`F34.event-stream`).** Replay, a turn
   sent over the socket, and a wrong key.
+
+  Requires: `F34.conversation-create`
   ```sh
   TOTAL=$(control-agent-server api GET "/api/conversations/$CID/events/count" --field .)
   cat > "$F34/stream.mjs" <<'JS'
@@ -915,6 +921,8 @@ Preconditions:
   environment with a global WebSocket constructor." (once per retry).
 - **Title and confirmation policy (`F34.conversation-controls`).** Two
   mutations, each read back through REST; the policy is restored.
+
+  Requires: `F34.conversation-create`
   ```sh
   cat > "$F34/controls.mjs" <<'JS'
   import { m, host, apiKey, assert } from './lib.mjs';
@@ -936,6 +944,8 @@ Preconditions:
   puts `NeverConfirm` back.
 - **Conversation manager (`F34.manager`).** Listing, lookups, loading,
   creating and deleting.
+
+  Requires: `F34.conversation-create`
   ```sh
   COUNT=$(control-agent-server api GET /api/conversations/count --field .)
   FINISHED=$(control-agent-server api GET /api/conversations/count --query status=finished --field .)
@@ -1075,6 +1085,8 @@ Preconditions:
   count back.
 - **Fork, navigate and ask (`F34.conversation-branching`).** On `CID`, the
   finished DeepSeek conversation; the fork is deleted at the end.
+
+  Requires: `F34.conversation-create`
   ```sh
   TOTAL=$(control-agent-server api GET "/api/conversations/$CID/events/count" --field .)
   cat > "$F34/branching.mjs" <<'JS'
@@ -1202,6 +1214,8 @@ Preconditions:
   `qa-f34-rejected.txt`) and leaves the conversation `idle`.
 - **Hooks (`F34.hooks-client`).** Project hooks through `HooksClient` and
   `RemoteConversation.loadHooks`.
+
+  Requires: `F34.conversation-create`
   ```sh
   cat > "$F34/hooks.mjs" <<'JS'
   import { m, host, apiKey, F34, assert } from './lib.mjs';
@@ -1255,6 +1269,8 @@ Preconditions:
   settings' flat `mcp_config` server map has no `qa-f34-mcp` entry and the
   same size as before.
 - **Restart (`F34.restart-reload`).** A restart, then a fresh client.
+
+  Requires: `F34.conversation-create`
   ```sh
   TOTAL=$(control-agent-server api GET "/api/conversations/$CID/events/count" --field .)
   control-agent-server restart

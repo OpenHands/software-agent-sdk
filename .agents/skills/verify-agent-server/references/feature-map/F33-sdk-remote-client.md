@@ -635,6 +635,8 @@ Preconditions:
   both secrets are deleted afterwards.
 - **Conversation-scoped workspace (`F33.workspace-runtime-scope`).** Bind a
   workspace to `IDLE` and probe its boundaries.
+
+  Requires: `F33.conversation-create`
   ```sh
   control-agent-server exec --env PYTHONPATH="$F33" --env CID="$IDLE" --save F33.workspace-runtime-scope/probe -- .venv/bin/python - <<'PY'
   import os
@@ -669,6 +671,8 @@ Preconditions:
 - **Runtime key and release (`F33.workspace-runtime-lifecycle`), blocked.**
   Needs an Agent Server whose conversation runtime is Docker (`docker` is not
   available on the machines this map was proven on).
+
+  Requires: `F33.conversation-create`
   ```sh
   control-agent-server exec --env PYTHONPATH="$F33" --env CID="$IDLE" --save F33.workspace-runtime-lifecycle/probe -- .venv/bin/python - <<'PY'
   import os
@@ -871,12 +875,13 @@ Preconditions:
   deltas are transient frames, while the reply itself is stored as a
   `MessageEvent` (or `finish` action).
 - **Token callbacks on a remote conversation (`F33.conversation-token-callbacks`), known bug.**
-  Requires: `F33.conversation-streaming`
   The `Conversation(...)` factory forwards `token_callbacks` to
   `RemoteConversation`, whose constructor swallows it in `**_`, so the
   callbacks are never called although the server streamed the same tokens
   to the socket. The correct behavior asserted here is that they receive the
   run's deltas.
+
+  Requires: `F33.conversation-streaming`
   ```sh
   test "$(jq .deltas "$F33/stream.json")" -gt 0
   test "$(jq .tokens "$F33/stream.json")" -gt 0  # bug
@@ -884,11 +889,12 @@ Preconditions:
   The event callback got the deltas (control); today the token callback got
   `0` calls.
 - **Deltas kept out of `state.events` (`F33.conversation-streaming-state`), known bug.**
-  Requires: `F33.conversation-streaming`
   `RemoteConversation`'s default callback adds every socket frame to
   `state.events`, so the transient deltas become part of the client's
   history although the server never stores them. The correct behavior
   asserted here is that `state.events` keeps matching the server.
+
+  Requires: `F33.conversation-streaming`
   ```sh
   test "$(jq '.local.MessageEvent // 0' "$F33/stream.json")" -eq "$(control-agent-server conversation events "$STREAM" --kinds MessageEvent | jq .matching)"
   test "$(jq '.local.StreamingDeltaEvent // 0' "$F33/stream.json")" -eq 0  # bug
@@ -1047,12 +1053,13 @@ Preconditions:
   socket sent on connect (never persisted), the 110 messages in order, and
   the first read of each state field equals the server's GET.
 - **Read the state twice (`F33.conversation-state-reread`), known bug.**
-  Requires: `F33.conversation-attach-large`
   `RemoteState` validates its cached conversation info on every read, and
   the discriminated-union validator pops `kind` from the dict it is given
   (`openhands/sdk/utils/models.py`), so the first read of a polymorphic
   field strips the cache. The correct behavior asserted here is that a
   second read returns the same value.
+
+  Requires: `F33.conversation-attach-large`
   ```sh
   control-agent-server exec --env PYTHONPATH="$F33" --env CID="$BIG" --save F33.conversation-state-reread/probe -- .venv/bin/python - <<'PY'
   import os
@@ -1883,7 +1890,6 @@ Preconditions:
   warning while the agent does not use its tool: that conversation runs
   normally and the server's registry never lists `qa_f33_ghost`.
 - **An agent tool the server cannot import (`F33.custom-tool-module-unimportable`), known bug.**
-  Requires: `F33.custom-tool-module`
   The agent now names `qa_f33_ghost`. The create only logs the import
   warning and answers 201 (`conversation_service.py`: "The agent will fail
   gracefully if it tries to use unregistered tools"); the agent is built on
@@ -1892,6 +1898,8 @@ Preconditions:
   unhandled 500, as does every later message. The correct behavior asserted
   here is a client error that the caller can act on (a 4xx at create or on
   the message, or a recorded conversation error), never a 500.
+
+  Requires: `F33.custom-tool-module`
   ```sh
   control-agent-server exec --env PYTHONPATH="$F33:$F33/clientonly" --save F33.custom-tool-module-unimportable/probe -- .venv/bin/python - <<'PY'
   import httpx

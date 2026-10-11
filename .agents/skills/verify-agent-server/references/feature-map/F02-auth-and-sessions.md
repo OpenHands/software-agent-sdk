@@ -14,8 +14,6 @@ call the API with credentials.
 
 Source: `openhands-agent-server/openhands/agent_server/auth_router.py`, `openhands-agent-server/openhands/agent_server/dependencies.py`, `openhands-agent-server/openhands/agent_server/middleware.py`, `openhands-agent-server/openhands/agent_server/sockets.py`, `openhands-agent-server/openhands/agent_server/config.py`, `openhands-agent-server/openhands/agent_server/env_parser.py`, `openhands-agent-server/openhands/agent_server/__main__.py`, `openhands-sdk/openhands/sdk/utils/command.py`
 
-Needs: `tmux`
-
 Routes: `POST /api/auth/workspace-session`, `DELETE /api/auth/workspace-session`
 
 ## Sub-features
@@ -92,8 +90,10 @@ Routes: `POST /api/auth/workspace-session`, `DELETE /api/auth/workspace-session`
 Preconditions:
 
 - A baseline run is live and exported (`launch --new`), `doctor` is ok. No
-  LLM profile is needed. `curl` and `jq` are on `PATH`; `tmux` is needed for
-  the bash-events frames.
+  LLM profile is needed. `curl` and `jq` are on `PATH`. `tmux` is needed only
+  by the recipes that run a command (bash-events frames, `execute_bash_command`);
+  each declares `Needs: tmux`, so a machine without it still drives the HTTP,
+  cookie and CORS recipes.
 - The block below creates a workspace with one HTML file, a conversation on
   it that never runs (`CID`), and `jar.sh`: one browser-like `curl` request
   that keeps cookies in `<run>/fixtures/qa-f02-cookies.txt`, sends the run's
@@ -191,6 +191,8 @@ Preconditions:
   default `--auth first-frame` sends `{"type": "auth", "session_api_key": K}`
   first; there is no acknowledgement, so each socket proves it by what it
   sends next.
+
+  Needs: `tmux`
   ```sh
   control-agent-server ws listen "/sockets/events/$CID" --until-kind ConversationStateUpdateEvent --duration 15 --save F02.ws-first-frame/events
   control-agent-server ws listen "/sockets/session/$CID" --query after_seq=-1 --until-kind sync --duration 15 --save F02.ws-first-frame/session
@@ -232,6 +234,8 @@ Preconditions:
   with `?session_api_key=` or the header and send a command as the very
   first frame, then send a redundant auth frame with a wrong key before a
   command.
+
+  Needs: `tmux`
   ```sh
   control-agent-server ws listen /sockets/bash-events --auth query --send '{"command":"echo qa-f02-query"}' --until-kind BashOutput --duration 20 --save F02.ws-legacy-key/query
   control-agent-server ws listen /sockets/bash-events --auth header --send '{"command":"echo qa-f02-header"}' --until-kind BashOutput --duration 20 --save F02.ws-legacy-key/header
@@ -307,6 +311,8 @@ Preconditions:
   the header.
 - **A second key (`F02.multiple-keys`).** Add `OH_SESSION_API_KEYS_1` with a
   restart and use both keys.
+
+  Needs: `tmux`
   ```sh
   control-agent-server restart --env OH_SESSION_API_KEYS_1=qa-f02-second-key
   control-agent-server api GET /api/conversations/count --auth none --header 'X-Session-API-Key: qa-f02-second-key' --expect 200 --save F02.multiple-keys/second-key
@@ -318,6 +324,8 @@ Preconditions:
   Both keys work on HTTP and on the socket; an unlisted key is 401.
 - **Rotate the key (`F02.rotate-key`).** Mint a cookie with the current key,
   restart with a new one, and try the old key everywhere.
+
+  Needs: `tmux`
   ```sh
   control-agent-server exec -- bash "$F02/jar.sh" POST /api/auth/workspace-session key 204
   control-agent-server exec -- bash "$F02/jar.sh" GET "/api/conversations/$CID/workspace/qa-f02.html" nokey 200 'has:qa-f02-workspace-file'
@@ -338,6 +346,8 @@ Preconditions:
 - **Keys stay out of commands (`F02.keys-hidden-from-commands`).** Run `env`
   through the server (the global bash route) with two indexed keys and a
   secret key configured.
+
+  Needs: `tmux`
   ```sh
   KEY=$(cat "$AGENT_SERVER_VERIFY_RUN/private/session_api_key")
   SECRET=$(cat "$AGENT_SERVER_VERIFY_RUN/private/secret_key")
@@ -404,6 +414,8 @@ Preconditions:
   and the same origin is refused on the conversation itself.
 - **Unauthenticated mode (`F02.no-auth-mode`).** A second server launched
   with `--no-auth`.
+
+  Needs: `tmux`
   ```sh
   NOAUTH=$(control-agent-server launch --new --no-auth --name f02-noauth --print-run)
   trap 'control-agent-server stop --run "$NOAUTH" >/dev/null' EXIT
@@ -420,6 +432,8 @@ Preconditions:
   The second run's evidence lands under its own run directory.
 - **Legacy `SESSION_API_KEY` (`F02.legacy-env-key`).** A second server whose
   only key is the legacy variable.
+
+  Needs: `tmux`
   ```sh
   LEGACY=$(control-agent-server launch --new --no-auth --name f02-legacy --env SESSION_API_KEY=qa-f02-legacy-key --print-run)
   trap 'control-agent-server stop --run "$LEGACY" >/dev/null' EXIT

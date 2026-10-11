@@ -244,6 +244,8 @@ Preconditions:
 - **Live and replayed socket frames (`F13.ws-live`).** Capture in the
   background, start a command over REST, then replay history on a new
   connection.
+
+  Requires: `F13.execute-sync`
   ```sh
   control-agent-server ws start /sockets/bash-events --name f13-live --duration 120 \
     --send '{"command": "echo QA_F13_WS_PROBE"}'
@@ -280,6 +282,8 @@ Preconditions:
   0); REST search sees it with its `timeout`.
 - **Deprecated replay flag (`F13.ws-resend-all`).** `resend_all=true`, then
   a connection with no replay flag that runs a probe.
+
+  Requires: `F13.execute-sync`
   ```sh
   NDEP=$(control-agent-server logs --grep 'resend_all is deprecated' | jq .total_matching)
   control-agent-server ws listen /sockets/bash-events --query resend_all=true --until-kind BashOutput \
@@ -361,6 +365,8 @@ Preconditions:
   so other consumers' sockets on a shared server count against it.
 - **Single and batch reads (`F13.get-events`).** By hex id, then a batch
   with a missing id.
+
+  Requires: `F13.execute-sync`
   ```sh
   OUT_ID=$(control-agent-server api GET /api/bash/bash_events/search --query command_id__eq="$EXEC_CMD" \
     --field items.0.id)
@@ -379,6 +385,8 @@ Preconditions:
   with `null` in the middle slot.
 - **Search (`F13.search`).** Filters, sort, a UTC time window, paging and
   validation, over three fresh commands.
+
+  Requires: `F13.execute-sync`
   ```sh
   T0=$(date -u +%Y-%m-%dT%H:%M:%S.%6NZ)
   for n in 1 2 3; do
@@ -458,6 +466,8 @@ Preconditions:
   only the second; the SDK prints `QA_F13_SDK_BIG_OK 1100012`.
 - **Order filter and paging (`F13.order-gt-paging`), known bug.** A poller
   that has seen order 0 asks for the next output, one per page.
+
+  Requires: `F13.output-chunks`
   ```sh
   control-agent-server api GET /api/bash/bash_events/search --query command_id__eq="$BIG_CMD" \
     --query order__gt=0 --query limit=2 --check items len-eq 1 --check items.0.order eq 1 \
@@ -542,6 +552,8 @@ Preconditions:
   `exit_code` 0.
 - **Stop is idempotent (`F13.stop-idempotent`).** Finished, dashed, unknown
   and malformed ids.
+
+  Requires: `F13.execute-sync`, `F13.stop`
   ```sh
   control-agent-server api POST "/api/bash/bash_commands/$STOP_CMD/stop" --expect 200 \
     --check success eq true --save F13.stop-idempotent/again
@@ -667,6 +679,8 @@ Preconditions:
   ```
   All seven are 404 `Conversation not found: 00000000-...`.
 - **Restart (`F13.persist-restart`).** History is on disk in both scopes.
+
+  Requires: `F13.execute-sync`, `F13.scoped-routes`
   ```sh
   control-agent-server restart
   control-agent-server api GET "/api/bash/bash_events/$EXEC_CMD" --check kind eq BashCommand \
@@ -680,6 +694,8 @@ Preconditions:
   After the restart the global command, its output and the scoped output
   are all still readable, and a stop of the finished command still finds it.
 - **Clear (`F13.clear`).** Global first, then the conversation's history.
+
+  Requires: `F13.execute-sync`, `F13.scoped-routes`
   ```sh
   N_GLOBAL=$(control-agent-server state ls 'server/workspace/bash_events/*' | jq .count)
   test "$N_GLOBAL" -ge 20

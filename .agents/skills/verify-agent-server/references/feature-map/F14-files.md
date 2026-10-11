@@ -359,6 +359,8 @@ Preconditions:
   Only `A`, `b`, `c` (case-insensitive order, absolute paths, no
   `next_page_id`); `.hid` appears first with `include_hidden=true`.
 - **Pagination (`F14.subdirs-pagination`).** Two per page.
+
+  Requires: `F14.subdirs`
   ```sh
   NEXT=$(control-agent-server api GET /api/file/search_subdirs --query path="$T" --query limit=2 --expect 200 \
     --check items len-eq 2 --check items.1.name eq b --field next_page_id)
@@ -372,6 +374,8 @@ Preconditions:
   Page one is `A`, `b` with `next_page_id` `c` (the lowercase name of the next
   entry); page two is `c` with no cursor; `limit` 0 and 101 are 422.
 - **Listing errors (`F14.subdirs-errors`).** Missing, file, relative, no path.
+
+  Requires: `F14.subdirs`
   ```sh
   control-agent-server api GET /api/file/search_subdirs --query path="$T/missing" --expect 404 \
     --check detail eq 'Directory not found' --save F14.subdirs-errors/missing
@@ -404,6 +408,8 @@ Preconditions:
   that follows the cursor loops forever.
 - **tar.gz archive (`F14.archive-tar`).** Archive the fixture repo, then a
   plain tree whose symlinks point inside and outside it.
+
+  Requires: `F14.subdirs`
   ```sh
   control-agent-server api GET /api/file/archive --query path="$REPO" --query format=tar.gz --expect 200 \
     --check-header content-disposition eq 'attachment; filename="qa-f14-repo.tar.gz"' \
@@ -597,6 +603,8 @@ Preconditions:
   `top.txt` (the resolution to the nested repository is deliberate, see
   `archive_directory`, so the description is what drifted).
 - **Archive validation (`F14.archive-errors`).**
+
+  Requires: `F14.subdirs`
   ```sh
   control-agent-server api GET /api/file/archive --query path=qa-f14/relative --expect 400 --check detail eq 'Path must be absolute'
   control-agent-server api GET /api/file/archive --query path="$F/missing-dir" --expect 404 \
@@ -802,6 +810,8 @@ Preconditions:
   `success=False` with the 422 in `error` (the SDK swallows HTTP errors into
   the result) and writes nothing.
 - **Restart (`F14.restart`).** Restart the server and read everything back.
+
+  Requires: `F14.trajectory`
   ```sh
   control-agent-server restart
   control-agent-server api GET /api/file/download --query path="$F/xfer/a/b/blob.bin" --expect 200 --raw-out "$F/after-restart.out"

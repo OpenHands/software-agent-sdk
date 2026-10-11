@@ -483,6 +483,156 @@ def test_selected_recipe_runs_its_transitive_prerequisites(
     assert result["summary"]["blocked"] == 0
 
 
+def test_helpers_outlive_their_bullet_until_stop(
+    run_dir, tmp_path, write_verification_family, capsys
+):
+    helper_pid = tmp_path / "helper.pid"
+    plain_pid = tmp_path / "plain.pid"
+    recipe = (
+        "  VALUE=$(echo carried)\n"
+        "  control-agent-server helper start --name qa-sleeper --print-pid"
+        f' -- sleep 60 > "{helper_pid}"\n'
+        f'  sleep 60 >/dev/null 2>&1 &\n  echo "$!" > "{plain_pid}"\n'
+    )
+    write_verification_family(
+        cas,
+        FAMILY.replace("  VALUE=$(echo carried)\n", recipe).replace(
+            '  test "$VALUE" = carried\n  control-agent-server api GET /info',
+            f'  test "$VALUE" = carried\n  kill -0 "$(cat "{helper_pid}")"\n'
+            "  control-agent-server api GET /info",
+        ),
+    )
+
+    def running(path):
+        pid = int(path.read_text())
+        with suppress(psutil.NoSuchProcess):
+            return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+        return False
+
+    try:
+        code, out = _run(capsys, "map", "run", "--file", "F98")
+        assert code == 0, out
+        assert json.loads(out)["summary"]["pass"] == 2
+        assert running(helper_pid)
+        assert not running(plain_pid)
+
+        code, out = _run(capsys, "stop")
+        assert code == 0, out
+        assert json.loads(out)["helpers"] == [
+            {"name": "qa-sleeper", "outcome": "terminated"}
+        ]
+        assert not running(helper_pid)
+    finally:
+        for path in (helper_pid, plain_pid):
+            if path.exists() and running(path):
+                psutil.Process(int(path.read_text())).kill()
+
+
+def test_helper_stop_and_start_errors(run_dir, capsys):
+    code, out = _run(
+        capsys, "helper", "start", "--name", "qa-sleeper", "--", "sleep", "30"
+    )
+    assert code == 0, out
+    pid = json.loads(out)["pid"]
+    code, out = _run(
+        capsys, "helper", "start", "--name", "qa-sleeper", "--", "sleep", "30"
+    )
+    assert code == 2 and "already running" in out
+    code, out = _run(capsys, "helper", "stop", "qa-sleeper")
+    assert json.loads(out)["stopped"] == [
+        {"name": "qa-sleeper", "outcome": "terminated"}
+    ]
+    assert not psutil.pid_exists(pid) or (
+        psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    )
+    code, out = _run(capsys, "helper", "stop", "qa-missing")
+    assert code == 2 and "No helper named qa-missing" in out
+    code, out = _run(capsys, "helper", "start", "--name", "qa-dies", "--", "false")
+    assert code == 1 and "exited with 1" in out
+
+
+def test_map_check_flags_variables_from_unrequired_recipes(
+    tmp_path, monkeypatch, capsys
+):
+    feature_map = tmp_path / "map"
+    feature_map.mkdir()
+    monkeypatch.setattr(cas, "FEATURE_MAP_DIR", feature_map)
+    program_text = "  cat > prog.py <<'PY'\n  print('$VALUE')\n  PY\n"
+    read_back = '  test "$VALUE" = carried\n  control-agent-server api GET /info'
+    family = FAMILY.replace("  Requires: `F98.first`\n", "").replace(
+        read_back, program_text + read_back
+    )
+    (feature_map / "F98-demo.md").write_text(family)
+    code, out = _run(capsys, "map", "check", "--file", "F98", "--no-routes")
+    problems = json.loads(out)["problems"]["F98-demo.md"]
+    assert code == 1
+    assert problems == [
+        f"{feature} reads $VALUE, last set by F98.first; "
+        "add Requires: `F98.first` so --only runs it"
+        for feature in ("F98.second", "F98.bug")
+    ]
+
+    quoted_only = FAMILY.replace("  Requires: `F98.first`\n", "").replace(
+        read_back, program_text + "  control-agent-server api GET /info"
+    )
+    (feature_map / "F98-demo.md").write_text(quoted_only)
+    code, out = _run(capsys, "map", "check", "--file", "F98", "--no-routes")
+    problems = json.loads(out)["problems"].get("F98-demo.md", [])
+    assert not [p for p in problems if p.startswith("F98.second")], out
+
+
+def test_recipe_needs_block_that_recipe_and_its_dependents(
+    run_dir, write_verification_family, monkeypatch, capsys
+):
+    family = FAMILY.replace(
+        "- **Offline (`F98.offline`), blocked: needs a GPU.** Not executed.\n",
+        "- **Container (`F98.container`).** Needs a Docker daemon.\n"
+        "  Needs: `docker`\n"
+        "  ```sh\n  CONTAINER=$(echo started)\n  ```\n"
+        "- **After the container (`F98.offline`).** Uses it.\n"
+        "  Requires: `F98.container`\n"
+        '  ```sh\n  test "$CONTAINER" = started\n  ```\n',
+    )
+    write_verification_family(cas, family)
+    monkeypatch.setattr(
+        cas,
+        "machine_capabilities",
+        lambda: {
+            "docker": {"available": False, "detail": "no docker daemon"},
+        },
+    )
+    code, out = _run(capsys, "map", "run", "--file", "F98", "--record")
+    result = json.loads(out)
+    assert code == 0, out
+    assert result["summary"] == {
+        "pass": 2,
+        "fail": 0,
+        "xfail": 1,
+        "xpass": 0,
+        "blocked": 2,
+        "skipped": 0,
+        "no-commands": 0,
+    }
+    blocked = [r for r in result["bullets"] if r["status"] == "blocked"]
+    assert [(r["ids"], r["missing"]) for r in blocked] == [
+        (["F98.container"], ["docker"]),
+        (["F98.offline"], ["docker"]),
+    ]
+    ledger = [
+        json.loads(line)
+        for line in (run_dir / "evidence" / "ledger.jsonl").read_text().splitlines()
+    ]
+    assert {r["feature"]: r["result"] for r in ledger}["F98.offline"] == "blocked"
+
+    code, out = _run(capsys, "capabilities")
+    family_row = json.loads(out)["families"][0]
+    assert family_row["drivable"] is True
+    assert family_row["blocked_recipes"] == [
+        {"ids": ["F98.container"], "missing": ["docker"]},
+        {"ids": ["F98.offline"], "missing": ["docker"]},
+    ]
+
+
 def test_coverage_fails_an_owned_route_without_a_recipe(
     write_verification_family, capsys
 ):

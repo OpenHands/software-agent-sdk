@@ -204,6 +204,8 @@ Preconditions:
 - **Switch through a provider connection (`F09.switch-llm-provider-connection`).**
   Save the DeepSeek key as a provider connection and switch `RID` to a
   config that references it instead of carrying a key.
+
+  Requires: `F09.switch-llm-encrypted-key`
   ```sh
   CONN=$(printf '{"display_name": "QA F09", "provider": "deepseek", "api_key": "%s"}' "$DEEPSEEK_API_KEY" \
     | control-agent-server api POST /api/llm/provider-connections --stdin --expect 201 --field id)
@@ -227,6 +229,8 @@ Preconditions:
   turn still runs on the installed LLM and its token count grows.
 - **Switch to a saved profile (`F09.switch-profile`).** Move `RID` to the
   preset's `deepseek-pro` profile and run a turn on it.
+
+  Requires: `F09.switch-llm-encrypted-key`
   ```sh
   control-agent-server api POST "/api/conversations/$RID/switch_profile" --json '{"profile_name": "deepseek-pro"}' \
     --expect 200 --check success eq true --save F09.switch-profile/switch
@@ -504,6 +508,8 @@ Preconditions:
   model switching`) is not reachable with them.
 - **Unknown model on a live session (`F09.acp-model-live-unknown`), known bug.**
   `LID` from the bullet above, whose adapter lists its models.
+
+  Requires: `F09.acp-model-live`
   ```sh
   control-agent-server api GET "/api/conversations/$LID" --quiet --check supports_runtime_model_switch eq true \
     --check available_models contains '"model_id": "sonnet"' --check available_models not-contains qa-f09-nope
@@ -635,6 +641,8 @@ Preconditions:
   state updates for `agent` and `hook_config`.
 - **The loaded hook runs (`F09.load-plugin-hook-runs`).** Run one turn on
   `PID`.
+
+  Requires: `F09.load-plugin`
   ```sh
   control-agent-server conversation send "$PID" --text 'Reply with the single word: ok' --wait --until finished,error --timeout 240
   control-agent-server api GET "/api/conversations/$PID" --quiet --check execution_status eq finished
@@ -646,6 +654,8 @@ Preconditions:
   marketplaces or without an agent context, then bad refs on `QID`, a fresh
   conversation with the marketplace registered; a bare name is the positive
   control.
+
+  Requires: `F09.acp-model-deferred`, `F09.load-plugin`
   ```sh
   control-agent-server api POST "/api/conversations/$CID/load_plugin" --json '{"plugin_ref": "qa-f09-mkt-plugin"}' \
     --expect 400 --check detail contains 'No marketplaces registered' --save F09.load-plugin-errors/no-marketplaces
@@ -682,6 +692,8 @@ Preconditions:
   registered marketplace and loads.
 - **Load the same plugin twice (`F09.load-plugin-twice`), known bug.** Load
   the plugin into `QID` again, now by its full ref.
+
+  Requires: `F09.load-plugin-errors`
   ```sh
   control-agent-server api POST "/api/conversations/$QID/load_plugin" --json '{"plugin_ref": "qa-f09-mkt-plugin@qa-f09-mkt"}' --expect 200 --save F09.load-plugin-twice/second-load
   control-agent-server api GET "/api/conversations/$QID" --query include_skills=true --quiet \
@@ -698,6 +710,8 @@ Preconditions:
 - **Load a plugin from the Python SDK (`F09.load-plugin-sdk`).** A fresh
   conversation `SID` with the marketplace registered, reattached from an SDK
   program.
+
+  Requires: `F09.load-plugin`
   ```sh
   SID=$(control-agent-server conversation start --no-autotitle --body-json "{\"agent_settings\": $AS, \"secrets_encrypted\": true}" --print-id)
   control-agent-server api GET "/api/conversations/$SID" --query include_skills=true --quiet --check agent.agent_context.skills len-eq 0 --check hook_config missing
@@ -730,6 +744,8 @@ Preconditions:
   the plugin's skill and its one `UserPromptSubmit` hook.
 - **Restart (`F09.restart-persist`).** Restart the server and read every
   switched conversation back; then run a turn on `RID`.
+
+  Requires: `F09.switch-profile`, `F09.acp-model-deferred`, `F09.load-plugin`
   ```sh
   control-agent-server restart
   control-agent-server api GET "/api/conversations/$CID" --quiet --check agent.llm.model eq openai/qa-f09-ws --check agent.llm.usage_id eq qa-f09-ws --save F09.restart-persist/cid

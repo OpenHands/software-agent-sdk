@@ -529,6 +529,8 @@ control-agent-server api GET "/api/conversations/$R" --check execution_status eq
   the scrub), and the conversation stays readable.
 - **Re-bind (`F12.binding-rebind`).** Same URL with new headers, then a
   different URL.
+
+  Requires: `F12.binding-live-acp`
   ```sh
   control-agent-server api PUT "/api/conversations/$A/credential-bindings/CODEX_AUTH_JSON" \
     --json "{\"url\": \"$SRC/cred\", \"headers\": {\"Authorization\": \"Bearer qa-f12-second\"}}" --expect 204 --save F12.binding-rebind/same-url
@@ -549,6 +551,8 @@ control-agent-server api GET "/api/conversations/$R" --check execution_status eq
   name the conversation).
 - **Required after a pause (`F12.binding-required-after-pause`).** Pause,
   then every way in.
+
+  Requires: `F12.binding-live-acp`
   ```sh
   control-agent-server api POST /api/conversations/prepare-for-sandbox-pause --expect 204
   control-agent-server api GET "/api/conversations/$A" --expect 200 --check id eq "$A"
@@ -569,6 +573,8 @@ control-agent-server api GET "/api/conversations/$R" --check execution_status eq
   new activation the conversation loads.
 - **Required after a restart (`F12.binding-required-after-restart`).** The
   requirement is in `meta.json`, so it survives; deletion is exempt.
+
+  Requires: `F12.binding-live-acp`
   ```sh
   control-agent-server restart
   control-agent-server api GET "/api/conversations/$A/events/count" --expect 409 --check retryable eq true --save F12.binding-required-after-restart/events
