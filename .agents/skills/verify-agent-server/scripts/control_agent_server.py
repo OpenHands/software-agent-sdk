@@ -4094,19 +4094,25 @@ LOCAL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)\+?=")
 LOCAL_BIND_RE = re.compile(
     r"\b(?:for|local|export|declare(?:\s+-\w+)*)\s+([A-Za-z_][A-Za-z0-9_]*)"
 )
+# `read [-ers] [-adinNptu ARG] NAME...`; only the letters in the second set
+# take an argument.
 READ_RE = re.compile(
-    r"\bread\b((?:\s+-\w+(?:\s+'[^']*'|\s+\S+)?)*)((?:\s+[A-Za-z_]\w*)+)"
+    r"\bread\b((?:\s+-[ers]*(?:[adinNptu]\s*(?:'[^']*'|[^\s;]+))?)*)"
+    r"((?:\s+[A-Za-z_]\w*)+)"
 )
 QUOTED_HEREDOC_RE = re.compile(r"<<-?\s*(?:'(\w+)'|\"(\w+)\"|\\(\w+))")
 
 
-def shell_expansions(script: str) -> tuple[set[str], set[str]]:
-    """Variables a bullet expands and the ones it binds itself.
+def outside_reads(script: str) -> set[str]:
+    """Variables a bullet expands before it binds them itself.
 
-    Quoted heredoc bodies (`<<'EOF'`) are program text, not shell, and are
-    skipped.
+    A name read before the bullet's first binding of it (or in the value of
+    that binding, as in `TOKEN=$(... "$TOKEN")`) comes from outside: in a full
+    replay, from an earlier bullet. `for`, `read`, `local`, `export` and
+    `declare` bind where they appear. Quoted heredoc bodies (`<<'EOF'`) are
+    program text, not shell, and are skipped.
     """
-    used: set[str] = set()
+    reads: set[str] = set()
     bound: set[str] = set()
     terminator: str | None = None
     for line in script.splitlines():
@@ -4114,15 +4120,20 @@ def shell_expansions(script: str) -> tuple[set[str], set[str]]:
             if line.strip() == terminator:
                 terminator = None
             continue
-        used.update(VAR_USE_RE.findall(line))
-        bound.update(LOCAL_ASSIGN_RE.findall(line))
-        bound.update(LOCAL_BIND_RE.findall(line))
+        binders = [(m.start(1), m.group(1)) for m in LOCAL_BIND_RE.finditer(line)]
         for match in READ_RE.finditer(line):
-            bound.update(match.group(2).split())
+            binders += [(match.start(2), name) for name in match.group(2).split()]
+        for match in VAR_USE_RE.finditer(line):
+            name = match.group(1)
+            early = any(n == name and pos < match.start() for pos, n in binders)
+            if name not in bound and not early:
+                reads.add(name)
+        bound.update(name for _, name in binders)
+        bound.update(LOCAL_ASSIGN_RE.findall(line))
         heredoc = QUOTED_HEREDOC_RE.search(line)
         if heredoc:
             terminator = next(g for g in heredoc.groups() if g)
-    return used, bound
+    return reads
 
 
 def undeclared_dependencies(bullets: list[Bullet]) -> list[str]:
@@ -4148,9 +4159,8 @@ def undeclared_dependencies(bullets: list[Bullet]) -> list[str]:
                 continue
             closure.add(feature)
             stack.extend(by_id[feature].requires)
-        used, bound = shell_expansions(bullet.script)
         missing: dict[str, list[str]] = {}
-        for name in sorted(used - bound):
+        for name in sorted(outside_reads(bullet.script)):
             for producer in reversed(bullets[:index]):
                 marker = producer.label.lower()
                 if "blocked" in marker or "known bug" in marker:

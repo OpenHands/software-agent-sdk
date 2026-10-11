@@ -154,10 +154,12 @@ Then exactly four H2 sections, in this order:
    `--only F33.conversation-token-callbacks` run streaming first. Selection
    includes these prerequisites transitively in family order. `map check`
    rejects dependencies that do not name earlier recipes, and it flags a
-   recipe that reads a variable whose last assignment is in an earlier
-   recipe it does not require (`map run` carries line-start assignments from
-   bullet to bullet, so an unselected producer leaves the variable empty).
-   Files are not traced: declare those dependencies by hand. `map run`
+   recipe that reads a variable (before assigning it itself) whose last
+   assignment is in an earlier recipe it does not require (`map run` carries
+   line-start assignments from bullet to bullet, so an unselected producer
+   leaves the variable empty). Files and server state (a stored setting, a
+   sink's requests) are not traced: declare those dependencies by hand, and
+   check them with `--only` on a fresh run. `map run`
    rejects unknown selected IDs before starting a server. Keep dependencies
    on ordinary recipes that successfully produce their fixtures.
 
