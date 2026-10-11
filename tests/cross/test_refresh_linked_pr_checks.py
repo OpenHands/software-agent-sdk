@@ -148,3 +148,39 @@ def test_rerun_pr_description_check_lists_runs_with_get(monkeypatch):
         "-X",
         "POST",
     ]
+
+
+def test_foreign_reference_does_not_refresh_same_number_local_issue(
+    monkeypatch, tmp_path
+):
+    _write_event(monkeypatch, _event(), tmp_path)
+    monkeypatch.setattr(
+        _prod,
+        "_linked_open_prs",
+        lambda repo, num: [{"number": 7, "headRefOid": "abc"}],
+    )
+    monkeypatch.setattr(
+        _prod, "_run", lambda args: _FakeProc("## Issue Number\nother/repo#12")
+    )
+    monkeypatch.setattr(
+        _prod, "_rerun_pr_description_check", _fail_on_call("wrong issue")
+    )
+    assert _prod.main() == 0
+
+
+def test_qualified_local_reference_still_refreshes(monkeypatch, tmp_path):
+    _write_event(monkeypatch, _event(), tmp_path)
+    monkeypatch.setattr(
+        _prod,
+        "_linked_open_prs",
+        lambda repo, num: [{"number": 7, "headRefOid": "abc123"}],
+    )
+    monkeypatch.setattr(_prod, "_run", lambda args: _FakeProc("Fixes org/repo#12"))
+    seen = []
+    monkeypatch.setattr(
+        _prod,
+        "_rerun_pr_description_check",
+        lambda repo, sha: (seen.append((repo, sha)) or True),
+    )
+    assert _prod.main() == 0
+    assert seen == [("org/repo", "abc123")]
