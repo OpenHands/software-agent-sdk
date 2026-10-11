@@ -472,10 +472,10 @@ def _add_api_routes(app: FastAPI) -> None:
     # check_session_api_key reads config from request.app.state at request time,
     # so keys delivered via POST /api/init are honoured without re-registering routes.
     dependencies = [
-        Depends(check_session_api_key),
         # Dormant gate: 503s every /api/* route until POST /api/init completes.
         # No-op for non-deferred deployments.
         Depends(require_initialized),
+        Depends(check_session_api_key),
     ]
 
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
@@ -510,7 +510,7 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(auth_router)
     app.include_router(
         openai_router,
-        dependencies=[Depends(check_openai_api_key), Depends(require_initialized)],
+        dependencies=[Depends(require_initialized), Depends(check_openai_api_key)],
     )
 
     # Workspace static-file routes get their own auth group that accepts
@@ -519,13 +519,17 @@ def _add_api_routes(app: FastAPI) -> None:
     # workspace artifacts work — browsers cannot attach custom headers to
     # those requests.
     workspace_api_router = APIRouter(
-        prefix="/api", dependencies=[Depends(check_workspace_session)]
+        prefix="/api",
+        dependencies=[Depends(require_initialized), Depends(check_workspace_session)],
     )
     workspace_api_router.include_router(conversation_registry.workspace_router)
     app.include_router(workspace_api_router)
     app.include_router(api_router)
 
-    app.include_router(app_backend_bridge_router)
+    app.include_router(
+        app_backend_bridge_router,
+        dependencies=[Depends(require_initialized)],
+    )
     app.include_router(
         conversation_registry.sockets_router,
         dependencies=[Depends(require_initialized)],
