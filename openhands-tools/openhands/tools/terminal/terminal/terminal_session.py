@@ -10,6 +10,7 @@ from openhands.sdk.utils import maybe_truncate
 from openhands.tools.terminal.constants import (
     CMD_OUTPUT_PS1_END,
     MAX_CMD_OUTPUT_SIZE,
+    MIN_POLL_INTERVAL,
     NO_CHANGE_TIMEOUT_SECONDS,
     POLL_INTERVAL,
     TIMEOUT_MESSAGE_TEMPLATE,
@@ -769,5 +770,6 @@ class TerminalSession(TerminalSessionBase):
                     )
                     return obs
 
-            # Sleep before next check
-            time.sleep(POLL_INTERVAL)
+            # Poll in proportion to the command's run time so a short command is
+            # noticed within milliseconds, not at the next POLL_INTERVAL tick.
+            time.sleep(min(POLL_INTERVAL, max(MIN_POLL_INTERVAL, elapsed_time / 4)))
