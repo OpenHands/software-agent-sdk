@@ -14,6 +14,7 @@ from .cloud import (
     RepoSource,
 )
 from .docker import DockerWorkspace
+from .podman import PodmanWorkspace
 from .remote_api import APIRemoteWorkspace
 
 
@@ -30,6 +31,7 @@ __all__ = [
     "GitProvider",
     "OpenHandsCloudWorkspace",
     "PlatformType",
+    "PodmanWorkspace",
     "RepoMapping",
     "RepoSource",
     "TargetType",
