@@ -298,9 +298,13 @@ def redact_text_secrets(text: str) -> str:
     Returns:
         The string with secrets replaced by ``<redacted>``.
     """
-    # api_key='...' patterns (single or double quotes)
-    text = re.sub(r"api_key='[^']*'", "api_key='<redacted>'", text)
-    text = re.sub(r'api_key="[^"]*"', 'api_key="<redacted>"', text)
+    # api_key='...' patterns (single or double quotes), with or without
+    # whitespace around the '='. The separator is captured rather than rewritten
+    # so the surrounding text keeps its original spacing. Horizontal whitespace
+    # only: an assignment never spans lines, and \s would let the pattern reach
+    # across one to quote text that is not this value.
+    text = re.sub(r"(api_key[ \t]*=[ \t]*)'[^']*'", r"\g<1>'<redacted>'", text)
+    text = re.sub(r'(api_key[ \t]*=[ \t]*)"[^"]*"', r'\g<1>"<redacted>"', text)
 
     # Dict entries with sensitive key names (case-insensitive, like is_secret_key)
     text = re.sub(
