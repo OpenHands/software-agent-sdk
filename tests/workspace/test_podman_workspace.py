@@ -1,7 +1,10 @@
 """Test PodmanWorkspace import, launch command, and startup rollback."""
 
 import gc
+import os
 import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from urllib.error import URLError
@@ -9,7 +12,7 @@ from urllib.error import URLError
 import pytest
 
 from openhands.sdk.workspace import RemoteWorkspace
-from openhands.workspace import PodmanWorkspace
+from openhands.workspace import DockerWorkspace, PodmanWorkspace
 
 
 MODULE = "openhands.workspace.podman.workspace"
@@ -30,10 +33,13 @@ def fake_podman():
         running="true",
         logs="",
         rm_results=[],
+        image_present=True,
     )
 
     def execute(cmd, **kwargs):
         fake.calls.append(cmd)
+        if cmd[1:3] == ["image", "exists"]:
+            return subprocess.CompletedProcess(cmd, int(not fake.image_present), "", "")
         if cmd[1:3] == ["container", "inspect"]:
             return subprocess.CompletedProcess(cmd, 0, f"{fake.running}\n", "")
         if cmd[1] == "logs":
@@ -81,7 +87,7 @@ def test_podman_workspace_import():
     assert issubclass(PodmanWorkspace, RemoteWorkspace)
 
 
-def test_podman_workspace_launch_command(fake_podman, monkeypatch):
+def test_podman_workspace_launch_command(fake_podman, monkeypatch, tmp_path):
     """The container publishes on loopback and receives secrets by name only."""
     monkeypatch.setenv("OH_SESSION_API_KEYS_0", "secret-key")
     monkeypatch.delenv("SESSION_API_KEY", raising=False)
@@ -89,14 +95,16 @@ def test_podman_workspace_launch_command(fake_podman, monkeypatch):
 
     workspace = PodmanWorkspace(
         host_port=8000,
-        volumes=["/src:/workspace/project:Z"],
+        volumes=[f"{tmp_path}:/workspace/project:Z"],
         detach_logs=False,
     )
 
     cmd = _run_command(fake_podman)
     assert cmd[:3] == ["podman", "run", "--detach"]
     assert _flag_values(cmd, "--publish") == ["127.0.0.1:8000:8000"]
-    assert _flag_values(cmd, "--volume") == ["/src:/workspace/project:Z"]
+    assert _flag_values(cmd, "--platform") == ["linux/amd64"]
+    assert "--device" not in cmd
+    assert _flag_values(cmd, "--volume") == [f"{tmp_path}:/workspace/project:Z"]
     assert _flag_values(cmd, "--userns") == ["keep-id:uid=10001,gid=10001"]
     assert _flag_values(cmd, "--env") == ["OH_SESSION_API_KEYS_0"]
     assert cmd[-5:] == [
@@ -154,14 +162,123 @@ def test_podman_workspace_reports_logs_when_server_exits(fake_podman):
 
 
 def test_podman_workspace_requires_podman(fake_podman):
-    """A missing podman binary fails before any podman command runs."""
+    """A missing podman binary fails before any port check or podman command."""
     with (
         patch(f"{MODULE}.shutil.which", return_value=None),
+        patch(f"{MODULE}.check_port_available") as port_check,
         pytest.raises(RuntimeError, match="Podman is not installed"),
     ):
         PodmanWorkspace(host_port=8000)
 
+    port_check.assert_not_called()
     assert fake_podman.calls == []
+
+
+def test_podman_workspace_no_build_import():
+    """Importing openhands.workspace does not pull in build-time dependencies."""
+    code = (
+        "import sys\n"
+        "from openhands.workspace import PodmanWorkspace\n"
+        "print('1' if 'openhands.agent_server.docker.build' in sys.modules else '0')\n"
+    )
+    root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": ""},
+        cwd=root,
+    )
+    assert result.stdout.strip() == "0"
+
+
+def test_podman_workspace_shares_docker_fields():
+    """Fields shared with DockerWorkspace keep their names."""
+    shared = [
+        "server_image",
+        "volumes",
+        "forward_env",
+        "host_port",
+        "working_dir",
+        "detach_logs",
+        "platform",
+        "extra_ports",
+        "enable_gpu",
+        "health_check_timeout",
+    ]
+    assert set(shared) <= PodmanWorkspace.model_fields.keys()
+    assert set(shared) <= DockerWorkspace.model_fields.keys()
+
+
+def test_podman_workspace_optional_flags(fake_podman):
+    """platform, extra_ports, and enable_gpu reach the pull and run commands."""
+    fake_podman.image_present = False
+
+    workspace = PodmanWorkspace(
+        host_port=8000,
+        platform="linux/arm64",
+        extra_ports=True,
+        enable_gpu=True,
+        detach_logs=False,
+    )
+
+    image = "ghcr.io/openhands/agent-server:latest-python"
+    assert ["podman", "pull", "--platform", "linux/arm64", image] in fake_podman.calls
+    cmd = _run_command(fake_podman)
+    assert _flag_values(cmd, "--platform") == ["linux/arm64"]
+    assert _flag_values(cmd, "--publish") == [
+        "127.0.0.1:8000:8000",
+        "127.0.0.1:8001:8001",
+    ]
+    assert _flag_values(cmd, "--device") == ["nvidia.com/gpu=all"]
+    workspace.cleanup()
+
+
+def test_podman_workspace_vscode_port_must_be_free(fake_podman):
+    """With extra_ports, a taken VSCode port fails before podman runs."""
+    with (
+        patch(f"{MODULE}.check_port_available", side_effect=lambda p: p != 8001),
+        pytest.raises(RuntimeError, match="Port 8001 is not available for VSCode"),
+    ):
+        PodmanWorkspace(host_port=8000, extra_ports=True)
+
+    assert fake_podman.calls == []
+
+
+def test_podman_workspace_rejects_missing_volume_source(fake_podman, tmp_path):
+    """A host path that does not exist is named in the error."""
+    missing = tmp_path / "missing"
+
+    with pytest.raises(ValueError, match=f"does not exist: {missing}"):
+        PodmanWorkspace(volumes=[f"{missing}:/workspace/project"])
+
+    assert fake_podman.calls == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read any directory")
+def test_podman_workspace_rejects_unreadable_volume_source(fake_podman, tmp_path):
+    """A host path the user cannot read is named in the error."""
+    locked = tmp_path / "locked"
+    locked.mkdir(mode=0)
+    try:
+        with pytest.raises(ValueError, match=f"not readable: {locked}"):
+            PodmanWorkspace(volumes=[f"{locked}:/workspace/project:Z"])
+    finally:
+        locked.chmod(0o700)
+
+    assert fake_podman.calls == []
+
+
+def test_podman_workspace_accepts_named_volume(fake_podman):
+    """A source that is not a path is a named volume and is passed through."""
+    workspace = PodmanWorkspace(
+        host_port=8000, volumes=["cache:/home/openhands/.cache"], detach_logs=False
+    )
+
+    cmd = _run_command(fake_podman)
+    assert _flag_values(cmd, "--volume") == ["cache:/home/openhands/.cache"]
+    workspace.cleanup()
 
 
 def _rm_calls(fake) -> list[list[str]]:
