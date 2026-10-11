@@ -34,41 +34,43 @@ def _map_git_status_to_enum(status: str) -> GitChangeStatus:
     return status_mapping[status]
 
 
-def _parse_name_status(changed_files: list[str]) -> list[GitChange]:
-    """Parse ``git diff --name-status`` output lines into GitChange objects.
+def _parse_name_status(output: str) -> list[GitChange]:
+    """Parse ``git diff --name-status -z`` output into GitChange objects.
+
+    The ``-z`` form is a NUL-separated field stream: ``<status>\\0<path>\\0``
+    for regular changes and ``<status>\\0<old path>\\0<new path>\\0`` for
+    renames/copies, whose status carries the similarity score (e.g.
+    ``R100``). Paths are emitted verbatim — no C-style quoting — so names
+    with spaces or non-ASCII characters survive unchanged.
 
     Renames are split into DELETED (old path) + ADDED (new path); copies
     surface only the new path as ADDED.
     """
     changes: list[GitChange] = []
-    for line in changed_files:
-        if not line.strip():
-            logger.warning("Empty line in git diff output, skipping")
+    fields = output.split("\0")
+    index = 0
+    while index < len(fields):
+        status = fields[index]
+        if not status:
+            # The stream is NUL-terminated, leaving one empty trailing field.
+            index += 1
             continue
 
-        # Handle different output formats from git diff --name-status
-        # Depending on git config, format can be either:
-        # * "A file.txt"
-        # * "A       file.txt"
-        # * "R100    old_file.txt    new_file.txt" (rename with similarity percentage)
-        parts = line.split()
-        if len(parts) < 2:
-            logger.error(f"Unexpected git diff line format: {line}")
-            raise GitCommandError(
-                message=f"Unexpected git diff output format: {line}",
-                command=["git", "diff", "--name-status"],
-                exit_code=0,
-                stderr="Invalid output format",
-            )
-
-        status = parts[0].strip()
-
-        # Handle rename operations (status starts with 'R' followed
-        # by similarity percentage)
-        if status.startswith("R") and len(parts) == 3:
+        # Handle rename operations (status is 'R' followed by the
+        # similarity percentage, e.g. 'R100').
+        if status.startswith("R"):
+            if index + 2 >= len(fields) or not fields[index + 2]:
+                logger.error(f"Unexpected git diff entry: {status!r}")
+                raise GitCommandError(
+                    message=f"Unexpected git diff output format: {status!r}",
+                    command=["git", "diff", "--name-status"],
+                    exit_code=0,
+                    stderr="Invalid output format",
+                )
+            old_path = fields[index + 1]
+            new_path = fields[index + 2]
+            index += 3
             # Rename: convert to delete (old path) + add (new path)
-            old_path = parts[1].strip()
-            new_path = parts[2].strip()
             changes.append(
                 GitChange(
                     status=GitChangeStatus.DELETED,
@@ -84,11 +86,20 @@ def _parse_name_status(changed_files: list[str]) -> list[GitChange]:
             logger.debug(f"Found git rename: {old_path} -> {new_path}")
             continue
 
-        # Handle copy operations (status starts with 'C' followed by
-        # similarity percentage)
-        elif status.startswith("C") and len(parts) == 3:
+        # Handle copy operations (status is 'C' followed by the
+        # similarity percentage).
+        if status.startswith("C"):
+            if index + 2 >= len(fields) or not fields[index + 2]:
+                logger.error(f"Unexpected git diff entry: {status!r}")
+                raise GitCommandError(
+                    message=f"Unexpected git diff output format: {status!r}",
+                    command=["git", "diff", "--name-status"],
+                    exit_code=0,
+                    stderr="Invalid output format",
+                )
+            new_path = fields[index + 2]
+            index += 3
             # Copy: only add the new path (original remains)
-            new_path = parts[2].strip()
             changes.append(
                 GitChange(
                     status=GitChangeStatus.ADDED,
@@ -98,24 +109,18 @@ def _parse_name_status(changed_files: list[str]) -> list[GitChange]:
             logger.debug(f"Found git copy: -> {new_path}")
             continue
 
-        # Handle regular operations (M, A, D, etc.)
-        elif len(parts) == 2:
-            path = parts[1].strip()
-        else:
-            logger.error(f"Unexpected git diff line format: {line}")
+        # Handle regular operations (M, A, D, U).
+        if index + 1 >= len(fields) or not fields[index + 1]:
+            logger.error(f"Unexpected git diff entry: {status!r}")
             raise GitCommandError(
-                message=f"Unexpected git diff output format: {line}",
+                message=f"Unexpected git diff output format: {status!r}",
                 command=["git", "diff", "--name-status"],
                 exit_code=0,
                 stderr="Invalid output format",
             )
+        path = fields[index + 1]
+        index += 2
 
-        if status == "??":
-            status = "A"
-        elif status == "*":
-            status = "M"
-
-        # Check for valid single-character status codes
         if status in {"M", "A", "D", "U"}:
             try:
                 changes.append(
@@ -178,35 +183,42 @@ def get_changes_in_repo(
         logger.warning(f"No valid git reference found for {validated_repo}")
         return []
 
-    # Get changed files using secure git command
+    # Get changed files using secure git command. The ``-z`` form keeps
+    # paths verbatim (NUL-separated, no C-style quoting) so names with
+    # spaces or non-ASCII characters survive parsing unchanged.
     try:
         changed_files_output = run_git_command(
-            ["git", "--no-pager", "diff", "--name-status", ref], validated_repo
-        )
-        changed_files = (
-            changed_files_output.splitlines() if changed_files_output else []
+            ["git", "--no-pager", "diff", "--name-status", "-z", ref],
+            validated_repo,
         )
     except GitCommandError as e:
         logger.error(f"Failed to get git diff for {validated_repo}: {e}")
         raise
-    changes = _parse_name_status(changed_files)
+    changes = _parse_name_status(changed_files_output)
 
-    # Get untracked files
+    # Get untracked files (NUL-separated so their names stay verbatim too)
     try:
         untracked_output = run_git_command(
-            ["git", "--no-pager", "ls-files", "--others", "--exclude-standard"],
+            [
+                "git",
+                "--no-pager",
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+            ],
             validated_repo,
         )
-        untracked_files = untracked_output.splitlines() if untracked_output else []
+        untracked_files = untracked_output.split("\0") if untracked_output else []
     except GitCommandError as e:
         logger.error(f"Failed to get untracked files for {validated_repo}: {e}")
         untracked_files = []
     for path in untracked_files:
-        if path.strip():
+        if path:
             changes.append(
                 GitChange(
                     status=GitChangeStatus.ADDED,
-                    path=Path(path.strip()),
+                    path=Path(path),
                 )
             )
             logger.debug(f"Found untracked file: {path}")

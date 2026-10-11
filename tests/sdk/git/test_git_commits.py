@@ -176,6 +176,30 @@ def test_get_commit_changes_unknown_sha_raises():
             get_commit_changes(temp_dir, "deadbeefdeadbeef")
 
 
+def test_get_commit_changes_lists_special_names_verbatim():
+    """A commit touching files whose names contain spaces or non-ASCII
+    characters lists their real names — the route used to fail with 400
+    on the former and show git's C-quoted form for the latter."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Arrange
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "my notes.md").write_text("a\n")
+        (Path(temp_dir) / "café.txt").write_text("b\n")
+        run_bash_command("git add -A", temp_dir)
+        run_bash_command("git commit -m 'special-names'", temp_dir)
+        sha = run_bash_command("git rev-parse HEAD", temp_dir).stdout.strip()
+
+        # Act
+        changes = get_commit_changes(temp_dir, sha)
+
+        # Assert
+        changes_by_path = {str(change.path): change.status for change in changes}
+        assert changes_by_path == {
+            "my notes.md": GitChangeStatus.ADDED,
+            "café.txt": GitChangeStatus.ADDED,
+        }
+
+
 def test_get_commit_file_diff_returns_parent_and_commit_content():
     """The diff sides are the file at the commit's parent vs at the commit."""
     with tempfile.TemporaryDirectory() as temp_dir:
