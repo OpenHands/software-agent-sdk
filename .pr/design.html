@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP Probe Error Reasons</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --border: #d1d9e0;
+    --code-bg: #f6f8fa; --accent: #0969da; --bad: #cf222e; --good: #1a7f37;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --border: #3d444d;
+      --code-bg: #151b23; --accent: #4493f8; --bad: #f85149; --good: #3fb950;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --border: #3d444d;
+    --code-bg: #151b23; --accent: #4493f8; --bad: #f85149; --good: #3fb950;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 1.6em; margin: 0 0 4px; }
+  h2 { font-size: 1.25em; margin: 36px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.05em; margin: 20px 0 6px; }
+  p.lead { color: var(--muted); margin-top: 0; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+  pre { background: var(--code-bg); padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 0.85em; line-height: 1.45; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 0.92em; display: block; overflow-x: auto; }
+  th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--code-bg); }
+  .bad { color: var(--bad); }
+  .good { color: var(--good); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  figure { margin: 0; border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
+  figure img { width: 100%; height: auto; display: block; }
+  figcaption { font-size: 0.85em; color: var(--muted); margin-top: 6px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+<h1>Surface the MCP server's reason for HTTP 4xx/5xx in <code>/api/mcp/test</code></h1>
+<p class="lead">Refs #5276 · bug fix · no public API or REST contract change</p>
+
+<h2>1. Problem</h2>
+<p>When an MCP server rejects the connection with an HTTP error, Agent Canvas shows only httpx's generic
+message, and the agent-server log says only <code>MCP test failed unexpectedly</code>. The server's
+explanation is lost. For #5276, GitLab answered</p>
+<pre><code>403 {"message":"403 Forbidden - MCP server not enabled for any of your groups"}</code></pre>
+<p>but the user saw</p>
+<pre><code class="bad">Connection failed: HTTPStatusError: Client error '403 Forbidden' for url 'https://gitlab.com/api/v4/mcp'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/403</code></pre>
+
+<h2>2. Root cause (two layers)</h2>
+<ol>
+  <li><b>Transport (SDK).</b> The <code>mcp</code> client streams its requests (<code>client.stream(...)</code> for
+    streamable HTTP, <code>aconnect_sse(...)</code> for SSE) and calls <code>raise_for_status()</code> before the body
+    is read. The resulting <code>httpx.HTTPStatusError</code> has an unread response:
+    <code>exc.response.text</code> raises <code>ResponseNotRead</code>.</li>
+  <li><b>REST (agent-server).</b> <code>_probe_mcp_server()</code> handles the error in its generic
+    <code>except Exception</code> and returns <code>f"{type(exc).__name__}: {exc}"</code>; httpx's message carries
+    only the status and URL.</li>
+</ol>
+
+<h2>3. Change</h2>
+
+<h3>3.1 SDK — <code>openhands-sdk/openhands/sdk/mcp/utils.py</code>: make the reason readable</h3>
+<p>Every remote MCP server (streamable HTTP and SSE) now gets an httpx client with a response hook that reads
+4xx/5xx bodies. The existing Agent Plugins package class is generalized instead of adding a second one:</p>
+<table>
+  <tr><th></th><th>Before</th><th>After</th></tr>
+  <tr><td>Class</td>
+      <td><code>_PackageRemoteMCPServer</code>, used only for Agent Plugins servers</td>
+      <td><code>_HookedRemoteMCPServer</code>, used for every <code>RemoteMCPServer</code></td></tr>
+  <tr><td>Client factory</td>
+      <td>set only when the server is streamable HTTP <em>and</em> has headers</td>
+      <td>always set (<code>to_transport()</code> only returns <code>StreamableHttpTransport | SSETransport</code>)</td></tr>
+  <tr><td>Request hook</td>
+      <td>§7.2.1 drop configured headers off-origin</td>
+      <td>same, only when <code>_bind_headers_to_origin</code> (= <code>literal_values</code>) and headers are set</td></tr>
+  <tr><td>Response hook</td><td>none</td><td><code>_read_error_response_body</code>: <code>await response.aread()</code> if <code>response.is_error</code></td></tr>
+</table>
+<pre><code>class _HookedRemoteMCPServer(RemoteMCPServer):
+    _bind_headers_to_origin: bool = PrivateAttr(default=False)
+
+    def to_transport(self):  # type: ignore[override]
+        transport = super().to_transport()
+        request_hooks = []
+        if self._bind_headers_to_origin and self.headers:
+            request_hooks.append(
+                _drop_headers_off_origin(self.url, tuple(self.headers))
+            )
+        transport.httpx_client_factory = _mcp_http_client_factory(request_hooks)
+        return transport
+
+# _prepare_mcp_config()
+        if isinstance(server, RemoteMCPServer):
+            hooked = _HookedRemoteMCPServer.model_validate(server.model_dump())
+            hooked._bind_headers_to_origin = server_spec.literal_values
+            prepared.mcpServers[server_name] = hooked</code></pre>
+<p>The client is still built by <code>mcp</code>'s <code>create_mcp_http_client()</code> with the same arguments, so
+timeouts, redirects, headers and auth are unchanged. 2xx responses (including SSE streams) are skipped by the
+hook. The factory is replaced after <code>super().to_transport()</code>, so fastmcp's OAuth keeps the factory it
+bound in the transport constructor.</p>
+
+<h3>3.2 agent-server — <code>mcp_router.py</code>: extract and show the reason</h3>
+<pre><code>    except httpx.HTTPStatusError as exc:
+        detail = _describe_http_status_error(exc)
+        logger.warning("MCP test failed for server %r: %s", request.name, detail)
+        return MCPTestFailure(error=detail, error_kind="unknown")</code></pre>
+<p><code>error</code> becomes <code>HTTP &lt;status&gt; &lt;phrase&gt; from &lt;url&gt;: &lt;reason&gt;</code>. The URL drops
+userinfo, query and fragment (<code>copy_with(userinfo=b"", query=None, fragment=None)</code>) so credentials in
+the URL never reach the UI or logs. The reason is the first non-empty candidate, human-readable text before
+machine codes, normalized to single spaces and capped at 300 characters:</p>
+<table>
+  <tr><th>#</th><th>Source</th><th>Basis</th></tr>
+  <tr><td>1</td><td><code>WWW-Authenticate</code> <code>error_description</code></td><td>RFC 6750</td></tr>
+  <tr><td>2</td><td>JSON <code>error_description</code></td><td>OAuth 2.0 (RFC 6749 §5.2) — Notion, Linear, Sentry, Asana, Stripe</td></tr>
+  <tr><td>3</td><td>JSON <code>message</code></td><td>GitLab / GitHub REST convention</td></tr>
+  <tr><td>4</td><td>JSON <code>error.message</code></td><td>JSON-RPC 2.0 — the <code>mcp</code> SDK's own server error responses</td></tr>
+  <tr><td>5</td><td>JSON <code>detail</code></td><td>RFC 9457 problem+json, FastAPI</td></tr>
+  <tr><td>6</td><td>JSON string <code>error</code></td><td>usually a code (<code>invalid_token</code>)</td></tr>
+  <tr><td>7</td><td><code>WWW-Authenticate</code> <code>error</code></td><td>code only</td></tr>
+  <tr><td>8</td><td>raw body text</td><td>fallback</td></tr>
+</table>
+<p>Probing 9 public MCP servers with an invalid token showed that most put only an error code in the header and
+the human-readable reason in the JSON body, which is why the body has to be readable (3.1).</p>
+
+<h2>4. Compatibility</h2>
+<ul>
+  <li><b>REST:</b> <code>MCPTestFailure</code> is unchanged; <code>error_kind</code> stays <code>unknown</code>, so no new enum
+    value and no client update. Canvas renders <code>unknown</code> as <code>Connection failed: {error}</code>; switching
+    to <code>connection</code> would have replaced the reason with a fixed "Could not reach the server" text. The
+    status code stays in the string, so Canvas's <code>\b(401|403)\b</code> credential heuristic still matches.</li>
+  <li><b>SDK:</b> no public symbol added or removed. <code>create_mcp_tools()</code> still raises
+    <code>httpx.HTTPStatusError</code> with the same <code>str(exc)</code>; the only difference is that
+    <code>exc.response.text</code> / <code>.json()</code> now work. Conversation logs are unchanged.</li>
+  <li><b>Agent Plugins §7.2.1:</b> unchanged; still covered by
+    <code>test_configured_headers_do_not_follow_a_redirect_off_origin</code>.</li>
+</ul>
+
+<h3>Impact by MCP server source × transport</h3>
+<table>
+  <tr><th>Source</th><th>stdio</th><th>streamable HTTP</th><th>SSE</th></tr>
+  <tr><td>User/caller config (Canvas, REST incl. <code>/api/mcp/test</code>, <code>Agent(mcp_config=...)</code>), skill <code>mcp_tools</code>, subagent <code>mcp_config</code>, Claude Code plugin <code>.mcp.json</code></td>
+      <td>unchanged</td><td>+ error body read</td><td>+ error body read</td></tr>
+  <tr><td>Agent Plugins <code>mcp.json</code>, with headers</td>
+      <td>unchanged</td><td>off-origin header drop (as before) + error body read</td><td>n/a (spec forbids SSE)</td></tr>
+  <tr><td>Agent Plugins <code>mcp.json</code>, without headers</td>
+      <td>unchanged</td><td>+ error body read</td><td>n/a</td></tr>
+</table>
+<p>ACP agents forward <code>mcp_config</code> to the external agent process and do not use this client.</p>
+
+<h2>5. Evidence</h2>
+
+<h3>5.1 Agent Canvas 1.23.0 + local agent-server</h3>
+<p>Canvas launched with <code>OH_AGENT_SERVER_LOCAL_PATH=&lt;sdk-repo&gt;</code>; before = unmodified main, after = this
+branch. Log lines: <a href="agent-server-log-excerpts.txt"><code>agent-server-log-excerpts.txt</code></a>. Canvas shows the
+<em>Timeout</em> field only for SHTTP, which identifies the transport in screenshots cropped above the type selector.</p>
+
+<table>
+  <tr><th>Scenario</th><th>Before</th><th>After</th></tr>
+  <tr><td>GitLab SHTTP, OAuth, account not in an MCP-enabled group (#5276)</td>
+      <td class="bad"><code>HTTPStatusError: Client error '403 Forbidden' …</code></td>
+      <td class="good"><code>HTTP 403 Forbidden from https://gitlab.com/api/v4/mcp: 403 Forbidden - MCP server not enabled for any of your groups</code></td></tr>
+  <tr><td>GitLab SSE, OAuth, same account</td>
+      <td class="bad">same generic 403</td><td class="good">same 403 reason</td></tr>
+  <tr><td>GitLab SSE, OAuth, account in an MCP-enabled group (GitLab serves no SSE)</td>
+      <td class="bad"><code>… '405 Method Not Allowed' …</code></td>
+      <td class="good"><code>HTTP 405 Method Not Allowed from …: 405</code> (all GitLab's body says)</td></tr>
+  <tr><td>Asana SSE, invalid Bearer token (reason only in body)</td>
+      <td class="bad"><code>… '401 Unauthorized' …</code></td>
+      <td class="good"><code>HTTP 401 Unauthorized from https://mcp.asana.com/sse: Invalid token format</code></td></tr>
+  <tr><td>Asana V2 SHTTP, no auth (reason in <code>WWW-Authenticate</code>)</td>
+      <td class="bad"><code>… '401 Unauthorized' …</code></td>
+      <td class="good"><code>HTTP 401 Unauthorized from https://mcp.asana.com/v2/mcp: Authorization header is required for MCP V2 access</code></td></tr>
+  <tr><td>GitLab SHTTP, OAuth, account in an MCP-enabled group</td>
+      <td>connects</td><td class="good">connects, 42 tools</td></tr>
+  <tr><td>Asana SSE, OAuth with a real account</td>
+      <td>—</td><td class="good">connects, 46 tools</td></tr>
+</table>
+
+<div class="grid">
+  <figure><img src="gitlab-shttp-403-before.png" alt="GitLab SHTTP 403 before"><figcaption>GitLab SHTTP 403 — before</figcaption></figure>
+  <figure><img src="gitlab-shttp-403-after.png" alt="GitLab SHTTP 403 after"><figcaption>GitLab SHTTP 403 — after</figcaption></figure>
+  <figure><img src="asana-sse-bad-token-before.png" alt="Asana SSE invalid token before"><figcaption>Asana SSE, invalid token — before</figcaption></figure>
+  <figure><img src="asana-sse-bad-token-after.png" alt="Asana SSE invalid token after"><figcaption>Asana SSE, invalid token — after</figcaption></figure>
+  <figure><img src="asana-v2-no-auth-before.png" alt="Asana V2 no auth before"><figcaption>Asana V2 SHTTP, no auth — before</figcaption></figure>
+  <figure><img src="asana-v2-no-auth-after.png" alt="Asana V2 no auth after"><figcaption>Asana V2 SHTTP, no auth — after</figcaption></figure>
+  <figure><img src="gitlab-sse-405-after.png" alt="GitLab SSE 405 after"><figcaption>GitLab SSE, MCP-enabled account — after</figcaption></figure>
+  <figure><img src="gitlab-shttp-ok-after.png" alt="GitLab SHTTP success after"><figcaption>GitLab SHTTP, MCP-enabled account — after (success)</figcaption></figure>
+  <figure><img src="asana-sse-oauth-ok-after.png" alt="Asana SSE OAuth success after"><figcaption>Asana SSE, OAuth — after (success)</figcaption></figure>
+</div>
+
+<h3>5.2 Agent Plugins package servers</h3>
+<p><a href="agent_plugin_mcp_matrix.py"><code>agent_plugin_mcp_matrix.py</code></a> loads a real Agent Plugins package
+through <code>AgentPluginsFormat</code> (<code>literal_values=True</code>) and connects with <code>create_mcp_tools()</code>.
+Output: <a href="agent-plugins-matrix.txt"><code>agent-plugins-matrix.txt</code></a>.</p>
+<table>
+  <tr><th>Case</th><th>Before</th><th>After</th></tr>
+  <tr><td>header <code>X-Plugin-Test</code> × huggingface.co/mcp</td><td>4 tools</td><td>4 tools</td></tr>
+  <tr><td>no header × huggingface.co/mcp</td><td>4 tools</td><td>4 tools</td></tr>
+  <tr><td>header × gitlab.com (no credentials)</td><td class="bad">401, body <code>ResponseNotRead</code></td><td class="good">401, body <code>{"message":"401 Unauthorized"}</code></td></tr>
+  <tr><td>no header × gitlab.com</td><td class="bad">401, body <code>ResponseNotRead</code></td><td class="good">401, body <code>{"message":"401 Unauthorized"}</code></td></tr>
+</table>
+
+<h3>5.3 Tests</h3>
+<ul>
+  <li><code>tests/sdk/mcp/test_create_mcp_tool.py::test_create_mcp_tools_http_error_keeps_response_body_readable[http|sse]</code>
+    — a local server returns 403; the raised <code>HTTPStatusError</code>'s body is readable.</li>
+  <li><code>tests/agent_server/test_mcp_router.py::test_mcp_test_http_error_surfaces_server_reason</code> — 7 response
+    shapes (JSON <code>message</code>, header <code>error_description</code>, JSON <code>error_description</code>, JSON-RPC
+    <code>error.message</code>, <code>detail</code> over a string <code>error</code>, plain text, empty body); the request URL
+    carries <code>user:pass@</code> and <code>?api_key=secret</code>, and the returned <code>error</code> must equal the
+    expected string exactly.</li>
+  <li>Each test was checked to fail with its part of the fix removed. Without the SDK hook, the three
+    body-based router cases fail.</li>
+</ul>
+
+<h2>6. Out of scope</h2>
+<ul>
+  <li>A streamable-HTTP 404 is turned into <code>Session terminated</code> by the <code>mcp</code> client and never
+    becomes an <code>HTTPStatusError</code>.</li>
+  <li>The OAuth probe counts the human authorization wait against the probe timeout (reproduced twice while
+    testing).</li>
+</ul>
+</main>
+</body>
+</html>

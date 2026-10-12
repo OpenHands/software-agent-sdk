@@ -35,6 +35,7 @@ from openhands.sdk.mcp.config import MCPServer, to_fastmcp_mcp_config
 from tests.sdk.mcp.test_create_mcp_tool import (  # noqa: E402
     MCPTestServer,
     _find_free_port,
+    rejecting_http_server,
 )
 
 
@@ -408,6 +409,86 @@ def test_mcp_test_remote_unreachable(client: TestClient):
     body = response.json()
     assert body["ok"] is False
     assert body["error_kind"] in {"connection", "timeout"}
+
+
+@pytest.mark.parametrize(
+    ("status", "headers", "body", "expected"),
+    [
+        pytest.param(
+            403,
+            {"Content-Type": "application/json"},
+            b'{"message":"403 Forbidden - MCP server not enabled"}',
+            "HTTP 403 Forbidden from {url}: 403 Forbidden - MCP server not enabled",
+            id="json-message",
+        ),
+        pytest.param(
+            400,
+            {
+                "WWW-Authenticate": 'Bearer error="invalid_token", '
+                'error_description="Invalid token"'
+            },
+            b"bad request: Authorization header is badly formatted",
+            "HTTP 400 Bad Request from {url}: Invalid token",
+            id="www-authenticate-description",
+        ),
+        pytest.param(
+            401,
+            {"WWW-Authenticate": 'Bearer error="invalid_token"'},
+            b'{"error":"invalid_token","error_description":"Invalid access token"}',
+            "HTTP 401 Unauthorized from {url}: Invalid access token",
+            id="json-error-description",
+        ),
+        pytest.param(
+            406,
+            {"Content-Type": "application/json"},
+            b'{"jsonrpc":"2.0","id":"server-error","error":{"code":-32600,'
+            b'"message":"Not Acceptable: Client must accept both application/json'
+            b' and text/event-stream"}}',
+            "HTTP 406 Not Acceptable from {url}: Not Acceptable: Client must accept"
+            " both application/json and text/event-stream",
+            id="json-rpc-error-message",
+        ),
+        pytest.param(
+            400,
+            {"Content-Type": "application/json"},
+            b'{"error":"invalid_request","detail":"Session expired"}',
+            "HTTP 400 Bad Request from {url}: Session expired",
+            id="json-detail-over-error-code",
+        ),
+        pytest.param(
+            401,
+            {"Content-Type": "text/plain"},
+            b"Unauthorized\n",
+            "HTTP 401 Unauthorized from {url}: Unauthorized",
+            id="plain-text",
+        ),
+        pytest.param(403, {}, b"", "HTTP 403 Forbidden from {url}", id="no-reason"),
+    ],
+)
+def test_mcp_test_http_error_surfaces_server_reason(
+    client: TestClient,
+    status: int,
+    headers: dict[str, str],
+    body: bytes,
+    expected: str,
+):
+    with rejecting_http_server(status, headers, body) as url:
+        response = client.post(
+            "/api/mcp/test",
+            json={
+                "server": {
+                    "transport": "http",
+                    "url": url.replace("://", "://user:pass@", 1) + "?api_key=secret",
+                },
+                "timeout": 10.0,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    body_json = response.json()
+    assert body_json["ok"] is False
+    assert body_json["error_kind"] == "unknown"
+    assert body_json["error"] == expected.format(url=url)
 
 
 # ---------------------------------------------------------------------------
