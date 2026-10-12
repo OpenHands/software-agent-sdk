@@ -53,7 +53,7 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
 from openhands.sdk.llm.message import ImageContent, TextContent
-from openhands.sdk.profiles import OpenHandsAgentProfile
+from openhands.sdk.profiles import OpenHandsAgentProfile, build_seed_profile
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -265,12 +265,13 @@ def _create_conversation_request(
 ) -> StartConversationRequest:
     llm_profile = _profile_name_from_model(model)
     _require_llm_profile(llm_profile, config)
-    profile = active_agent_profile(config, config.cipher)
-    if profile is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="No active agent profile. Activate one to use this endpoint.",
-        )
+    stored = active_agent_profile(config, config.cipher)
+    settings = get_settings_store(config).load() or PersistedSettings()
+    # With no active profile (e.g. it was deleted), launch the global settings
+    # as an unsaved profile, as the gateway did before it launched profiles.
+    profile = stored or build_seed_profile(
+        settings.agent_settings, settings.active_profile
+    )
     try:
         additions = AgentLaunchAdditions(
             # An ACP server runs its own model.
@@ -284,10 +285,10 @@ def _create_conversation_request(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="System instructions are too long",
         ) from None
-    settings = get_settings_store(config).load() or PersistedSettings()
     return settings.conversation_settings.create_request(
         StartConversationRequest,
-        agent_profile_id=profile.id,
+        agent_profile_id=stored.id if stored else None,
+        agent_profile=None if stored else profile,
         agent_launch_additions=additions,
         workspace=LocalWorkspace(working_dir=config.workspace_path),
         conversation_id=conversation_id,

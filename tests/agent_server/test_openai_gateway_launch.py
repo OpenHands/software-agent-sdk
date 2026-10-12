@@ -11,6 +11,7 @@ from openhands.agent_server.persistence import (
     get_settings_store,
 )
 from openhands.sdk import LLM
+from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.launch import ResolvedLaunch
 from openhands.sdk.profiles import ACPAgentProfile, OpenHandsAgentProfile
@@ -79,6 +80,31 @@ def test_the_gateway_launches_an_acp_profile_with_its_own_model(config):
     assert launched.profile is not None
     assert launched.profile.agent_profile_id == profile.id
     assert launched.profile.llm_profile_ref is None
+
+
+def test_without_an_active_profile_the_gateway_launches_the_global_settings(config):
+    get_agent_profile_store().save(
+        OpenHandsAgentProfile(name="inactive", llm_profile_ref="slow")
+    )
+    get_settings_store(config).save(
+        PersistedSettings(
+            agent_settings=OpenHandsAgentSettings(
+                agent_context=AgentContext(system_message_suffix="Global suffix.")
+            )
+        )
+    )
+
+    launched = _launch(config, _gateway_request(config, "openhands_fast"))
+
+    assert isinstance(launched.settings, OpenHandsAgentSettings)
+    assert launched.settings.llm.model == "fast-model"
+    assert launched.settings.agent_context.system_message_suffix == "Global suffix."
+    assert launched.profile is not None
+    assert launched.profile.inline
+    assert launched.profile.llm_profile_ref == "fast"
+    settings = get_settings_store(config).load()
+    assert settings is not None
+    assert settings.active_agent_profile_id is None
 
 
 @pytest.mark.parametrize(
