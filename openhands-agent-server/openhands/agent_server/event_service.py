@@ -1370,6 +1370,34 @@ class EventService:
                     )
                     self._conversation._on_event(error_event)
 
+        # A /goal loop that was in flight when this process stopped left its
+        # last persisted goal status active=True ("running"): a graceful
+        # shutdown cancels the loop inside close() with _closing set (the
+        # cancel handler then records nothing), and a hard kill never runs
+        # close() at all. No loop exists after the reload, so reconcile the
+        # stale status to a resumable "interrupted" -- the same terminal
+        # record /goal/stop writes -- instead of leaving a UI to render a dead
+        # goal as running forever.
+        def _reconcile_stale_goal_status() -> None:
+            conversation = self._conversation
+            if conversation is None:
+                return
+            last = self._last_goal_loop_status()
+            if last is None or not last.get("active"):
+                return
+            event = ConversationStateUpdateEvent(
+                key="goal",
+                value={**last, "active": False, "status": "interrupted"},
+            )
+            with conversation._state:
+                conversation._on_event(event)
+
+        # State-lock acquisition stays off the event loop, per the concurrency
+        # rules in openhands-agent-server/AGENTS.md.
+        await asyncio.get_running_loop().run_in_executor(
+            None, _reconcile_stale_goal_status
+        )
+
         # Publish initial state update
         await self._publish_state_update()
 

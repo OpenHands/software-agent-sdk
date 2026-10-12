@@ -610,3 +610,168 @@ async def test_goal_loop_release_returns_capacity(event_service, tmp_path):
         event_service._run_semaphore.release()
     finally:
         await event_service.close()
+
+
+def _restart_service(tmp_path, conversation_id) -> EventService:
+    """Build a fresh EventService over an already-persisted conversation.
+
+    Mirrors a server restart: same conversation id and conversations dir, no
+    agent (it is reloaded from base_state.json).
+    """
+    return EventService(
+        stored=StoredConversation(
+            id=conversation_id,
+            workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+        ),
+        conversations_dir=tmp_path / "conversations",
+    )
+
+
+@pytest.mark.asyncio
+async def test_restart_reconciles_stale_running_goal_status(event_service, tmp_path):
+    # Simulate a hard kill: the process died while a goal loop was active, so
+    # the last persisted goal status is still active/running and close() never
+    # ran to record anything. The reload must reconcile it to a resumable
+    # "interrupted" status, driven purely by the loaded persisted state.
+    await _start(event_service, tmp_path, "noop")
+    conversation_id = event_service.stored.id
+    conversation = event_service.get_conversation()
+    stale = {
+        "active": True,
+        "status": "running",
+        "iteration": 2,
+        "max_iterations": 5,
+        "objective": "build x",
+        "verdict": None,
+    }
+    with conversation._state:
+        conversation._on_event(
+            ConversationStateUpdateEvent(key="goal", value=dict(stale))
+        )
+    await event_service.close()
+
+    restarted = _restart_service(tmp_path, conversation_id)
+    try:
+        await restarted.start()
+        updates = _goal_status_updates(restarted)
+        # Exactly one reconciled event is appended after the stale one.
+        assert len(updates) == 2
+        assert updates[-1] == {**stale, "active": False, "status": "interrupted"}
+
+        # The reconciled status stays resumable: /goal/resume is admitted and
+        # drives the loop to a terminal status.
+        restarted.get_conversation().switch_llm(
+            _scripted("resumed and finished", usage_id="agent")
+        )
+        judge = _scripted(_DONE, usage_id="judge")
+        await restarted.resume_goal_loop(judge_llm=judge)
+        goal_task = restarted._goal_loop_task
+        assert goal_task is not None
+        await asyncio.wait_for(goal_task, timeout=15)
+        outcome = restarted._goal_loop_outcome
+        assert outcome is not None
+        assert outcome.status == "complete"
+        assert outcome.iterations == 3  # resumed from round 2 -> completed at round 3
+    finally:
+        await restarted.close()
+
+
+@pytest.mark.asyncio
+async def test_goal_loop_graceful_shutdown_reconciles_on_restart(
+    event_service, tmp_path
+):
+    # close() cancels an in-flight goal loop with _closing set, so the cancel
+    # handler deliberately records no status: after a graceful shutdown the
+    # last persisted goal status stays active/running. The reload must
+    # reconcile it just like after a hard kill.
+    await _start(event_service, tmp_path, "did the work")
+    conversation_id = event_service.stored.id
+    judge = cast(
+        _GatedJudge,
+        _GatedJudge.from_messages(
+            [Message(role="assistant", content=[TextContent(text=_NOT_DONE)])],
+            usage_id="judge",
+        ),
+    )
+    try:
+        await event_service.start_goal_loop(
+            "build x", judge_llm=judge, max_iterations=5
+        )
+        # Catch the loop mid-audit (round-1 run finished, judge blocked): the
+        # last status so far is the active/running kickoff.
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, judge._entered.wait, 5.0)
+        updates = _goal_status_updates(event_service)
+        assert updates[-1]["active"] is True
+        assert updates[-1]["status"] == "running"
+        stale = updates[-1]
+
+        # Release the judge thread so close()'s cancel can complete, then tear
+        # the service down the way a graceful server shutdown does.
+        judge._gate.set()
+    finally:
+        judge._gate.set()  # release the orphaned judge thread for cleanup
+        await event_service.close()
+
+    restarted = _restart_service(tmp_path, conversation_id)
+    try:
+        await restarted.start()
+        updates = _goal_status_updates(restarted)
+        assert updates[-1] == {**stale, "active": False, "status": "interrupted"}
+    finally:
+        await restarted.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_preserves_terminal_goal_status(event_service, tmp_path):
+    # A terminal status (complete/capped) must not gain a reconciled
+    # "interrupted" event on reload, and a conversation without any goal
+    # status must stay goal-event-free.
+    await _start(event_service, tmp_path, "noop")
+    conversation_id = event_service.stored.id
+    conversation = event_service.get_conversation()
+    terminal = {
+        "active": False,
+        "status": "complete",
+        "iteration": 2,
+        "max_iterations": 5,
+        "objective": "build x",
+        "verdict": None,
+    }
+    with conversation._state:
+        conversation._on_event(
+            ConversationStateUpdateEvent(key="goal", value=dict(terminal))
+        )
+    await event_service.close()
+
+    restarted = _restart_service(tmp_path, conversation_id)
+    try:
+        await restarted.start()
+        assert _goal_status_updates(restarted) == [terminal]
+    finally:
+        await restarted.close()
+
+    # A conversation that never had a goal loop gains no goal event on reload.
+    fresh = EventService(
+        stored=StoredConversation(
+            id=uuid4(),
+            workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+        ),
+        agent=Agent(
+            llm=LLM(usage_id="agent", model="test-model", api_key=SecretStr("x"))
+        ),
+        conversations_dir=tmp_path / "conversations",
+    )
+    try:
+        await fresh.start()
+        fresh_id = fresh.stored.id
+        assert _goal_status_updates(fresh) == []
+    finally:
+        await fresh.close()
+
+    reloaded = _restart_service(tmp_path, fresh_id)
+    try:
+        await reloaded.start()
+        assert _goal_status_updates(reloaded) == []
+    finally:
+        await reloaded.close()
