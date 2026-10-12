@@ -9,7 +9,12 @@ from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.io import InMemoryFileStore
 from openhands.sdk.plugin import PluginSource
-from openhands.sdk.subagent.registry import get_agent_factory
+from openhands.sdk.subagent import registry as registry_module
+from openhands.sdk.subagent.registry import (
+    agent_definition_to_factory,
+    get_agent_factory,
+    register_agent,
+)
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.testing import TestLLM
 from openhands.tools.task.definition import TaskToolSet
@@ -22,7 +27,7 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _write_agent(project: Path, description: str) -> None:
     directory = project / ".agents" / "agents"
-    directory.mkdir(parents=True)
+    directory.mkdir(parents=True, exist_ok=True)
     (directory / "shared.md").write_text(
         "---\n"
         "name: shared\n"
@@ -251,3 +256,98 @@ def test_fork_keeps_forwarded_definitions(tmp_path: Path, initialize: bool) -> N
         with closing(conversation.fork()) as fork:
             fork.send_message("Prepare fork")
             assert "fork-visible" in TaskToolSet.create(fork._state)[0].description
+
+
+@pytest.mark.parametrize("source", ["project", "user"])
+def test_fork_rediscovers_file_agents_after_restart(
+    tmp_path: Path, source: str
+) -> None:
+    root = tmp_path if source == "project" else tmp_path / "home"
+    _write_agent(root, "version-one")
+    persistence = tmp_path / "conversations"
+    supplied = AgentDefinition(name="supplied", description="keep me", level="project")
+    with closing(
+        LocalConversation(
+            agent=Agent(llm=TestLLM.from_messages([]), tools=[]),
+            workspace=tmp_path,
+            persistence_dir=persistence,
+            agent_definitions=[supplied],
+            visualizer=None,
+        )
+    ) as parent:
+        parent.send_message("Prepare parent")
+        _write_agent(root, "version-two")
+        with closing(parent.fork()) as fork:
+            fork_id = fork.id
+            fork.send_message("Prepare fork")
+            assert (
+                fork._agent_registry.get_agent_factory("shared").definition.description
+                == "version-two"
+            )
+            assert fork.state.agent_definitions == [supplied]
+            assert (
+                parent._agent_registry.get_agent_factory(
+                    "shared"
+                ).definition.description
+                == "version-one"
+            )
+
+    _write_agent(root, "version-three")
+    with closing(
+        LocalConversation(
+            agent=None,
+            conversation_id=fork_id,
+            workspace=tmp_path,
+            persistence_dir=persistence,
+            visualizer=None,
+        )
+    ) as reopened:
+        reopened.send_message("Prepare reopened fork")
+        assert (
+            reopened._agent_registry.get_agent_factory("shared").definition.description
+            == "version-three"
+        )
+        assert (
+            reopened._agent_registry.get_agent_factory("supplied").definition
+            == supplied
+        )
+
+
+def test_fork_does_not_snapshot_process_builtins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(registry_module, "_agent_factories", {})
+    builtin = AgentDefinition(name="builtin-helper", description="old", level="builtin")
+    register_agent(builtin.name, agent_definition_to_factory(builtin), builtin)
+    persistence = tmp_path / "conversations"
+    with closing(
+        LocalConversation(
+            agent=Agent(llm=TestLLM.from_messages([]), tools=[]),
+            workspace=tmp_path,
+            persistence_dir=persistence,
+            visualizer=None,
+        )
+    ) as parent:
+        parent.send_message("Prepare parent")
+        with closing(parent.fork()) as fork:
+            fork_id = fork.id
+            fork.send_message("Prepare fork")
+            assert fork.state.agent_definitions == []
+
+    monkeypatch.setattr(registry_module, "_agent_factories", {})
+    updated = builtin.model_copy(update={"description": "new"})
+    register_agent(updated.name, agent_definition_to_factory(updated), updated)
+    with closing(
+        LocalConversation(
+            agent=None,
+            conversation_id=fork_id,
+            workspace=tmp_path,
+            persistence_dir=persistence,
+            visualizer=None,
+        )
+    ) as reopened:
+        reopened.send_message("Prepare reopened fork")
+        assert (
+            reopened._agent_registry.get_agent_factory(updated.name).definition
+            == updated
+        )

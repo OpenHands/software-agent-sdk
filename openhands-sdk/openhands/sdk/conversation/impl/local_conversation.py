@@ -244,8 +244,8 @@ class LocalConversation(BaseConversation):
         file_store: FileStore | None = None,
         mcp_tool_provider: MCPToolProvider | None = None,
         profile_store_dir: str | Path | None = None,
-        agent_definitions: list[AgentDefinition] | None = None,
         stream_callbacks: list[StreamProgressCallbackType] | None = None,
+        agent_definitions: list[AgentDefinition] | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -879,10 +879,7 @@ class LocalConversation(BaseConversation):
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
                 tags=tags,
-                agent_definitions=[
-                    *self._agent_definitions,
-                    *self._agent_registry.get_registered_agent_definitions(),
-                ],
+                agent_definitions=list(self._state.agent_definitions),
             )
 
             # Branch slice copies path_to_root(event) (root-first, re-rootable);

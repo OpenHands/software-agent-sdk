@@ -62,7 +62,7 @@ loading must:
 ### Core rule: process base plus conversation overlay
 
 Explicit programmatic agents and built-ins live in the process registry.
-Plugin and project/user file agents live in each `LocalConversation`'s
+Automatically discovered plugin and project/user file agents live in each `LocalConversation`'s
 `ConversationAgentRegistry`, so same-name definitions in different conversations
 do not collide. The scoped registry keeps the highest-priority source; first
 registration wins within the same priority. This also handles forwarded
@@ -85,10 +85,12 @@ The resolver enforces this order, independent of arrival order:
 4. User file-based agents
    - `~/.agents/agents/*.md` then `~/.openhands/agents/*.md`
 
-5. Process-level built-ins registered by `openhands-tools`
+5. Process-level fallback, including built-ins registered by `openhands-tools`
+   and file/plugin agents deliberately registered through the public APIs
+   without a conversation registry.
 
 Task/Delegate resolution uses the parent conversation's resolver. Remote clients
-forward shared programmatic/built-in definitions; workspace files and plugins
+forward shared process registrations; workspace files and plugins
 are discovered on the server, not by reading server paths on the client.
 Forwarded definitions are restored lazily into the server conversation overlay;
 they are never registered into the server process registry.

@@ -31,6 +31,7 @@ from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, Metrics, TextContent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.subagent.registry import (
+    ConversationAgentRegistry,
     _reset_registry_for_tests,
     agent_definition_to_factory,
     register_agent,
@@ -115,18 +116,21 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
-    def test_remote_payload_excludes_other_workspaces_and_client_path_files(
+    def test_remote_payload_includes_globals_but_excludes_other_workspace_files(
         self, mock_ws_client, tmp_path: Path, monkeypatch
     ):
         monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
         _reset_registry_for_tests()
-        for project in ("unrelated", "server-path"):
+        for project in ("unrelated", "server-path", "global-files"):
             directory = tmp_path / project / ".agents" / "agents"
             directory.mkdir(parents=True)
             (directory / "reviewer.md").write_text(
                 f"---\nname: {project}\ndescription: private to {project}\n---\n"
             )
-        register_file_agents(tmp_path / "unrelated")
+        register_file_agents(
+            tmp_path / "unrelated", registry=ConversationAgentRegistry()
+        )
+        register_file_agents(tmp_path / "global-files")
         definition = AgentDefinition(name="explicit", description="shared programmatic")
         register_agent(
             definition.name, agent_definition_to_factory(definition), definition
@@ -144,7 +148,10 @@ class TestRemoteConversation:
                 for call in client.request.call_args_list
                 if call.args[:2] == ("POST", "/api/conversations")
             )
-            assert [d["name"] for d in payload["agent_definitions"]] == ["explicit"]
+            assert [d["name"] for d in payload["agent_definitions"]] == [
+                "explicit",
+                "global-files",
+            ]
         finally:
             conversation.close()
             _reset_registry_for_tests()

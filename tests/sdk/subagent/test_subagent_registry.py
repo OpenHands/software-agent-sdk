@@ -49,20 +49,39 @@ def _create_skill_file(skills_dir: Path, name: str, content: str) -> None:
     )
 
 
-def test_conversation_registry_ignores_legacy_global_file_agents() -> None:
-    def factory(llm: LLM) -> Agent:
-        return cast(Agent, MagicMock())
-
-    register_agent_if_absent(
-        "other-project",
-        factory,
-        AgentDefinition(name="other-project", description="leaked", level="project"),
-    )
+@pytest.mark.parametrize("source", ["plugin", "project", "user"])
+def test_conversation_registry_resolves_public_global_registrations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", lambda: home)
+    if source == "plugin":
+        register_plugin_agents(
+            [
+                AgentDefinition(
+                    name="shared",
+                    description="global helper",
+                    system_prompt="Global prompt",
+                )
+            ]
+        )
+    else:
+        root = home if source == "user" else tmp_path
+        directory = root / ".agents" / "agents"
+        directory.mkdir(parents=True)
+        (directory / "shared.md").write_text(
+            "---\nname: shared\ndescription: global helper\n---\nGlobal prompt"
+        )
+        register_file_agents(tmp_path)
 
     registry = ConversationAgentRegistry()
-    with pytest.raises(ValueError, match="Unknown agent 'other-project'"):
-        registry.get_agent_factory("other-project")
-    assert registry.get_registered_agent_definitions() == []
+    factory = registry.get_agent_factory("shared")
+    assert factory is get_agent_factory("shared")
+    assert registry.get_registered_agent_definitions() == [factory.definition]
+    assert "global helper" in registry.get_factory_info()
+    worker = factory.factory_func(_make_test_llm())
+    assert worker.agent_context is not None
+    assert worker.agent_context.system_message_suffix == "Global prompt"
 
 
 @pytest.mark.parametrize("reverse", [False, True])

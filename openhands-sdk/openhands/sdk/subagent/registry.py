@@ -62,9 +62,9 @@ class AgentFactory(NamedTuple):
 class ConversationAgentRegistry:
     """Conversation-owned agent factories layered over global registrations.
 
-    Explicit programmatic registrations remain process-wide. File and plugin
-    definitions live in this overlay, so conversations may safely use the same
-    name with different definitions. Built-ins remain the final fallback.
+    Automatically discovered file and plugin definitions live in this overlay.
+    Explicit programmatic registrations take precedence; other process-wide
+    registrations remain available as fallbacks.
     """
 
     def __init__(self) -> None:
@@ -103,7 +103,7 @@ class ConversationAgentRegistry:
             return global_factory
         if scoped_factory is not None:
             return scoped_factory
-        if global_factory is not None and global_factory.definition.level == "builtin":
+        if global_factory is not None:
             return global_factory
         _raise_unknown_agent(
             name, {d.name for d in self.get_registered_agent_definitions()}
@@ -124,7 +124,7 @@ class ConversationAgentRegistry:
                 if f.definition.level in (None, "programmatic")
             ),
             *scoped_factories,
-            *(f for f in global_factories if f.definition.level == "builtin"),
+            *global_factories,
         ]:
             if factory.definition.name not in seen:
                 seen.add(factory.definition.name)
