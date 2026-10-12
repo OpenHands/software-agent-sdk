@@ -436,8 +436,16 @@ class CanvasExtensionBackendManager:
             state=state,
             revision=revision,
             prepared_revision=prepared_revision,
-            pid=runtime.process.pid if runtime and runtime.process else None,
-            port=runtime.port if runtime else None,
+            pid=(
+                runtime.process.pid
+                if runtime and runtime.process and runtime.process.returncode is None
+                else None
+            ),
+            port=(
+                runtime.port
+                if runtime and runtime.process and runtime.process.returncode is None
+                else None
+            ),
             detail=detail,
         )
 
@@ -446,11 +454,10 @@ class CanvasExtensionBackendManager:
             runtime = self._runtimes.get(name)
             if runtime and runtime.process and runtime.process.returncode is not None:
                 returncode = runtime.process.returncode
-                await self._finish_runtime(runtime)
-                runtime.process = None
                 runtime.port = None
                 runtime.state = "unhealthy"
                 runtime.detail = f"Backend exited with code {returncode}"
+                await self._terminate_runtime(runtime)
             elif runtime and runtime.state == "ready" and runtime.port is not None:
                 manifest = self._manifest(name)
                 if manifest is None or manifest.backend is None:
@@ -626,6 +633,8 @@ class CanvasExtensionBackendManager:
                     raise RuntimeError(
                         "prepared backend metadata does not match manifest"
                     )
+                if runtime.process is not None:
+                    await self._terminate_runtime(runtime)
                 package_root = (self.installed_dir / name).resolve()
                 data_dir = self.data_dir / name
                 data_dir.mkdir(parents=True, exist_ok=True)
@@ -695,6 +704,12 @@ class CanvasExtensionBackendManager:
         except ProcessLookupError:
             return False
 
+    def _runtime_group_alive(self, runtime: _Runtime) -> bool:
+        process = runtime.process
+        return process is not None and (
+            process.returncode is None or self._group_alive(process.pid)
+        )
+
     async def _wait_for_group_exit(self, pgid: int, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
         while True:
@@ -713,11 +728,16 @@ class CanvasExtensionBackendManager:
         # leader: a backend may fork descendants, and one that outlives (or is
         # forked just after) the leader keeps the group alive. Escalating only
         # on the leader's exit code would leak those descendants.
-        if process.returncode is None or self._group_alive(pgid):
+        if process.returncode is None:
             self._signal_group(pgid, signal.SIGTERM)
             if not await self._wait_for_group_exit(pgid, _STOP_TIMEOUT_SECONDS):
                 self._signal_group(pgid, signal.SIGKILL)
                 await self._wait_for_group_exit(pgid, _STOP_TIMEOUT_SECONDS)
+        elif self._group_alive(pgid):
+            # With no leader left to shut down cleanly, its descendants are
+            # orphaned; do not let one hold status or restart for the grace period.
+            self._signal_group(pgid, signal.SIGKILL)
+            await self._wait_for_group_exit(pgid, _STOP_TIMEOUT_SECONDS)
         if process.returncode is None:
             await process.wait()
         await self._finish_runtime(runtime)
@@ -726,8 +746,7 @@ class CanvasExtensionBackendManager:
 
     def has_running_backends(self) -> bool:
         return any(
-            runtime.start_task is not None
-            or (runtime.process is not None and runtime.process.returncode is None)
+            runtime.start_task is not None or self._runtime_group_alive(runtime)
             for runtime in self._runtimes.values()
         )
 
@@ -769,8 +788,7 @@ class CanvasExtensionBackendManager:
         async with self._lock(name):
             runtime = self._runtimes.get(name)
             if runtime and (
-                runtime.start_task is not None
-                or (runtime.process and runtime.process.returncode is None)
+                runtime.start_task is not None or self._runtime_group_alive(runtime)
             ):
                 raise RuntimeError("stop the backend before deleting its data")
             shutil.rmtree(self.data_dir / name, ignore_errors=True)

@@ -15,11 +15,13 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from openhands.sdk import TextContent
 from openhands.sdk.logger import get_logger
+from openhands.tools.terminal.constants import MIN_POLL_INTERVAL, POLL_INTERVAL
 from openhands.tools.terminal.definition import (
     TerminalAction,
     TerminalObservation,
@@ -27,6 +29,7 @@ from openhands.tools.terminal.definition import (
 from openhands.tools.terminal.terminal import (
     TerminalCommandStatus,
     create_terminal_session,
+    terminal_session as session_module,
 )
 
 from .conftest import get_no_change_timeout_suffix
@@ -235,6 +238,31 @@ def test_truncation_preserves_metadata_in_llm_content(monkeypatch, terminal_type
     assert "[The command completed with exit code 0.]" in llm_text
 
     session.close()
+
+
+@parametrize_terminal_types
+def test_polling_starts_fast_and_backs_off_to_poll_interval(monkeypatch, terminal_type):
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        time.sleep(seconds)
+
+    clock = SimpleNamespace(time=time.time, sleep=sleep)
+    monkeypatch.setattr(session_module, "time", clock)
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = create_terminal_session(
+            work_dir=temp_dir, terminal_type=terminal_type
+        )
+        session.initialize()
+        sleeps.clear()
+        obs = session.execute(TerminalAction(command="sleep 2.5"))
+        session.close()
+
+    assert obs.metadata.exit_code == 0
+    assert MIN_POLL_INTERVAL <= sleeps[0] < POLL_INTERVAL / 2
+    assert sleeps == sorted(sleeps)
+    assert sleeps[-1] == POLL_INTERVAL
 
 
 @parametrize_terminal_types
