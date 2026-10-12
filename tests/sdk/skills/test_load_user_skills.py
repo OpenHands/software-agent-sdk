@@ -395,3 +395,83 @@ def test_load_user_skills_disabled_installed_skill_excluded(tmp_path, monkeypatc
         assert "disabled-skill" not in skill_names
     finally:
         skill.USER_SKILLS_DIRS = original_dirs
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_installed_skill_resources_do_not_leak_into_user_skills(
+    tmp_path, monkeypatch, enabled
+):
+    skills_dir = tmp_path / "skills"
+    installed_dir = skills_dir / "installed"
+    source = tmp_path / "resource-skill"
+    source.mkdir()
+    (source / "SKILL.md").write_text(
+        "---\nname: resource-skill\ndescription: Resource skill\n---\nInstructions."
+    )
+    for directory in ("commands", "references"):
+        (source / directory).mkdir()
+        (source / directory / "notes.md").write_text("Private resource instructions.")
+    install_skill(str(source), installed_dir=installed_dir)
+    if not enabled:
+        disable_skill("resource-skill", installed_dir=installed_dir)
+
+    (skills_dir / "legacy").mkdir()
+    (skills_dir / "legacy" / "notes.md").write_text("Legacy instructions.")
+    direct = skills_dir / "direct-skill"
+    direct.mkdir()
+    (direct / "SKILL.md").write_text(
+        "---\nname: direct-skill\ndescription: Direct skill\n---\nInstructions."
+    )
+    (direct / "reference.md").write_text("Direct resource instructions.")
+    monkeypatch.setattr(skill, "USER_SKILLS_DIRS", [skills_dir])
+    monkeypatch.setattr(installed, "DEFAULT_INSTALLED_SKILLS_DIR", installed_dir)
+
+    loaded = load_user_skills()
+    expected = {"legacy/notes", "direct-skill"}
+    if enabled:
+        expected.add("resource-skill")
+    assert {entry.name for entry in loaded} == expected
+    assert len(loaded) == len(expected)
+    assert (installed_dir / "resource-skill" / "references" / "notes.md").is_file()
+
+
+def test_user_skills_survive_symlink_loop_next_to_installed_dir(tmp_path, monkeypatch):
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "good.md").write_text("Good instructions.")
+    (skills_dir / "a.md").symlink_to(skills_dir / "b.md")
+    (skills_dir / "b.md").symlink_to(skills_dir / "a.md")
+    monkeypatch.setattr(skill, "USER_SKILLS_DIRS", [skills_dir])
+    monkeypatch.setattr(
+        installed, "DEFAULT_INSTALLED_SKILLS_DIR", skills_dir / "installed"
+    )
+
+    assert [entry.name for entry in load_user_skills()] == ["good"]
+
+
+def test_installed_dir_excluded_through_symlinked_user_skills_dir(
+    tmp_path, monkeypatch
+):
+    skills_dir = tmp_path / "openhands" / "skills"
+    installed_dir = skills_dir / "installed"
+    (installed_dir / "pkg" / "references").mkdir(parents=True)
+    (installed_dir / "pkg" / "references" / "notes.md").write_text("Package notes.")
+    agents_skills_dir = tmp_path / "agents" / "skills"
+    agents_skills_dir.parent.mkdir()
+    agents_skills_dir.symlink_to(skills_dir, target_is_directory=True)
+    monkeypatch.setattr(skill, "USER_SKILLS_DIRS", [agents_skills_dir, skills_dir])
+    monkeypatch.setattr(installed, "DEFAULT_INSTALLED_SKILLS_DIR", installed_dir)
+
+    assert load_user_skills() == []
+
+
+def test_load_skills_from_dir_keeps_installed_dir_without_exclusion(tmp_path):
+    skills_dir = tmp_path / "skills"
+    (skills_dir / "installed" / "pkg" / "references").mkdir(parents=True)
+    (skills_dir / "installed" / "pkg" / "references" / "notes.md").write_text(
+        "Package notes."
+    )
+
+    repo_skills, _, _ = skill.load_skills_from_dir(skills_dir)
+
+    assert "installed/pkg/references/notes" in repo_skills

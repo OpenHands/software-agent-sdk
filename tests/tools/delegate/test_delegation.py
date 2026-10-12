@@ -14,6 +14,7 @@ from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.llm import LLM, TextContent
+from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.subagent.registry import (
     ConversationAgentRegistry,
     _reset_registry_for_tests,
@@ -82,6 +83,10 @@ def create_test_executor_and_parent():
     parent_conversation.state.workspace.working_dir = "/tmp"
     parent_conversation.state.persistence_dir = None
     parent_conversation.visualize = False
+    parent_conversation.get_llm_call_context.return_value = LLMCallContext(
+        prompt_cache_key=str(parent_conversation.id),
+        session_id=str(parent_conversation.id),
+    )
 
     executor = DelegateExecutor()
 

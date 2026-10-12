@@ -108,9 +108,14 @@ class TestDetect:
     def test_ignores_missing_dir(self, tmp_path: Path):
         assert AgentPluginsFormat.detect(tmp_path / "does-not-exist") is False
 
-    def test_not_registered_yet(self, tmp_path: Path):
-        """Pins the decision to keep this format out of ``_FORMATS``."""
+    def test_registered_ahead_of_claude_code(self, tmp_path: Path):
+        """A root manifest wins over the universal Claude Code fallback."""
         write_manifest(tmp_path / "p", EXAMPLE_MANIFEST)
+
+        assert isinstance(detect_format(tmp_path / "p"), AgentPluginsFormat)
+
+    def test_claude_code_still_the_fallback(self, tmp_path: Path):
+        (tmp_path / "p").mkdir()
 
         assert isinstance(detect_format(tmp_path / "p"), ClaudeCodePluginFormat)
 

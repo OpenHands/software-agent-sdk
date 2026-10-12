@@ -221,6 +221,9 @@ class DelegateExecutor(ToolExecutor):
                     "hook_config": factory.definition.hooks,
                     "persistence_dir": subagents_persistence_dir,
                     "agent_definitions": registry.get_registered_agent_definitions(),
+                    "_parent_llm_call_context": (
+                        parent_conversation.get_llm_call_context()
+                    ),
                 }
 
                 if factory.definition.max_iteration_per_run is not None:

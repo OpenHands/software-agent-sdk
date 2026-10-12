@@ -536,6 +536,18 @@
           "unknown"
         ]
       ]
+    },
+    {
+      "category": "type-guard",
+      "reason": "A type guard accepts any value by design; its predicate narrows the value to a concrete type.",
+      "owner": "enyst",
+      "entries": [
+        [
+          "client/http-client.d.ts::function:isHttpError/parameter:value::unknown",
+          "unknown",
+          "unknown"
+        ]
+      ]
     }
   ]
 }

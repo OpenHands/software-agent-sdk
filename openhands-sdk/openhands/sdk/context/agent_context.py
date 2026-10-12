@@ -260,6 +260,14 @@ class AgentContext(BaseModel):
     @model_validator(mode="after")
     def _load_auto_skills(self):
         """Load user/legacy-public skills if enabled, then apply ``disabled_skills``."""
+        return self.resolve_auto_skills()
+
+    def resolve_auto_skills(self) -> AgentContext:
+        """Resolve ``load_*_skills`` into ``skills`` and apply ``disabled_skills``.
+
+        Exposed because ``model_copy`` skips validators: callers that rebuild a
+        context that way must re-run this or the deny-list silently won't apply.
+        """
         include_public = self.load_public_skills
         if self.load_user_skills or include_public:
             auto_skills = load_available_skills(

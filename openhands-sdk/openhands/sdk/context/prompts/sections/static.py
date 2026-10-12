@@ -23,7 +23,6 @@ from openhands.sdk.utils.path import get_user_persistence_dir, to_posix_path
 
 
 __all__ = [
-    "BrowserSection",
     "CodeQualitySection",
     "EfficiencySection",
     "EnvironmentSetupSection",
@@ -31,6 +30,7 @@ __all__ = [
     "FileSystemSection",
     "MemorySection",
     "ModelSpecificSection",
+    "PersonaSection",
     "ProblemSolvingSection",
     "ProcessManagementSection",
     "PullRequestsSection",
@@ -39,6 +39,7 @@ __all__ = [
     "SecuritySection",
     "SelfDocumentationSection",
     "SoulSection",
+    "ToolGuidanceSection",
     "TroubleshootingSection",
     "VersionControlSection",
 ]
@@ -97,6 +98,18 @@ class RoleSection(_StaticTextSection):
 * Your primary role is to assist users by executing commands, modifying code, and solving technical problems effectively. You should be thorough, methodical, and prioritize quality over speed.
 * If the user asks a question, like "why is X happening", don't try to fix the problem. Just give an answer to the question.
 </ROLE>"""
+
+
+class PersonaSection(_StaticTextSection):
+    """The agent's own persona, standing in for the persona sections it replaces."""
+
+    name = "persona"
+
+    def guard(self, ctx: PromptContext) -> bool:
+        return ctx.persona is not None
+
+    def render(self, ctx: PromptContext) -> str | None:
+        return ctx.persona
 
 
 class MemorySection(_StaticTextSection):
@@ -378,21 +391,16 @@ When an action originates from or is influenced by repository-provided context (
         return _refine(body, ctx.platform)
 
 
-class BrowserSection(_StaticTextSection):
-    name = "browser"
-    body = """\
-<BROWSER_TOOLS>
-You have a browser for navigating pages and interacting with web UIs.
-* Try curl/wget/fetch first. Use the browser only when simpler tools fail or the page requires JS/interaction.
-* ALWAYS call `browser_get_state` before EVERY `browser_click` or `browser_type` — indices change after each action. Flow: navigate → get_state → interact → get_state → get_content.
-* Max 10 browser actions per sub-task. If stuck, switch approach entirely.
-* If 20+ total steps without converging, stop exploring and commit to your best answer.
-* On 403/CAPTCHA/login wall: try one alternative, then abandon the browser.
-* Do NOT submit forms or create accounts unless explicitly asked.
-</BROWSER_TOOLS>"""
+class ToolGuidanceSection(_StaticTextSection):
+    """Usage guidance supplied by the loaded tools (e.g. ``<BROWSER_TOOLS>``)."""
+
+    name = "tool_guidance"
 
     def guard(self, ctx: PromptContext) -> bool:
-        return ctx.enable_browser
+        return bool(ctx.tool_guidance)
+
+    def render(self, ctx: PromptContext) -> str | None:
+        return "\n\n".join(ctx.tool_guidance)
 
 
 class ExternalServicesSection(_StaticTextSection):

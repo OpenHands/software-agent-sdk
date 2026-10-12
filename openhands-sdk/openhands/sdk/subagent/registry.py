@@ -131,8 +131,10 @@ class ConversationAgentRegistry:
                 definitions.append(factory.definition)
         return definitions
 
-    def get_factory_info(self) -> str:
-        return _format_factory_info(self.get_registered_agent_definitions())
+    def get_factory_info(
+        self, include: Callable[[AgentDefinition], bool] | None = None
+    ) -> str:
+        return _format_factory_info(self.get_registered_agent_definitions(), include)
 
 
 # Global registry for user-registered agent factories
@@ -489,7 +491,11 @@ def get_agent_factory(name: str | None) -> AgentFactory:
     return factory
 
 
-def _format_factory_info(definitions: list[AgentDefinition]) -> str:
+def _format_factory_info(
+    definitions: list[AgentDefinition],
+    include: Callable[[AgentDefinition], bool] | None = None,
+) -> str:
+    definitions = [d for d in definitions if include is None or include(d)]
     if not definitions:
         return "- No user-registered agents yet. Call register_agent(...) to add custom agents."  # noqa: E501
 
@@ -502,9 +508,11 @@ def _format_factory_info(definitions: list[AgentDefinition]) -> str:
     )
 
 
-def get_factory_info() -> str:
+def get_factory_info(
+    include: Callable[[AgentDefinition], bool] | None = None,
+) -> str:
     """Get formatted information about available process-wide factories."""
-    return _format_factory_info(get_registered_agent_definitions())
+    return _format_factory_info(get_registered_agent_definitions(), include)
 
 
 def get_registered_agent_definitions() -> list[AgentDefinition]:

@@ -4,8 +4,8 @@ from typing import Any
 import pytest
 from litellm import get_optional_params
 
-from openhands.sdk.llm import LLM
-from openhands.sdk.llm.llm import LLMCallContext
+from openhands.sdk.llm import LLM, LLMCallContext
+from openhands.sdk.llm.call_context import llm_call_context_scope
 from openhands.sdk.llm.options.chat_options import select_chat_options
 from openhands.sdk.llm.utils.model_features import ModelFeatures, get_features
 
@@ -26,7 +26,6 @@ class DummyLLM:
     litellm_extra_body: dict[str, Any] | None = None
     # Align with LLM default; only emitted for models that support it
     prompt_cache_retention: str | None = "24h"
-    _call_context: LLMCallContext = field(default_factory=LLMCallContext)
     openrouter_site_url: str = ""
     openrouter_app_name: str = ""
 
@@ -345,9 +344,13 @@ def test_extended_thinking_budget_clamped_below_max_tokens():
 def test_chat_options_forwards_prompt_cache_key_when_set():
     """Regression test for #2904."""
     llm = LLM(model="gpt-4o")
-    llm._call_context = LLMCallContext(prompt_cache_key="conv-abc123")
     assert (
-        select_chat_options(llm, user_kwargs={}, has_tools=True).get("prompt_cache_key")
+        select_chat_options(
+            llm,
+            user_kwargs={},
+            has_tools=True,
+            call_context=LLMCallContext(prompt_cache_key="conv-abc123"),
+        ).get("prompt_cache_key")
         == "conv-abc123"
     )
 
@@ -357,6 +360,33 @@ def test_chat_options_omits_prompt_cache_key_when_unset():
     assert "prompt_cache_key" not in select_chat_options(
         llm, user_kwargs={}, has_tools=True
     )
+
+
+def test_chat_options_omits_prompt_cache_key_for_unsupported_provider():
+    """Anthropic/Gemini reject `prompt_cache_key` with 400; must not be sent.
+
+    Regression test for the UnsupportedParamsError reported on Anthropic models
+    when running against a litellm proxy with `drop_params: false`. The param
+    is OpenAI-specific and must be gated on provider support, unlike
+    `supports_prompt_cache` which gates Anthropic `cache_control` breakpoints.
+    """
+    for model in ("claude-opus-4-5-20251101", "gemini/gemini-2.5-pro"):
+        llm = DummyLLM(model=model)
+        with llm_call_context_scope(LLMCallContext(prompt_cache_key="conv-abc123")):
+            out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+        assert "prompt_cache_key" not in out, model
+
+
+def test_chat_options_forwards_prompt_cache_key_when_override_enabled():
+    """A capability override can force `prompt_cache_key` on for unresolved
+    OpenAI proxy aliases where litellm's registry returns no supported params."""
+    llm = DummyLLM(
+        model="prod/my-openai-alias",
+        capability_overrides={"supports_prompt_cache_key": True},
+    )
+    with llm_call_context_scope(LLMCallContext(prompt_cache_key="conv-abc123")):
+        out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+    assert out.get("prompt_cache_key") == "conv-abc123"
 
 
 def test_chat_options_injects_openrouter_headers_via_extra_headers():

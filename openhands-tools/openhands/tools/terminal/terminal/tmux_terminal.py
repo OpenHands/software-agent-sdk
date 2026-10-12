@@ -122,8 +122,10 @@ class TmuxTerminal(TerminalInterface):
         # auto-launch `less` on a TTY don't capture the pane and wedge the session.
         env.setdefault("GIT_PAGER", "cat")
         env.setdefault("PAGER", "cat")
-        # Use a dedicated socket to isolate OpenHands sessions from the user's tmux
-        self.server = libtmux.Server(socket_name=TMUX_SOCKET_NAME, environment=env)
+        # Never reuse a socket: tmux numeric IDs restart at zero after server exit.
+        self.server = libtmux.Server(
+            socket_name=f"{TMUX_SOCKET_NAME}-{uuid.uuid4().hex}", environment=env
+        )
         _shell_command = "/bin/bash"
         if self.username in ["root", "openhands"]:
             # This starts a non-login (new) shell for the given user

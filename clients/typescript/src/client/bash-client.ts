@@ -94,6 +94,21 @@ export class BashClient {
     return response.data;
   }
 
+  /**
+   * Stop a running bash command by id. Unknown or already-finished ids
+   * resolve successfully, matching the server's idempotency contract.
+   */
+  async stopCommand(commandId: string): Promise<void> {
+    try {
+      await this.client.post(`/api/bash/bash_commands/${commandId}/stop`, {});
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 404) {
+        return;
+      }
+      throw error;
+    }
+  }
+
   close(): void {
     this.client.close();
   }

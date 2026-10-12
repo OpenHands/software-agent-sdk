@@ -23,6 +23,7 @@ from openhands.agent_server.models import (
     BashEventSortOrder,
     BashOutput,
     ExecuteBashRequest,
+    Success,
 )
 from openhands.agent_server.server_details_router import update_last_execution_time
 
@@ -130,6 +131,28 @@ async def clear_all_bash_events(
     """Clear all bash events from storage"""
     count = await bash_event_service.clear_all_events()
     return {"cleared_count": count}
+
+
+@bash_router.post(
+    "/bash_commands/{command_id}/stop",
+    responses={404: {"description": "Item not found"}},
+)
+async def stop_bash_command(
+    command_id: UUID,
+    bash_event_service: BashEventService = Depends(get_bash_event_service),
+) -> Success:
+    """Stop a running bash command by id without touching the others.
+
+    Idempotent: stopping an already-finished command succeeds, while an
+    unknown command id reports not-found so the caller can treat it as
+    an already-cancelled stop.
+    """
+    update_last_execution_time()
+    if await bash_event_service.stop_bash_command(command_id):
+        return Success()
+    if await bash_event_service.get_bash_event(command_id.hex) is not None:
+        return Success()
+    raise HTTPException(status.HTTP_404_NOT_FOUND)
 
 
 def _validate_cwd(request: ExecuteBashRequest, service: BashEventService) -> None:

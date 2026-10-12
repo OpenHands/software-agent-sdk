@@ -39,6 +39,8 @@ export interface ConversationRuntimeInfo {
 
 export interface ConversationInfo {
   id: ConversationID;
+  /** Availability of the execution runtime backing this catalog entry. */
+  runtime_info?: ConversationRuntimeInfo | null;
   /**
    * Current execution status of the conversation.
    * Note: This field was renamed from agent_status to execution_status in the API.

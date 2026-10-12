@@ -4,7 +4,6 @@
 
 import { HttpClient } from '../client/http-client';
 import { AgentProfilesClient } from '../client/agent-profiles-client';
-import { DesktopClient } from '../client/desktop-client';
 import { FileClient } from '../client/file-client';
 import { HooksClient } from '../client/hooks-client';
 import { LLMMetadataClient } from '../client/llm-client';
@@ -90,7 +89,6 @@ export class ConversationManager {
   public readonly subAgents: SubAgentsClient;
   public readonly tools: ToolClient;
   public readonly vscode: VSCodeClient;
-  public readonly desktop: DesktopClient;
   public readonly files: FileClient;
   public readonly workspaces: WorkspacesClient;
   public readonly shared: SharedClient;
@@ -123,7 +121,6 @@ export class ConversationManager {
     this.subAgents = new SubAgentsClient(clientOptions);
     this.tools = new ToolClient(clientOptions);
     this.vscode = new VSCodeClient(clientOptions);
-    this.desktop = new DesktopClient(clientOptions);
     this.files = new FileClient(clientOptions);
     this.workspaces = new WorkspacesClient(clientOptions);
     this.shared = new SharedClient(clientOptions);
@@ -408,7 +405,6 @@ export class ConversationManager {
     this.subAgents.close();
     this.tools.close();
     this.vscode.close();
-    this.desktop.close();
     this.files.close();
     this.workspaces.close();
     this.shared.close();

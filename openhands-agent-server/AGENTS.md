@@ -22,7 +22,7 @@ conversations, long-running bash, slow webhooks, websocket back-pressure, etc.
 
 ### Running stress tests
 
-The suite is **excluded from default collection** via `addopts = -m 'not stress'`
+The suite is **excluded from default collection** via `addopts = -m 'not stress and not acp_live'`
 in `pyproject.toml`. Override the filter with `-m stress`:
 
 ```bash
