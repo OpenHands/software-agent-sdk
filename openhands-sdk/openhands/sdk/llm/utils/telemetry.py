@@ -480,18 +480,21 @@ def _redact_request_credentials(ctx: dict[str, Any]) -> dict[str, Any]:
     kwargs = ctx.get("kwargs")
     if not isinstance(kwargs, dict):
         return ctx
-    logged_kwargs = kwargs.copy()
+    logged_kwargs = {}
     for key, value in kwargs.items():
-        if key in ("extra_headers", "headers"):
-            logged_kwargs[key] = sanitize_dict(value)
-        elif isinstance(value, (str, SecretStr)) and is_secret_key(key):
+        if isinstance(value, (str, SecretStr)) and is_secret_key(key):
             logged_kwargs[key] = sanitize_dict({key: value})[key]
+        else:
+            logged_kwargs[key] = sanitize_dict(value)
     return {**ctx, "kwargs": logged_kwargs}
 
 
 def _safe_json(obj: Any) -> Any:
     # Centralized serializer for telemetry logs.
     # Prefer robust serialization for Pydantic models first to avoid cycles.
+    if isinstance(obj, SecretStr):
+        return str(obj)
+
     # Typed LiteLLM responses
     if isinstance(obj, ModelResponse) or isinstance(obj, ResponsesAPIResponse):
         return obj.model_dump(mode="json", exclude_none=True)

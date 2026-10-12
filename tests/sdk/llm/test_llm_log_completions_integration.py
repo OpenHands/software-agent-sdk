@@ -205,6 +205,7 @@ def _completion_with_provider_auth_header(
     fail: bool = False,
     error_message: str = "provider failed",
     completion_kwargs: dict[str, Any] | None = None,
+    provider_metadata_api_key: str | None = None,
 ) -> dict[str, Any]:
     """Run one completion whose provider adds ``Authorization`` in place.
 
@@ -226,6 +227,10 @@ def _completion_with_provider_auth_header(
     def provider(**kwargs):
         received_kwargs.update(kwargs)
         kwargs["extra_headers"]["Authorization"] = "Bearer provider-secret"
+        if provider_metadata_api_key is not None:
+            metadata = kwargs["metadata"]
+            assert isinstance(metadata, dict)
+            metadata["api_key"] = provider_metadata_api_key
         if fail:
             raise ValueError(error_message)
         return create_mock_litellm_response(content="ok")
@@ -309,6 +314,38 @@ def test_log_completions_redact_credential_options_without_changing_request(
     assert logged_kwargs["aws_secret_access_key"] == "<redacted>"
     assert logged_kwargs["max_completion_tokens"] == 42
     assert logged_kwargs["extra_headers"]["X-Trace-Id"] == "trace-1"
+
+
+def test_log_completions_redact_and_detach_nested_request_credentials():
+    metadata = {
+        "api_key": "caller-nested-secret",
+        "trace_id": "trace-2",
+        "nested": [{"access_token": "list-secret"}],
+        "wrapped": SecretStr("wrapped-secret"),
+    }
+    with tempfile.TemporaryDirectory() as temp_dir:
+        received_kwargs = _completion_with_provider_auth_header(
+            temp_dir,
+            extra_headers={"X-Trace-Id": "trace-1"},
+            completion_kwargs={"metadata": metadata},
+            provider_metadata_api_key="provider-nested-secret",
+        )
+        raw = _read_only_log(temp_dir)
+
+    logged_metadata = json.loads(raw)["kwargs"]["metadata"]
+    assert received_kwargs["metadata"] is metadata
+    assert metadata["api_key"] == "provider-nested-secret"
+    assert metadata["nested"][0]["access_token"] == "list-secret"
+    for secret in (
+        "caller-nested-secret",
+        "provider-nested-secret",
+        "list-secret",
+        "wrapped-secret",
+    ):
+        assert secret not in raw
+    assert logged_metadata["api_key"] == "<redacted>"
+    assert logged_metadata["nested"] == [{"access_token": "<redacted>"}]
+    assert logged_metadata["trace_id"] == "trace-2"
 
 
 @pytest.mark.parametrize(
