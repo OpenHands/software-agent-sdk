@@ -485,6 +485,13 @@ class Config(BaseModel):
     )
     model_config: ClassVar[ConfigDict] = {"frozen": True}
 
+    @field_validator("session_api_keys")
+    @classmethod
+    def _drop_empty_session_api_keys(cls, value: list[str]) -> list[str]:
+        # An empty key (e.g. ``OH_SESSION_API_KEYS_0=``) is never a real
+        # credential; keeping it would make an empty string authenticate.
+        return [key for key in value if key]
+
     @field_validator("secret_key")
     @classmethod
     def _empty_secret_key_is_unset(cls, value: SecretStr | None) -> SecretStr | None:
