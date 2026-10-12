@@ -2,7 +2,7 @@ import json
 import logging
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from openhands.agent_server.config import (
     CONFIG_PATH_ENV,
@@ -92,8 +92,11 @@ def no_session_keys(monkeypatch, tmp_path):
     monkeypatch.delenv(V1_SESSION_API_KEY_ENV, raising=False)
 
 
-def test_empty_secret_key_env_is_treated_as_unset(monkeypatch, caplog, no_session_keys):
-    monkeypatch.setenv("OH_SECRET_KEY", "")
+@pytest.mark.parametrize("blank", ["", "   ", "\n"])
+def test_empty_secret_key_env_is_treated_as_unset(
+    monkeypatch, caplog, no_session_keys, blank
+):
+    monkeypatch.setenv("OH_SECRET_KEY", blank)
 
     config = load_config()
 
@@ -103,8 +106,11 @@ def test_empty_secret_key_env_is_treated_as_unset(monkeypatch, caplog, no_sessio
     assert "OH_SECRET_KEY was not defined" in caplog.text
 
 
-def test_empty_secret_key_env_falls_back_to_session_key(monkeypatch, no_session_keys):
-    monkeypatch.setenv("OH_SECRET_KEY", "")
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_empty_secret_key_env_falls_back_to_session_key(
+    monkeypatch, no_session_keys, blank
+):
+    monkeypatch.setenv("OH_SECRET_KEY", blank)
     monkeypatch.setenv(V1_SESSION_API_KEY_ENV, "session-key")
 
     config = load_config()
@@ -113,3 +119,22 @@ def test_empty_secret_key_env_falls_back_to_session_key(monkeypatch, no_session_
     assert config.secret_key.get_secret_value() == "session-key"
     assert config.cipher is not None
     assert config.cipher.secret_key == "session-key"
+
+
+def test_blank_secret_key_in_config_file_is_treated_as_unset(
+    monkeypatch, tmp_path, no_session_keys
+):
+    config_file = tmp_path / "config.json"
+    config_file.write_text(json.dumps({"secret_key": "   "}))
+    monkeypatch.setenv(CONFIG_PATH_ENV, str(config_file))
+    monkeypatch.delenv("OH_SECRET_KEY", raising=False)
+
+    config = load_config()
+
+    assert config.secret_key is None
+    assert config.cipher is None
+
+
+def test_blank_secret_key_in_constructor_is_treated_as_unset(no_session_keys):
+    assert Config(secret_key=SecretStr("  ")).secret_key is None
+    assert Config(secret_key=SecretStr("real")).secret_key.get_secret_value() == "real"

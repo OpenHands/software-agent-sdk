@@ -495,9 +495,10 @@ class Config(BaseModel):
     @field_validator("secret_key")
     @classmethod
     def _empty_secret_key_is_unset(cls, value: SecretStr | None) -> SecretStr | None:
-        """Treat an empty secret key (e.g. ``OH_SECRET_KEY=``) as unset, so the
-        session-key fallback applies instead of encrypting with an empty key."""
-        if value is not None and not value.get_secret_value():
+        """Treat a blank secret key (e.g. ``OH_SECRET_KEY=`` or whitespace only)
+        as unset, so the session-key fallback applies instead of encrypting with
+        a key anyone can guess."""
+        if value is not None and not value.get_secret_value().strip():
             return _default_secret_key()
         return value
 
