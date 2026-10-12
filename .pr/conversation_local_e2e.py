@@ -74,7 +74,11 @@ def main() -> int:
     root = Path(tempfile.mkdtemp(prefix="conv-local-e2e-"))
     workdir = root / "workspace"
     workdir.mkdir()
-    env = {k: v for k, v in os.environ.items() if not k.endswith("SESSION_API_KEY")}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("OH_") and not k.endswith("SESSION_API_KEY")
+    }
     env.update(
         HOME=str(root / "home"),
         OH_PERSISTENCE_DIR=str(root / "persist"),
