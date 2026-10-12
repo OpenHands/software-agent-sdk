@@ -1,19 +1,33 @@
 """Utility functions for MCP integration."""
 
 import asyncio
+import contextlib
+import datetime
 import inspect
 import logging
-from collections.abc import Callable, Mapping, Sequence
-from typing import Protocol
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from typing import Any, Protocol, Unpack
 
 import httpx
 import mcp.types
+from fastmcp import FastMCP
 from fastmcp.client.auth import OAuth
 from fastmcp.client.logging import LogMessage
 from fastmcp.client.messages import MessageHandler
-from fastmcp.client.transports import StreamableHttpTransport
-from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
+from fastmcp.client.transports import (
+    ClientTransport,
+    FastMCPTransport,
+    StreamableHttpTransport,
+)
+from fastmcp.client.transports.base import SessionKwargs
+from fastmcp.client.transports.config import MCPConfigTransport
+from fastmcp.mcp_config import (
+    MCPConfig as FastMCPConfig,
+    MCPServerTypes,
+    RemoteMCPServer,
+)
 from key_value.aio.protocols import AsyncKeyValue
+from mcp import ClientSession
 from mcp.shared._httpx_utils import create_mcp_http_client
 
 from openhands.sdk.logger import get_logger
@@ -40,6 +54,11 @@ MCPOAuthFactory = Callable[
 
 # Backward-compatible callback that reports only newly added tools.
 ToolsChangedCallback = Callable[[Sequence[MCPToolDefinition]], None]
+
+# Share of ``create_mcp_tools``'s timeout that each server of a multi-server
+# config gets to connect; the rest stays available for listing tools once
+# the slowest server has connected (or been dropped).
+_SERVER_CONNECT_TIMEOUT_FRACTION = 0.8
 
 
 class MCPToolProvider(Protocol):
@@ -162,6 +181,91 @@ def _origin_bound_client_factory(url: str, header_names: tuple[str, ...]):
 def _origin(url: httpx.URL) -> tuple[str, str, int | None]:
     default_port = {"http": 80, "https": 443}.get(url.scheme)
     return url.scheme, url.host, url.port or default_port
+
+
+class _ConcurrentMCPConfigTransport(MCPConfigTransport):
+    """An ``MCPConfigTransport`` that connects its servers concurrently.
+
+    FastMCP connects the servers of a multi-server config one after another,
+    all inside the caller's single timeout, so one server that never answers
+    costs every server's tools. Here each server connects concurrently under
+    its own ``server_timeout``; a server that fails or times out is logged
+    and skipped, the way FastMCP already skips a server that errors. Servers
+    are mounted exactly as FastMCP mounts them, so tool names are unchanged.
+    """
+
+    def __init__(self, config: FastMCPConfig, server_timeout: float):
+        super().__init__(config)
+        self.server_timeout = server_timeout
+
+    @contextlib.asynccontextmanager
+    async def connect_session(
+        self, **session_kwargs: Unpack[SessionKwargs]
+    ) -> AsyncIterator[ClientSession]:
+        if len(self.config.mcpServers) == 1:
+            async with super().connect_session(**session_kwargs) as session:
+                yield session
+            return
+
+        timeout = session_kwargs.get("read_timeout_seconds")
+        composite = FastMCP[Any](name="MCPRouter")
+        async with contextlib.AsyncExitStack() as stack:
+            for transport in self._transports:
+                await transport.close()
+            self._transports = []
+
+            servers = self.config.mcpServers
+            connected = await asyncio.gather(
+                *(
+                    self._connect_server(name, server, timeout, stack)
+                    for name, server in servers.items()
+                )
+            )
+            # Mount in config order so tool order does not depend on which
+            # server answered first.
+            for name, result in zip(servers, connected):
+                if result is None:
+                    continue
+                transport, proxy = result
+                self._transports.append(transport)
+                composite.mount(proxy, namespace=name if self.name_as_prefix else None)
+
+            if not self._transports:
+                raise ConnectionError("All MCP servers failed to connect")
+
+            async with FastMCPTransport(mcp=composite).connect_session(
+                **session_kwargs
+            ) as session:
+                yield session
+
+    async def _connect_server(
+        self,
+        name: str,
+        server: MCPServerTypes,
+        timeout: datetime.timedelta | None,
+        stack: contextlib.AsyncExitStack,
+    ) -> tuple[ClientTransport, FastMCP[Any]] | None:
+        try:
+            async with asyncio.timeout(self.server_timeout):
+                transport, _client, proxy = await self._create_proxy(
+                    name, server, timeout, stack
+                )
+        except TimeoutError:
+            logger.warning(
+                "MCP server %r did not connect within %.1f seconds; "
+                "continuing without its tools",
+                name,
+                self.server_timeout,
+            )
+            return None
+        except Exception:
+            logger.warning(
+                "MCP server %r failed to connect; continuing without its tools",
+                name,
+                exc_info=True,
+            )
+            return None
+        return transport, proxy
 
 
 def _prepare_mcp_config(
@@ -394,6 +498,11 @@ def create_mcp_tools(
     ``on_tools_reconciled`` is provided, it receives the client and complete
     current tool snapshot after additions, updates, or removals. Callbacks run
     on the client's background event-loop thread and must be thread-safe.
+
+    ``timeout`` bounds the whole call. With several servers, they connect
+    concurrently and each gets its own share of ``timeout``; a server that
+    fails or does not connect in time is logged and skipped, and the tools
+    of the others are returned.
     """
     mcp_config = _require_native_mcp_config(mcp_config)
     requested = mcp_config
@@ -413,7 +522,10 @@ def create_mcp_tools(
         client=None,  # type: ignore[arg-type]
         on_tools_changed=on_tools_changed,
     )
-    client = MCPClient(config, log_handler=log_handler, message_handler=handler)
+    transport = _ConcurrentMCPConfigTransport(
+        config, server_timeout=timeout * _SERVER_CONNECT_TIMEOUT_FRACTION
+    )
+    client = MCPClient(transport, log_handler=log_handler, message_handler=handler)
     handler._client = client
     client._tools_reconciled_callback = on_tools_reconciled
 
