@@ -20,9 +20,12 @@ from uuid import UUID
 import httpx
 import pytest
 import uvicorn
+from fastapi import WebSocket
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
 from openai.types.responses import ResponseInputItemParam
 from pydantic import SecretStr
+from websockets.exceptions import ConnectionClosed, InvalidStatus
+from websockets.sync.client import connect
 
 from openhands.agent_server.__main__ import preload_modules
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
@@ -61,6 +64,7 @@ def live_server_env(
     monkeypatch: pytest.MonkeyPatch,
     import_modules: str | None = None,
     session_api_keys: list[str] | None = None,
+    deferred_init: bool = False,
 ) -> Generator[dict]:
     """Launch a real FastAPI server backed by temp workspace and conversations.
 
@@ -104,7 +108,10 @@ def live_server_env(
         "session_api_keys": session_api_keys or [],
         "conversations_path": str(conversations_path),
         "workspace_path": str(workspace_path),
+        "bash_events_dir": str(tmp_path / "bash-events"),
     }
+    if deferred_init:
+        cfg.update(deferred_init=True, secret_key="test-bootstrap-key")
     cfg_file = tmp_path / "config.json"
     cfg_file.write_text(json.dumps(cfg))
 
@@ -128,7 +135,9 @@ def live_server_env(
 
     # Start uvicorn on a free port
     port = find_available_tcp_port()
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    config = uvicorn.Config(
+        app, host="127.0.0.1", port=port, log_level="warning", ws="wsproto"
+    )
     server = uvicorn.Server(config)
 
     thread = threading.Thread(target=server.run, daemon=True)
@@ -155,7 +164,9 @@ def live_server_env(
     try:
         yield {
             "app": app,
-            "conversation_service": app.state.conversation_service,
+            "conversation_service": (
+                None if deferred_init else app.state.conversation_service
+            ),
             "host": f"http://127.0.0.1:{port}",
             "workspace_path": workspace_path,
         }
@@ -177,6 +188,85 @@ def _assert_secret(value: "str | SecretStr", expected: str) -> None:
         assert value.get_secret_value() == expected
     else:
         assert value == expected
+
+
+def test_deferred_websocket_initialization_lifecycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    async def accept_app_backend_websocket(
+        websocket: WebSocket, _extension_name: str, _path: str
+    ) -> None:
+        await websocket.accept()
+        await websocket.close()
+
+    monkeypatch.setattr(
+        "openhands.agent_server.canvas_extensions_bridge_router."
+        "proxy_app_backend_websocket",
+        accept_app_backend_websocket,
+    )
+
+    with live_server_env(tmp_path, monkeypatch, deferred_init=True) as environment:
+        host = environment["host"]
+        websocket_origin = host.replace("http://", "ws://")
+        bash_socket_url = f"{websocket_origin}/sockets/bash-events"
+        app_backend_socket_urls = (
+            f"{websocket_origin}/app-backends/test-extension",
+            f"{websocket_origin}/app-backends/test-extension/events",
+        )
+
+        with httpx.Client(base_url=host, trust_env=False) as client:
+            assert client.get("/api/init").json()["state"] == "dormant"
+            assert client.get("/api/conversations/count").status_code == 503
+
+            for socket_url in (*app_backend_socket_urls, bash_socket_url):
+                with pytest.raises(InvalidStatus) as rejected:
+                    with connect(socket_url):
+                        pytest.fail(f"Dormant WebSocket accepted: {socket_url}")
+                assert rejected.value.response.status_code == 403
+
+            initialized = client.post(
+                "/api/init",
+                headers={"X-Init-API-Key": "test-bootstrap-key"},
+                json={"session_api_keys": ["test-ready-key"]},
+            )
+            assert initialized.status_code == 200
+            assert initialized.json()["state"] == "ready"
+            assert client.get("/api/conversations/count").status_code == 401
+            assert (
+                client.get(
+                    "/api/conversations/count",
+                    headers={"X-Session-API-Key": "test-ready-key"},
+                ).status_code
+                == 200
+            )
+
+            for socket_url in app_backend_socket_urls:
+                with connect(socket_url):
+                    pass
+
+            with connect(bash_socket_url) as websocket:
+                websocket.send(json.dumps({"type": "auth", "session_api_key": "wrong"}))
+                with pytest.raises(ConnectionClosed) as unauthorized:
+                    websocket.recv(timeout=5)
+                assert unauthorized.value.rcvd is not None
+                assert unauthorized.value.rcvd.code == 4001
+
+            with connect(bash_socket_url) as websocket:
+                websocket.send(
+                    json.dumps({"type": "auth", "session_api_key": "test-ready-key"})
+                )
+                websocket.send(
+                    json.dumps({"command": "printf websocket-ready", "timeout": 5})
+                )
+                output = ""
+                while True:
+                    event = json.loads(websocket.recv(timeout=10))
+                    if event["kind"] == "BashOutput":
+                        output += event.get("stdout") or ""
+                        if event["exit_code"] is not None:
+                            assert event["exit_code"] == 0
+                            break
+                assert output == "websocket-ready"
 
 
 def test_health_endpoints_return_ok_json(server_env):
