@@ -137,4 +137,6 @@ def test_blank_secret_key_in_config_file_is_treated_as_unset(
 
 def test_blank_secret_key_in_constructor_is_treated_as_unset(no_session_keys):
     assert Config(secret_key=SecretStr("  ")).secret_key is None
-    assert Config(secret_key=SecretStr("real")).secret_key.get_secret_value() == "real"
+    secret_key = Config(secret_key=SecretStr("real")).secret_key
+    assert secret_key is not None
+    assert secret_key.get_secret_value() == "real"
