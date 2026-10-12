@@ -30,8 +30,10 @@ TIMEOUT_MESSAGE_TEMPLATE: Final[str] = (
 # How long to wait with no new output before considering it a no-change timeout
 NO_CHANGE_TIMEOUT_SECONDS: Final[int] = 30
 
-# How often to poll for new output in seconds
+# How often to poll for new output in seconds, once a command has run for a while
 POLL_INTERVAL: Final[float] = 0.5
+# Shortest poll interval, used right after a command is sent
+MIN_POLL_INTERVAL: Final[float] = 0.02
 HISTORY_LIMIT: Final[int] = 10_000
 
 TMUX_SOCKET_NAME: Final[str] = "openhands"
