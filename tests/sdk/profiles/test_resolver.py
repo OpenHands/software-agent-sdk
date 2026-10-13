@@ -586,25 +586,22 @@ def test_no_available_skills_yields_no_skills(
 def test_seed_then_resolve_with_narrower_catalog_does_not_dangle(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:
-    # #4017 regression: a global whose AgentContext carries an inline skill whose
-    # name is NOT in the launch discovery catalog. The old freeze-by-name seed
-    # would name that skill and then hard-fail at launch (DanglingSkillRef). The
-    # deny-list seed disables nothing, so seed->resolve against the narrower
-    # catalog succeeds and yields exactly the catalog skills.
     from openhands.sdk.profiles import build_seed_profile
     from openhands.sdk.settings.model import validate_agent_settings
 
     settings = validate_agent_settings(
         {
             "agent_kind": "openhands",
-            "agent_context": {"skills": [{"name": "inline-only", "content": "x"}]},
+            "agent_context": {
+                "skills": [{"name": "inline-only", "content": "x"}],
+                "disabled_skills": ["beta", "missing"],
+            },
         }
     )
     profile = build_seed_profile(settings, active_llm_profile="default")
     assert isinstance(profile, OpenHandsAgentProfile)
-    assert profile.disabled_skills == []
+    assert profile.disabled_skills == ["beta", "missing"]
 
-    # Launch catalog does NOT contain "inline-only" — must still resolve.
     resolved = resolve_agent_profile(
         profile,
         llm_store=llm_store,
@@ -615,7 +612,6 @@ def test_seed_then_resolve_with_narrower_catalog_does_not_dangle(
     assert isinstance(resolved, OpenHandsAgentSettings)
     assert {s.name for s in resolved.agent_context.skills} == {
         "alpha",
-        "beta",
         "gamma",
     }
 
