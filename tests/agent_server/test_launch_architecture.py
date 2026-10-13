@@ -13,7 +13,7 @@ import openhands.agent_server
 PACKAGE_ROOT = Path(openhands.agent_server.__file__).parent
 LAUNCH_MODULE = PACKAGE_ROOT / "launch.py"
 AGENT_CLASSES = {"Agent", "ACPAgent"}
-AGENT_SOURCES = {"agent", "agent_settings", "agent_profile_id"}
+AGENT_SOURCES = {"agent", "agent_settings", "agent_profile_id", "agent_profile"}
 ALLOWED: set[tuple[str, int]] = set()
 
 
