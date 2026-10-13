@@ -19,7 +19,7 @@ from fastapi.websockets import WebSocketDisconnect
 from pydantic import SecretStr
 
 from openhands.agent_server.api import api_lifespan, create_app
-from openhands.agent_server.config import Config
+from openhands.agent_server.config import CONFIG_PATH_ENV, Config, load_config
 from openhands.agent_server.init_router import (
     InitRequest,
     InitService,
@@ -154,6 +154,15 @@ class TestBuildInitializedConfig:
         )
         assert merged.secret_key is not None
         assert merged.secret_key.get_secret_value() == "explicit-secret"
+
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_empty_secret_key_is_treated_as_unset(self, blank):
+        base = Config(deferred_init=True)
+        merged = _build_initialized_config(
+            base, InitRequest(session_api_keys=["s1"], secret_key=SecretStr(blank))
+        )
+        assert merged.secret_key is not None
+        assert merged.secret_key.get_secret_value() == "s1"
 
 
 class TestRouterMounting:
@@ -402,6 +411,45 @@ class TestInitServiceTransitions:
 
 class TestEndToEndOverLifespan:
     """Drive the whole flow through the FastAPI lifespan + TestClient."""
+
+    def test_blank_init_secret_falls_back_to_session_key(self, tmp_path):
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        app = create_app(cfg)
+        with TestClient(app) as client:
+            try:
+                response = client.post(
+                    "/api/init",
+                    json={
+                        "secret_key": "",
+                        "session_api_keys": ["user-session-key"],
+                    },
+                )
+                assert response.status_code == 200
+                assert app.state.config.cipher.secret_key == "user-session-key"
+            finally:
+                _reset_conversation_singleton()
+
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_blank_secret_key_env_keeps_init_closed(self, tmp_path, monkeypatch, blank):
+        _reset_conversation_singleton()
+        monkeypatch.setenv(CONFIG_PATH_ENV, str(tmp_path / "missing.json"))
+        monkeypatch.setenv("OH_SECRET_KEY", blank)
+        monkeypatch.setenv("OH_DEFERRED_INIT", "true")
+        monkeypatch.setenv("OH_CONVERSATIONS_PATH", str(tmp_path / "convs"))
+        monkeypatch.setenv("OH_BASH_EVENTS_DIR", str(tmp_path / "bash"))
+        cfg = load_config()
+        assert cfg.deferred_init and cfg.secret_key is None
+        with TestClient(create_app(cfg)) as client:
+            try:
+                assert client.post("/api/init", json={}).status_code == 401
+                assert client.get("/api/init").json()["state"] == "dormant"
+            finally:
+                _reset_conversation_singleton()
 
     @pytest.mark.parametrize("session_api_keys", [[""], ["", "user-session-key"]])
     def test_init_rejects_empty_session_keys(self, tmp_path, session_api_keys):
