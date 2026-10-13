@@ -500,7 +500,7 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   control-agent-server ws stop f11-j2
   control-agent-server conversation events "$J2" --key goal --contains '"active": false, "status": "interrupted"' --expect-count 1
   control-agent-server conversation events "$J2" --key goal --contains '"active": false, "status": "capped"' --expect-count 1
-  control-agent-server conversation events "$J2" --key goal --show 50 --full --save F11.goal-cap-overrun/goal-events | jq -e '[.events[].value | select(.iteration > .max_iterations)] | length == 0'  # bug
+  control-agent-server conversation events "$J2" --key goal --show 50 --full --save F11.goal-cap-overrun/goal-events | jq -e '[.events[].value | select(.iteration > .max_iterations)] | length == 0'  # bug: events contains '"status": "capped", "iteration": 2, "max_iterations": 1'
   ```
   The arrange steps and positive controls hold (the failed audit recorded
   one `interrupted` status, the resume was admitted and ended with one
@@ -522,7 +522,7 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   control-agent-server restart
   control-agent-server api GET "/api/conversations/$R" --quiet --check execution_status eq paused --save F11.goal-restart-active/after-restart
   control-agent-server conversation events "$R" --key goal --expect-min 1
-  control-agent-server conversation events "$R" --key goal --show 1 --full --save F11.goal-restart-active/goal-events | jq -e '.events[-1].value.active == false and .events[-1].value.status == "interrupted"'  # bug
+  control-agent-server conversation events "$R" --key goal --show 1 --full --save F11.goal-restart-active/goal-events | jq -e '.events[-1].value.active == false and .events[-1].value.status == "interrupted"'  # bug: events.-1.value.active eq true && events.-1.value.status eq running
   ```
   Before the restart the loop is active (`running` at iteration 0); after
   it the conversation is `paused` and the goal rows came back, and the

@@ -415,8 +415,8 @@ Preconditions:
   Read status and URL on the keyed run, where VS Code is not running.
   ```sh
   control-agent-server api GET /api/vscode/status --expect 200 --check enabled eq true --check running eq false
-  control-agent-server api GET /api/vscode/url --expect 200 --check . eq '{"url": null}' --save F16.vscode-url-not-running/global  # bug
-  control-agent-server api GET "/api/conversations/$CID/vscode/url" --expect 200 --check . eq '{"url": null}'  # bug
+  control-agent-server api GET /api/vscode/url --expect 200 --check . eq '{"url": null}' --save F16.vscode-url-not-running/global  # bug: status eq 200 && response.body.url contains tkn=
+  control-agent-server api GET "/api/conversations/$CID/vscode/url" --expect 200 --check . eq '{"url": null}'  # bug: status eq 200 && response.body.url contains tkn=
   ```
   `running` is false, so the body should be exactly `{"url": null}` on both
   routes (each `# bug` line alone shows the defect), as the service intends
@@ -440,7 +440,9 @@ Preconditions:
   ODD=$(control-agent-server conversation start --no-run --tools none --no-autotitle --workspace "$F/qa f16&x=1#frag" --print-id)
   OWS=$(control-agent-server api GET "/api/conversations/$ODD" --field workspace.working_dir)
   control-agent-server api GET "/api/conversations/$ODD/vscode/url" --expect 200 --save F16.vscode-folder-encoding/odd-folder
-  control-agent-server api GET "/api/conversations/$ODD/vscode/url" --expect 200 --field url | python3 -c "$ROUNDTRIP" "$OWS"  # bug
+  control-agent-server api GET "/api/conversations/$ODD/vscode/url" --expect 200 --field url \
+    | python3 -c 'import sys, json, urllib.parse as u; p = u.urlsplit(sys.stdin.read().strip()); print(json.dumps({"folder": u.parse_qs(p.query).get("folder"), "fragment": p.fragment}))' \
+    | control-agent-server assert --check folder len-eq 1 --check folder.0 eq "$OWS" --check fragment eq ''  # bug: value.fragment eq frag && value.folder.0 matches '/qa f16$'
   ```
   The normal workspace round-trips. For the odd one the `folder` parameter
   should decode back to `.../qa f16&x=1#frag`; today the value is pasted
@@ -501,7 +503,7 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$Z/workspace/" --run "$DK" --auth none --expect 401
   control-agent-server api POST /api/auth/workspace-session --run "$DK" --jar qa-f16-docker --expect 204
   control-agent-server api GET "/api/conversations/$Z/workspace/" --run "$DK" --auth none --jar qa-f16-docker --expect 404 --save F16.docker-root-cookie/slash
-  control-agent-server api GET "/api/conversations/$Z/workspace" --run "$DK" --auth none --jar qa-f16-docker --expect 404 --save F16.docker-root-cookie/slashless  # bug
+  control-agent-server api GET "/api/conversations/$Z/workspace" --run "$DK" --auth none --jar qa-f16-docker --expect 404 --save F16.docker-root-cookie/slashless  # bug: status eq 401
   control-agent-server stop --run "$DK"
   ```
   With the header both forms reach the Docker routes (404); with nothing,

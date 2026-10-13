@@ -400,7 +400,7 @@ Preconditions:
     --expect 200 --check-header access-control-allow-origin eq http://localhost:3000
   control-agent-server api OPTIONS /api/settings --auth none --header 'Origin: https://qa-f03-other.example' --header 'Access-Control-Request-Method: GET' \
     --expect 400 --check-header access-control-allow-origin missing
-  control-agent-server api OPTIONS /api/settings --auth none --header 'Origin: https://qa-f03.example' --header 'Access-Control-Request-Method: GET' --expect 200 --check-header access-control-allow-origin eq https://qa-f03.example --save F03.init-delivered-cors-origins/preflight  # bug
+  control-agent-server api OPTIONS /api/settings --auth none --header 'Origin: https://qa-f03.example' --header 'Access-Control-Request-Method: GET' --expect 200 --check-header access-control-allow-origin eq https://qa-f03.example --save F03.init-delivered-cors-origins/preflight  # bug: status eq 400 && response.body contains 'Disallowed CORS origin'
   ```
   The localhost preflight is allowed (the always-on allowlist, positive
   control) and an origin nobody delivered is refused with 400 (the

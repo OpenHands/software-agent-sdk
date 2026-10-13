@@ -208,14 +208,14 @@ Preconditions:
 - **No Bedrock ids under a provider (`F23.models-no-bedrock`), known bug.**
   The route says Bedrock models are excluded without AWS credentials. Both
   lists are first shown to hold the provider's own ids (positive controls),
-  then each is searched for Bedrock ids, which `debug` prints to stderr.
+  then each is searched for Bedrock ids, which the `assert` prints.
   ```sh
   control-agent-server api GET /api/llm/models --query provider=deepseek --quiet --check models contains deepseek/deepseek-flash \
     --save F23.models-no-bedrock/deepseek
   control-agent-server api GET /api/llm/models --query provider=anthropic --quiet --check models len-ge 1 --save F23.models-no-bedrock/anthropic
   control-agent-server api GET /api/llm/models --query provider=anthropic --field models | jq -e 'any(.[]; startswith("claude-"))'
-  control-agent-server api GET /api/llm/models --query provider=deepseek --field models | jq -e 'map(select(test("^deepseek\\."))) | debug | length == 0'  # bug
-  control-agent-server api GET /api/llm/models --query provider=anthropic --field models | jq -e 'map(select(test("^anthropic\\."))) | debug | length == 0'  # bug
+  control-agent-server api GET /api/llm/models --query provider=deepseek --field models | jq -c 'map(select(test("^deepseek\\.")))' | control-agent-server assert --check . len-eq 0  # bug: value len-ge 1 && value contains deepseek.
+  control-agent-server api GET /api/llm/models --query provider=anthropic --field models | jq -c 'map(select(test("^anthropic\\.")))' | control-agent-server assert --check . len-eq 0  # bug: value len-ge 1 && value contains anthropic.claude-
   ```
   Expected: no id in the Bedrock `vendor.model` form under either provider.
   Today `?provider=deepseek` lists `deepseek.r1-v1:0`, `deepseek.v3-v1:0`
@@ -350,7 +350,7 @@ Preconditions:
     --expect 201,422 --save F23.conn-create-blank-key/placeholder | jq -r .status)
   control-agent-server api GET /api/llm/provider-connections --save F23.conn-create-blank-key/list
   echo "whitespace key: $S_SPACE, placeholder key: $S_MASK"
-  test "$S_SPACE $S_MASK" = '422 422'  # bug
+  control-agent-server assert --value "$S_SPACE $S_MASK" --check . eq '422 422'  # bug: value eq '201 201'
   control-agent-server api GET /api/llm/provider-connections --check . len-eq 2 --check . not-contains qa-f23-blank-
   ```
   Expected: both are 422 like `""`, and nothing is created. Today both are
@@ -461,7 +461,7 @@ Preconditions:
     control-agent-server api PATCH "/api/llm/provider-connections/$DEF" --json '{"api_key": "sk-qa-f23-default"}' --expect 200 --quiet > /dev/null
   done
   echo "applied keys: $APPLIED"
-  test "$APPLIED" = '[sk-qa-f23-default][sk-qa-f23-default][sk-qa-f23-default]'  # bug
+  control-agent-server assert --value "$APPLIED" --check . eq '[sk-qa-f23-default][sk-qa-f23-default][sk-qa-f23-default]'  # bug: value eq '[null][null][**********]'
   ```
   Before any blank `PATCH`, activating the probe applies
   `sk-qa-f23-default` (positive control).
@@ -515,7 +515,7 @@ Preconditions:
     | control-agent-server api POST /api/profiles/qa-f23-draft/validate --stdin --timeout 120 --expect 200 --check valid eq true
   control-agent-server api POST /api/profiles/qa-f23-draft/validate --timeout 120 --expect 200 \
     --json "{\"llm\": {\"model\": \"deepseek/deepseek-flash\", \"provider_connection_id\": \"$CONN\", \"num_retries\": 0}}" \
-    --save F23.validate-linked-draft/linked --check valid eq true --check error eq null  # bug
+    --save F23.validate-linked-draft/linked --check valid eq true --check error eq null  # bug: status eq 200 && response.body.valid eq false && response.body.error.type eq LLMAuthenticationError
   ```
   Expected: both `valid: true`, since a linked draft runs on the
   connection's key once saved and activated. Today the linked draft is
@@ -635,7 +635,7 @@ Preconditions:
   control-agent-server api GET /api/llm/provider-connections --timeout 60 --expect 200 --quiet --save F23.store-busy-responsive/list > /dev/null &
   LISTER=$!
   sleep 5
-  control-agent-server api GET /alive --auth none --expect 200 --expect-max-ms 3000 --timeout 60 --save F23.store-busy-responsive/alive  # bug
+  control-agent-server api GET /alive --auth none --expect 200 --expect-max-ms 3000 --timeout 60 --save F23.store-busy-responsive/alive  # bug: status eq 200 && elapsed_ms gt 3000
   wait "$LISTER"
   test $((SECONDS - T0)) -ge 10
   wait "$LOCKER"

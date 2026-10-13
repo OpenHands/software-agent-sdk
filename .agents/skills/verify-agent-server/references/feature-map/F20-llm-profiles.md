@@ -436,11 +436,11 @@ Preconditions:
   wait "$SAVER"
   wait "$LOCKER"
   control-agent-server api GET /api/profiles/qa-busy --expect 404
-  jq -e '.elapsed_ms <= 3000' "$F20/busy-alive.json"  # bug
+  control-agent-server assert --json "$F20/busy-alive.json" --check elapsed_ms le 3000  # bug: value.status eq 200 && value.elapsed_ms ge 15000
   ```
   Expected `/alive` to answer within 3 seconds while the save waits, as it
   does with the lock free. Today it answers 200 only when the save gives up,
-  about 25 seconds later, so the `jq` bound marked `# bug` fails: every
+  about 25 seconds later, so the bound marked `# bug` fails: every
   profile route is an `async def` that calls the synchronous, file-locked
   `LLMProfileStore` on the event loop (`profiles_router.py`), so a 30-second
   lock wait freezes the whole server, liveness and readiness probes
@@ -508,14 +508,14 @@ Preconditions:
     --json '{"llm": {"model": "deepseek/deepseek-flash", "api_key": "sk-qa-f20-invalid-key", "num_retries": 0}}' \
     --check valid eq false --check error.message contains authentication_error --check error.message not-contains sk-qa-f20-invalid-key \
     --save F20.validate-bad-key-type/deepseek-401 | tee "$F20/bad-key.json"
-  jq -e '.response.body.error.type == "LLMAuthenticationError"' "$F20/bad-key.json"  # bug
+  control-agent-server assert --json "$F20/bad-key.json" --check response.body.error.type eq LLMAuthenticationError  # bug: value.status eq 200 && value.response.body.error.type eq LLMBadRequestError
   ```
   The call itself proves the case: `valid: false`, and the provider's error
   passed through in `error.message` is DeepSeek's typed
   `"type":"authentication_error"`. Expected `error.type`
   `LLMAuthenticationError` (what an OpenAI-compatible 401 gives in
   `F20.validate-provider-errors`). Today it is `LLMBadRequestError`, so the
-  `jq` check marked `# bug` fails: DeepSeek answers HTTP 401 with
+  check marked `# bug` fails: DeepSeek answers HTTP 401 with
   `Authentication Fails, Your api key: ... is invalid`, LiteLLM raises it as
   `BadRequestError`, and the SDK's auth heuristics (`AUTH_PATTERNS` in
   `openhands-sdk/openhands/sdk/llm/exceptions/classifier.py`) match neither
@@ -583,11 +583,11 @@ Preconditions:
     --json '{"llm": {"model": "openai/qa-unreachable", "base_url": "http://127.0.0.1:9/v1", "api_key": "qa-key"}}' \
     --check valid eq false --check error.type eq LLMServiceUnavailableError \
     --save F20.validate-unreachable-bounded/default-retries | tee "$F20/unreachable.json"
-  jq -e '.elapsed_ms <= 30000' "$F20/unreachable.json"  # bug
+  control-agent-server assert --json "$F20/unreachable.json" --check elapsed_ms le 30000  # bug: value.status eq 200 && value.elapsed_ms ge 90000
   ```
   The client waits long enough for the server's own answer, so the call
   proves the server is up and its verdict is right (`valid: false`,
-  `LLMServiceUnavailableError`); the `jq` bound marked `# bug` then checks
+  `LLMServiceUnavailableError`); the bound marked `# bug` then checks
   how long that took. Expected a verdict within 30 s. Today it takes about
   120 s (`elapsed_ms` near 121000): `validate` calls the posted LLM
   unchanged, so a connection error is retried with the LLM's defaults
@@ -607,10 +607,10 @@ Preconditions:
   control-agent-server restart --hard
   control-agent-server api GET /api/profiles --expect 200 --check active_profile eq deepseek-flash
   test "$RC" = 0 || jq -e '.exit == 3 and (.error // "" | startswith("ReadTimeout"))' "$F20/hang.json"
-  test "$RC" = 0  # bug
+  control-agent-server assert --json "$F20/hang.json" --check ok eq true  # bug: value.exit eq 3 && value.error matches '^ReadTimeout'
   ```
   Expected a verdict within 30 s (the CLI's `--timeout 30` is the bound).
-  Today the CLI gives up with a client `ReadTimeout`, so `test "$RC" = 0`
+  Today the CLI gives up with a client `ReadTimeout`, so the check of `hang.json`
   marked `# bug` fails. The lines before it make that failure mean the
   bug and nothing else: the stub logged the request (the server reached
   the provider; today it is still waiting on that first attempt),
@@ -891,14 +891,14 @@ Preconditions:
   control-agent-server api DELETE /api/agent-profiles/qa-f20-alias-agent --expect 200
   control-agent-server api DELETE /api/profiles/qa-alias --expect 200
   control-agent-server api GET /api/profiles --check profiles not-contains '"name": "qa-alias"'
-  jq -e '.status == 409' "$F20/alias-delete.json"  # bug
-  jq -e '.status == 200' "$F20/alias-after.json"  # bug
+  control-agent-server assert --json "$F20/alias-delete.json" --check status eq 409  # bug: value.status eq 200 && value.response.body.message eq "Profile 'qa-alias.json' deleted"
+  control-agent-server assert --json "$F20/alias-after.json" --check status eq 200  # bug: value.status eq 404 && value.response.body.detail eq "Profile 'qa-alias' not found"
   ```
   Expected the alias delete to be 409 like the plain one (positive control:
   `DELETE /api/profiles/qa-alias` is 409, and `GET .../qa-alias.json` reads
   the same profile), and `qa-alias` to survive it. The alias delete and the
   read after it accept either outcome and are recorded; cleanup runs; then
-  the first `jq` marked `# bug` checks the delete's status (the second, the
+  the first line marked `# bug` checks the delete's status (the second, the
   profile's survival, each alone encoding the bug). Today the alias delete
   answers 200 `Profile 'qa-alias.json' deleted`
   and `qa-alias` is gone while `qa-f20-alias-agent` still cites it: the store
@@ -922,7 +922,7 @@ Preconditions:
   control-agent-server state cat home/.openhands/profiles/qa-rotate.json --check api_key matches '^gAAAAA'
   control-agent-server api GET /api/profiles/qa-rotate --header 'X-Expose-Secrets: plaintext' --expect 2xx,4xx --save F20.secret-key-rotation/detail
   control-agent-server api GET /api/profiles --expect 2xx,4xx --save F20.secret-key-rotation/list
-  control-agent-server api POST /api/profiles/qa-rotate/activate --expect 4xx --save F20.secret-key-rotation/activate  # bug
+  control-agent-server api POST /api/profiles/qa-rotate/activate --expect 4xx --save F20.secret-key-rotation/activate  # bug: status eq 200 && response.body.message contains 'activated and applied'
   control-agent-server api GET /api/settings --max-chars 200 --check active_profile eq deepseek-flash
   control-agent-server state cat home/.openhands/settings.json --max-chars 200 --check agent_settings.llm.api_key matches '^gAAAAA'
   ```

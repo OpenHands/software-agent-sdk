@@ -197,8 +197,8 @@ Preconditions:
     --query kind=openhands.sdk.event.llm_convertible.message.MessageEvent \
     --check items len-eq 2 --check items.0.kind eq MessageEvent --check items.1.kind eq MessageEvent
   control-agent-server api GET "/api/conversations/$CID/events/search" --query kind=MessageEvent --expect 200 \
-    --check items len-eq 2 --save F06.search-kind-short/short-name  # bug
-  control-agent-server api GET "/api/conversations/$CID/events/count" --query kind=MessageEvent --check . eq 2  # bug
+    --check items len-eq 2 --save F06.search-kind-short/short-name  # bug: status eq 200 && response.body.items len-eq 0
+  control-agent-server api GET "/api/conversations/$CID/events/count" --query kind=MessageEvent --check . eq 2  # bug: status eq 200 && response.body eq 0
   ```
   Correct behavior: the two messages. Today both return nothing (`items: []`
   and `0`, with status 200): the service compares `kind` with
@@ -256,9 +256,9 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$CID/events" --json "[\"$E2\"]" --expect 200 \
     --check . len-eq 1 --check 0.id eq "$E2"
   control-agent-server api GET "/api/conversations/$CID/events/00000000-0000-4000-8000-0000000000e6" --expect 404 \
-    --save F06.unknown-event/get-one  # bug
+    --save F06.unknown-event/get-one  # bug: status eq 500 && response.body.exception contains 'Unknown event_id'
   control-agent-server api GET "/api/conversations/$CID/events" --json "[\"$E2\", \"qa-missing-event\"]" --expect 200 \
-    --check . len-eq 2 --check 0.id eq "$E2" --check 1 missing --save F06.unknown-event/batch  # bug
+    --check . len-eq 2 --check 0.id eq "$E2" --check 1 missing --save F06.unknown-event/batch  # bug: status eq 500 && response.body.exception contains 'Unknown event_id'
   ```
   Correct behavior: 404, and `[<event>, null]`. Today both are 500
   `{"detail": "Internal Server Error", "exception": "'Unknown event_id: ...'"}`:
@@ -353,13 +353,13 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq 5
   control-agent-server api POST "/api/conversations/$CID/events" \
     --json '{"role":"assistant","content":[{"type":"text","text":"QA_F06_ASSISTANT"}]}' --expect 4xx \
-    --save F06.send-non-user-role/assistant  # bug
+    --save F06.send-non-user-role/assistant  # bug: status eq 500 && response.body.exception contains 'Only user messages are allowed'
   control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq 5
   control-agent-server api POST "/api/conversations/$QA_ROLE/events" \
     --json '{"role":"assistant","content":[{"type":"text","text":"QA_F06_ASSISTANT"}]}' --expect 4xx \
-    --save F06.send-non-user-role/assistant-empty-log  # bug
+    --save F06.send-non-user-role/assistant-empty-log  # bug: status eq 500 && response.body.exception contains 'Only user messages are allowed'
   control-agent-server api GET "/api/conversations/$QA_ROLE/events/count" --check . eq 0 \
-    --save F06.send-non-user-role/empty-log-count  # bug
+    --save F06.send-non-user-role/empty-log-count  # bug: status eq 200 && response.body eq 1
   ```
   Correct behavior: a 4xx client error and nothing appended. Today it is 500
   `{"exception": "Only user messages are allowed to be sent to the agent."}`:
@@ -419,7 +419,7 @@ Preconditions:
   control-agent-server api DELETE "/api/conversations/$QA_DEL" --expect 200 --save F06.ws-delete-close/delete
   control-agent-server api GET "/api/conversations/$QA_DEL" --expect 404
   control-agent-server ws listen "/sockets/events/$QA_DEL" --expect-close 4004 --duration 5
-  if control-agent-server ws stop f06-del --expect-open --save F06.ws-delete-close/socket; then false; fi  # bug
+  control-agent-server ws stop f06-del --save F06.ws-delete-close/socket | control-agent-server assert --check close.code exists  # bug: value.opened eq true && value.stopped eq stopped && value.close missing
   ```
   Correct behavior: the server closes the open socket (with any close code)
   while it deletes the conversation; `EventService.close()` awaits
@@ -555,11 +555,14 @@ Preconditions:
   FROM_OBS=$(control-agent-server api GET "/api/conversations/$LIVE/events/search" --field items \
     | jq -e --arg id "$OBS_ID" '[.[].id] | length - index($id)')
   test "$FROM_OBS" -ge 2
-  control-agent-server api GET "/api/conversations/$LIVE/events/count" --query timestamp__gte="$OBS_T" \
-    --check . ge "$FROM_OBS" --save F06.search-timestamp-order/count-since-observation  # bug
-  control-agent-server ws listen "/sockets/events/$LIVE" --query resend_mode=since --query after_timestamp="$OBS_T" \
-    --duration 3 --save F06.search-timestamp-order/replay-since-observation | jq -e --argjson n "$FROM_OBS" '.frames - 1 >= $n'  # bug
-  control-agent-server api GET "/api/conversations/$LIVE/events/search" --field items | jq -e '[.[].timestamp] | . == sort'  # bug
+  COUNT_SINCE=$(control-agent-server api GET "/api/conversations/$LIVE/events/count" --query timestamp__gte="$OBS_T" \
+    --save F06.search-timestamp-order/count-since-observation --field .)
+  control-agent-server assert --value="$((COUNT_SINCE - FROM_OBS))" --check . ge 0  # bug: value eq -1
+  SINCE=$(control-agent-server ws listen "/sockets/events/$LIVE" --query resend_mode=since --query after_timestamp="$OBS_T" \
+    --duration 3 --save F06.search-timestamp-order/replay-since-observation | jq .frames)
+  control-agent-server assert --value="$((SINCE - 1 - FROM_OBS))" --check . ge 0  # bug: value eq -1
+  control-agent-server api GET "/api/conversations/$LIVE/events/search" --field items \
+    | jq -c '[range(1; length) as $i | select(.[$i].timestamp < .[$i - 1].timestamp) | (.[$i].key // .[$i].kind)]' | control-agent-server assert --check . len-eq 0  # bug: value contains stats
   ```
   Correct behavior: a cut at the first `ObservationEvent` keeps it and
   everything listed after it (`FROM_OBS` events), over REST and over the

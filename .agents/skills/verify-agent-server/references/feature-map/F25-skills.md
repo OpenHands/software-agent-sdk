@@ -201,7 +201,7 @@ Preconditions:
 
   Requires: `F25.public-repo`
   ```sh
-  control-agent-server api GET /api/skills/marketplace --timeout 180 --expect 200 --check skills len-ge 1 --save F25.marketplace-public/catalog  # bug
+  control-agent-server api GET /api/skills/marketplace --timeout 180 --expect 200 --check skills len-ge 1 --save F25.marketplace-public/catalog  # bug: status eq 200 && response.body.skills len-eq 0
   ```
   The clone holds `.plugin/marketplace.json` with about 70 plugin entries
   whose sources are `./skills/<name>`, so the catalog should list them. Today
@@ -341,7 +341,7 @@ Preconditions:
   Install a SKILL.md whose YAML does not parse.
   ```sh
   control-agent-server api POST /api/skills/install --json '{"source": "'"$F/qa-f25-badyaml"'"}' --expect 422 \
-    --save F25.install-bad-frontmatter/install  # bug
+    --save F25.install-bad-frontmatter/install  # bug: status eq 500 && response.body.exception contains 'while parsing'
   test ! -e "$I/qa-f25-badyaml"
   ```
   An unparsable skill should be the documented 422 like the other invalid
@@ -425,7 +425,7 @@ Preconditions:
     case "$DOC" in
       *"'$SRC'"*)
         control-agent-server api POST /api/skills/install --json '{"source": "'"$SRC"'"}' --timeout 240 --expect 200 \
-          --check name eq github --save F25.install-documented-sources/documented  # bug
+          --check name eq github --save F25.install-documented-sources/documented  # bug: status eq 400 && response.body.detail contains 'Failed to fetch skill source'
         control-agent-server api DELETE /api/skills/installed/github --expect 200
         ;;
     esac
@@ -495,7 +495,7 @@ Preconditions:
   T2=$(control-agent-server api GET /api/skills/installed/qa-f25-src-skill --field installed_at)
   ls -d "$AGENT_SERVER_VERIFY_RUN"/home/.openhands/cache/extensions/qa-f25-src-*/.git
   control-agent-server api POST /api/skills/install --json '{"source": "file://'"$G"'", "repo_path": "skills/qa-f25-src-skill", "ref": "qa-f25-no-such-ref", "force": true}' \
-    --expect 400 --save F25.install-unknown-ref/cached  # bug
+    --expect 400 --save F25.install-unknown-ref/cached  # bug: status eq 200 && response.body.name eq qa-f25-src-skill
   control-agent-server api GET /api/skills/installed/qa-f25-src-skill --expect 200 --check installed_at eq "$T2"
   ```
   The first clone fails (`git clone --branch qa-f25-no-such-ref`), so the
@@ -516,7 +516,7 @@ Preconditions:
   control-agent-server api POST /api/skills/install --json '{"source": "'"$F/tmp/qa-f25-gone"'"}' --expect 200
   rm -rf "$F/tmp/qa-f25-gone"
   control-agent-server api POST /api/skills/install --json '{"source": "'"$F/tmp/qa-f25-gone"'"}' --expect 400 --check detail contains 'Failed to fetch'
-  control-agent-server api POST /api/skills/installed/qa-f25-gone/refresh --expect 400,422 --save F25.refresh-unfetchable/refresh  # bug
+  control-agent-server api POST /api/skills/installed/qa-f25-gone/refresh --expect 400,422 --save F25.refresh-unfetchable/refresh  # bug: status eq 500 && response.body.exception contains 'Local extension path does not exist'
   control-agent-server api GET /api/skills/installed/qa-f25-gone --expect 200 --check enabled eq true
   ```
   The source cannot be fetched: installing from the vanished path again is
@@ -591,7 +591,7 @@ Preconditions:
   trap 'git -C "$PUB" remote set-url origin "$E"' EXIT
   git -C "$PUB" remote set-url origin "$F/qa-f25-unreachable"
   if git -C "$PUB" fetch -q origin 2>/dev/null; then false; fi
-  control-agent-server api POST /api/skills/sync --expect 200 --check status eq error --save F25.sync-offline/sync  # bug
+  control-agent-server api POST /api/skills/sync --expect 200 --check status eq error --save F25.sync-offline/sync  # bug: status eq 200 && response.body.status eq success
   ```
   The origin is unreachable (a plain `git fetch` fails before the sync), and
   the server's fetch fails too (the log shows `Failed to fetch updates`), so the forced
@@ -814,7 +814,7 @@ Preconditions:
   test -f "$PUB/skills/qa-f25-pub-extra/SKILL.md"
   grep -q '"name": "qa-f25-pub-extra"' "$PUB/marketplaces/default.json"
   control-agent-server api GET /api/skills/marketplace --expect 200 --check skills contains '"name": "qa-f25-pub-extra"' \
-    --save F25.marketplace-stale-cache/after-sync  # bug
+    --save F25.marketplace-stale-cache/after-sync  # bug: status eq 200 && response.body.skills contains '"name": "qa-f25-pub"' && response.body.skills not-contains qa-f25-pub-extra
   ```
   The sync brings the new entry into the clone, so a refreshed catalog should
   list it. Today the catalog serves its module-level 5-minute cache: sync only
