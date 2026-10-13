@@ -23,6 +23,7 @@ from openhands.agent_server._secrets_exposure import (
     get_config,
     store_errors,
 )
+from openhands.agent_server.config import Config
 from openhands.agent_server.launch import (
     can_probe_tools,
     server_launch_stores,
@@ -234,7 +235,7 @@ def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
 
 def _seed_default_profile(
     store: AgentProfileStore,
-    request: Request,
+    config: Config,
     settings: PersistedSettings,
     cipher: Cipher | None,
 ) -> None:
@@ -265,7 +266,7 @@ def _seed_default_profile(
         store.save(profile, max_profiles=MAX_AGENT_PROFILES)
 
         profile_id = str(profile.id)
-        settings_store = get_settings_store(get_config(request))
+        settings_store = get_settings_store(config)
 
         def set_pointer(s: PersistedSettings) -> PersistedSettings:
             s.active_agent_profile_id = profile_id
@@ -273,6 +274,31 @@ def _seed_default_profile(
 
         settings_store.update(set_pointer)
         logger.info(f"Seeded default agent profile '{profile.name}' (id={profile_id})")
+
+
+def active_agent_profile(
+    config: Config, cipher: Cipher | None
+) -> OpenHandsAgentProfile | ACPAgentProfile | None:
+    """Return the active Agent Profile, seeding ``default`` on first use."""
+    settings_store = get_settings_store(config)
+    settings = settings_store.load() or PersistedSettings()
+    store = get_agent_profile_store()
+    if settings.active_agent_profile_id is None:
+        with store_errors():
+            existing = store.list()
+        if not existing:
+            _seed_default_profile(store, config, settings, cipher)
+            settings = settings_store.load() or settings
+    if settings.active_agent_profile_id is None:
+        return None
+    with store_errors():
+        name = store.name_for_id(settings.active_agent_profile_id)
+        if name is None:
+            return None
+        try:
+            return store.load(name)
+        except FileNotFoundError:
+            return None
 
 
 def _summary_id_for_name(store: AgentProfileStore, name: str) -> str | None:
@@ -302,7 +328,7 @@ async def list_agent_profiles(request: Request) -> AgentProfileListResponse:
         existing = store.list()
 
     if not existing and settings.active_agent_profile_id is None:
-        _seed_default_profile(store, request, settings, get_cipher(request))
+        _seed_default_profile(store, config, settings, get_cipher(request))
         settings = settings_store.load() or settings
 
     with store_errors():
