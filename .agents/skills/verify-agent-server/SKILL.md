@@ -195,9 +195,9 @@ missing prerequisite; never substitute a mock and call it a pass.
 - **Run the daily pass**: follow [references/daily.md](references/daily.md):
   static checks (`map check`, `map coverage`), the families changed since the
   `Maintenance baseline` line of the map index (`map baseline`; `map owners`
-  with no arguments diffs from it), a smoke recipe per family, and a
-  date-derived rotation (`map rotation`) that gives every family a full live
-  pass once a week. A pass that finished its changed families proposes
+  with no arguments diffs from it), and nothing else: families nothing in
+  the range touched wait for the weekly pass, and a pass with no new commits
+  on `main` stops early. A pass that finished its changed families proposes
   `TARGET` as the next baseline with `map baseline --set "$TARGET"` in its PR;
   compare ledgers with `evidence report --baseline` when yesterday's is at
   hand.

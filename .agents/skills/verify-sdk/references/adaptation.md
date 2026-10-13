@@ -32,8 +32,8 @@ in this repository and `verify-openhands` in
   task (`Real-LLM:`), so a reader sees at once which rows CI checks on every
   PR and which only a labeled run or this skill checks.
 - **The same baseline and daily pass as the agent-server map.** BASE is a
-  line in the index, the daily pass replays the families changed since it
-  plus a smoke bullet per family and a weekly rotation, and only a pass that
+  line in the index, the daily pass replays only the families changed since
+  it and stops early when nothing merged, and only a pass that
   finished its changed families moves it. Family IDs are `Snn` so they never
   collide with the agent-server map's `Fnn`.
 - Not imported: Cursor plugin configuration, `disable-model-invocation`, and

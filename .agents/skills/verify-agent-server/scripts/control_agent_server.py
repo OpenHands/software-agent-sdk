@@ -4968,33 +4968,6 @@ def cmd_map_baseline(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def rotation_slice(
-    families: Sequence[str], day: datetime, per_day: int | None = None
-) -> tuple[int, list[str]]:
-    """Today's slice of the families: every family once in seven days."""
-    per_day = per_day or -(-len(families) // 7)
-    # A continuous day count, so the cycle does not restart on January 1.
-    slot = day.toordinal() % 7
-    return slot, list(families[slot * per_day : slot * per_day + per_day])
-
-
-def cmd_map_rotation(args: argparse.Namespace) -> dict[str, Any]:
-    day = (
-        datetime.strptime(args.date, "%Y-%m-%d").replace(tzinfo=UTC)
-        if args.date
-        else datetime.now(UTC)
-    )
-    files = {row["id"]: row["file"] for row in parse_index()}
-    slot, today = rotation_slice(list(files), day, args.per_day)
-    return {
-        "ok": True,
-        "date": day.strftime("%Y-%m-%d"),
-        "slot": slot,
-        "families": today,
-        "files": [files[f] for f in today],
-    }
-
-
 # --------------------------------------------------------------------------
 # Parser
 # --------------------------------------------------------------------------
@@ -5029,7 +5002,7 @@ Driving:
 
 Proof and map:
   evidence      add | report: the append-only ledger under <run>/evidence/
-  map           run | check | coverage | ids | routes | diff | owners | baseline | rotation: an executable, checked map
+  map           run | check | coverage | ids | routes | diff | owners | baseline: an executable, checked map
 
 Which run: --run DIR, else ${RUN_ENV}, else the only live run.
 Run state lives under ${HOME_ENV} (default $TMPDIR/agent-server-verify).
@@ -6044,7 +6017,7 @@ as blocked while the rest of the family runs.""",
     mp = commands.add_parser(
         "map",
         help="feature map tooling",
-        description="Map: run | check | coverage | ids | routes | diff | owners | baseline | rotation",
+        description="Map: run | check | coverage | ids | routes | diff | owners | baseline",
         formatter_class=Formatter,
         epilog=f"""Examples:
   {CLI} map run --file F01 --record         # execute a family's recipes and record the ledger
@@ -6055,12 +6028,11 @@ as blocked while the rest of the family runs.""",
   {CLI} map diff --base ../agent-sdk-base       # routes added/removed/deprecated since BASE
   {CLI} map owners --changed origin/main...HEAD
   {CLI} map owners                          # families changed since the maintenance baseline
-  {CLI} map baseline                        # the recorded baseline and how far HEAD is from it
-  {CLI} map rotation                        # today's families for the daily full-recipe rotation""",
+  {CLI} map baseline                        # the recorded baseline and how far HEAD is from it""",
     )
     mp_sub = mp.add_subparsers(
         dest="map_command",
-        metavar="<run|check|coverage|ids|routes|diff|owners|baseline|rotation>",
+        metavar="<run|check|coverage|ids|routes|diff|owners|baseline>",
     )
     mc = mp_sub.add_parser(
         "check",
@@ -6193,24 +6165,6 @@ reported and not executed. Transcripts are saved under <run>/evidence/map-run/."
         "--main",
         default="origin/main",
         help="the branch a new baseline must be on (default origin/main)",
-    )
-    mrot = mp_sub.add_parser(
-        "rotation",
-        help="the families whose full recipes the daily pass drives today",
-        formatter_class=Formatter,
-        epilog=f"""Examples:
-  {CLI} map rotation
-  {CLI} map rotation --date 2026-10-12
-  for f in $({CLI} map rotation | jq -r ".families[]"); do {CLI} map run --file "$f" --fresh --record; done
-
-The slice comes from the UTC date's day count modulo 7, over the index table
-in ID order, so every family gets a full live pass once a week and no state
-carries between runs.""",
-    )
-    mrot.set_defaults(func=cmd_map_rotation)
-    mrot.add_argument("--date", help="YYYY-MM-DD (default: today, UTC)")
-    mrot.add_argument(
-        "--per-day", type=int, help="families per day (default: a seventh, rounded up)"
     )
     return parser
 

@@ -5,8 +5,8 @@ The SDK has no server to launch, so its map drives the SDK through pytest,
 the example scripts and the integration runner. This tool keeps that map
 honest the way control-agent-server keeps the agent-server map honest: it
 checks structure and every path the map cites, maps changed files to
-families, reads and moves the maintenance baseline, names the day's rotation,
-replays a family's `sh` blocks into a ledger, and compares ledgers.
+families, reads and moves the maintenance baseline, replays a family's `sh`
+blocks into a ledger, and compares ledgers.
 
 Every command prints one JSON object. Exit codes: 0 ok, 1 action failed,
 2 usage. Standard library only.
@@ -351,7 +351,7 @@ def cmd_ids(args: argparse.Namespace) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
-# owners, baseline, rotation
+# owners, baseline
 # --------------------------------------------------------------------------
 
 
@@ -436,33 +436,6 @@ def cmd_baseline(args: argparse.Namespace) -> dict[str, Any]:
         "hint": None
         if behind is not None
         else "baseline not in this clone; deepen it (git fetch --deepen=...)",
-    }
-
-
-def rotation_slice(
-    families: Sequence[str], day: datetime, per_day: int | None = None
-) -> tuple[int, list[str]]:
-    """Today's slice of the families: every family once in seven days."""
-    per_day = per_day or -(-len(families) // 7)
-    # A continuous day count, so the cycle does not restart on January 1.
-    slot = day.toordinal() % 7
-    return slot, list(families[slot * per_day : slot * per_day + per_day])
-
-
-def cmd_rotation(args: argparse.Namespace) -> dict[str, Any]:
-    day = (
-        datetime.strptime(args.date, "%Y-%m-%d").replace(tzinfo=UTC)
-        if args.date
-        else datetime.now(UTC)
-    )
-    files = {row["id"]: row["file"] for row in parse_index()}
-    slot, today = rotation_slice(list(files), day, args.per_day)
-    return {
-        "ok": True,
-        "date": day.strftime("%Y-%m-%d"),
-        "slot": slot,
-        "families": today,
-        "files": [files[f] for f in today],
     }
 
 
@@ -895,7 +868,6 @@ JSON object. Exit codes: 0 ok, 1 action failed, 2 usage.
   ids        every sub-feature ID
   owners     map changed source paths to families (default: since the baseline)
   baseline   read or move the index's Maintenance baseline line
-  rotation   today's families for the daily full-recipe rotation
   run        replay a family's `sh` blocks into a ledger
   report     latest result per sub-feature, fail first; compare with a baseline
 
@@ -962,21 +934,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--set", metavar="SHA")
     p.add_argument("--date", help="YYYY-MM-DD for --set (default: today, UTC)")
     p.add_argument("--main", default="origin/main")
-
-    p = sub.add_parser(
-        "rotation",
-        help="today's families for the full-recipe rotation",
-        formatter_class=fmt,
-        epilog=f"""Examples:
-  {CLI} rotation
-  {CLI} rotation --date 2026-10-12
-
-The slice comes from the UTC date's day count modulo 7, over the index table
-in ID order, so every family gets a full pass once a week.""",
-    )
-    p.set_defaults(func=cmd_rotation)
-    p.add_argument("--date")
-    p.add_argument("--per-day", type=int)
 
     p = sub.add_parser(
         "run",

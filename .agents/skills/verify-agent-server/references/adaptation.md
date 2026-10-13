@@ -59,10 +59,9 @@ the surface under test is the REST and WebSocket API rather than a screen.
   `map owners`, then relies on the existing oasdiff breakage check for schema
   changes instead of re-deriving it.
 - **A daily pass between weekly ones.** The procedure in
-  [daily.md](daily.md) follows `verify-openhands`' daily pass: the families
-  changed since the recorded baseline, a smoke recipe per family, and a
-  date-derived rotation that covers every family's full recipes once a week.
-  `map baseline` and `map rotation` keep that free of state between runs.
+  [daily.md](daily.md) follows `verify-openhands`' daily pass: it drives only
+  the families changed since the recorded baseline and stops early when
+  nothing merged. `map baseline` keeps that free of state between runs.
 - **Isolation by configuration.** Every run gets a private `HOME`,
   `OH_PERSISTENCE_DIR`, config file, conversations and workspace paths,
   worktree root, tmux dir, session key, secret key and port, and inherits none

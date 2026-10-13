@@ -874,30 +874,6 @@ def test_map_baseline_rejects_missing_duplicate_or_malformed_lines(
     )
 
 
-@pytest.mark.parametrize("start", [(2026, 10, 10), (2026, 12, 29), (2028, 2, 26)])
-def test_rotation_covers_every_family_once_a_week(start):
-    """Any seven consecutive days, New Year and leap days included."""
-    families = [f"F{n:02d}" for n in range(1, 35)]
-    first = cas.datetime(*start)
-    seen = []
-    for offset in range(7):
-        day = cas.datetime.fromordinal(first.toordinal() + offset)
-        _, today = cas.rotation_slice(families, day)
-        assert 0 < len(today) <= 5
-        seen += today
-    assert sorted(seen) == families
-
-
-def test_rotation_reads_the_index(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(cas, "FEATURE_MAP_DIR", tmp_path)
-    _index(tmp_path, ["Maintenance baseline: main@abc1234 (2026-10-01)."])
-    code, out = _run(capsys, "map", "rotation", "--date", "2026-10-12")
-    assert code == 0, out
-    slot = cas.datetime(2026, 10, 12).toordinal() % 7
-    expected = [f"F{n:02d}" for n in range(slot * 5 + 1, min(slot * 5 + 6, 35))]
-    assert json.loads(out)["families"] == expected
-
-
 def test_compare_ledgers_sorts_what_changed():
     def row(feature, result):
         return {"feature": feature, "result": result, "run": "r"}

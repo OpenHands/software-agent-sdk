@@ -4,8 +4,8 @@ The weekly pass in [maintenance.md](maintenance.md) proves every family live.
 A daily pass cannot: 34 families and 900-odd sub-features take longer than one
 agent's day, and most of the map did not change since yesterday. The daily
 pass answers a narrower question with the same rigor: **did anything that
-merged since the last pass change what an API consumer sees, and does the rest
-still hold in its neighbourhood?** 
+merged since the last pass change what an API consumer sees?** It drives only
+the features that question touches, and does nothing when nothing merged.
 
 It is the delta pass that [maintenance.md](maintenance.md) allows, and it
 moves the same baseline.
@@ -27,19 +27,21 @@ open PR:
   `main` and freeze its full SHA as `TARGET`; deepen a shallow clone until
   `BASE` is present (`map baseline` returns `commits_since: null` until it
   is).
+- **Stop early when `BASE` equals `TARGET`**: nothing merged, so there is
+  nothing to drive. The one exception is an earlier pass's PR that is still
+  open with something pending on it (failing CI, an unanswered review); handle
+  that and stop.
 - A pass proposes `TARGET` as the next baseline in its PR
   (`control-agent-server map baseline --set "$TARGET"`; the SHA must be on
-  `origin/main`) only when tier 2 finished: every family `map owners` listed
+  `origin/main`) only when step 2 finished: every family `map owners` listed
   was driven, every commit in `BASE..TARGET` was resolved to its PR, and the
   closed-issue rows below were re-driven. Merging that PR accepts the
-  baseline. A pass that ran out of time or was blocked in tier 2 leaves the
+  baseline. A pass that ran out of time or was blocked in step 2 leaves the
   line where it was, even when its PR carries other map or CLI fixes, and says
   so in its report (maintenance.md's blocked/partial outcome); a pass that
   changes nothing leaves it too, so the next pass covers a longer range. If an
   earlier pass's PR is still open, the next pass continues on that branch and
   takes `BASE` from the line there.
-- The rotation slice (which families get their full recipes today) comes
-  from the date: `control-agent-server map rotation`. No state carries it.
 - Yesterday's ledger is an optional input: when the previous run directory or
   its `evidence/ledger.jsonl` is at hand (a CI artifact, a shared directory),
   pass it to `evidence report --baseline`; without it the report has no
@@ -51,10 +53,10 @@ available (`control-agent-server capabilities`), as the weekly pass does. A
 pass that runs out of time says so and names what it did not reach; it never
 rolls the remainder into tomorrow silently.
 
-## Tiers, in order
+## Steps, in order
 
-Run the tiers in this order and stop when the budget runs out; each tier is
-cheaper than the next and catches a different kind of rot.
+Run the steps in this order and stop when the budget runs out. A family that
+nothing in `BASE..TARGET` touched is not driven: it waits for the weekly pass.
 
 1. **Static (minutes, no server).** `control-agent-server map check` and
    `map coverage`. A recipe that names a route the app no longer serves, a
@@ -81,19 +83,8 @@ cheaper than the next and catches a different kind of rot.
    touching a family's `Source:` paths shows up only this way. So is every
    open `bug` issue opened since `BASE` that names a mapped route or feature:
    it is reproduced and gets its note, so bugs filed outside a pass reach the
-   map.
-3. **Smoke (every family, cheaply).** For each family not already driven in
-   tier 2, run the one recipe that proves the family's main state on the run
-   you already have (its first sub-feature, or the read-only listing it
-   starts with): `map run --file Fnn --only <ID> --record`. One ledger row per
-   family. This catches a router that stopped answering without re-proving
-   every row.
-4. **Rotation (depth over the week).** Drive the full recipes of today's
-   slice: `control-agent-server map rotation` names about a seventh of the
-   families (five a day), so every family gets a full live pass once a week
-   between weekly maintenance passes. `map run --file Fnn --fresh --record`
-   for each. Model-backed recipes run only inside the LLM budget; without a
-   key they are `blocked` with the missing prerequisite.
+   map. Model-backed recipes run only inside the LLM budget; without a key
+   they are `blocked` with the missing prerequisite.
 
 ## Reading the result
 
@@ -102,16 +93,17 @@ with `--baseline <yesterday's run or ledger>` when that ledger is at hand.
 Fail and blocked rows come first; the "Changes since baseline" section, when
 present, is the daily verdict:
 
-- **Newly failing** on a family that tier 2 drove for a changed path: an
+- **Newly failing** on a family that step 2 drove for a changed path: an
   introduced-in-range candidate. Re-drive the same minimal recipe on `BASE`
   (`map run --file Fnn --only <ID> --fresh --checkout <BASE worktree>`) before
   calling it a regression; otherwise classify it as reproduced-on-both,
   environment or harness gap, or origin-unconfirmed.
 - **Newly failing** elsewhere, or **newly passing** without a PR that explains
   it: an undocumented change; cite the commit and ask.
-- **Not checked this run** rows are the rotation moving on, not regressions.
+- **Not checked this run** rows are features nothing in the range touched,
+  not regressions.
 - Without yesterday's ledger, read today's fail rows the same way: a fail on a
-  family tier 2 drove for a changed path is a candidate to re-drive on
+  family step 2 drove for a changed path is a candidate to re-drive on
   `BASE`; elsewhere it is a finding to triage, with the family's last known
   state taken from the map (a `known bug` bullet, a linked issue).
 
@@ -136,7 +128,7 @@ revision or entry point does not count; a gap is not a pass.
 
 - Not the full pass: it does not re-prove every bullet, and the baseline it
   moves says only that the day's changes were covered, which is why an
-  unfinished tier 2 never moves it. When tier 2 finds that most of the map is
+  unfinished step 2 never moves it. When step 2 finds that most of the map is
   affected (a shared model, a dependency bump such as FastAPI, LiteLLM or
   MCP), say so and run the full procedure instead. A full pass is still needed
   weekly or before a release, because dependency bumps change behavior without

@@ -7,7 +7,7 @@ description: >
   of what the OpenHands SDK does in-process (agent loop, LLMs, conversations,
   events, condensers, skills, plugins, MCP, hooks, sub-agents, critic,
   security, tools, workspaces, settings, observability, ACP) and ships
-  sdk-map (check, owners, baseline, rotation, run, report).
+  sdk-map (check, owners, baseline, run, report).
 triggers:
 - /verify-sdk
 - sdk feature map
@@ -96,9 +96,9 @@ lives there, not in the checkout.
   [the agent-server report contract](../verify-agent-server/references/report.md).
 - **Run the daily pass**: follow [references/daily.md](references/daily.md):
   `sdk-map check`, the families changed since the `Maintenance baseline` line
-  (`sdk-map owners` with no arguments), a smoke bullet per family, and a
-  date-derived rotation (`sdk-map rotation`) that replays every family once a
-  week.
+  (`sdk-map owners` with no arguments), and nothing else: families nothing
+  in the range touched wait for the weekly pass, and a pass with no new
+  commits on `main` stops early.
 - **Maintain the map (periodic or weekly)**: follow
   [references/maintenance.md](references/maintenance.md): a frozen
   BASE/TARGET, a PR-intent ledger, a source wave, a full replay with a model

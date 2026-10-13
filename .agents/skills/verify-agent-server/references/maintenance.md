@@ -46,10 +46,8 @@ git diff --name-status "$BASE" "$TARGET"
 
 A daily pass may be a **delta pass**: source and live coverage only for the
 families whose paths or routes changed in BASE..TARGET (§2) and for rows that
-link an issue closed since BASE, plus a smoke recipe per family and a weekly
-rotation of full recipes. [daily.md](daily.md) is that procedure. It says
-"delta" in its report. A full pass is
-still needed now and then (weekly, or before a release), because dependency
+link an issue closed since BASE. [daily.md](daily.md) is that procedure. It
+says "delta" in its report. A full pass is still needed now and then (weekly, or before a release), because dependency
 bumps (LiteLLM, FastAPI, MCP) change behavior without touching a router.
 
 Use separate worktrees for BASE and TARGET and `control-agent-server launch

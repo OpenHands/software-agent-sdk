@@ -11,7 +11,6 @@ import importlib.util
 import json
 import os
 import sys
-from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -255,17 +254,6 @@ def test_owners_routes_paths_and_flags_unowned_ones(demo_map, capsys):
     ]
 
 
-@pytest.mark.parametrize("start", [datetime(2026, 10, 10), datetime(2026, 12, 29)])
-def test_rotation_covers_every_family_once_a_week(start):
-    """Any seven consecutive days, New Year included, cover every family once."""
-    families = [f"S{n:02d}" for n in range(1, 22)]
-    seen = []
-    for offset in range(7):
-        _, today = sdk_map.rotation_slice(families, start + timedelta(days=offset))
-        seen += today
-    assert sorted(seen) == families
-
-
 def test_statements_split_on_top_level_lines_only():
     block = (
         "uv run pytest tests/a.py -q\n"
@@ -415,7 +403,7 @@ def test_reports_take_the_newest_attempt_whatever_the_argument_order(
 
 def test_every_command_documents_examples(capsys):
     parser = sdk_map.build_parser()
-    for name in ("check", "ids", "owners", "baseline", "rotation", "run", "report"):
+    for name in ("check", "ids", "owners", "baseline", "run", "report"):
         with pytest.raises(SystemExit):
             parser.parse_args([name, "--help"])
         assert "Examples:" in capsys.readouterr().out, name

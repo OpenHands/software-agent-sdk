@@ -4,9 +4,9 @@ The weekly pass in [maintenance.md](maintenance.md) replays every family.
 A daily pass need not: most of the map did not change since yesterday, and
 the model-backed recipes cost money. The daily pass answers a narrower
 question with the same rigor: **did anything that merged since the last pass
-change what a program using the SDK sees, and does the rest still hold where
-it is cheapest to look?** It is the delta pass that maintenance.md allows,
-and it moves the same baseline.
+change what a program using the SDK sees?** It replays only the families that
+question touches, and does nothing when nothing merged. It is the delta pass
+that maintenance.md allows, and it moves the same baseline.
 
 This is a procedure, not a scheduler: run it from whatever runs you daily, do
 not create automations or post externally unless asked, and hand what you
@@ -22,15 +22,18 @@ everything it needs lives in the repository or on an open PR:
   says how many commits `HEAD` is past it, and `sdk-map owners` with no
   arguments diffs from it. Fetch `main` and freeze its full SHA as `TARGET`;
   deepen a shallow clone until `BASE` is present.
+- **Stop early when `BASE` equals `TARGET`**: nothing merged, so there is
+  nothing to replay. The one exception is an earlier pass's PR that is still
+  open with something pending on it (failing CI, an unanswered review); handle
+  that and stop.
 - A pass proposes `TARGET` as the next baseline in its PR
-  (`sdk-map baseline --set "$TARGET"`) only when tier 2 finished: every
+  (`sdk-map baseline --set "$TARGET"`) only when step 2 finished: every
   family `sdk-map owners` listed was replayed, every commit in `BASE..TARGET`
   was resolved to its PR, and the closed-issue rows below were re-driven.
   Merging that PR accepts the baseline. A pass that ran out of time or was
-  blocked in tier 2 leaves the line where it was and says so. If an earlier
+  blocked in step 2 leaves the line where it was and says so. If an earlier
   pass's PR is still open, the next pass continues on that branch and takes
   `BASE` from the line there.
-- The rotation slice comes from the date: `sdk-map rotation`.
 - Yesterday's run directory is an optional input to
   `sdk-map report --baseline`.
 
@@ -38,7 +41,10 @@ Record the UTC time, model and spend budget, and the keys and tools
 available. A pass that runs out of time says so and names what it did not
 reach.
 
-## Tiers, in order
+## Steps, in order
+
+A family that nothing in `BASE..TARGET` touched is not replayed: it waits for
+the weekly pass.
 
 1. **Static (seconds).** `sdk-map check`. A cited test, example or source
    path that is gone, or a sub-feature with no bullet, is drift found before
@@ -51,27 +57,21 @@ reach.
    (maintenance.md §3). Then the second half: every row whose Gotchas or
    `Known failure` note links an issue that closed since `BASE` is replayed
    and its note updated, and every open `bug` issue opened since `BASE` that
-   names a mapped feature is reproduced and gets its note.
-3. **Smoke (every family, cheaply).** For each family not replayed in tier 2,
-   replay its first `Driving it` bullet (`sdk-map run --file Snn --only
-   <first ID>`). This catches an import or fixture that broke without
-   re-proving every row.
-4. **Rotation (depth over the week).** Replay the full recipes of today's
-   slice (`sdk-map rotation`, three families a day), so every family gets a
-   full replay once a week between weekly passes. Model-backed blocks run
-   only inside the budget; without a key they are `blocked`.
+   names a mapped feature is reproduced and gets its note. Model-backed blocks
+   run only inside the budget; without a key they are `blocked`.
 
 ## Reading the result
 
 `sdk-map report --runs <every run of the pass>`, with `--baseline
 <yesterday's run>` when at hand. Fail and blocked rows come first.
 
-- **Newly failing** on a family tier 2 replayed for a changed path: an
+- **Newly failing** on a family step 2 replayed for a changed path: an
   introduced-in-range candidate. Replay the same bullet on a `BASE` worktree
   before calling it a regression.
 - **Newly failing** elsewhere, or **newly passing** without a PR that
   explains it: cite the commit and ask. A dependency bump is a common cause.
-- **Not checked this run**: the rotation moving on, not a regression.
+- **Not checked this run**: features nothing in the range touched, not a
+  regression.
 
 Triage as the skill does, at most one PR of proven map and `sdk-map`
 corrections per pass, carrying the moved baseline line and saying "delta" in
@@ -79,7 +79,7 @@ its report.
 
 ## What the daily pass is not
 
-- Not the full pass: when tier 2 finds most of the map affected (a shared
+- Not the full pass: when step 2 finds most of the map affected (a shared
   model, a LiteLLM bump), say so and run maintenance.md instead.
 - Not CI: CI already runs the unit tests on every PR. The pass adds what CI
   skips (examples, integration tasks, the map's own claims) and the
