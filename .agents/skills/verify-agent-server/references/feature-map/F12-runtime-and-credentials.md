@@ -357,8 +357,10 @@ control-agent-server api GET "/api/conversations/$R" --check execution_status eq
   OLD=$(control-agent-server ws stop f12-before --wait 5 --save F12.sandbox-pause-websocket/old-socket)
   OLD_SESSION=$(control-agent-server ws stop f12-before-session --wait 5 --save F12.sandbox-pause-websocket/old-session-socket)
   printf '%s\n%s\n' "$OLD" "$OLD_SESSION" | jq -c '{close, kinds}'
-  echo "$OLD" | jq -e '.close != null or ((.kinds.MessageEvent // 0) >= 1)'  # bug
-  echo "$OLD_SESSION" | jq -e '.close != null or ((.kinds["durable:MessageEvent"] // 0) >= 1)'  # bug
+  echo "$OLD" | jq -c '{opened, close, messages: (.kinds.MessageEvent // 0)} | .closed_or_streaming = (.close != null or .messages >= 1)' \
+    | control-agent-server assert --check closed_or_streaming eq true  # bug: value.opened eq true && value.close missing && value.messages eq 0
+  echo "$OLD_SESSION" | jq -c '{opened, close, messages: (.kinds["durable:MessageEvent"] // 0)} | .closed_or_streaming = (.close != null or .messages >= 1)' \
+    | control-agent-server assert --check closed_or_streaming eq true  # bug: value.opened eq true && value.close missing && value.messages eq 0
   ```
   Correct behavior: a socket that was open before the pause is closed by
   the server (so the client reconnects) or keeps streaming. Today both stay
@@ -490,8 +492,8 @@ control-agent-server api GET "/api/conversations/$R" --check execution_status eq
     --save F12.binding-native-cold/put
   control-agent-server api GET "/api/conversations/$N/events/count" --expect 200
   control-agent-server api POST /api/conversations/prepare-for-sandbox-pause --expect 204
-  control-agent-server api GET "/api/conversations/$N/events/count" --expect 200 --save F12.binding-native-cold/events-after-pause  # bug
-  control-agent-server state cat meta.json --conversation "$N" --check required_runtime_credential_bindings len-eq 0  # bug
+  control-agent-server api GET "/api/conversations/$N/events/count" --expect 200 --save F12.binding-native-cold/events-after-pause  # bug: status eq 409 && response.body contains credential_binding_activation_required
+  control-agent-server state cat meta.json --conversation "$N" --check required_runtime_credential_bindings len-eq 0  # bug: checks.0.actual contains CODEX_AUTH_JSON
   ```
   Correct behavior: a regular conversation either refuses the binding (409,
   as it does when loaded) or ignores it, and stays readable after the next
@@ -752,8 +754,8 @@ control-agent-server api GET "/api/conversations/$R" --check execution_status eq
   control-agent-server conversation send "$WC" --run "$K" --text 'QA_F12_SWITCH_2'
   control-agent-server sink read --name qa-f12-switch --expect-min 3 --wait 30
   control-agent-server conversation wait "$WC" --run "$K" --until finished,error --timeout 60
-  control-agent-server sink read --name qa-f12-keysrc-switch --expect-min 2 --expect-max 2 --save F12.managed-key-switch/key-fetch  # bug
-  control-agent-server api GET "/api/conversations/$WC" --run "$K" --check execution_status eq finished  # bug
+  control-agent-server sink read --name qa-f12-keysrc-switch --expect-min 2 --expect-max 2 --save F12.managed-key-switch/key-fetch  # bug: requests eq 1
+  control-agent-server api GET "/api/conversations/$WC" --run "$K" --check execution_status eq finished  # bug: status eq 200 && checks.0.actual eq error
   control-agent-server stop --run "$K"
   ```
   Correct behavior: the switched LLM sits on an allow-listed `base_url`, so

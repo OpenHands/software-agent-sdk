@@ -323,7 +323,7 @@ Preconditions:
   control-agent-server state cat "evidence/F07.live-order/order-$ORD.json" --contains QA_F07_ORDER --check frames.6.direction ne received \
     --check frames.1.frame.type eq sync --check frames.2.frame.type eq transient \
     --check frames.3.frame.type eq durable --check frames.4.frame.type eq durable --check frames.5.frame.type eq durable
-  control-agent-server state cat "evidence/F07.live-order/order-$ORD.json" --check frames.3.frame.seq eq 0 --check frames.4.frame.seq eq 1 --check frames.5.frame.seq eq 2  # bug
+  control-agent-server state cat "evidence/F07.live-order/order-$ORD.json" --check frames.3.frame.seq eq 0 --check frames.4.frame.seq eq 1 --check frames.5.frame.seq eq 2  # bug: checks.0.actual eq 0 && checks.1.actual eq 2 && checks.2.actual eq 1
   ```
   The arrange steps and positive controls hold either way: the message is
   persisted, the capture holds `sync`, the snapshot and exactly three
@@ -642,7 +642,7 @@ Preconditions:
   control-agent-server api DELETE "/api/conversations/$DEL" --expect 200 --save "F07.deleted-close/delete-$DEL"
   control-agent-server api GET "/api/conversations/$DEL" --expect 404
   control-agent-server ws listen "/sockets/session/$DEL" --duration 5 --expect-close 4004 --expect-frames 0
-  if control-agent-server ws stop "del-$DEL" --expect-open --save "F07.deleted-close/socket-$DEL"; then false; fi  # bug
+  control-agent-server ws stop "del-$DEL" --save "F07.deleted-close/socket-$DEL" | control-agent-server assert --check close.code exists  # bug: value.opened eq true && value.stopped eq stopped && value.close missing
   ```
   Correct behavior: the server closes the open socket (with any close code)
   while it deletes the conversation; `EventService.close()` awaits

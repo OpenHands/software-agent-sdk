@@ -57,6 +57,16 @@ loading must:
 
 (See `load_agents_from_dir` in `load.py`.)
 
+### Registration failures must be non-fatal
+
+If a parsed file-based or plugin definition cannot be registered (for example, its
+`skills` names a skill that does not exist), registration must:
+
+- log a warning naming the agent, its `source` and the error, and
+- skip that definition and keep registering the others.
+
+(See `_register_definition` in `registry.py`.)
+
 ## Invariant 2: resolution / precedence (“who wins”)
 
 ### Core rule: first registration wins

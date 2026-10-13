@@ -401,7 +401,7 @@ Preconditions:
   JS
   control-agent-server exec --timeout 60 --expect-output QA_F34_BINARY_READ --save F34.workspace-binary-download/program -- node "$F34/binary.mjs"
   cat "$F34/binary.json"
-  jq -e '.blob == [255, 0, 128, 254, 65] and .file_size == 5' "$F34/binary.json"  # bug
+  control-agent-server assert --json "$F34/binary.json" --check blob eq '[255, 0, 128, 254, 65]' --check file_size eq 5  # bug: value.file_size eq 11 && value.blob eq '[239, 191, 189, 0, 239, 191, 189, 239, 191, 189, 65]'
   ```
   Expected: the same five bytes and `file_size` 5. Today the blob holds 11
   bytes (`[239,191,189,0,239,191,189,239,191,189,65]`: each invalid byte
@@ -507,7 +507,7 @@ Preconditions:
   TSC="node clients/typescript/node_modules/typescript/bin/tsc --noEmit --strict --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022"
   $TSC "$F34/git-contract.mts"
   $TSC "$F34/git-paths.mts"
-  $TSC "$F34/git-types.mts"  # bug
+  $TSC "$F34/git-types.mts" | control-agent-server assert --check . eq ''  # bug: value matches 'TS2322: Type ..UPDATED.. is not assignable'
   ```
   Expected: both files type-check. Today the contract file compiles and
   the exported type fails with `Type '"UPDATED"' is not assignable to type
@@ -591,7 +591,7 @@ Preconditions:
   JS
   control-agent-server exec --timeout 60 --expect-output QA_F34_BASH_WS_DONE --save F34.bash-websocket/program -- node "$F34/bash-ws.mjs"
   cat "$F34/bash-ws.json"
-  jq -e '.saw_output and .errors == []' "$F34/bash-ws.json"  # bug
+  control-agent-server assert --json "$F34/bash-ws.json" --check saw_output eq true --check errors len-eq 0  # bug: value.saw_output eq false && value.errors contains 'WebSocket implementation not available'
   ```
   Expected: the replayed `BashOutput` reaches the callback and `onError` is
   never called. Today `saw_output` is false with no frame, and `errors`
@@ -795,8 +795,9 @@ Preconditions:
   JS
   control-agent-server exec --timeout 60 --expect-output QA_F34_UNKNOWN_EVENT_READ --save F34.events-unknown-id/program -- node "$F34/unknown-event.mjs" "$SCID"
   cat "$F34/unknown-event.json"
-  jq -e '.single.http_error and .single.status == 404' "$F34/unknown-event.json"  # bug
-  jq -e '.batch.value == [.first, null]' "$F34/unknown-event.json"  # bug
+  control-agent-server assert --json "$F34/unknown-event.json" --check single.http_error eq true --check single.status eq 404  # bug: value.single.status eq 500 && value.single.response.exception contains 'Unknown event_id'
+  control-agent-server assert --json "$F34/unknown-event.json" --check batch.value len-eq 2 --check batch.value.0 eq "$(jq -r .first "$F34/unknown-event.json")" \
+    --check batch.value.1 missing  # bug: value.batch.status eq 500 && value.batch.response.exception contains 'Unknown event_id'
   ```
   Expected: a 404 `HttpError`, and `[<event>, null]`. Today both calls
   reject with a 500 `HttpError` whose `response.exception` is
@@ -827,7 +828,7 @@ Preconditions:
   JS
   control-agent-server exec --timeout 60 --expect-output QA_F34_KIND_READ --save F34.events-search-kind/program -- node "$F34/kind.mjs" "$SCID"
   cat "$F34/kind.json"
-  jq -e '.short == .full and .short_count == 1' "$F34/kind.json"  # bug
+  control-agent-server assert --json "$F34/kind.json" --check short len-eq 1 --check short.0 eq "$(jq -r '.full[0]' "$F34/kind.json")" --check short_count eq 1  # bug: value.short len-eq 0 && value.short_count eq 0
   ```
   Expected: the short name finds the same message. Today it returns no items
   and a count of 0.
@@ -913,7 +914,7 @@ Preconditions:
   JS
   control-agent-server exec --timeout 60 --expect-output QA_F34_CALLBACK_DONE --save F34.ws-callback-client/program -- node "$F34/callback.mjs" "$SCID"
   cat "$F34/callback.json"
-  jq -e '(.kinds | index("ConversationStateUpdateEvent")) != null and .errors == []' "$F34/callback.json"  # bug
+  control-agent-server assert --json "$F34/callback.json" --check kinds contains ConversationStateUpdateEvent --check errors len-eq 0  # bug: value.kinds len-eq 0 && value.errors contains 'WebSocket implementation not available'
   ```
   Expected: the snapshot reaches the conversation callback and `onError` is
   never called. Today `kinds` is empty and `errors` holds "WebSocket
@@ -1005,7 +1006,7 @@ Preconditions:
   control-agent-server exec --timeout 60 --expect-output QA_F34_UPDATE_READ --save F34.manager-update-result/program -- node "$F34/update.mjs" "$SCID"
   control-agent-server api GET "/api/conversations/$SCID" --max-chars 300 --check title eq qa-f34-renamed
   cat "$F34/update.json"
-  jq -e --arg id "$SCID" '.id == $id and .title == "qa-f34-renamed"' "$F34/update.json"  # bug
+  control-agent-server assert --json "$F34/update.json" --check id eq "$SCID" --check title eq qa-f34-renamed  # bug: value.success eq true && value.id missing
   ```
   Expected: the stored title and a `ConversationInfo` with the conversation's
   `id` and new title. Today the title is stored but the promise resolves with
@@ -1041,7 +1042,7 @@ Preconditions:
   control-agent-server exec --timeout 60 --expect-output QA_F34_CREATE_OPTIONS_READ --save F34.manager-create-options/program -- node "$F34/create-options.mjs"
   for ID in $(jq -r '.ids[]' "$F34/create-options.json"); do control-agent-server api GET "/api/conversations/$ID" --expect 404; done
   cat "$F34/create-options.json"
-  jq -e '.max_iterations == 7 and .stuck_detection == false' "$F34/create-options.json"  # bug
+  control-agent-server assert --json "$F34/create-options.json" --check max_iterations eq 7 --check stuck_detection eq false  # bug: value.max_iterations eq 500 && value.stuck_detection eq true
   ```
   Expected: `max_iterations` 7 and `stuck_detection: false`, as the
   direct `start()` gets. Today the manager's conversation has
@@ -1349,7 +1350,7 @@ Preconditions:
   wait "$RPID"
   cat "$F34/reconnect-native.json"
   jq -e '.ws.reconnected and .ws.sent_after >= 1 and .native.went_down' "$F34/reconnect-native.json"
-  jq -e '.native.reconnected and .native.sent_after >= 1' "$F34/reconnect-native.json"  # bug
+  control-agent-server assert --json "$F34/reconnect-native.json" --check native.reconnected eq true --check native.sent_after ge 1  # bug: value.native.reconnected eq false && value.native.last_state.attemptCount eq 1
   ```
   Expected: both streams come back and see the message posted after the
   restart. Today the `ws`-backed stream does, while the native one stays

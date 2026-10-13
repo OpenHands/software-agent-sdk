@@ -912,7 +912,7 @@ Preconditions:
   test "$(sha256sum "$INST/qa-f28-notgz/backend/linux.tar.gz" | cut -d' ' -f1)" = \
     "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["backend"]["artifacts"]["linux-amd64"]["sha256"])' "$INST/qa-f28-notgz/canvas-extension.json")"
   control-agent-server api POST /api/canvas-extensions/installed/qa-f28-notgz/backend/prepare --json "{\"revision\": \"$NREV\"}" \
-    --expect 409 --save F28.prepare-corrupt-archive/prepare  # bug
+    --expect 409 --save F28.prepare-corrupt-archive/prepare  # bug: status eq 500 && response.body.exception contains 'not a gzip file'
   control-agent-server state ls 'home/.openhands/canvas-extensions/backends/approvals/qa-f28-notgz.json' --expect-count 0
   control-agent-server state ls 'home/.openhands/canvas-extensions/backends/artifacts/qa-f28-notgz/**' --expect-count 0
   ```
@@ -930,9 +930,9 @@ Preconditions:
     --expect 200 --check resolved_ref eq "$GV1" --quiet
   control-agent-server state ls 'home/.openhands/cache/extensions/qa-f28-git-*/canvas-extension.json' --expect-count 1
   control-agent-server api POST /api/canvas-extensions/install --json "{\"source\": \"file://$GX\", \"ref\": \"qa-no-such-ref\", \"force\": true}" \
-    --expect 400 --check detail contains 'Could not read canvas extension source' --save F28.install-ref-cached/unknown-ref  # bug
+    --expect 400 --check detail contains 'Could not read canvas extension source' --save F28.install-ref-cached/unknown-ref  # bug: status eq 200 && response.body.requested_ref eq qa-no-such-ref
   control-agent-server state cat home/.openhands/canvas-extensions/installed/.installed.json \
-    --check extensions.qa-f28-git.requested_ref eq "$GV1" --check extensions.qa-f28-git.resolved_ref eq "$GV1"  # bug
+    --check extensions.qa-f28-git.requested_ref eq "$GV1" --check extensions.qa-f28-git.resolved_ref eq "$GV1"  # bug: content.extensions.qa-f28-git.requested_ref eq qa-no-such-ref
   control-agent-server api DELETE /api/canvas-extensions/installed/qa-f28-git --expect 200 --quiet
   ```
   The pinned install leaves exactly one cached clone of the source. Expected:
@@ -960,7 +960,7 @@ Preconditions:
   curl -fsS "http://127.0.0.1:$FPORT/fast"
   test "$(curl -fsS -m 3 "http://127.0.0.1:$FPORT/health")" = ok
   control-agent-server api GET /api/canvas-extensions/installed/qa-f28-flaky/backend --until-ok 5 --check state eq ready \
-    --save F28.status-probe-latch/after-recovery  # bug
+    --save F28.status-probe-latch/after-recovery  # bug: status eq 200 && response.body.state eq unhealthy
   control-agent-server api POST /api/canvas-extensions/installed/qa-f28-flaky/backend/stop --expect 200 --check state eq stopped --quiet
   ```
   Expected: once `/health` answers in time again (the direct `curl` shows it
@@ -1020,7 +1020,7 @@ Preconditions:
   control-agent-server restart --hard
   control-agent-server api GET /api/canvas-extensions/installed/qa-orphan/backend --check state eq stopped \
     --check pid eq null --save F28.hard-restart-orphan/status-after-crash
-  if pgrep -f "$BK/artifacts/qa-orphan/"; then false; fi  # bug
+  control-agent-server assert --value "$(pgrep -f "$BK/artifacts/qa-orphan/" || true)" --check . eq ''  # bug: value matches '^[0-9]+'
   ```
   Expected: no backend process of the dead server remains once the server is
   back (reaped at startup, or tied to the server's lifetime). Actual: the

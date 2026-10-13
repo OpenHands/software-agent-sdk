@@ -221,7 +221,7 @@ Preconditions:
   trap drop_empty EXIT
   control-agent-server api GET /api/meta-profiles/qa-empty --expect 404
   control-agent-server api POST /api/meta-profiles/qa-empty --json '{"classifier_model": "deepseek-flash"}' --expect 422 \
-    --save F22.empty-router/save  # bug
+    --save F22.empty-router/save  # bug: status eq 201 && response.body.name eq qa-empty
   control-agent-server api GET /api/meta-profiles/qa-empty --expect 404
   control-agent-server api GET /api/meta-profiles --check meta_profiles len-eq 2
   ```
@@ -472,7 +472,7 @@ Preconditions:
     | tee "$F22/acp-activate.json"
   control-agent-server api GET /api/meta-profiles --check active_meta_profile eq null --save F22.activate-acp/list
   control-agent-server api GET /api/settings --max-chars 200 --check active_meta_profile eq null --check agent_settings.agent_kind eq acp
-  jq -e '.status >= 400 and .status < 500' "$F22/acp-activate.json"  # bug
+  control-agent-server assert --json "$F22/acp-activate.json" --check status ge 400 --check status lt 500  # bug: value.status eq 200 && value.response.body.message eq "Meta-profile 'qa-direct' activated"
   ```
   Expected a 4xx: settings that cannot attach the routing tool should refuse
   the activation, the way `PersistedSettings` refuses to record it. Today the
@@ -529,7 +529,7 @@ Preconditions:
   test "$(cat "$S")" = '{"agent_settings": '
   restore_settings
   control-agent-server api GET /api/meta-profiles --check active_meta_profile eq qa-direct
-  jq -e '.status == 409' "$F22/corrupt-settings-activate.json"  # bug
+  control-agent-server assert --json "$F22/corrupt-settings-activate.json" --check status eq 409  # bug: value.status eq 500 && value.response.body.exception contains 'Cannot load settings from'
   ```
   Expected 409, as `POST /api/profiles/{name}/activate` answers for the same
   file (`Settings file is corrupted or encrypted with a different key`; the
@@ -600,12 +600,12 @@ Preconditions:
   for i in $(seq 6); do
     sleep 2
     control-agent-server api GET /alive --auth none --expect 200 --expect-max-ms 3000 --timeout 60 --quiet \
-      --save F22.store-busy-responsive/alive || { SLOW=$i; break; }
+      --save F22.store-busy-responsive/alive | tee "$F22/alive-probe.json" || { SLOW=$i; break; }
   done
   wait "$SAVER"
   wait "$LOCKER"
   control-agent-server api GET /api/meta-profiles/qa-busy --expect 404
-  test "$SLOW" = 0  # bug
+  control-agent-server assert --json "$F22/alive-probe.json" --check ok eq true  # bug: value.status eq 200 && value.elapsed_ms ge 10000
   ```
   Expected every `/alive` probe to answer within 3 seconds while the save
   waits. Today the first probe that overlaps the save takes about 28
@@ -614,7 +614,8 @@ Preconditions:
   (`meta_profiles_router.py`), so a 30-second lock wait freezes the whole
   server, probes included (the same defect as `F20.store-busy-responsive`).
   `SLOW` is the number of the first slow probe; its exchange (with
-  `elapsed_ms`) is in the bullet's transcript.
+  `elapsed_ms`) is in the bullet's transcript and in `alive-probe.json`,
+  which the line marked `# bug` checks.
 - **Limit (`F22.limit`).** Fill the store to 50, then create and overwrite.
   ```sh
   N=$(control-agent-server api GET /api/meta-profiles --field meta_profiles | jq length)
@@ -665,7 +666,7 @@ Preconditions:
   control-agent-server api POST /api/meta-profiles/qa-tilde/activate --run "$T" --expect 200
   control-agent-server api GET /api/meta-profiles --run "$T" --check meta_profiles len-eq 1 --check active_meta_profile eq qa-tilde
   control-agent-server state ls 'home/qa-f22-tilde/settings.json' --run "$T" --expect-count 1
-  control-agent-server state ls 'home/qa-f22-tilde/meta-profiles/qa-tilde.json' --run "$T" --expect-count 1  # bug
+  control-agent-server state ls 'home/qa-f22-tilde/meta-profiles/qa-tilde.json' --run "$T" --expect-count 1  # bug: count eq 0
   ```
   `settings.json` lands in `home/qa-f22-tilde/` (the settings store expands
   `~` through `get_user_persistence_dir`). Expected the meta-profile next to

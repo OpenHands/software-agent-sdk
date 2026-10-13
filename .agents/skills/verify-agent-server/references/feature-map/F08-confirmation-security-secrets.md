@@ -438,7 +438,7 @@ KID=$(control-agent-server api POST /api/conversations \
   control-agent-server api GET "/api/conversations/$KID" --check secret_registry.secret_sources.QA_F08_VISIBLE_SAVED.kind eq StaticSecret
   control-agent-server api POST "/api/conversations/$KID/secrets" --json '{"secrets": {"QA_F08_FRESH": "qa-f08-fresh-value"}}' --expect 200
   control-agent-server api GET "/api/conversations/$KID" --check secret_registry.secret_sources.QA_F08_FRESH.kind eq StaticSecret \
-    --save F08.secrets-visible/get  # bug
+    --save F08.secrets-visible/get  # bug: status eq 200 && checks.0.actual eq null && response.body.secret_registry.secret_sources.QA_F08_VISIBLE_SAVED.kind eq StaticSecret
   ```
   Expected: GET lists `QA_F08_FRESH` as it lists the saved one. Today it does not:
   `LocalConversation.update_secrets` mutates
@@ -471,9 +471,9 @@ KID=$(control-agent-server api POST /api/conversations \
   ```sh
   control-agent-server api POST "/api/conversations/$KID/secrets" --json '{"secrets": {"QA_F08_STRING": "qa-f08-string-value"}}' --expect 200
   control-agent-server api POST "/api/conversations/$KID/secrets" --json '{"secrets": {"QA_F08_NUMBER": 5}}' \
-    --expect 422 --save F08.secrets-bad-value/number  # bug
-  control-agent-server api POST "/api/conversations/$KID/secrets" --json '{"secrets": {"QA_F08_NULL": null}}' --expect 422  # bug
-  control-agent-server api POST "/api/conversations/$KID/secrets" --json '{"secrets": {"QA_F08_BOOL": true}}' --expect 422  # bug
+    --expect 422 --save F08.secrets-bad-value/number  # bug: status eq 500 && response.body.exception contains "'int' object has no attribute 'pop'"
+  control-agent-server api POST "/api/conversations/$KID/secrets" --json '{"secrets": {"QA_F08_NULL": null}}' --expect 422  # bug: status eq 500 && response.body.exception contains "'NoneType' object has no attribute 'pop'"
+  control-agent-server api POST "/api/conversations/$KID/secrets" --json '{"secrets": {"QA_F08_BOOL": true}}' --expect 422  # bug: status eq 500 && response.body.exception contains "'bool' object has no attribute 'pop'"
   ```
   Expected: 422 like any other invalid body. Today each is 500
   `"exception": "'int' object has no attribute 'pop'"` (`'NoneType'` for
@@ -684,7 +684,7 @@ KID=$(control-agent-server api POST /api/conversations \
   control-agent-server api PATCH "/api/conversations/$UNS" --json '{"tags": {"qa": "f08-after-restart"}}' --expect 200
   control-agent-server api GET "/api/conversations/$UNS" --check secret_registry.secret_sources.QA_F08_SAVED.kind eq StaticSecret
   control-agent-server api GET "/api/conversations/$UNS" --check secret_registry.secret_sources.QA_F08_UNSAVED.kind eq StaticSecret \
-    --save F08.secrets-unsaved-restart/get  # bug
+    --save F08.secrets-unsaved-restart/get  # bug: status eq 200 && checks.0.actual eq null && response.body.secret_registry.secret_sources.QA_F08_SAVED.kind eq StaticSecret
   ```
   Expected: both names after the restart. Today `QA_F08_SAVED` is there and
   `QA_F08_UNSAVED` is gone: the POST never reached `base_state.json` (see

@@ -733,7 +733,7 @@ Preconditions:
     --check detail contains 'not found' --save F18.dangling-pointers/activate-agent-profile
   control-agent-server api PATCH /api/settings --json '{"active_profile": "qa-f18-nope"}' --expect 404 --check detail eq "Profile 'qa-f18-nope' not found"
   control-agent-server api PATCH /api/settings --json '{"active_agent_profile_id": "00000000-0000-4000-8000-0000000000f1"}' \
-    --expect 404,422 --save F18.dangling-pointers/agent-profile-id  # bug
+    --expect 404,422 --save F18.dangling-pointers/agent-profile-id  # bug: status eq 200 && response.body.active_agent_profile_id eq 00000000-0000-4000-8000-0000000000f1
   ```
   `POST /api/agent-profiles/{id}/activate` answers 404 `Agent profile with id
   ... not found`, and PATCH refuses an unknown `active_profile` with 404.
@@ -752,7 +752,7 @@ Preconditions:
   control-agent-server api POST /api/meta-profiles/qa-f18-no-router/activate --expect 404 \
     --check detail eq "Meta-profile 'qa-f18-no-router' not found" --save F18.dangling-pointers/activate-meta-profile
   control-agent-server api GET /api/settings --check active_meta_profile missing --check agent_settings.enable_classify_and_switch_llm_tool eq false
-  control-agent-server api PATCH /api/settings --json '{"active_meta_profile": "qa-f18-no-router"}' --expect 404,422 --save F18.dangling-pointers/meta-profile  # bug
+  control-agent-server api PATCH /api/settings --json '{"active_meta_profile": "qa-f18-no-router"}' --expect 404,422 --save F18.dangling-pointers/meta-profile  # bug: status eq 200 && response.body.active_meta_profile eq qa-f18-no-router
   ```
   The activate route answers 404. Expected: PATCH refuses the name too.
   Today it answers 200, stores the pointer and turns on
@@ -772,7 +772,7 @@ Preconditions:
   cp "$F18/qa-f18-broken.json" "$AP/qa-f18-broken.json"
   control-agent-server api GET /api/agent-profiles/qa-f18-broken --expect 400 \
     --check detail contains 'Failed to load profile' --save F18.secret-scope-profile-errors/agent-profile-route
-  control-agent-server api GET /api/settings/secrets --query "agent_profile_id=$BROKEN" --expect 4xx --save F18.secret-scope-profile-errors/unloadable  # bug
+  control-agent-server api GET /api/settings/secrets --query "agent_profile_id=$BROKEN" --expect 4xx --save F18.secret-scope-profile-errors/unloadable  # bug: status eq 500 && response.body.exception contains 'Failed to load profile'
   ```
   Scoping works while the profile is valid (one secret), and the
   agent-profile route reports the broken file as 400 `Failed to load profile
@@ -797,7 +797,7 @@ Preconditions:
   control-agent-server api GET /api/agent-profiles/qa-f18-busy --timeout 60 --expect 503 \
     --check exception eq '503: Profile store is busy. Please retry.' --save F18.secret-scope-profile-errors/agent-profile-busy
   control-agent-server api GET /api/settings/secrets --query agent_profile_id=00000000-0000-4000-8000-0000000000f1 --timeout 60 \
-    --expect 503 --save F18.secret-scope-profile-errors/secrets-busy  # bug
+    --expect 503 --save F18.secret-scope-profile-errors/secrets-busy  # bug: status eq 500 && response.body.exception contains 'lock acquisition timed out'
   ```
   After 30 seconds the agent-profile route answers 503 `Profile store is
   busy. Please retry.`. Expected: the scoped secrets list answers 503 as
@@ -810,7 +810,7 @@ Preconditions:
   ```sh
   control-agent-server api GET /openapi.json --expect 200 --quiet --raw-out "$F18/openapi.json"
   CLAIMED=$(jq -r '.paths["/api/settings/secrets/{name}"].get.description // ""' "$F18/openapi.json" | sed -n 's/.* \([0-9][0-9][0-9]\) if name format is invalid.*/\1/p')
-  control-agent-server api GET /api/settings/secrets/1bad --expect "${CLAIMED:-422}" --save F18.secret-name-contract/invalid-name  # bug
+  control-agent-server api GET /api/settings/secrets/1bad --expect "${CLAIMED:-422}" --save F18.secret-name-contract/invalid-name  # bug: status eq 422 && response.body.detail contains 'Invalid secret name format'
   ```
   Expected: the documented and the real status agree (either the docstring
   says 422 or the code answers 400). Today the description of `GET`,
@@ -843,10 +843,10 @@ Preconditions:
   control-agent-server api PUT /api/settings/secrets --json '{"name": "QA_F18_ROTATED", "value": "qa-f18-rotated-value"}' --expect 200,409,500 --save F18.secret-key-rotation/put-under-new-key
   control-agent-server api PATCH /api/settings --json '{"misc_settings_diff": {"qa_f18_rotated": true}}' --expect 200,409 --save F18.secret-key-rotation/patch-under-new-key
   control-agent-server restart --restore-secret-key
-  control-agent-server state cat home/.openhands/secrets.json --check custom_secrets.QA_F18_TOKEN.secret matches '^gAAAAA'  # bug
-  control-agent-server state cat home/.openhands/settings.json --check agent_settings.llm.api_key matches '^gAAAAA'  # bug
-  control-agent-server api GET /api/settings/secrets/QA_F18_TOKEN --expect 200 --check . eq "$QA_F18_SECRET" --save F18.secret-key-rotation/after-rotating-back  # bug
-  control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --check agent_settings.llm.api_key eq "$QA_F18_LLM_KEY" --save F18.secret-key-rotation/settings-after-rotating-back  # bug
+  control-agent-server state cat home/.openhands/secrets.json --check custom_secrets.QA_F18_TOKEN.secret matches '^gAAAAA'  # bug: content.custom_secrets.QA_F18_TOKEN exists && content.custom_secrets.QA_F18_TOKEN.secret eq null
+  control-agent-server state cat home/.openhands/settings.json --check agent_settings.llm.api_key matches '^gAAAAA'  # bug: content.agent_settings.llm exists && content.agent_settings.llm.api_key eq null
+  control-agent-server api GET /api/settings/secrets/QA_F18_TOKEN --expect 200 --check . eq "$QA_F18_SECRET" --save F18.secret-key-rotation/after-rotating-back  # bug: status eq 404 && response.body.detail eq 'Secret not found'
+  control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --check agent_settings.llm.api_key eq "$QA_F18_LLM_KEY" --save F18.secret-key-rotation/settings-after-rotating-back  # bug: status eq 200 && checks.0.actual eq null
   ```
   Under the new key every read degrades silently: the secret is 404 `Secret
   not found`, `llm_api_key_is_set` is `false`, and the log says `Failed to

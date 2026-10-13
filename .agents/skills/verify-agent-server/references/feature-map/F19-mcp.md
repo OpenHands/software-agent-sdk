@@ -306,7 +306,7 @@ Preconditions:
   removes the stored entry before failing, so later bullets are unaffected.
   ```sh
   control-agent-server api GET /api/settings --check agent_settings.mcp_config.qa-empty missing
-  control-agent-server api POST /api/settings/mcp/qa-empty --json '{}' --expect 422 --save F19.settings-empty-server/create || { control-agent-server api DELETE /api/settings/mcp/qa-empty --expect 200,404 >/dev/null; false; }  # bug
+  control-agent-server api POST /api/settings/mcp/qa-empty --json '{}' --expect 422 --save F19.settings-empty-server/create || { control-agent-server api DELETE /api/settings/mcp/qa-empty --expect 200,404 >/dev/null; false; }  # bug: request.method eq DELETE && status eq 200
   control-agent-server api GET /api/settings --check agent_settings.mcp_config.qa-empty missing
   ```
   Today the POST answers 201 with `qa-empty: {"enabled": true}` in the
@@ -525,7 +525,7 @@ Preconditions:
   ```sh
   control-agent-server api GET "/api/mcp/oauth/status/$J" --check status eq succeeded --check callback_ready eq true
   RBODY=$(jq -nc --arg u "$CALLBACK" '{callback_url: $u}')
-  control-agent-server api POST "/api/mcp/oauth/callback/$J" --json "$RBODY" --expect 200,4xx --save F19.oauth-callback-replay/replay  # bug
+  control-agent-server api POST "/api/mcp/oauth/callback/$J" --json "$RBODY" --expect 200,4xx --save F19.oauth-callback-replay/replay  # bug: status eq 500 && response.body.exception contains 'All connection attempts failed'
   control-agent-server api GET "/api/mcp/oauth/status/$J" --check status eq succeeded
   ```
   Today the `# bug` line gets 500 `All connection attempts failed`. The same
@@ -545,8 +545,8 @@ Preconditions:
   control-agent-server api GET "/api/mcp/oauth/status/$JB" --check callback_ready eq true --until-ok 20
   control-agent-server api POST "/api/mcp/oauth/callback/$JB" --json '{"callback_url":"http://localhost:1/callback?code=x"}' --expect 400 \
     --check detail eq 'Unexpected OAuth callback URL'
-  control-agent-server api POST "/api/mcp/oauth/callback/$JB" --json '{"callback_url":"http://localhost:99999/callback?code=x"}' --expect 400 --save F19.oauth-callback-bad-port/port-99999  # bug
-  control-agent-server api POST "/api/mcp/oauth/callback/$JB" --json '{"callback_url":"http://localhost:abc/callback?code=x"}' --expect 400 --save F19.oauth-callback-bad-port/port-abc  # bug
+  control-agent-server api POST "/api/mcp/oauth/callback/$JB" --json '{"callback_url":"http://localhost:99999/callback?code=x"}' --expect 400 --save F19.oauth-callback-bad-port/port-99999  # bug: status eq 500 && response.body.exception contains 'Port out of range'
+  control-agent-server api POST "/api/mcp/oauth/callback/$JB" --json '{"callback_url":"http://localhost:abc/callback?code=x"}' --expect 400 --save F19.oauth-callback-bad-port/port-abc  # bug: status eq 500 && response.body.exception contains 'Port could not be cast to integer'
   control-agent-server api GET "/api/mcp/oauth/status/$JB" --check status eq authorizing
   ```
   Today both `# bug` posts are 500 (`Port out of range 0-65535`,

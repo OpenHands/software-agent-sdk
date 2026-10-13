@@ -362,9 +362,9 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
     --check app eq qa-backend
   control-agent-server api POST /app-backends/qa-backend/session --header 'Origin: http://localhost:3000' \
     --header 'X-Forwarded-Proto: https' --expect 200 --check ingress_url eq "$S/app-backends/qa-backend/" \
-    --save F29.session-forwarded-proto/session  # bug
+    --save F29.session-forwarded-proto/session  # bug: status eq 421 && response.body.detail contains 'must use the configured ingress origin'
   control-agent-server api GET /app-backends/qa-backend/echo --auth none --cookie "oh_app_backend_session=$FP" \
-    --header 'X-Forwarded-Proto: https' --expect 200 --check app eq qa-backend --save F29.session-forwarded-proto/proxy  # bug
+    --header 'X-Forwarded-Proto: https' --expect 200 --check app eq qa-backend --save F29.session-forwarded-proto/proxy  # bug: status eq 421 && response.body.detail contains 'must use the configured ingress origin'
   ```
   The same bootstrap and proxied GET without the header answer 200 first.
   Expected: 200 for both with the header too. Actual: 421 `Canvas App
@@ -528,11 +528,11 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
     --cookie "oh_app_backend_session=$RP" --expect 200 --check path eq / --check query.path eq echo
   control-agent-server api GET /app-backends/qa-backend --query path=echo --auth none \
     --cookie "oh_app_backend_session=$RP" --expect 200 --check path eq / --check query.path eq echo \
-    --save F29.proxy-root-path-query/get  # bug
+    --save F29.proxy-root-path-query/get  # bug: status eq 200 && response.body.path eq /echo
   control-agent-server api GET /app-backends/qa-backend --query 'path=..' --auth none \
-    --cookie "oh_app_backend_session=$RP" --expect 200 --check path eq / --check query.path eq ..  # bug
+    --cookie "oh_app_backend_session=$RP" --expect 200 --check path eq / --check query.path eq ..  # bug: status eq 400 && response.body.detail eq 'Invalid backend path'
   control-agent-server ws listen /app-backends/qa-backend --query path=ws --auth none --header "Origin: $S" \
-    --header "Cookie: oh_app_backend_session=$RP" --send qa-f29-root --duration 5 --expect-close 1011 --expect-frames 0  # bug
+    --header "Cookie: oh_app_backend_session=$RP" --send qa-f29-root --duration 5 --expect-close 1011 --expect-frames 0  # bug: first_frames.0.frame contains qa-f29-root
   ```
   The controls first: the bare root with another query parameter, and the
   trailing-slash root with `?path=echo`, both reach `/` with the query
@@ -577,11 +577,11 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   if grep -qi '"transfer-encoding"' <<<"$DIRECT_POST"; then false; fi
   control-agent-server api GET /app-backends/qa-headers/echo --auth none --cookie "oh_app_backend_session=$FR" --expect 200 \
     --check method eq GET --check body eq '' --check headers.transfer-encoding missing \
-    --save F29.proxy-request-framing/get  # bug
+    --save F29.proxy-request-framing/get  # bug: status eq 200 && response.body.headers.transfer-encoding eq chunked
   control-agent-server api POST /app-backends/qa-headers/echo --auth none --cookie "oh_app_backend_session=$FR" \
     --header "Origin: $S" --json '{"qa": "body"}' --expect 200 --check body eq '{"qa":"body"}' \
     --check headers.content-length eq 13 --check headers.transfer-encoding missing \
-    --save F29.proxy-request-framing/post  # bug
+    --save F29.proxy-request-framing/post  # bug: status eq 200 && response.body.headers.transfer-encoding eq chunked
   ```
   Directly, the backend sees no `Transfer-Encoding` on a GET and
   `Content-Length: 13` on the POST. Expected: the same through the bridge.
@@ -623,7 +623,7 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   test -n "$RH"
   control-agent-server api GET /app-backends/qa-backend/echo --auth none --cookie "oh_app_backend_session=$RH" --expect 200 \
     --check-header date matches '^[A-Z][a-z]{2}, [0-9]{2} [A-Z][a-z]{2} [0-9]{4} [0-9:]{8} GMT$' \
-    --check-header server not-contains ', ' --all-headers --save F29.proxy-response-headers/echo  # bug
+    --check-header server not-contains ', ' --all-headers --save F29.proxy-response-headers/echo  # bug: status eq 200 && checks.0.actual contains 'GMT, ' && checks.1.actual contains aiohttp
   ```
   The controls: a route the server answers itself carries one `Date` and
   `server: uvicorn`, and the backend answered directly sends one of each.
@@ -713,7 +713,7 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   control-agent-server exec --expect-output 'subprotocol=qa.v1' --expect-output '"protocol": "qa.v1"' \
     --save F29.ws-subprotocol/bridged -- "$PWD/.venv/bin/python" -c \
     'import sys; from websockets.sync.client import connect; ws = connect(sys.argv[1], subprotocols=["qa.v1"], origin=sys.argv[2], additional_headers={"Cookie": "oh_app_backend_session=" + sys.argv[3]}, proxy=None); print("subprotocol=" + str(ws.subprotocol)); ws.send("qa-f29-proto"); print(ws.recv(timeout=10)); ws.close()' \
-    "ws://127.0.0.1:$P/app-backends/qa-headers/ws" "$S" "$SP"  # bug
+    "ws://127.0.0.1:$P/app-backends/qa-headers/ws" "$S" "$SP"  # bug: stdout_tail contains subprotocol=None && stdout_tail contains '"protocol": "none"'
   ```
   The controls: directly, the backend negotiates `qa.v1`; through the
   bridge, the same client without a subprotocol gets its echo with a fresh
@@ -837,7 +837,7 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   CRASH_PID=$(control-agent-server api GET /api/canvas-extensions/installed/qa-backend/backend --expect 200 --check state eq ready --field pid)
   kill -TERM "$CRASH_PID"
   control-agent-server api GET /app-backends/qa-backend/echo --auth none --cookie "oh_app_backend_session=$CC" --until-ok 15 \
-    --expect 503 --check exception eq '503: Canvas App backend is not ready' --save F29.backend-crash-detected/crashed  # bug
+    --expect 503 --check exception eq '503: Canvas App backend is not ready' --save F29.backend-crash-detected/crashed  # bug: status eq 502 && response.body.exception contains 'Conversation container unreachable'
   control-agent-server api GET /api/canvas-extensions/installed/qa-backend/backend --expect 200 --check state ne ready
   control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json "{\"revision\": \"$REV\"}" \
     --expect 200 --check state eq ready

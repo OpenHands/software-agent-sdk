@@ -301,7 +301,7 @@ Preconditions:
     --check resolved_ref eq "$H1" --save F26.install-repo-root-name/install --field name)
   control-agent-server api DELETE "/api/plugins/installed/$N" --expect 200
   control-agent-server api GET "/api/plugins/installed/$N" --expect 404
-  test "$N" = qa-f26-src  # bug
+  control-agent-server assert --value "$N" --check . eq qa-f26-src  # bug: value matches '^qa-f26-src-[0-9a-f]{16}$'
   ```
   A manifest-less directory takes its directory's name, so the repository
   should install as `qa-f26-src`. Today it installs as
@@ -387,7 +387,7 @@ Preconditions:
   case "$DOC" in
     *"'github:OpenHands/extensions/plugins/city-weather'"*)
       control-agent-server api POST /api/plugins/install --json '{"source": "github:OpenHands/extensions/plugins/city-weather"}' \
-        --timeout 240 --expect 200 --check name eq city-weather --save F26.install-documented-source/documented  # bug
+        --timeout 240 --expect 200 --check name eq city-weather --save F26.install-documented-source/documented  # bug: status eq 400 && response.body.detail contains 'Failed to fetch plugin source'
       control-agent-server api DELETE /api/plugins/installed/city-weather --expect 200
       ;;
   esac
@@ -529,11 +529,11 @@ Preconditions:
   control-agent-server api GET /api/plugins/installed/qa-f26-adopted --expect 200 --check source eq local
   rm -rf "$F/tmp/qa-f26-gone"
   printf '{bad json' > "$F/tmp/qa-f26-broken/.plugin/plugin.json"
-  control-agent-server api POST /api/plugins/installed/qa-f26-gone/refresh --expect 400,422 --save F26.refresh-unfetchable/vanished  # bug
+  control-agent-server api POST /api/plugins/installed/qa-f26-gone/refresh --expect 400,422 --save F26.refresh-unfetchable/vanished  # bug: status eq 500 && response.body.exception contains 'Local extension path does not exist'
   control-agent-server api GET /api/plugins/installed/qa-f26-gone --expect 200 --check enabled eq true
-  control-agent-server api POST /api/plugins/installed/qa-f26-broken/refresh --expect 422 --save F26.refresh-unfetchable/invalid  # bug
+  control-agent-server api POST /api/plugins/installed/qa-f26-broken/refresh --expect 422 --save F26.refresh-unfetchable/invalid  # bug: status eq 500 && response.body.exception contains 'Invalid JSON'
   control-agent-server api GET /api/plugins/installed/qa-f26-broken --expect 200 --check version eq 0.1.0
-  control-agent-server api POST /api/plugins/installed/qa-f26-adopted/refresh --expect 400,422 --save F26.refresh-unfetchable/local  # bug
+  control-agent-server api POST /api/plugins/installed/qa-f26-adopted/refresh --expect 400,422 --save F26.refresh-unfetchable/local  # bug: status eq 500 && response.body.exception contains 'Unable to parse extension source'
   control-agent-server api GET /api/plugins/installed/qa-f26-adopted --expect 200 --check source eq local
   ```
   The install route answers an unfetchable source with 400 and an invalid
@@ -646,9 +646,9 @@ Preconditions:
   control-agent-server ws read qa-f26-resume --kinds MessageEvent --contains '"text": "/qa-f26-inst:qa-hello"' --expect-min 1 --wait 30
   control-agent-server ws read qa-f26-resume --kinds HookExecutionEvent --contains QA_F26_INST_HOOK --expect-none
   control-agent-server ws stop qa-f26-resume --kinds MessageEvent --contains '"activated_skills": ["qa-f26-inst:qa-hello"]' --expect-none \
-    --save F26.conversation-resume-disabled/frames  # bug
+    --save F26.conversation-resume-disabled/frames  # bug: matching ge 1
   control-agent-server api GET "/api/conversations/$CIDR" --query include_skills=true --expect 200 \
-    --check agent.agent_context.skills not-contains qa-f26-inst --save F26.conversation-resume-disabled/conversation  # bug
+    --check agent.agent_context.skills not-contains qa-f26-inst --save F26.conversation-resume-disabled/conversation  # bug: status eq 200 && response.body.agent.agent_context.skills contains qa-f26-inst
   ```
   The conversation loaded the plugin before it was disabled (its hook ran
   for the prompt). Ambient plugins are not pinned to a conversation; on

@@ -280,7 +280,7 @@ Preconditions:
   control-agent-server api POST /api/profiles/qa-f09-edit --json '{"llm": {"model": "openai/qa-f09-edit-2", "api_key": "sk-qa-f09-edit", "base_url": "http://127.0.0.1:9/v1"}}' --expect 201
   control-agent-server api GET /api/profiles/qa-f09-edit --quiet --check config.model eq openai/qa-f09-edit-2
   control-agent-server api POST "/api/conversations/$EID/switch_profile" --json '{"profile_name": "qa-f09-edit"}' --expect 200 --save F09.switch-profile-edited/switch-again
-  control-agent-server api GET "/api/conversations/$EID" --quiet --check agent.llm.model eq openai/qa-f09-edit-2 --save F09.switch-profile-edited/get  # bug
+  control-agent-server api GET "/api/conversations/$EID" --quiet --check agent.llm.model eq openai/qa-f09-edit-2 --save F09.switch-profile-edited/get  # bug: status eq 200 && checks.0.actual eq openai/qa-f09-edit-1
   ```
   The first switch installs `openai/qa-f09-edit-1` and the profile then
   reads back as `openai/qa-f09-edit-2`. Expected: the second switch installs
@@ -307,7 +307,7 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$KID" --quiet --check agent.llm.usage_id eq default --check execution_status eq idle
   ST=$(control-agent-server api POST "/api/conversations/$KID/switch_llm" --json "{\"llm\": $PRO}" \
     --expect 200,400,409,422 --save F09.switch-llm-registered-usage-id/switch | jq -r .status)
-  test "$ST" != 200 || control-agent-server api GET "/api/conversations/$KID" --quiet --check agent.llm.model eq deepseek/deepseek-v4-pro --save F09.switch-llm-registered-usage-id/get  # bug
+  test "$ST" != 200 || control-agent-server api GET "/api/conversations/$KID" --quiet --check agent.llm.model eq deepseek/deepseek-v4-pro --save F09.switch-llm-registered-usage-id/get  # bug: status eq 200 && checks.0.actual eq openai/qa-placeholder
   ```
   The profile config carries `usage_id: default`, and the fresh conversation
   switches to `deepseek/deepseek-v4-pro`. Expected: the initialized one
@@ -332,7 +332,7 @@ Preconditions:
   control-agent-server conversation send "$BID" --text 'Reply with the single word: ok' --wait --until finished,error --timeout 240
   control-agent-server api GET "/api/conversations/$BID" --quiet --check execution_status eq finished --check agent.llm.usage_id eq qa-f09-early
   control-agent-server api GET "/api/conversations/$BID" --until-ok 20 --quiet \
-    --check stats.usage_to_metrics.qa-f09-early.accumulated_token_usage.prompt_tokens gt 0 --save F09.switch-llm-before-first-run/stats  # bug
+    --check stats.usage_to_metrics.qa-f09-early.accumulated_token_usage.prompt_tokens gt 0 --save F09.switch-llm-before-first-run/stats  # bug: status eq 200 && checks.0.actual eq null
   ```
   The run finishes, which only the switched model can do (the placeholder
   points at a closed port). Expected: its tokens are recorded under
@@ -376,8 +376,8 @@ Preconditions:
     --expect 200 --save F09.switch-llm-mid-run-get/switch
   control-agent-server ws read qa-f09-midget --kinds ConversationStateUpdateEvent --contains '"usage_id": "qa-f09-midget"' --expect-min 1 --wait 10 --save F09.switch-llm-mid-run-get/frames
   control-agent-server api GET "/api/conversations/$GID" --quiet --check execution_status eq running
-  control-agent-server api GET "/api/conversations/$GID" --quiet --check agent.llm.usage_id eq qa-f09-midget --save F09.switch-llm-mid-run-get/get  # bug
-  control-agent-server state cat "server/workspace/conversations/${GID//-/}/base_state.json" --max-chars 200 --check agent.llm.usage_id eq qa-f09-midget  # bug
+  control-agent-server api GET "/api/conversations/$GID" --quiet --check agent.llm.usage_id eq qa-f09-midget --save F09.switch-llm-mid-run-get/get  # bug: status eq 200 && checks.0.actual eq default
+  control-agent-server state cat "server/workspace/conversations/${GID//-/}/base_state.json" --max-chars 200 --check agent.llm.usage_id eq qa-f09-midget  # bug: checks.0.actual eq default
   control-agent-server conversation wait "$GID" --until finished,error --timeout 240
   control-agent-server api GET "/api/conversations/$GID" --quiet --check execution_status eq finished --check agent.llm.usage_id eq qa-f09-midget
   ```
@@ -430,8 +430,8 @@ Preconditions:
   ```sh
   AID2=$(control-agent-server conversation start --no-autotitle --body-json '{"agent_settings": {"agent_kind": "acp", "acp_server": "claude-code", "acp_model": "sonnet"}}' --print-id)
   control-agent-server api GET "/api/conversations/$AID2" --quiet --check agent.kind eq ACPAgent --check agent.acp_model eq sonnet --check execution_status eq idle
-  control-agent-server api POST "/api/conversations/$AID2/switch_acp_model" --json '{"model": "   "}' --expect 400,422 --save F09.acp-model-blank/blank  # bug
-  control-agent-server api GET "/api/conversations/$AID2" --quiet --check agent.acp_model eq sonnet --check current_model_id eq sonnet  # bug
+  control-agent-server api POST "/api/conversations/$AID2/switch_acp_model" --json '{"model": "   "}' --expect 400,422 --save F09.acp-model-blank/blank  # bug: status eq 200 && response.body.success eq true
+  control-agent-server api GET "/api/conversations/$AID2" --quiet --check agent.acp_model eq sonnet --check current_model_id eq sonnet  # bug: status eq 200 && checks.0.actual eq '   ' && checks.1.actual eq '   '
   ```
   Expected: refused, as `ACPAgent.set_acp_model` refuses an empty or
   whitespace-only model on a live session (`model must be a non-empty
@@ -443,11 +443,11 @@ Preconditions:
   ```sh
   AID3=$(control-agent-server conversation start --no-autotitle --body-json '{"agent_settings": {"agent_kind": "acp", "acp_server": "claude-code", "acp_model": "sonnet"}}' --print-id)
   control-agent-server api GET "/api/conversations/$AID3" --quiet --check agent.llm.usage_id eq acp-managed --check agent.llm.model eq sonnet
-  control-agent-server api POST "/api/conversations/$AID3/switch_profile" --json '{"profile_name": "deepseek-pro"}' --expect 400,409,422 --save F09.switch-llm-acp-refused/switch-profile  # bug
+  control-agent-server api POST "/api/conversations/$AID3/switch_profile" --json '{"profile_name": "deepseek-pro"}' --expect 400,409,422 --save F09.switch-llm-acp-refused/switch-profile  # bug: status eq 200 && response.body.success eq true
   control-agent-server api POST "/api/conversations/$AID3/switch_llm" \
     --json '{"llm": {"model": "openai/qa-f09-acp", "api_key": "sk-qa-f09-acp", "base_url": "http://127.0.0.1:9/v1", "usage_id": "qa-f09-acp"}}' \
-    --expect 400,409,422 --save F09.switch-llm-acp-refused/switch-llm  # bug
-  control-agent-server api GET "/api/conversations/$AID3" --quiet --check agent.llm.usage_id eq acp-managed --check agent.acp_model eq sonnet  # bug
+    --expect 400,409,422 --save F09.switch-llm-acp-refused/switch-llm  # bug: status eq 200 && response.body.success eq true
+  control-agent-server api GET "/api/conversations/$AID3" --quiet --check agent.llm.usage_id eq acp-managed --check agent.acp_model eq sonnet  # bug: status eq 200 && checks.0.actual eq qa-f09-acp && checks.1.ok eq true
   ```
   The ACP agent starts with `usage_id` `acp-managed` and the model name
   `sonnet`. Expected: both switches are refused with a 4xx (400 would mirror
@@ -513,7 +513,7 @@ Preconditions:
   ```sh
   control-agent-server api GET "/api/conversations/$LID" --quiet --check supports_runtime_model_switch eq true \
     --check available_models contains '"model_id": "sonnet"' --check available_models not-contains qa-f09-nope
-  control-agent-server api POST "/api/conversations/$LID/switch_acp_model" --json '{"model": "qa-f09-nope"}' --expect 400,422 --save F09.acp-model-live-unknown/switch  # bug
+  control-agent-server api POST "/api/conversations/$LID/switch_acp_model" --json '{"model": "qa-f09-nope"}' --expect 400,422 --save F09.acp-model-live-unknown/switch  # bug: status eq 500 && response.body.exception contains 'Internal error'
   ```
   Expected: a client error, as `ACPAgent.set_acp_model` documents ("the ACP
   server rejects the model-switch call (e.g. ... an invalid model id)" is a
@@ -603,7 +603,7 @@ Preconditions:
   ```sh
   grep -n 'async switchAcpModel(' clients/typescript/src/client/conversation-client.ts
   grep -n 'async switchAcpModel(' clients/typescript/src/conversation/remote-conversation.ts
-  if grep -n 'returns 409 before the first message' clients/typescript/src/client/conversation-client.ts clients/typescript/src/conversation/remote-conversation.ts; then false; fi  # bug
+  control-agent-server assert --value "$(cat clients/typescript/src/client/conversation-client.ts clients/typescript/src/conversation/remote-conversation.ts | grep -c 'returns 409 before the first message')" --check . eq 0  # bug: value ge 1
   ```
   Expected: the docstrings of `ConversationClient.switchAcpModel` and
   `RemoteConversation.switchAcpModel` say what `F09.acp-model-deferred` and
@@ -698,7 +698,7 @@ Preconditions:
   control-agent-server api POST "/api/conversations/$QID/load_plugin" --json '{"plugin_ref": "qa-f09-mkt-plugin@qa-f09-mkt"}' --expect 200 --save F09.load-plugin-twice/second-load
   control-agent-server api GET "/api/conversations/$QID" --query include_skills=true --quiet \
     --check agent.agent_context.skills len-eq 2 --check agent.agent_context.skills contains qa-f09-mkt-plugin-skill --check hook_config.user_prompt_submit len-ge 1
-  control-agent-server api GET "/api/conversations/$QID" --quiet --check hook_config.user_prompt_submit len-eq 1 --save F09.load-plugin-twice/get  # bug
+  control-agent-server api GET "/api/conversations/$QID" --quiet --check hook_config.user_prompt_submit len-eq 1 --save F09.load-plugin-twice/get  # bug: status eq 200 && checks.0.actual contains 'echo QA_PLUGIN_HOOK'
   ```
   The second load is 200 and the skills are not duplicated (still two).
   Expected: one copy of the hook as well. Today `hook_config.user_prompt_submit`

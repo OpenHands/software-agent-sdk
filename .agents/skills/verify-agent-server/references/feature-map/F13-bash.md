@@ -430,7 +430,7 @@ Preconditions:
   control-agent-server api GET /api/bash/bash_events/search --query kind__eq=BashCommand \
     --query timestamp__gte="$GTE_UTC" --check items contains "$TZ_CMD" --save F13.timestamp-offset/utc
   control-agent-server api GET /api/bash/bash_events/search --query kind__eq=BashCommand \
-    --query timestamp__gte="$GTE_PLUS2" --check items contains "$TZ_CMD" --save F13.timestamp-offset/plus-two  # bug
+    --query timestamp__gte="$GTE_PLUS2" --check items contains "$TZ_CMD" --save F13.timestamp-offset/plus-two  # bug: status eq 200 && checks.0.actual eq '[]'
   ```
   Expected: both searches contain the command. Today the `Z` window does (the
   positive control) and the `+02:00` window, the `# bug` assertion, is
@@ -474,7 +474,7 @@ Preconditions:
     --check next_page_id missing --quiet --save F13.order-gt-paging/limit-2
   control-agent-server api GET /api/bash/bash_events/search --query command_id__eq="$BIG_CMD" \
     --query order__gt=0 --query limit=1 --check items len-eq 1 --check items.0.order eq 1 \
-    --quiet --save F13.order-gt-paging/limit-1  # bug
+    --quiet --save F13.order-gt-paging/limit-1  # bug: status eq 200 && checks.0.actual eq '[]'
   ```
   With a page that holds both chunks, `order__gt=0` keeps only chunk 1 (the
   positive control: the filter works). Expected: the one-item page holds
@@ -493,7 +493,7 @@ Preconditions:
   ```sh
   control-agent-server api POST /api/bash/execute_bash_command \
     --json '{"command": "yes a | head -c 1100000; echo QA_F13_TAIL", "timeout": 60}' --expect 200 \
-    --check exit_code eq 0 --check stdout len-eq 1100012 --quiet --save F13.execute-large-output/execute  # bug
+    --check exit_code eq 0 --check stdout len-eq 1100012 --quiet --save F13.execute-large-output/execute  # bug: status eq 200 && checks.0.ok eq true && response.headers.content-length lt 1100012
   ```
   Expected: `stdout` holds all 1,100,012 characters (`exit_code` 0 holds
   either way; the length check is the one that fails). Today the response is
@@ -771,9 +771,9 @@ Preconditions:
   ```sh
   control-agent-server api GET "/api/conversations/$CID/bash/bash_events/search" --expect 200
   control-agent-server api GET /api/conversations/not-a-uuid/bash/bash_events/search --expect 422 \
-    --save F13.scoped-bad-id/search  # bug
+    --save F13.scoped-bad-id/search  # bug: status eq 500 && response.body.exception contains runtime_event_service
   control-agent-server api POST /api/conversations/not-a-uuid/bash/execute_bash_command \
-    --json '{"command": "echo QA_F13_BADID"}' --expect 422  # bug
+    --json '{"command": "echo QA_F13_BADID"}' --expect 422  # bug: status eq 500 && response.body.exception contains runtime_event_service
   ```
   The same search on a real conversation id answers 200 (the positive
   control). Expected: 422 for `not-a-uuid`. Today every scoped bash route answers 500
@@ -807,7 +807,7 @@ Preconditions:
   done
   control-agent-server logs --run "$EV" --grep 'Evicted idle' --expect-min 1
   sleep 3
-  pgrep -f "$EV_MARK"  # bug
+  control-agent-server assert --value "$(pgrep -fc "$EV_MARK")" --check . ge 1  # bug: value eq 0
   control-agent-server api POST "/api/conversations/$EV_CID/bash/bash_commands/$EV_CMD/stop" --run "$EV" --expect 200
   control-agent-server api GET "/api/conversations/$EV_CID/bash/bash_events/search" --run "$EV" \
     --query command_id__eq="$EV_CMD" --until-ok 15 --check items.-1.exit_code eq -15
