@@ -1787,10 +1787,17 @@ def test_llm_summarizing_condenser_explicit_none_max_tokens_remains_unset() -> N
 
 
 def test_llm_summarizing_condenser_settings_match_condenser_fields() -> None:
+    # The mirror invariant: every condenser knob is configurable via settings.
+    # ``llm`` / ``llm_profile_ref`` are the deliberate exceptions — they are not
+    # condenser-knob mirrors but the routing config for which LLM runs the
+    # summarization (#5469); ``llm`` exists on the condenser itself, so only the
+    # ref is a settings-only field.
     condenser_fields = set(LLMSummarizingCondenser.model_fields) - {"llm"}
     settings_fields = set(LLMSummarizingCondenserSettings.model_fields) - {
         "enabled",
         "condenser_kind",
+        "llm",
+        "llm_profile_ref",
     }
 
     assert settings_fields == condenser_fields

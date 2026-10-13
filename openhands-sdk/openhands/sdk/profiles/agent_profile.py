@@ -258,6 +258,24 @@ class OpenHandsAgentProfile(AgentProfileBase):
             data, owner="OpenHandsAgentProfile", enable_browser=True
         )
 
+    @field_validator("condenser")
+    @classmethod
+    def _strip_embedded_condenser_llm(
+        cls, condenser: CondenserSettingsConfig
+    ) -> CondenserSettingsConfig:
+        """Keep the profile secret-free: refs resolve at launch, never payloads.
+
+        A stored condenser may carry a resolved ``llm`` if a caller validated a
+        payload straight from resolved settings. The LLM object is the launch's
+        copy; the portable form is ``llm_profile_ref``, so the embedded object
+        is dropped on ingest (see #5469). Stripped here so any write path —
+        save(), rename, direct model_validate — enforces the invariant.
+        """
+        if isinstance(condenser, LLMSummarizingCondenserSettings):
+            if condenser.llm is not None:
+                return condenser.model_copy(update={"llm": None})
+        return condenser
+
     @field_validator("tools")
     @classmethod
     def _canonicalize_tools(cls, tools: list[Tool] | None) -> list[Tool] | None:

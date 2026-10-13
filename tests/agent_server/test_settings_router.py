@@ -244,6 +244,10 @@ def test_get_settings_migrates_legacy_openhands_settings_and_resaves_current(
         "minimum_progress": 0.1,
         "hard_context_reset_max_retries": 5,
         "hard_context_reset_context_scaling": 0.8,
+        # #5469: dedicated condenser LLM. Both unset for a legacy payload —
+        # the ref is portable, the embedded LLM is launch-resolved.
+        "llm_profile_ref": None,
+        "llm": None,
     }
     assert agent_settings["verification"]["critic_enabled"] is True
     assert "confirmation_mode" not in agent_settings["verification"]
@@ -900,6 +904,9 @@ def test_patch_settings_updates_condenser_config(client_with_settings):
         "minimum_progress": 0.2,
         "hard_context_reset_max_retries": 7,
         "hard_context_reset_context_scaling": 0.6,
+        # #5469: both unset — the diff never touched the condenser LLM split.
+        "llm_profile_ref": None,
+        "llm": None,
     }
 
 

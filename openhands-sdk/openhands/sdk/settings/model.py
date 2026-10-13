@@ -293,6 +293,51 @@ class LLMSummarizingCondenserSettings(CondenserSettings):
             ).model_dump()
         },
     )
+    llm: LLM | None = Field(
+        default=None,
+        description=(
+            "LLM used for summarization. ``None`` (the default) summarizes with "
+            "the agent's own LLM. A profile launch embeds the resolved LLM named "
+            "by the profile's ``condenser.llm_profile_ref``; direct code may "
+            "build an ``LLM`` itself. Like the top-level agent ``llm``, it "
+            "persists with the resolved settings and round-trips through the "
+            "cipher; agent profiles strip it at validation (profiles are "
+            "secret-free at rest; the ref is the portable form)."
+        ),
+    )
+    llm_profile_ref: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Name of a saved LLM profile to use for condensation instead of the "
+            "agent's LLM. A reference, not a credential: the profile launch "
+            "resolves it against the LLM profile store and embeds the result in "
+            ":attr:`llm`, so a resolved ``AgentSettings`` stays store-free. "
+            "Unset means the condenser follows the agent LLM."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Condenser LLM profile",
+                prominence=SettingProminence.MAJOR,
+                depends_on=("enabled",),
+            ).model_dump()
+        },
+    )
+
+    @model_validator(mode="after")
+    def _validate_llm_profile_ref(self) -> LLMSummarizingCondenserSettings:
+        if (
+            self.llm is not None
+            and self.llm_profile_ref is not None
+            and self.llm.usage_id != self.llm_profile_ref
+        ):
+            raise ValueError(
+                "condenser.llm does not match condenser.llm_profile_ref: the "
+                f"embedded LLM has usage_id {self.llm.usage_id!r} but the ref "
+                f"names {self.llm_profile_ref!r}. The launch embeds the profile "
+                "named by the ref; do not hand-write both."
+            )
+        return self
 
     def build_condenser(self, llm: LLM) -> LLMSummarizingCondenser | None:
         """Create a condenser from these settings, or ``None`` if disabled."""
@@ -301,17 +346,32 @@ class LLMSummarizingCondenserSettings(CondenserSettings):
 
         from openhands.sdk.context.condenser import LLMSummarizingCondenser
 
-        condenser_llm = llm.model_copy(update={"usage_id": "condenser"})
-        condenser_llm.reset_metrics()
+        # The agent's own LLM summarizes unless these settings carry a dedicated
+        # LLM (embedded at launch from the profile's ``llm_profile_ref``).
+        # A dedicated LLM keeps its usage_id — that is the store-key marker
+        # switch_llm uses to leave it alone — except when it would collide with
+        # the agent's own registry key, which would dedup its tokens out of
+        # conversation stats (same rule as the sub-agent condenser spawn).
+        if self.llm is not None:
+            usage_id = (
+                "condenser" if self.llm.usage_id == llm.usage_id else self.llm.usage_id
+            )
+            condenser_llm = self.llm.model_copy(update={"usage_id": usage_id})
+            condenser_llm.reset_metrics()
+        else:
+            condenser_llm = llm.model_copy(update={"usage_id": "condenser"})
+            condenser_llm.reset_metrics()
         condenser_kwargs = self.model_dump(
-            exclude={"enabled", "condenser_kind"},
+            exclude={"enabled", "condenser_kind", "llm", "llm_profile_ref"},
             exclude_none=True,
         )
         # If the user didn't explicitly configure a condenser token limit, inherit
-        # the agent LLM's effective max input tokens so condensation can be
-        # triggered by token count, not just event count.
+        # the condenser LLM's effective max input tokens so condensation can be
+        # triggered by token count, not just event count. The agent's own budget
+        # is irrelevant when the two models differ: a cheap 8k-context condenser
+        # must not be allowed to overflow a 1M-token agent window.
         if "max_tokens" not in self.model_fields_set:
-            effective_max_input_tokens = llm.effective_max_input_tokens
+            effective_max_input_tokens = condenser_llm.effective_max_input_tokens
             if effective_max_input_tokens is not None:
                 condenser_kwargs["max_tokens"] = effective_max_input_tokens
         return LLMSummarizingCondenser(llm=condenser_llm, **condenser_kwargs)
