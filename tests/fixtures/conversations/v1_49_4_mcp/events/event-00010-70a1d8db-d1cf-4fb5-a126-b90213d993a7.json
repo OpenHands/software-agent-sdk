@@ -1,0 +1,30 @@
+{
+  "id": "70a1d8db-d1cf-4fb5-a126-b90213d993a7",
+  "timestamp": "2026-09-23T09:42:20.029894",
+  "source": "agent",
+  "parent_id": "0dda6e42-e284-44df-afb7-407e333d1a9c",
+  "thought": [
+    {
+      "cache_prompt": false,
+      "type": "text",
+      "text": ""
+    }
+  ],
+  "thinking_blocks": [],
+  "action": {
+    "message": "done",
+    "kind": "FinishAction"
+  },
+  "tool_name": "finish",
+  "tool_call_id": "call_finish",
+  "tool_call": {
+    "id": "call_finish",
+    "name": "finish",
+    "arguments": "{\"message\": \"done\"}",
+    "origin": "completion"
+  },
+  "llm_response_id": "test-response-5",
+  "security_risk": "UNKNOWN",
+  "summary": "finish: {\"message\": \"done\"}",
+  "kind": "ActionEvent"
+}
