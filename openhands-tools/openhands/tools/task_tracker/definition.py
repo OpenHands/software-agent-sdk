@@ -46,9 +46,11 @@ class TaskTrackerAction(Action):
         default="view",
         description="The command to execute. `view` shows the current task list. `plan` creates or updates the task list based on provided requirements and progress. Always `view` the current list before making changes.",  # noqa: E501
     )
-    task_list: list[TaskItem] = Field(
-        default_factory=list,
-        description="The full task list. Required parameter of `plan` command.",
+    task_list: list[TaskItem] | None = Field(
+        default=None,
+        description="The full task list. Required parameter of `plan` command. "
+        "Pass an explicit empty list to clear all tasks; omitting it is an error "
+        "rather than a silent wipe.",
     )
 
     @property
@@ -155,7 +157,7 @@ class TaskTrackerExecutor(ToolExecutor[TaskTrackerAction, TaskTrackerObservation
 
         Args:
             save_dir: Optional directory to save tasks to. If provided, tasks will be
-                     persisted to save_dir/TASKS.md
+                     persisted to save_dir/TASKS.json
         """
         self.save_dir = Path(save_dir) if save_dir else None
         logger.info(f"TaskTrackerExecutor initialized with save_dir: {self.save_dir}")
@@ -172,6 +174,20 @@ class TaskTrackerExecutor(ToolExecutor[TaskTrackerAction, TaskTrackerObservation
     ) -> TaskTrackerObservation:
         """Execute the task tracker action."""
         if action.command == "plan":
+            if action.task_list is None:
+                # The field is documented as required for `plan`, but it is
+                # omittable in the schema. Treating an omitted list as "set to
+                # empty" silently destroys the saved tasks while reporting
+                # success, so refuse it and tell the model what to send.
+                return TaskTrackerObservation.from_text(
+                    text=(
+                        "The `plan` command requires `task_list`. Pass the full "
+                        "task list, or an explicit empty list to clear all tasks."
+                    ),
+                    is_error=True,
+                    command=action.command,
+                    task_list=self._task_list,
+                )
             # Update the task list
             self._task_list = action.task_list
             # Save to file if save_dir is provided
@@ -427,7 +443,7 @@ class TaskTrackerTool(ToolDefinition[TaskTrackerAction, TaskTrackerObservation])
                 observation_type=TaskTrackerObservation,
                 annotations=ToolAnnotations(
                     readOnlyHint=False,
-                    destructiveHint=False,
+                    destructiveHint=True,
                     idempotentHint=True,
                     openWorldHint=False,
                 ),
