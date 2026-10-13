@@ -18,7 +18,7 @@ from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
-from openhands.sdk.conversation.secret_registry import SecretValue
+from openhands.sdk.conversation.secret_registry import SecretRegistry, SecretValue
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -872,6 +872,7 @@ class LocalConversation(BaseConversation):
                 stuck_detection=self._stuck_detector is not None,
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
+                cipher=self._cipher,
                 tags=tags,
                 _parent_llm_call_context=self._llm_call_context,
             )
@@ -910,6 +911,14 @@ class LocalConversation(BaseConversation):
                 self._state.activated_path_rules
             )
             fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
+
+            # Runtime-added secrets (update_secrets) live only in the source's
+            # registry; __init__ re-seeded only agent_context/request secrets.
+            # Reassigning the public field triggers the autosave, so the fork's
+            # base_state.json persists them encrypted with its cipher.
+            fork_conv._state.secret_registry = SecretRegistry(
+                secret_sources=dict(self._state.secret_registry.secret_sources)
+            )
 
             # Copy title via tags if provided
             if title is not None:
