@@ -253,7 +253,7 @@ Preconditions:
   control-agent-server api GET /api/git/changes --query path="$F/ws/proj" --expect 200 --check . len-eq 2 \
     --check 0.path eq README.md --check 1.path eq notes.txt
   control-agent-server api GET /api/git/changes --query path="$F/ws" --expect 200 --check . len-eq 2 \
-    --check 0.path eq proj/README.md --check 1.path eq proj/notes.txt --save F15.changes-repo-below-path/ws  # bug
+    --check 0.path eq proj/README.md --check 1.path eq proj/notes.txt --save F15.changes-repo-below-path/ws  # bug: status eq 200 && response.body len-eq 0
   ```
   `$F/ws` itself is not a repository and the repository below it answers
   with its two changes (positive control). Expected: the repository's two
@@ -277,11 +277,11 @@ Preconditions:
   rm "$F/names/untracked note.md"
   printf 'a2\n' > "$F/names/my notes.md"
   control-agent-server api GET /api/git/changes --query path="$F/names" --expect 200 --check . len-eq 1 \
-    --check 0.status eq UPDATED --check 0.path eq 'my notes.md' --save F15.changes-special-names/space  # bug
+    --check 0.status eq UPDATED --check 0.path eq 'my notes.md' --save F15.changes-special-names/space  # bug: status eq 400 && response.body.detail contains 'Unexpected git diff output format'
   git -C "$F/names" checkout -q -- 'my notes.md'
   printf 'b2\n' > "$F/names/café.txt"
   control-agent-server api GET /api/git/changes --query path="$F/names" --expect 200 --check . len-eq 1 \
-    --check 0.path eq café.txt --save F15.changes-special-names/non-ascii  # bug
+    --check 0.path eq café.txt --save F15.changes-special-names/non-ascii  # bug: status eq 200 && response.body.0.path contains 303/251
   ```
   The committed repository answers for an untracked name with a space
   (positive control: the route and the space in a name are fine on their
@@ -306,12 +306,12 @@ Preconditions:
     --check 0.path eq README.md --check 1.path eq notes.txt --check 2.path eq src/app.py --check 3.path eq src/new.py
   control-agent-server api GET /api/git/changes --query path="$F/subdir/src" --expect 200 \
     --raw-out "$F/subdir.json" --save F15.changes-subdir-paths/src
-  python3 - "$F/subdir.json" "$F/subdir/src" "$F/subdir" <<'PY'  # bug
+  python3 - "$F/subdir.json" "$F/subdir/src" "$F/subdir" <<'PY' | control-agent-server assert --check paths len-ge 1 --check bases len-ge 1  # bug: value.paths eq '["README.md", "new.py", "src/app.py"]' && value.bases len-eq 0
   import json, os, sys
   changes = json.load(open(sys.argv[1]))
-  paths = [c["path"] for c in changes if c["status"] != "DELETED"]
+  paths = sorted(c["path"] for c in changes if c["status"] != "DELETED")
   bases = [b for b in sys.argv[2:] if all(os.path.exists(os.path.join(b, p)) for p in paths)]
-  assert paths and bases, f"no single base resolves every path: {changes}"
+  print(json.dumps({"paths": paths, "bases": bases}))
   PY
   ```
   The repository root lists all four changes on one base (positive
@@ -423,7 +423,8 @@ Preconditions:
   for name in crlf lead trail; do
     control-agent-server api GET /api/git/diff --query path="$F/ws-files/$name.txt" --query ref=HEAD --expect 200 \
       --check modified len-ge 1 --raw-out "$F/ws-$name.json" --save "F15.diff-whitespace/$name"
-    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["original"] == d["modified"], d' "$F/ws-$name.json"  # bug
+    jq '{original, modified, same: (.original == .modified), strip_only: (.original == (.modified | gsub("^\\s+|\\s+$"; "")))}' "$F/ws-$name.json" \
+      | control-agent-server assert --check same eq true  # bug: value.same eq false && value.strip_only eq true
   done
   ```
   Expected: identical sides for every unchanged file (`changes` is `[]`).
@@ -442,7 +443,7 @@ Preconditions:
   control-agent-server api GET /api/git/changes --query path="$F/deleted" --expect 200 \
     --check 2.status eq DELETED --check 2.path eq src/util.py
   control-agent-server api GET /api/git/diff --query path="$F/deleted/src/util.py" --expect 200 \
-    --check original eq "$(git -C "$REPO" show HEAD:src/util.py)" --check modified eq '' --save F15.diff-deleted-file/diff  # bug
+    --check original eq "$(git -C "$REPO" show HEAD:src/util.py)" --check modified eq '' --save F15.diff-deleted-file/diff  # bug: status eq 400 && response.body.detail contains 'File does not exist'
   ```
   Expected: the base text as `original` and `""` as `modified`, as the
   commit-mode diff already does for deleted files. Actual:

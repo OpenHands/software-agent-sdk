@@ -414,7 +414,7 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
     --check stats.usage_to_metrics.default.accumulated_token_usage.prompt_tokens eq 13 \
     --check stats.usage_to_metrics.default.accumulated_token_usage.completion_tokens eq 7 --quiet
   control-agent-server state cat fixtures/qa-f30/usage-2.json --check usage.prompt_tokens eq 3 \
-    --check usage.completion_tokens eq 2 --check usage.total_tokens eq 5  # bug
+    --check usage.completion_tokens eq 2 --check usage.total_tokens eq 5  # bug: content.usage.prompt_tokens eq 13 && content.usage.completion_tokens eq 7 && content.usage.total_tokens eq 20
   ```
   The stub got exactly two model calls, one per request, so the second
   request's own usage is the stub's 3/2/5: the conversation's stats hold one
@@ -456,7 +456,7 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
     --check items.1.llm_message.content.0.text eq QA_F30_RACE_B --check items.2.llm_message.content.0.text eq QA_F30_RACE_C \
     --save F30.chat-reuse-concurrent/agent-messages
   wait "$XPID" || { cat "$F30/race-x.out"; false; }
-  control-agent-server state cat fixtures/qa-f30/race-x.json --check choices.0.message.content eq QA_F30_RACE_B  # bug
+  control-agent-server state cat fixtures/qa-f30/race-x.json --check choices.0.message.content eq QA_F30_RACE_B  # bug: content.choices.0.message.content eq QA_F30_RACE_C
   ```
   The conversation answers X with `QA_F30_RACE_B` and finishes, then reruns
   for Y and answers `QA_F30_RACE_C`; Y gets `QA_F30_RACE_C`, and X's request
@@ -630,7 +630,7 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   test ! -e "$AGENT_SERVER_VERIFY_RUN/server/workspace/project/qa_f30_reconf.txt"
   wait "$XPID" || { cat "$F30/reconf-2.json"; false; }
   control-agent-server state cat fixtures/qa-f30/reconf-2.json --check status eq 409 \
-    --check response.body.detail eq 'Agent run ended with status: waiting_for_confirmation' --check elapsed_ms lt 30000  # bug
+    --check response.body.detail eq 'Agent run ended with status: waiting_for_confirmation' --check elapsed_ms lt 30000  # bug: content.status eq 504 && content.response.body.exception contains 'Agent run timed out'
   ```
   The second turn's model call proposes the command and the conversation is
   `waiting_for_confirmation` within seconds (the command not run), while the
@@ -698,7 +698,7 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
     --expect 429 --expect-max-ms 10000 --save F30.chat-reuse-run-limit-429/retry
   control-agent-server api GET "/api/conversations/$HOLD2" --check execution_status eq running --quiet
   control-agent-server api GET "/api/conversations/$CID/events/search" --query source=user --query body=QA_F30_429_REUSE \
-    --check items len-eq 0 --save F30.chat-reuse-run-limit-429/user-messages  # bug
+    --check items len-eq 0 --save F30.chat-reuse-run-limit-429/user-messages  # bug: status eq 200 && response.body.items len-ge 1 && response.body.items.0.source eq user
   ```
   Both tries are refused with 429 at once while the holder still runs, and
   the same `body` search finds an earlier user turn of `CID` (so an empty

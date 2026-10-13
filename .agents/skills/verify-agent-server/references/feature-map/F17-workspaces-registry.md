@@ -177,7 +177,7 @@ Preconditions:
   control-agent-server api DELETE /api/workspaces/parents --query path=/qa-f17/never --expect 404 \
     --check detail eq 'Workspace parent not found'
   control-agent-server api GET /api/workspaces --expect 200 --check workspaces len-eq 0 --check workspaceParents len-eq 0
-  control-agent-server state ls home/.openhands/workspaces.json --expect-count 0  # bug
+  control-agent-server state ls home/.openhands/workspaces.json --expect-count 0  # bug: count eq 1
   ```
   Expected: both deletes are 404 and, like the read before them, leave no
   file. Today the first 404 creates `workspaces.json` with two empty lists
@@ -266,17 +266,17 @@ Preconditions:
   test "$(stat -c '%i %y' "$WS")" = "$STAMP"
   control-agent-server api POST /api/workspaces --json-file "$F17/readd.json" --expect 200 --check workspaces len-eq 5 \
     --check workspaces.0.name eq qa-f17-repo --save F17.noop-write-untouched/readd
-  test "$(stat -c '%i %y' "$WS")" = "$STAMP"  # bug
+  control-agent-server assert --value "$(stat -c '%i %y' "$WS")" --check . eq "$STAMP"  # bug: value matches '^[0-9]+ [0-9]{4}-[0-9]{2}-[0-9]{2} '
   control-agent-server api DELETE /api/workspaces --query path=/qa-f17/never --expect 404
-  test "$(stat -c '%i %y' "$WS")" = "$STAMP"  # bug
+  control-agent-server assert --value "$(stat -c '%i %y' "$WS")" --check . eq "$STAMP"  # bug: value matches '^[0-9]+ [0-9]{4}-[0-9]{2}-[0-9]{2} '
   control-agent-server api DELETE /api/workspaces/parents --query path=/qa-f17/never --expect 404
-  test "$(stat -c '%i %y' "$WS")" = "$STAMP"  # bug
+  control-agent-server assert --value "$(stat -c '%i %y' "$WS")" --check . eq "$STAMP"  # bug: value matches '^[0-9]+ [0-9]{4}-[0-9]{2}-[0-9]{2} '
   ```
   The read leaves the stamp, which shows the comparison can hold. Expected:
   the re-post (every path in `readd.json` is already saved: 200, still five
   entries, the repository keeps its name) and both 404 deletes leave it too.
   Today the re-post already replaces the file (a new inode from the
-  temp-file rename and a new mtime), so the first marked `test` fails; the
+  temp-file rename and a new mtime), so the first marked stamp check fails; the
   content stays the same, which is why only the stamp shows it. List left:
   `REPO`, `PLAIN`, `snake`, `null`, `dup`.
 - **Paths are opaque strings (`F17.paths-opaque`).** Register a relative path,
@@ -644,11 +644,11 @@ Preconditions:
     --json '{"workspaces": [{"id": "/qa-f17/ro", "name": "qa-f17-ro", "path": "/qa-f17/ro"}]}' --save F17.noop-write-readonly/real-add
   control-agent-server state ls 'home/.openhands/workspaces.tmp*' --expect-count 0
   control-agent-server api DELETE /api/workspaces --query path=/qa-f17/never --expect 404 \
-    --check detail eq 'Workspace not found' --save F17.noop-write-readonly/delete-unknown  # bug
-  control-agent-server api POST /api/workspaces --json-file "$F17/readd.json" --expect 200 --check workspaces len-eq 5  # bug
-  control-agent-server api DELETE /api/workspaces/parents --query path=/qa-f17/never --expect 404  # bug
+    --check detail eq 'Workspace not found' --save F17.noop-write-readonly/delete-unknown  # bug: status eq 500 && response.body.exception contains 'Failed to update workspaces'
+  control-agent-server api POST /api/workspaces --json-file "$F17/readd.json" --expect 200 --check workspaces len-eq 5  # bug: status eq 500 && response.body.exception contains 'Failed to save workspaces'
+  control-agent-server api DELETE /api/workspaces/parents --query path=/qa-f17/never --expect 404  # bug: status eq 500 && response.body.exception contains 'Failed to update workspaces'
   control-agent-server api POST /api/workspaces/parents --json-file "$F17/plain-parent.json" --expect 200 \
-    --check workspaceParents len-eq 2  # bug
+    --check workspaceParents len-eq 2  # bug: status eq 500 && response.body.exception contains 'Failed to save workspaces'
   chattr -i "$PDIR"
   trap - EXIT
   control-agent-server api GET /api/workspaces --expect 200 --check . eq "$BEFORE" --check . not-contains /qa-f17/ro

@@ -241,7 +241,7 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   TF=$(control-agent-server api POST "/api/conversations/$TS/fork" --json '{"title": "QA F10 tag fork"}' --expect 201 --quiet \
     --check tags.title eq 'QA F10 tag fork' --save F10.fork-tags-consistent/fork --field id)
   TF_QA=$(control-agent-server api GET "/api/conversations/$TF" --field tags | python3 -c 'import json, sys; v = json.load(sys.stdin).get("qa"); print("null" if v is None else v)')
-  control-agent-server state cat meta.json --conversation "$TF" --check title eq 'QA F10 tag fork' --check tags.qa eq "$TF_QA"  # bug
+  control-agent-server state cat meta.json --conversation "$TF" --check title eq 'QA F10 tag fork' --check tags.qa eq "$TF_QA"  # bug: checks.0.ok eq true && checks.1.check eq 'tags.qa eq null' && checks.1.actual eq src
   ```
   The source shows `qa=src` on GET and in `meta.json` (the two views can
   agree). Expected: the fork's GET and `meta.json` agree on `qa`, whichever
@@ -260,7 +260,7 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   ```sh
   KF=$(control-agent-server api POST "/api/conversations/$S/fork" --expect 201 --field id)
   control-agent-server state cat base_state.json --conversation "$S" --max-chars 200 --check agent.llm.api_key exists --check agent.condenser.llm.api_key exists
-  control-agent-server state cat base_state.json --conversation "$KF" --max-chars 200 --check agent.llm.api_key exists --check agent.condenser.llm.api_key exists  # bug
+  control-agent-server state cat base_state.json --conversation "$KF" --max-chars 200 --check agent.llm.api_key exists --check agent.condenser.llm.api_key exists  # bug: content.agent.llm.model exists && checks.0.actual eq null && checks.1.actual eq null
   ```
   Expected: both files hold the keys (encrypted with the server's cipher;
   `state cat` shows `<redacted:encrypted>`). Today the source's do and the
@@ -277,7 +277,7 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   N_A_MSG=$(control-agent-server api GET "/api/conversations/$A/events/count" --query kind=$MSG --field .)
   AF=$(control-agent-server api POST "/api/conversations/$A/fork" --json '{"title": "QA F10 memory fork"}' --expect 201 --field id)
   control-agent-server conversation send "$AF" --text 'What is the project codename I told you? Answer with the codename only.' --wait --until finished,error --timeout 180
-  control-agent-server conversation events "$AF" --kinds ConversationErrorEvent --contains LLMAuthenticationError --expect-count 0 --save F10.fork-run-memory/auth-errors  # bug
+  control-agent-server conversation events "$AF" --kinds ConversationErrorEvent --contains LLMAuthenticationError --expect-count 0 --save F10.fork-run-memory/auth-errors  # bug: matching ge 1
   control-agent-server api GET "/api/conversations/$AF" --quiet --check execution_status eq finished --save F10.fork-run-memory/status
   control-agent-server api GET "/api/conversations/$AF/agent_final_response" --check response matches '(?i)pelican' --save F10.fork-run-memory/final
   control-agent-server api GET "/api/conversations/$A/events/count" --query kind=$MSG --check . eq "$N_A_MSG"
@@ -365,7 +365,7 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   U1=$(control-agent-server api GET "/api/conversations/$AN/events/search" --query kind=$MSG --query source=user --check items len-eq 1 --field items.0.id)
   control-agent-server api GET "/api/conversations/$AN/agent_final_response" --check response matches '\S'
   control-agent-server api POST "/api/conversations/$AN/navigate" --json "{\"event_id\": \"$U1\"}" --expect 200 --quiet --check leaf_event_id eq "$U1"
-  control-agent-server api GET "/api/conversations/$AN/agent_final_response" --check response eq '' --save F10.navigate-final-response/after-navigate  # bug
+  control-agent-server api GET "/api/conversations/$AN/agent_final_response" --check response eq '' --save F10.navigate-final-response/after-navigate  # bug: status eq 200 && response.body.response matches '\S'
   ```
   Expected: once HEAD is back on the user's message, the active branch has no
   agent answer, so `agent_final_response` is `""` (the agent's context, title
@@ -415,8 +415,8 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   is the caller's configuration, not a server fault.
   ```sh
   control-agent-server api GET "/api/conversations/$NC" --quiet --check execution_status eq idle
-  control-agent-server api POST "/api/conversations/$NC/condense" --expect 4xx --save F10.condense-status/disabled  # bug
-  control-agent-server api POST "/api/conversations/$NOOP/condense" --expect 4xx --save F10.condense-status/no-op  # bug
+  control-agent-server api POST "/api/conversations/$NC/condense" --expect 4xx --save F10.condense-status/disabled  # bug: status eq 500 && response.body.exception contains 'No condenser configured'
+  control-agent-server api POST "/api/conversations/$NOOP/condense" --expect 4xx --save F10.condense-status/no-op  # bug: status eq 500 && response.body.exception contains 'NoOpCondenser does not handle condensation requests'
   ```
   Expected: a 4xx (400, 409 or 422) carrying the cause. Today both answer
   500 `{"detail": "Internal Server Error", "exception": "Cannot condense
@@ -509,7 +509,7 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   ```sh
   control-agent-server api GET /openapi.json --auth none --quiet \
     --check 'paths./api/conversations/{conversation_id}/ask_agent.post.responses.404' exists
-  control-agent-server api POST "/api/conversations/$NOPE/ask_agent" --json '{"question": "hi"}' --expect 404 --save F10.ask-agent-unknown/unknown  # bug
+  control-agent-server api POST "/api/conversations/$NOPE/ask_agent" --json '{"question": "hi"}' --expect 404 --save F10.ask-agent-unknown/unknown  # bug: status eq 500 && response.body.exception contains '500: Internal Server Error'
   ```
   Expected: 404. Today it is 500 `{"detail": "Internal Server Error",
   "exception": "500: Internal Server Error"}`:

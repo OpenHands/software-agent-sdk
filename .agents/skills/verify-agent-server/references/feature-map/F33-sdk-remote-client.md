@@ -884,7 +884,7 @@ Preconditions:
   Requires: `F33.conversation-streaming`
   ```sh
   test "$(jq .deltas "$F33/stream.json")" -gt 0
-  test "$(jq .tokens "$F33/stream.json")" -gt 0  # bug
+  control-agent-server assert --json "$F33/stream.json" --check tokens gt 0  # bug: value.tokens eq 0 && value.deltas gt 0
   ```
   The event callback got the deltas (control); today the token callback got
   `0` calls.
@@ -897,7 +897,7 @@ Preconditions:
   Requires: `F33.conversation-streaming`
   ```sh
   test "$(jq '.local.MessageEvent // 0' "$F33/stream.json")" -eq "$(control-agent-server conversation events "$STREAM" --kinds MessageEvent | jq .matching)"
-  test "$(jq '.local.StreamingDeltaEvent // 0' "$F33/stream.json")" -eq 0  # bug
+  control-agent-server assert --json "$F33/stream.json" --check local.StreamingDeltaEvent missing  # bug: value.local.StreamingDeltaEvent gt 0
   ```
   The stored kinds agree (control); today `state.events` also holds one
   `StreamingDeltaEvent` per delta (the same count as the callback saw).
@@ -1088,7 +1088,7 @@ Preconditions:
   assert reads["agent"][0] == "Agent" and reads["is_confirmation_mode_active"][0] is True, reads
   f33.emit("reread", reads=reads, stable=all(first == second for first, second in reads.values()))
   PY
-  test "$(jq .stable "$F33/reread.json")" = true  # bug
+  control-agent-server assert --json "$F33/reread.json" --check stable eq true  # bug: value.reads.confirmation_policy.1 eq 'error: ValidationError' && value.reads.security_analyzer.1 eq NoneType
   ```
   Each field is read on a freshly attached conversation, and every first
   read is right (control). Today the second read of `confirmation_policy`
@@ -1442,7 +1442,7 @@ Preconditions:
   test "$(cat "$F33/longtool/qa-f33-long.txt")" = late
   control-agent-server conversation events "$LONG" --kinds ActionEvent --contains '"timeout": 90.0' --expect-count 1
   control-agent-server api GET "/api/conversations/$LONG" --check execution_status eq finished --save F33.conversation-run-join-long-tool/get
-  test "$(jq .joined "$F33/longtool.json")" = true  # bug
+  control-agent-server assert --json "$F33/longtool.json" --check joined eq true  # bug: value.error contains ReadTimeout && value.status eq running
   ```
   `run(blocking=False)` returns at once; once the 45 s command is running,
   the blocking `run()` should wait for it and return at `finished`. Today
@@ -1731,7 +1731,7 @@ Preconditions:
   GAP=$(jq -r .cid "$F33/gap.json")
   control-agent-server api GET "/api/conversations/$GAP/events/search" --query source=user --check items len-eq 2 \
     --check items.1.id eq "$(jq -r .message "$F33/gap.json")" --save F33.conversation-reconnect-callbacks/server-message
-  test "$(jq .callback_got_message "$F33/gap.json")" = true  # bug
+  control-agent-server assert --json "$F33/gap.json" --check callback_got_message eq true  # bug: value.callback_got_message eq false
   ```
   The server stored both messages and, after the reconnect, `state.events`
   has both; the callback got the first one live, but today
@@ -1934,7 +1934,7 @@ Preconditions:
   f33.emit("ghost", cid=cid, statuses=statuses, server_errors=sum(s >= 500 for s in statuses.values()))
   PY
   control-agent-server api GET /api/tools/ --check . contains terminal --check . not-contains qa_f33_ghost
-  test "$(jq .server_errors "$F33/ghost.json")" -eq 0  # bug
+  control-agent-server assert --json "$F33/ghost.json" --check server_errors eq 0  # bug: value.statuses.create eq 201 && value.statuses.message eq 500
   ```
   The server's registry lacks `qa_f33_ghost` (control). Today the probe
   records `{"create": 201, "message": 500}`; the server log has the

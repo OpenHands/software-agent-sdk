@@ -336,7 +336,7 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   test "$AFTER" -ge 3
   control-agent-server api GET "/api/conversations/$E" --check execution_status eq error --quiet --save F05.run-error-responsive/after
   echo "slowest probe while the run failed: $SLOWEST ms"
-  test "$SLOWEST" -le 1500  # bug
+  control-agent-server assert --value "$SLOWEST" --check . le 1500  # bug: value ge 3000
   ```
   Expected: every probe answers in about 100 ms. Today one of them waits
   about 5 s: `_run_and_publish` logs the run failure with `logger.exception`
@@ -360,8 +360,8 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
     --check 'paths./api/conversations/{conversation_id}/pause.post.responses.404' exists \
     --check 'paths./api/conversations/{conversation_id}/interrupt.post.responses.404' exists
   control-agent-server api GET "/api/conversations/$NOPE" --expect 404
-  control-agent-server api POST "/api/conversations/$NOPE/pause" --expect 404 --save F05.unknown-id-pause/pause  # bug
-  control-agent-server api POST "/api/conversations/$NOPE/interrupt" --expect 404 --save F05.unknown-id-pause/interrupt  # bug
+  control-agent-server api POST "/api/conversations/$NOPE/pause" --expect 404 --save F05.unknown-id-pause/pause  # bug: status eq 400 && response.body.detail eq 'Bad Request'
+  control-agent-server api POST "/api/conversations/$NOPE/interrupt" --expect 404 --save F05.unknown-id-pause/interrupt  # bug: status eq 400 && response.body.detail eq 'Bad Request'
   ```
   The OpenAPI document and a GET of the same id (404) are the controls.
   Expected: 404 for both. Today both return 400 `{"detail": "Bad Request"}`
@@ -424,8 +424,8 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   ```sh
   control-agent-server api GET /api/conversations/search --query status=paused --check items contains "$P"
   control-agent-server api POST "/api/conversations/$P/run" --expect 409
-  control-agent-server api GET "/api/conversations/$P" --check execution_status eq paused --quiet --save F05.pause-running-get/get  # bug
-  control-agent-server state cat "server/workspace/conversations/$(echo "$P" | tr -d -)/base_state.json" --check execution_status eq paused  # bug
+  control-agent-server api GET "/api/conversations/$P" --check execution_status eq paused --quiet --save F05.pause-running-get/get  # bug: status eq 200 && checks.0.actual eq running
+  control-agent-server state cat "server/workspace/conversations/$(echo "$P" | tr -d -)/base_state.json" --check execution_status eq paused  # bug: checks.0.actual eq running
   ```
   The status search (the live status says `paused`) and the 409 (the model
   call is still in flight) are the controls that the mid-call pause holds.
@@ -716,7 +716,7 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   control-agent-server api GET "/api/conversations/$K/events/count" --query kind=$PAUSE_KIND --check . eq 2
   control-agent-server restart --hard
   control-agent-server api GET "/api/conversations/$K/events/count" --query kind=$PAUSE_KIND --check . eq 2
-  control-agent-server api GET "/api/conversations/$K" --check execution_status eq paused --quiet --save F05.pause-running-crash/get  # bug
+  control-agent-server api GET "/api/conversations/$K" --check execution_status eq paused --quiet --save F05.pause-running-crash/get  # bug: status eq 200 && checks.0.actual eq error
   ```
   The stub's new request proves the model call was in flight when the pause
   landed, and the second `PauseEvent` is still in the event log after the
