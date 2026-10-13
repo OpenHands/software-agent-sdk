@@ -234,11 +234,11 @@ class InitService:
                     detail=f"server already in state: {self._state}",
                 )
             if req.session_api_keys is not None and any(
-                not key for key in req.session_api_keys
+                not key.strip() for key in req.session_api_keys
             ):
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="session_api_keys cannot contain empty keys",
+                    detail="session_api_keys cannot contain empty or blank keys",
                 )
             self._state = "initializing"
             self._error = None
