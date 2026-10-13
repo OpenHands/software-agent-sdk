@@ -551,10 +551,15 @@ class EventService:
         timestamp_lt_str: str | None,
     ) -> bool:
         """Return True if ``event`` matches all of the provided filters."""
-        if (
-            kind is not None
-            and f"{event.__class__.__module__}.{event.__class__.__name__}" != kind
+        if kind is not None and kind not in (
+            event.__class__.__name__,
+            f"{event.__class__.__module__}.{event.__class__.__name__}",
         ):
+            # Accept the short class name (the discriminator events serialize as
+            # their ``kind`` field, and what the API docs give as the example) as
+            # well as the module-qualified path. Matching only the qualified path
+            # made ``kind=MessageEvent`` return nothing for events that serialize
+            # as ``"kind": "MessageEvent"``.
             return False
         if source is not None and event.source != source:
             return False

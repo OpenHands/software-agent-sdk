@@ -261,10 +261,17 @@ class TestEventServiceSearchEvents:
         result = await event_service.search_events(kind="ActionEvent")
         assert len(result.items) == 0
 
-        # Test filtering by MessageEvent
+        # Test filtering by MessageEvent (module-qualified path)
         result = await event_service.search_events(
             kind="openhands.sdk.event.llm_convertible.message.MessageEvent"
         )
+        assert len(result.items) == 5
+        for event in result.items:
+            assert event.__class__.__name__ == "MessageEvent"
+
+        # Test filtering by the short class name, i.e. the value events
+        # serialize as their ``kind`` field and the docs give as the example.
+        result = await event_service.search_events(kind="MessageEvent")
         assert len(result.items) == 5
         for event in result.items:
             assert event.__class__.__name__ == "MessageEvent"
@@ -711,10 +718,14 @@ class TestEventServiceCountEvents:
         result = await event_service.count_events()
         assert result == 5
 
-        # Count ActionEvent events (should be 5)
+        # Count by module-qualified path (should be 5)
         result = await event_service.count_events(
             kind="openhands.sdk.event.llm_convertible.message.MessageEvent"
         )
+        assert result == 5
+
+        # Count by the short class name (the serialized ``kind`` value)
+        result = await event_service.count_events(kind="MessageEvent")
         assert result == 5
 
         # Count non-existent event type (should be 0)
