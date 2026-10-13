@@ -12,6 +12,7 @@ from openhands.agent_server.config import (
     Config,
     load_config,
 )
+from openhands.agent_server.init_router import InitRequest, _build_initialized_config
 
 
 def test_load_config_reads_registered_marketplaces_from_env(monkeypatch, tmp_path):
@@ -140,3 +141,25 @@ def test_blank_secret_key_in_constructor_is_treated_as_unset(no_session_keys):
     secret_key = Config(secret_key=SecretStr("real")).secret_key
     assert secret_key is not None
     assert secret_key.get_secret_value() == "real"
+
+
+def test_secret_key_env_with_surrounding_whitespace_is_kept_verbatim(
+    monkeypatch, no_session_keys
+):
+    monkeypatch.setenv("OH_SECRET_KEY", " mykey ")
+
+    cipher = load_config().cipher
+
+    assert cipher is not None
+    assert cipher.secret_key == " mykey "
+
+
+def test_init_secret_key_with_surrounding_whitespace_is_kept_verbatim(
+    no_session_keys,
+):
+    merged = _build_initialized_config(
+        Config(deferred_init=True), InitRequest(secret_key=SecretStr(" mykey "))
+    )
+
+    assert merged.secret_key is not None
+    assert merged.secret_key.get_secret_value() == " mykey "

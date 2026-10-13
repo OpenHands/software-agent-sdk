@@ -19,7 +19,7 @@ from fastapi.websockets import WebSocketDisconnect
 from pydantic import SecretStr
 
 from openhands.agent_server.api import api_lifespan, create_app
-from openhands.agent_server.config import Config
+from openhands.agent_server.config import CONFIG_PATH_ENV, Config, load_config
 from openhands.agent_server.init_router import (
     InitRequest,
     InitService,
@@ -445,6 +445,23 @@ class TestEndToEndOverLifespan:
                 )
                 assert response.status_code == 200
                 assert app.state.config.cipher.secret_key == "user-session-key"
+            finally:
+                _reset_conversation_singleton()
+
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_blank_secret_key_env_keeps_init_closed(self, tmp_path, monkeypatch, blank):
+        _reset_conversation_singleton()
+        monkeypatch.setenv(CONFIG_PATH_ENV, str(tmp_path / "missing.json"))
+        monkeypatch.setenv("OH_SECRET_KEY", blank)
+        monkeypatch.setenv("OH_DEFERRED_INIT", "true")
+        monkeypatch.setenv("OH_CONVERSATIONS_PATH", str(tmp_path / "convs"))
+        monkeypatch.setenv("OH_BASH_EVENTS_DIR", str(tmp_path / "bash"))
+        cfg = load_config()
+        assert cfg.deferred_init and cfg.secret_key is None
+        with TestClient(create_app(cfg)) as client:
+            try:
+                assert client.post("/api/init", json={}).status_code == 401
+                assert client.get("/api/init").json()["state"] == "dormant"
             finally:
                 _reset_conversation_singleton()
 

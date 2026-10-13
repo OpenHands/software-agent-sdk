@@ -354,6 +354,10 @@ def check_init_api_key(
     per-user runtime config."""
     config: Config | None = getattr(request.app.state, "config", None)
     if config is None or config.secret_key is None:
+        if config is not None and config.secret_key_was_blank:
+            # A blank key was configured but no usable key remains → fail
+            # closed, since no client can present a blank key.
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
         # No key configured → endpoint is open. Acceptable for dev.
         return
     expected = config.secret_key.get_secret_value()
