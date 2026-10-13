@@ -97,6 +97,9 @@ def _make_conversation(llm: LLM, tmp_path) -> LocalConversation:
 
 
 def _base_state_path(conv: LocalConversation) -> Path:
+    assert conv._state.persistence_dir is not None, (
+        "persistence_dir must be set for file-backed conversations"
+    )
     return Path(conv._state.persistence_dir) / BASE_STATE
 
 
@@ -253,11 +256,12 @@ async def test_llm_exception_restores_invariants(tmp_path):
 
 @pytest.mark.asyncio
 async def test_another_mutation_during_io_window_persists(tmp_path):
-    """While the lock is released for I/O, a second pause() (or any state
-    mutation through a with-block) must produce a complete, valid snapshot on disk.
+    """A state mutation during the I/O window must produce a complete,
+    valid ConversationState snapshot on disk (not a partial write).
 
-    We call pause() twice to simulate two independent state transactions during
-    the window. The final disk state must be a valid, consistent ConversationState.
+    We pause() during the window and verify the flushed JSON contains all
+    required top-level fields (id, execution_status, agent, etc.), proving
+    the eager flush wrote a full consistent model dump.
     """
     llm = ControlledLLM()
     conv = _make_conversation(llm, tmp_path)
