@@ -284,3 +284,56 @@ async def test_another_mutation_during_io_window_persists(tmp_path):
         await task
     except (asyncio.CancelledError, Exception):
         pass
+
+
+# ---------------------------------------------------------------------------
+# Batching resume: after the lock reacquires post-I/O, the outer transaction
+# must buffer mutations again. Spy only records the save timing (and the
+# _save_depth at each write); it does not change autosave gating.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_batching_resumes_after_reacquire(tmp_path, monkeypatch):
+    """The flush boundary is pinned, not just write count.
+
+    Each base_state.json write is recorded with the ``_save_depth`` in effect at
+    that moment. The only window write must be pause's own ``with``-exit flush at
+    depth 0; the only post-reacquire write must be the outer ``with`` exit flush
+    at depth 0. A premature flush while reacquired (depth 1) is caught.
+    """
+    llm = ControlledLLM()
+    conv = _make_conversation(llm, tmp_path)
+    state = conv._state
+
+    calls: list[tuple[str, int]] = []
+    original_save = state._save_base_state
+    phase = "pre"
+
+    def spy_save(fs):
+        calls.append((phase, state._save_depth))
+        return original_save(fs)
+
+    monkeypatch.setattr(state, "_save_base_state", spy_save)
+
+    task = await _enter_io_window(conv, llm)
+
+    phase = "window"
+    conv.pause()
+    # pause's own transaction exited: it flushed and cleared dirty.
+    assert not state._dirty
+    window_depths = [depth for p, depth in calls if p == "window"]
+    assert window_depths == [0], (
+        f"the window write must be pause's exit flush at depth 0: {calls}"
+    )
+
+    phase = "post"
+    llm.release.set()
+    await asyncio.wait_for(task, timeout=10.0)
+
+    post_depths = [depth for p, depth in calls if p == "post"]
+    assert post_depths == [0], (
+        f"expected exactly one outer-exit flush at depth 0 after reacquire, got {calls}"
+    )
+    assert state._save_depth == 0
+    assert not state._dirty
