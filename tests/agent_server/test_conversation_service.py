@@ -4,6 +4,7 @@ import socket
 import tempfile
 import threading
 import time
+from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -413,6 +414,90 @@ async def test_second_service_does_not_resume_active_running_conversation(tmp_pa
             "ObservationEvent",
         ]
         assert not any(isinstance(event, AgentErrorEvent) for event in events)
+
+
+@pytest.mark.asyncio
+async def test_shared_conversation_reload_preserves_latest_metadata(
+    persisted_conversation,
+):
+    conversations_dir, conversation_id = persisted_conversation
+    meta_file = conversations_dir / conversation_id.hex / "meta.json"
+    cipher = Cipher(secret_key="shared-metadata-test-key")
+
+    async with AsyncExitStack() as stack:
+        async with ConversationService(
+            conversations_dir=conversations_dir, cipher=cipher
+        ) as primary:
+            runtime = await primary.get_event_service(conversation_id)
+            assert runtime is not None
+            secondary = await stack.enter_async_context(
+                ConversationService(conversations_dir=conversations_dir, cipher=cipher)
+            )
+            original_meta = meta_file.read_text()
+            assert await secondary.get_event_service(conversation_id) is None
+            assert meta_file.read_text() == original_meta
+
+            assert await primary.update_conversation(
+                conversation_id,
+                UpdateConversationRequest(title="after B", tags={"stage": "latest"}),
+            )
+            await runtime.apply_resume_secrets(
+                {"token": StaticSecret(value=SecretStr("latest-secret"))}
+            )
+            expected = await primary.get_conversation(conversation_id)
+            assert expected is not None
+            expected_meta = StoredConversation.model_validate_json(
+                meta_file.read_text(), context={"cipher": cipher}
+            )
+
+        reloaded_runtime = await secondary.get_event_service(conversation_id)
+        assert reloaded_runtime is not None
+        reloaded = await secondary.get_conversation(conversation_id)
+        assert reloaded is not None
+        assert reloaded.title == expected.title == "after B"
+        assert reloaded.tags == expected.tags == {"stage": "latest"}
+        assert reloaded.updated_at == expected.updated_at
+        secret = reloaded_runtime.stored.secrets["token"]
+        assert isinstance(secret, StaticSecret)
+        assert secret.value is not None
+        assert secret.value.get_secret_value() == "latest-secret"
+        assert (
+            StoredConversation.model_validate_json(
+                meta_file.read_text(), context={"cipher": cipher}
+            )
+            == expected_meta
+        )
+        assert "latest-secret" not in meta_file.read_text()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", [False, True], ids=["invalid", "missing"])
+async def test_shared_conversation_reload_rejects_unreadable_metadata(
+    persisted_conversation, missing
+):
+    conversations_dir, conversation_id = persisted_conversation
+    conversation_dir = conversations_dir / conversation_id.hex
+    meta_file = conversation_dir / "meta.json"
+    original_meta = meta_file.read_text()
+
+    async with ConversationService(conversations_dir=conversations_dir) as secondary:
+        if missing:
+            meta_file.unlink()
+            error = FileNotFoundError
+        else:
+            meta_file.write_text("invalid JSON")
+            error = ValueError
+
+        with pytest.raises(error):
+            await secondary.get_event_service(conversation_id)
+        assert not (conversation_dir / LEASE_FILE_NAME).exists()
+        if missing:
+            assert not meta_file.exists()
+        else:
+            assert meta_file.read_text() == "invalid JSON"
+
+        meta_file.write_text(original_meta)
+        assert await secondary.get_event_service(conversation_id) is not None
 
 
 @pytest.mark.asyncio
@@ -1136,7 +1221,7 @@ async def test_shutdown_closes_runtime_from_in_flight_hydration(
     runtime.stored = record.stored
     runtime.get_state.return_value = state
 
-    async def blocking_start() -> None:
+    async def blocking_start(**_kwargs) -> None:
         startup_entered.set()
         await finish_startup.wait()
 
@@ -2460,6 +2545,7 @@ class TestConversationServiceStartConversation:
             ) as mock_event_service_class:
                 mock_event_service = AsyncMock()
                 mock_event_service.start = AsyncMock()  # Successful startup
+                mock_event_service.stored = stored
                 # Sync methods must not be AsyncMock (would return unawaited
                 # coroutines); mark_subscription_baseline is called sync.
                 mock_event_service.mark_subscription_baseline = MagicMock()

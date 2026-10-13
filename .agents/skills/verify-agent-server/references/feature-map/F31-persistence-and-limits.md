@@ -352,32 +352,29 @@ Preconditions:
   Refused a moment before, `B` loads `X` right after the SIGKILL (same host,
   dead pid, lease not yet expired) as generation 2 with the same events; the
   restarted owner now gets 404. `B`'s graceful stop releases the lease.
-- **Takeover keeps newer metadata (`F31.takeover-keeps-metadata`), known bug.**
+- **Takeover keeps newer metadata (`F31.takeover-keeps-metadata`).**
   The owner renames `Y` after `B` started; then the owner dies and `B` takes
   `Y` over.
   ```sh
-  Y=$(control-agent-server conversation start --tools none --no-autotitle --title 'QA F31 before B' --no-run --print-id)
+  Y=$(control-agent-server conversation start --placeholder-agent --tools none --no-autotitle --title 'QA F31 before B' --no-run --print-id)
   B=$(control-agent-server launch --new --name f31-meta --share-conversations-from "$AGENT_SERVER_VERIFY_RUN" --print-run)
   trap 'control-agent-server stop --run "$B" >/dev/null 2>&1 || true' EXIT
   PIDB=$(jq -r .pid "$B/run.json")
   control-agent-server api PATCH "/api/conversations/$Y" --json '{"title": "QA F31 after B"}' --expect 200 --check success eq true
   control-agent-server state cat meta.json --conversation "$Y" --check title eq 'QA F31 after B'
   control-agent-server restart --hard
-  control-agent-server api GET "/api/conversations/$Y/events/count" --run "$B" --expect 200
+  control-agent-server api POST "/api/conversations/$Y/pause" --run "$B" --expect 200 --check success eq true
   control-agent-server state cat owner_lease.json --conversation "$Y" --check owner_pid eq "$PIDB" --check generation eq 2
-  control-agent-server state cat meta.json --conversation "$Y" --check title eq 'QA F31 after B'  # bug
-  control-agent-server api GET "/api/conversations/$Y" --run "$B" --check title eq 'QA F31 after B' --save F31.takeover-keeps-metadata/get-after-takeover  # bug
+  control-agent-server state cat meta.json --conversation "$Y" --check title eq 'QA F31 after B'
+  control-agent-server api GET "/api/conversations/$Y" --run "$B" --check title eq 'QA F31 after B' --save F31.takeover-keeps-metadata/get-after-takeover
   ```
   Expected: `B` reports and keeps the title the owner stored last. The
   owner's rename reached `meta.json` and `B`'s first load took `Y` over
-  (generation 2 under `B`'s pid) before the two `# bug` assertions. Today
-  `B` loads `Y` from the catalog snapshot it read at its own startup and
-  saves it right away (`_start_event_service` calls `save_meta()`; nothing
-  calls `EventService.load_meta()`), so `meta.json` is rewritten with
-  `QA F31 before B` (the first assertion fails there) and `B`'s GET reports
-  it too: the owner's later title (and `updated_at`) is lost. Takeover is
-  not required: a plain generation 1 load on `B` after the owner released
-  `Y` with a graceful restart (or an idle eviction) reverts it the same way.
+  (generation 2 under `B`'s pid) before the metadata assertions. The pause
+  request loads the runtime; persisted event reads do not claim a lease.
+  On resume, `EventService.start()` re-reads `meta.json` after claiming the
+  lease, before `_start_event_service` saves it. The same metadata must
+  survive a generation 1 load after a graceful restart or idle eviction.
   The `trap` stops `B`.
 - **Lease expiry fences a frozen owner (`F31.lease-expiry-fencing`).** With
   a 20 s lease, this server is frozen with SIGSTOP so it stops renewing
@@ -734,9 +731,8 @@ Preconditions:
   keeps every earlier start of the run.
 - A second server reads the catalog once, at its own startup. Conversations
   created on the owner afterwards are 404 there until it restarts, and its
-  copy of the metadata goes stale; the first time it loads such a
-  conversation (takeover or not) it writes that stale copy to `meta.json`
-  (`F31.takeover-keeps-metadata`).
+  copy of the metadata can go stale. Loading a runtime refreshes metadata
+  after the lease claim (`F31.takeover-keeps-metadata`).
 - A conversation whose lease is held elsewhere looks exactly like an unknown
   id on the second server (404, 400, `success: false`, close 4004), while its
   GET is 200 from the catalog. Only the lease file tells the two apart.

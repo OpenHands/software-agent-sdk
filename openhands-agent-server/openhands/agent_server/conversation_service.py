@@ -84,6 +84,7 @@ from openhands.sdk.launch import LaunchedAgent, finalize
 from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
+from openhands.sdk.secret import SecretSource
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.tool.registry import get_tool_module_qualnames
 from openhands.sdk.utils.cipher import Cipher
@@ -1041,6 +1042,7 @@ class ConversationService:
         *,
         require_runtime_bindings: bool = True,
         agent: AgentBase | None = None,
+        resume_secrets: dict[str, SecretSource] | None = None,
     ) -> EventService | None:
         event_services = self._event_services
         if event_services is None:
@@ -1067,7 +1069,9 @@ class ConversationService:
 
         await asyncio.to_thread(self._prepare_persisted_runtime, record.stored)
         try:
-            return await self._start_event_service(record.stored, persisted_agent=agent)
+            return await self._start_event_service(
+                record.stored, persisted_agent=agent, resume_secrets=resume_secrets
+            )
         except ConversationLeaseHeldError as exc:
             logger.debug(
                 "Skipping active conversation %s owned by %s until %s",
@@ -1385,28 +1389,16 @@ class ConversationService:
         )
         fallback_secret = request.secrets.get(CODEX_AUTH_SECRET_NAME)
         if managed_codex_credential or fallback_secret is not None:
-            original_stored = existing_record.stored
-            injected_fallback = (
-                not managed_codex_credential and fallback_secret is not None
+            # Apply request credentials after the persisted metadata is refreshed.
+            event_service = await self._get_or_load_event_service_locked(
+                conversation_id,
+                agent=reattach_agent,
+                resume_secrets=(
+                    {CODEX_AUTH_SECRET_NAME: fallback_secret}
+                    if not managed_codex_credential and fallback_secret is not None
+                    else None
+                ),
             )
-            if injected_fallback:
-                existing_record.stored = original_stored.model_copy(
-                    update={
-                        "secrets": {
-                            **original_stored.secrets,
-                            CODEX_AUTH_SECRET_NAME: fallback_secret,
-                        }
-                    }
-                )
-            try:
-                # Reuse the agent we already parsed from base_state.json
-                # above so the load path doesn't read and parse it again.
-                event_service = await self._get_or_load_event_service_locked(
-                    conversation_id, agent=reattach_agent
-                )
-            finally:
-                if injected_fallback:
-                    existing_record.stored = original_stored
             if event_service is not None:
                 state = await event_service.get_state()
                 return (
@@ -2258,6 +2250,7 @@ class ConversationService:
         is_new_conversation: bool = False,
         launched: LaunchedAgent | None = None,
         persisted_agent: AgentBase | None = None,
+        resume_secrets: dict[str, SecretSource] | None = None,
     ) -> EventService:
         event_services = self._event_services
         if event_services is None:
@@ -2287,7 +2280,10 @@ class ConversationService:
         event_service._run_semaphore = self._run_semaphore
 
         try:
-            await event_service.start()
+            await event_service.start(
+                is_new_conversation=is_new_conversation, resume_secrets=resume_secrets
+            )
+            stored = event_service.stored
             # Register subscribers after start() so subscribe_to_events runs
             # its initial-state push synchronously and any failure surfaces to
             # the caller instead of being silently logged on a later publish.

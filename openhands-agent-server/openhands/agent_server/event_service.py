@@ -80,6 +80,7 @@ from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.mcp.utils import MCPToolProvider
+from openhands.sdk.secret import SecretSource
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
@@ -1143,7 +1144,12 @@ class EventService:
                 "Failed to initialize git repository at %s: %s", working_dir, e
             )
 
-    async def start(self):
+    async def start(
+        self,
+        *,
+        is_new_conversation: bool = False,
+        resume_secrets: dict[str, SecretSource] | None = None,
+    ):
         # Store the main event loop for cross-thread communication
         self._main_loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
 
@@ -1159,6 +1165,27 @@ class EventService:
             )
             lease_claim = self._lease.claim()
             self._lease_generation = lease_claim.generation
+        base_state_exists = await asyncio.to_thread(
+            (self.conversation_dir / BASE_STATE).exists
+        )
+        if base_state_exists and not is_new_conversation:
+            # Read after claiming ownership so the previous owner's final
+            # metadata write cannot be replaced by a stale catalog snapshot.
+            await self.load_meta()
+        if resume_secrets:
+            profile = self.stored.launched_agent_profile
+            self.stored = self.stored.model_copy(
+                update={
+                    "secrets": {
+                        **self.stored.secrets,
+                        **{
+                            name: value
+                            for name, value in resume_secrets.items()
+                            if profile is None or profile.allows_secret(name)
+                        },
+                    }
+                }
+            )
         await self._scrub_persisted_credentials()
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
@@ -1170,9 +1197,6 @@ class EventService:
         # persisted agent. On a new conversation the creating caller supplied the
         # agent via ``self.agent``; deep-copy it (expose_secrets) so the running
         # agent is independent of the caller's object.
-        base_state_exists = await asyncio.to_thread(
-            (self.conversation_dir / BASE_STATE).exists
-        )
         if base_state_exists:
             agent: AgentBase | None = None
         else:
