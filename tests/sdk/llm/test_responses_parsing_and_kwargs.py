@@ -7,6 +7,8 @@ from litellm.types.llms.base import BaseLiteLLMOpenAIResponseObject
 from litellm.types.llms.openai import (
     GenericEvent,
     OutputTextDeltaEvent,
+    ReasoningSummaryTextDeltaEvent,
+    RefusalDeltaEvent,
     ResponseAPIUsage,
     ResponseCompletedEvent,
     ResponsesAPIResponse,
@@ -749,6 +751,74 @@ def test_stream_delta_chunks_carry_the_output_item_id():
     _, chunk = llm._process_stream_event(other, emit_deltas=True)
     assert chunk is not None
     assert chunk.id == "msg_def"
+
+
+@pytest.mark.parametrize("mode", ["sync", "async", "async-with-sync-stream"])
+@pytest.mark.parametrize("with_callback", [True, False])
+@pytest.mark.parametrize(
+    "event_class,event_type",
+    [
+        (OutputTextDeltaEvent, ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA),
+        (RefusalDeltaEvent, ResponsesAPIStreamEvents.REFUSAL_DELTA),
+        (
+            ReasoningSummaryTextDeltaEvent,
+            ResponsesAPIStreamEvents.REASONING_SUMMARY_TEXT_DELTA,
+        ),
+    ],
+)
+async def test_responses_stream_missing_item_id_preserves_final_output(
+    mode, with_callback, event_class, event_type
+):
+    events, completed = _make_wrapped_response_stream_events()
+    output_item = completed.output[0]
+    completed.output = []
+    # LiteLLM can bypass required-field validation when decoding provider events.
+    malformed = event_class.model_construct(
+        type=event_type, output_index=0, content_index=0, delta="unidentified"
+    )
+    events.insert(0, malformed)
+    events.insert(
+        -1,
+        GenericEvent.model_construct(
+            type=ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE,
+            output_index=0,
+            item=output_item,
+        ),
+    )
+    received = []
+
+    async def async_events():
+        for event in events:
+            yield event
+
+    llm = LLM(model="gpt-5-mini", num_retries=0)
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    messages.insert(
+        0, Message(role="system", content=[TextContent(text="Be helpful.")])
+    )
+    callback = received.append if with_callback else None
+    with patch.object(LLM, "requires_streaming", new_callable=PropertyMock) as required:
+        required.return_value = True
+        if mode == "sync":
+            with patch(
+                "openhands.sdk.llm.llm.litellm_responses", return_value=iter(events)
+            ):
+                result = llm.responses(messages, stream=True, on_token=callback)
+        else:
+            with patch(
+                "openhands.sdk.llm.llm.litellm_aresponses",
+                new_callable=AsyncMock,
+                return_value=async_events() if mode == "async" else iter(events),
+            ):
+                result = await llm.aresponses(messages, stream=True, on_token=callback)
+
+    assert result.raw_response is completed
+    assert completed.output == [output_item]
+    assert result.message.content == [TextContent(text="Hello wrapped stream")]
+    assert [chunk.id for chunk in received] == (["m1"] if with_callback else [])
+    assert [chunk.choices[0].delta.content for chunk in received] == (
+        ["Hello wrapped stream"] if with_callback else []
+    )
 
 
 @pytest.mark.parametrize("mode", ["sync", "async", "async-with-sync-stream"])
