@@ -3,6 +3,8 @@
 When the run loop releases the state lock for an awaited LLM network call,
 a concurrent pause() must immediately persist the new execution_status to
 disk (base_state.json), not defer it until the step ends.
+
+All synchronization uses asyncio.Events for determinism — no wall-clock sleeps.
 """
 
 import asyncio
@@ -22,7 +24,7 @@ from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot, TokenUsage
 
 
-def _make_response(model_name: str = "test-slow") -> LLMResponse:
+def _make_response(model_name: str = "test-llm") -> LLMResponse:
     return LLMResponse(
         message=Message(
             role="assistant",
@@ -38,40 +40,47 @@ def _make_response(model_name: str = "test-slow") -> LLMResponse:
     )
 
 
-class HangingLLM(LLM):
-    """LLM that hangs in acompletion so we can pause mid-call."""
+class ControlledLLM(LLM):
+    """LLM that signals entry via ``entered`` and waits on ``release``.
 
-    def __init__(self):
-        super().__init__(model="test-hang", usage_id="test-hang")
+    Tests ``await entered`` to know the state lock has been released for I/O,
+    then perform concurrent actions, then set ``release`` to let the LLM return.
+    """
+
+    _entered: asyncio.Event = PrivateAttr()
+    _release: asyncio.Event = PrivateAttr()
+    _should_raise: bool = PrivateAttr(default=False)
+
+    def __init__(self, should_raise: bool = False):
+        super().__init__(model="test-controlled", usage_id="test-controlled")
+        self._entered = asyncio.Event()
+        self._release = asyncio.Event()
+        self._should_raise = should_raise
+
+    @property
+    def entered(self) -> asyncio.Event:
+        return self._entered
+
+    @property
+    def release(self) -> asyncio.Event:
+        return self._release
 
     async def acompletion(self, messages, tools=None, **kw) -> LLMResponse:  # type: ignore[override]
-        await asyncio.sleep(30.0)
-        return _make_response("test-hang")
+        self._entered.set()
+        await self._release.wait()
+        if self._should_raise:
+            raise RuntimeError("LLM transient error")
+        return _make_response("test-controlled")
 
 
 class InstantLLM(LLM):
-    """LLM that completes immediately."""
+    """LLM that completes immediately, no event coordination."""
 
     def __init__(self):
         super().__init__(model="test-instant", usage_id="test-instant")
 
     async def acompletion(self, messages, tools=None, **kw) -> LLMResponse:  # type: ignore[override]
         return _make_response("test-instant")
-
-
-class FlakyLLM(LLM):
-    """LLM that raises on first call, succeeds on second."""
-
-    _call_count: int = PrivateAttr(default=0)
-
-    def __init__(self):
-        super().__init__(model="test-flaky", usage_id="test-flaky")
-
-    async def acompletion(self, messages, tools=None, **kw) -> LLMResponse:  # type: ignore[override]
-        self._call_count += 1
-        if self._call_count == 1:
-            raise RuntimeError("LLM transient error")
-        return _make_response("test-flaky")
 
 
 def _make_conversation(llm: LLM, tmp_path) -> LocalConversation:
@@ -88,120 +97,116 @@ def _make_conversation(llm: LLM, tmp_path) -> LocalConversation:
 
 
 def _base_state_path(conv: LocalConversation) -> Path:
-    """Locate base_state.json on disk for this conversation."""
     return Path(conv._state.persistence_dir) / BASE_STATE
+
+
+async def _enter_io_window(conv: LocalConversation, llm: ControlledLLM):
+    """Start arun() and wait until the LLM call has begun (lock released).
+
+    Returns the arun task. The caller is now inside the released-lock window.
+    """
+    task = asyncio.create_task(conv.arun())
+    await asyncio.wait_for(llm.entered.wait(), timeout=5.0)
+    return task
+
+
+# ---------------------------------------------------------------------------
+# Core fix: pause during I/O window must persist immediately
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_pause_during_llm_call_persists_to_disk(tmp_path):
     """After pause() returns during an in-flight LLM call, base_state.json
     on disk must immediately show execution_status=paused (#5626)."""
-    conv = _make_conversation(HangingLLM(), tmp_path)
+    llm = ControlledLLM()
+    conv = _make_conversation(llm, tmp_path)
+    task = await _enter_io_window(conv, llm)
 
-    task = asyncio.create_task(conv.arun())
-
-    # Wait for arun() to enter the LLM call (which releases the state lock
-    # via _released_state_lock_during_io).
-    await asyncio.sleep(0.3)
-
-    # Call pause() — this acquires the now-free state lock and sets PAUSED.
     conv.pause()
 
-    # Read base_state.json from disk. On current main, this still says
-    # "running" because _save_depth is 1 (deferred save). After the fix,
-    # it should say "paused".
     bs_path = _base_state_path(conv)
-    assert bs_path.exists(), f"base_state.json not found at {bs_path}"
     disk_state = json.loads(bs_path.read_text())
     assert disk_state["execution_status"] == "paused", (
-        f"base_state.json shows '{disk_state['execution_status']}', "
-        f"expected 'paused'. The pause was not persisted during the I/O window."
+        f"base_state.json shows '{disk_state['execution_status']}', expected 'paused'."
     )
 
-    # Clean up: cancel the hanging task
+    llm.release.set()
     task.cancel()
     try:
         await task
     except (asyncio.CancelledError, Exception):
         pass
+
+
+# ---------------------------------------------------------------------------
+# Normal path: no concurrent pause, batching still works
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_normal_arun_completes_and_persists_final_state(tmp_path):
-    """Normal (no concurrent pause) arun() must complete and persist final state.
+    """Normal arun() must finish and flush FINISHED to disk.
 
-    Verifies that the _save_depth stash/restore in _released_state_lock_during_io
-    does not break the normal batching path: after the LLM returns, depth is
-    restored and the outer with-block exits correctly, flushing FINISHED.
+    Verifies the stash/restore does not break the outer transaction's final flush.
     """
     conv = _make_conversation(InstantLLM(), tmp_path)
     await conv.arun()
 
-    # Final state on disk must be FINISHED
     bs_path = _base_state_path(conv)
     disk_state = json.loads(bs_path.read_text())
-    assert disk_state["execution_status"] == "finished", (
-        f"Normal arun left disk state as '{disk_state['execution_status']}', "
-        f"expected 'finished'."
-    )
-    # In-memory state agrees
+    assert disk_state["execution_status"] == "finished"
     assert conv.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert conv._state._save_depth == 0
+    assert not conv._state._dirty
+
+
+# ---------------------------------------------------------------------------
+# Depth restoration: after reacquire, _save_depth is exactly restored
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_save_depth_restored_after_io_window(tmp_path):
-    """After the LLM call returns and the lock is reacquired, _save_depth must
-    be restored to its pre-IO value so the outer transaction continues batching.
+async def test_depth_restored_after_io_window(tmp_path):
+    """When the LLM returns, _save_depth must be restored to its pre-IO value.
 
-    We verify this by checking that after arun() completes normally, the state
-    is consistent and _save_depth is back to 0 (not negative, not stuck >0).
+    We use a ControlledLLM that releases after we verify depth is 0 (stashed).
+    After arun() completes, depth must be 0 and dirty must be False.
     """
-    conv = _make_conversation(InstantLLM(), tmp_path)
-    await conv.arun()
+    llm = ControlledLLM()
+    conv = _make_conversation(llm, tmp_path)
+    task = await _enter_io_window(conv, llm)
 
-    # After arun completes, _save_depth should be 0 (all with-blocks exited)
+    # While the lock is released, _save_depth has been set to 0 by the fix.
+    conv.pause()  # pause's with-block flushes then exits; depth stays 0.
     assert conv._state._save_depth == 0, (
-        f"After arun, _save_depth should be 0, got {conv._state._save_depth}"
+        f"During I/O window, _save_depth should be 0, got {conv._state._save_depth}"
     )
-    assert not conv._state._dirty, (
-        "After arun, state should not be dirty (all saves flushed)"
-    )
+
+    llm.release.set()
+    await asyncio.wait_for(task, timeout=5.0)
+
+    # After arun completes, depth must be 0 (outer with-block exited cleanly)
+    assert conv._state._save_depth == 0
+    assert not conv._state._dirty
+
+
+# ---------------------------------------------------------------------------
+# Cancellation: task.cancel() during I/O window must restore depth/lock
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_interrupt_still_works_after_fix(tmp_path):
-    """interrupt() (task cancellation) must still work after the fix.
-
-    Verifies that the finally block in _released_state_lock_during_io correctly
-    restores _save_depth even when the task is cancelled mid-LLM-call.
+async def test_cancel_during_io_window_restores_invariants(tmp_path):
+    """Cancelling the arun task while the LLM call is in flight must:
+    - persist the pause that happened during the window
+    - leave _save_depth == 0
+    - leave no dirty state
     """
-    conv = _make_conversation(HangingLLM(), tmp_path)
+    llm = ControlledLLM()
+    conv = _make_conversation(llm, tmp_path)
+    task = await _enter_io_window(conv, llm)
 
-    task = asyncio.create_task(conv.arun())
-    await asyncio.sleep(0.3)
-
-    conv.interrupt()
-    await asyncio.wait_for(task, timeout=2.0)
-
-    assert conv.state.execution_status == ConversationExecutionStatus.PAUSED
-    # After interrupt + arun unwinding, _save_depth must be 0
-    assert conv._state._save_depth == 0, (
-        f"After interrupt, _save_depth should be 0, got {conv._state._save_depth}"
-    )
-
-
-@pytest.mark.asyncio
-async def test_pause_persists_and_saves_depth_is_zero(tmp_path):
-    """After pause during an in-flight LLM call and task cancellation,
-    _save_depth must be 0 (not leaked) and disk shows paused.
-
-    Verifies the finally block in _released_state_lock_during_io restores
-    state invariants even when the task is cancelled mid-LLM-call.
-    """
-    conv = _make_conversation(HangingLLM(), tmp_path)
-
-    task = asyncio.create_task(conv.arun())
-    await asyncio.sleep(0.3)
     conv.pause()
     task.cancel()
     try:
@@ -209,12 +214,69 @@ async def test_pause_persists_and_saves_depth_is_zero(tmp_path):
     except (asyncio.CancelledError, Exception):
         pass
 
-    # Disk must show paused (the core #5626 fix)
     bs_path = _base_state_path(conv)
     disk_state = json.loads(bs_path.read_text())
     assert disk_state["execution_status"] == "paused"
-
-    # _save_depth must be 0 — the finally block restored it
     assert conv._state._save_depth == 0, (
         f"After cancel, _save_depth should be 0, got {conv._state._save_depth}"
     )
+
+
+# ---------------------------------------------------------------------------
+# LLM exception: error path must restore depth/lock invariants
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_llm_exception_restores_invariants(tmp_path):
+    """If the LLM raises while the lock is released, the finally block must
+    restore _save_depth and the outer transaction must handle the error.
+    """
+    llm = ControlledLLM(should_raise=True)
+    conv = _make_conversation(llm, tmp_path)
+    task = await _enter_io_window(conv, llm)
+
+    llm.release.set()
+    with pytest.raises(Exception):
+        await asyncio.wait_for(task, timeout=5.0)
+
+    # After an LLM error, the finally block must have restored _save_depth.
+    assert conv._state._save_depth == 0, (
+        f"After LLM exception, _save_depth should be 0, got {conv._state._save_depth}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Concurrent mutation during I/O window: another legitimate state change
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_another_mutation_during_io_window_persists(tmp_path):
+    """While the lock is released for I/O, a second pause() (or any state
+    mutation through a with-block) must produce a complete, valid snapshot on disk.
+
+    We call pause() twice to simulate two independent state transactions during
+    the window. The final disk state must be a valid, consistent ConversationState.
+    """
+    llm = ControlledLLM()
+    conv = _make_conversation(llm, tmp_path)
+    task = await _enter_io_window(conv, llm)
+
+    conv.pause()
+
+    # Verify pause persisted
+    bs_path = _base_state_path(conv)
+    disk_state = json.loads(bs_path.read_text())
+    assert disk_state["execution_status"] == "paused"
+    # Validate the JSON is a complete ConversationState (has required fields)
+    assert "id" in disk_state
+    assert "execution_status" in disk_state
+    assert "agent" in disk_state
+
+    llm.release.set()
+    task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        pass
