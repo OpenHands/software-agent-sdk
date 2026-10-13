@@ -42,7 +42,7 @@ Routes: `GET /api/tools/`, `GET /api/tools/catalog`, `POST /api/sub-agents`,
 - `F27.subagents-user`: user agents from `~/.agents/agents` and `$OH_PERSISTENCE_DIR/agents` are listed with `level: user` only while `load_user` is on, and `load_project: false` hides the project's agents.
 - `F27.subagents-precedence`: names are unique and the first source wins: a project agent shadows the built-in and the user agent of the same name, and `.agents/agents` shadows `.openhands/agents`.
 - `F27.subagents-invalid`: definitions that do not validate (bad `permission_mode`, `max_iteration_per_run: 0`) are skipped with a logged warning, and `README.md`, subdirectories and non-`.md` files are ignored, while the request still answers 200.
-- `F27.subagents-bad-skill`: a project agent whose `skills` names a skill that does not exist should not break conversations in that workspace; today the catalog lists it as valid and a message to such a conversation is a 500.
+- `F27.subagents-bad-skill`: a project agent whose `skills` names a skill that does not exist does not break conversations in that workspace: the catalog lists it (it validates frontmatter only), and the conversation skips it with a logged warning and accepts every message.
 - `F27.catalog-sealed`: a client tool registered by a conversation (`client_tools`) is part of that conversation's agent but never enters the catalog, which is sealed at startup.
 - `F27.client-tool-call`: when the agent calls a client tool, the events socket delivers a `ClientAction_<name>` `ActionEvent` with the model's arguments, the server answers it with the `Tool call dispatched to client.` acknowledgment and the run finishes; the tool is registered again when the conversation resumes after a restart; a duplicate name in one request, a name that collides with `terminal` and a reused name with a different schema are each 422 and create nothing, while the same name with the same schema is accepted.
 - `F27.agent-definitions`: `agent_definitions` in the create request make that sub-agent available to the conversation's task tool, which delegates to it by name (the delegate runs the command, the `TaskObservation` names it); the definition is stored with the conversation and is not listed by `POST /api/sub-agents`.
@@ -438,9 +438,9 @@ Preconditions:
   `Failed to load agent definition from ...` warnings to the log, one per
   invalid file (the file name wraps onto the next log line). Every earlier
   request that read the project logged them too, hence the count from `W0`.
-- **Agent with a missing skill (`F27.subagents-bad-skill`), known bug.** The
-  catalog accepts the agent; a conversation in that workspace cannot take a
-  message.
+- **Agent with a missing skill (`F27.subagents-bad-skill`).** The catalog
+  accepts the agent; a conversation in that workspace skips it and takes
+  messages.
   ```sh
   control-agent-server api POST /api/sub-agents --json '{"load_user": false, "load_builtin": false, "project_dir": "'"$F/badskill"'"}' \
     --expect 200 --check agents len-eq 1 --check agents.0.name eq qa-bad-skill --check agents.0.skills.0 eq qa-f27-missing-skill
@@ -449,22 +449,17 @@ Preconditions:
     --json '{"role": "user", "content": [{"type": "text", "text": "hi"}], "run": false}' --expect 2xx \
     --save F27.subagents-bad-skill/send-control
   BCID=$(control-agent-server conversation start --workspace "$F/badskill" --no-run --tools terminal --no-autotitle --print-id)
-  control-agent-server api POST "/api/conversations/$BCID/events" --json '{"role": "user", "content": [{"type": "text", "text": "hi"}], "run": false}' --expect 2xx,4xx --save F27.subagents-bad-skill/send  # bug: status eq 500 && response.body.exception contains 'not found but was given to agent'
+  control-agent-server api POST "/api/conversations/$BCID/events" --json '{"role": "user", "content": [{"type": "text", "text": "hi"}], "run": false}' --expect 2xx --save F27.subagents-bad-skill/send
+  control-agent-server api POST "/api/conversations/$BCID/events" --json '{"role": "user", "content": [{"type": "text", "text": "again"}], "run": false}' --expect 2xx --save F27.subagents-bad-skill/send-again
+  control-agent-server logs --grep 'Skipping file-based agent' --expect-min 1
   ```
   The same message to a conversation in a workspace without project agents
-  is accepted (the control). A broken sub-agent definition should cost only
-  that sub-agent (skipped with a warning, as invalid frontmatter is) or be a
-  client error naming it.
-  Today the message `POST` is `500` with `Skill 'qa-f27-missing-skill' not
-  found but was given to agent 'qa-bad-skill'.`: the conversation registers
-  every project and user agent file on its first message and
-  `agent_definition_to_factory` raises for a skill it cannot resolve. With an
-  `initial_message` in the create request, `POST /api/conversations` itself
-  is the 500, and the conversation is stored anyway (it is listed, `idle`).
-  User agents (`~/.agents/agents`) are registered for every workspace: the
-  same file there made the first message of a conversation in an unrelated
-  workspace a 500 when this bullet was reviewed (not driven here, because a
-  failing bullet would leave the file behind for the later conversations).
+  is accepted (the control). The conversation registers every project and
+  user agent file on its first message; a definition that cannot be
+  registered (here `Skill 'qa-f27-missing-skill' not found but was given to
+  agent 'qa-bad-skill'.`) costs only that sub-agent: it is skipped with a
+  `Skipping file-based agent ...` warning naming its file (the agent name
+  wraps onto the next log line), and the other agents register. Plugin agents are skipped the same way.
 - **Hooks in a conversation (`F27.hooks-conversation`).** Load the project's
   hooks, start a DeepSeek conversation with them, and look for the hook.
   ```sh
@@ -895,9 +890,9 @@ Preconditions:
   reports the PascalCase name (`hook_event_type: PreToolUse`). The `async`
   flag is serialized as `async`.
 - The sub-agents catalog validates frontmatter only. It does not resolve
-  `skills`, `tools` or `model` (a profile name); those fail later, when a
-  conversation registers the agents (`F27.subagents-bad-skill`) or spawns
-  one. Plugin agents and programmatic registrations are not listed.
+  `skills`, `tools` or `model` (a profile name); a missing skill is skipped
+  with a warning when a conversation registers the agents
+  (`F27.subagents-bad-skill`), the others fail when it spawns one. Plugin agents and programmatic registrations are not listed.
 - `$OH_PERSISTENCE_DIR/agents` replaces `~/.openhands/agents` for user
   agents; in a launched run both are `<run>/home/.openhands/agents`, so the
   bullets cannot tell the two apart.
