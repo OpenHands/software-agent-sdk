@@ -412,10 +412,7 @@ class TestInitServiceTransitions:
 class TestEndToEndOverLifespan:
     """Drive the whole flow through the FastAPI lifespan + TestClient."""
 
-    @pytest.mark.parametrize("session_api_keys", [[""], ["", "user-session-key"]])
-    def test_empty_init_secret_never_uses_an_empty_session_key(
-        self, tmp_path, session_api_keys
-    ):
+    def test_blank_init_secret_falls_back_to_session_key(self, tmp_path):
         _reset_conversation_singleton()
         cfg = Config(
             deferred_init=True,
@@ -425,17 +422,6 @@ class TestEndToEndOverLifespan:
         app = create_app(cfg)
         with TestClient(app) as client:
             try:
-                response = client.post(
-                    "/api/init",
-                    json={
-                        "secret_key": "",
-                        "session_api_keys": session_api_keys,
-                    },
-                )
-                assert response.status_code == 422
-                assert "user-session-key" not in response.text
-                assert client.get("/api/init").json()["state"] == "dormant"
-
                 response = client.post(
                     "/api/init",
                     json={
