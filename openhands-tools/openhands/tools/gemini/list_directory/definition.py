@@ -156,16 +156,25 @@ class ListDirectoryTool(ToolDefinition[ListDirectoryAction, ListDirectoryObserva
     def create(
         cls,
         conv_state: "ConversationState",
+        restrict_to_workspace: bool = False,
+        allowed_roots: list[str] | None = None,
     ) -> Sequence["ListDirectoryTool"]:
         """Initialize ListDirectoryTool with executor.
 
         Args:
             conv_state: Conversation state to get working directory from.
+            restrict_to_workspace: If True, reject paths that resolve (after
+                normalizing ``..`` and following symlinks) outside the
+                workspace root or ``allowed_roots``. Defaults to False.
+            allowed_roots: Extra absolute directories the tool may access
+                when ``restrict_to_workspace`` is True.
         """
         from openhands.tools.gemini.list_directory.impl import ListDirectoryExecutor
 
         executor = ListDirectoryExecutor(
-            workspace_root=conv_state.workspace.working_dir
+            workspace_root=conv_state.workspace.working_dir,
+            restrict_to_workspace=restrict_to_workspace,
+            allowed_roots=allowed_roots,
         )
 
         working_dir = conv_state.workspace.working_dir

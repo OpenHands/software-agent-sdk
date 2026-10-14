@@ -72,6 +72,8 @@ class PlanningFileEditorTool(
         cls,
         conv_state: "ConversationState",
         plan_path: str | None = None,
+        restrict_to_workspace: bool = False,
+        allowed_roots: list[str] | None = None,
     ) -> Sequence["PlanningFileEditorTool"]:
         """Initialize PlanningFileEditorTool.
 
@@ -79,6 +81,11 @@ class PlanningFileEditorTool(
             conv_state: Conversation state to get working directory from.
             plan_path: Optional absolute path to PLAN.md file. If not provided,
                 defaults to {working_dir}/.agents_tmp/PLAN.md.
+            restrict_to_workspace: If True, reject paths that resolve outside
+                the workspace root, ``allowed_roots`` or the PLAN.md directory.
+                Defaults to False.
+            allowed_roots: Extra absolute directories the tool may access
+                when ``restrict_to_workspace`` is True.
 
         Raises:
             ValueError: If plan_path is provided but is not an absolute path.
@@ -130,6 +137,8 @@ class PlanningFileEditorTool(
         executor = PlanningFileEditorExecutor(
             workspace_root=working_dir,
             plan_path=plan_path,
+            restrict_to_workspace=restrict_to_workspace,
+            allowed_roots=allowed_roots,
         )
 
         # Add working directory information to the tool description
