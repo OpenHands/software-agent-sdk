@@ -1016,15 +1016,24 @@ def client_with_llm_store(
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
     config = Config(static_files_path=None, session_api_keys=[], secret_key=None)
     app = create_app(config)
+
+    def agent_profiles() -> AgentProfileStore:
+        return AgentProfileStore(base_dir=temp_agent_profiles_dir)
+
+    def llm_profiles() -> LLMProfileStore:
+        return LLMProfileStore(base_dir=temp_llm_profiles_dir)
+
     with (
         patch(
             "openhands.agent_server.agent_profiles_router.get_agent_profile_store",
-            lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
+            agent_profiles,
         ),
         patch(
             "openhands.agent_server.agent_profiles_router.get_llm_profile_store",
-            lambda: LLMProfileStore(base_dir=temp_llm_profiles_dir),
+            llm_profiles,
         ),
+        patch("openhands.agent_server.launch.get_agent_profile_store", agent_profiles),
+        patch("openhands.agent_server.launch.get_llm_profile_store", llm_profiles),
     ):
         yield TestClient(app)
     reset_stores()
@@ -1131,7 +1140,7 @@ def test_materialize_reports_disabled_and_resolved_skills(
     )
 
     with patch(
-        "openhands.agent_server.profile_launch.discover_profile_skills",
+        "openhands.agent_server.launch.discover_profile_skills",
         return_value=[
             Skill(name="alpha", content="x"),
             Skill(name="beta", content="y"),
@@ -1147,8 +1156,8 @@ def test_materialize_reports_disabled_and_resolved_skills(
     assert body["resolved_settings"] is not None
 
 
-_BROWSER_PROBE = "openhands.agent_server.profile_launch.is_tool_usable"
-_DISCOVER = "openhands.agent_server.profile_launch.discover_profile_skills"
+_BROWSER_PROBE = "openhands.agent_server.launch.is_tool_usable"
+_DISCOVER = "openhands.agent_server.launch.discover_profile_skills"
 
 
 def test_materialize_reports_the_tools_a_launch_would_build(

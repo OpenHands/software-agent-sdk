@@ -9,6 +9,7 @@ import httpx
 from pydantic import BaseModel, Field, TypeAdapter
 
 from openhands.sdk.git.models import GitChange, GitDiff
+from openhands.sdk.observability.laminar import observability_headers_from_env
 from openhands.sdk.utils.path import to_posix_path
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 
@@ -73,7 +74,7 @@ class RemoteWorkspaceMixin(BaseModel):
 
     @property
     def _headers(self):
-        headers = {}
+        headers = observability_headers_from_env()
         if self.api_key:
             headers["X-Session-API-Key"] = self.api_key
         return headers
@@ -132,6 +133,21 @@ class RemoteWorkspaceMixin(BaseModel):
     ) -> Generator[dict[str, Any], httpx.Response, dict[str, Any] | None]:
         page = yield from self._search_command_output_generator(command_id)
         return next(iter(page.get("items", [])), None)
+
+    def _stop_command_generator(
+        self,
+        command_id: str,
+    ) -> Generator[dict[str, Any], httpx.Response]:
+        response = yield {
+            "method": "POST",
+            "url": f"{self.host}{self.api_prefix}/bash/bash_commands/{command_id}/stop",
+            "headers": self._headers,
+            "timeout": 60,
+        }
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return None
 
     def _runtime_lifecycle_generator(
         self,

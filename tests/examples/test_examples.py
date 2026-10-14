@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Iterable
 from pathlib import Path
@@ -124,7 +125,6 @@ def test_example_scripts(
     example_path: Path,
     examples_enabled: bool,
     examples_results_dir: Path,
-    tmp_path: Path,
 ) -> None:
     if not examples_enabled:
         pytest.skip("Use --run-examples to execute example scripts.")
@@ -140,44 +140,47 @@ def test_example_scripts(
     env.setdefault("PYTHONUNBUFFERED", "1")
     # Windows pipes default to the active code page; examples may print model text.
     env.setdefault("PYTHONIOENCODING", "utf-8")
-    # Give each example subprocess its own tmux socket directory so that parallel
-    # workers cannot tear down a tmux server shared via the default socket path
-    # (openhands/tools/terminal uses a fixed socket name). tmux creates its own
-    # tmux-<uid> subdirectory inside TMUX_TMPDIR.
-    env["TMUX_TMPDIR"] = str(tmp_path)
-    # Apply model overrides for certain examples requiring provider-specific models
-    overrides = _LLM_SPECIFIC_EXAMPLES.get(_normalize_path(example_path))
-    if overrides:
-        env.update(overrides)
+    # Keep tmux socket paths under Unix socket limits while preserving per-example
+    # isolation for parallel workers. tmux appends tmux-<uid>/<socket_name> here.
+    with tempfile.TemporaryDirectory(prefix="oh-ex-", dir="/tmp") as tmux_tmpdir:
+        env["TMUX_TMPDIR"] = tmux_tmpdir
+        # Apply model overrides for certain examples requiring provider-specific models
+        overrides = _LLM_SPECIFIC_EXAMPLES.get(_normalize_path(example_path))
+        if overrides:
+            env.update(overrides)
 
-    timed_out = False
-    try:
-        process = subprocess.run(  # noqa: S603
-            [sys.executable, str(example_path)],
-            cwd=str(REPO_ROOT),
-            env=env,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            check=False,
-            timeout=EXAMPLE_TIMEOUT_SECONDS,
-        )
-        stdout = process.stdout
-        stderr = process.stderr
-        returncode = process.returncode
-    except subprocess.TimeoutExpired as e:
-        timed_out = True
-        # e.stdout/e.stderr are bytes|str|None; ensure we have str
-        raw_stdout = e.stdout
-        raw_stderr = e.stderr
-        stdout = (
-            raw_stdout.decode() if isinstance(raw_stdout, bytes) else (raw_stdout or "")
-        )
-        stderr = (
-            raw_stderr.decode() if isinstance(raw_stderr, bytes) else (raw_stderr or "")
-        )
-        returncode = -1
+        timed_out = False
+        try:
+            process = subprocess.run(  # noqa: S603
+                [sys.executable, str(example_path)],
+                cwd=str(REPO_ROOT),
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                check=False,
+                timeout=EXAMPLE_TIMEOUT_SECONDS,
+            )
+            stdout = process.stdout
+            stderr = process.stderr
+            returncode = process.returncode
+        except subprocess.TimeoutExpired as e:
+            timed_out = True
+            # e.stdout/e.stderr are bytes|str|None; ensure we have str
+            raw_stdout = e.stdout
+            raw_stderr = e.stderr
+            stdout = (
+                raw_stdout.decode()
+                if isinstance(raw_stdout, bytes)
+                else (raw_stdout or "")
+            )
+            stderr = (
+                raw_stderr.decode()
+                if isinstance(raw_stderr, bytes)
+                else (raw_stderr or "")
+            )
+            returncode = -1
 
     duration = time.perf_counter() - start
 

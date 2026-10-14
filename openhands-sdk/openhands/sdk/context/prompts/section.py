@@ -53,8 +53,8 @@ class PromptContext(BaseModel):
     """Frozen snapshot of everything that shapes a system prompt.
 
     ``template_kwargs`` is the resolved kwarg dict for the static, cache-stable
-    block; the other fields snapshot per-conversation signals. ``enable_browser``
-    / ``model_family`` / ``cli_mode`` are typed views over ``template_kwargs``.
+    block; the other fields snapshot per-conversation signals. ``model_family`` /
+    ``cli_mode`` are typed views over ``template_kwargs``.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -63,6 +63,7 @@ class PromptContext(BaseModel):
         default_factory=dict, validate_default=True
     )
     tool_names: tuple[str, ...] = Field(default_factory=tuple)
+    tool_guidance: tuple[str, ...] = Field(default_factory=tuple)
     platform: Platform = Field(default_factory=Platform.current)
     working_dir: str | None = None
     now: str | None = None
@@ -85,10 +86,6 @@ class PromptContext(BaseModel):
         # frozen=True blocks attribute reassignment but not nested mutation;
         # store a read-only copy so the snapshot and its views cannot drift.
         return MappingProxyType(dict(value))
-
-    @property
-    def enable_browser(self) -> bool:
-        return bool(self.template_kwargs.get("enable_browser", False))
 
     @property
     def model_family(self) -> str | None:
@@ -114,9 +111,9 @@ class PromptSection(Protocol):
     :meth:`guard` decides whether the section applies (if ``False`` it is
     skipped and :meth:`render` never runs), then :meth:`render` produces the
     text. The split is intentional -- ``guard`` returning ``False`` means "not
-    applicable here" (e.g. browser disabled, wrong platform), while ``render``
-    returning ``None`` means "applicable, but nothing to add right now" (e.g. no
-    skills present).
+    applicable here" (e.g. security policy disabled), while ``render`` returning
+    ``None`` means "applicable, but nothing to add right now" (e.g. no skills
+    present).
 
     Both must be pure -- read-only on ``ctx``, no I/O -- so sections are
     testable in isolation. ``name`` is the registry's unique key for

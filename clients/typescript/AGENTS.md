@@ -358,10 +358,10 @@ Integration tests are in `src/__tests__/integration/` and require a running agen
 export LLM_API_KEY="your-api-key"
 export LLM_MODEL="anthropic/claude-sonnet-4-5-20250929"
 
-# Start agent-server in Docker (software-agent-sdk v1.44.0)
+# Start agent-server in Docker (matching the pinned image in package.json -> config.agentServerImage)
 docker run -d --name agent-server -p 127.0.0.1:8010:8000 \
   -v /tmp/agent-workspace:/workspace \
-  ghcr.io/openhands/agent-server:1.44.0-python --host 0.0.0.0
+  ghcr.io/openhands/agent-server:1.51.0-python --host 0.0.0.0
 
 # Run integration tests
 npm run test:integration
@@ -391,7 +391,7 @@ Required GitHub secrets:
 
 ### CI Image Version
 
-- The integration workflow pins `ghcr.io/openhands/agent-server:1.44.0-python`, which corresponds to the `software-agent-sdk` release `v1.44.0`.
+- The pinned agent-server image for the TypeScript client is `package.json` → `config.agentServerImage` (currently `ghcr.io/openhands/agent-server:1.51.0-python`), which is the source of truth the generated schema and integration workflows use.
 - Keep the TypeScript client tests strict against that released server image rather than adding compatibility fallbacks for older prerelease builds.
 
 ## Agent Behavior Guidelines

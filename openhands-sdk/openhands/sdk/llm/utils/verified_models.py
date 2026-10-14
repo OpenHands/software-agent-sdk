@@ -11,6 +11,7 @@ stay. When a new version lands, drop the oldest one in the same line.
 
 # GPT: gpt-6 and gpt-5.6. Codex: gpt-5.3-codex and gpt-5.2-codex.
 VERIFIED_OPENAI_MODELS = [
+    "gpt-6.1-sol",
     "gpt-6-sol",
     "gpt-6-luna",
     "gpt-6-astra",
@@ -22,12 +23,13 @@ VERIFIED_OPENAI_MODELS = [
     "gpt-5.2-codex",
 ]
 
-# Opus: 5.5 and 5. Sonnet: 5 and 4.6. Haiku: 4.5. Fable: 5.1 and 5.
+# Opus: 5.5 and 5. Sonnet: 5.5 and 5. Haiku: 5.5 and 4.5. Fable: 5.1 and 5.
 VERIFIED_ANTHROPIC_MODELS = [
     "claude-opus-5-5",
     "claude-opus-5",
+    "claude-sonnet-5-5",
     "claude-sonnet-5",
-    "claude-sonnet-4-6",
+    "claude-haiku-5-5",
     "claude-haiku-4-5-20251001",
     "claude-fable-5-1",
     "claude-fable-5",
@@ -39,8 +41,9 @@ VERIFIED_MISTRAL_MODELS = [
     "devstral-medium-2512",
 ]
 
-# Pro: 3.1. Flash: 3.8 and 3.7. Flash-lite: 3.5 and 3.1.
+# Argon: 4. Pro: 3.1. Flash: 3.8 and 3.7. Flash-lite: 3.5 and 3.1.
 VERIFIED_GEMINI_MODELS = [
+    "gemini-4-argon",
     "gemini-3.1-pro",
     "gemini-3.1-pro-preview",
     "gemini-3.8-flash",
@@ -105,15 +108,15 @@ VERIFIED_QWEN_MODELS = [
 
 # OpenRouter routes other vendors' models. Entries are the OpenRouter id with
 # the ``openrouter/`` prefix stripped (so ``anthropic/claude-opus-5`` here
-# corresponds to ``openrouter/anthropic/claude-opus-5``), and every entry must
-# be a real LiteLLM catalog id (``openrouter/<entry>`` must resolve in
-# ``get_supported_llm_models()``) so the route has known context-window
-# metadata. Only the frontier routes the OpenHands proxy itself serves are
-# kept; the long tail stays in the unverified catalog.
+# corresponds to ``openrouter/anthropic/claude-opus-5``). Keep only the frontier
+# routes the OpenHands proxy serves, using OpenRouter's actual model ids.
 VERIFIED_OPENROUTER_MODELS = [
     "anthropic/claude-opus-5",
+    "anthropic/claude-sonnet-5.5",
     "anthropic/claude-sonnet-5",
+    "anthropic/claude-haiku-5.5",
     "anthropic/claude-haiku-4.5",
+    "openai/gpt-6.1-sol",
     "openai/gpt-6-astra",
     "openai/gpt-5.6-sol",
     "openai/gpt-5.3-codex",
@@ -121,6 +124,7 @@ VERIFIED_OPENROUTER_MODELS = [
     "deepseek/deepseek-chat",
     "deepseek/deepseek-v4-pro",
     "deepseek/deepseek-v4-flash",
+    "google/gemini-4-argon",
     "google/gemini-3.1-pro-preview",
     "google/gemini-3.8-flash",
     "google/gemini-3.7-flash",
@@ -134,15 +138,34 @@ VERIFIED_OPENROUTER_MODELS = [
     "minimax/minimax-m3",
 ]
 
+# DigitalOcean Inference ids (``GET https://inference.do-ai.run/v1/models``).
+# Chat Completions models with tool calling only: the gpt-6 line needs the
+# Responses API for tools, so it is left out.
+VERIFIED_DIGITALOCEAN_MODELS = [
+    "anthropic-claude-opus-5.5",
+    "anthropic-claude-opus-5",
+    "anthropic-claude-sonnet-5.5",
+    "anthropic-claude-5-sonnet",
+    "openai-gpt-5.6-sol",
+    "openai-gpt-5.6-terra",
+    "openai-gpt-5.6-luna",
+    "deepseek-v4-pro",
+    "glm-5.3",
+    "glm-5.2",
+    "kimi-k3",
+    "qwen3.8-max",
+]
+
 # What the ``openhands/`` provider serves. Same rule; every entry must also be in
 # a provider list above, except OpenHands-only models.
 VERIFIED_OPENHANDS_MODELS = [
     "claude-opus-5-5",
     "claude-opus-5",
+    "claude-sonnet-5-5",
     "claude-sonnet-5",
-    "claude-sonnet-4-6",
     "claude-fable-5-1",
     "claude-fable-5",
+    "gpt-6.1-sol",
     "gpt-6-sol",
     "gpt-6-luna",
     "gpt-6-astra",
@@ -200,4 +223,5 @@ VERIFIED_MODELS = {
     "nvidia": VERIFIED_NVIDIA_MODELS,
     "qwen": VERIFIED_QWEN_MODELS,
     "openrouter": VERIFIED_OPENROUTER_MODELS,
+    "digitalocean": VERIFIED_DIGITALOCEAN_MODELS,
 }

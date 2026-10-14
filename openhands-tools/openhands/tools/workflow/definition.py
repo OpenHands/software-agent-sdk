@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, ClassVar, Final, Literal
 
 from pydantic import Field
 
+from openhands.sdk.subagent import SubAgentScope
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -150,9 +151,14 @@ class WorkflowTool(ToolDefinition[WorkflowAction, WorkflowObservation]):
         conv_state: ConversationState | None = None,  # noqa: ARG003
         executor: WorkflowExecutor | None = None,
         description: str = _WORKFLOW_DESCRIPTION,
+        sub_agent_scope: SubAgentScope | dict[str, bool] | None = None,
     ) -> Sequence[WorkflowTool]:
         from openhands.tools.workflow.impl import WorkflowExecutor
 
+        if executor is None:
+            executor = WorkflowExecutor(
+                sub_agent_scope=SubAgentScope.model_validate(sub_agent_scope or {})
+            )
         return [
             cls(
                 action_type=WorkflowAction,
@@ -165,7 +171,7 @@ class WorkflowTool(ToolDefinition[WorkflowAction, WorkflowObservation]):
                     idempotentHint=False,
                     openWorldHint=True,
                 ),
-                executor=executor if executor is not None else WorkflowExecutor(),
+                executor=executor,
             )
         ]
 
@@ -179,10 +185,9 @@ class WorkflowToolSet(ToolDefinition[WorkflowAction, WorkflowObservation]):
     def create(
         cls,
         conv_state: ConversationState,  # noqa: ARG003
+        sub_agent_scope: SubAgentScope | dict[str, bool] | None = None,
     ) -> Sequence[WorkflowTool]:
-        from openhands.tools.workflow.impl import WorkflowExecutor
-
-        return WorkflowTool.create(executor=WorkflowExecutor())
+        return WorkflowTool.create(sub_agent_scope=sub_agent_scope)
 
 
 register_tool(WorkflowToolSet.name, WorkflowToolSet)

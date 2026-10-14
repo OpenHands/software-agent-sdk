@@ -23,18 +23,20 @@ from openhands.agent_server._secrets_exposure import (
     get_config,
     store_errors,
 )
+from openhands.agent_server.config import Config
+from openhands.agent_server.launch import (
+    can_probe_tools,
+    server_launch_stores,
+    target_launch_runtime,
+)
 from openhands.agent_server.persistence import (
     PersistedSettings,
     get_agent_profile_store,
     get_llm_profile_store,
     get_settings_store,
 )
-from openhands.agent_server.profile_launch import (
-    can_probe_tools,
-    configured_browser_available,
-    gather_profile_launch_inputs,
-)
 from openhands.agent_server.profiles_router import MAX_PROFILES, _has_api_key
+from openhands.sdk.launch import preview_launch
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import (
     ProfileLimitExceeded as LLMProfileLimitExceeded,
@@ -49,7 +51,6 @@ from openhands.sdk.profiles import (
     OpenHandsAgentProfile,
     ProfileLimitExceeded,
     build_seed_profile,
-    resolve_agent_profile_dry_run,
     safe_validation_error_detail,
     save_profile_preserving_identity,
     validate_agent_profile,
@@ -234,7 +235,7 @@ def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
 
 def _seed_default_profile(
     store: AgentProfileStore,
-    request: Request,
+    config: Config,
     settings: PersistedSettings,
     cipher: Cipher | None,
 ) -> None:
@@ -265,7 +266,7 @@ def _seed_default_profile(
         store.save(profile, max_profiles=MAX_AGENT_PROFILES)
 
         profile_id = str(profile.id)
-        settings_store = get_settings_store(get_config(request))
+        settings_store = get_settings_store(config)
 
         def set_pointer(s: PersistedSettings) -> PersistedSettings:
             s.active_agent_profile_id = profile_id
@@ -273,6 +274,31 @@ def _seed_default_profile(
 
         settings_store.update(set_pointer)
         logger.info(f"Seeded default agent profile '{profile.name}' (id={profile_id})")
+
+
+def active_agent_profile(
+    config: Config, cipher: Cipher | None
+) -> OpenHandsAgentProfile | ACPAgentProfile | None:
+    """Return the active Agent Profile, seeding ``default`` on first use."""
+    settings_store = get_settings_store(config)
+    settings = settings_store.load() or PersistedSettings()
+    store = get_agent_profile_store()
+    if settings.active_agent_profile_id is None:
+        with store_errors():
+            existing = store.list()
+        if not existing:
+            _seed_default_profile(store, config, settings, cipher)
+            settings = settings_store.load() or settings
+    if settings.active_agent_profile_id is None:
+        return None
+    with store_errors():
+        name = store.name_for_id(settings.active_agent_profile_id)
+        if name is None:
+            return None
+        try:
+            return store.load(name)
+        except FileNotFoundError:
+            return None
 
 
 def _summary_id_for_name(store: AgentProfileStore, name: str) -> str | None:
@@ -302,7 +328,7 @@ async def list_agent_profiles(request: Request) -> AgentProfileListResponse:
         existing = store.list()
 
     if not existing and settings.active_agent_profile_id is None:
-        _seed_default_profile(store, request, settings, get_cipher(request))
+        _seed_default_profile(store, config, settings, get_cipher(request))
         settings = settings_store.load() or settings
 
     with store_errors():
@@ -550,13 +576,14 @@ async def materialize_agent_profile(
     name: ProfileName,
     body: MaterializeAgentProfileRequest | None = None,
 ) -> AgentProfileDiagnostics:
-    """Dry-run resolve a profile the way a launch would; return a diagnostics report.
+    """Preview the launch of a profile; return a diagnostics report.
 
-    Resolves the stored profile ``name``, or ``body.profile`` when given (so an
-    editor can preview before saving). Dangling LLM/MCP references are reported
-    in the body (valid=False) rather than raising — the only error statuses are
-    404 (unknown stored profile) and 422 (invalid draft). resolved_settings is
-    redacted (api_key_set booleans; no raw secrets).
+    Previews the stored profile ``name``, or ``body.profile`` when given (so an
+    editor can preview before saving), with the same resolve and finalize as a
+    launch, against the runtime this server launches into. Dangling references
+    are reported in the body (valid=False) rather than raising — the only error
+    statuses are 404 (unknown stored profile) and 422 (invalid draft).
+    resolved_settings is redacted (no raw secrets).
     """
     if body is not None and body.profile is not None:
         profile = _validate_profile_payload({**body.profile, "name": name})
@@ -571,40 +598,15 @@ async def materialize_agent_profile(
                 detail=f"Agent profile '{name}' not found",
             )
 
-    # Still needed here (unlike the profile load above): resolve_agent_profile_
-    # dry_run uses it to decrypt the *referenced LLM profile's* own secret.
-    cipher = get_cipher(request)
     config = get_config(request)
     settings = get_settings_store(config).load() or PersistedSettings()
-    mcp_config = settings.agent_settings.mcp_config
-
-    inputs = await asyncio.to_thread(
-        gather_profile_launch_inputs,
-        profile,
-        config.acp_skill_sourcing,
-        configured_browser_available(config),
-    )
-    if inputs.skill_discovery_error is not None:
-        logger.warning(
-            "Skill discovery failed during materialize: %s",
-            inputs.skill_discovery_error,
+    context = settings.agent_settings.agent_context
+    return await asyncio.to_thread(
+        lambda: preview_launch(
+            profile,
+            server_launch_stores(settings, get_cipher(request)),
+            target_launch_runtime(config),
+            load_memory=context is not None and context.load_memory,
+            check_usable=can_probe_tools(config),
         )
-
-    llm_store = get_llm_profile_store()
-    diagnostics = await asyncio.to_thread(
-        resolve_agent_profile_dry_run,
-        profile,
-        llm_store=llm_store,
-        mcp_config=mcp_config,
-        available_skills=inputs.available_skills,
-        cipher=cipher,
-        browser_available=inputs.browser_available,
-        check_usable=can_probe_tools(config),
     )
-    if inputs.skill_discovery_error is not None:
-        diagnostics.errors.append(
-            f"Skill discovery failed: {inputs.skill_discovery_error}"
-        )
-        diagnostics.valid = False
-        diagnostics.resolved_settings = None
-    return diagnostics

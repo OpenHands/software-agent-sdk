@@ -195,6 +195,53 @@ def test_openhands_explicit_browser_is_launched_only_where_it_can_run(
     assert [tool.name for tool in settings.tools or []] == expected
 
 
+@pytest.mark.parametrize(
+    ("mcp_server_refs", "scoped_mcp"), [(None, False), ([], True), (["fetch"], True)]
+)
+def test_openhands_profile_delegation_is_scoped_to_the_profile(
+    llm_store: LLMProfileStore,
+    mcp_config: dict[str, MCPServer],
+    mcp_server_refs: list[str] | None,
+    scoped_mcp: bool,
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="delegating",
+        llm_profile_ref="default",
+        tools=[Tool(name="terminal"), Tool(name="task_tool_set")],
+        mcp_server_refs=mcp_server_refs,
+    )
+
+    settings = resolve_agent_profile(
+        profile, llm_store=llm_store, mcp_config=mcp_config, available_skills=None
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    scope = {"tools": True, "mcp_servers": scoped_mcp}
+    assert settings.tools == [
+        Tool(name="terminal"),
+        Tool(name="task_tool_set", params={"sub_agent_scope": scope}),
+    ]
+    assert settings.create_agent().tools == settings.tools
+    assert profile.tools == [Tool(name="terminal"), Tool(name="task_tool_set")]
+
+
+def test_openhands_default_tools_are_not_scoped(llm_store: LLMProfileStore) -> None:
+    profile = OpenHandsAgentProfile(
+        name="oh", llm_profile_ref="default", mcp_server_refs=[]
+    )
+
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        browser_available=False,
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert all(not tool.params for tool in settings.tools or [])
+
+
 def test_resolve_without_browser_availability_keeps_unset_tools_unset(
     llm_store: LLMProfileStore,
 ) -> None:
@@ -539,25 +586,22 @@ def test_no_available_skills_yields_no_skills(
 def test_seed_then_resolve_with_narrower_catalog_does_not_dangle(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:
-    # #4017 regression: a global whose AgentContext carries an inline skill whose
-    # name is NOT in the launch discovery catalog. The old freeze-by-name seed
-    # would name that skill and then hard-fail at launch (DanglingSkillRef). The
-    # deny-list seed disables nothing, so seed->resolve against the narrower
-    # catalog succeeds and yields exactly the catalog skills.
     from openhands.sdk.profiles import build_seed_profile
     from openhands.sdk.settings.model import validate_agent_settings
 
     settings = validate_agent_settings(
         {
             "agent_kind": "openhands",
-            "agent_context": {"skills": [{"name": "inline-only", "content": "x"}]},
+            "agent_context": {
+                "skills": [{"name": "inline-only", "content": "x"}],
+                "disabled_skills": ["beta", "missing"],
+            },
         }
     )
     profile = build_seed_profile(settings, active_llm_profile="default")
     assert isinstance(profile, OpenHandsAgentProfile)
-    assert profile.disabled_skills == []
+    assert profile.disabled_skills == ["beta", "missing"]
 
-    # Launch catalog does NOT contain "inline-only" — must still resolve.
     resolved = resolve_agent_profile(
         profile,
         llm_store=llm_store,
@@ -568,7 +612,6 @@ def test_seed_then_resolve_with_narrower_catalog_does_not_dangle(
     assert isinstance(resolved, OpenHandsAgentSettings)
     assert {s.name for s in resolved.agent_context.skills} == {
         "alpha",
-        "beta",
         "gamma",
     }
 

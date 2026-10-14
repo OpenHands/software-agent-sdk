@@ -9,7 +9,6 @@ import pytest
 from openhands.sdk.agent import ACPAgent, Agent
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.llm import LLM
-from openhands.sdk.tool import Tool
 
 
 PERSONA = "You are a ramen chef. Answer only cooking questions."
@@ -30,7 +29,6 @@ KEPT_TAGS = {
     "MEMORY",
     "SECURITY",
     "SECURITY_RISK_ASSESSMENT",
-    "BROWSER_TOOLS",
     "EXTERNAL_SERVICES",
     "PROCESS_MANAGEMENT",
     "IMPORTANT",
@@ -40,7 +38,6 @@ KEPT_TAGS = {
 def _agent(**kwargs: Any) -> Agent:
     return Agent(
         llm=LLM(model="claude-sonnet-4-5", api_key="k", usage_id="agent"),
-        tools=[Tool(name="browser_tool_set")],
         agent_context=AgentContext(
             load_memory=True, system_message_suffix="Cite file paths."
         ),
