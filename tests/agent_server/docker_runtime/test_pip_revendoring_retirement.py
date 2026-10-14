@@ -27,7 +27,7 @@ import json
 import pip
 
 versions = {"pip": pip.__version__}
-for name in ("urllib3", "msgpack"):
+for name in ("urllib3", "msgpack", "pkg_resources"):
     module_name = "pip._vendor." + name
     try:
         module = importlib.import_module(module_name)
@@ -36,7 +36,7 @@ for name in ("urllib3", "msgpack"):
             raise
         versions[name] = None
     else:
-        versions[name] = module.__version__
+        versions[name] = getattr(module, "__version__", "vendored")
 print(json.dumps(versions))
 """
 
@@ -74,7 +74,7 @@ def test_upstream_pip_still_needs_revendoring():
         f"Upstream pip's vendoring layout changed: {versions}. "
         "Reassess whether the pip-revendored workaround is still needed."
     )
-    assert any(
+    assert versions["pkg_resources"] is not None or any(
         Version(versions[name]) < Version(fixed)
         for name, fixed in FIXED_VERSIONS.items()
     ), (

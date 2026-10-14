@@ -42,7 +42,11 @@ FROM node:24.21.0-trixie-slim AS node-runtime
 
 # pip 26.2.1 vendors urllib3 2.7.0 (CVE-2026-97689) and msgpack 1.1.2
 # (GHSA-6v7p-g79w-8964), and no pip release vendors the fixed versions yet.
-# Re-vendor them with pip's own tooling so its import rewrites, patches, and
+# It also vendors pkg_resources from setuptools 70.3.0 (CVE-2025-47273,
+# CVE-2026-59890); setuptools dropped pkg_resources in 82.0.0, before either
+# fix, so it is removed instead. pip only imports it for the deprecated
+# pkg_resources metadata backend, which is off by default on Python 3.11+.
+# Re-vendor with pip's own tooling so its import rewrites, patches, and
 # bom.cdx.json stay consistent; the source archive is used because the sdist
 # omits tools/vendoring/patches. Drop this stage once pip ships the fixes;
 # tests/agent_server/docker_runtime/test_pip_revendoring_retirement.py flags it.
@@ -56,9 +60,12 @@ RUN set -eux; \
     sed -i -E \
         -e 's/^( +)urllib3==2\.7\.0$/\1urllib3==2.8.0/' \
         -e 's/^msgpack==1\.1\.2$/msgpack==1.2.1/' \
+        -e '/^setuptools==70\.3\.0$/d' \
         src/pip/_vendor/vendor.txt; \
     grep -qx '    urllib3==2.8.0' src/pip/_vendor/vendor.txt; \
     grep -qx 'msgpack==1.2.1' src/pip/_vendor/vendor.txt; \
+    if grep -q '^setuptools==' src/pip/_vendor/vendor.txt; then exit 1; fi; \
+    rm tools/vendoring/patches/pkg_resources.patch; \
     python -m venv /tmp/vendoring; \
     /tmp/vendoring/bin/pip install --no-cache-dir vendoring==1.4.0; \
     /tmp/vendoring/bin/vendoring sync; \
