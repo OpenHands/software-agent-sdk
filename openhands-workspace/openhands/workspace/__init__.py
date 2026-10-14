@@ -15,6 +15,7 @@ from .cloud import (
 )
 from .docker import DockerWorkspace
 from .remote_api import APIRemoteWorkspace
+from .smolmachines import SmolMachinesWorkspace
 
 
 if TYPE_CHECKING:
@@ -32,6 +33,7 @@ __all__ = [
     "PlatformType",
     "RepoMapping",
     "RepoSource",
+    "SmolMachinesWorkspace",
     "TargetType",
 ]
 
