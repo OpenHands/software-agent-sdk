@@ -65,7 +65,13 @@ class SubAgentInfo(BaseModel):
     permission_mode: str | None = None
     max_iteration_per_run: int | None = None
     max_budget_per_run: float | None = None
-    mcp_config: dict[str, MCPServer] | None = None
+    mcp_config: dict[str, MCPServer] | None = Field(
+        default=None,
+        description=(
+            "MCP servers the definition declares. A delegated sub-agent ignores "
+            "them and inherits its parent's MCP servers."
+        ),
+    )
     mcp_servers: dict[str, MCPServer] | None = Field(
         default=None,
         deprecated=True,

@@ -459,6 +459,16 @@ def discover_profile_skills() -> list[Skill]:
     )
 
 
+def discover_public_skill_names() -> set[str]:
+    """Names of the public tier of :func:`discover_profile_skills`.
+
+    A user skill that shadows a public one by name belongs to the user tier, as
+    it does in the merged catalog.
+    """
+    names = load_available_skills(include_public=True)
+    return set(names) - set(load_available_skills(include_user=True))
+
+
 def sync_public_skills() -> tuple[bool, str]:
     """Force refresh of public skills from GitHub repository.
 
