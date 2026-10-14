@@ -49,7 +49,7 @@ def _default_session_api_keys():
     """
     result = []
     session_api_key = os.getenv(V0_SESSION_API_KEY_ENV)
-    if session_api_key:
+    if session_api_key and session_api_key.strip():
         result.append(session_api_key)
     return result
 
@@ -62,10 +62,10 @@ def _default_secret_key() -> SecretStr | None:
     We check both the V0 and V1 variables for this.
     """
     session_api_key = os.getenv(V0_SESSION_API_KEY_ENV)
-    if session_api_key:
+    if session_api_key and session_api_key.strip():
         return SecretStr(session_api_key)
     session_api_key = os.getenv(V1_SESSION_API_KEY_ENV)
-    if session_api_key:
+    if session_api_key and session_api_key.strip():
         return SecretStr(session_api_key)
     return None
 
@@ -504,9 +504,11 @@ class Config(BaseModel):
     @field_validator("session_api_keys")
     @classmethod
     def _drop_empty_session_api_keys(cls, value: list[str]) -> list[str]:
-        # An empty key (e.g. ``OH_SESSION_API_KEYS_0=``) is never a real
-        # credential; keeping it would make an empty string authenticate.
-        return [key for key in value if key]
+        # An empty or whitespace-only key (e.g. ``OH_SESSION_API_KEYS_0=`` or a
+        # stray space from a template) is never a real credential; keeping it
+        # would make a guessable string authenticate. Non-blank keys are kept
+        # verbatim, since keys are compared exactly.
+        return [key for key in value if key.strip()]
 
     @field_validator("secret_key")
     @classmethod
