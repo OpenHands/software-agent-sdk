@@ -4,6 +4,7 @@ import io
 import json
 import os
 import signal
+import sys
 import tarfile
 import threading
 import time
@@ -644,6 +645,89 @@ async def test_cleanup_kills_sigterm_ignoring_descendant(
         with pytest.raises(ProcessLookupError):
             os.kill(child_pid, 0)
     finally:
+        await manager.shutdown()
+
+
+_CRASHING_SERVER = """
+import asyncio, sys
+from pathlib import Path
+from openhands.agent_server.canvas_extensions.backend import (
+    CanvasExtensionBackendManager,
+)
+
+async def main():
+    manager = CanvasExtensionBackendManager(Path(sys.argv[1]), Path(sys.argv[2]))
+    revision = manager.revision("my-extension")
+    await manager.prepare("my-extension", revision)
+    status = await manager.start("my-extension", revision)
+    print(status.model_dump_json(), flush=True)
+    await asyncio.sleep(300)
+
+asyncio.run(main())
+"""
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    # A zombie child of this test process is dead too.
+    return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+
+
+@pytest.mark.asyncio
+async def test_restart_after_server_crash_reaps_orphaned_backend(tmp_path: Path):
+    """A SIGKILLed server's backend must not survive the next server (#5637)."""
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    installed_dir = tmp_path / "installed"
+    state_dir = tmp_path / "state"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    crashed = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        _CRASHING_SERVER,
+        str(installed_dir),
+        str(state_dir),
+        stdout=asyncio.subprocess.PIPE,
+    )
+    assert crashed.stdout is not None
+    line = await asyncio.wait_for(crashed.stdout.readline(), timeout=60)
+    started = json.loads(line)
+    assert started["state"] == "ready"
+    backend_pid = started["pid"]
+    runtime_file = state_dir / "data" / "my-extension" / "runtime.json"
+    child_pid = json.loads(runtime_file.read_text())["child_pid"]
+    crashed.kill()
+    await crashed.wait()
+    assert _alive(backend_pid) and _alive(child_pid)
+
+    # An unrelated process named in a forged record of the dead server is
+    # never signalled: its command line is outside the app's artifacts.
+    [record_path] = list((state_dir / "run").glob("*.json"))
+    record = json.loads(record_path.read_text())
+    bystander = await asyncio.create_subprocess_exec(
+        "/bin/sleep", "300", start_new_session=True
+    )
+    forged = state_dir / "run" / f"{bystander.pid}.json"
+    stat = Path(f"/proc/{bystander.pid}/stat").read_text()
+    record.update(
+        pgid=bystander.pid, start_time=int(stat.rsplit(")", 1)[1].split()[19])
+    )
+    forged.write_text(json.dumps(record))
+
+    manager = CanvasExtensionBackendManager(installed_dir, state_dir)
+    try:
+        await manager.reap_orphans()
+        assert not _alive(backend_pid)
+        assert not _alive(child_pid)
+        assert bystander.returncode is None and _alive(bystander.pid)
+        assert list((state_dir / "run").iterdir()) == []
+        assert (await manager.status("my-extension")).state == "stopped"
+        await manager.delete_data("my-extension")
+    finally:
+        bystander.kill()
+        await bystander.wait()
         await manager.shutdown()
 
 

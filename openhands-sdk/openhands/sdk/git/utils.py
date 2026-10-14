@@ -4,6 +4,7 @@ import shlex
 import subprocess
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.utils.redact import (
@@ -565,13 +566,17 @@ def is_git_url(source: str) -> bool:
 
 
 def normalize_git_url(url: str) -> str:
-    """Normalize a git URL by ensuring .git suffix for HTTPS URLs.
+    """Normalize a git URL by ensuring a .git suffix for HTTPS URLs.
+
+    Azure DevOps clone URLs (paths containing ``/_git/``) are left without the
+    suffix, since Azure DevOps resolves ``<repo>.git`` as a different repository.
 
     Args:
         url: Git URL to normalize.
 
     Returns:
-        Normalized URL with .git suffix for HTTPS/HTTP URLs.
+        Normalized URL with a .git suffix for HTTPS/HTTP URLs, except Azure
+        DevOps ``/_git/`` URLs, which only lose a trailing slash.
 
     Examples:
         >>> normalize_git_url("https://github.com/owner/repo")
@@ -580,9 +585,14 @@ def normalize_git_url(url: str) -> str:
         "https://github.com/owner/repo.git"
         >>> normalize_git_url("git@github.com:owner/repo.git")
         "git@github.com:owner/repo.git"
+        >>> normalize_git_url("https://dev.azure.com/org/project/_git/repo")
+        "https://dev.azure.com/org/project/_git/repo"
     """
     if url.startswith(("https://", "http://")) and not url.endswith(".git"):
         url = url.rstrip("/")
+        # Azure DevOps resolves ``<repo>.git`` as a different, missing repo.
+        if "/_git/" in urlparse(url).path:
+            return url
         url = f"{url}.git"
     return url
 

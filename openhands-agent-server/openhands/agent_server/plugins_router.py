@@ -98,7 +98,9 @@ class InstallPluginRequest(BaseModel):
     source: str = Field(
         min_length=1,
         description=(
-            "Plugin source - git URL, GitHub shorthand, or local path. Examples: "
+            "Plugin source - git URL, GitHub shorthand (github:owner/repo, "
+            "optionally followed by the plugin's path in the repository), or "
+            "local path. Examples: "
             "'github:OpenHands/extensions/plugins/city-weather', '/path/to/plugin'"
         ),
     )

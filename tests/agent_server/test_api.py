@@ -112,9 +112,10 @@ def test_ensure_server_tmux_tmpdir_creates_default_dir(short_tmp_path, monkeypat
         "openhands.agent_server.api._default_server_tmux_tmpdir", lambda: expected
     )
 
-    tmux_tmpdir, was_defaulted = _ensure_server_tmux_tmpdir()
+    tmux_tmpdir, was_defaulted, created = _ensure_server_tmux_tmpdir()
 
     assert was_defaulted is True
+    assert created is True
     assert tmux_tmpdir == expected
     assert tmux_tmpdir.is_dir()
     assert os.environ["TMUX_TMPDIR"] == str(tmux_tmpdir)
@@ -124,9 +125,10 @@ def test_ensure_server_tmux_tmpdir_respects_existing_env(short_tmp_path, monkeyp
     existing = short_tmp_path / "custom-tmux"
     monkeypatch.setenv("TMUX_TMPDIR", str(existing))
 
-    tmux_tmpdir, was_defaulted = _ensure_server_tmux_tmpdir()
+    tmux_tmpdir, was_defaulted, created = _ensure_server_tmux_tmpdir()
 
     assert was_defaulted is False
+    assert created is False
     assert tmux_tmpdir == existing
     assert not existing.exists()
 
@@ -142,7 +144,7 @@ def test_ensure_server_tmux_tmpdir_replaces_too_deep_env(
         "openhands.agent_server.api._default_server_tmux_tmpdir", lambda: expected
     )
 
-    tmux_tmpdir, was_defaulted = _ensure_server_tmux_tmpdir()
+    tmux_tmpdir, was_defaulted, created = _ensure_server_tmux_tmpdir()
 
     assert was_defaulted is True
     assert tmux_tmpdir == expected
@@ -562,8 +564,141 @@ class TestServiceParallelization:
             mock_app.state = SimpleNamespace(config=Config())
             async with api_lifespan(mock_app):
                 assert os.environ["TMUX_TMPDIR"] == str(expected_tmux_tmpdir)
+                assert expected_tmux_tmpdir.is_dir()
 
             assert "TMUX_TMPDIR" not in os.environ
+            assert not expected_tmux_tmpdir.exists()
+
+    async def test_lifespan_keeps_user_provided_tmux_tmpdir(
+        self, short_tmp_path, monkeypatch
+    ):
+        """A TMUX_TMPDIR the user set is never removed at shutdown."""
+        user_tmux_tmpdir = short_tmp_path / "user-tmux"
+        user_tmux_tmpdir.mkdir()
+        monkeypatch.setenv("TMUX_TMPDIR", str(user_tmux_tmpdir))
+        mock_conversation_service = AsyncMock()
+
+        with (
+            patch(
+                "openhands.agent_server.api.get_default_conversation_service",
+                return_value=mock_conversation_service,
+            ),
+            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
+            patch(
+                "openhands.agent_server.api.get_tool_preload_service", return_value=None
+            ),
+        ):
+            mock_app = AsyncMock()
+            mock_app.state = SimpleNamespace(config=Config())
+            async with api_lifespan(mock_app):
+                assert os.environ["TMUX_TMPDIR"] == str(user_tmux_tmpdir)
+
+            assert os.environ["TMUX_TMPDIR"] == str(user_tmux_tmpdir)
+            assert user_tmux_tmpdir.is_dir()
+
+    async def test_lifespan_removes_substitute_for_too_deep_tmux_tmpdir(
+        self, deep_tmp_path, short_tmp_path, monkeypatch
+    ):
+        """A too-long TMUX_TMPDIR is restored and kept; the substitute removed."""
+        monkeypatch.setenv("TMUX_TMPDIR", str(deep_tmp_path))
+        substitute = short_tmp_path / "tmux"
+        monkeypatch.setattr(
+            "openhands.agent_server.api._default_server_tmux_tmpdir",
+            lambda: substitute,
+        )
+        monkeypatch.setattr(
+            "openhands.agent_server.api._fits_tmux_socket",
+            lambda path: path == substitute,
+        )
+        mock_conversation_service = AsyncMock()
+
+        with (
+            patch(
+                "openhands.agent_server.api.get_default_conversation_service",
+                return_value=mock_conversation_service,
+            ),
+            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
+            patch(
+                "openhands.agent_server.api.get_tool_preload_service", return_value=None
+            ),
+        ):
+            mock_app = AsyncMock()
+            mock_app.state = SimpleNamespace(config=Config())
+            async with api_lifespan(mock_app):
+                assert os.environ["TMUX_TMPDIR"] == str(substitute)
+
+            assert os.environ["TMUX_TMPDIR"] == str(deep_tmp_path)
+            assert deep_tmp_path.is_dir()
+            assert not substitute.exists()
+
+    async def test_lifespan_logs_and_continues_when_tmux_tmpdir_removal_fails(
+        self, short_tmp_path, monkeypatch, caplog
+    ):
+        """A failed removal is logged and does not abort shutdown."""
+        expected_tmux_tmpdir = short_tmp_path / "tmux"
+        monkeypatch.setattr(
+            "openhands.agent_server.api._default_server_tmux_tmpdir",
+            lambda: expected_tmux_tmpdir,
+        )
+
+        def fail_rmtree(path):
+            raise PermissionError("denied")
+
+        # Replace the module's shutil, not shutil.rmtree itself, so fixture
+        # teardown can still remove the directory.
+        monkeypatch.setattr(
+            "openhands.agent_server.api.shutil", SimpleNamespace(rmtree=fail_rmtree)
+        )
+        mock_conversation_service = AsyncMock()
+
+        with (
+            patch(
+                "openhands.agent_server.api.get_default_conversation_service",
+                return_value=mock_conversation_service,
+            ),
+            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
+            patch(
+                "openhands.agent_server.api.get_tool_preload_service", return_value=None
+            ),
+        ):
+            mock_app = AsyncMock()
+            mock_app.state = SimpleNamespace(config=Config())
+            with caplog.at_level("WARNING"):
+                async with api_lifespan(mock_app):
+                    pass
+
+            assert "TMUX_TMPDIR" not in os.environ
+            assert "Failed to remove per-server tmux directory" in caplog.text
+
+    async def test_lifespan_keeps_preexisting_default_tmux_tmpdir(
+        self, short_tmp_path, monkeypatch
+    ):
+        """A default directory that existed before startup is not removed."""
+        expected_tmux_tmpdir = short_tmp_path / "tmux"
+        expected_tmux_tmpdir.mkdir()
+        monkeypatch.setattr(
+            "openhands.agent_server.api._default_server_tmux_tmpdir",
+            lambda: expected_tmux_tmpdir,
+        )
+        mock_conversation_service = AsyncMock()
+
+        with (
+            patch(
+                "openhands.agent_server.api.get_default_conversation_service",
+                return_value=mock_conversation_service,
+            ),
+            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
+            patch(
+                "openhands.agent_server.api.get_tool_preload_service", return_value=None
+            ),
+        ):
+            mock_app = AsyncMock()
+            mock_app.state = SimpleNamespace(config=Config())
+            async with api_lifespan(mock_app):
+                assert os.environ["TMUX_TMPDIR"] == str(expected_tmux_tmpdir)
+
+            assert "TMUX_TMPDIR" not in os.environ
+            assert expected_tmux_tmpdir.is_dir()
 
 
 class TestRootPath:

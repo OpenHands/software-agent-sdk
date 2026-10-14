@@ -513,8 +513,8 @@ def service_install_skill(
     Args:
         source: Skill source - git URL, GitHub shorthand, or local path.
             Supports formats like:
-            - GitHub URL: https://github.com/OpenHands/extensions/tree/main/skills/github
             - GitHub shorthand: github:OpenHands/extensions/skills/github
+            - Git URL plus repo_path: https://github.com/OpenHands/extensions.git
             - Local path: /path/to/skill
         ref: Optional branch, tag, or commit to install.
         repo_path: Subdirectory path within the repository (for monorepos).

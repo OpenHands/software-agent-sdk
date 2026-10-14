@@ -330,7 +330,7 @@ Preconditions:
   ```sh
   control-agent-server api POST /api/plugins/install --json '{"source": "'"$F/qa-f26-missing"'"}' --expect 400 \
     --check detail eq 'Failed to fetch plugin source. Check that the source is valid.' --save F26.install-errors/missing-path
-  control-agent-server api POST /api/plugins/install --json '{"source": "github:qa/f26/extra"}' --expect 400
+  control-agent-server api POST /api/plugins/install --json '{"source": "github:qa"}' --expect 400
   control-agent-server api POST /api/plugins/install --json '{"source": "qa-f26-not-a-source"}' --expect 400
   control-agent-server api POST /api/plugins/install --json '{"source": "file://'"$F/qa-f26-no-repo"'"}' --expect 400
   control-agent-server api POST /api/plugins/install --json '{"source": "file://'"$G"'", "repo_path": "plugins/qa-f26-missing"}' --expect 400
@@ -346,9 +346,8 @@ Preconditions:
   control-agent-server api GET /api/plugins/installed --expect 200 --check plugins len-eq 3 --save F26.install-errors/after
   test "$(find "$I" -mindepth 1 -maxdepth 1 | wc -l)" -eq 4
   ```
-  A missing path, a GitHub shorthand with a subpath (rejected by the parser
-  without any network call; the documented example has the same shape, see
-  `F26.install-documented-source`), an unparsable source, a `file://` URL
+  A missing path, a GitHub shorthand without a repository (rejected by the
+  parser without any network call), an unparsable source, a `file://` URL
   that is not a repository, a missing `repo_path` and a `repo_path` that
   climbs out of the repository are all `400 Failed to fetch plugin source`. Invalid JSON in `.plugin/plugin.json`, a manifest-less
   directory named `Qa_Plugin`, a manifest name `Bad_Name` and a manifest
@@ -375,7 +374,7 @@ Preconditions:
   `plugins/city-weather` is copied into the store, with the commit it was
   installed at. Without network the install is `400 Failed to fetch plugin
   source`. The plugin is removed so later bullets see the same store.
-- **Documented install source (`F26.install-documented-source`), known bug.**
+- **Documented install source (`F26.install-documented-source`).**
   Install the public plugin in the working form first (the positive control:
   this server reaches GitHub now), then in the GitHub form the OpenAPI
   description of `InstallPluginRequest.source` advertises (network).
@@ -387,20 +386,18 @@ Preconditions:
   case "$DOC" in
     *"'github:OpenHands/extensions/plugins/city-weather'"*)
       control-agent-server api POST /api/plugins/install --json '{"source": "github:OpenHands/extensions/plugins/city-weather"}' \
-        --timeout 240 --expect 200 --check name eq city-weather --save F26.install-documented-source/documented  # bug: status eq 400 && response.body.detail contains 'Failed to fetch plugin source'
+        --timeout 240 --expect 200 --check name eq city-weather --save F26.install-documented-source/documented
       control-agent-server api DELETE /api/plugins/installed/city-weather --expect 200
       ;;
   esac
   ```
   The working form (`github:OpenHands/extensions` plus `repo_path`, as in
   `F26.install-github`) installs and is removed again, so GitHub is
-  reachable from this server at this moment; the documented example should
-  install too (or stop being documented, which also passes this bullet).
-  Today it is `400 Failed to fetch plugin source` with no network call:
-  `parse_extension_source` accepts only `github:owner/repo` (one slash). The
-  same text ships in the TypeScript client's generated schema. Without
-  network the positive control fails first, so the bullet reports `fail`,
-  not `xfail`.
+  reachable from this server at this moment; the documented example
+  `github:OpenHands/extensions/plugins/city-weather` installs the same plugin:
+  the shorthand clones `OpenHands/extensions` and uses the rest as
+  `repo_path` (passing both is a `400`). Without network the positive
+  control fails first, so the bullet reports `fail`.
 - **Enable and disable (`F26.enable-disable`).** Disable the plugin, read it
   back everywhere, then enable it again.
   ```sh
