@@ -112,6 +112,7 @@ from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -204,6 +205,7 @@ class LocalConversation(BaseConversation):
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _mcp_tool_provider: MCPToolProvider
+    _mcp_config_from_parent: bool
     _llm_call_context: LLMCallContext
 
     def __init__(
@@ -243,6 +245,7 @@ class LocalConversation(BaseConversation):
         profile_store_dir: str | Path | None = None,
         stream_callbacks: list[StreamProgressCallbackType] | None = None,
         _parent_llm_call_context: LLMCallContext | None = None,
+        _mcp_config_from_parent: bool = False,
         **_: object,
     ):
         """Initialize the conversation.
@@ -305,6 +308,9 @@ class LocalConversation(BaseConversation):
                 for state and EventLog storage.
             _parent_llm_call_context: Runtime LLM context inherited by an internal
                 child conversation. Conversation-local identity is always replaced.
+            _mcp_config_from_parent: The agent's ``mcp_config`` is the resolved
+                config of a delegating parent. It is used as-is: no plugin MCP
+                servers are merged into it and no ``${VAR}`` is expanded again.
             profile_store_dir: Optional directory containing saved LLM profiles.
                 Defaults to ``~/.openhands/profiles``.
         """
@@ -325,6 +331,7 @@ class LocalConversation(BaseConversation):
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
+        self._mcp_config_from_parent = _mcp_config_from_parent
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
@@ -815,7 +822,10 @@ class LocalConversation(BaseConversation):
                 if ``None``).
             agent: Agent for the fork. Defaults to a deep-copy of the
                 source agent.
-            title: Optional title for the forked conversation.
+            title: Deprecated. ``LocalConversation`` has no title field;
+                ``ConversationState`` does not store titles (they live on
+                ``StoredConversation`` in the agent-server layer). Passing a
+                value is accepted for backwards compatibility but has no effect.
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
@@ -830,6 +840,17 @@ class LocalConversation(BaseConversation):
         Raises:
             ValueError: If ``from_event_id`` is not an event in this conversation.
         """
+        if title is not None:
+            warn_deprecated(
+                "LocalConversation.fork() title parameter",
+                deprecated_in="1.54.0",
+                removed_in="1.60.0",
+                details=(
+                    "LocalConversation has no title field; titles are managed by "
+                    "StoredConversation in the agent-server layer."
+                ),
+                stacklevel=2,
+            )
         fork_id = conversation_id or uuid.uuid4()
         # Always deep-copy the agent (supplied or source) so the fork owns
         # its own object graph. Required because __init__ binds
@@ -910,13 +931,6 @@ class LocalConversation(BaseConversation):
                 self._state.activated_path_rules
             )
             fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
-
-            # Copy title via tags if provided
-            if title is not None:
-                fork_conv._state.tags = {
-                    **fork_conv._state.tags,
-                    "title": title,
-                }
 
             # Reset or copy metrics
             if not reset_metrics:
@@ -1215,7 +1229,9 @@ class LocalConversation(BaseConversation):
         # - This is the ONLY place where defaults are applied (plugin loading preserves
         #   placeholders with expand_defaults=False to avoid double-expansion)
         # Agent Plugins servers are left literal (see expand_mcp_servers).
-        if merged_mcp:
+        if self._mcp_config_from_parent:
+            merged_mcp = dict(self.agent.mcp_config)
+        elif merged_mcp:
             # Pass the registry's lookup method as a callback - secrets are retrieved
             # lazily, one at a time, only when actually referenced in the config
             merged_mcp = expand_mcp_servers(

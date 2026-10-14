@@ -1787,8 +1787,6 @@ class RemoteConversation(BaseConversation):
             self.agent.model_dump(context={"expose_secrets": True}),
         )
 
-        # Use server-returned tags (which include merged title) rather than
-        # the input tags, so the client-side object stays consistent.
         server_tags: dict[str, str] | None = fork_info.get("tags") or None
 
         return RemoteConversation(
