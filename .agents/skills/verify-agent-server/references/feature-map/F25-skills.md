@@ -48,7 +48,7 @@ Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
 - `F25.name-errors`: an unknown skill name is 404 and a name outside `^[a-z0-9]+(-[a-z0-9]+)*$` is 422 on get, enable/disable, uninstall and refresh.
 - `F25.self-heal`: a skill directory copied into the store by hand is invisible to the single view until the list call discovers it with source `local`; a tracked directory removed by hand is pruned from the metadata by the list call.
 - `F25.sync`: `POST /api/skills/sync` updates the cached public repository from its origin and clears the 60 s public-skills cache, so a skill committed upstream is listed immediately (translated: a local git origin stands in for GitHub).
-- `F25.sync-offline`: when the public repository cannot be fetched, sync reports `status: error`; today it reports success and keeps serving the stale clone.
+- `F25.sync-offline`: when the public repository cannot be fetched, sync reports `status: error` and the stale clone stays in place for offline loading.
 - `F25.catalog-registered-marketplace`: a registered marketplace with `auto_load` adds its standalone skills and plugin skills (and plugin commands) to the catalog, a name list selects some, and `auto_load: false` or `load_public: false` adds none.
 - `F25.conversation-activation`: in a real DeepSeek conversation that loads user skills, a trigger word activates an enabled installed skill: `activated_knowledge_skills`, the user `MessageEvent` (REST and WebSocket replay) and the system prompt name it.
 - `F25.invoke-skill`: an enabled installed AgentSkill without triggers is reachable only through the auto-attached `invoke_skill` tool; when the agent calls it, the observation carries the skill body and the conversation lists the skill in `invoked_skills`, not in `activated_knowledge_skills`.
@@ -583,7 +583,7 @@ Preconditions:
   equals the origin's and the skill is listed. With the default
   `marketplace_path` only the entries of `marketplaces/default.json` load, so
   `qa-f25-pub-new` stays out.
-- **Sync without a reachable origin (`F25.sync-offline`), known bug.** Point
+- **Sync without a reachable origin (`F25.sync-offline`).** Point
   the clone's origin at a missing path, sync, restore it on exit.
 
   Requires: `F25.sync`
@@ -591,15 +591,15 @@ Preconditions:
   trap 'git -C "$PUB" remote set-url origin "$E"' EXIT
   git -C "$PUB" remote set-url origin "$F/qa-f25-unreachable"
   if git -C "$PUB" fetch -q origin 2>/dev/null; then false; fi
-  control-agent-server api POST /api/skills/sync --expect 200 --check status eq error --save F25.sync-offline/sync  # bug: status eq 200 && response.body.status eq success
+  control-agent-server api POST /api/skills/sync --expect 200 --check status eq error --save F25.sync-offline/sync
   ```
   The origin is unreachable (a plain `git fetch` fails before the sync), and
   the server's fetch fails too (the log shows `Failed to fetch updates`), so the forced
-  refresh did not happen and the response should say `status: error`. Today
-  it says `{"status": "success", "message": "Skills repository synced
-  successfully"}`: `update_skills_repository` returns the stale clone after a
-  failed fetch and `sync_public_skills` treats any path as success. The same
-  happens offline against GitHub once a clone exists.
+  refresh did not happen and the response says `{"status": "error",
+  "message": "Failed to sync skills repository"}`. The sync asks
+  `update_skills_repository` for a strict update, so a failed fetch is not
+  reported as a sync; the stale clone stays on disk and skill loading keeps
+  using it. The same holds offline against GitHub once a clone exists.
 - **Registered marketplace skills (`F25.catalog-registered-marketplace`).**
   Register the `qa-f25-mk` fixture in the request (the public tier is the
   offline stand-in now).
