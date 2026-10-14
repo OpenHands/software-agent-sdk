@@ -912,7 +912,7 @@ Preconditions:
   test "$(sha256sum "$INST/qa-f28-notgz/backend/linux.tar.gz" | cut -d' ' -f1)" = \
     "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["backend"]["artifacts"]["linux-amd64"]["sha256"])' "$INST/qa-f28-notgz/canvas-extension.json")"
   control-agent-server api POST /api/canvas-extensions/installed/qa-f28-notgz/backend/prepare --json "{\"revision\": \"$NREV\"}" \
-    --expect 409 --save F28.prepare-corrupt-archive/prepare  # bug
+    --expect 409 --save F28.prepare-corrupt-archive/prepare  # bug: status eq 500 && response.body.exception contains 'not a gzip file'
   control-agent-server state ls 'home/.openhands/canvas-extensions/backends/approvals/qa-f28-notgz.json' --expect-count 0
   control-agent-server state ls 'home/.openhands/canvas-extensions/backends/artifacts/qa-f28-notgz/**' --expect-count 0
   ```
@@ -930,9 +930,9 @@ Preconditions:
     --expect 200 --check resolved_ref eq "$GV1" --quiet
   control-agent-server state ls 'home/.openhands/cache/extensions/qa-f28-git-*/canvas-extension.json' --expect-count 1
   control-agent-server api POST /api/canvas-extensions/install --json "{\"source\": \"file://$GX\", \"ref\": \"qa-no-such-ref\", \"force\": true}" \
-    --expect 400 --check detail contains 'Could not read canvas extension source' --save F28.install-ref-cached/unknown-ref  # bug
+    --expect 400 --check detail contains 'Could not read canvas extension source' --save F28.install-ref-cached/unknown-ref  # bug: status eq 200 && response.body.requested_ref eq qa-no-such-ref
   control-agent-server state cat home/.openhands/canvas-extensions/installed/.installed.json \
-    --check extensions.qa-f28-git.requested_ref eq "$GV1" --check extensions.qa-f28-git.resolved_ref eq "$GV1"  # bug
+    --check extensions.qa-f28-git.requested_ref eq "$GV1" --check extensions.qa-f28-git.resolved_ref eq "$GV1"  # bug: content.extensions.qa-f28-git.requested_ref eq qa-no-such-ref
   control-agent-server api DELETE /api/canvas-extensions/installed/qa-f28-git --expect 200 --quiet
   ```
   The pinned install leaves exactly one cached clone of the source. Expected:
@@ -945,7 +945,7 @@ Preconditions:
   that commit (the second `# bug` line, for a fix that answers 400 but still
   writes the record). Once fixed, the bullet uninstalls the app; while the
   bug lasts the app stays installed, which no later bullet counts.
-- **Health probe latch (`F28.status-probe-latch`), known bug.** Make the
+- **Health probe latch (`F28.status-probe-latch`).** Make the
   running backend answer one status probe slower than the 1 s probe timeout,
   then fast again.
   ```sh
@@ -960,20 +960,18 @@ Preconditions:
   curl -fsS "http://127.0.0.1:$FPORT/fast"
   test "$(curl -fsS -m 3 "http://127.0.0.1:$FPORT/health")" = ok
   control-agent-server api GET /api/canvas-extensions/installed/qa-f28-flaky/backend --until-ok 5 --check state eq ready \
-    --save F28.status-probe-latch/after-recovery  # bug
+    --save F28.status-probe-latch/after-recovery
   control-agent-server api POST /api/canvas-extensions/installed/qa-f28-flaky/backend/stop --expect 200 --check state eq stopped --quiet
   ```
   Expected: once `/health` answers in time again (the direct `curl` shows it
   does), the status returns to `ready` (whether or not the slow probe was
-  reported). The slow-probe status is not asserted, so a fix that tolerates
-  one slow probe passes too. Actual: the slow probe reads `unhealthy`
-  ("Backend health probe failed", saved as `slow-probe`) and that latches
-  while the process keeps serving, so the `# bug` line keeps reading
-  `unhealthy` for its 5 s; later status calls never re-probe, `start` with
-  the same revision returns the same `unhealthy` pid without restarting it, a
-  forced install stays refused with 409, and only `stop` followed by `start`
-  recovers. While the bug lasts the backend is left running; the next bullet
-  stops it first.
+  reported). The slow-probe status is not asserted, so a server that
+  tolerates one slow probe passes too. Today the slow probe reads `unhealthy`
+  ("Backend health probe failed", saved as `slow-probe`) with the same pid;
+  each later status call probes that live process again, so the status reads
+  `ready` as soon as `/health` answers in time, and `start` with the same
+  revision re-probes the same pid instead of restarting it. A backend whose
+  process exited stays `unhealthy` until `stop` or `start`.
 - **Status after the leader exits (`F28.status-exit-hang`).** The backend
   forks a child that inherits its stdout, then its leader exits.
   ```sh
@@ -1020,7 +1018,7 @@ Preconditions:
   control-agent-server restart --hard
   control-agent-server api GET /api/canvas-extensions/installed/qa-orphan/backend --check state eq stopped \
     --check pid eq null --save F28.hard-restart-orphan/status-after-crash
-  if pgrep -f "$BK/artifacts/qa-orphan/"; then false; fi  # bug
+  control-agent-server assert --value "$(pgrep -f "$BK/artifacts/qa-orphan/" || true)" --check . eq ''  # bug: value matches '^[0-9]+'
   ```
   Expected: no backend process of the dead server remains once the server is
   back (reaped at startup, or tied to the server's lifetime). Actual: the
@@ -1094,9 +1092,9 @@ Preconditions:
   running (`F28.hard-restart-orphan`); a graceful stop or `restart` stops them.
   `control-agent-server stop` reaps leftovers whose `HOME` is inside the run.
 - Every `GET .../backend` of a `ready` backend probes its health path with a
-  1 s timeout. One slow answer latches `unhealthy` until `stop` and `start`
-  (`F28.status-probe-latch`), so fixture backends must answer `/health` from
-  a threaded server, never behind a slow request. Before #5689 a backend
+  1 s timeout. One slow answer reads `unhealthy` until a later probe answers
+  in time (`F28.status-probe-latch`), so fixture backends must answer
+  `/health` from a threaded server, never behind a slow request. Before #5689 a backend
   whose children kept its stdout open after the leader died wedged that
   app's lifecycle routes; the server now reaps them
   (`F28.status-exit-hang`).

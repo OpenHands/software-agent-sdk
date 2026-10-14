@@ -245,7 +245,7 @@ Preconditions:
   control-agent-server conversation events "$BID" --kinds MessageEvent --contains QA_F32_BUFFER --expect-count 1
   control-agent-server conversation events "$BID" --key last_user_message_id --expect-count 1
   control-agent-server sink read --path "/qa-f32-b/events/${BID//-/}" --expect-min 1 --expect-max 1
-  control-agent-server sink read --path "/qa-f32-b/events/${BID//-/}" --contains QA_F32_BUFFER --expect-min 1 --wait 10 --save F32.buffer-stranded/after-wait  # bug
+  control-agent-server sink read --path "/qa-f32-b/events/${BID//-/}" --contains QA_F32_BUFFER --expect-min 1 --wait 10 --save F32.buffer-stranded/after-wait  # bug: requests eq 0
   ```
   The message and its update are stored, and only the first batch was
   posted. Expected: the user message reaches the sink within 10 s. Actual:
@@ -309,8 +309,8 @@ Preconditions:
   first queued event and is not reset.
   ```sh
   control-agent-server api GET /openapi.json --auth none --quiet --check 'components.schemas.InitRequest.properties.webhooks.anyOf.0.items.$ref' eq '#/components/schemas/WebhookSpec' --check components.schemas.WebhookSpec.properties.base_url.description exists --check components.schemas.WebhookSpec.properties.flush_delay.description exists
-  control-agent-server api GET /openapi.json --auth none --quiet --check components.schemas.WebhookSpec.properties.flush_delay.description not-contains 'Timer is reset on each new event'  # bug
-  control-agent-server api GET /openapi.json --auth none --quiet --check components.schemas.WebhookSpec.properties.base_url.description not-contains 'Events will be sent to {base_url}/events and'  # bug
+  control-agent-server api GET /openapi.json --auth none --quiet --check components.schemas.WebhookSpec.properties.flush_delay.description not-contains 'Timer is reset on each new event'  # bug: status eq 200 && checks.0.actual contains 'Timer is reset on each new event'
+  control-agent-server api GET /openapi.json --auth none --quiet --check components.schemas.WebhookSpec.properties.base_url.description not-contains 'Events will be sent to {base_url}/events and'  # bug: status eq 200 && checks.0.actual contains 'Events will be sent to {base_url}/events and'
   ```
   Expected: descriptions that state the per-conversation path and a timer
   from the first event. Actual: `flush_delay` says "Timer is reset on each
@@ -401,7 +401,7 @@ Preconditions:
   WCID=$(control-agent-server conversation start --tools none --no-autotitle --prompt 'Reply with exactly: ok' --wait --print-id)
   control-agent-server api GET "/api/conversations/$WCID" --check execution_status eq finished
   control-agent-server sink read --name qa-f32-slow --path "/events/${WCID//-/}" --expect-min 1
-  control-agent-server api POST "/api/conversations/$WCID/run" --expect 200 --save F32.slow-receiver/run-after-finished  # bug
+  control-agent-server api POST "/api/conversations/$WCID/run" --expect 200 --save F32.slow-receiver/run-after-finished  # bug: status eq 409 && response.body.detail contains 'Conversation already running'
   ```
   With the fast stand-in, `POST .../run` right after `finished` answers 200
   (the conversation is finished, so that run ends without a model call).
@@ -511,7 +511,7 @@ Preconditions:
   ```sh
   control-agent-server api GET "/api/conversations/$UCID" --check stats.usage_to_metrics.default.accumulated_token_usage.prompt_tokens gt 0
   control-agent-server sink read --name qa-f32-telemetry --contains '"total_tokens_bucket": "' --expect-min 1
-  control-agent-server sink read --name qa-f32-telemetry --contains '"total_tokens_bucket": "unknown"' --expect-max 0 --save F32.telemetry-usage-buckets/outcome  # bug
+  control-agent-server sink read --name qa-f32-telemetry --contains '"total_tokens_bucket": "unknown"' --expect-max 0 --save F32.telemetry-usage-buckets/outcome  # bug: requests ge 1
   ```
   Expected: a token bucket such as `1000-10000`. Actual: `unknown` (and
   `cost_bucket` `unknown`), although the conversation's stats hold the
@@ -643,7 +643,7 @@ Preconditions:
   the server keys pseudonyms with its secret key.
   ```sh
   control-agent-server api GET /openapi.json --auth none --quiet --check 'components.schemas.InitRequest.properties.telemetry.anyOf.0.$ref' eq '#/components/schemas/TelemetrySpec' --check components.schemas.TelemetrySpec.properties.salt.description exists
-  control-agent-server api GET /openapi.json --auth none --quiet --check components.schemas.TelemetrySpec.properties.salt.description matches '(?i)secret'  # bug
+  control-agent-server api GET /openapi.json --auth none --quiet --check components.schemas.TelemetrySpec.properties.salt.description matches '(?i)secret'  # bug: status eq 200 && checks.0.actual contains 'per-process random salt'
   ```
   Expected: the description names the secret-key fallback. Actual: "Falls
   back to a per-process random salt, which keeps pseudonyms stable within a
@@ -682,7 +682,7 @@ Preconditions:
   ```sh
   control-agent-server sink read --name qa-f32-deferred --path /init --contains agent_server.server_started --expect-min 1
   control-agent-server sink read --name qa-f32-deferred --path /init --contains '"deferred_init": ' --expect-min 1
-  control-agent-server sink read --name qa-f32-deferred --path /init --contains '"deferred_init": true' --expect-min 1 --save F32.deferred-init-flag/events  # bug
+  control-agent-server sink read --name qa-f32-deferred --path /init --contains '"deferred_init": true' --expect-min 1 --save F32.deferred-init-flag/events  # bug: requests eq 0
   ```
   Expected: `deferred_init: true` in the runtime properties. Actual: `false`
   on every event, because `/api/init` builds the telemetry sink from the

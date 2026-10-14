@@ -31,6 +31,7 @@ from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings.model import OpenHandsAgentSettings
+from openhands.sdk.skills import Skill
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -241,13 +242,16 @@ async def test_the_host_forwards_its_memory_preference_and_no_llm_override(
     request = StartConversationRequest(
         workspace=LocalWorkspace(working_dir="/workspace"),
         agent_profile_id=profile.id,
-        agent_launch_additions=AgentLaunchAdditions(llm_profile_ref="fast"),
+        agent_launch_additions=AgentLaunchAdditions(
+            llm_profile_ref="fast",
+            skills=[Skill(name="deployment", content="Deployment instructions.")],
+        ),
     )
 
     payload, launched, identity = await _forward(request, runtime_config)
 
     assert launched is not None and launched.llm_profile_ref == "fast"
-    assert payload["agent_launch_additions"] == {"system_message_suffix_append": None}
+    assert "llm_profile_ref" not in payload["agent_launch_additions"]
     assert payload["agent_settings"]["agent_context"]["load_memory"] is True
     received = StartConversationRequest.model_validate(payload)
     source = launch_source(received, _no_stores, identity.cipher)
@@ -258,6 +262,29 @@ async def test_the_host_forwards_its_memory_preference_and_no_llm_override(
     assert agent.llm.model == "fast-model"
     assert agent.agent_context is not None
     assert agent.agent_context.load_memory is True
+    assert [skill.name for skill in agent.agent_context.skills] == ["deployment"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing", [False, True])
+async def test_suffix_only_launch_omits_unused_skills(tmp_path, monkeypatch, existing):
+    request = StartConversationRequest(
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent=Agent(llm=LLM(model="test")),
+        agent_launch_additions=AgentLaunchAdditions(
+            system_message_suffix_append="Deployment context",
+        ),
+    )
+
+    payload, _, _ = await _forward(
+        request, config(tmp_path, monkeypatch), existing=existing
+    )
+
+    assert "skills" not in payload["agent_launch_additions"]
+    assert (
+        payload["agent_launch_additions"]["system_message_suffix_append"]
+        == "Deployment context"
+    )
 
 
 @pytest.mark.asyncio

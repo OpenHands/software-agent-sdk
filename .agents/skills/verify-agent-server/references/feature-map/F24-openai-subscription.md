@@ -469,7 +469,7 @@ Preconditions:
     --check expires_at eq "$EXP5"
   bash "$F24/write-login.sh" "$OFF" -1000 >/dev/null
   control-agent-server api GET /api/llm/subscription/openai/status --run "$OFF" --expect 200 --check connected eq false \
-    --save F24.status-offline/status  # bug
+    --save F24.status-offline/status  # bug: status eq 500 && response.body.exception contains 'All connection attempts failed'
   control-agent-server logs --run "$OFF" --grep 'Refreshing OpenAI access token' --expect-min 1
   control-agent-server logs --run "$OFF" --grep 'Unhandled exception on GET' --expect-none
   ```
@@ -497,9 +497,9 @@ Preconditions:
     --expect 200 --check connected eq false
   bash "$F24/netgate.sh" down "$GP"
   control-agent-server api POST /api/llm/subscription/openai/device/start --run "$OUTAGE" --expect 502,503,504 \
-    --save F24.device-start-offline/start  # bug
+    --save F24.device-start-offline/start  # bug: status eq 500 && response.body.exception contains 'All connection attempts failed'
   control-agent-server api POST /api/llm/subscription/openai/device/poll --run "$OUTAGE" --json "{\"device_code\": \"$DC4\"}" \
-    --expect 502,503,504 --save F24.device-start-offline/poll  # bug
+    --expect 502,503,504 --save F24.device-start-offline/poll  # bug: status eq 500 && response.body.exception contains 'All connection attempts failed'
   control-agent-server logs --run "$OUTAGE" --grep 'Unhandled exception' --expect-none
   ```
   Expected: a gateway status (502, 503 or 504) that tells the client OpenAI

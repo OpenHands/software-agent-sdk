@@ -484,7 +484,7 @@ Preconditions:
   control-agent-server exec --run "$PREFIXED" --save F02.workspace-cookie-root-path/mint -- bash "$F02/jar.sh" POST /qa-f02-prefix/api/auth/workspace-session key 204
   grep -q oh_workspace_session_key "$PREFIXED/fixtures/qa-f02-cookies.txt"
   control-agent-server exec --run "$PREFIXED" -- bash "$F02/jar.sh" GET "/api/conversations/$PCID/workspace/qa-f02.html" nokey 200 'has:qa-f02-workspace-file'
-  control-agent-server exec --run "$PREFIXED" --save F02.workspace-cookie-root-path/file-with-cookie -- bash "$F02/jar.sh" GET "/qa-f02-prefix/api/conversations/$PCID/workspace/qa-f02.html" nokey 200 'has:qa-f02-workspace-file'  # bug
+  control-agent-server exec --run "$PREFIXED" --save F02.workspace-cookie-root-path/file-with-cookie -- bash "$F02/jar.sh" GET "/qa-f02-prefix/api/conversations/$PCID/workspace/qa-f02.html" nokey 200 'has:qa-f02-workspace-file'  # bug: exit_code eq 1 && stdout_tail contains status=401
   control-agent-server stop --run "$PREFIXED"
   ```
   The server advertises `servers: [{"url": "/qa-f02-prefix"}]` and serves
@@ -506,7 +506,7 @@ Preconditions:
   control-agent-server api POST /api/auth/workspace-session --header 'Host: localhost:8000' --expect 204 \
     --check-header set-cookie contains Secure --check-header set-cookie contains Partitioned
   control-agent-server api POST /api/auth/workspace-session --header 'Host: [::1]:8000' --expect 204 --save F02.workspace-session-ipv6-loopback/ipv6-host \
-    --check-header set-cookie contains SameSite=none --check-header set-cookie contains Secure --check-header set-cookie contains Partitioned  # bug
+    --check-header set-cookie contains SameSite=none --check-header set-cookie contains Secure --check-header set-cookie contains Partitioned  # bug: status eq 204 && checks.0.actual contains SameSite=none && checks.1.actual not-contains Secure
   ```
   `127.0.0.1` and `localhost` get `Secure; Partitioned`. Expected: the
   `Host: [::1]:8000` mint gets them too, since `::1` is in the server's

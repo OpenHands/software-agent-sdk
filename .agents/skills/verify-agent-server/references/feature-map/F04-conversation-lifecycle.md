@@ -293,12 +293,11 @@ EOF
     --json "{\"workspace\": {\"working_dir\": \"$W\"}, \"agent\": $STUB_AGENT, \"autotitle\": false, \"initial_message\": {\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"QA F04 run false.\"}], \"run\": false}}" \
     --expect 201 --save F04.create-initial-message-run-false/start --field id)
   control-agent-server conversation events "$NR" --kinds MessageEvent --contains 'QA F04 run false.' --expect-count 1
-  if control-agent-server conversation wait "$NR" --until running,finished,error,stuck --timeout 15; then false; fi  # bug
-  control-agent-server api GET "/api/conversations/$NR" --check execution_status eq idle --save F04.create-initial-message-run-false/get
+  sleep 15; control-agent-server api GET "/api/conversations/$NR" --check execution_status eq idle --save F04.create-initial-message-run-false/get  # bug: response.body.execution_status matches '^(running|finished)$'
   control-agent-server conversation events "$NR" --kinds ActionEvent --expect-count 0
   ```
   Expected: the message is recorded and the conversation stays `idle` until
-  a `run` (no agent action). Today the wait sees `finished` within a second:
+  a `run` (no agent action). Today it is `finished` within a second:
   `start_conversation` sends the initial message with `run=False` and then
   always calls `event_service.run()`, never reading `initial_message.run`
   (whose default is `false`). The fix may instead remove the field from the
@@ -398,7 +397,7 @@ EOF
   Requires: `F04.create-secrets`
   ```sh
   control-agent-server api GET "/api/conversations/$SECID" --expect 200 \
-    --check secret_registry.secret_sources.QA_F04_TOKEN.kind eq StaticSecret --save F04.create-secrets-get/get  # bug
+    --check secret_registry.secret_sources.QA_F04_TOKEN.kind eq StaticSecret --save F04.create-secrets-get/get  # bug: status eq 200 && response.body.secret_registry.secret_sources exists && checks.0.actual eq null
   ```
   Expected: the GET lists `QA_F04_TOKEN` like the create response did. Today
   it returns `{"secret_sources": {}}`: start-time secrets are applied to the
@@ -411,7 +410,7 @@ EOF
   ```sh
   control-agent-server api POST /api/conversations \
     --json "{\"workspace\": {\"working_dir\": \"$W\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false, \"secrets\": {\"QA_F04_PLAIN\": \"qa-f04-plain-value\"}}" \
-    --expect 201,422 --save F04.create-secrets-plain/start  # bug
+    --expect 201,422 --save F04.create-secrets-plain/start  # bug: status eq 500 && response.body.exception contains "'str' object has no attribute 'pop'"
   ```
   Today the server answers 500 `"exception": "'str' object has no attribute
   'pop'"`: `DiscriminatedUnionMixin` calls `.pop("kind")` on the string, an
@@ -512,7 +511,7 @@ EOF
   limits a batch to 99 ids.
   ```sh
   IDS100=$(python3 -c 'import uuid; print(",".join(str(uuid.uuid4()) for _ in range(100)))')
-  control-agent-server exec --expect-output QA_BATCH_OK --save F04.batch-get-limit/hundred -- python3 "$F/qa-f04-batch.py" "$IDS100" 400,422  # bug
+  control-agent-server exec --expect-output QA_BATCH_OK --save F04.batch-get-limit/hundred -- python3 "$F/qa-f04-batch.py" "$IDS100" 400,422  # bug: exit_code eq 1 && stdout_tail contains '"status": 500'
   ```
   Expected: a 4xx that names the limit. Today it is 500 with an empty
   `exception`: the limit is a bare `assert len(ids) < 100` in
@@ -612,7 +611,7 @@ EOF
   Requires: `F04.create-parent`
   ```sh
   control-agent-server api PATCH "/api/conversations/$CHILD" --json '{"title": "QA F04 child"}' --check success eq true
-  control-agent-server api PATCH "/api/conversations/$CHILD" --json '{"title": "   "}' --expect 422 --save F04.patch-whitespace-title/patch  # bug
+  control-agent-server api PATCH "/api/conversations/$CHILD" --json '{"title": "   "}' --expect 422 --save F04.patch-whitespace-title/patch  # bug: status eq 200 && response.body.success eq true
   control-agent-server api GET "/api/conversations/$CHILD" --check title eq 'QA F04 child'
   ```
   Expected: 422 (like an empty title) and the title kept. Today `min_length=1`
@@ -623,7 +622,7 @@ EOF
   ```sh
   control-agent-server api GET /openapi.json --check 'paths./api/conversations/{conversation_id}.patch.responses.404' exists --quiet
   control-agent-server api GET "/api/conversations/$NOPE" --expect 404
-  control-agent-server api PATCH "/api/conversations/$NOPE" --json '{"title": "QA nobody"}' --expect 404 --save F04.patch-unknown-id/unknown  # bug
+  control-agent-server api PATCH "/api/conversations/$NOPE" --json '{"title": "QA nobody"}' --expect 404 --save F04.patch-unknown-id/unknown  # bug: status eq 200 && response.body.success eq false
   ```
   Expected: 404, as declared. Today it is 200 `{"success": false}`: the
   handler turns a `False` from `update_conversation` into a successful
@@ -675,8 +674,8 @@ EOF
   control-agent-server api GET /openapi.json --check 'paths./api/conversations/{conversation_id}.delete.responses.404' exists --quiet
   control-agent-server api GET "/api/conversations/$DEL" --expect 404
   control-agent-server api GET "/api/conversations/$NOPE" --expect 404
-  control-agent-server api DELETE "/api/conversations/$NOPE" --expect 404 --save F04.delete-unknown-id/unknown  # bug
-  control-agent-server api DELETE "/api/conversations/$DEL" --expect 404 --save F04.delete-unknown-id/repeat  # bug
+  control-agent-server api DELETE "/api/conversations/$NOPE" --expect 404 --save F04.delete-unknown-id/unknown  # bug: status eq 400 && response.body.detail eq 'Bad Request'
+  control-agent-server api DELETE "/api/conversations/$DEL" --expect 404 --save F04.delete-unknown-id/repeat  # bug: status eq 400 && response.body.detail eq 'Bad Request'
   ```
   Expected: 404 for both, as declared. Today both are 400 with
   `{"detail": "Bad Request"}`: the handler maps every `False` from
