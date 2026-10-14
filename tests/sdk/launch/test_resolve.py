@@ -133,6 +133,43 @@ def test_an_openhands_profile_gets_the_catalog_minus_its_deny_list():
     assert context.load_project_skills is True
 
 
+def _skill_names(resolved) -> list[str]:
+    return [s.name for s in _openhands(resolved).agent_context.skills]
+
+
+_TIERED_SKILLS = [
+    Skill(name="alpha", content="a"),
+    Skill(name="beta", content="b"),
+    Skill(name="mine", content="m"),
+]
+_PUBLIC_NAMES = ["alpha", "beta"]
+
+
+@pytest.mark.parametrize(
+    ("public_skills", "expected"),
+    [
+        (None, ["alpha", "beta", "mine"]),
+        ([], ["mine"]),
+        (["beta", "absent"], ["beta", "mine"]),
+    ],
+)
+def test_public_skills_select_from_the_public_tier_only(public_skills, expected):
+    resolved = resolve(
+        _profile(public_skills=public_skills),
+        fakes.stores(skills=_TIERED_SKILLS, public_skill_names=_PUBLIC_NAMES),
+    )
+
+    assert _skill_names(resolved) == expected
+
+
+def test_without_tier_names_every_catalog_skill_counts_as_public():
+    resolved = resolve(
+        _profile(public_skills=["alpha"]), fakes.stores(skills=_TIERED_SKILLS)
+    )
+
+    assert _skill_names(resolved) == ["alpha"]
+
+
 def test_an_acp_profile_gets_the_whole_catalog_whatever_the_runtime():
     catalog = [Skill(name="alpha", content="a")]
 

@@ -42,7 +42,7 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 - `F15.diff`: `diff` for a modified file returns the base text as `original` and the disk text as `modified` (final newline dropped on both sides), an untracked file has `original` `""`, and an explicit `ref` moves the base.
 - `F15.diff-commit`: `commit=<sha>` returns the file as that commit changed it, read from git objects: `original` from the first parent (empty for the root commit or an added file), `modified` from the commit (empty for a file it deleted), also for files no longer on disk and for abbreviated SHAs.
 - `F15.diff-errors`: `ref` together with `commit` is 400, a non-hex `commit` 422, an unknown commit or ref 400, a missing file 400, a file over 1 MiB 400, and no `path` 422.
-- `F15.diff-whitespace`: an unchanged file with leading indentation or trailing blank lines diffs to identical `original` and `modified`; today `original` loses them, so a file that `changes` does not list shows a phantom diff.
+- `F15.diff-whitespace`: an unchanged file with leading indentation or trailing blank lines diffs to identical `original` and `modified`, so a file that `changes` does not list shows no diff.
 - `F15.diff-deleted-file`: the working-tree diff of a file that `changes` lists as `DELETED` returns its base text as `original` and `""` as `modified`; today it is 400 `File does not exist`.
 - `F15.commits`: `commits` lists the history newest first with `sha`, `short_sha`, `subject`, `author` and an ISO 8601 `timestamp`, `has_more` tells whether `limit` cut it, and `limit` outside 1..200 is 422.
 - `F15.commit-changes`: `commits/{sha}/changes` lists one commit's files against its first parent (the root commit as all `ADDED`, a rename as `DELETED` plus `ADDED`), accepts abbreviated SHAs, answers 400 for an unknown SHA and 422 for a non-hex or shorter-than-4 SHA.
@@ -407,7 +407,7 @@ Preconditions:
   ```
   400, 422, 400, 400, 400 (absolute path in the message), 400 for a file over
   1 MiB, and 422 without `path`.
-- **Phantom whitespace diff (`F15.diff-whitespace`), known bug.** Commit a
+- **Unchanged-file whitespace (`F15.diff-whitespace`).** Commit a
   file with leading indentation and one with trailing blank lines, change
   nothing, ask for their diffs.
   ```sh
@@ -423,16 +423,15 @@ Preconditions:
   for name in crlf lead trail; do
     control-agent-server api GET /api/git/diff --query path="$F/ws-files/$name.txt" --query ref=HEAD --expect 200 \
       --check modified len-ge 1 --raw-out "$F/ws-$name.json" --save "F15.diff-whitespace/$name"
-    jq '{original, modified, same: (.original == .modified), strip_only: (.original == (.modified | gsub("^\\s+|\\s+$"; "")))}' "$F/ws-$name.json" \
-      | control-agent-server assert --check same eq true  # bug: value.same eq false && value.strip_only eq true
+    jq '{original, modified, same: (.original == .modified)}' "$F/ws-$name.json" \
+      | control-agent-server assert --check same eq true
   done
   ```
-  Expected: identical sides for every unchanged file (`changes` is `[]`).
-  Actual: the CRLF file passes (both sides are newline-normalized), but
-  `lead.txt` gives `original` `"indented line\nbody"` against `modified`
-  `"  indented line\nbody"`, and `trail.txt` `"body"` against `"body\n\n"`:
-  `original` comes from `run_git_command`, which `.strip()`s git's stdout,
-  while `modified` is `"\n".join(text.splitlines())`. The commit-mode diff
+  Expected: identical sides for every unchanged file (`changes` is `[]`):
+  `lead.txt` gives `"  indented line\nbody"` and `trail.txt` `"body\n\n"` on
+  both sides, and the CRLF file `"one\ntwo"`: `get_git_diff` reads the
+  `git show` blob verbatim (`strip=False`) and normalizes it like
+  `modified`, `"\n".join(text.splitlines())`. The commit-mode diff
   strips both sides alike, so it shows no phantom change but loses the
   whitespace.
 - **Diff of a deleted file (`F15.diff-deleted-file`), known bug.** `changes`
@@ -805,8 +804,9 @@ Preconditions:
   calling.
 - Both diff sides drop the final newline and line endings are normalized
   (`\r\n` becomes `\n`, so a file whose only change is LF to CRLF is listed as
-  `UPDATED` but diffs to identical sides). Leading and trailing whitespace is
-  lost on `original` only (`F15.diff-whitespace`).
+  `UPDATED` but diffs to identical sides). Other leading and trailing
+  whitespace is kept on both sides (`F15.diff-whitespace`); the commit-mode
+  diff strips it from both.
 - `diff` on a directory inside a repository is not refused: it returns
   `git show`'s tree listing (`"tree <sha>:src\n\napp.py\nutil.py"`) as
   `original` and `""` as `modified`.

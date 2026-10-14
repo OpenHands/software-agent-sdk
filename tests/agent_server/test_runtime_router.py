@@ -205,3 +205,28 @@ async def test_concurrent_runtime_requests_share_event_loop_bash_service(
     assert all(response.status_code == 200 for response in responses)
     event_service = await app.state.conversation_service.get_event_service(UUID(cid))
     assert instances == [event_service.bash_event_service]
+
+
+@pytest.mark.asyncio
+async def test_runtime_upload_onto_directory_or_under_file_is_400(
+    runtime_client, tmp_path
+):
+    client, _ = runtime_client
+    workspace = tmp_path / "upload-ws"
+    prefix = f"/api/conversations/{await _create(client, workspace)}"
+    (workspace / "is-a-dir").mkdir(parents=True)
+    (workspace / "a-file.txt").write_bytes(b"keep me")
+
+    for target, detail in (
+        ("is-a-dir", "Path is a directory"),
+        ("a-file.txt/child.txt", "A parent of the path is not a directory"),
+    ):
+        response = await client.post(
+            prefix + "/file/upload",
+            params={"path": str(workspace / target)},
+            files={"file": ("test.txt", b"content", "text/plain")},
+        )
+        assert response.status_code == 400, response.text
+        assert response.json()["detail"] == detail
+    assert (workspace / "is-a-dir").is_dir()
+    assert (workspace / "a-file.txt").read_bytes() == b"keep me"
