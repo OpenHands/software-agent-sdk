@@ -44,6 +44,7 @@ _STOP_TIMEOUT_SECONDS: Final[float] = 5
 _ARTIFACT_DOWNLOAD_TIMEOUT_SECONDS: Final[float] = 120
 _MAX_ARTIFACT_BYTES: Final[int] = 1024 * 1024 * 1024
 _MAX_ARTIFACT_REDIRECTS: Final[int] = 5
+_PROBE_FAILED_DETAIL: Final[str] = "Backend health probe failed"
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -451,27 +452,43 @@ class CanvasExtensionBackendManager:
 
     async def status(self, name: str) -> BackendStatus:
         async with self._lock(name):
-            runtime = self._runtimes.get(name)
-            if runtime and runtime.process and runtime.process.returncode is not None:
-                returncode = runtime.process.returncode
-                runtime.port = None
-                runtime.state = "unhealthy"
-                runtime.detail = f"Backend exited with code {returncode}"
-                await self._terminate_runtime(runtime)
-            elif runtime and runtime.state == "ready" and runtime.port is not None:
-                manifest = self._manifest(name)
-                if manifest is None or manifest.backend is None:
-                    # The on-disk manifest no longer validates (or stopped
-                    # declaring a backend); report that instead of tracing back
-                    # an AssertionError once `_probe` dereferences it.
-                    return self._status_unlocked(name)
-                probe_url = (
-                    f"http://127.0.0.1:{runtime.port}{manifest.backend.health.path}"
+            return await self._refresh_unlocked(name)
+
+    async def _refresh_unlocked(self, name: str) -> BackendStatus:
+        runtime = self._runtimes.get(name)
+        if runtime and runtime.process and runtime.process.returncode is not None:
+            returncode = runtime.process.returncode
+            runtime.port = None
+            runtime.state = "unhealthy"
+            runtime.detail = f"Backend exited with code {returncode}"
+            await self._terminate_runtime(runtime)
+        elif (
+            runtime
+            and runtime.port is not None
+            and (
+                runtime.state == "ready"
+                # A live process that only missed a probe is probed again, so
+                # one slow answer does not latch it `unhealthy`.
+                or (
+                    runtime.state == "unhealthy"
+                    and runtime.detail == _PROBE_FAILED_DETAIL
                 )
-                if not await asyncio.to_thread(self._probe, probe_url):
-                    runtime.state = "unhealthy"
-                    runtime.detail = "Backend health probe failed"
-            return self._status_unlocked(name)
+            )
+        ):
+            manifest = self._manifest(name)
+            if manifest is None or manifest.backend is None:
+                # The on-disk manifest no longer validates (or stopped
+                # declaring a backend); report that instead of tracing back
+                # an AssertionError once `_probe` dereferences it.
+                return self._status_unlocked(name)
+            probe_url = f"http://127.0.0.1:{runtime.port}{manifest.backend.health.path}"
+            if await asyncio.to_thread(self._probe, probe_url):
+                runtime.state = "ready"
+                runtime.detail = None
+            else:
+                runtime.state = "unhealthy"
+                runtime.detail = _PROBE_FAILED_DETAIL
+        return self._status_unlocked(name)
 
     @staticmethod
     def _allocate_port() -> int:
@@ -606,7 +623,7 @@ class CanvasExtensionBackendManager:
                         "a different backend revision is already running"
                     )
                 if task is None:
-                    return current
+                    return await self._refresh_unlocked(name)
             else:
                 if revision != self.revision(name):
                     raise ValueError(

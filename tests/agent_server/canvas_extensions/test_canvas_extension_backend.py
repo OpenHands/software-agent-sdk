@@ -375,6 +375,85 @@ async def test_status_reports_starting_and_stop_abandons_hung_backend(
     assert (await manager.delete_data("my-extension")).state == "stopped"
 
 
+_SLOW_HEALTH_SERVER = """#!/usr/bin/python3
+import http.server
+import sys
+import time
+
+slow = False
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        global slow
+        slow = {"/slow": True, "/fast": False}.get(self.path, slow)
+        if self.path == "/health" and slow:
+            time.sleep(2)
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        pass
+
+server = http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler)
+server.serve_forever()
+"""
+
+
+@pytest.mark.asyncio
+async def test_status_recovers_after_one_slow_health_probe(tmp_path: Path):
+    """A missed probe must not latch a live backend `unhealthy` (#5646)."""
+    source = _write_backend_extension(tmp_path / "source" / "my-extension", timeout=10)
+    installed_dir = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    archive = installed_dir / "my-extension" / "backend-linux-amd64.tar.gz"
+    payload = _SLOW_HEALTH_SERVER.encode()
+    with tarfile.open(archive, "w:gz") as tar:
+        info = tarfile.TarInfo("server.py")
+        info.mode = 0o755
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    manifest_path = installed_dir / "my-extension" / MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text())
+    checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+    for artifact in manifest["backend"]["artifacts"].values():
+        artifact["sha256"] = checksum
+    manifest_path.write_text(json.dumps(manifest))
+
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+    revision = manager.revision("my-extension")
+    assert revision is not None
+    await manager.prepare("my-extension", revision)
+    try:
+        ready = await manager.start("my-extension", revision)
+        assert ready.state == "ready"
+        base = f"http://127.0.0.1:{ready.port}"
+
+        await asyncio.to_thread(urllib.request.urlopen, f"{base}/slow", timeout=3)
+        slow = await manager.status("my-extension")
+        assert slow.state == "unhealthy"
+        assert slow.pid == ready.pid
+        # Still slow: the backend stays unhealthy and the bridge stays closed.
+        assert (await manager.status("my-extension")).state == "unhealthy"
+        assert manager.ready_endpoint("my-extension") is None
+
+        await asyncio.to_thread(urllib.request.urlopen, f"{base}/fast", timeout=3)
+        recovered = await manager.status("my-extension")
+        assert recovered.state == "ready"
+        assert recovered.detail is None
+        assert recovered.pid == ready.pid
+        assert manager.ready_endpoint("my-extension") == ("127.0.0.1", ready.port)
+
+        # `start` with the same revision re-probes instead of echoing a stale
+        # `unhealthy`, and keeps the same process.
+        await asyncio.to_thread(urllib.request.urlopen, f"{base}/slow", timeout=3)
+        assert (await manager.status("my-extension")).state == "unhealthy"
+        await asyncio.to_thread(urllib.request.urlopen, f"{base}/fast", timeout=3)
+        restarted = await manager.start("my-extension", revision)
+        assert restarted.state == "ready"
+        assert restarted.pid == ready.pid
+    finally:
+        await manager.shutdown()
+
+
 @pytest.mark.parametrize("recovery", ["status", "stop", "restart"])
 @pytest.mark.asyncio
 async def test_exited_leader_descendant_does_not_block_recovery(
