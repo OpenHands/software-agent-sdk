@@ -44,7 +44,8 @@ FROM node:24.21.0-trixie-slim AS node-runtime
 # (GHSA-6v7p-g79w-8964), and no pip release vendors the fixed versions yet.
 # Re-vendor them with pip's own tooling so its import rewrites, patches, and
 # bom.cdx.json stay consistent; the source archive is used because the sdist
-# omits tools/vendoring/patches. Drop this stage once pip ships the fixes.
+# omits tools/vendoring/patches. Drop this stage once pip ships the fixes;
+# tests/agent_server/docker_runtime/test_pip_revendoring_retirement.py flags it.
 FROM python:3.13.15-trixie AS pip-revendored
 ADD --checksum=sha256:65cac79de403d368cc8333f3d9981f293248dc336662338749693ff99659d5e3 \
     https://github.com/pypa/pip/archive/refs/tags/26.2.1.tar.gz /tmp/pip.tar.gz
