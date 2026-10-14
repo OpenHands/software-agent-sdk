@@ -45,6 +45,8 @@ _HOP_BY_HOP_HEADERS = frozenset(
         "upgrade",
         # ``host`` and ``content-length`` are recomputed by httpx; forwarding
         # the original values causes spurious 400s when bodies are re-chunked.
+        # ``proxy_http`` re-adds the client's ``content-length`` when it
+        # streams that client's body unchanged.
         "host",
         "content-length",
     }
@@ -123,12 +125,19 @@ async def proxy_http(
         headers["X-Session-API-Key"] = workspace.api_key
 
     async def _request_body() -> AsyncIterator[bytes]:
-        if body is not None:
-            yield body
-            return
         async for chunk in request.stream():
             if chunk:
                 yield chunk
+
+    # Keep the client's body framing: a fixed-length body stays fixed-length
+    # (httpx skips chunking when Content-Length is set) and a request without
+    # a body is sent without one, instead of an empty chunked body.
+    content: bytes | AsyncIterator[bytes] | None = body
+    if body is None and "transfer-encoding" in request.headers:
+        content = _request_body()
+    elif body is None and "content-length" in request.headers:
+        headers["Content-Length"] = request.headers["content-length"]
+        content = _request_body()
 
     # Keep HTTPX's contexts open until StreamingResponse consumes the body.
     stack = AsyncExitStack()
@@ -139,7 +148,7 @@ async def proxy_http(
             )
         )
         upstream = await stack.enter_async_context(
-            client.stream(request.method, url, headers=headers, content=_request_body())
+            client.stream(request.method, url, headers=headers, content=content)
         )
     except BaseException as exc:
         await stack.aclose()
