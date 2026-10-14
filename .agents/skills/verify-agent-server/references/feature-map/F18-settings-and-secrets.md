@@ -45,7 +45,7 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
 - `F18.encrypted-at-rest`: `settings.json` and `secrets.json` hold Fernet tokens, never the raw values, with mode `0600`.
 - `F18.secret-scope-agent-profile`: `?agent_profile_id=` limits the list to that agent profile's `secret_refs` (`[]` lists nothing, no `secret_refs` lists everything); an unknown id is 404 `Agent profile not found`.
 - `F18.sdk-remote-workspace`: the SDK's `RemoteWorkspace.get_secrets()` returns `LookupSecret`s whose URLs resolve to the stored values, and `get_llm()` returns the stored model and key.
-- `F18.sdk-clone-repos`: with the server secret `github_token` stored, the SDK's `RemoteWorkspace.clone_repos()` reads it from `GET /api/settings/secrets/github_token` and clones with it (a local git remote reachable only through the token-bearing URL), a provider whose token secret is missing (`gitlab_token`) clones anonymously, and `get_repos_context()` names both clones.
+- `F18.sdk-clone-repos`: with the server secret `GITHUB_TOKEN` stored, the SDK's `RemoteWorkspace.clone_repos()` reads it from `GET /api/settings/secrets/GITHUB_TOKEN` and clones with it (a local git remote reachable only through the token-bearing URL), a provider whose token secret is missing (`GITLAB_TOKEN`) clones anonymously, and `get_repos_context()` names both clones.
 - `F18.ts-client`: the TypeScript `SettingsClient` reads both schemas, reads settings redacted, `plaintext` and `encrypted`, applies a sparse `updateSettings` that a second read shows, upserts, lists (also with `agentProfileId`), reads as text and deletes a secret, and rejects an unknown secret (404), a bad name (422) and a wrong key (401) with an `HttpError`.
 - `F18.persist-restart`: settings (plaintext key, model, conversation settings) and secrets read back unchanged after a restart with the same cipher key.
 - `F18.corrupted-files`: with an unparsable `settings.json`, GET silently returns defaults and PATCH is 409 without touching the file; with an unparsable `secrets.json` the list is empty, GET by name 404, PUT and DELETE 500; restoring the files restores the values.
@@ -80,7 +80,8 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
   `RemoteWorkspace.get_secrets(names=None, agent_profile_id=None)` lists names
   and returns `LookupSecret(url=<host>/api/settings/secrets/<name>)`, which the
   server or the client resolves later; `clone_repos(repos, target_dir)` reads
-  `github_token`, `gitlab_token` or `bitbucket_token` through
+  `GITHUB_TOKEN`, `GITLAB_TOKEN` or `BITBUCKET_TOKEN` (falling back to the
+  lowercase name) through
   `_get_secret_value` (`GET /api/settings/secrets/{name}`, `None` on a 404)
   and runs `git clone` on the client's machine, and `get_repos_context()`
   describes the clones (`openhands-sdk/openhands/sdk/workspace/remote/base.py`,
@@ -169,8 +170,8 @@ Preconditions:
       api_key=os.environ["SESSION_API_KEY"],
       working_dir=str(target),
   )
-  assert ws._get_secret_value("github_token") == "qa-f18-gh-token"
-  assert ws._get_secret_value("gitlab_token") is None
+  assert ws._get_secret_value("GITHUB_TOKEN") == "qa-f18-gh-token"
+  assert ws._get_secret_value("GITLAB_TOKEN") is None
   result = ws.clone_repos(
       [
           "https://github.com/qa-owner/qa-gh-repo",
@@ -557,7 +558,7 @@ Preconditions:
   `https://qa-f18-gh-token@github.com/` and the anonymous
   `https://gitlab.com/` to them, so the GitHub clone succeeds only if the URL
   carries the token the server stored, and the GitLab clone only if it
-  carries none. Store `github_token` (arrange), run the program, delete it.
+  carries none. Store `GITHUB_TOKEN` (arrange), run the program, delete it.
   ```sh
   G="$F18/git"
   rm -rf "$G" "$F18/clones"
@@ -569,18 +570,18 @@ Preconditions:
   git clone -q --bare "$G/src" "$G/gh/qa-owner/qa-gh-repo"
   git clone -q --bare "$G/src" "$G/gl/qa-owner/qa-gl-repo.git"
   printf '[url "file://%s/gh/"]\n\tinsteadOf = https://qa-f18-gh-token@github.com/\n[url "file://%s/gl/"]\n\tinsteadOf = https://gitlab.com/\n' "$G" "$G" > "$F18/gitconfig"
-  control-agent-server api GET /api/settings/secrets --check secrets not-contains github_token --check secrets not-contains gitlab_token
-  control-agent-server api PUT /api/settings/secrets --json '{"name": "github_token", "value": "qa-f18-gh-token"}' --expect 200
+  control-agent-server api GET /api/settings/secrets --check secrets not-contains GITHUB_TOKEN --check secrets not-contains GITLAB_TOKEN
+  control-agent-server api PUT /api/settings/secrets --json '{"name": "GITHUB_TOKEN", "value": "qa-f18-gh-token"}' --expect 200
   control-agent-server exec --env GIT_CONFIG_GLOBAL="$F18/gitconfig" --env GIT_CONFIG_NOSYSTEM=1 --env GIT_TERMINAL_PROMPT=0 \
     --env QA_F18_CLONES="$F18/clones" --env OPENHANDS_SUPPRESS_BANNER=1 --timeout 120 \
     --expect-output QA_F18_CLONE_OK --save F18.sdk-clone-repos/program -- .venv/bin/python "$F18/sdk_clone.py"
   test "$(git -C "$F18/clones/qa-gl-repo" log -1 --format=%s)" = 'qa f18 clone fixture'
-  control-agent-server api DELETE /api/settings/secrets/github_token --expect 200
+  control-agent-server api DELETE /api/settings/secrets/GITHUB_TOKEN --expect 200
   control-agent-server api GET /api/settings/secrets --check secrets len-eq 1 --check secrets.0.name eq QA_F18_TOKEN
   ```
   The program prints `QA_F18_CLONE_OK ['qa-gh-repo', 'qa-gl-repo']`:
-  `_get_secret_value` returns the stored `github_token` and `None` for the
-  missing `gitlab_token`, both clones succeed into directories named after
+  `_get_secret_value` returns the stored `GITHUB_TOKEN` and `None` for the
+  missing `GITLAB_TOKEN`, both clones succeed into directories named after
   the repositories (the short `owner/repo` form with `provider: gitlab` gets
   `.git` appended), and `get_repos_context()` names both. The secret is gone
   again afterwards.
@@ -906,7 +907,7 @@ Preconditions:
   server for those 30 seconds.
 - `RemoteWorkspace.clone_repos` runs `git` on the client's machine, not on
   the server, and leaves the token in the clone's `remote.origin.url`
-  (`https://<github_token>@github.com/...`). A local stand-in therefore
+  (`https://<GITHUB_TOKEN>@github.com/...`). A local stand-in therefore
   needs a git config on the client side (`exec --env GIT_CONFIG_GLOBAL=...`);
   the short `owner/repo` form gets `.git` appended, full URLs do not.
 - The known-bug bullets stop at their `# bug` line under `set -e`, so the

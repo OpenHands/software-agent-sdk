@@ -97,17 +97,17 @@ class TestRepoSource:
     def test_provider_github_token_name(self):
         """Test GitHub token name."""
         repo = RepoSource(url="owner/repo", provider="github")
-        assert repo.get_token_name() == "github_token"
+        assert repo.get_token_name() == "GITHUB_TOKEN"
 
     def test_provider_gitlab_token_name(self):
         """Test GitLab token name."""
         repo = RepoSource(url="owner/repo", provider="gitlab")
-        assert repo.get_token_name() == "gitlab_token"
+        assert repo.get_token_name() == "GITLAB_TOKEN"
 
     def test_provider_bitbucket_token_name(self):
         """Test Bitbucket token name."""
         repo = RepoSource(url="owner/repo", provider="bitbucket")
-        assert repo.get_token_name() == "bitbucket_token"
+        assert repo.get_token_name() == "BITBUCKET_TOKEN"
 
     # --- URL validation ---
 
@@ -443,7 +443,7 @@ class TestCloneRepos:
         mock_run.return_value = MagicMock(returncode=1, stderr=leaky_stderr)
 
         def token_fetcher(name: str) -> str | None:
-            return token if name == "github_token" else None
+            return token if name == "GITHUB_TOKEN" else None
 
         with tempfile.TemporaryDirectory() as tmpdir:
             repos = [RepoSource(url="owner/repo", provider="github")]
@@ -461,7 +461,7 @@ class TestCloneRepos:
         mock_run.return_value = MagicMock(returncode=0, stderr="")
 
         def token_fetcher(name: str) -> str | None:
-            if name == "github_token":
+            if name == "GITHUB_TOKEN":
                 return "ghtoken123"
             return None
 
@@ -476,6 +476,63 @@ class TestCloneRepos:
             # Check that token was included in clone URL
             call_args = mock_run.call_args[0][0]
             assert any("ghtoken123" in str(arg) for arg in call_args)
+
+    @pytest.mark.parametrize(
+        ("provider", "secret_name"),
+        [
+            ("github", "GITHUB_TOKEN"),
+            ("gitlab", "GITLAB_TOKEN"),
+            ("bitbucket", "BITBUCKET_TOKEN"),
+        ],
+    )
+    @patch("subprocess.run")
+    def test_clone_authenticates_with_token_stored_under_env_var_name(
+        self, mock_run, provider, secret_name
+    ):
+        """The provider token is stored under its conventional env var name."""
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        token = "provider-token-value"
+
+        def token_fetcher(name: str) -> str | None:
+            return token if name == secret_name else None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos = [RepoSource(url="owner/repo", provider=provider)]
+            clone_repos(repos, Path(tmpdir), token_fetcher=token_fetcher)
+
+        clone_cmd = mock_run.call_args[0][0]
+        assert any(token in str(arg) for arg in clone_cmd)
+
+    @patch("subprocess.run")
+    def test_clone_falls_back_to_lowercase_token_name(self, mock_run):
+        """App servers that predate the uppercase names serve ``github_token``."""
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        fetched: list[str] = []
+
+        def token_fetcher(name: str) -> str | None:
+            fetched.append(name)
+            return "legacy-token" if name == "github_token" else None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos = [RepoSource(url="owner/repo", provider="github")]
+            clone_repos(repos, Path(tmpdir), token_fetcher=token_fetcher)
+
+        clone_cmd = mock_run.call_args[0][0]
+        assert any("legacy-token" in str(arg) for arg in clone_cmd)
+        assert fetched == ["GITHUB_TOKEN", "github_token"]
+
+    @patch("subprocess.run")
+    def test_clone_prefers_uppercase_token_name(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        tokens = {"GITHUB_TOKEN": "current-token", "github_token": "legacy-token"}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos = [RepoSource(url="owner/repo", provider="github")]
+            clone_repos(repos, Path(tmpdir), token_fetcher=tokens.get)
+
+        clone_cmd = " ".join(str(arg) for arg in mock_run.call_args[0][0])
+        assert "current-token" in clone_cmd
+        assert "legacy-token" not in clone_cmd
 
     @patch("subprocess.run")
     def test_clone_with_provider_specific_token(self, mock_run):
@@ -495,9 +552,9 @@ class TestCloneRepos:
             ]
             clone_repos(repos, Path(tmpdir), token_fetcher=token_fetcher)
 
-            # Should have fetched github_token and gitlab_token
-            assert "github_token" in fetched_tokens
-            assert "gitlab_token" in fetched_tokens
+            # Should have fetched GITHUB_TOKEN and GITLAB_TOKEN
+            assert "GITHUB_TOKEN" in fetched_tokens
+            assert "GITLAB_TOKEN" in fetched_tokens
 
     @patch("subprocess.run")
     def test_clone_self_hosted_gitlab_with_token(self, mock_run):
@@ -506,7 +563,7 @@ class TestCloneRepos:
         mock_run.return_value = MagicMock(returncode=0, stderr="")
 
         def token_fetcher(name: str) -> str | None:
-            return "gltoken123" if name == "gitlab_token" else None
+            return "gltoken123" if name == "GITLAB_TOKEN" else None
 
         with tempfile.TemporaryDirectory() as tmpdir:
             repos = [
