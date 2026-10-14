@@ -139,10 +139,10 @@ def get_commit_changes(repo_path: str | Path, commit: str) -> list[GitChange]:
     parent = _rev_parse(validated_repo, f"{sha}^") or GIT_EMPTY_TREE_HASH
 
     output = run_git_command(
-        ["git", "--no-pager", "diff", "--name-status", parent, sha],
+        ["git", "--no-pager", "diff", "--name-status", "-z", parent, sha],
         validated_repo,
     )
-    return _parse_name_status(output.splitlines() if output else [])
+    return _parse_name_status(output)
 
 
 def _show_file_at_rev(repo: Path, rev: str, relative_path: Path) -> str:
