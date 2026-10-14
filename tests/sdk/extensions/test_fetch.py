@@ -70,6 +70,30 @@ def test_parse_https_bitbucket_url():
     assert url == "https://bitbucket.org/org/repo.git"
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "https://dev.azure.com/org/project/_git/repo",
+        "https://org@dev.azure.com/org/Web%20Apps/_git/skills",
+        "https://org.visualstudio.com/project/_git/repo",
+        "https://tfs.example.com/tfs/Collection/project/_git/repo",
+    ],
+)
+def test_parse_azure_devops_url_keeps_path_without_git_suffix(source):
+    """Azure DevOps treats ``<repo>.git`` as a different, missing repository."""
+    source_type, url = parse_extension_source(source)
+    assert source_type == SourceType.GIT
+    assert url == source
+
+
+def test_parse_azure_devops_url_strips_trailing_slash():
+    source_type, url = parse_extension_source(
+        "https://dev.azure.com/org/project/_git/repo/"
+    )
+    assert source_type == SourceType.GIT
+    assert url == "https://dev.azure.com/org/project/_git/repo"
+
+
 def test_parse_ssh_git_url():
     source_type, url = parse_extension_source("git@github.com:owner/repo.git")
     assert source_type == SourceType.GIT
