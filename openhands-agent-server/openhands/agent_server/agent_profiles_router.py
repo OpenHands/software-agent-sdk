@@ -239,10 +239,10 @@ def _ensure_active_profile(
     """Keep ``active_agent_profile_id`` on a stored profile.
 
     A missing or dangling pointer moves to ``default``, which is seeded from the
-    current ``agent_settings`` when absent, so every launch has a profile. A
-    store too full to seed ``default`` activates its first profile instead. The
-    lock spans the check, the seed and the pointer write, so concurrent callers
-    seed once and agree on the pointer.
+    current ``agent_settings`` when absent, so every launch has a profile. When
+    ``default`` is unreadable or the store is too full to seed it, the first
+    other profile is activated instead. The lock spans the check, the seed and
+    the pointer write, so concurrent callers seed once and agree on the pointer.
     """
     settings_store = get_settings_store(config)
     with store_errors(), store.lock():
@@ -269,13 +269,27 @@ def _profile_to_activate(
     """Return the name and id of ``default``, seeding it if the store has room."""
     try:
         profile = store.load(SEED_PROFILE_NAME)
+        return profile.name, str(profile.id)
     except FileNotFoundError:
         try:
             profile = _seed_default_profile(store, settings, cipher)
+            return profile.name, str(profile.id)
         except ProfileLimitExceeded:
-            first = next((s for s in store.list_summaries() if s["id"]), None)
-            return (first["name"], str(first["id"])) if first else None
-    return profile.name, str(profile.id)
+            pass
+    except ValueError:
+        logger.warning(
+            f"Agent profile '{SEED_PROFILE_NAME}' exists but failed to load; "
+            "leaving it as-is"
+        )
+    first = next(
+        (
+            s
+            for s in store.list_summaries()
+            if s["id"] and s["name"] != SEED_PROFILE_NAME
+        ),
+        None,
+    )
+    return (first["name"], str(first["id"])) if first else None
 
 
 def _seed_default_profile(
