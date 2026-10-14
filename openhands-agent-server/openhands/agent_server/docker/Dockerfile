@@ -42,10 +42,9 @@ FROM node:24.21.0-trixie-slim AS node-runtime
 
 # pip 26.2.1 vendors urllib3 2.7.0 (CVE-2026-97689) and msgpack 1.1.2
 # (GHSA-6v7p-g79w-8964), and no pip release vendors the fixed versions yet.
-# It also vendors pkg_resources from setuptools 70.3.0 (CVE-2025-47273,
-# CVE-2026-59890); setuptools dropped pkg_resources in 82.0.0, before either
-# fix, so it is removed instead. pip only imports it for the deprecated
-# pkg_resources metadata backend, which is off by default on Python 3.11+.
+# Its pkg_resources (setuptools 70.3.0: CVE-2025-47273, CVE-2026-59890) is
+# removed, as setuptools dropped it in 82.0.0 but fixed CVE-2026-59890 in 83.0.0.
+# pip imports it only for _PIP_USE_IMPORTLIB_METADATA=0, which raises ImportError.
 # Re-vendor with pip's own tooling so its import rewrites, patches, and
 # bom.cdx.json stay consistent; the source archive is used because the sdist
 # omits tools/vendoring/patches. Drop this stage once pip ships the fixes;
