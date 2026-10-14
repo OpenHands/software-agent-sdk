@@ -5,9 +5,11 @@ PooledTmuxTerminal, including declared_resources() and concurrent execution
 through the executor's __call__ interface.
 """
 
+import subprocess
 import tempfile
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -139,3 +141,63 @@ class TestTmuxPoolRecovery:
         assert reset_obs.exit_code == 0
         assert "Terminal session has been reset" in reset_obs.text
         assert pool_executor.working_dir in reset_obs.text
+
+
+class TestTmuxPoolPagerGuard:
+    """Pagers must not hijack pooled panes. See issue #3660."""
+
+    @pytest.fixture
+    def fast_timeout_pool_executor(self):
+        """Like ``pool_executor``, with a short no-change timeout.
+
+        Keeps a regression fast: without the pager guard, the default 30s
+        timeout would apply before the wedge is detected.
+        """
+        with tempfile.TemporaryDirectory() as work_dir:
+            executor = TerminalExecutor(
+                working_dir=work_dir,
+                terminal_type="tmux",
+                max_panes=1,
+                no_change_timeout_seconds=2,
+            )
+            yield executor
+            executor.close()
+
+    def test_pager_does_not_hijack_pooled_pane(self, fast_timeout_pool_executor):
+        pool_executor = fast_timeout_pool_executor
+        work_dir = Path(pool_executor.working_dir)
+        # One large file so `git log -p` output exceeds a screen and a pager,
+        # if launched, would stay open waiting for input.
+        (work_dir / "module.py").write_text(
+            "".join(f"# line {i}\n" for i in range(800))
+            + "\ndef encode(payload):\n    pass\n"
+        )
+        for cmd in (
+            ["git", "init", "-q"],
+            ["git", "add", "-A"],
+            [
+                "git",
+                "-c",
+                "user.email=a@b.c",
+                "-c",
+                "user.name=x",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        ):
+            subprocess.run(cmd, cwd=work_dir, check=True)
+
+        # Without the fix this opens a pager in the pooled pane and never
+        # returns to the prompt.
+        pool_executor(TerminalAction(command="git log -p"), None)
+
+        # The follow-up command must return its OWN output, not the stale
+        # paged git-log screen from the previous command.
+        obs = pool_executor(
+            TerminalAction(command="grep -n 'def encode' module.py"), None
+        )
+        assert not obs.is_error
+        assert obs.exit_code == 0
+        assert "def encode" in obs.text
+        assert "diff --git" not in obs.text

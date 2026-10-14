@@ -143,10 +143,6 @@ class SubprocessTerminal(TerminalInterface):
 
         # Inherit environment variables from the parent process
         env = build_terminal_env(self._env)
-        # Disable interactive pagers (git, man, systemctl, ...) so commands that
-        # auto-launch `less` on a TTY don't capture the PTY and wedge the session.
-        env.setdefault("GIT_PAGER", "cat")
-        env.setdefault("PAGER", "cat")
         env["PS1"] = self.PS1
         env["PS2"] = ""
         env["TERM"] = "xterm-256color"
