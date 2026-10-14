@@ -1,4 +1,6 @@
 import logging
+import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -368,3 +370,16 @@ def test_discover_untracked_skips_mismatched_manifest_name(tmp_path: Path):
 
     assert discovered == []
     assert "some-ext" not in metadata.extensions
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_save_to_dir_writes_owner_only_file(tmp_path: Path):
+    """Sources can carry URL credentials, so the metadata file must not be
+    readable by group or other users, even if an existing file was wider."""
+    metadata_path = InstallationMetadata.get_metadata_path(tmp_path)
+    metadata_path.write_text("{}")
+    metadata_path.chmod(0o644)
+
+    InstallationMetadata().save_to_dir(tmp_path)
+
+    assert stat.S_IMODE(metadata_path.stat().st_mode) == 0o600

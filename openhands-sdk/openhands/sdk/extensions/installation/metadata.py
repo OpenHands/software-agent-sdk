@@ -212,7 +212,7 @@ class InstallationMetadata(BaseModel):
         """Save metadata to the installed extensions directory."""
         metadata_path = self.get_metadata_path(installed_dir)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(metadata_path, self.model_dump_json(indent=2), mode=0o644)
+        atomic_write_text(metadata_path, self.model_dump_json(indent=2), mode=0o600)
 
     def validate_tracked(self, installed_dir: Path) -> list[InstallationInfo]:
         """Validate tracked extensions exist on disk.
