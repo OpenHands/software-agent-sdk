@@ -40,7 +40,7 @@ Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
 - `F25.install-git`: a `file://` git source with `repo_path` installs offline and records the source, `repo_path` and the resolved commit SHA.
 - `F25.sdk-load-skills`: `RemoteWorkspace.load_skills_from_agent_server()` turns the merged catalog of its `working_dir` into SDK `Skill` objects (project, user and enabled installed skills, keyword triggers kept) and an `AgentContext` that does not reload public skills.
 - `F25.install-github`: the working GitHub form (`github:OpenHands/extensions` plus `repo_path`) installs a public skill from github.com at a full commit SHA, and uninstalling it removes it.
-- `F25.install-documented-sources`: every source form the OpenAPI description of `InstallSkillRequest.source` advertises installs; today both GitHub examples are 400 while `github:owner/repo` plus `repo_path` works.
+- `F25.install-documented-sources`: every GitHub source form the OpenAPI description of `InstallSkillRequest.source` advertises installs, including the `github:owner/repo/<path>` shorthand.
 - `F25.refresh`: refresh re-fetches from the recorded source: a new commit in the git source updates `resolved_ref` and the installed files, an edited local source updates the description, and the enabled flag is preserved.
 - `F25.install-ref`: installing a git source with `ref` pins that commit (`resolved_ref`, the installed files, `requested_ref` in `.installed.json`); refresh moves it to the source's latest commit and drops `requested_ref`.
 - `F25.install-unknown-ref`: a `ref` the git source does not have is 400 and leaves the installation unchanged; today that holds only for a first clone, while a source whose clone is cached installs the cached HEAD with 200.
@@ -114,10 +114,10 @@ Preconditions:
   preset themselves; the TypeScript bullet needs `node`.
   No launch flags are needed. Outbound HTTPS
   to github.com is needed by `F25.public-repo` and `F25.install-github`, which
-  arrange the network state for the two known-bug bullets after them
-  (`F25.marketplace-public`, `F25.install-documented-sources`); every other
+  arrange the network state for the two bullets after them
+  (`F25.marketplace-public`, a known bug, and `F25.install-documented-sources`); every other
   bullet runs offline (apart from the DeepSeek calls). Each of these recipes
-  declares what it needs on its own `Needs:` line (the two known-bug bullets
+  declares what it needs on its own `Needs:` line (those two bullets
   inherit `network` through `Requires:`), so a machine without a model key,
   network or `node` reports just those recipes blocked and drives the rest. `F25.ts-client` builds
   `clients/typescript/dist` with `npm ci && npm run build` only when it is
@@ -414,9 +414,9 @@ Preconditions:
   commit, and the skill leaves the store again. This bullet is the network
   arrange step for `F25.install-documented-sources`: it proves github.com is
   reachable and `skills/github` installs.
-- **Documented install sources (`F25.install-documented-sources`), known bug.**
+- **Documented install sources (`F25.install-documented-sources`).**
   Install the same skill in each GitHub form the OpenAPI description of
-  `InstallSkillRequest.source` still advertises.
+  `InstallSkillRequest.source` advertises.
 
   Requires: `F25.install-github`
   ```sh
@@ -425,19 +425,18 @@ Preconditions:
     case "$DOC" in
       *"'$SRC'"*)
         control-agent-server api POST /api/skills/install --json '{"source": "'"$SRC"'"}' --timeout 240 --expect 200 \
-          --check name eq github --save F25.install-documented-sources/documented  # bug: status eq 400 && response.body.detail contains 'Failed to fetch skill source'
+          --check name eq github --save F25.install-documented-sources/documented
         control-agent-server api DELETE /api/skills/installed/github --expect 200
         ;;
     esac
   done
   ```
-  `F25.install-github` showed the skill installs from github.com, so a
-  documented example should install it too (or stop being documented, which
-  also passes this bullet). Today both are `400 Failed to fetch skill
-  source`: `parse_extension_source` accepts only `github:owner/repo` (one
-  slash), and the `/tree/main/...` URL is cloned as
-  `.../tree/main/skills/github.git`. The same text ships in the TypeScript
-  client's generated schema.
+  `F25.install-github` showed the skill installs from github.com, so every
+  documented example installs it too. `github:owner/repo/<path>` clones
+  `owner/repo` and uses `<path>` as `repo_path` (passing both is a `400`).
+  The loop also covers the `/tree/<ref>/<path>` URL in case it is documented
+  again; that form is not parsed (it would be cloned as
+  `.../tree/main/skills/github.git`), so it is not advertised.
 - **Refresh from the source (`F25.refresh`).** Commit to the git source and
   edit the local source, then refresh both.
 
@@ -878,10 +877,11 @@ Preconditions:
   `load_public` loads every `skills/` entry there while the catalog stays
   empty (`F25.marketplace-public`).
 - Install sources: plain absolute paths are copied; `file://` and other URLs
-  are cloned into `$OH_PERSISTENCE_DIR/cache/extensions/`. The examples in the
-  OpenAPI description of `InstallSkillRequest.source` do not work
-  (`F25.install-documented-sources`); the working form is
-  `{"source": "github:OpenHands/extensions", "repo_path": "skills/github"}`.
+  are cloned into `$OH_PERSISTENCE_DIR/cache/extensions/`.
+  `github:OpenHands/extensions/skills/github` is the same install as
+  `{"source": "github:OpenHands/extensions", "repo_path": "skills/github"}`
+  (`F25.install-documented-sources`), but the record keeps the source as
+  given; a GitHub `/tree/<ref>/<path>` URL is not parsed.
 - The 409 for an existing skill is decided after the fetch, so a conflicting
   git install still clones. `version` is always `1.0.0` (the frontmatter
   `version` is not read). Refresh reinstalls with `ref` dropped, so a skill

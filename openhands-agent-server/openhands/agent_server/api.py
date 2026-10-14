@@ -1,5 +1,6 @@
 import asyncio
 import os
+import shutil
 import sys
 import tempfile
 import traceback
@@ -140,12 +141,15 @@ def _default_server_tmux_tmpdir() -> Path:
     return _SHORT_TMUX_TMPDIR_ROOT / name
 
 
-def _ensure_server_tmux_tmpdir() -> tuple[Path, bool]:
+def _ensure_server_tmux_tmpdir() -> tuple[Path, bool, bool]:
+    """Return the tmux directory, whether it was defaulted, and whether this
+    call created it (only then is it removed at shutdown)."""
     existing = os.getenv("TMUX_TMPDIR")
     if existing and _fits_tmux_socket(Path(existing)):
-        return Path(existing), False
+        return Path(existing), False, False
 
     tmux_tmpdir = _default_server_tmux_tmpdir()
+    created = not tmux_tmpdir.exists()
     tmux_tmpdir.mkdir(parents=True, exist_ok=True)
     os.environ["TMUX_TMPDIR"] = str(tmux_tmpdir)
     if existing:
@@ -160,7 +164,7 @@ def _ensure_server_tmux_tmpdir() -> tuple[Path, bool]:
             "TMUX_TMPDIR not set; defaulting to per-server tmux directory %s",
             tmux_tmpdir,
         )
-    return tmux_tmpdir, True
+    return tmux_tmpdir, True, created
 
 
 def _cleanup_stale_tmux_sessions() -> None:
@@ -189,11 +193,16 @@ def _cleanup_stale_tmux_sessions() -> None:
 @asynccontextmanager
 async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     original_tmux_tmpdir = os.environ.get("TMUX_TMPDIR")
-    tmux_tmpdir, tmux_tmpdir_was_defaulted = _ensure_server_tmux_tmpdir()
+    tmux_tmpdir, tmux_tmpdir_was_defaulted, tmux_tmpdir_was_created = (
+        _ensure_server_tmux_tmpdir()
+    )
     secret_resolution: local_secret_resolution | None = None
     try:
         # Clean up stale tmux sessions from previous server runs
         _cleanup_stale_tmux_sessions()
+        backend_manager = getattr(api.state, "canvas_extension_backend_manager", None)
+        if backend_manager is not None:
+            await backend_manager.reap_orphans()
 
         config: Config = api.state.config
         deferred = config.deferred_init
@@ -348,13 +357,23 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         emit_server_stopped()
         await shutdown_telemetry_sink()
 
-        if tmux_tmpdir_was_defaulted and os.environ.get("TMUX_TMPDIR") == str(
-            tmux_tmpdir
-        ):
-            if original_tmux_tmpdir is None:
-                os.environ.pop("TMUX_TMPDIR", None)
-            else:
-                os.environ["TMUX_TMPDIR"] = original_tmux_tmpdir
+        if tmux_tmpdir_was_defaulted:
+            if os.environ.get("TMUX_TMPDIR") == str(tmux_tmpdir):
+                if original_tmux_tmpdir is None:
+                    os.environ.pop("TMUX_TMPDIR", None)
+                else:
+                    os.environ["TMUX_TMPDIR"] = original_tmux_tmpdir
+        if tmux_tmpdir_was_created:
+            # Only the per-server directory this process created; a
+            # user-provided TMUX_TMPDIR is never removed.
+            try:
+                shutil.rmtree(tmux_tmpdir)
+            except OSError as e:
+                logger.warning(
+                    "Failed to remove per-server tmux directory %s: %s",
+                    tmux_tmpdir,
+                    e,
+                )
 
 
 def _emit_request_failed(request: Request, exc: Exception, error_id: str) -> None:
