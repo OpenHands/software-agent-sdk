@@ -89,19 +89,16 @@ def resolve(
     *,
     llm_profile_ref: str | None = None,
 ) -> ResolvedLaunch:
-    """Resolve a stored profile id or an inline profile into a ``ResolvedLaunch``.
+    """Resolve a stored profile id or a profile into a ``ResolvedLaunch``.
 
     Every reference is copied into the result, so the runtime that finalizes it
     needs no store. All dangling references are raised together as
     :class:`UnresolvedProfileReferences`; a store that cannot be read raises
     :class:`LaunchStoreError`; an unknown profile id raises ``ProfileNotFound``.
     """
-    if isinstance(source, UUID):
-        profile = _load_stored_profile(source, stores)
-        inline = False
-    else:
-        profile = source
-        inline = True
+    profile = (
+        _load_stored_profile(source, stores) if isinstance(source, UUID) else source
+    )
     if llm_profile_ref is not None and not isinstance(profile, OpenHandsAgentProfile):
         raise AgentLaunchError(
             "agent_launch_additions.llm_profile_ref applies only to an "
@@ -136,7 +133,6 @@ def resolve(
             agent_profile_id=profile.id,
             revision=profile.revision,
             secret_refs=profile.secret_refs,
-            inline=inline,
             llm_profile_ref=llm_profile_ref,
         ),
     )
