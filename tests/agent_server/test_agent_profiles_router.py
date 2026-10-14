@@ -341,6 +341,21 @@ def test_an_existing_default_is_activated_rather_than_reseeded(client, store):
     assert store.load("default").llm_profile_ref == "kept"
 
 
+def test_a_full_store_without_default_activates_an_existing_profile(
+    client, store, monkeypatch
+):
+    monkeypatch.setattr(router_module, "MAX_AGENT_PROFILES", 2)
+    store.save(OpenHandsAgentProfile(name="beta", llm_profile_ref="x"))
+    store.save(OpenHandsAgentProfile(name="alpha", llm_profile_ref="x"))
+
+    response = client.get("/api/agent-profiles")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(_ids(body)) == {"alpha", "beta"}
+    assert body["active_agent_profile_id"] == _ids(body)["alpha"]
+
+
 def test_a_dangling_pointer_moves_to_a_seeded_default(client):
     stale = "12345678-1234-1234-1234-1234567890ab"
     client.patch("/api/settings", json={"active_agent_profile_id": stale})

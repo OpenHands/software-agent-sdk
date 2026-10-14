@@ -239,7 +239,8 @@ def _ensure_active_profile(
     """Keep ``active_agent_profile_id`` on a stored profile.
 
     A missing or dangling pointer moves to ``default``, which is seeded from the
-    current ``agent_settings`` when absent, so every launch has a profile. The
+    current ``agent_settings`` when absent, so every launch has a profile. A
+    store too full to seed ``default`` activates its first profile instead. The
     lock spans the check, the seed and the pointer write, so concurrent callers
     seed once and agree on the pointer.
     """
@@ -249,18 +250,32 @@ def _ensure_active_profile(
         active_id = settings.active_agent_profile_id
         if active_id is not None and store.name_for_id(active_id) is not None:
             return
-        try:
-            profile = store.load(SEED_PROFILE_NAME)
-        except FileNotFoundError:
-            profile = _seed_default_profile(store, settings, cipher)
-        profile_id = str(profile.id)
+        target = _profile_to_activate(store, settings, cipher)
+        if target is None:
+            return
+        name, profile_id = target
 
         def set_pointer(s: PersistedSettings) -> PersistedSettings:
             s.active_agent_profile_id = profile_id
             return s
 
         settings_store.update(set_pointer)
-        logger.info(f"Activated agent profile '{profile.name}' (id={profile_id})")
+        logger.info(f"Activated agent profile '{name}' (id={profile_id})")
+
+
+def _profile_to_activate(
+    store: AgentProfileStore, settings: PersistedSettings, cipher: Cipher | None
+) -> tuple[str, str] | None:
+    """Return the name and id of ``default``, seeding it if the store has room."""
+    try:
+        profile = store.load(SEED_PROFILE_NAME)
+    except FileNotFoundError:
+        try:
+            profile = _seed_default_profile(store, settings, cipher)
+        except ProfileLimitExceeded:
+            first = next((s for s in store.list_summaries() if s["id"]), None)
+            return (first["name"], str(first["id"])) if first else None
+    return profile.name, str(profile.id)
 
 
 def _seed_default_profile(
