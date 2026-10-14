@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Any, ClassVar, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from openhands.agent_server.conversation_lease import DEFAULT_LEASE_TTL_SECONDS
 from openhands.agent_server.env_parser import (
@@ -484,6 +484,13 @@ class Config(BaseModel):
         ),
     )
     model_config: ClassVar[ConfigDict] = {"frozen": True}
+
+    @field_validator("session_api_keys")
+    @classmethod
+    def _drop_empty_session_api_keys(cls, value: list[str]) -> list[str]:
+        # An empty key (e.g. ``OH_SESSION_API_KEYS_0=``) is never a real
+        # credential; keeping it would make an empty string authenticate.
+        return [key for key in value if key]
 
     @property
     def cipher(self) -> Cipher | None:

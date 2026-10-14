@@ -28,6 +28,7 @@ from openhands.sdk.settings import (
     OpenHandsAgentSettings,
 )
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
 @pytest.fixture
@@ -1694,6 +1695,48 @@ def test_create_and_list_secrets(client_with_settings):
     assert "value" not in secrets[0]
 
 
+@pytest.mark.parametrize("value", ["", " \t ", REDACTED_SECRET_VALUE])
+def test_create_secret_rejects_unusable_value(client_with_settings, value):
+    response = client_with_settings.put(
+        "/api/settings/secrets",
+        json={"name": "MY_SECRET", "value": value},
+    )
+
+    assert response.status_code == 422
+    assert client_with_settings.get("/api/settings/secrets").json()["secrets"] == []
+    assert (
+        client_with_settings.get("/api/settings/secrets/MY_SECRET").status_code == 404
+    )
+
+
+@pytest.mark.parametrize("value", ["", " \t ", REDACTED_SECRET_VALUE])
+def test_secret_upsert_rejects_unusable_value_without_changing_existing(
+    client_with_settings, value
+):
+    created = client_with_settings.put(
+        "/api/settings/secrets",
+        json={
+            "name": "MY_SECRET",
+            "value": "original-value",
+            "description": "Original",
+        },
+    )
+    assert created.status_code == 200
+
+    response = client_with_settings.put(
+        "/api/settings/secrets",
+        json={"name": "MY_SECRET", "value": value, "description": "Updated"},
+    )
+
+    assert response.status_code == 422
+    stored = client_with_settings.get("/api/settings/secrets/MY_SECRET")
+    assert stored.status_code == 200
+    assert stored.text == "original-value"
+    assert client_with_settings.get("/api/settings/secrets").json()["secrets"] == [
+        {"name": "MY_SECRET", "description": "Original"}
+    ]
+
+
 def test_list_secrets_scoped_by_agent_profile(client_with_settings):
     for name in ("ALLOWED", "EXCLUDED"):
         client_with_settings.put(
@@ -1853,6 +1896,9 @@ def test_secret_upsert_updates_existing(client_with_settings):
     get_response = client_with_settings.get("/api/settings/secrets/MY_SECRET")
     assert get_response.status_code == 200
     assert get_response.text == "updated-value"
+    assert client_with_settings.get("/api/settings/secrets").json()["secrets"] == [
+        {"name": "MY_SECRET", "description": "Updated"}
+    ]
 
 
 def test_secret_name_validation_on_get(client_with_settings):

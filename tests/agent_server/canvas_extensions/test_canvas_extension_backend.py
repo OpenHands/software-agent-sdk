@@ -3,9 +3,11 @@ import hashlib
 import io
 import json
 import os
+import signal
 import tarfile
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -52,6 +54,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
+        if self.path == "/exit":
+            self.wfile.flush()
+            os._exit(0)
 
     def log_message(self, format, *args):
         pass
@@ -370,9 +375,93 @@ async def test_status_reports_starting_and_stop_abandons_hung_backend(
     assert (await manager.delete_data("my-extension")).state == "stopped"
 
 
+@pytest.mark.parametrize("recovery", ["status", "stop", "restart"])
 @pytest.mark.asyncio
-async def test_stop_kills_sigterm_ignoring_descendant(tmp_path: Path):
-    """Stopping must reclaim the whole process group, not just the leader."""
+async def test_exited_leader_descendant_does_not_block_recovery(
+    tmp_path: Path,
+    recovery: str,
+):
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    installed_dir = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+    revision = manager.revision("my-extension")
+    assert revision is not None
+    await manager.prepare("my-extension", revision)
+    started = await manager.start("my-extension", revision)
+    assert started.state == "ready"
+    assert started.port is not None
+
+    runtime_file = manager.data_dir / "my-extension" / "runtime.json"
+    child_pid = int(json.loads(runtime_file.read_text())["child_pid"])
+    runtime = manager._runtimes["my-extension"]
+    assert runtime.process is not None
+
+    try:
+        response = await asyncio.to_thread(
+            urllib.request.urlopen,
+            f"http://127.0.0.1:{started.port}/exit",
+            timeout=1,
+        )
+        with response:
+            assert response.status == 200
+        for _ in range(200):
+            if runtime.process.returncode is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert runtime.process.returncode == 0
+        assert manager.has_running_backends()
+        with pytest.raises(RuntimeError, match="stop the backend"):
+            await asyncio.wait_for(manager.delete_data("my-extension"), timeout=1)
+
+        if recovery == "status":
+            status = await asyncio.wait_for(manager.status("my-extension"), timeout=1)
+            assert status.state == "unhealthy"
+            assert status.detail == "Backend exited with code 0"
+            assert status.pid is None
+            assert status.port is None
+            assert runtime.process is None
+            assert not manager.has_running_backends()
+            prepared = await asyncio.wait_for(
+                manager.prepare("my-extension", revision), timeout=1
+            )
+            assert prepared.state == "unhealthy"
+            assert (
+                "backend-ready"
+                in (
+                    await asyncio.wait_for(
+                        manager.logs("my-extension", 4096), timeout=1
+                    )
+                ).logs
+            )
+            deleted = await asyncio.wait_for(
+                manager.delete_data("my-extension"), timeout=1
+            )
+            assert deleted.state == "unhealthy"
+            stopped = await asyncio.wait_for(manager.stop("my-extension"), timeout=15)
+            assert stopped.state == "stopped"
+            assert not manager.has_running_backends()
+        elif recovery == "stop":
+            stopped = await asyncio.wait_for(manager.stop("my-extension"), timeout=15)
+            assert stopped.state == "stopped"
+            assert not manager.has_running_backends()
+        else:
+            restarted = await asyncio.wait_for(
+                manager.start("my-extension", revision), timeout=15
+            )
+            assert restarted.state == "ready"
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.parametrize("leader_exited", [False, True])
+@pytest.mark.asyncio
+async def test_cleanup_kills_sigterm_ignoring_descendant(
+    tmp_path: Path,
+    leader_exited: bool,
+):
     source = _write_backend_extension(tmp_path / "source" / "my-extension")
     installed_dir = tmp_path / "installed"
     install_canvas_extension(str(source), installed_dir=installed_dir)
@@ -381,12 +470,12 @@ async def test_stop_kills_sigterm_ignoring_descendant(tmp_path: Path):
     archive = installed_dir / "my-extension" / "backend-linux-amd64.tar.gz"
     payload = (
         b"#!/usr/bin/python3\n"
-        b"import http.server, os, subprocess, sys\n"
+        b"import http.server, os, signal, subprocess, sys\n"
         b"port = int(sys.argv[1])\n"
         b"data_dir = sys.argv[2]\n"
         b"os.makedirs(data_dir, exist_ok=True)\n"
-        b"child = subprocess.Popen(['/bin/sh', '-c',"
-        b" \"trap '' TERM; sleep 300\"])\n"
+        b"child = subprocess.Popen(['/bin/sleep', '300'], "
+        b"preexec_fn=lambda: signal.signal(signal.SIGTERM, signal.SIG_IGN))\n"
         b"with open(os.path.join(data_dir, 'child'), 'w') as stream:\n"
         b"    stream.write(str(child.pid))\n"
         b"class Handler(http.server.BaseHTTPRequestHandler):\n"
@@ -415,9 +504,24 @@ async def test_stop_kills_sigterm_ignoring_descendant(tmp_path: Path):
     await manager.prepare("my-extension", revision)
     assert (await manager.start("my-extension", revision)).state == "ready"
     child_pid = int((manager.data_dir / "my-extension" / "child").read_text())
-    assert (await manager.stop("my-extension")).state == "stopped"
-    with pytest.raises(ProcessLookupError):
-        os.kill(child_pid, 0)
+    runtime = manager._runtimes["my-extension"]
+    assert runtime.process is not None
+    try:
+        if leader_exited:
+            os.kill(runtime.process.pid, signal.SIGTERM)
+            for _ in range(200):
+                if runtime.process.returncode is not None:
+                    break
+                await asyncio.sleep(0.01)
+            assert runtime.process.returncode == -signal.SIGTERM
+            status = await asyncio.wait_for(manager.status("my-extension"), timeout=2)
+            assert status.state == "unhealthy"
+        else:
+            assert (await manager.stop("my-extension")).state == "stopped"
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)
+    finally:
+        await manager.shutdown()
 
 
 def test_status_degrades_when_manifest_is_corrupted(tmp_path: Path):
