@@ -1,0 +1,150 @@
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.51.0                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+[10/07/26 04:57:46] INFO     TmuxPanePool initialized:     tmux_pane_pool.py:140
+                             session=openhands-pool-None-4                      
+                             3de9c2b-d4f4-41f7-b419-8e12ca                      
+                             79dad2, max_panes=1                                
+[10/07/26 04:57:48] WARNING  Error killing pool session:   tmux_pane_pool.py:164
+                             kill-session: no server                            
+                             running on                                         
+                             /tmp/tmux-0/openhands                              
+[10/07/26 04:57:49] INFO     TmuxPanePool initialized:     tmux_pane_pool.py:140
+                             session=openhands-pool-None-7                      
+                             f21713a-8c63-48e2-a586-63509b                      
+                             abfa48, max_panes=4                                
+[10/07/26 04:57:49] INFO     TerminalExecutor initialized (pool      impl.py:147
+                             mode) working_dir: /tmp/tmp966cxa5q,               
+                             username: None, max_panes: 4                       
+[10/07/26 04:57:49] WARNING  Recovering terminal pane pool after     impl.py:537
+                             tmux server/session disappeared                    
+                             ╭─ Traceback (most recent call last) ─╮            
+                             │ /opt/hc/venv/lib/python3.12/site-pa │            
+                             │ ckages/openhands/tools/terminal/imp │            
+                             │ l.py:521 in _execute_pooled         │            
+                             │                                     │            
+                             │   518 │   │   │   │   │   )         │            
+                             │   519 │   │   │   │   )             │            
+                             │   520 │   │   │   │   self._export_ │            
+                             │ ❱ 521 │   │   │   │   observation = │            
+                             │   522 │   │   │   │                 │            
+                             │   523 │   │   │   │   if reset_text │            
+                             │   524 │   │   │   │   │   observati │            
+                             │                                     │            
+                             │ /opt/hc/python/lib/python3.12/unitt │            
+                             │ est/mock.py:1139 in __call__        │            
+                             │                                     │            
+                             │   1136 │   │   # in the signature   │            
+                             │   1137 │   │   self._mock_check_sig │            
+                             │   1138 │   │   self._increment_mock │            
+                             │ ❱ 1139 │   │   return self._mock_ca │            
+                             │   1140 │                            │            
+                             │   1141 │                            │            
+                             │   1142 │   def _mock_call(self, /,  │            
+                             │                                     │            
+                             │ /opt/hc/python/lib/python3.12/unitt │            
+                             │ est/mock.py:1143 in _mock_call      │            
+                             │                                     │            
+                             │   1140 │                            │            
+                             │   1141 │                            │            
+                             │   1142 │   def _mock_call(self, /,  │            
+                             │ ❱ 1143 │   │   return self._execute │            
+                             │   1144 │                            │            
+                             │   1145 │   def _increment_mock_call │            
+                             │   1146 │   │   self.called = True   │            
+                             │                                     │            
+                             │ /opt/hc/python/lib/python3.12/unitt │            
+                             │ est/mock.py:1198 in                 │            
+                             │ _execute_mock_call                  │            
+                             │                                     │            
+                             │   1195 │   │   effect = self.side_e │            
+                             │   1196 │   │   if effect is not Non │            
+                             │   1197 │   │   │   if _is_exception │            
+                             │ ❱ 1198 │   │   │   │   raise effect │            
+                             │   1199 │   │   │   elif not _callab │            
+                             │   1200 │   │   │   │   result = nex │            
+                             │   1201 │   │   │   │   if _is_excep │            
+                             ╰─────────────────────────────────────╯            
+                             TmuxObjectDoesNotExist: Could not find             
+                             object                                             
+[10/07/26 04:57:50] INFO     TmuxPanePool initialized:     tmux_pane_pool.py:140
+                             session=openhands-pool-None-1                      
+                             f8a6aca-3cde-4c01-a5ab-961fda                      
+                             ef2d7a, max_panes=4                                
+[10/07/26 04:57:50] INFO     TerminalExecutor initialized (pool      impl.py:147
+                             mode) working_dir: /tmp/tmp966cxa5q,               
+                             username: None, max_panes: 4                       
+[10/07/26 04:57:51] WARNING  Recovering terminal pane pool after     impl.py:537
+                             tmux server/session disappeared                    
+                             ╭─ Traceback (most recent call last) ─╮            
+                             │ /opt/hc/venv/lib/python3.12/site-pa │            
+                             │ ckages/openhands/tools/terminal/imp │            
+                             │ l.py:521 in _execute_pooled         │            
+                             │                                     │            
+                             │   518 │   │   │   │   │   )         │            
+                             │   519 │   │   │   │   )             │            
+                             │   520 │   │   │   │   self._export_ │            
+                             │ ❱ 521 │   │   │   │   observation = │            
+                             │   522 │   │   │   │                 │            
+                             │   523 │   │   │   │   if reset_text │            
+                             │   524 │   │   │   │   │   observati │            
+                             │                                     │            
+                             │ /opt/hc/venv/lib/python3.12/site-pa │            
+                             │ ckages/openhands/tools/terminal/ter │            
+                             │ minal/terminal_session.py:563 in    │            
+                             │ execute                             │            
+                             │                                     │            
+                             │   560 │   │   while True:           │            
+                             │   561 │   │   │   _start_time = tim │            
+                             │   562 │   │   │   logger.debug(f"GE │            
+                             │ ❱ 563 │   │   │   cur_terminal_outp │            
+                             │   564 │   │   │   logger.debug(     │            
+                             │   565 │   │   │   │   f"TERMINAL CO │            
+                             │   566 │   │   │   )                 │            
+                             │                                     │            
+                             │ /opt/hc/venv/lib/python3.12/site-pa │            
+                             │ ckages/openhands/tools/terminal/ter │            
+                             │ minal/tmux_terminal.py:238 in       │            
+                             │ read_screen                         │            
+                             │                                     │            
+                             │   235 │   │                         │            
+                             │   236 │   │   result = self.pane.cm │            
+                             │   237 │   │   if result.returncode: │            
+                             │ ❱ 238 │   │   │   raise LibTmuxExce │            
+                             │   239 │   │   content = "\n".join(  │            
+                             │   240 │   │   │   map(              │            
+                             │   241 │   │   │   │   # avoid doubl │            
+                             ╰─────────────────────────────────────╯            
+                             LibTmuxException: ['no server running              
+                             on /tmp/tmux-0/openhands']                         
+[10/07/26 04:57:51] WARNING  Error killing pool session:   tmux_pane_pool.py:164
+                             kill-session: no server                            
+                             running on                                         
+                             /tmp/tmux-0/openhands                              
+[10/07/26 04:57:52] INFO     TmuxPanePool initialized:     tmux_pane_pool.py:140
+                             session=openhands-pool-None-c                      
+                             19f9b9a-fb94-4aa8-9bfa-4a74d5                      
+                             e9eb72, max_panes=4                                
+[10/07/26 04:57:52] INFO     TerminalExecutor initialized (pool      impl.py:147
+                             mode) working_dir: /tmp/tmp966cxa5q,               
+                             username: None, max_panes: 4                       
+{
+  "versions": {
+    "openhands-sdk": "1.51.0",
+    "openhands-tools": "1.51.0",
+    "libtmux": "0.62.0"
+  },
+  "results": {
+    "capacity_after_repeated_setup_failure": true,
+    "no_tmux_lookup_from_pool_logging": true,
+    "missing_object_recovery": true,
+    "real_shell_exit_recovery": true
+  }
+}

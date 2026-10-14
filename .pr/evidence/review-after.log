@@ -1,0 +1,48 @@
+
+=== https://github.com/OpenHands/software-agent-sdk/pull/5567#discussion_r4206692673 ===
+exiter: exit_code=-1 tmux_error="can't find pane: %2"
+sibling: exit_code=0 tmux_error='SIBLING_DONE'
+not reproduced
+
+process exit: 0
+
+=== https://github.com/OpenHands/software-agent-sdk/pull/5567#discussion_r4206692682 ===
+finished: {'holder': -1, 'waiter2': -1, 'waiter1': -1}
+pool was rebuilt: True
+blocked after 30s: []
+not reproduced
+
+process exit: 0
+
+=== https://github.com/OpenHands/software-agent-sdk/pull/5567#discussion_r4206692690 ===
+holder exit_code: -1
+waiter result: -1
+pool rebuilt and healthy: True
+not reproduced
+
+process exit: 0
+
+=== https://github.com/OpenHands/software-agent-sdk/pull/5567#discussion_r4206692693 ===
+returned observation: exit_code=-1 text=''
+not reproduced
+
+process exit: 0
+
+=== https://github.com/OpenHands/software-agent-sdk/pull/5567#discussion_r4206692697 ===
+agent sees: Original tmux error: no server running on /private/tmp/tmux-501/openhands-f87fddce91434f6c921c525449b61704
+empty-stderr message: 'capture-pane failed (rc=1)'
+recoverable: True
+
+process exit: 0
+
+=== https://github.com/OpenHands/software-agent-sdk/pull/5567#discussion_r4206692707 ===
+not reproduced: setup failure was detected
+checkout raised LibTmuxException: can't find pane: %1
+
+process exit: 1
+
+=== https://github.com/OpenHands/software-agent-sdk/pull/5567#discussion_r4206692716 ===
+checkin of a warm pane took 0 ms
+not reproduced
+
+process exit: 0
