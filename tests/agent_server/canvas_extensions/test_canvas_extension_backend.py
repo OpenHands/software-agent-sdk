@@ -172,6 +172,50 @@ async def test_prepare_start_logs_stop_and_preserve_data(
 
 
 @pytest.mark.asyncio
+async def test_ready_endpoint_closes_when_ready_backend_exits(tmp_path: Path):
+    """A crashed backend is not dialed before anyone polls its status (#5912)."""
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    installed_dir = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+    revision = manager.revision("my-extension")
+    assert revision is not None
+    await manager.prepare("my-extension", revision)
+    try:
+        ready = await manager.start("my-extension", revision)
+        assert ready.state == "ready"
+        assert manager.ready_endpoint("my-extension") == ("127.0.0.1", ready.port)
+
+        await asyncio.to_thread(
+            urllib.request.urlopen, f"http://127.0.0.1:{ready.port}/exit", timeout=3
+        )
+        process = manager._runtimes["my-extension"].process
+        assert process is not None
+        deadline = time.monotonic() + 5
+        while process.returncode is None and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        assert process.returncode is not None
+
+        # No status poll yet: the stored state is stale, the bridge is closed.
+        assert manager._runtimes["my-extension"].state == "ready"
+        assert manager.ready_endpoint("my-extension") is None
+
+        crashed = await manager.status("my-extension")
+        assert crashed.state == "unhealthy"
+        assert crashed.detail == "Backend exited with code 0"
+        assert manager.ready_endpoint("my-extension") is None
+
+        restarted = await manager.start("my-extension", revision)
+        assert restarted.state == "ready"
+        assert manager.ready_endpoint("my-extension") == (
+            "127.0.0.1",
+            restarted.port,
+        )
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_remote_artifact_download_strip_cache_and_home(tmp_path: Path):
     archive = tmp_path / "remote.tar.gz"
     script = _SERVER.encode()

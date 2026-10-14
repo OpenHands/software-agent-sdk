@@ -479,3 +479,20 @@ async def test_backend_switch_invalidates_existing_session(live_bridge) -> None:
     live_bridge.manager.endpoint = ("127.0.0.1", _free_port())
     switched = await client.get(f"{root}/prefix/static/app.js")
     assert switched.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_unreachable_backend_error_names_the_canvas_backend(
+    live_bridge,
+) -> None:
+    client: httpx.AsyncClient = live_bridge.client
+    root = f"{live_bridge.public_url}/app-backends/{APP_NAME}"
+    # Nothing listens on this port, so the proxy's connection fails.
+    live_bridge.manager.endpoint = ("127.0.0.1", _free_port())
+    assert (
+        await client.post(f"{root}/session", headers=_bootstrap_headers())
+    ).status_code == 200
+
+    unreachable = await client.get(f"{root}/prefix/static/app.js")
+    assert unreachable.status_code == 502
+    assert unreachable.json() == {"detail": "Canvas App backend unreachable"}

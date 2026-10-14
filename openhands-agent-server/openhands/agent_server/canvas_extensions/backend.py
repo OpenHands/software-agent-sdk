@@ -816,6 +816,11 @@ class CanvasExtensionBackendManager:
         runtime = self._runtimes.get(name)
         if runtime is None or runtime.state != "ready" or runtime.port is None:
             return None
+        # `state` is only reconciled by status()/start()/stop(); a backend that
+        # crashed since then must not be dialed (the next status poll reports
+        # it `unhealthy` and reaps its process group).
+        if runtime.process is None or runtime.process.returncode is not None:
+            return None
         return "127.0.0.1", runtime.port
 
     async def shutdown(self) -> None:
