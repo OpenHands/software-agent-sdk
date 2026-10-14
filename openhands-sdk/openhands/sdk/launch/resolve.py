@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 from uuid import UUID
 
+from pydantic import SecretStr
+
 from openhands.sdk.launch.errors import (
     AgentLaunchError,
     LaunchStoreError,
@@ -55,6 +57,9 @@ class LaunchStores:
     # Names of the public catalog tier that `public_skills` filters; None
     # counts every catalog skill as public.
     public_skill_names: Callable[[], Collection[str]] | None = None
+    # Server-wide credential: a profile is secret-free, so every OpenHands
+    # profile launch uses this one.
+    critic_api_key: SecretStr | None = None
     agent_profiles: AgentProfileLoader | None = None
     meta_profiles: MetaProfileLoader | None = None
     llm_profile_names: Callable[[], Sequence[str]] | None = None
@@ -168,6 +173,7 @@ def _resolve_openhands(
             browser_available=None,
             meta_profile=meta_profile,
             meta_profile_llms=meta_llms,
+            critic_api_key=stores.critic_api_key,
         )
     except ValueError as exc:
         raise AgentLaunchError(str(exc)) from exc

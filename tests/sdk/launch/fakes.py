@@ -6,6 +6,8 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 from uuid import UUID
 
+from pydantic import SecretStr
+
 from openhands.sdk import LLM
 from openhands.sdk.launch import LaunchStores
 from openhands.sdk.llm.meta_profile_store import MetaProfile
@@ -70,6 +72,7 @@ def stores(
     skills: Sequence[Skill] = (),
     public_skill_names: Sequence[str] | None = None,
     metas: Mapping[str, MetaProfile] | None = None,
+    critic_api_key: SecretStr | None = None,
 ) -> LaunchStores:
     llm_profiles = LLMProfiles({"default": llm()} if llms is None else llms)
     return LaunchStores(
@@ -82,4 +85,5 @@ def stores(
         ),
         agent_profiles=AgentProfiles(*profiles),
         meta_profiles=MetaProfiles(metas or {}),
+        critic_api_key=critic_api_key,
     )

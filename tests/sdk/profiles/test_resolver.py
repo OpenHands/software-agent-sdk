@@ -889,6 +889,24 @@ def test_resolve_and_dry_run_apply_public_skills_to_the_public_tier(
     assert diag.resolved_skills == ["alpha", "mine"]
 
 
+def test_resolve_uses_the_server_critic_key(
+    llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
+) -> None:
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
+
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=[],
+        critic_api_key=SecretStr("sk-critic"),
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    key = settings.verification.critic_api_key
+    assert isinstance(key, SecretStr) and key.get_secret_value() == "sk-critic"
+
+
 def test_dry_run_default_disabled_resolves_all_discovered(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:

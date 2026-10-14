@@ -11,10 +11,10 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.launch import resolve
+from openhands.sdk.launch import LaunchStores, resolve
 from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileClass
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles.agent_profile import (
@@ -54,6 +54,13 @@ class Fixed:
     """Set to ``value`` by resolve for every profile."""
 
     value: Any
+
+
+@dataclass(frozen=True)
+class Stores:
+    """Copied from the launching server's stores, never from the profile."""
+
+    field: str
 
 
 @dataclass(frozen=True)
@@ -120,9 +127,7 @@ OPENHANDS_FIELDS: dict[str, Any] = {
     "verification": Nested(
         {
             **{name: PROFILE for name in ProfileVerificationSettings.model_fields},
-            "critic_api_key": NotOnProfile(
-                "a profile is secret-free; the critic reuses the resolved LLM key"
-            ),
+            "critic_api_key": Stores("critic_api_key"),
         }
     ),
 }
@@ -276,7 +281,11 @@ def _stores():
         classifier_model="default",
         classes=[MetaProfileClass(description="all", model="default")],
     )
-    return fakes.stores(mcp={"srv": MCPServer(command="echo")}, metas={"router": meta})
+    return fakes.stores(
+        mcp={"srv": MCPServer(command="echo")},
+        metas={"router": meta},
+        critic_api_key=SecretStr("sk-critic"),
+    )
 
 
 @pytest.mark.parametrize(
@@ -288,7 +297,8 @@ def _stores():
     ids=["openhands", "acp"],
 )
 def test_resolve_copies_profile_fields_and_fixed_values(profile, table):
-    settings = resolve(profile, _stores()).settings
+    stores = _stores()
+    settings = resolve(profile, stores).settings
 
     for path, owner in _leaves(table):
         if isinstance(owner, Profile):
@@ -298,3 +308,6 @@ def test_resolve_copies_profile_fields_and_fixed_values(profile, table):
             assert _get(settings, path) == expected, path
         if isinstance(owner, Fixed):
             assert _get(settings, path) == owner.value, path
+        if isinstance(owner, Stores):
+            assert owner.field in LaunchStores.__dataclass_fields__, path
+            assert _get(settings, path) == getattr(stores, owner.field), path

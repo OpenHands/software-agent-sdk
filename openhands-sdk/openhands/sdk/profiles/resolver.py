@@ -270,6 +270,7 @@ def _build_openhands_settings(
     browser_available: bool | None,
     meta_profile: MetaProfile | None = None,
     meta_profile_llms: Mapping[str, LLM] | None = None,
+    critic_api_key: SecretStr | None = None,
 ) -> AgentSettingsConfig:
     """Compose the resolved ``OpenHandsAgentSettings`` from a profile + LLM.
 
@@ -302,7 +303,10 @@ def _build_openhands_settings(
             disabled_skills=profile.disabled_skills,
         ),
         "condenser": profile.condenser,
-        "verification": profile.verification.model_dump(),
+        "verification": {
+            **profile.verification.model_dump(),
+            "critic_api_key": critic_api_key,
+        },
         "enable_classify_and_switch_llm_tool": (
             profile.enable_classify_and_switch_llm_tool
         ),
@@ -393,6 +397,7 @@ def resolve_agent_profile(
     mcp_config: dict[str, MCPServer],
     available_skills: list[Skill] | None,
     public_skill_names: Collection[str] | None = None,
+    critic_api_key: SecretStr | None = None,
     cipher: Cipher | None = None,
     browser_available: bool | None = None,
 ) -> AgentSettingsConfig:
@@ -436,6 +441,7 @@ def resolve_agent_profile(
             filtered_mcp,
             filtered_skills,
             browser_available=browser_available,
+            critic_api_key=critic_api_key,
         )
 
     return _build_acp_settings(
@@ -450,6 +456,7 @@ def resolve_agent_profile_dry_run(
     mcp_config: dict[str, MCPServer],
     available_skills: list[Skill] | None,
     public_skill_names: Collection[str] | None = None,
+    critic_api_key: SecretStr | None = None,
     cipher: Cipher | None = None,
     browser_available: bool | None = None,
     check_usable: bool = True,
@@ -551,6 +558,7 @@ def resolve_agent_profile_dry_run(
                     filtered_mcp,
                     filtered_skills,
                     browser_available=browser_available,
+                    critic_api_key=critic_api_key,
                 )
             else:
                 settings = _build_acp_settings(profile, filtered_mcp, filtered_skills)
