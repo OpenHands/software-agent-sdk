@@ -293,7 +293,7 @@ Preconditions:
   The repository is cloned into `cache/extensions/qa-f26-src-<hash>`, the
   plugin subdirectory alone is copied into the store, and the record keeps
   the source, `repo_path` and the commit (`H1`); no ref was requested.
-- **Repository root name (`F26.install-repo-root-name`), known bug.**
+- **Repository root name (`F26.install-repo-root-name`).**
   Install the whole fixture repository (it has no plugin manifest at its
   root), remove it, then compare the name.
   ```sh
@@ -301,14 +301,13 @@ Preconditions:
     --check resolved_ref eq "$H1" --save F26.install-repo-root-name/install --field name)
   control-agent-server api DELETE "/api/plugins/installed/$N" --expect 200
   control-agent-server api GET "/api/plugins/installed/$N" --expect 404
-  control-agent-server assert --value "$N" --check . eq qa-f26-src  # bug: value matches '^qa-f26-src-[0-9a-f]{16}$'
+  control-agent-server assert --value "$N" --check . eq qa-f26-src
   ```
   A manifest-less directory takes its directory's name, so the repository
-  should install as `qa-f26-src`. Today it installs as
-  `qa-f26-src-<16 hex>`: the name is inferred from the server's cache
-  directory (`get_cache_path` appends a hash of the URL), so the same
-  repository gets another name under another URL spelling. The install is
-  removed before the comparison, so later bullets do not see it.
+  installs as `qa-f26-src`, the repository's name, never as its
+  `qa-f26-src-<hash>` cache directory: the name does not depend on how the
+  URL is spelled. The install is removed before the comparison, so later
+  bullets do not see it.
 - **Duplicate install (`F26.install-conflict`).** Install the same plugin
   again, then force it while it is disabled.
   ```sh
@@ -828,7 +827,8 @@ Preconditions:
   The user directories are `~/.agents/plugins` and `$OH_PERSISTENCE_DIR/plugins`
   (the `installed/` child is skipped). All of these are fixed at import.
 - The Claude Code layout is the fallback for any directory: a directory
-  without a manifest installs under its own name with version `1.0.0`, and
+  without a manifest installs under its own name (a git repository root
+  under the repository's name) with version `1.0.0`, and
   the whole directory is copied (a git source without `repo_path` copies the
   clone including `.git`, which `files` hides). Never install a large
   directory such as `/tmp` to test this.

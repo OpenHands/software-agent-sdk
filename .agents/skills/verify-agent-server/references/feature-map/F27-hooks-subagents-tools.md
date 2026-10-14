@@ -54,7 +54,7 @@ Routes: `GET /api/tools/`, `GET /api/tools/catalog`, `POST /api/sub-agents`,
 - `F27.browser-disabled-launch`: a conversation started from the saved settings (default tools) gets `browser_tool_set` while the server finds Chromium, and leaves it out after a restart with `enable_browser: false`; a conversation created before keeps its stored tools.
 - `F27.browser-disabled`: with `enable_browser: false` the catalog reports `browser_tool_set` unusable although Chromium is present, while `GET /api/tools/` still lists it.
 - `F27.server-info-browser-disabled`: with `enable_browser: false`, `/server_info` `usable_tools` should agree with the catalog and leave out `browser_tool_set`; today it still lists it.
-- `F27.subagents-browser-disabled`: with `enable_browser: false`, the sub-agents catalog should leave out the browser-only `web-researcher`; today it still lists it.
+- `F27.subagents-browser-disabled`: with `enable_browser: false`, the sub-agents catalog leaves out the browser-only `web-researcher` and keeps the other built-ins.
 - `F27.catalog-docker-runtime`: with `conversation_runtime: docker` the catalog probes nothing in the server process: `browser_tool_set` is usable for the stock image although the server finds no Chromium, and unusable for a `-minimal` image tag or with `conversation_image_has_browser: false`.
 
 ## How to get to it (agent POV)
@@ -370,7 +370,7 @@ Preconditions:
   control-agent-server api POST /api/sub-agents --json '{"load_user": false, "load_project": false, "load_builtin": false}' \
     --expect 200 --check agents len-eq 0
   ```
-  Four built-ins in file order, all `level: builtin` with their bundled
+  Four built-ins in file order (the browser is enabled), all `level: builtin` with their bundled
   source file; `web-researcher` needs `browser_tool_set` and an MCP fetch
   server. A `project_dir` that does not exist is not an error and adds
   nothing. Without built-ins the list is empty.
@@ -831,17 +831,19 @@ Preconditions:
   so; `usable_tools` should agree. Today it still lists `browser_tool_set`:
   `list_usable_tools()` runs only the Chromium probe and ignores
   `enable_browser`, which only the catalog route applies.
-- **Browser-only sub-agent with the browser disabled (`F27.subagents-browser-disabled`), known bug.**
-  List the built-ins on the same server.
+- **Browser-only sub-agent with the browser disabled (`F27.subagents-browser-disabled`).**
+  List the built-ins on a server with `enable_browser: false` (the restart
+  makes the recipe hold under `--only`, too).
   ```sh
+  control-agent-server restart --config-json '{"enable_browser": false}'
   control-agent-server api GET /api/tools/catalog --expect 200 --quiet --check tools contains '{"name": "browser_tool_set", "user_selectable": true, "usable": false'
-  control-agent-server api POST /api/sub-agents --json '{"load_user": false, "load_project": false}' --expect 200 --check agents contains '"name": "bash-runner"' --check agents not-contains '"name": "web-researcher"' --save F27.subagents-browser-disabled/builtins  # bug: status eq 200 && response.body.agents contains '"name": "web-researcher"'
+  control-agent-server api POST /api/sub-agents --json '{"load_user": false, "load_project": false}' --expect 200 --check agents contains '"name": "bash-runner"' --check agents not-contains '"name": "web-researcher"' --save F27.subagents-browser-disabled/builtins
   ```
-  `discover_builtin_agents(enable_browser=False)` drops `web-researcher`,
-  whose only tool is `browser_tool_set`, but the route calls it with the
-  default `True` regardless of the server config, so today all four
-  built-ins are listed and a client can offer a sub-agent that has no usable
-  tool. The server also registers the built-in agents for conversations with
+  The route passes the configured browser availability (the catalog's
+  `configured_browser_available`) to `discover_builtin_agents`, so
+  `web-researcher`, whose only tool is `browser_tool_set`, is left out and
+  a client never offers a sub-agent without a usable tool; the other three
+  built-ins stay. The server also registers the built-in agents for conversations with
   `enable_browser=True` at import (`tool_router.py`), so by source the
   delegation registry that a conversation's task tool reads still holds
   `web-researcher` (not driven here).
