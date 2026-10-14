@@ -37,6 +37,9 @@ The usual flow is SDK/Agent Server → OpenAPI contract → `clients/typescript`
 
 All pull requests must comply with [`.agents/skills/custom-codereview-guide.md`](.agents/skills/custom-codereview-guide.md), in addition to the repository's contribution requirements and CI checks.
 
+For issue triage, read [the review guide](.agents/skills/custom-codereview-guide.md#issue-triage-ownership-and-scope)
+for ownership and scope; PR evidence is not an issue-readiness requirement.
+
 ## Review-Facing Implementation Checklist
 
 Code should satisfy the repository review checkpoints before the PR is opened:
@@ -80,7 +83,7 @@ Code should satisfy the repository review checkpoints before the PR is opened:
 - Persisted settings compatibility is enforced by `.github/scripts/check_persisted_settings_compat.py` plus `tests/sdk/persisted_settings_baselines/vN/` golden fixtures. When a versioned persisted settings shape changes incompatibly, bump the relevant schema version constant, add the migration step, and add a fixture for the old shape.
 - The persisted-settings compatibility check builds its historical PyPI baseline environment with `uv` and a PyPI release-date `exclude-newer` cutoff, and golden fixtures may include a top-level `__expected__` map of dotted paths whose post-migration values must be preserved.
 
-- Prefer removing genuinely temporary compatibility fields and serializers outright rather than carrying legacy settings shims in the SDK. Note that persisted settings now ship with a real migration chain (`AGENT_SETTINGS_SCHEMA_VERSION` is at 6) plus golden fixtures and a CI gate, so check `tests/sdk/persisted_settings_baselines/` before deleting anything that looks like a shim — it may be load-bearing for an older persisted payload.
+- Prefer removing genuinely temporary compatibility fields and serializers outright rather than carrying legacy settings shims in the SDK. Note that persisted settings now ship with a real migration chain (`AGENT_SETTINGS_SCHEMA_VERSION` is at 8) plus golden fixtures and a CI gate, so check `tests/sdk/persisted_settings_baselines/` before deleting anything that looks like a shim — it may be load-bearing for an older persisted payload.
 - Do not expose settings schema versions as public `CURRENT_PERSISTED_VERSION` class constants on `AgentSettings` or `ConversationSettings`; keep versioning internal to the `schema_version` field/defaults and private module constants.
 - `ConversationSettings` owns the conversation-scoped confirmation controls directly (`confirmation_mode`, `security_analyzer`); keep those fields top-level on the model and grouped into the exported `verification` section via schema metadata rather than nested helper models, and prefer the direct settings-model constructor `create_request(...)` over separate request-wrapper helpers.
 - Anthropic malformed tool-use/tool-result history errors (for example, missing or duplicated ``tool_result`` blocks) are intentionally mapped to a dedicated `LLMMalformedConversationHistoryError` and caught separately in `Agent.step()`, so recovery can still use condensation while logs preserve that this was malformed history rather than a true context-window overflow.
@@ -361,7 +364,7 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 <REPO>
 <PROJECT_STRUCTURE>
 - This is a monorepo with a `uv`-managed Python workspace (single `uv.lock` at repo root) and a separately managed npm package under `clients/typescript/`. The Python distributable packages are: `openhands-sdk/` (SDK), `openhands-tools/` (built-in tools), `openhands-workspace/` (workspace impls), and `openhands-agent-server/` (server runtime).
-- `clients/typescript/` contains the browser-compatible TypeScript client, with its own `package-lock.json`, npm scripts, and Jest tests.
+- `clients/typescript/` contains the browser-compatible TypeScript client, with its own `package-lock.json`, npm scripts, and Vitest tests.
 - `examples/` contains runnable patterns; `tests/` is split by domain (`tests/sdk`, `tests/tools`, `tests/workspace`, `tests/agent_server`, etc.).
 - Python namespace is `openhands.*` across packages; keep new modules within the matching package and mirror test paths under `tests/`.
 </PROJECT_STRUCTURE>

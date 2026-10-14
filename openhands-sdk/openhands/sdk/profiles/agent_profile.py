@@ -27,6 +27,7 @@ from pydantic import (
 
 from openhands.sdk.settings.model import (
     ACPServerKind,
+    AgentKind,
     CondenserSettingsConfig,
     CriticMode,
     LLMSummarizingCondenserSettings,
@@ -95,6 +96,10 @@ class AgentProfileBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: int = Field(default=AGENT_PROFILE_SCHEMA_VERSION, ge=1)
+    agent_kind: AgentKind = Field(
+        default="openhands",
+        description="Discriminator for the agent profile union.",
+    )
     id: UUID = Field(
         default_factory=uuid4,
         description=(
@@ -152,7 +157,7 @@ class OpenHandsAgentProfile(AgentProfileBase):
     :attr:`~AgentProfileBase.mcp_server_refs`.
     """
 
-    agent_kind: Literal["openhands"] = Field(
+    agent_kind: Literal["openhands"] = Field(  # type: ignore[reportIncompatibleVariableOverride]
         default="openhands",
         description=(
             "Discriminator for the ``AgentProfile`` union. ``'openhands'`` "
@@ -272,7 +277,7 @@ class ACPAgentProfile(AgentProfileBase):
     value rides the conversation secrets channel, never the profile.
     """
 
-    agent_kind: Literal["acp"] = Field(
+    agent_kind: Literal["acp"] = Field(  # type: ignore[reportIncompatibleVariableOverride]
         default="acp",
         description=(
             "Discriminator for the ``AgentProfile`` union. ``'acp'`` selects an "
@@ -355,6 +360,21 @@ class LaunchedAgentProfile(BaseModel):
             "null preserves unrestricted behavior for older conversations."
         ),
     )
+    inline: bool = Field(
+        default=False,
+        description=(
+            "True when the conversation was launched from an inline "
+            "`agent_profile` draft rather than a stored profile. The id is then "
+            "the draft's own and may not name a stored profile."
+        ),
+    )
+    llm_profile_ref: str | None = Field(
+        default=None,
+        description=(
+            "Per-launch LLM profile override from `agent_launch_additions`. "
+            "null means the profile's own `llm_profile_ref` was used."
+        ),
+    )
 
     def allows_secret(self, name: str) -> bool:
         return self.secret_refs is None or name in self.secret_refs
@@ -367,8 +387,8 @@ def _agent_profile_discriminator(value: Any) -> str:
     OpenHands variant, mirroring
     :func:`~openhands.sdk.settings.model._agent_settings_discriminator`.
     """
-    if isinstance(value, BaseModel):
-        return getattr(value, "agent_kind", "openhands")
+    if isinstance(value, AgentProfileBase):
+        return value.agent_kind
     if isinstance(value, Mapping):
         return value.get("agent_kind", "openhands")
     return "openhands"

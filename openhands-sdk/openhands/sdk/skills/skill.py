@@ -850,6 +850,7 @@ def load_skills_from_dir(
     strict: bool = True,
     recursive: bool = True,
     root: Path | None = None,
+    exclude_dirs: set[Path] | None = None,
 ) -> tuple[dict[str, Skill], dict[str, Skill], dict[str, Skill]]:
     """Load all skills from the given directory.
 
@@ -868,6 +869,8 @@ def load_skills_from_dir(
             children of skill_dir.
         root: If given, skill paths that resolve outside it (e.g. through a
             symlink) are skipped. Plugins pass their root here.
+        exclude_dirs: Directories whose regular .md files are not loaded as
+            skills (e.g. managed installed packages inside a user skills dir).
 
     Returns:
         Tuple of (repo_skills, knowledge_skills, agent_skills) dictionaries.
@@ -889,7 +892,17 @@ def load_skills_from_dir(
     # doesn't exist.
     skill_md_files = find_skill_md_directories(skill_dir, root)
     skill_md_dirs = {skill_md.parent for skill_md in skill_md_files}
-    regular_md_files = find_regular_md_files(skill_dir, skill_md_dirs, recursive, root)
+    # Rebase exclusions onto skill_dir so they still match when skill_dir is
+    # reached through a symlink (e.g. ~/.agents/skills -> ~/.openhands/skills).
+    real_skill_dir = skill_dir.resolve()
+    rebased_exclude_dirs = {
+        skill_dir / real.relative_to(real_skill_dir)
+        for d in exclude_dirs or ()
+        if (real := d.resolve()).is_relative_to(real_skill_dir)
+    }
+    regular_md_files = find_regular_md_files(
+        skill_dir, skill_md_dirs | rebased_exclude_dirs, recursive, root
+    )
 
     # Load SKILL.md files (auto-detected and validated in Skill.load)
     # Wrap each load in try/except to ensure one bad skill doesn't break all loading
@@ -956,10 +969,18 @@ def load_user_skills() -> list[Skill]:
         List of Skill objects loaded from user directories.
         Returns empty list if no skills found or loading fails.
     """
+    from openhands.sdk.skills.installed import get_installed_skills_dir
+
     all_skills: list[Skill] = []
     seen_names: set[str] = set()
 
-    _load_and_merge_from_dirs(USER_SKILLS_DIRS, seen_names, all_skills, "user skills")
+    _load_and_merge_from_dirs(
+        USER_SKILLS_DIRS,
+        seen_names,
+        all_skills,
+        "user skills",
+        exclude_dirs={get_installed_skills_dir()},
+    )
 
     # Load enabled installed skills (lower precedence than user skills)
     try:
@@ -1013,6 +1034,7 @@ def _load_and_merge_from_dirs(
     seen_names: set[str],
     all_skills: list[Skill],
     source_label: str,
+    exclude_dirs: set[Path] | None = None,
 ) -> None:
     """Load skills from multiple directories, merging with deduplication.
 
@@ -1025,6 +1047,7 @@ def _load_and_merge_from_dirs(
         seen_names: Set of already-seen skill names (mutated in place).
         all_skills: Accumulator list of skills (mutated in place).
         source_label: Human-readable label for log messages (e.g. "user skills").
+        exclude_dirs: Passed through to load_skills_from_dir().
     """
     for skills_dir in dirs:
         if not skills_dir.exists():
@@ -1034,7 +1057,7 @@ def _load_and_merge_from_dirs(
         try:
             logger.debug(f"Loading {source_label} from {skills_dir}")
             repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(
-                skills_dir
+                skills_dir, exclude_dirs=exclude_dirs
             )
             _merge_loaded_skills(
                 source_dir=skills_dir,

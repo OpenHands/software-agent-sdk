@@ -18,9 +18,9 @@ Each record captures the static properties that are known at configuration time
 - ``supports_runtime_model_switch``  whether the server supports a protocol-level
                                   model switch for runtime, mid-conversation use
 - ``session_meta_key``      top-level ``_meta`` key for model selection (or ``None``)
-- ``available_models``      curated list of selectable models for the provider's
-                            model picker (``acp_model`` candidates)
-- ``default_model``         model preselected when none is configured (or ``None``)
+- ``available_models``      deprecated curated model list; ask the server with
+                            :func:`~openhands.sdk.agent.acp_model_discovery.discover_acp_models`
+- ``default_model``         deprecated curated default model (or ``None``)
 - ``file_secrets``          reserved "file-content" credential secrets the
                             provider authenticates from (Codex ``auth.json``,
                             Gemini Vertex SA JSON); see :class:`ACPFileSecretSpec`
@@ -48,11 +48,18 @@ from openhands.sdk.settings.acp_install_catalog import (
     GEMINI_CLI_VERSION as GEMINI_CLI_VERSION,
     KIMI_CODE_VERSION as KIMI_CODE_VERSION,
 )
+from openhands.sdk.utils.deprecation import warn_deprecated
+
+
+_ASK_THE_ACP_SERVER = (
+    "Ask the ACP server for its models instead: POST /api/acp/models, or "
+    "openhands.sdk.agent.acp_model_discovery.discover_acp_models()."
+)
 
 
 @dataclass(frozen=True)
 class ACPModelOption:
-    """One selectable model for a built-in ACP provider's model picker."""
+    """One curated model for a built-in ACP provider's picker (deprecated)."""
 
     id: str
     """Exact model identifier sent to the ACP server as ``acp_model``."""
@@ -246,8 +253,12 @@ class ACPProviderInfo:
     - ``None``         — codex-acp, gemini-cli, pi-acp
     """
 
-    available_models: tuple[ACPModelOption, ...] = field(default=(), compare=False)
-    """Curated list of models surfaced in this provider's ``acp_model`` picker.
+    available_models: tuple[ACPModelOption, ...] = field(
+        default=(), compare=False, repr=False
+    )
+    """Deprecated: ask the ACP server with ``discover_acp_models`` instead.
+
+    Curated list of models surfaced in this provider's ``acp_model`` picker.
 
     These mirror the runtime picker values for each built-in harness, but are
     suggestions — not authoritative access checks. A user can still configure a
@@ -256,8 +267,10 @@ class ACPProviderInfo:
     list (e.g. forward-compatible entries).
     """
 
-    default_model: str | None = None
-    """Model ID preselected when no ``acp_model`` is configured, or ``None``.
+    default_model: str | None = field(default=None, compare=False, repr=False)
+    """Deprecated: ask the ACP server with ``discover_acp_models`` instead.
+
+    Model ID preselected when no ``acp_model`` is configured, or ``None``.
 
     When set, it must be one of the :attr:`available_models` ids. ``None`` lets
     the ACP server pick its own default.
@@ -333,6 +346,36 @@ class ACPProviderInfo:
     :class:`~openhands.sdk.agent.ACPAgent` only for the provider that declares
     them — see :class:`ACPEnvConflictSpec`.
     """
+
+    def __getattribute__(self, name: str) -> Any:
+        if name == "available_models":
+            warn_deprecated(
+                "ACPProviderInfo.available_models",
+                deprecated_in="1.54.0",
+                removed_in="1.59.0",
+                details=_ASK_THE_ACP_SERVER,
+                stacklevel=3,
+            )
+        elif name == "default_model":
+            warn_deprecated(
+                "ACPProviderInfo.default_model",
+                deprecated_in="1.54.0",
+                removed_in="1.59.0",
+                details=_ASK_THE_ACP_SERVER,
+                stacklevel=3,
+            )
+        return object.__getattribute__(self, name)
+
+
+def _deprecated_model_option() -> type[ACPModelOption]:
+    warn_deprecated(
+        "ACPModelOption",
+        deprecated_in="1.54.0",
+        removed_in="1.59.0",
+        details=_ASK_THE_ACP_SERVER,
+        stacklevel=4,
+    )
+    return ACPModelOption
 
 
 # ---------------------------------------------------------------------------

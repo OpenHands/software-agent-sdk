@@ -145,6 +145,14 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         """Read the latest output; a missing exit code means it is still running."""
         return self._execute(self._get_command_output_generator(command_id))
 
+    def stop_command(self, command_id: str) -> None:
+        """Stop a running bash command by id.
+
+        Unknown or already-finished ids are no-ops, matching the server's
+        idempotency contract.
+        """
+        self._execute(self._stop_command_generator(command_id))
+
     def get_runtime_session_key(self) -> str:
         """Get the scoped worker credential for this conversation runtime."""
         return self._execute(self._runtime_lifecycle_generator(release=False))

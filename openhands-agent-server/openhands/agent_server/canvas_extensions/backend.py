@@ -13,8 +13,9 @@ import time
 import urllib.error
 import urllib.request
 from collections import deque
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Final, Literal
+from urllib.parse import urljoin, urlsplit
 
 from pydantic import BaseModel, Field
 
@@ -40,6 +41,16 @@ _SAFE_INHERITED_ENV: Final[frozenset[str]] = frozenset(
 )
 _MAX_LOG_BYTES: Final[int] = 256 * 1024
 _STOP_TIMEOUT_SECONDS: Final[float] = 5
+_ARTIFACT_DOWNLOAD_TIMEOUT_SECONDS: Final[float] = 120
+_MAX_ARTIFACT_BYTES: Final[int] = 1024 * 1024 * 1024
+_MAX_ARTIFACT_REDIRECTS: Final[int] = 5
+_PROBE_FAILED_DETAIL: Final[str] = "Backend health probe failed"
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        del req, fp, code, msg, headers, newurl
+        return None
 
 
 class BackendRevisionRequest(BaseModel):
@@ -99,6 +110,9 @@ class CanvasExtensionBackendManager:
         self,
         installed_dir: Path | None = None,
         state_dir: Path | None = None,
+        *,
+        allow_insecure_artifact_urls: bool = False,
+        max_artifact_bytes: int = _MAX_ARTIFACT_BYTES,
     ) -> None:
         self.installed_dir = installed_dir or get_installed_canvas_extensions_dir()
         root = (
@@ -106,8 +120,11 @@ class CanvasExtensionBackendManager:
         )
         self.state_dir = root
         self.artifacts_dir = root / "artifacts"
+        self.downloads_dir = root / "downloads"
         self.data_dir = root / "data"
         self.approvals_dir = root / "approvals"
+        self.allow_insecure_artifact_urls = allow_insecure_artifact_urls
+        self.max_artifact_bytes = max_artifact_bytes
         self._runtimes: dict[str, _Runtime] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
@@ -198,24 +215,129 @@ class CanvasExtensionBackendManager:
         return digest.hexdigest()
 
     @staticmethod
-    def _extract_archive(archive: Path, destination: Path) -> None:
+    def _validate_download_url(url: str, allow_http: bool) -> None:
+        parsed = urlsplit(url)
+        schemes = {"https", "http"} if allow_http else {"https"}
+        if (
+            parsed.scheme not in schemes
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+        ):
+            raise ValueError("backend artifact URL is not allowed")
+
+    def _download_archive(self, url: str, expected_sha256: str) -> Path:
+        self.downloads_dir.mkdir(parents=True, exist_ok=True)
+        destination = self.downloads_dir / f"{expected_sha256}.tar.gz"
+        if destination.is_file() and self._sha256(destination) == expected_sha256:
+            return destination
+        destination.unlink(missing_ok=True)
+        temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+        opener = urllib.request.build_opener(_NoRedirect)
+        current_url = url
+        try:
+            for redirect_count in range(_MAX_ARTIFACT_REDIRECTS + 1):
+                self._validate_download_url(
+                    current_url, self.allow_insecure_artifact_urls
+                )
+                request = urllib.request.Request(
+                    current_url,
+                    headers={
+                        "Accept": "application/octet-stream",
+                        "Accept-Encoding": "identity",
+                        "User-Agent": "OpenHands-Agent-Server",
+                    },
+                )
+                try:
+                    response = opener.open(
+                        request, timeout=_ARTIFACT_DOWNLOAD_TIMEOUT_SECONDS
+                    )
+                except urllib.error.HTTPError as exc:
+                    if exc.code not in {301, 302, 303, 307, 308}:
+                        raise ValueError(
+                            f"backend artifact download failed with HTTP {exc.code}"
+                        ) from exc
+                    location = exc.headers.get("Location")
+                    if not location or redirect_count == _MAX_ARTIFACT_REDIRECTS:
+                        raise ValueError(
+                            "backend artifact redirect limit exceeded"
+                        ) from exc
+                    current_url = urljoin(current_url, location)
+                    continue
+                with response:
+                    length = response.headers.get("Content-Length")
+                    if length is not None and int(length) > self.max_artifact_bytes:
+                        raise ValueError("backend artifact exceeds maximum size")
+                    digest = hashlib.sha256()
+                    received = 0
+                    with temporary.open("wb") as stream:
+                        while chunk := response.read(1024 * 1024):
+                            received += len(chunk)
+                            if received > self.max_artifact_bytes:
+                                raise ValueError(
+                                    "backend artifact exceeds maximum size"
+                                )
+                            digest.update(chunk)
+                            stream.write(chunk)
+                    if digest.hexdigest() != expected_sha256:
+                        raise ValueError(
+                            "backend artifact checksum does not match manifest"
+                        )
+                    os.replace(temporary, destination)
+                    return destination
+            raise ValueError("backend artifact redirect limit exceeded")
+        except (OSError, urllib.error.URLError) as exc:
+            raise ValueError("backend artifact download failed") from exc
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _extract_archive(
+        archive: Path, destination: Path, strip_components: int = 0
+    ) -> None:
         root = destination.resolve()
+        seen: set[PurePosixPath] = set()
+        extracted = 0
         with tarfile.open(archive, mode="r:gz") as tar:
-            members = tar.getmembers()
-            for member in members:
-                target = (root / member.name).resolve()
-                if (
-                    member.name.startswith("/")
-                    or not target.is_relative_to(root)
-                    or not (member.isfile() or member.isdir())
-                ):
+            for member in tar:
+                original = PurePosixPath(member.name)
+                if original.is_absolute() or ".." in original.parts:
                     raise ValueError(
                         "backend artifact contains an unsafe archive entry"
                     )
-            tar.extractall(destination, members=members, filter="data")
-        for path in destination.rglob("*"):
-            mode = path.stat().st_mode
-            path.chmod(mode & (0o555 if path.is_file() else 0o755))
+                parts = original.parts[strip_components:]
+                if not parts:
+                    continue
+                relative = PurePosixPath(*parts)
+                if relative in seen or not (member.isfile() or member.isdir()):
+                    raise ValueError(
+                        "backend artifact contains an unsafe archive entry"
+                    )
+                seen.add(relative)
+                target = (root / Path(*relative.parts)).resolve()
+                if not target.is_relative_to(root):
+                    raise ValueError(
+                        "backend artifact contains an unsafe archive entry"
+                    )
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                else:
+                    source = tar.extractfile(member)
+                    if source is None:
+                        raise ValueError(
+                            "backend artifact contains an unsafe archive entry"
+                        )
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with source, target.open("wb") as output:
+                        shutil.copyfileobj(source, output)
+                    target.chmod(member.mode & 0o555)
+                extracted += 1
+        if not extracted:
+            raise ValueError("backend artifact contains no files after stripping")
+        for path in sorted(destination.rglob("*"), reverse=True):
+            if path.is_dir():
+                path.chmod(0o555)
         destination.chmod(0o555)
 
     async def prepare(self, name: str, revision: str) -> BackendStatus:
@@ -238,10 +360,19 @@ class CanvasExtensionBackendManager:
             assert parts is not None
             _, artifact, current_platform = parts
             package_root = self.installed_dir / name
-            archive = self._resolve_contained(package_root, artifact.path)
-            actual_sha256 = await asyncio.to_thread(self._sha256, archive)
-            if actual_sha256 != artifact.sha256:
-                raise ValueError("backend artifact checksum does not match manifest")
+            if artifact.path:
+                archive = self._resolve_contained(package_root, artifact.path)
+                actual_sha256 = await asyncio.to_thread(self._sha256, archive)
+                if actual_sha256 != artifact.sha256:
+                    raise ValueError(
+                        "backend artifact checksum does not match manifest"
+                    )
+            else:
+                assert artifact.url is not None
+                archive = await asyncio.to_thread(
+                    self._download_archive, artifact.url, artifact.sha256
+                )
+                actual_sha256 = artifact.sha256
 
             artifact_dir = self.artifacts_dir / name / actual_sha256
             if not artifact_dir.exists():
@@ -252,7 +383,12 @@ class CanvasExtensionBackendManager:
                     )
                 )
                 try:
-                    await asyncio.to_thread(self._extract_archive, archive, temporary)
+                    await asyncio.to_thread(
+                        self._extract_archive,
+                        archive,
+                        temporary,
+                        artifact.strip_components,
+                    )
                     try:
                         os.replace(temporary, artifact_dir)
                     except OSError:
@@ -301,35 +437,58 @@ class CanvasExtensionBackendManager:
             state=state,
             revision=revision,
             prepared_revision=prepared_revision,
-            pid=runtime.process.pid if runtime and runtime.process else None,
-            port=runtime.port if runtime else None,
+            pid=(
+                runtime.process.pid
+                if runtime and runtime.process and runtime.process.returncode is None
+                else None
+            ),
+            port=(
+                runtime.port
+                if runtime and runtime.process and runtime.process.returncode is None
+                else None
+            ),
             detail=detail,
         )
 
     async def status(self, name: str) -> BackendStatus:
         async with self._lock(name):
-            runtime = self._runtimes.get(name)
-            if runtime and runtime.process and runtime.process.returncode is not None:
-                returncode = runtime.process.returncode
-                await self._finish_runtime(runtime)
-                runtime.process = None
-                runtime.port = None
-                runtime.state = "unhealthy"
-                runtime.detail = f"Backend exited with code {returncode}"
-            elif runtime and runtime.state == "ready" and runtime.port is not None:
-                manifest = self._manifest(name)
-                if manifest is None or manifest.backend is None:
-                    # The on-disk manifest no longer validates (or stopped
-                    # declaring a backend); report that instead of tracing back
-                    # an AssertionError once `_probe` dereferences it.
-                    return self._status_unlocked(name)
-                probe_url = (
-                    f"http://127.0.0.1:{runtime.port}{manifest.backend.health.path}"
+            return await self._refresh_unlocked(name)
+
+    async def _refresh_unlocked(self, name: str) -> BackendStatus:
+        runtime = self._runtimes.get(name)
+        if runtime and runtime.process and runtime.process.returncode is not None:
+            returncode = runtime.process.returncode
+            runtime.port = None
+            runtime.state = "unhealthy"
+            runtime.detail = f"Backend exited with code {returncode}"
+            await self._terminate_runtime(runtime)
+        elif (
+            runtime
+            and runtime.port is not None
+            and (
+                runtime.state == "ready"
+                # A live process that only missed a probe is probed again, so
+                # one slow answer does not latch it `unhealthy`.
+                or (
+                    runtime.state == "unhealthy"
+                    and runtime.detail == _PROBE_FAILED_DETAIL
                 )
-                if not await asyncio.to_thread(self._probe, probe_url):
-                    runtime.state = "unhealthy"
-                    runtime.detail = "Backend health probe failed"
-            return self._status_unlocked(name)
+            )
+        ):
+            manifest = self._manifest(name)
+            if manifest is None or manifest.backend is None:
+                # The on-disk manifest no longer validates (or stopped
+                # declaring a backend); report that instead of tracing back
+                # an AssertionError once `_probe` dereferences it.
+                return self._status_unlocked(name)
+            probe_url = f"http://127.0.0.1:{runtime.port}{manifest.backend.health.path}"
+            if await asyncio.to_thread(self._probe, probe_url):
+                runtime.state = "ready"
+                runtime.detail = None
+            else:
+                runtime.state = "unhealthy"
+                runtime.detail = _PROBE_FAILED_DETAIL
+        return self._status_unlocked(name)
 
     @staticmethod
     def _allocate_port() -> int:
@@ -337,18 +496,24 @@ class CanvasExtensionBackendManager:
             sock.bind(("127.0.0.1", 0))
             return int(sock.getsockname()[1])
 
-    def _environment(self, backend: CanvasExtensionBackend) -> dict[str, str]:
+    def _environment(
+        self, backend: CanvasExtensionBackend, data_dir: Path
+    ) -> dict[str, str]:
         disallowed = set(backend.inherit_environment) - _SAFE_INHERITED_ENV
         if disallowed:
             names = ", ".join(sorted(disallowed))
             raise ValueError(
                 f"backend requests disallowed environment variables: {names}"
             )
-        return {
+        home = data_dir / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        environment = {
             name: os.environ[name]
             for name in backend.inherit_environment
             if name in os.environ
         }
+        environment["HOME"] = str(home)
+        return environment
 
     @staticmethod
     def _expand_argv(
@@ -458,7 +623,7 @@ class CanvasExtensionBackendManager:
                         "a different backend revision is already running"
                     )
                 if task is None:
-                    return current
+                    return await self._refresh_unlocked(name)
             else:
                 if revision != self.revision(name):
                     raise ValueError(
@@ -485,6 +650,8 @@ class CanvasExtensionBackendManager:
                     raise RuntimeError(
                         "prepared backend metadata does not match manifest"
                     )
+                if runtime.process is not None:
+                    await self._terminate_runtime(runtime)
                 package_root = (self.installed_dir / name).resolve()
                 data_dir = self.data_dir / name
                 data_dir.mkdir(parents=True, exist_ok=True)
@@ -501,7 +668,7 @@ class CanvasExtensionBackendManager:
                     runtime.process = await asyncio.create_subprocess_exec(
                         *self._expand_argv(backend, port, data_dir, artifact_dir),
                         cwd=package_root,
-                        env=self._environment(backend),
+                        env=self._environment(backend, data_dir),
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                         start_new_session=True,
@@ -554,6 +721,12 @@ class CanvasExtensionBackendManager:
         except ProcessLookupError:
             return False
 
+    def _runtime_group_alive(self, runtime: _Runtime) -> bool:
+        process = runtime.process
+        return process is not None and (
+            process.returncode is None or self._group_alive(process.pid)
+        )
+
     async def _wait_for_group_exit(self, pgid: int, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
         while True:
@@ -572,11 +745,16 @@ class CanvasExtensionBackendManager:
         # leader: a backend may fork descendants, and one that outlives (or is
         # forked just after) the leader keeps the group alive. Escalating only
         # on the leader's exit code would leak those descendants.
-        if process.returncode is None or self._group_alive(pgid):
+        if process.returncode is None:
             self._signal_group(pgid, signal.SIGTERM)
             if not await self._wait_for_group_exit(pgid, _STOP_TIMEOUT_SECONDS):
                 self._signal_group(pgid, signal.SIGKILL)
                 await self._wait_for_group_exit(pgid, _STOP_TIMEOUT_SECONDS)
+        elif self._group_alive(pgid):
+            # With no leader left to shut down cleanly, its descendants are
+            # orphaned; do not let one hold status or restart for the grace period.
+            self._signal_group(pgid, signal.SIGKILL)
+            await self._wait_for_group_exit(pgid, _STOP_TIMEOUT_SECONDS)
         if process.returncode is None:
             await process.wait()
         await self._finish_runtime(runtime)
@@ -585,8 +763,7 @@ class CanvasExtensionBackendManager:
 
     def has_running_backends(self) -> bool:
         return any(
-            runtime.start_task is not None
-            or (runtime.process is not None and runtime.process.returncode is None)
+            runtime.start_task is not None or self._runtime_group_alive(runtime)
             for runtime in self._runtimes.values()
         )
 
@@ -628,8 +805,7 @@ class CanvasExtensionBackendManager:
         async with self._lock(name):
             runtime = self._runtimes.get(name)
             if runtime and (
-                runtime.start_task is not None
-                or (runtime.process and runtime.process.returncode is None)
+                runtime.start_task is not None or self._runtime_group_alive(runtime)
             ):
                 raise RuntimeError("stop the backend before deleting its data")
             shutil.rmtree(self.data_dir / name, ignore_errors=True)
