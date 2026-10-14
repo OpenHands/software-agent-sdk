@@ -56,7 +56,7 @@ Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
 - `F25.catalog-server-marketplaces`: a `registered_marketplaces` entry in the server config contributes without a request entry, a request entry of the same name replaces it, and one of another name adds to it.
 - `F25.marketplace-catalog`: the catalog lists the public repository's entries (name, description, absolute source) with `installed: false`, and installing an entry's `source` flips it to `installed: true` immediately (translated: a local stand-in with `marketplaces/default.json`).
 - `F25.ts-client`: the TypeScript `SkillsClient` installs a skill from a git source, lists, reads, disables and re-enables it (`toggleSkill`, with `getSkills` following the flag), refreshes, syncs, reads the marketplace and uninstalls it; an unknown skill is a 404 `HttpError` and a client without a key gets 401.
-- `F25.marketplace-stale-cache`: after a sync brings a new entry into the public repository, the catalog lists it; today the catalog keeps a 5-minute cache (including an empty one) that sync does not clear.
+- `F25.marketplace-stale-cache`: after a sync brings a new entry into the public repository, the catalog lists it: a successful sync clears the catalog's 5-minute cache, which never keeps an empty result.
 - `F25.uninstall`: uninstall deletes the directory and the metadata entry, the single view and a second uninstall are 404, the catalog drops the skill and the marketplace entry reads `installed: false` again.
 
 ## How to get to it (agent POV)
@@ -797,7 +797,7 @@ Preconditions:
   installed by `F25.marketplace-catalog`, and the uninstall that REST then
   confirms. An unknown skill rejects with a 404 `HttpError`; a client without
   `apiKey` gets 401.
-- **Catalog after a sync (`F25.marketplace-stale-cache`), known bug.** Warm
+- **Catalog after a sync (`F25.marketplace-stale-cache`).** Warm
   the catalog, list a second entry upstream, sync, read the catalog.
 
   Requires: `F25.sync`
@@ -813,13 +813,12 @@ Preconditions:
   test -f "$PUB/skills/qa-f25-pub-extra/SKILL.md"
   grep -q '"name": "qa-f25-pub-extra"' "$PUB/marketplaces/default.json"
   control-agent-server api GET /api/skills/marketplace --expect 200 --check skills contains '"name": "qa-f25-pub-extra"' \
-    --save F25.marketplace-stale-cache/after-sync  # bug: status eq 200 && response.body.skills contains '"name": "qa-f25-pub"' && response.body.skills not-contains qa-f25-pub-extra
+    --save F25.marketplace-stale-cache/after-sync
   ```
-  The sync brings the new entry into the clone, so a refreshed catalog should
-  list it. Today the catalog serves its module-level 5-minute cache: sync only
-  clears the public-skills cache, and unlike that cache the catalog also
-  caches an empty result (so an offline first call or `F25.marketplace-public`
-  leaves the tab empty for 5 minutes). A restart clears it.
+  The sync brings the new entry into the clone and a successful sync clears
+  the catalog's module-level 5-minute cache, so the next read lists it. Like
+  the public-skills cache, the catalog does not cache an empty result, so an
+  offline first call is retried on the next read.
 - **Uninstall (`F25.uninstall`).** Remove the marketplace skill and the local
   skill.
   ```sh
@@ -867,9 +866,9 @@ Preconditions:
   request's, the request winning by name.
 - The public-skills cache lives 60 s (forever for a tag or SHA
   `EXTENSIONS_REF`) and caches only non-empty results; `/api/skills/sync`
-  clears it. The marketplace catalog has its own 5-minute cache that sync does
-  not clear and that also keeps an empty result
-  (`F25.marketplace-stale-cache`); restart the server to clear it.
+  clears it. The marketplace catalog has its own 5-minute cache, also kept
+  only when non-empty, that a successful sync clears too
+  (`F25.marketplace-stale-cache`).
 - The public clone is updated through its own `origin`, which is what makes
   the local stand-in work: replacing `public-skills` with a clone of a local
   repository makes `load_public`, sync and the marketplace catalog offline and

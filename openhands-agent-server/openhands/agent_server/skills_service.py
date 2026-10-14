@@ -488,6 +488,7 @@ def sync_public_skills() -> tuple[bool, str]:
 
         if result:
             _invalidate_public_skills_cache()
+            _invalidate_catalog_cache()
             return (True, "Skills repository synced successfully")
         else:
             return (False, "Failed to sync skills repository")
@@ -659,7 +660,8 @@ class MarketplaceSkillInfo(BaseModel):
 #
 # Only the catalog structure (name, description, source) is cached; the
 # `installed` field is always derived fresh from the local FS so that
-# install/uninstall actions are reflected immediately.
+# install/uninstall actions are reflected immediately. Empty results are not
+# cached, and a successful sync_public_skills clears the cache.
 #
 # Thread safety: concurrent cache misses (cold start or TTL expiry) may
 # trigger parallel git fetches, but each fetch is idempotent and produces
@@ -670,6 +672,12 @@ class MarketplaceSkillInfo(BaseModel):
 _CatalogEntry = tuple[str, str | None, str]
 _catalog_cache: tuple[float, list[_CatalogEntry]] | None = None
 _CATALOG_TTL_SECONDS = 300  # 5 minutes
+
+
+def _invalidate_catalog_cache() -> None:
+    """Drop the cached marketplace catalog so the next call re-reads the clone."""
+    global _catalog_cache
+    _catalog_cache = None
 
 
 def service_get_marketplace_catalog(
@@ -701,7 +709,10 @@ def service_get_marketplace_catalog(
         entries = _catalog_cache[1]
     else:
         entries = _fetch_catalog_entries(marketplace_path)
-        _catalog_cache = (now, entries)
+        # Only cache non-empty results so a transient fetch failure does not
+        # blank the catalog for the whole TTL.
+        if entries:
+            _catalog_cache = (now, entries)
 
     # Always-fresh installed check — local FS scan, not a network call.
     installed_names = {

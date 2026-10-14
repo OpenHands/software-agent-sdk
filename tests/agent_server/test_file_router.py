@@ -91,6 +91,33 @@ def test_upload_file_query_param_relative_path_fails(client):
     assert "must be absolute" in response.json()["detail"]
 
 
+@pytest.mark.parametrize(
+    ("relative_target", "detail"),
+    [
+        ("is-a-dir", "Path is a directory"),
+        ("a-file.txt/child.txt", "A parent of the path is not a directory"),
+        ("a-file.txt/nested/child.txt", "A parent of the path is not a directory"),
+    ],
+)
+def test_upload_onto_directory_or_under_file_is_400(
+    client, tmp_path, relative_target, detail
+):
+    """Uploading onto a directory, or below a file, is the caller's path error."""
+    (tmp_path / "is-a-dir").mkdir()
+    (tmp_path / "a-file.txt").write_bytes(b"keep me")
+
+    response = client.post(
+        "/api/file/upload",
+        params={"path": str(tmp_path / relative_target)},
+        files={"file": ("test.txt", io.BytesIO(b"content"), "text/plain")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == detail
+    assert (tmp_path / "is-a-dir").is_dir()
+    assert (tmp_path / "a-file.txt").read_bytes() == b"keep me"
+
+
 def test_upload_file_query_param_missing_path(client):
     """Test that upload without path parameter returns 422."""
     response = client.post(

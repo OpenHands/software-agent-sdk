@@ -72,6 +72,7 @@ def run_git_command(
     timeout: int = 30,
     *,
     expected_failure: bool = False,
+    strip: bool = True,
 ) -> str:
     """Run a git command safely without shell injection vulnerabilities.
 
@@ -81,6 +82,9 @@ def run_git_command(
         timeout: Timeout in seconds (default: 30)
         expected_failure: Log a non-zero exit at debug level when the caller
             intentionally probes for a fallback condition.
+        strip: Strip leading and trailing whitespace from the output. Pass
+            ``False`` to read file contents (e.g. ``git show rev:path``)
+            verbatim.
 
     Returns:
         Command output as string
@@ -112,7 +116,7 @@ def run_git_command(
             )
 
         logger.debug(f"Git command succeeded: {cmd_str}")
-        return result.stdout.strip()
+        return result.stdout.strip() if strip else result.stdout
 
     except subprocess.TimeoutExpired as e:
         error_msg = f"Git command timed out: {cmd_str}"

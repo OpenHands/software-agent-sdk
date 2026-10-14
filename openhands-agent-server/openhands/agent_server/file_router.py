@@ -110,6 +110,20 @@ async def _upload_file(path: str, file: UploadFile) -> Success:
 
     except HTTPException:
         raise
+    except IsADirectoryError:
+        # The target itself is an existing directory: the caller's path is
+        # wrong, not a server fault (create_directory answers 400 likewise).
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path is a directory",
+        )
+    except (FileExistsError, NotADirectoryError):
+        # mkdir(parents=True) raises FileExistsError when the direct parent is
+        # a file and NotADirectoryError when a component further up is one.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A parent of the path is not a directory",
+        )
     except Exception as e:
         logger.error(f"Failed to upload file: {e}")
         raise HTTPException(

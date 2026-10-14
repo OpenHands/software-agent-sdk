@@ -1065,3 +1065,82 @@ class TestMarketplaceCatalogCache:
             service_get_marketplace_catalog()
 
         assert mock_fetch.call_count == 2  # fetched again after expiry
+
+    def test_empty_result_is_not_cached(self):
+        """A failed or empty fetch is retried on the next call instead of
+        blanking the catalog for the whole TTL."""
+        import openhands.agent_server.skills_service as svc
+
+        entries = [("github", "GitHub skill", "github:org/repo")]
+        with (
+            patch(
+                "openhands.agent_server.skills_service._fetch_catalog_entries",
+                side_effect=[[], entries],
+            ) as mock_fetch,
+            patch(
+                "openhands.agent_server.skills_service.service_list_installed_skills",
+                return_value=[],
+            ),
+        ):
+            assert svc.service_get_marketplace_catalog() == []
+            assert svc._catalog_cache is None
+            result = svc.service_get_marketplace_catalog()
+
+        assert mock_fetch.call_count == 2
+        assert [s.name for s in result] == ["github"]
+
+    def test_sync_clears_catalog_cache(self):
+        """A successful sync makes the next catalog read pick up new entries."""
+        import openhands.agent_server.skills_service as svc
+
+        before = [("github", "GitHub skill", "github:org/repo")]
+        after = [*before, ("jira", "Jira skill", "github:org/repo/jira")]
+        with (
+            patch(
+                "openhands.agent_server.skills_service._fetch_catalog_entries",
+                side_effect=[before, after],
+            ) as mock_fetch,
+            patch(
+                "openhands.agent_server.skills_service.service_list_installed_skills",
+                return_value=[],
+            ),
+            patch("openhands.agent_server.skills_service.get_skills_cache_dir"),
+            patch(
+                "openhands.agent_server.skills_service.update_skills_repository",
+                return_value=Path("/tmp/cache/public-skills"),
+            ),
+        ):
+            assert len(svc.service_get_marketplace_catalog()) == 1
+            success, _ = svc.sync_public_skills()
+            result = svc.service_get_marketplace_catalog()
+
+        assert success is True
+        assert mock_fetch.call_count == 2
+        assert [s.name for s in result] == ["github", "jira"]
+
+    def test_failed_sync_keeps_catalog_cache(self):
+        """A failed sync leaves the cached catalog in place."""
+        import openhands.agent_server.skills_service as svc
+
+        entries = [("github", "GitHub skill", "github:org/repo")]
+        with (
+            patch(
+                "openhands.agent_server.skills_service._fetch_catalog_entries",
+                return_value=entries,
+            ) as mock_fetch,
+            patch(
+                "openhands.agent_server.skills_service.service_list_installed_skills",
+                return_value=[],
+            ),
+            patch("openhands.agent_server.skills_service.get_skills_cache_dir"),
+            patch(
+                "openhands.agent_server.skills_service.update_skills_repository",
+                return_value=None,
+            ),
+        ):
+            svc.service_get_marketplace_catalog()
+            success, _ = svc.sync_public_skills()
+            svc.service_get_marketplace_catalog()
+
+        assert success is False
+        mock_fetch.assert_called_once()
