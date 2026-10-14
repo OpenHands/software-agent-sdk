@@ -68,6 +68,7 @@ def stores(
     llms: Mapping[str, LLM] | None = None,
     mcp: Mapping[str, MCPServer] | None = None,
     skills: Sequence[Skill] = (),
+    public_skill_names: Sequence[str] | None = None,
     metas: Mapping[str, MetaProfile] | None = None,
 ) -> LaunchStores:
     llm_profiles = LLMProfiles({"default": llm()} if llms is None else llms)
@@ -76,6 +77,9 @@ def stores(
         llm_profile_names=lambda: list(llm_profiles.llms),
         mcp_config=dict(mcp or {}),
         skills=lambda: list(skills),
+        public_skill_names=(
+            None if public_skill_names is None else lambda: list(public_skill_names)
+        ),
         agent_profiles=AgentProfiles(*profiles),
         meta_profiles=MetaProfiles(metas or {}),
     )

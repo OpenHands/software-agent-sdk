@@ -39,9 +39,14 @@ class Profile:
 
 @dataclass(frozen=True)
 class Reference:
-    """Resolved from the named profile reference."""
+    """Resolved from the named profile field(s)."""
 
     ref: str
+    also: tuple[str, ...] = ()
+
+    @property
+    def refs(self) -> tuple[str, ...]:
+        return (self.ref, *self.also)
 
 
 @dataclass(frozen=True)
@@ -80,7 +85,7 @@ LAUNCH = Launch()
 _CATALOG = Fixed(False)
 
 OPENHANDS_CONTEXT = {
-    "skills": Reference("disabled_skills"),
+    "skills": Reference("disabled_skills", also=("public_skills",)),
     "system_message_suffix": PROFILE,
     "user_message_suffix": NotOnProfile("no profile field yet"),
     "load_user_skills": _CATALOG,
@@ -203,7 +208,8 @@ def test_every_profile_owned_field_exists_on_the_profile(settings_model, profile
             head = field.split(".")[0]
             assert head in profile_model.model_fields, path
         if isinstance(owner, Reference) and owner.ref != "catalog":
-            assert owner.ref in profile_model.model_fields, path
+            for ref in owner.refs:
+                assert ref in profile_model.model_fields, path
 
 
 @pytest.mark.parametrize(
@@ -220,7 +226,7 @@ def test_every_profile_field_has_a_use(settings_model, profile_model):
         if isinstance(owner, Profile):
             used.add(path.removeprefix("agent_context.").split(".")[0])
         if isinstance(owner, Reference):
-            used.add(owner.ref)
+            used.update(owner.refs)
     assert set(profile_model.model_fields) <= used
 
 

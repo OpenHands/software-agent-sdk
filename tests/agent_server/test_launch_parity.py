@@ -172,6 +172,40 @@ def test_default_and_a_copy_of_it_launch_the_same_agent(server, tmp_path):
     assert _agent_view(from_default["agent"]) == _agent_view(from_copy["agent"])
 
 
+def test_public_skills_select_the_public_tier_and_a_launch_can_add_one(
+    server, tmp_path
+):
+    catalog = [*CATALOG, Skill(name="mine", content="m", description="user skill")]
+    profile = _save(
+        OpenHandsAgentProfile(
+            name="named", llm_profile_ref="default", public_skills=["alpha"]
+        )
+    )
+    workspace = str(tmp_path / "workspace")
+    invoked = CATALOG[1].model_dump(mode="json")
+
+    with (
+        patch("openhands.agent_server.launch.discover_profile_skills", lambda: catalog),
+        patch(
+            "openhands.agent_server.launch.discover_public_skill_names",
+            lambda: {"alpha", "beta"},
+        ),
+        patch("openhands.agent_server.launch.is_tool_usable", return_value=True),
+    ):
+        preview = server.post(f"/api/agent-profiles/{profile.name}/materialize").json()
+        plain = _launch(server, workspace, agent_profile_id=str(profile.id))
+        invoking = _launch(
+            server,
+            workspace,
+            agent_profile_id=str(profile.id),
+            agent_launch_additions={"skills": [invoked]},
+        )
+
+    assert preview["resolved_skills"] == ["alpha", "mine"]
+    assert _agent_view(plain["agent"])["skills"] == ["alpha", "mine"]
+    assert sorted(_agent_view(invoking["agent"])["skills"]) == ["alpha", "beta", "mine"]
+
+
 def test_inline_stored_and_agent_settings_sources_launch_the_same_agent(
     server, tmp_path
 ):

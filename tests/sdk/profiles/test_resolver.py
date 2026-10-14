@@ -856,6 +856,39 @@ def test_dry_run_reports_disabled_and_resolved_skills(
     assert diag.resolved_settings is not None
 
 
+def test_resolve_and_dry_run_apply_public_skills_to_the_public_tier(
+    llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="oh",
+        llm_profile_ref="default",
+        public_skills=["alpha"],
+        disabled_skills=["gamma"],
+    )
+    catalog = [*_discovered_skills(), Skill(name="mine", content="m")]
+    public = {"alpha", "beta", "gamma"}
+
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=catalog,
+        public_skill_names=public,
+    )
+    diag = resolve_agent_profile_dry_run(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=catalog,
+        public_skill_names=public,
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert [s.name for s in settings.agent_context.skills] == ["alpha", "mine"]
+    assert diag.public_skills == ["alpha"]
+    assert diag.resolved_skills == ["alpha", "mine"]
+
+
 def test_dry_run_default_disabled_resolves_all_discovered(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:

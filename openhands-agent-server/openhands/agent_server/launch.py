@@ -25,7 +25,10 @@ from openhands.agent_server.persistence import (
     get_agent_profile_store,
     get_llm_profile_store,
 )
-from openhands.agent_server.skills_service import discover_profile_skills
+from openhands.agent_server.skills_service import (
+    discover_profile_skills,
+    discover_public_skill_names,
+)
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.agent_context import AgentContext
@@ -67,6 +70,7 @@ def server_launch_stores(
         llm_profile_names=lambda: [n.removesuffix(".json") for n in llm_store.list()],
         mcp_config=settings.agent_settings.mcp_config,
         skills=discover_profile_skills,
+        public_skill_names=discover_public_skill_names,
         agent_profiles=get_agent_profile_store(),
         meta_profiles=MetaProfileStore(base_dir=default_meta_profile_dir()),
         cipher=cipher,

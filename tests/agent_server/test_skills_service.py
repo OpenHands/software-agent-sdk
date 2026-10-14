@@ -13,6 +13,7 @@ from openhands.agent_server.skills_service import (
     SkillLoadResult,
     create_sandbox_skill,
     discover_profile_skills,
+    discover_public_skill_names,
     load_all_skills,
     load_org_skills_from_url,
     load_registered_marketplace_skills,
@@ -764,6 +765,20 @@ class TestDiscoverProfileSkills:
         with patch(self._LOAD_ALL, side_effect=RuntimeError("boom")):
             with pytest.raises(RuntimeError, match="boom"):
                 discover_profile_skills()
+
+
+class TestDiscoverPublicSkillNames:
+    _LOAD = "openhands.agent_server.skills_service.load_available_skills"
+
+    def test_a_user_skill_shadowing_a_public_one_is_not_public(self):
+        def load(*, include_public=False, include_user=False):
+            names = (["alpha", "shared"] if include_public else []) + (
+                ["shared", "mine"] if include_user else []
+            )
+            return {name: Skill(name=name, content="x") for name in names}
+
+        with patch(self._LOAD, side_effect=load):
+            assert discover_public_skill_names() == {"alpha"}
 
 
 class TestSyncPublicSkills:
