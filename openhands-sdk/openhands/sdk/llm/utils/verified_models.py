@@ -41,8 +41,9 @@ VERIFIED_MISTRAL_MODELS = [
     "devstral-medium-2512",
 ]
 
-# Pro: 3.1. Flash: 3.8 and 3.7. Flash-lite: 3.5 and 3.1.
+# Argon: 4. Pro: 3.1. Flash: 3.8 and 3.7. Flash-lite: 3.5 and 3.1.
 VERIFIED_GEMINI_MODELS = [
+    "gemini-4-argon",
     "gemini-3.1-pro",
     "gemini-3.1-pro-preview",
     "gemini-3.8-flash",
@@ -123,6 +124,7 @@ VERIFIED_OPENROUTER_MODELS = [
     "deepseek/deepseek-chat",
     "deepseek/deepseek-v4-pro",
     "deepseek/deepseek-v4-flash",
+    "google/gemini-4-argon",
     "google/gemini-3.1-pro-preview",
     "google/gemini-3.8-flash",
     "google/gemini-3.7-flash",

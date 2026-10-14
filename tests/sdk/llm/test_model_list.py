@@ -208,7 +208,7 @@ def test_verified_lists_keep_two_latest_versions_per_line():
             {"devstral-2512", "devstral-medium-2512"},
             {"devstral-medium-2507"},
         ),
-        "gemini": ({"gemini-3.8-flash", "gemini-3.7-flash"}, {"gemini-3.6-flash"}),
+        "gemini": ({"gemini-4-argon", "gemini-3.8-flash"}, {"gemini-3.6-flash"}),
         "deepseek": ({"deepseek-v4-pro", "deepseek-v3.2-reasoner"}, set()),
         "moonshot": ({"kimi-k3", "kimi-k2.7-code"}, {"kimi-k2.6"}),
         "minimax": ({"minimax-m3", "minimax-m2.7"}, {"minimax-m2.5"}),
