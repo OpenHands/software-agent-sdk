@@ -480,8 +480,10 @@ def sync_public_skills() -> tuple[bool, str]:
     """
     try:
         cache_dir = get_skills_cache_dir()
+        # strict: a failed fetch must not be reported as a sync. The stale
+        # clone stays on disk for offline skill loading.
         result = update_skills_repository(
-            PUBLIC_SKILLS_REPO, PUBLIC_SKILLS_REF, cache_dir
+            PUBLIC_SKILLS_REPO, PUBLIC_SKILLS_REF, cache_dir, strict=True
         )
 
         if result:

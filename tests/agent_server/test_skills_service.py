@@ -876,6 +876,54 @@ class TestSyncPublicSkills:
             assert success is False
             mock_invalidate.assert_not_called()
 
+    def test_sync_public_skills_reports_unreachable_origin(self, tmp_path):
+        """A sync whose fetch fails must report failure, not the stale clone."""
+        import subprocess
+
+        def git(*args: str, cwd: Path) -> None:
+            subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        git("init", "-q", "-b", "main", cwd=origin)
+        (origin / "README.md").write_text("skills\n")
+        git("add", "README.md", cwd=origin)
+        git(
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-qm",
+            "init",
+            cwd=origin,
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch(
+                "openhands.agent_server.skills_service.get_skills_cache_dir",
+                return_value=cache_dir,
+            ),
+            patch(
+                "openhands.agent_server.skills_service.PUBLIC_SKILLS_REPO",
+                str(origin),
+            ),
+            patch("openhands.agent_server.skills_service.PUBLIC_SKILLS_REF", "main"),
+        ):
+            assert sync_public_skills()[0] is True
+            clone = cache_dir / "public-skills"
+
+            # The origin becomes unreachable once the clone exists.
+            origin.rename(tmp_path / "moved")
+            success, message = sync_public_skills()
+
+        assert success is False
+        assert "failed" in message.lower()
+        # The stale clone stays usable for offline skill loading.
+        assert (clone / "README.md").read_text() == "skills\n"
+
 
 class TestSkillLoadResult:
     """Tests for SkillLoadResult dataclass."""
