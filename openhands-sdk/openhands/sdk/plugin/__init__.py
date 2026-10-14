@@ -17,6 +17,7 @@ from openhands.sdk.plugin.discovery import (
     load_project_plugins,
     load_user_plugins,
 )
+from openhands.sdk.plugin.errors import PluginManifestError, PluginNameError
 from openhands.sdk.plugin.fetch import (
     PluginFetchError,
     fetch_plugin_with_resolution,
@@ -62,6 +63,8 @@ __all__ = [
     # Plugin classes
     "Plugin",
     "PluginFetchError",
+    "PluginManifestError",
+    "PluginNameError",
     "PluginManifest",
     "PluginAuthor",
     "PluginSource",
