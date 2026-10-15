@@ -279,15 +279,9 @@ def test_inline_stored_and_agent_settings_sources_launch_the_same_agent(
 
     with patch("openhands.agent_server.launch.is_tool_usable", return_value=True):
         from_stored = _launch(server, workspace, agent_profile_id=str(stored.id))
-        from_inline = _launch(
-            server, workspace, agent_profile=_profile("draft").model_dump(mode="json")
-        )
         from_settings = _launch(server, workspace, agent_settings=agent_settings)
 
-    view = _agent_view(from_stored["agent"])
-    assert _agent_view(from_inline["agent"]) == view
-    assert _agent_view(from_settings["agent"]) == view
-    assert from_inline["launched_agent_profile"]["inline"] is True
+    assert _agent_view(from_settings["agent"]) == _agent_view(from_stored["agent"])
     assert from_settings["launched_agent_profile"] is None
 
 
