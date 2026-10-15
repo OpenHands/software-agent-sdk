@@ -16,7 +16,11 @@ from typing import Any
 from filelock import FileLock
 from pydantic import BaseModel, Field
 
-from openhands.sdk.extensions.fetch import SourceType, parse_extension_source
+from openhands.sdk.extensions.fetch import (
+    ExtensionFetchError,
+    SourceType,
+    parse_extension_source,
+)
 from openhands.sdk.plugin.fetch import DEFAULT_CACHE_DIR, PluginFetchError
 from openhands.sdk.plugin.paths import get_pinned_plugin_cache_path
 from openhands.sdk.plugin.plugin import Plugin
@@ -34,6 +38,7 @@ _BRACED_VAR_RE = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?::-([^}]*))?\}")
 
 _ERROR_STATUSES = {
     "missing_secret": 422,
+    "invalid_source": 422,
     "source_not_allowed": 422,
     "auth_failed": 422,
     "source_unavailable": 502,
@@ -123,7 +128,13 @@ def fetch_plugin_strict(
     expanded_source, expanded_ref, secret_values = _expand_source_and_ref(
         source, ref, secrets or {}
     )
-    source_type, url = parse_extension_source(expanded_source)
+    try:
+        source_type, url = parse_extension_source(expanded_source)
+    except ExtensionFetchError:
+        raise PluginSourceError(
+            "invalid_source",
+            "Invalid plugin source.",
+        ) from None
 
     if source_type == SourceType.LOCAL:
         if not allow_local:
@@ -421,7 +432,12 @@ def _store_pinned_checkout(
         tmp_target = target.parent / f".{target.name}.{os.getpid()}.tmp"
         if tmp_target.exists():
             shutil.rmtree(tmp_target)
-        shutil.copytree(fetched_root, tmp_target, symlinks=True)
+        shutil.copytree(
+            fetched_root,
+            tmp_target,
+            symlinks=True,
+            ignore=shutil.ignore_patterns(".git"),
+        )
         tmp_target.rename(target)
     return target
 

@@ -123,6 +123,22 @@ def test_preflight_missing_secret_fails_before_git(tmp_path: Path):
     assert "TOKEN" in exc_info.value.message
 
 
+def test_preflight_invalid_expanded_source_hides_secret_value():
+    secret_value = "supersecretvalue"
+
+    with pytest.raises(PluginSourceError) as exc_info:
+        with preflight_plugin(
+            source="${TOKEN}",
+            secrets={"TOKEN": secret_value},
+        ):
+            pass
+
+    assert exc_info.value.code == "invalid_source"
+    assert exc_info.value.message == "Invalid plugin source."
+    assert secret_value not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+
+
 def test_strict_fetch_pins_each_commit_to_an_immutable_cache_path(tmp_path: Path):
     repo, sha1, sha2 = _make_plugin_repo(tmp_path)
     cache_dir = tmp_path / "cache"
@@ -160,3 +176,37 @@ def test_strict_fetch_pins_each_commit_to_an_immutable_cache_path(tmp_path: Path
     )
     assert cached_path == first.path
     assert resolved == sha1
+
+
+def test_strict_fetch_does_not_cache_git_remote_credentials(tmp_path: Path):
+    repo, sha1, _sha2 = _make_plugin_repo(tmp_path)
+    cache_dir = tmp_path / "cache"
+    secret_value = "SUPERSECRET"
+    source = f"file://x-access-token:${{TOKEN}}@{repo}"
+
+    first = fetch_plugin_strict(
+        source=source,
+        ref=sha1,
+        repo_path="plugins/demo",
+        secrets={"TOKEN": secret_value},
+        cache_dir=cache_dir,
+        allow_local=True,
+    )
+    second = fetch_plugin_strict(
+        source=source,
+        ref=sha1,
+        repo_path="plugins/demo",
+        secrets={"TOKEN": secret_value},
+        cache_dir=cache_dir,
+        allow_local=True,
+    )
+
+    assert second.path == first.path
+    pinned_root = first.path.parents[1]
+    assert not (pinned_root / ".git").exists()
+    assert not list(pinned_root.rglob(".git"))
+    assert secret_value not in "\n".join(
+        path.read_text(errors="ignore")
+        for path in pinned_root.rglob("*")
+        if path.is_file()
+    )

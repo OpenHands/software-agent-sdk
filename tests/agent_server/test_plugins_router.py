@@ -260,3 +260,26 @@ def test_fetch_endpoint_returns_structured_error(client: TestClient):
         "code": "missing_secret",
         "message": "Missing secret: TOKEN",
     }
+
+
+def test_fetch_endpoint_invalid_expanded_source_is_structured_and_redacted(
+    client: TestClient,
+):
+    secret_value = "supersecretvalue"
+
+    resp = client.post(
+        "/plugins/fetch",
+        json={
+            "source": "${TOKEN}",
+            "secrets": {
+                "TOKEN": {"kind": "StaticSecret", "value": secret_value},
+            },
+        },
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == {
+        "code": "invalid_source",
+        "message": "Invalid plugin source.",
+    }
+    assert secret_value not in resp.text
