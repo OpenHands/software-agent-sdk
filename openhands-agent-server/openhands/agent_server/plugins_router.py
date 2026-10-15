@@ -36,6 +36,11 @@ from openhands.sdk.plugin.strict_fetch import PluginSourceError
 from openhands.sdk.secret import SecretSource
 
 
+type JSONValue = (
+    str | int | float | bool | None | list[JSONValue] | dict[str, JSONValue]
+)
+
+
 plugins_router = APIRouter(prefix="/plugins", tags=["Plugins"])
 
 # Kebab-case plugin name — matches the SDK's installed-plugin name rule. Guards
@@ -140,7 +145,7 @@ class FetchPluginResponse(BaseModel):
     resolved_ref: str | None
     source: str
     repo_path: str | None
-    manifest: dict
+    manifest: dict[str, JSONValue]
     skills: list[str]
     commands: list[str]
 
