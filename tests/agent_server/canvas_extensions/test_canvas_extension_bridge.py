@@ -57,6 +57,7 @@ class _LiveServer:
         port: int | None = None,
         ssl_certfile: Path | None = None,
         ssl_keyfile: Path | None = None,
+        proxy_headers: bool = True,
     ) -> None:
         self.port = port or _free_port()
         self.server = uvicorn.Server(
@@ -67,6 +68,7 @@ class _LiveServer:
                 log_level="warning",
                 ssl_certfile=str(ssl_certfile) if ssl_certfile else None,
                 ssl_keyfile=str(ssl_keyfile) if ssl_keyfile else None,
+                proxy_headers=proxy_headers,
             )
         )
         self.thread = threading.Thread(target=self.server.run, daemon=True)
@@ -469,6 +471,81 @@ async def test_spoofed_forwarded_headers_are_honored_only_when_trusted(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("public_scheme", "expected_status"),
+    [
+        # Plain-HTTP ingress: the header must not turn the origin into https.
+        ("http", 200),
+        # HTTPS ingress reached over plain HTTP: the header must not claim it.
+        ("https", 421),
+    ],
+)
+async def test_untrusted_forwarded_proto_does_not_change_origin_on_launch_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    public_scheme: str,
+    expected_status: int,
+) -> None:
+    """With `trust_forwarded_headers` off, `X-Forwarded-Proto` from a loopback
+    client leaves the request origin alone under the server's real uvicorn
+    launch options.
+
+    Regression test: `__main__` left uvicorn's `proxy_headers` on, so uvicorn
+    rewrote the scheme from `X-Forwarded-Proto` for loopback peers before
+    `_request_origin` read it.
+    """
+    from openhands.agent_server.__main__ import _trust_forwarded_headers
+
+    config_file = tmp_path / "config.json"
+    config_file.write_text('{"trust_forwarded_headers": false}')
+    monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(config_file))
+
+    backend = FastAPI()
+
+    @backend.get("/echo")
+    async def echo() -> JSONResponse:
+        return JSONResponse({"app": APP_NAME})
+
+    with _LiveServer(backend) as backend_server:
+        bridge_port = _free_port()
+        public_url = f"{public_scheme}://127.0.0.1:{bridge_port}"
+        app = FastAPI()
+        app.state.config = Config(
+            session_api_keys=[CONTROL_KEY],
+            allow_cors_origins=[CANVAS_ORIGIN],
+            app_backend_public_url=public_url,
+        )
+        app.state.app_backend_session_store = AppBackendSessionStore()
+        app.state.canvas_extension_backend_manager = _ReadyBackendManager(
+            ("127.0.0.1", backend_server.port)
+        )
+        app.include_router(app_backend_bridge_router)
+        with _LiveServer(
+            app, port=bridge_port, proxy_headers=_trust_forwarded_headers()
+        ):
+            root = f"http://127.0.0.1:{bridge_port}/app-backends/{APP_NAME}"
+            async with httpx.AsyncClient() as client:
+                bootstrap = await client.post(
+                    f"{root}/session",
+                    headers={**_bootstrap_headers(), "X-Forwarded-Proto": "https"},
+                )
+                assert bootstrap.status_code == expected_status
+                if expected_status != 200:
+                    return
+                cookie = bootstrap.cookies.get(APP_BACKEND_SESSION_COOKIE_NAME)
+                assert cookie
+                proxied = await client.get(
+                    f"{root}/echo",
+                    headers={
+                        "Cookie": f"{APP_BACKEND_SESSION_COOKIE_NAME}={cookie}",
+                        "X-Forwarded-Proto": "https",
+                    },
+                )
+                assert proxied.status_code == 200
+                assert proxied.json() == {"app": APP_NAME}
+
+
+@pytest.mark.asyncio
 async def test_backend_switch_invalidates_existing_session(live_bridge) -> None:
     client: httpx.AsyncClient = live_bridge.client
     root = f"{live_bridge.public_url}/app-backends/{APP_NAME}"
@@ -479,3 +556,20 @@ async def test_backend_switch_invalidates_existing_session(live_bridge) -> None:
     live_bridge.manager.endpoint = ("127.0.0.1", _free_port())
     switched = await client.get(f"{root}/prefix/static/app.js")
     assert switched.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_unreachable_backend_error_names_the_canvas_backend(
+    live_bridge,
+) -> None:
+    client: httpx.AsyncClient = live_bridge.client
+    root = f"{live_bridge.public_url}/app-backends/{APP_NAME}"
+    # Nothing listens on this port, so the proxy's connection fails.
+    live_bridge.manager.endpoint = ("127.0.0.1", _free_port())
+    assert (
+        await client.post(f"{root}/session", headers=_bootstrap_headers())
+    ).status_code == 200
+
+    unreachable = await client.get(f"{root}/prefix/static/app.js")
+    assert unreachable.status_code == 502
+    assert unreachable.json() == {"detail": "Canvas App backend unreachable"}

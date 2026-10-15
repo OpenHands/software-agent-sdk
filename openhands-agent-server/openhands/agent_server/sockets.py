@@ -156,7 +156,7 @@ async def _accept_authenticated_websocket(
 
     # Legacy path: key supplied via query param or header.
     if resolved_key is not None:
-        if resolved_key in config.session_api_keys:
+        if resolved_key and resolved_key in config.session_api_keys:
             logger.warning(
                 "session_api_key passed via query param or header is deprecated. "
                 "Use first-message auth instead."
@@ -213,7 +213,8 @@ async def _accept_authenticated_websocket(
             websocket, code=4001, reason="Authentication failed"
         )
         return False
-    if data.get("session_api_key") not in config.session_api_keys:
+    presented_key = data.get("session_api_key")
+    if not presented_key or presented_key not in config.session_api_keys:
         logger.warning("WebSocket first-message auth failed: invalid API key")
         await _safe_close_websocket(
             websocket, code=4001, reason="Authentication failed"

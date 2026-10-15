@@ -214,6 +214,15 @@ class OpenHandsAgentProfile(AgentProfileBase):
             "exclusion is the only selection model that can't dangle."
         ),
     )
+    public_skills: list[str] | None = Field(
+        default=None,
+        description=(
+            "Which public-catalog skills to load. null = all; [] = none; a list "
+            "= only the named skills, ignoring names the catalog lacks. User and "
+            "project skills are not affected, and `disabled_skills` still "
+            "applies to every skill."
+        ),
+    )
     condenser: CondenserSettingsConfig = Field(
         default_factory=LLMSummarizingCondenserSettings,
         description="Condenser settings for the agent.",
@@ -358,6 +367,13 @@ class LaunchedAgentProfile(BaseModel):
         description=(
             "Secret allow-list captured at launch, also enforced on resume. "
             "null preserves unrestricted behavior for older conversations."
+        ),
+    )
+    llm_profile_ref: str | None = Field(
+        default=None,
+        description=(
+            "Per-launch LLM profile override from `agent_launch_additions`. "
+            "null means the profile's own `llm_profile_ref` was used."
         ),
     )
 

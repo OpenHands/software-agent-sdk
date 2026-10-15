@@ -1,5 +1,6 @@
 import asyncio
 import os
+import shutil
 import sys
 import tempfile
 import traceback
@@ -35,6 +36,7 @@ from openhands.agent_server.config import (
     Config,
     get_default_config,
 )
+from openhands.agent_server.conversation_lease import _is_pid_alive
 from openhands.agent_server.conversation_registry import (
     create_conversation_registry,
 )
@@ -109,7 +111,11 @@ from openhands.agent_server.workspaces_router import workspaces_router
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.tool.registry import seal_tool_catalog, unseal_tool_catalog
 from openhands.sdk.utils.redact import sanitize_dict
-from openhands.tools.terminal.constants import TMUX_SOCKET_NAME
+from openhands.tools.terminal.constants import (
+    TMUX_SOCKET_NAME,
+    TMUX_SOCKET_OWNER_OPTION,
+)
+from openhands.tools.terminal.terminal.tmux_terminal import _socket_creation_lock
 
 
 logger = get_logger(__name__)
@@ -140,12 +146,15 @@ def _default_server_tmux_tmpdir() -> Path:
     return _SHORT_TMUX_TMPDIR_ROOT / name
 
 
-def _ensure_server_tmux_tmpdir() -> tuple[Path, bool]:
+def _ensure_server_tmux_tmpdir() -> tuple[Path, bool, bool]:
+    """Return the tmux directory, whether it was defaulted, and whether this
+    call created it (only then is it removed at shutdown)."""
     existing = os.getenv("TMUX_TMPDIR")
     if existing and _fits_tmux_socket(Path(existing)):
-        return Path(existing), False
+        return Path(existing), False, False
 
     tmux_tmpdir = _default_server_tmux_tmpdir()
+    created = not tmux_tmpdir.exists()
     tmux_tmpdir.mkdir(parents=True, exist_ok=True)
     os.environ["TMUX_TMPDIR"] = str(tmux_tmpdir)
     if existing:
@@ -160,40 +169,105 @@ def _ensure_server_tmux_tmpdir() -> tuple[Path, bool]:
             "TMUX_TMPDIR not set; defaulting to per-server tmux directory %s",
             tmux_tmpdir,
         )
-    return tmux_tmpdir, True
+    return tmux_tmpdir, True, created
 
 
-def _cleanup_stale_tmux_sessions() -> None:
-    """Clean up legacy and isolated terminal sockets on server startup."""
-    if os.name != "posix":
-        return
-    socket_dir = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
-    socket_names = [TMUX_SOCKET_NAME]
-    socket_names.extend(
+def _isolated_socket_names(socket_dir: Path) -> list[str]:
+    """Return per-instance socket names present in *socket_dir*."""
+    return [
         path.name
         for path in socket_dir.glob(f"{TMUX_SOCKET_NAME}-" + "[0-9a-f]" * 32)
         if path.is_socket()
-    )
-    for socket_name in socket_names:
+    ]
+
+
+def _kill_sessions(server: libtmux.Server) -> None:
+    for session in server.sessions:
+        try:
+            session.kill()
+        except Exception as e:
+            logger.warning("Failed to kill tmux session %s: %s", session, e)
+
+
+def _socket_owner_pid(server: libtmux.Server) -> int | None:
+    """Return the recorded owner PID for a socket, or None when unknown."""
+    try:
+        raw = server.show_option(
+            TMUX_SOCKET_OWNER_OPTION, global_=True, scope=None, ignore_errors=True
+        )
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    try:
+        return int(str(raw).strip())
+    except ValueError:
+        return None
+
+
+def _reclaim_stale_tmux_sockets(socket_dir: Path) -> None:
+    """Reclaim the legacy socket and any isolated socket whose owner is gone."""
+    try:
+        _kill_sessions(libtmux.Server(socket_name=TMUX_SOCKET_NAME))
+    except Exception as e:
+        logger.warning("Failed to cleanup tmux socket %s: %s", TMUX_SOCKET_NAME, e)
+
+    for socket_name in _isolated_socket_names(socket_dir):
         try:
             server = libtmux.Server(socket_name=socket_name)
-            for session in server.sessions:
-                try:
-                    session.kill()
-                except Exception as e:
-                    logger.warning("Failed to kill tmux session %s: %s", session, e)
+            owner_pid = _socket_owner_pid(server)
+            if owner_pid is not None and _is_pid_alive(owner_pid):
+                logger.debug(
+                    "Leaving tmux socket %s alone; owner pid %s is alive",
+                    socket_name,
+                    owner_pid,
+                )
+                continue
+            _kill_sessions(server)
         except Exception as e:
             logger.warning("Failed to cleanup tmux socket %s: %s", socket_name, e)
+
+
+def _cleanup_stale_tmux_sessions() -> None:
+    """Clean up legacy and isolated terminal sockets on server startup.
+
+    The legacy socket (``openhands``) is always reclaimed. Per-instance
+    sockets (``openhands-<32 hex>``) are only reclaimed when their owning
+    process is gone: several agent-servers may share one externally supplied
+    ``TMUX_TMPDIR``, and killing a live sibling's sessions silently destroys
+    that conversation's terminal.
+
+    The scan holds the same cross-process creation lock that terminal setup
+    takes between creating a socket and recording its owner, so a socket that
+    is still being set up by a live process is never reclaimed as stale.
+    """
+    if os.name != "posix":
+        return
+    socket_dir = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
+
+    try:
+        with _socket_creation_lock():
+            _reclaim_stale_tmux_sockets(socket_dir)
+    except Exception as e:
+        # The lock only closes a rare startup race; it must never stop cleanup
+        # from running (or the server from starting).
+        logger.warning("tmux socket creation lock unavailable: %s", e)
+        _reclaim_stale_tmux_sockets(socket_dir)
 
 
 @asynccontextmanager
 async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     original_tmux_tmpdir = os.environ.get("TMUX_TMPDIR")
-    tmux_tmpdir, tmux_tmpdir_was_defaulted = _ensure_server_tmux_tmpdir()
+    tmux_tmpdir, tmux_tmpdir_was_defaulted, tmux_tmpdir_was_created = (
+        _ensure_server_tmux_tmpdir()
+    )
     secret_resolution: local_secret_resolution | None = None
     try:
         # Clean up stale tmux sessions from previous server runs
         _cleanup_stale_tmux_sessions()
+        backend_manager = getattr(api.state, "canvas_extension_backend_manager", None)
+        if backend_manager is not None:
+            await backend_manager.reap_orphans()
 
         config: Config = api.state.config
         deferred = config.deferred_init
@@ -348,13 +422,23 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         emit_server_stopped()
         await shutdown_telemetry_sink()
 
-        if tmux_tmpdir_was_defaulted and os.environ.get("TMUX_TMPDIR") == str(
-            tmux_tmpdir
-        ):
-            if original_tmux_tmpdir is None:
-                os.environ.pop("TMUX_TMPDIR", None)
-            else:
-                os.environ["TMUX_TMPDIR"] = original_tmux_tmpdir
+        if tmux_tmpdir_was_defaulted:
+            if os.environ.get("TMUX_TMPDIR") == str(tmux_tmpdir):
+                if original_tmux_tmpdir is None:
+                    os.environ.pop("TMUX_TMPDIR", None)
+                else:
+                    os.environ["TMUX_TMPDIR"] = original_tmux_tmpdir
+        if tmux_tmpdir_was_created:
+            # Only the per-server directory this process created; a
+            # user-provided TMUX_TMPDIR is never removed.
+            try:
+                shutil.rmtree(tmux_tmpdir)
+            except OSError as e:
+                logger.warning(
+                    "Failed to remove per-server tmux directory %s: %s",
+                    tmux_tmpdir,
+                    e,
+                )
 
 
 def _emit_request_failed(request: Request, exc: Exception, error_id: str) -> None:
@@ -472,10 +556,10 @@ def _add_api_routes(app: FastAPI) -> None:
     # check_session_api_key reads config from request.app.state at request time,
     # so keys delivered via POST /api/init are honoured without re-registering routes.
     dependencies = [
-        Depends(check_session_api_key),
         # Dormant gate: 503s every /api/* route until POST /api/init completes.
         # No-op for non-deferred deployments.
         Depends(require_initialized),
+        Depends(check_session_api_key),
     ]
 
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
@@ -508,7 +592,10 @@ def _add_api_routes(app: FastAPI) -> None:
     # /api/auth/* mints workspace cookies and requires the header to bootstrap,
     # so it lives under the header-only auth group.
     api_router.include_router(auth_router)
-    app.include_router(openai_router, dependencies=[Depends(check_openai_api_key)])
+    app.include_router(
+        openai_router,
+        dependencies=[Depends(require_initialized), Depends(check_openai_api_key)],
+    )
 
     # Workspace static-file routes get their own auth group that accepts
     # EITHER the X-Session-API-Key header OR the workspace session cookie.
@@ -516,14 +603,21 @@ def _add_api_routes(app: FastAPI) -> None:
     # workspace artifacts work — browsers cannot attach custom headers to
     # those requests.
     workspace_api_router = APIRouter(
-        prefix="/api", dependencies=[Depends(check_workspace_session)]
+        prefix="/api",
+        dependencies=[Depends(require_initialized), Depends(check_workspace_session)],
     )
     workspace_api_router.include_router(conversation_registry.workspace_router)
     app.include_router(workspace_api_router)
     app.include_router(api_router)
 
-    app.include_router(app_backend_bridge_router)
-    app.include_router(conversation_registry.sockets_router)
+    app.include_router(
+        app_backend_bridge_router,
+        dependencies=[Depends(require_initialized)],
+    )
+    app.include_router(
+        conversation_registry.sockets_router,
+        dependencies=[Depends(require_initialized)],
+    )
 
 
 def _setup_static_files(app: FastAPI, config: Config) -> None:

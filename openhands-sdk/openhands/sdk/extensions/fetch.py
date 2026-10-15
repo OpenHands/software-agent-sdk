@@ -23,12 +23,28 @@ class SourceType(StrEnum):
 
     LOCAL   -- a filesystem path (absolute, home-relative, or dot-relative).
     GIT     -- any git-clonable URL (HTTPS, SSH, git://, etc.).
-    GITHUB  -- the ``github:owner/repo`` shorthand, expanded to an HTTPS URL.
+    GITHUB  -- the ``github:owner/repo[/path]`` shorthand, expanded to an HTTPS URL.
     """
 
     LOCAL = "local"
     GIT = "git"
     GITHUB = "github"
+
+
+def _split_github_shorthand(source: str) -> tuple[str, str | None]:
+    """Split ``github:owner/repo[/subpath]`` into ``("owner/repo", subpath)``.
+
+    Raises:
+        ExtensionFetchError: If owner or repo is missing.
+    """
+    owner, _, rest = source.strip()[len("github:") :].partition("/")
+    repo, _, subpath = rest.partition("/")
+    if not owner or not repo:
+        raise ExtensionFetchError(
+            f"Invalid GitHub shorthand format: {source}. "
+            f"Expected format: github:owner/repo[/path]"
+        )
+    return f"{owner}/{repo}", subpath.strip("/") or None
 
 
 def parse_extension_source(source: str) -> tuple[SourceType, str]:
@@ -37,6 +53,8 @@ def parse_extension_source(source: str) -> tuple[SourceType, str]:
     Args:
         source: Extension source string. Can be:
             - "github:owner/repo" - GitHub repository shorthand
+            - "github:owner/repo/path" - the same, naming a subdirectory
+              (fetch() uses the path as ``repo_path``)
             - "https://github.com/owner/repo.git" - Full git URL
             - "git@github.com:owner/repo.git" - SSH git URL
             - "/local/path" - Local path
@@ -57,16 +75,10 @@ def parse_extension_source(source: str) -> tuple[SourceType, str]:
     """
     source = source.strip()
 
-    # GitHub shorthand: github:owner/repo
+    # GitHub shorthand: github:owner/repo[/subpath]
     if source.startswith("github:"):
-        repo_path = source[7:]  # Remove "github:" prefix
-        # Validate format
-        if "/" not in repo_path or repo_path.count("/") > 1:
-            raise ExtensionFetchError(
-                f"Invalid GitHub shorthand format: {source}. "
-                f"Expected format: github:owner/repo"
-            )
-        url = f"https://github.com/{repo_path}.git"
+        repo, _ = _split_github_shorthand(source)
+        url = f"https://github.com/{repo}.git"
         return (SourceType.GITHUB, url)
 
     # Git URLs: detect by protocol/scheme rather than enumerating providers
@@ -193,6 +205,16 @@ def fetch_with_resolution(
         ExtensionFetchError: If fetching the extension fails.
     """
     source_type, url = parse_extension_source(source)
+
+    if source_type == SourceType.GITHUB:
+        _, subpath = _split_github_shorthand(source)
+        if subpath is not None:
+            if repo_path:
+                raise ExtensionFetchError(
+                    f"GitHub shorthand {source} already names a subdirectory; "
+                    "do not also pass repo_path"
+                )
+            repo_path = subpath
 
     if source_type == SourceType.LOCAL:
         base_path = _resolve_local_source(url)

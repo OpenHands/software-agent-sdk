@@ -1939,7 +1939,6 @@ class ConversationService:
             fork_conv = await asyncio.to_thread(
                 source_conversation.fork,
                 conversation_id=fork_conv_id,
-                title=title,
                 tags=tags,
                 reset_metrics=reset_metrics,
                 from_event_id=from_event_id,
@@ -1966,6 +1965,7 @@ class ConversationService:
                 "id": fork_conv_id,
                 "workspace": fork_workspace,
                 "title": title,
+                "tags": tags or {},
                 "created_at": utc_now(),
                 "updated_at": utc_now(),
                 "forked_from_conversation_id": source_id,
@@ -1973,8 +1973,6 @@ class ConversationService:
             }
             if reset_metrics:
                 fork_overrides["metrics"] = None
-            if tags is not None:
-                fork_overrides["tags"] = tags
             fork_stored = source_service.stored.model_copy(update=fork_overrides)
             try:
                 # If the service fails to start, clean up the orphaned
