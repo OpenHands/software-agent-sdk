@@ -2209,6 +2209,68 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    def test_remote_conversation_preserves_callback_list(self, mock_ws_client):
+        self.setup_mock_client()
+        callback_calls = []
+        callback = callback_calls.append
+        callbacks = [callback]
+
+        conversation = RemoteConversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            callbacks=callbacks,
+            visualizer=None,
+        )
+        try:
+            assert callbacks == [callback]
+        finally:
+            conversation.close()
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversations_reusing_callbacks_keep_events_isolated(
+        self, mock_ws_client
+    ):
+        self.setup_mock_client()
+        callback_calls = []
+        callbacks = [callback_calls.append]
+        first = RemoteConversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            callbacks=callbacks,
+            visualizer=None,
+        )
+        try:
+            self.workspace = RemoteWorkspace(host=self.host, working_dir="/tmp")
+            self.setup_mock_client()
+            second = RemoteConversation(
+                agent=self.agent,
+                workspace=self.workspace,
+                callbacks=callbacks,
+                visualizer=None,
+            )
+            try:
+                event = MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user", content=[TextContent(text="Only for the second")]
+                    ),
+                )
+                second_ws_callback = mock_ws_client.call_args_list[1].kwargs["callback"]
+                second_ws_callback(event)
+
+                assert list(second.state.events) == [event]
+                assert callback_calls == [event]
+                assert list(first.state.events) == []
+            finally:
+                second.close()
+        finally:
+            first.close()
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_remote_conversation_with_visualize(self, mock_ws_client):
         """Test RemoteConversation with visualizer=DefaultConversationVisualizer()."""
         # Setup mocks
