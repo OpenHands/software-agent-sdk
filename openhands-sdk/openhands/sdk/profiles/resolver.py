@@ -1,4 +1,7 @@
-"""``resolve_agent_profile()`` — the join point between profiles and execution.
+"""Profile resolution building blocks shared with :mod:`openhands.sdk.launch`.
+
+``resolve_agent_profile()`` and ``resolve_agent_profile_dry_run()`` are
+deprecated in favor of ``openhands.sdk.launch.resolve`` and ``preview_launch``.
 
 A profile carries *references* (``llm_profile_ref`` / ``mcp_server_refs``) plus a
 ``disabled_skills`` deny-list, and is secret-free at rest; an
@@ -52,6 +55,7 @@ from openhands.sdk.subagent.scope import SubAgentScope, scope_delegation_tools
 from openhands.sdk.tool.defaults import BROWSER_TOOL_NAME, launch_tool_specs
 from openhands.sdk.tool.registry import is_tool_available
 from openhands.sdk.tool.spec import Tool
+from openhands.sdk.utils.deprecation import deprecated
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
@@ -386,6 +390,14 @@ def _build_acp_settings(
     return validate_agent_settings(payload)
 
 
+@deprecated(
+    deprecated_in="1.55.0",
+    removed_in="1.60.0",
+    details=(
+        "Use openhands.sdk.launch.resolve, which also resolves meta-profiles "
+        "and reports every dangling reference at once."
+    ),
+)
 def resolve_agent_profile(
     profile: OpenHandsAgentProfile | ACPAgentProfile,
     *,
@@ -445,6 +457,11 @@ def resolve_agent_profile(
     )
 
 
+@deprecated(
+    deprecated_in="1.55.0",
+    removed_in="1.60.0",
+    details="Use openhands.sdk.launch.preview_launch.",
+)
 def resolve_agent_profile_dry_run(
     profile: OpenHandsAgentProfile | ACPAgentProfile,
     *,
