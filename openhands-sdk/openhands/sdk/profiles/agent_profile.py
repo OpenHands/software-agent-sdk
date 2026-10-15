@@ -369,14 +369,6 @@ class LaunchedAgentProfile(BaseModel):
             "null preserves unrestricted behavior for older conversations."
         ),
     )
-    inline: bool = Field(
-        default=False,
-        description=(
-            "True when the conversation was launched from an inline "
-            "`agent_profile` draft rather than a stored profile. The id is then "
-            "the draft's own and may not name a stored profile."
-        ),
-    )
     llm_profile_ref: str | None = Field(
         default=None,
         description=(
