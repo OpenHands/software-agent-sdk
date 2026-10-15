@@ -22,13 +22,15 @@ from openhands.tools.terminal.constants import (
     HISTORY_LIMIT,
     TMUX_SESSION_HEIGHT,
     TMUX_SESSION_WIDTH,
-    TMUX_SOCKET_NAME,
 )
 from openhands.tools.terminal.env import (
     build_terminal_env,
     normalize_terminal_env,
 )
-from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
+from openhands.tools.terminal.terminal.tmux_terminal import (
+    TmuxTerminal,
+    _new_owned_session,
+)
 
 
 logger = get_logger(__name__)
@@ -118,15 +120,12 @@ class TmuxPanePool:
             return
 
         env = build_terminal_env(self.env)
-        # Stale handles must not reach another pool after tmux restarts.
-        self._server = libtmux.Server(
-            socket_name=f"{TMUX_SOCKET_NAME}-{uuid.uuid4().hex}", environment=env
-        )
         session_name = f"openhands-pool-{self.username}-{uuid.uuid4()}"
-        self._session = self._server.new_session(
+        # Stale handles must not reach another pool after tmux restarts.
+        self._server, self._session = _new_owned_session(
+            env,
             session_name=session_name,
             start_directory=self.work_dir,
-            kill_session=True,
             x=TMUX_SESSION_WIDTH,
             y=TMUX_SESSION_HEIGHT,
         )
