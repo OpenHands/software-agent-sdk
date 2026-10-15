@@ -1,13 +1,12 @@
-"""Tests for MCPClient stdio subprocess cleanup."""
+"""MCPClient.sync_close kills the stdio processes that client owns."""
 
+import contextlib
 import os
 import signal
 import subprocess
 import sys
 import time
-from collections.abc import Sequence
 from pathlib import Path
-from typing import cast
 
 import pytest
 from fastmcp.client.transports import StdioTransport
@@ -17,176 +16,151 @@ from openhands.sdk.mcp.client import MCPClient
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX process groups only")
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_SERVER_ARGS = ["-m", "tests.sdk.mcp.stdio_test_server"]
-_IGNORE_SIGTERM = (
-    "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"
-)
+_PROBE = ["-m", "tests.sdk.mcp.stdio_cleanup_probe"]
 
 
-class AbandonedCloseMCPClient(MCPClient):
-    alive_after_forced_cleanup: list[bool] | None = None
-
+class _AbandonedClose(MCPClient):
     async def close(self) -> None:
-        """Simulate an async close path that leaves its transport running."""
-
-    def _force_kill_subprocesses(self, pids: Sequence[int]) -> None:
-        super()._force_kill_subprocesses(pids)
-        # Sampled before executor teardown, which would also unwind the transport.
-        self.alive_after_forced_cleanup = [_is_alive(pid) for pid in pids]
+        """Leave the transport running, as a timed-out async close does."""
 
 
-class RecordingMCPClient(MCPClient):
-    forced_pids: Sequence[int] | None = None
-
-    def _force_kill_subprocesses(self, pids: Sequence[int]) -> None:
-        self.forced_pids = pids
-        super()._force_kill_subprocesses(pids)
-
-
-class FailingCleanupMCPClient(MCPClient):
-    def _force_kill_subprocesses(self, pids: Sequence[int]) -> None:
-        raise RuntimeError("forced cleanup failed")
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    # A zombie is gone for the purposes of this cleanup.
+    stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    return stat != "Z"
 
 
-def _client(client_type: type[MCPClient] = MCPClient) -> MCPClient:
-    transport = StdioTransport(sys.executable, _SERVER_ARGS, cwd=str(_REPO_ROOT))
+def _wait_until_dead(pid: int) -> None:
+    deadline = time.monotonic() + 5
+    while _alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not _alive(pid)
+
+
+def _read_pid(path: Path) -> int:
+    deadline = time.monotonic() + 5
+    while not path.exists():
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"pid file missing: {path}")
+        time.sleep(0.05)
+    return int(path.read_text())
+
+
+def _reap(pid: int) -> None:
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def _open(
+    tmp_path: Path,
+    name: str,
+    *,
+    spawn_child: bool = False,
+    abandoned: bool = False,
+) -> MCPClient:
+    env = os.environ.copy()
+    env["OH_MCP_PIDFILE"] = str(tmp_path / f"{name}.pid")
+    env["OH_MCP_CHILD_PIDFILE"] = str(tmp_path / f"{name}-child.pid")
+    env["OH_MCP_CHILD_READY"] = str(tmp_path / f"{name}-child.ready")
+    if spawn_child:
+        env["OH_MCP_SPAWN_CHILD"] = "1"
+    transport = StdioTransport(sys.executable, _PROBE, env=env, cwd=str(_REPO_ROOT))
+    client_type = _AbandonedClose if abandoned else MCPClient
     client = client_type(transport)
     client.call_async_from_sync(client.connect, timeout=10.0)
     return client
 
 
-def _is_alive(pid: int) -> bool:
+def test_sync_close_kills_only_its_owned_stdio_process(tmp_path: Path) -> None:
+    """An abandoned close kills this client's server and leaves a twin running."""
+    first = _open(tmp_path, "first", abandoned=True)
+    second = _open(tmp_path, "second")
+    first_pid = _read_pid(tmp_path / "first.pid")
+    second_pid = _read_pid(tmp_path / "second.pid")
     try:
-        if Path(f"/proc/{pid}/stat").read_text().split()[2] == "Z":
-            return False
-    except FileNotFoundError:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
-
-
-def _wait_until_dead(pid: int) -> None:
-    deadline = time.monotonic() + 5
-    while _is_alive(pid) and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert not _is_alive(pid)
-
-
-def _reap_group(leader_pid: int, child_pid: int | None = None) -> None:
-    try:
-        os.killpg(leader_pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    if child_pid is not None:
-        try:
-            os.kill(child_pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-
-
-def test_sync_close_kills_only_its_owned_stdio_process() -> None:
-    """Clients with identical commands must not kill each other's server."""
-    first = cast(AbandonedCloseMCPClient, _client(AbandonedCloseMCPClient))
-    second = _client()
-    try:
-        first_pids = first._get_transport_subprocess_pids()
-        second_pids = second._get_transport_subprocess_pids()
-        assert len(first_pids) == len(second_pids) == 1
-        assert first_pids != second_pids
+        assert _alive(first_pid)
+        assert _alive(second_pid)
 
         first.sync_close()
+        first.sync_close()
 
-        assert first.alive_after_forced_cleanup == [False]
-        _wait_until_dead(first_pids[0])
-        assert _is_alive(second_pids[0])
+        _wait_until_dead(first_pid)
+        assert _alive(second_pid)
     finally:
         first.sync_close()
         second.sync_close()
+        _reap(first_pid)
+        _reap(second_pid)
 
 
-def test_sync_close_does_not_force_kill_stale_pid_after_clean_close() -> None:
-    """A clean close must not pass its exited process PID to forced cleanup."""
-    client = cast(RecordingMCPClient, _client(RecordingMCPClient))
-
-    client.sync_close()
-    client.sync_close()
-
-    assert client.forced_pids == []
-    assert client._closed
-
-
-def test_sync_close_closes_executor_when_forced_cleanup_fails() -> None:
-    """Forced subprocess cleanup must not prevent executor teardown."""
-    client = cast(FailingCleanupMCPClient, _client(FailingCleanupMCPClient))
-
-    client.sync_close()
-    client.sync_close()
-
-    assert client._closed
-    assert client._executor._portal is None
-
-
-def test_process_group_escalates_after_leader_exits() -> None:
-    """SIGKILL still reaches a child that ignores SIGTERM after its leader exits."""
-    script = f"""
-import signal
-import subprocess
-import sys
-import time
-
-child = subprocess.Popen([sys.executable, "-c", {_IGNORE_SIGTERM!r}])
-print(child.pid, flush=True)
-signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-time.sleep(60)
-"""
-    leader = subprocess.Popen(
-        [sys.executable, "-c", script],
-        stdout=subprocess.PIPE,
-        text=True,
+def test_clean_sync_close_spares_an_unrelated_process(tmp_path: Path) -> None:
+    """A finished close kills its server, and a second call leaves other pids alone."""
+    client = _open(tmp_path, "clean")
+    server_pid = _read_pid(tmp_path / "clean.pid")
+    bystander = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(120)"],
         start_new_session=True,
     )
-    assert leader.stdout is not None
-    child_pid = int(leader.stdout.readline())
     try:
-        MCPClient._kill_process_group(leader.pid)
+        client.sync_close()
+        client.sync_close()
 
-        leader.wait(timeout=5)
+        _wait_until_dead(server_pid)
+        assert bystander.poll() is None
+    finally:
+        client.sync_close()
+        _reap(server_pid)
+        if bystander.poll() is None:
+            bystander.kill()
+            bystander.wait(timeout=5)
+
+
+def test_sync_close_kills_descendant_that_ignores_sigterm(tmp_path: Path) -> None:
+    """SIGKILL reaches a child that survives the group's SIGTERM."""
+    client = _open(tmp_path, "group", spawn_child=True, abandoned=True)
+    leader_pid = _read_pid(tmp_path / "group.pid")
+    child_pid = _read_pid(tmp_path / "group-child.pid")
+    try:
+        assert _alive(leader_pid)
+        assert _alive(child_pid)
+
+        client.sync_close()
+
+        _wait_until_dead(leader_pid)
         _wait_until_dead(child_pid)
     finally:
-        _reap_group(leader.pid, child_pid)
-        leader.wait(timeout=5)
+        client.sync_close()
+        _reap(leader_pid)
+        _reap(child_pid)
 
 
-def test_process_group_kills_descendant_after_leader_is_reaped() -> None:
-    """A reaped leader must not hide a live descendant (the npm exec -> node case)."""
-    script = f"""
-import subprocess
-import sys
-
-child = subprocess.Popen([sys.executable, "-c", {_IGNORE_SIGTERM!r}])
-print(child.pid, flush=True)
-sys.exit(0)
-"""
-    leader = subprocess.Popen(
-        [sys.executable, "-c", script],
-        stdout=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-    )
-    assert leader.stdout is not None
-    child_pid = int(leader.stdout.readline())
+def test_sync_close_kills_descendant_after_leader_exits(tmp_path: Path) -> None:
+    """A wrapper that has already exited does not hide its descendant."""
+    client = _open(tmp_path, "reaped", abandoned=True)
+    leader_pid = _read_pid(tmp_path / "reaped.pid")
     try:
-        # The leader exits on its own and is reaped before cleanup runs, so
-        # os.getpgid(leader.pid) can no longer resolve the group.
-        leader.wait(timeout=5)
-        assert not _is_alive(leader.pid)
-        assert _is_alive(child_pid)
+        with contextlib.suppress(Exception):
+            client.call_async_from_sync(client.call_tool, "release", timeout=5.0)
+        child_pid = _read_pid(tmp_path / "reaped-child.pid")
+        _wait_until_dead(leader_pid)
+        assert _alive(child_pid)
 
-        MCPClient._kill_process_group(leader.pid)
+        client.sync_close()
 
         _wait_until_dead(child_pid)
     finally:
-        _reap_group(leader.pid, child_pid)
+        client.sync_close()
+        _reap(leader_pid)
+        child_file = tmp_path / "reaped-child.pid"
+        if child_file.exists():
+            _reap(int(child_file.read_text()))
