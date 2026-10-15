@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+from pathlib import Path
 from unittest import mock
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +16,7 @@ from openhands.sdk.hooks.types import HookDecision, HookEvent, HookEventType
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.utils.metrics import Metrics
+from openhands.sdk.testing import TestLLM
 from tests.command_utils import python_command
 
 
@@ -521,6 +523,57 @@ class TestAgentHookExecution:
         assert not result.success
         assert result.decision == HookDecision.ALLOW
         assert not result.blocked
+
+    def test_evaluator_does_not_run_ambient_plugin_hooks(
+        self, tmp_path: Path, sample_event
+    ):
+        workspace = tmp_path / "workspace"
+        hooks_dir = workspace / ".openhands" / "plugins" / "probe" / "hooks"
+        hooks_dir.mkdir(parents=True)
+        marker = tmp_path / "ambient-hooks.txt"
+        command = python_command(
+            "import sys; "
+            "from pathlib import Path; "
+            f"Path({str(marker)!r}).open('a', encoding='utf-8').write("
+            "sys.stdin.read().replace(chr(10), ' ') + chr(10))"
+        )
+        (hooks_dir / "hooks.json").write_text(
+            json.dumps(
+                {
+                    event_type: [
+                        {
+                            "matcher": "*",
+                            "hooks": [{"type": "command", "command": command}],
+                        }
+                    ]
+                    for event_type in ("SessionStart", "SessionEnd")
+                }
+            ),
+            encoding="utf-8",
+        )
+        llm = TestLLM.from_messages(
+            [
+                Message(
+                    role="assistant",
+                    content=[
+                        TextContent(
+                            text='{"decision": "allow", "reason": "looks safe"}'
+                        )
+                    ],
+                )
+            ]
+        )
+        evaluator = HookExecutor(working_dir=str(workspace), llm=llm)
+
+        result = evaluator._execute_agent_hook(
+            HookDefinition(type=HookType.AGENT, system_prompt="Evaluate."),
+            sample_event,
+        )
+
+        assert result.decision == HookDecision.ALLOW
+        assert result.reason == "looks safe"
+        assert result.error is None
+        assert not marker.exists()
 
     def test_deny_decision_blocks(self, executor, sample_event):
         """_execute_agent_hook parsing deny JSON produces a blocked HookResult."""
