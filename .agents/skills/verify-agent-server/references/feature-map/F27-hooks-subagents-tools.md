@@ -53,9 +53,9 @@ Routes: `GET /api/tools/`, `GET /api/tools/catalog`, `POST /api/sub-agents`,
 - `F27.browser-probe`: without a Chromium the server can find, the catalog reports `browser_tool_set` unusable and `/server_info` `usable_tools` leaves it out; with a Playwright Chromium in the server's `~/.cache/ms-playwright` and a restart, the catalog reports it usable and `usable_tools` lists it.
 - `F27.browser-disabled-launch`: a conversation started from the saved settings (default tools) gets `browser_tool_set` while the server finds Chromium, and leaves it out after a restart with `enable_browser: false`; a conversation created before keeps its stored tools.
 - `F27.browser-disabled`: with `enable_browser: false` the catalog reports `browser_tool_set` unusable although Chromium is present, while `GET /api/tools/` still lists it.
-- `F27.server-info-browser-disabled`: with `enable_browser: false`, `/server_info` `usable_tools` should agree with the catalog and leave out `browser_tool_set`; today it still lists it.
+- `F27.server-info-browser-disabled`: with `enable_browser: false`, `/server_info` `usable_tools` agrees with the catalog and leaves out `browser_tool_set`, although Chromium is present.
 - `F27.subagents-browser-disabled`: with `enable_browser: false`, the sub-agents catalog leaves out the browser-only `web-researcher` and keeps the other built-ins.
-- `F27.catalog-docker-runtime`: with `conversation_runtime: docker` the catalog probes nothing in the server process: `browser_tool_set` is usable for the stock image although the server finds no Chromium, and unusable for a `-minimal` image tag or with `conversation_image_has_browser: false`.
+- `F27.catalog-docker-runtime`: with `conversation_runtime: docker` the catalog probes nothing in the server process: `browser_tool_set` is usable for the stock image although the server finds no Chromium, and unusable for a `-minimal` image tag or with `conversation_image_has_browser: false`; `/server_info` `usable_tools` follows it for the browser.
 
 ## How to get to it (agent POV)
 
@@ -821,16 +821,18 @@ Preconditions:
   The catalog forces `usable: false` although the probe of the previous
   bullet finds Chromium, while the raw registry still lists
   `browser_tool_set` (tools register at import, always with the browser).
-- **Usable tools with the browser disabled (`F27.server-info-browser-disabled`), known bug.**
+- **Usable tools with the browser disabled (`F27.server-info-browser-disabled`).**
   Compare `/server_info` with the catalog on the same server.
+
+  Requires: `F27.browser-probe`, `F27.browser-disabled`
   ```sh
   control-agent-server api GET /api/tools/catalog --expect 200 --quiet --check tools contains '{"name": "browser_tool_set", "user_selectable": true, "usable": false'
-  control-agent-server api GET /server_info --auth none --expect 200 --check usable_tools contains terminal --check usable_tools not-contains browser_tool_set --save F27.server-info-browser-disabled/server-info  # bug: status eq 200 && response.body.usable_tools contains browser_tool_set
+  control-agent-server api GET /server_info --auth none --expect 200 --check usable_tools contains terminal --check usable_tools not-contains browser_tool_set --save F27.server-info-browser-disabled/server-info
   ```
   Conversations on this server never get the browser, and the catalog says
-  so; `usable_tools` should agree. Today it still lists `browser_tool_set`:
-  `list_usable_tools()` runs only the Chromium probe and ignores
-  `enable_browser`, which only the catalog route applies.
+  so; `usable_tools` agrees and leaves out `browser_tool_set` although the
+  Chromium probe finds it: `/server_info` applies the same config decision
+  (`configured_browser_available`) as the catalog route.
 - **Browser-only sub-agent with the browser disabled (`F27.subagents-browser-disabled`).**
   List the built-ins on a server with `enable_browser: false` (the restart
   makes the recipe hold under `--only`, too).
@@ -862,7 +864,8 @@ Preconditions:
   control-agent-server api GET /api/tools/catalog --expect 200 --quiet \
     --check tools contains '{"name": "browser_tool_set", "user_selectable": true, "usable": false'
   control-agent-server restart --reset-config --config-json '{"conversation_runtime": "docker"}'
-  control-agent-server api GET /server_info --auth none --expect 200 --check conversation_runtime eq docker
+  control-agent-server api GET /server_info --auth none --expect 200 --check conversation_runtime eq docker \
+    --check usable_tools contains browser_tool_set
   control-agent-server api GET /api/tools/catalog --expect 200 --quiet \
     --check tools contains '{"name": "browser_tool_set", "user_selectable": true, "usable": true' \
     --check tools contains '{"name": "terminal", "user_selectable": true, "usable": true' \
@@ -872,11 +875,10 @@ Preconditions:
   A `-minimal` tag of the stock image and `conversation_image_has_browser:
   false` make the browser unusable; the stock image (the default
   `conversation_image`) makes it usable although the server process has no
-  Chromium (`F27.browser-probe` showed it unusable without the link). In this
-  mode `/server_info` `usable_tools` still reports what the server process
-  itself probes, so it leaves `browser_tool_set` out here: the same gap as
-  `F27.server-info-browser-disabled`, not asserted because on a machine with
-  a system Chromium the process probe finds it.
+  Chromium (`F27.browser-probe` showed it unusable without the link), and
+  `/server_info` `usable_tools` follows the catalog for the browser, so it
+  lists `browser_tool_set` here too. Its other entries still come from the
+  server process's own probes.
 
 ## Gotchas
 
