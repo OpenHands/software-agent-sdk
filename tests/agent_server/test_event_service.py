@@ -206,6 +206,36 @@ def _attach_event_log(event_service, event_log: EventLog) -> None:
     event_service._conversation = conversation
 
 
+@pytest.mark.parametrize(
+    ("kind", "expected_ids"),
+    [
+        (None, ["event3", "event4"]),
+        ("MessageEvent", ["event3", "event4"]),
+        (
+            "openhands.sdk.event.llm_convertible.message.MessageEvent",
+            ["event3", "event4"],
+        ),
+        ("ActionEvent", []),
+        ("NonExistentEvent", []),
+    ],
+)
+async def test_search_and_count_events_kind_with_timestamp_filter(
+    event_service, mock_conversation_with_timestamped_events, kind, expected_ids
+):
+    event_service._conversation = mock_conversation_with_timestamped_events
+    filters = {
+        "kind": kind,
+        "timestamp__gte": datetime(2025, 1, 1, 12),
+        "timestamp__lt": datetime(2025, 1, 1, 14),
+    }
+
+    result = await event_service.search_events(**filters)
+
+    assert [event.id for event in result.items] == expected_ids
+    assert result.next_page_id is None
+    assert await event_service.count_events(**filters) == len(expected_ids)
+
+
 class TestEventServiceSearchEvents:
     """Test cases for EventService.search_events method."""
 
