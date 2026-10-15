@@ -44,7 +44,6 @@ def test_a_stored_profile_resolves_with_its_provenance():
     assert resolved.profile.agent_profile_id == profile.id
     assert resolved.profile.revision == 4
     assert resolved.profile.secret_refs == ["GITHUB_TOKEN"]
-    assert resolved.profile.inline is False
     assert resolved.allowed_secrets == frozenset({"GITHUB_TOKEN"})
 
 
@@ -53,14 +52,13 @@ def test_an_unknown_profile_id_is_not_found():
         resolve(uuid4(), fakes.stores())
 
 
-def test_an_inline_profile_is_recorded_as_inline_and_not_stored():
+def test_a_profile_object_resolves_without_being_stored():
     draft = _profile(name="draft")
     stores = fakes.stores()
 
     resolved = resolve(draft, stores)
 
     assert resolved.profile is not None
-    assert resolved.profile.inline is True
     assert resolved.profile.agent_profile_id == draft.id
     assert stores.agent_profiles is not None
     assert stores.agent_profiles.name_for_id(draft.id) is None

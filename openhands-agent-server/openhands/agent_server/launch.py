@@ -147,8 +147,6 @@ def launch_source(
         return resolve(
             request.agent_profile_id, stores(), llm_profile_ref=llm_profile_ref
         )
-    if request.agent_profile is not None:
-        return resolve(request.agent_profile, stores(), llm_profile_ref=llm_profile_ref)
     agent: AgentBase | None = request.agent
     if agent is not None:
         if context is None:
@@ -246,7 +244,7 @@ def forward_to_runtime(
     forwarded = request.model_copy(
         update={"secrets": materialize_secrets(scoped), "secrets_encrypted": True}
     )
-    sources = {"agent", "agent_settings", "agent_profile_id", "agent_profile"}
+    sources = {"agent", "agent_settings", "agent_profile_id"}
     payload = forwarded.model_dump(
         mode="json",
         context={"cipher": cipher},
