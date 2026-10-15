@@ -2002,7 +2002,7 @@ def test_acp_create_agent_uses_server_default_command(
         "npx",
         "-y",
         "--prefer-offline",
-        "@agentclientprotocol/claude-agent-acp@0.63.0",
+        "@agentclientprotocol/claude-agent-acp@0.90.0",
     ]
     assert agent.acp_model == "claude-opus-4-6"
     # The authoritative provider key is carried onto the agent.
