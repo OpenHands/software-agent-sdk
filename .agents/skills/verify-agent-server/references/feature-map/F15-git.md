@@ -35,7 +35,7 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 - `F15.changes-base`: without `ref` the display base is `HEAD` on a remote-less default branch, the fork point from local `main` on a feature branch (committed work stays visible), the fork point from `origin`'s default branch on a fully pushed clean branch, and the branch's own upstream once the tree is dirty.
 - `F15.changes-ref`: `ref=HEAD` gives `git status`-style changes and an older commit adds its later commits' files; an unknown or option-shaped `ref` is 400 and never runs as a git option; no `path` is 422.
 - `F15.changes-nested-repo`: changes inside a repository nested one level below the requested repository are listed with the nested directory as prefix, the nested directory itself is not listed, and `diff` of such an entry reads the nested repository.
-- `F15.changes-repo-below-path`: a non-repository directory that holds one repository (the layout of a repository-backed conversation) lists that repository's changes with its directory as prefix; today it lists nothing.
+- `F15.changes-repo-below-path`: a non-repository directory that holds one repository (the layout of a repository-backed conversation) lists that repository's changes with its directory as prefix.
 - `F15.changes-special-names`: a modified tracked file whose name has a space or a non-ASCII character is listed under its real name; today a space fails the whole list with 400 and a non-ASCII name comes back as a mangled git-quoted string.
 - `F15.changes-subdir-paths`: `changes` for a subdirectory of a repository returns paths on one base; today tracked paths are repository-relative (and include files outside the subdirectory) while untracked paths are subdirectory-relative.
 - `F15.non-repo`: on a plain directory, a missing directory and a non-repository file every operation answers 200 with an empty result (`[]`, `{"original": null, "modified": null}`, `{"commits": [], "has_more": false}`); a repository without commits lists its files as `ADDED` and has no commits.
@@ -243,7 +243,7 @@ Preconditions:
   lists the inner repository's own changes under `inner/` and not the
   directory itself, and the diff of `inner/README.md` is read from the inner
   repository (its committed text against the edit).
-- **Repository below the requested directory (`F15.changes-repo-below-path`), known bug.**
+- **Repository below the requested directory (`F15.changes-repo-below-path`).**
   A plain directory that holds one repository, as a repository-backed
   conversation's workspace does (`{base}/{repo}`).
   ```sh
@@ -253,16 +253,14 @@ Preconditions:
   control-agent-server api GET /api/git/changes --query path="$F/ws/proj" --expect 200 --check . len-eq 2 \
     --check 0.path eq README.md --check 1.path eq notes.txt
   control-agent-server api GET /api/git/changes --query path="$F/ws" --expect 200 --check . len-eq 2 \
-    --check 0.path eq proj/README.md --check 1.path eq proj/notes.txt --save F15.changes-repo-below-path/ws  # bug: status eq 200 && response.body len-eq 0
+    --check 0.path eq proj/README.md --check 1.path eq proj/notes.txt --save F15.changes-repo-below-path/ws
   ```
   `$F/ws` itself is not a repository and the repository below it answers
-  with its two changes (positive control). Expected: the repository's two
-  changes under `proj/`, as for a nested
-  repository (and as `GET /api/file/archive` resolves the same layout).
-  Actual: `200 []`. `get_git_changes` calls `get_changes_in_repo` on the
-  directory first; it raises `GitRepositoryError` before the `./*/.git` scan
-  runs, and the router maps that to `[]`. Consumers that pass the workspace
-  root see "no changes" for a repository-backed conversation.
+  with its two changes (positive control). The directory answers with the
+  repository's two changes under `proj/`, sorted by path, as for a nested
+  repository (and as `GET /api/file/archive` resolves the same layout), so
+  consumers that pass the workspace root of a repository-backed conversation
+  see its changes. The directory contributes no changes of its own.
 - **File names with a space or non-ASCII characters (`F15.changes-special-names`), known bug.**
   ```sh
   mkdir -p "$F/names"
@@ -787,7 +785,8 @@ Preconditions:
   `git remote show origin`, a network call with a 30 s timeout. Use
   remote-less fixtures or a local bare remote cloned with `git clone` (which
   records `origin/HEAD`), as `F15.changes-base` does.
-- A non-repository `path` is not an error: `changes` is `[]`, commits are
+- A non-repository `path` is not an error: `changes` is `[]` (unless a
+  repository sits directly below it, `F15.changes-repo-below-path`), commits are
   empty and `diff` is `{"original": null, "modified": null}` (null, not `""`).
   A missing file inside a repository is 400, and so is a file over 1 MiB.
 - "Not a repository" means no ancestor holds a `.git`: git searches upward
@@ -810,9 +809,10 @@ Preconditions:
 - `diff` on a directory inside a repository is not refused: it returns
   `git show`'s tree listing (`"tree <sha>:src\n\napp.py\nutil.py"`) as
   `original` and `""` as `modified`.
-- Nested repositories are only scanned one level below a `path` that is
-  itself a repository (`./*/.git`); deeper ones show up as an untracked
-  directory entry.
+- Nested repositories are only scanned one level below `path`
+  (`./*/.git`), whether or not `path` is itself a repository; deeper ones
+  show up as an untracked directory entry (or not at all below a
+  non-repository `path`).
 - `commits/{sha}/changes` keeps git's output order (renames as
   `DELETED`+`ADDED` pairs), unlike `changes`, which is sorted by path.
 - Git calls reset `idle_time` (`update_last_execution_time`), like file
