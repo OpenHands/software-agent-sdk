@@ -166,6 +166,47 @@ def test_update_continues_on_checkout_error(tmp_path: Path):
     _update_repository(tmp_path, "nonexistent", mock_git)
 
 
+def test_update_strict_ref_raises_on_checkout_error(tmp_path: Path):
+    """With strict_ref, an unknown ref is an error, not the cached checkout."""
+    mock_git = create_autospec(GitHelper)
+    mock_git.checkout.side_effect = GitCommandError(
+        "Invalid ref", command=["git", "checkout"], exit_code=1
+    )
+
+    with pytest.raises(GitCommandError):
+        _update_repository(tmp_path, "nonexistent", mock_git, strict_ref=True)
+
+    mock_git.fetch.assert_called_once_with(tmp_path)
+
+
+def test_update_strict_ref_raises_when_fetch_fails_and_ref_not_cached(
+    tmp_path: Path,
+):
+    mock_git = create_autospec(GitHelper)
+    mock_git.checkout.side_effect = GitCommandError(
+        "Invalid ref", command=["git", "checkout"], exit_code=1
+    )
+    mock_git.fetch.side_effect = GitCommandError(
+        "Network error", command=["git", "fetch"], exit_code=1
+    )
+
+    with pytest.raises(GitCommandError, match="not in the cached repository"):
+        _update_repository(tmp_path, "v2.0.0", mock_git, strict_ref=True)
+
+
+def test_update_strict_ref_keeps_cached_branch_when_fetch_fails(tmp_path: Path):
+    """A branch that is already cached is still usable offline."""
+    mock_git = create_autospec(GitHelper)
+    mock_git.get_current_branch.return_value = "main"
+    mock_git.fetch.side_effect = GitCommandError(
+        "Network error", command=["git", "fetch"], exit_code=1
+    )
+
+    _update_repository(tmp_path, "main", mock_git, strict_ref=True)
+
+    mock_git.checkout.assert_called_once_with(tmp_path, "main")
+
+
 def test_update_strict_raises_on_fetch_error(tmp_path: Path):
     """strict=True surfaces a failed fetch instead of keeping the stale cache."""
     mock_git = create_autospec(GitHelper)

@@ -285,6 +285,9 @@ def _fetch_remote_source_with_resolution(
         ref=ref,
         update=update,
         git_helper=git_helper,
+        # An explicitly requested ref must not silently fall back to the
+        # cached checkout: the caller would record a version it did not get.
+        strict_ref=True,
     )
 
     if result is None:
