@@ -540,7 +540,7 @@ Preconditions:
   `last_user_message_id` and `execution_status=running`, then per step
   `ActionEvent`, `ObservationEvent` and `stats`, ending with the `finish`
   action and `execution_status=finished`.
-- **Log order is timestamp order (`F06.search-timestamp-order`), known bug.**
+- **Log order is timestamp order (`F06.search-timestamp-order`).**
   Search walks the log in append order and its docstring relies on that
   being timestamp order (`_search_events_sync`); `after_timestamp` is
   documented for "REST fetches history, the socket continues from that
@@ -557,23 +557,23 @@ Preconditions:
   test "$FROM_OBS" -ge 2
   COUNT_SINCE=$(control-agent-server api GET "/api/conversations/$LIVE/events/count" --query timestamp__gte="$OBS_T" \
     --save F06.search-timestamp-order/count-since-observation --field .)
-  control-agent-server assert --value="$((COUNT_SINCE - FROM_OBS))" --check . ge 0  # bug: value eq -1
+  control-agent-server assert --value="$((COUNT_SINCE - FROM_OBS))" --check . ge 0
   SINCE=$(control-agent-server ws listen "/sockets/events/$LIVE" --query resend_mode=since --query after_timestamp="$OBS_T" \
     --duration 3 --save F06.search-timestamp-order/replay-since-observation | jq .frames)
-  control-agent-server assert --value="$((SINCE - 1 - FROM_OBS))" --check . ge 0  # bug: value eq -1
+  control-agent-server assert --value="$((SINCE - 1 - FROM_OBS))" --check . ge 0
   control-agent-server api GET "/api/conversations/$LIVE/events/search" --field items \
-    | jq -c '[range(1; length) as $i | select(.[$i].timestamp < .[$i - 1].timestamp) | (.[$i].key // .[$i].kind)]' | control-agent-server assert --check . len-eq 0  # bug: value contains stats
+    | jq -c '[range(1; length) as $i | select(.[$i].timestamp < .[$i - 1].timestamp) | (.[$i].key // .[$i].kind)]' | control-agent-server assert --check . len-eq 0
   ```
   Correct behavior: a cut at the first `ObservationEvent` keeps it and
   everything listed after it (`FROM_OBS` events), over REST and over the
-  socket. Today the count is one short (8 of 9 on a two-edit run): the
-  `stats` update of each model call is created, and timestamped, when the
-  model answers, but is persisted from an executor that waits for the state
-  lock, so it lands after that step's action and observation (and after
-  `execution_status=finished` for the last call) with an older timestamp
-  (`_setup_stats_streaming`, `_emit_event_from_thread` in
-  `event_service.py`). A client that loads history over REST and then
-  reconnects with `resend_mode=since` silently misses that update.
+  socket, and no listed event has a timestamp older than the one before
+  it. The `stats` update of each model call is built when the model
+  answers, inside the step, and appended later from an executor that waits
+  for the state lock (`_setup_stats_streaming`, `_emit_event_from_thread`
+  in `event_service.py`); it is stamped when appended, so it carries a
+  timestamp after the step's action and observation it follows, and a
+  client that loads history over REST and reconnects with
+  `resend_mode=since` gets it.
 - **A message reopens a finished conversation (`F06.send-resets-finished`).**
 
   Requires: `F06.send-run`
@@ -687,11 +687,10 @@ Preconditions:
   a fresh first page.
 - Timestamps are naive server-local ISO strings compared as strings. Recipes
   run the server with `TZ=UTC`; a value with an offset is converted to server
-  time first. Search is in log order, which is not strictly timestamp order:
-  a `stats` update is appended after an action and its observation but
-  carries a timestamp from before the action, so a `timestamp__gte` or
-  `resend_mode=since` cut taken at that observation's timestamp skips it
-  (`F06.search-timestamp-order`).
+  time first. Search is in log order, which is timestamp order: a `stats`
+  update appended after an action and its observation is stamped when it
+  is appended, so a `timestamp__gte` or `resend_mode=since` cut taken at
+  that observation's timestamp keeps it (`F06.search-timestamp-order`).
 - Each conversation's event bus takes at most 50 subscribers, internal ones
   (webhooks, auto-title) included; one more socket closes with 1013
   `Too many connections for this conversation`, which the SDK treats as

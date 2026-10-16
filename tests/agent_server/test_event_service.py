@@ -3683,6 +3683,42 @@ def test_emit_event_from_thread_uses_captured_loop(event_service: EventService) 
     assert len(captured_calls) == 1, "run_in_executor should have been called once"
 
 
+async def test_emit_event_from_thread_stamps_event_when_persisted(
+    event_service: EventService,
+) -> None:
+    """An event emitted from a callback is timestamped when it is appended.
+
+    The stats update is built when the model answers, but it is appended only
+    once the step that holds the state lock has appended its action and
+    observation. Keeping the build-time timestamp put it out of timestamp
+    order, so ``timestamp__gte`` and ``resend_mode=since`` skipped it.
+    """
+    state_lock = FIFOLock()
+    appended: list[Event] = []
+    conversation = MagicMock()
+    conversation._state = state_lock
+    conversation._on_event.side_effect = appended.append
+    event_service._main_loop = asyncio.get_running_loop()
+    event_service._conversation = conversation  # type: ignore[assignment]
+
+    event = ConversationStateUpdateEvent(key="stats", value={})
+    with state_lock:
+        event_service._emit_event_from_thread(event)
+        await asyncio.sleep(0.01)
+        # Stands in for the step's action/observation appended under the lock.
+        step_end = datetime.now().isoformat()
+        await asyncio.sleep(0.01)
+
+    for _ in range(200):
+        if appended:
+            break
+        await asyncio.sleep(0.01)
+    assert len(appended) == 1
+    persisted = appended[0]
+    assert persisted.id == event.id
+    assert persisted.timestamp > step_end > event.timestamp
+
+
 def test_llm_log_callback_swallows_emit_failures(
     event_service: EventService, caplog
 ) -> None:
