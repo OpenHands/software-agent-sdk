@@ -33,6 +33,23 @@ def pool_executor():
         executor.close()
 
 
+def test_pool_waits_for_slow_shell_initialization(tmp_path):
+    (tmp_path / ".bashrc").write_text("sleep 0.4\n")
+    executor = TerminalExecutor(
+        working_dir=str(tmp_path),
+        no_change_timeout_seconds=1,
+        terminal_type="tmux",
+        env={"HOME": str(tmp_path)},
+        max_panes=1,
+    )
+    try:
+        obs = executor(TerminalAction(command="sleep 2"))
+
+        assert obs.metadata.exit_code == -1
+    finally:
+        executor.close()
+
+
 class TestDeclaredResources:
     def test_pool_mode_opts_out_of_framework_locking(self, pool_executor):
         """In pool mode, declared_resources returns empty keys so the
