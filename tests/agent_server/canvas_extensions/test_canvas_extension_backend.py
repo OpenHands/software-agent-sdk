@@ -116,6 +116,34 @@ class _ArtifactHandler(BaseHTTPRequestHandler):
         pass
 
 
+requires_linux_backend = pytest.mark.skipif(
+    CanvasExtensionBackendManager.current_platform() is None,
+    reason="backend artifact fixture only supports Linux amd64/arm64",
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    CanvasExtensionBackendManager.current_platform() is not None,
+    reason="backend artifacts are supported on this platform",
+)
+async def test_backend_is_unsupported_on_non_linux_platform(tmp_path: Path):
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    installed_dir = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+    revision = manager.revision("my-extension")
+    assert revision is not None
+
+    status = await manager.status("my-extension")
+    assert status.state == "unsupported"
+    assert "platform" in (status.detail or "")
+    assert (await manager.prepare("my-extension", revision)).state == "unsupported"
+    assert (await manager.start("my-extension", revision)).state == "unsupported"
+    assert not manager.artifacts_dir.exists()
+
+
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_prepare_start_logs_stop_and_preserve_data(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -172,6 +200,7 @@ async def test_prepare_start_logs_stop_and_preserve_data(
     assert runtime_file.is_file()
 
 
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_ready_endpoint_closes_when_ready_backend_exits(tmp_path: Path):
     """A crashed backend is not dialed before anyone polls its status (#5912)."""
@@ -258,6 +287,7 @@ async def test_remote_artifact_download_strip_cache_and_home(tmp_path: Path):
         thread.join()
 
 
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_prepare_rejects_revision_checksum_and_unsafe_archive(tmp_path: Path):
     source = _write_backend_extension(tmp_path / "source" / "my-extension")
@@ -300,6 +330,7 @@ async def test_prepare_rejects_revision_checksum_and_unsafe_archive(tmp_path: Pa
     assert not (tmp_path / "escape").exists()
 
 
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_start_rejects_executable_that_resolves_outside_artifact(tmp_path: Path):
     source = _write_backend_extension(tmp_path / "source" / "my-extension")
@@ -324,6 +355,7 @@ async def test_start_rejects_executable_that_resolves_outside_artifact(tmp_path:
     assert "inside the prepared artifact" in (status.detail or "")
 
 
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_failed_start_cleanup_and_unsupported_states(tmp_path: Path):
     source = _write_backend_extension(tmp_path / "source" / "my-extension", timeout=0.2)
@@ -365,6 +397,7 @@ async def test_failed_start_cleanup_and_unsupported_states(tmp_path: Path):
     await manager.shutdown()
 
 
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_status_reports_starting_and_stop_abandons_hung_backend(
     tmp_path: Path,
@@ -443,6 +476,7 @@ server.serve_forever()
 """
 
 
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_status_recovers_after_one_slow_health_probe(tmp_path: Path):
     """A missed probe must not latch a live backend `unhealthy` (#5646)."""
@@ -500,6 +534,7 @@ async def test_status_recovers_after_one_slow_health_probe(tmp_path: Path):
 
 
 @pytest.mark.parametrize("recovery", ["status", "stop", "restart"])
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_exited_leader_descendant_does_not_block_recovery(
     tmp_path: Path,
@@ -581,6 +616,7 @@ async def test_exited_leader_descendant_does_not_block_recovery(
 
 
 @pytest.mark.parametrize("leader_exited", [False, True])
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_cleanup_kills_sigterm_ignoring_descendant(
     tmp_path: Path,
@@ -676,6 +712,7 @@ def _alive(pid: int) -> bool:
     return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
 
 
+@requires_linux_backend
 @pytest.mark.asyncio
 async def test_restart_after_server_crash_reaps_orphaned_backend(tmp_path: Path):
     """A SIGKILLed server's backend must not survive the next server (#5637)."""
@@ -749,6 +786,7 @@ def test_status_degrades_when_manifest_is_corrupted(tmp_path: Path):
     assert status.detail
 
 
+@requires_linux_backend
 def test_backend_http_lifecycle_and_data_deletion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
