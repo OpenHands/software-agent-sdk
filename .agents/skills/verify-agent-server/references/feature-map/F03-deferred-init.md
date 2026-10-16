@@ -22,9 +22,9 @@ onto `app.state`, recomputes the root path and the VS Code token, and emits
 the orchestrator can retry; a second init is a 400; on a
 non-deferred server both routes 404. Of the delivered fields,
 `conversations_path`, `bash_events_dir`, `conversation_worktree_root`,
-`max_concurrent_runs`, `webhooks`, `session_api_keys`, `web_url` and `env`
-take effect, while `allow_cors_origins` never reaches the CORS middleware built
-at boot; this family reproduces it.
+`max_concurrent_runs`, `webhooks`, `session_api_keys`, `web_url`, `env` and
+`allow_cors_origins` take effect; the CORS middleware follows the config that
+init stores on `app.state`.
 
 Source: `openhands-agent-server/openhands/agent_server/init_router.py`, `openhands-agent-server/openhands/agent_server/api.py`, `openhands-agent-server/openhands/agent_server/config.py`, `openhands-agent-server/openhands/agent_server/sockets.py`, `openhands-agent-server/openhands/agent_server/dependencies.py`, `openhands-agent-server/openhands/agent_server/middleware.py`, `openhands-agent-server/openhands/agent_server/persistence/store.py`
 
@@ -53,7 +53,7 @@ Routes: `GET /api/init`, `POST /api/init`
 - `F03.init-web-url-root-path`: a delivered `web_url` with a path becomes the root path: prefixed URLs serve and the OpenAPI document advertises the prefix.
 - `F03.init-delivered-worktree-root`: a `worktree: true` conversation on a git workspace created after init gets its worktree under the delivered `conversation_worktree_root`, not the boot root.
 - `F03.init-delivered-max-runs`: a delivered `max_concurrent_runs` of 1 replaces the boot default (10): a second conversation's `/run` is 429 while another run holds the slot, and is accepted once the slot is free.
-- `F03.init-delivered-cors-origins`: an origin delivered in `allow_cors_origins` must pass a CORS preflight after init, as the field promises (reproduces a real bug; see Gotchas).
+- `F03.init-delivered-cors-origins`: an origin delivered in `allow_cors_origins` passes a CORS preflight after init, as the field promises, while an origin nobody delivered is still refused.
 - `F03.init-second-call-400`: a second `POST /api/init` after `ready` is rejected with 400 and the state is unchanged; the init key is now the delivered `secret_key`, so the dormant bootstrap key is 401.
 - `F03.init-open-without-secret`: a pod booted with neither a secret key nor session keys accepts `POST /api/init` without `X-Init-API-Key`; afterwards the first delivered session key is the init key (a keyless retry is 401, a retry with it is 400).
 - `F03.init-state-not-persisted`: the init state lives in memory only, so after a restart a deferred pod is dormant again (the previously delivered key gets the dormant 503 too) and must be re-initialized.
@@ -394,20 +394,21 @@ Preconditions:
   (the positive control), and the bullet interrupts it again so no run is
   left. Both conversations are created before either runs, because a create
   also reserves a slot while it initializes.
-- **Delivered CORS origins (`F03.init-delivered-cors-origins`), known bug.** The init body carried `allow_cors_origins` `["https://qa-f03.example"]`, documented as "CORS origins to add to the existing localhost allowlist". Today the preflight from that origin is refused, so this is an expected failure.
+- **Delivered CORS origins (`F03.init-delivered-cors-origins`).** The init body carried `allow_cors_origins` `["https://qa-f03.example"]`, documented as "CORS origins to add to the existing localhost allowlist"; the preflight from that origin is allowed.
+
+  Requires: `F03.init-success`
   ```sh
   control-agent-server api OPTIONS /api/settings --auth none --header 'Origin: http://localhost:3000' --header 'Access-Control-Request-Method: GET' \
     --expect 200 --check-header access-control-allow-origin eq http://localhost:3000
   control-agent-server api OPTIONS /api/settings --auth none --header 'Origin: https://qa-f03-other.example' --header 'Access-Control-Request-Method: GET' \
     --expect 400 --check-header access-control-allow-origin missing
-  control-agent-server api OPTIONS /api/settings --auth none --header 'Origin: https://qa-f03.example' --header 'Access-Control-Request-Method: GET' --expect 200 --check-header access-control-allow-origin eq https://qa-f03.example --save F03.init-delivered-cors-origins/preflight  # bug: status eq 400 && response.body contains 'Disallowed CORS origin'
+  control-agent-server api OPTIONS /api/settings --auth none --header 'Origin: https://qa-f03.example' --header 'Access-Control-Request-Method: GET' --expect 200 --check-header access-control-allow-origin eq https://qa-f03.example --save F03.init-delivered-cors-origins/preflight
   ```
   The localhost preflight is allowed (the always-on allowlist, positive
   control) and an origin nobody delivered is refused with 400 (the
-  middleware discriminates). The delivered origin should be echoed in
-  `access-control-allow-origin` with 200; today it gets the same 400
-  `Disallowed CORS origin` as the undelivered one, because `CORSDispatcher`
-  copied the boot config's `allow_cors_origins` when the app was built.
+  middleware discriminates). The delivered origin is echoed in
+  `access-control-allow-origin` with 200: `CORSDispatcher` rebuilds its
+  default CORS branch when `app.state.config` changes, which `/api/init` does.
 - **Second init is 400 (`F03.init-second-call-400`).** Init is one-shot, and the delivered `secret_key` is now the init key.
   ```sh
   control-agent-server api POST /api/init --auth none --header "X-Init-API-Key: $SK" --json '{}' --expect 401 --save F03.init-second-call-400/old-key
@@ -522,12 +523,9 @@ Preconditions:
   not a rollback; resend the full env on retry.
 - `OH_DEFERRED_INIT` must be `1`/`true` (case-insensitive); `yes` parses as
   False.
-- An init-delivered `allow_cors_origins` is a no-op
-  (`F03.init-delivered-cors-origins`): `create_app` adds `CORSDispatcher`
-  with the boot config's list, which it copies, and nothing rebuilds it at
-  init. The same origin in the boot config (`restart --config-json
-  '{"deferred_init": false, "allow_cors_origins": ["https://qa-f03.example"]}'`)
-  passes the same preflight with 200 (observed live; not asserted here).
+- An init-delivered `allow_cors_origins` replaces the boot config's list
+  rather than adding to it (`F03.init-delivered-cors-origins`); localhost and
+  `DOCKER_HOST_ADDR` stay allowed either way.
 - With a delivered `max_concurrent_runs` of 1, a `POST /api/conversations`
   also takes the slot while it initializes, so create every conversation
   before starting a run (`F03.init-delivered-max-runs`).

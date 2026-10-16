@@ -799,6 +799,66 @@ class TestEndToEndOverLifespan:
             finally:
                 _reset_conversation_singleton()
 
+    def test_cors_origins_delivered_at_init_pass_preflight(self, tmp_path):
+        """``allow_cors_origins`` delivered by /api/init must take effect: a
+        preflight from that origin is allowed afterwards."""
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        delivered = "https://gui.example.com"
+        preflight_headers = {"Access-Control-Request-Method": "GET"}
+        with TestClient(create_app(cfg)) as client:
+            try:
+                before = client.options(
+                    "/api/settings", headers={"Origin": delivered, **preflight_headers}
+                )
+                assert before.status_code == 400
+
+                resp = client.post(
+                    "/api/init",
+                    json={
+                        "allow_cors_origins": [delivered],
+                        # Sets a root_path, which the CORS dispatcher strips.
+                        "web_url": "https://example.com/rt/qa/",
+                        "conversations_path": str(tmp_path / "u" / "convs"),
+                        "bash_events_dir": str(tmp_path / "u" / "bash"),
+                    },
+                )
+                assert resp.status_code == 200
+
+                after = client.options(
+                    "/api/settings", headers={"Origin": delivered, **preflight_headers}
+                )
+                assert after.status_code == 200
+                assert after.headers["access-control-allow-origin"] == delivered
+
+                other_origin = "https://other.example.com"
+                other = client.options(
+                    "/api/settings",
+                    headers={"Origin": other_origin, **preflight_headers},
+                )
+                assert other.status_code == 400
+                assert "access-control-allow-origin" not in other.headers
+
+                localhost = client.options(
+                    "/api/settings",
+                    headers={"Origin": "http://localhost:3000", **preflight_headers},
+                )
+                assert localhost.status_code == 200
+
+                # Workspace cookie routes keep their wildcard CORS.
+                workspace = client.options(
+                    "/api/auth/workspace-session",
+                    headers={"Origin": other_origin, **preflight_headers},
+                )
+                assert workspace.status_code == 200
+                assert workspace.headers["access-control-allow-origin"] == other_origin
+            finally:
+                _reset_conversation_singleton()
+
     def test_init_api_key_required_when_configured(self, tmp_path):
         _reset_conversation_singleton()
         cfg = Config(
