@@ -12,7 +12,7 @@ that map's `Fnn`.
 
 Maintenance baseline: main@4cc058275c5a08d845bd846576aafc80e5dd7d0d (2026-10-11). The first mapping; the next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **458 sub-features**, **29 of them untested** (no unit or cross
+The map has **459 sub-features**, **29 of them untested** (no unit or cross
 test exercises the behavior; most of those have an example script).
 
 ## What each sub-feature links
@@ -83,7 +83,7 @@ an interactive login are labeled **blocked**.
 | S10 | [Hooks](S10-hooks.md) | config format and discovery, matchers, command hooks, blocking tool calls and prompts, context injection, Stop, SessionStart and SessionEnd, `HookExecutionEvent`, prompt and agent hooks, plugin hooks | `Conversation(hook_config=HookConfig(...))`, `HookDefinition(type=)`, `HookManager` | llm, git | 20 | 1 |
 | S11 | [Sub-agents and delegation](S11-subagents-delegation.md) | the `task` tool lifecycle, agent registry, Markdown agent files and `AgentDefinition`, built-in agents, `SubAgentScope`, the legacy delegate executor | `Tool(name=TaskToolSet.name)`, `register_agent`, `.agents/agents/*.md` | llm | 23 | 2 |
 | S12 | [Critic and critic-driven refinement](S12-critic.md) | `CriticResult`, rule critics, evaluation modes, iterative refinement, `APIBasedCritic`, critic from settings | `Agent(critic=APIBasedCritic(...))`, `event.critic_result` | llm, network | 15 | 4 |
-| S13 | [Security analyzers, confirmation mode and secrets](S13-security-confirmation.md) | risk levels, confirmation policies, approve and reject, LLM, pattern, policy-rail, ensemble, ToolShield and GraySwan analyzers, secret sources, env injection, masking | `set_confirmation_policy`, `set_security_analyzer`, `Conversation(secrets=)` | llm, network | 21 | 0 |
+| S13 | [Security analyzers, confirmation mode and secrets](S13-security-confirmation.md) | risk levels, confirmation policies, approve and reject, LLM, pattern, policy-rail, ensemble, ToolShield, GraySwan and Jev analyzers, secret sources, env injection, masking | `set_confirmation_policy`, `set_security_analyzer`, `Conversation(secrets=)` | llm, network | 22 | 0 |
 | S14 | [Core tools and tool presets](S14-core-tools.md) | terminal (tmux and subprocess), file editor, apply_patch, Gemini file tools, glob, grep, output masking, default, GPT-5 and Gemini presets | `Tool(name="terminal" \| "file_editor" \| ...)`, `get_default_agent`, `get_gpt5_*`, `get_gemini_*` | llm, tmux, git, network | 24 | 0 |
 | S15 | [Browser tools and session recording](S15-browser.md) | `BrowserToolSet`, Chromium detection and fallback, navigation, interaction, tabs, storage, screenshots, rrweb recording | `Tool(name="browser_tool_set")`, `BrowserToolExecutor` | chromium, llm, network | 17 | 0 |
 | S16 | [Planning, task tracking, oracle, ToM and workflow tools](S16-planning-workflow-tools.md) | task tracker, planning preset and PLAN.md editor, plan-then-execute, `ask_oracle`, `tom_consult`, sleeptime compute, the workflow tool | `Tool(name="task_tracker" \| "ask_oracle" \| "tom_consult" \| "workflow_tool_set")`, `get_planning_agent` | llm | 20 | 6 |
