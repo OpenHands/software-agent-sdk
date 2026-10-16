@@ -14,6 +14,7 @@ from unittest.mock import create_autospec, patch
 
 import pytest
 
+from openhands.sdk.extensions.fetch import get_cache_path
 from openhands.sdk.git.cached_repo import GitHelper
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.plugin import Plugin, PluginFetchError
@@ -46,6 +47,29 @@ def test_fetch_generic_error_raises_plugin_fetch_error(tmp_path: Path):
         fetch_plugin(
             "github:owner/repo",
             cache_dir=tmp_path,
+            git_helper=mock_git,
+        )
+
+
+def test_fetch_unknown_ref_from_existing_cache_raises_plugin_fetch_error(
+    tmp_path: Path,
+):
+    source = "https://github.com/owner/repo.git"
+    cache_path = get_cache_path(source, tmp_path)
+    cache_path.mkdir(parents=True)
+    (cache_path / ".git").mkdir()
+    mock_git = create_autospec(GitHelper, instance=True)
+    mock_git.checkout_requested_ref.side_effect = GitCommandError(
+        "unknown ref",
+        command=["git", "checkout", "missing-ref"],
+        exit_code=1,
+    )
+
+    with pytest.raises(PluginFetchError, match="Failed to fetch plugin"):
+        fetch_plugin(
+            source,
+            cache_dir=tmp_path,
+            ref="missing-ref",
             git_helper=mock_git,
         )
 

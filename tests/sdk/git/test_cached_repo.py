@@ -75,6 +75,7 @@ def test_clone_removes_existing_directory(tmp_path: Path):
 def test_update_fetches_and_resets(tmp_path: Path):
     mock_git = create_autospec(GitHelper)
     mock_git.get_current_branch.return_value = "main"
+    mock_git.needs_explicit_branch_fetch.return_value = False
 
     _update_repository(tmp_path, None, mock_git)
 

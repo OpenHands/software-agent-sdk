@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import BaseModel
 
+from openhands.sdk.extensions.fetch import ExtensionFetchError
 from openhands.sdk.extensions.installation import (
     InstallationInterface,
     InstallationManager,
@@ -188,6 +189,33 @@ def test_install_with_force_overwrites(
     manager.install(mock_extension_dir, force=True)
 
     assert not marker_file.exists()
+
+
+def test_failed_force_install_preserves_files_and_metadata(
+    manager: InstallationManager[MockExtension],
+    mock_extension_dir: Path,
+    installation_dir: Path,
+    mock_extension: MockExtension,
+):
+    manager.install(mock_extension_dir)
+    marker_file = installation_dir / mock_extension.name / "marker.txt"
+    marker_file.write_text("original")
+    metadata_path = installation_dir / ".installed.json"
+    metadata_before = metadata_path.read_bytes()
+
+    with patch(
+        "openhands.sdk.extensions.installation.manager.fetch_with_resolution",
+        side_effect=ExtensionFetchError("unknown ref"),
+    ):
+        with pytest.raises(ExtensionFetchError, match="unknown ref"):
+            manager.install(
+                source="github:org/repo",
+                ref="missing-ref",
+                force=True,
+            )
+
+    assert marker_file.read_text() == "original"
+    assert metadata_path.read_bytes() == metadata_before
 
 
 def test_install_invalid_extension_name_raises_error(
