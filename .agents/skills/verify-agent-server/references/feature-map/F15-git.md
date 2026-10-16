@@ -43,7 +43,7 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 - `F15.diff-commit`: `commit=<sha>` returns the file as that commit changed it, read from git objects: `original` from the first parent (empty for the root commit or an added file), `modified` from the commit (empty for a file it deleted), also for files no longer on disk and for abbreviated SHAs.
 - `F15.diff-errors`: `ref` together with `commit` is 400, a non-hex `commit` 422, an unknown commit or ref 400, a missing file 400, a file over 1 MiB 400, and no `path` 422.
 - `F15.diff-whitespace`: an unchanged file with leading indentation or trailing blank lines diffs to identical `original` and `modified`, so a file that `changes` does not list shows no diff.
-- `F15.diff-deleted-file`: the working-tree diff of a file that `changes` lists as `DELETED` returns its base text as `original` and `""` as `modified`; today it is 400 `File does not exist`.
+- `F15.diff-deleted-file`: the working-tree diff of a file that `changes` lists as `DELETED` returns its base text as `original` and `""` as `modified`; a path missing both on disk and at the base is still 400 `File does not exist`.
 - `F15.commits`: `commits` lists the history newest first with `sha`, `short_sha`, `subject`, `author` and an ISO 8601 `timestamp`, `has_more` tells whether `limit` cut it, and `limit` outside 1..200 is 422.
 - `F15.commit-changes`: `commits/{sha}/changes` lists one commit's files against its first parent (the root commit as all `ADDED`, a rename as `DELETED` plus `ADDED`), accepts abbreviated SHAs, answers 400 for an unknown SHA and 422 for a non-hex or shorter-than-4 SHA.
 - `F15.scoped`: the four conversation-scoped routes on a conversation whose workspace is the fixture repository return exactly what the global routes return.
@@ -432,24 +432,21 @@ Preconditions:
   `modified`, `"\n".join(text.splitlines())`. The commit-mode diff
   strips both sides alike, so it shows no phantom change but loses the
   whitespace.
-- **Diff of a deleted file (`F15.diff-deleted-file`), known bug.** `changes`
-  lists a deleted file; the diff the Changes tab opens for it fails.
+- **Diff of a deleted file (`F15.diff-deleted-file`).** `changes` lists a
+  deleted file; the diff the Changes tab opens for it shows the deletion.
   ```sh
   cp -r "$REPO" "$F/deleted"
   rm "$F/deleted/src/util.py"
   control-agent-server api GET /api/git/changes --query path="$F/deleted" --expect 200 \
     --check 2.status eq DELETED --check 2.path eq src/util.py
   control-agent-server api GET /api/git/diff --query path="$F/deleted/src/util.py" --expect 200 \
-    --check original eq "$(git -C "$REPO" show HEAD:src/util.py)" --check modified eq '' --save F15.diff-deleted-file/diff  # bug: status eq 400 && response.body.detail contains 'File does not exist'
+    --check original eq "$(git -C "$REPO" show HEAD:src/util.py)" --check modified eq '' --save F15.diff-deleted-file/diff
   ```
   Expected: the base text as `original` and `""` as `modified`, as the
-  commit-mode diff already does for deleted files. Actual:
-  `400 {"detail": "File does not exist: .../src/util.py"}`: `get_git_diff`
-  checks the disk before it looks at git. The old side of a working-tree
-  rename fails the same way. No route returns a working-tree-deleted file's
-  base text, so the Changes tab lists a deletion it cannot show. The SDK
-  unit test `test_get_git_diff_deleted_file` currently pins the
-  `GitPathError`, so a fix updates it too.
+  commit-mode diff does for deleted files; the old side of a working-tree
+  rename diffs the same way. `get_git_diff` reads a path missing from disk
+  from the base ref and answers `File does not exist` only when the base has
+  no file there either (`F15.diff-errors/missing`).
 - **Commit history (`F15.commits`).**
   ```sh
   control-agent-server api GET /api/git/commits --query path="$REPO" --expect 200 --check commits len-eq 2 \
