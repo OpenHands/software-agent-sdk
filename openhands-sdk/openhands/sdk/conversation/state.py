@@ -149,6 +149,20 @@ class ConversationState(OpenHandsModel):
         ),
     )
 
+    # Ambient (installed/local) plugins are re-discovered on every load, but their
+    # contributions are merged into the persisted agent. Recording what they
+    # contributed lets a resumed conversation drop them before re-discovery, so
+    # a since-disabled or removed plugin does not linger. ``None`` marks a
+    # conversation persisted before these fields existed.
+    ambient_plugin_skills: list[str] | None = Field(
+        default=None,
+        description="Skill names contributed by ambient plugins at the last load.",
+    )
+    ambient_plugin_mcp_servers: list[str] | None = Field(
+        default=None,
+        description="MCP server names contributed by ambient plugins at the last load.",
+    )
+
     # Hook-blocked actions: action_id -> blocking reason
     blocked_actions: dict[str, str] = Field(
         default_factory=dict,
@@ -581,6 +595,8 @@ class ConversationState(OpenHandsModel):
             max_iterations=max_iterations,
             stuck_detection=stuck_detection,
             tags=tags or {},
+            ambient_plugin_skills=[],
+            ambient_plugin_mcp_servers=[],
         )
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)

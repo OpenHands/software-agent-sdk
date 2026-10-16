@@ -624,7 +624,7 @@ Preconditions:
   first `full_state` frame embeds hook configuration); the same reads with
   the plugin enabled match in `F26.conversation-ambient`. The plugin stays
   disabled.
-- **Resume after disabling (`F26.conversation-resume-disabled`), known bug.**
+- **Resume after disabling (`F26.conversation-resume-disabled`).**
   Install and enable the plugin (`force`, so the bullet also runs alone with
   `map run --only`), let a conversation load it with a plain prompt, disable
   the plugin, restart the server, and send the command, for the first time,
@@ -642,21 +642,23 @@ Preconditions:
   control-agent-server ws read qa-f26-resume --kinds MessageEvent --contains '"text": "/qa-f26-inst:qa-hello"' --expect-min 1 --wait 30
   control-agent-server ws read qa-f26-resume --kinds HookExecutionEvent --contains QA_F26_INST_HOOK --expect-none
   control-agent-server ws stop qa-f26-resume --kinds MessageEvent --contains '"activated_skills": ["qa-f26-inst:qa-hello"]' --expect-none \
-    --save F26.conversation-resume-disabled/frames  # bug: matching ge 1
+    --save F26.conversation-resume-disabled/frames
   control-agent-server api GET "/api/conversations/$CIDR" --query include_skills=true --expect 200 \
-    --check agent.agent_context.skills not-contains qa-f26-inst --save F26.conversation-resume-disabled/conversation  # bug: status eq 200 && response.body.agent.agent_context.skills contains qa-f26-inst
+    --check agent.agent_context.skills not-contains qa-f26-inst --save F26.conversation-resume-disabled/conversation
   ```
   The conversation loaded the plugin before it was disabled (its hook ran
   for the prompt). Ambient plugins are not pinned to a conversation; on
   resume they are "re-discovered from disk / current enabled state"
-  (`LocalConversation._ensure_plugins_loaded`), so the resumed turn should
-  behave like `F26.conversation-disabled`. It does run the user hook and not
-  the disabled plugin's hook, but the disabled plugin's command still
-  activates (`activated_skills: ["qa-f26-inst:qa-hello"]` on the user
-  message, the first marked check), and the agent context still lists its
-  skills (the second): they were merged into the agent and persisted in
-  `base_state.json`, so only its hooks follow the current state (by the same
-  path, read from source and not driven here, its MCP servers stay too). The command is sent here for the
+  (`LocalConversation._ensure_plugins_loaded`), so the resumed turn
+  behaves like `F26.conversation-disabled`: the user hook runs, the disabled
+  plugin's hook does not, its command does not activate (no
+  `activated_skills: ["qa-f26-inst:qa-hello"]` on the user message), and the
+  agent context lists none of its skills. Ambient contributions are merged
+  into the agent persisted in `base_state.json`, so the conversation records
+  their skill and MCP server names and drops them before re-discovery (read
+  from source and not driven here: the MCP servers follow the same path, and
+  a conversation persisted before that record existed drops what disabled
+  installed plugins contribute). The command is sent here for the
   first time because a keyword skill activates once per conversation
   (`activated_knowledge_skills`). The plugin stays disabled.
 - **Persistence across a restart (`F26.restart-persist`).** Disable
@@ -859,8 +861,8 @@ Preconditions:
   name counts, whatever its source.
 - Ambient plugins load once per conversation, at its first message or run.
   Disabling or uninstalling a plugin does not unload it from a conversation
-  that is already running; after a restart its hooks are gone but its skills
-  and commands stay (`F26.conversation-resume-disabled`).
+  that is already running; after a restart it is gone, hooks, skills,
+  commands and MCP servers alike (`F26.conversation-resume-disabled`).
 - `GET /api/conversations/{id}` trims `agent.agent_context.skills` unless
   `include_skills=true`, so a plain `GET` shows no plugin skills.
 - `POST /api/plugins` needs a JSON body; without one it is 422 (the
