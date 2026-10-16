@@ -118,6 +118,13 @@ Then exactly four H2 sections, in this order:
    (`RemoteConversation.pause()`), the TypeScript client method, the config
    field or environment variable, and (for context only) the Agent Canvas
    surface that calls it. Note which entry point each recipe exercises.
+   Which consumer features call a server feature is not recorded here: the
+   consumer maps (verify-openhands in OpenHands/OpenHands, verify-automation
+   in OpenHands/automation) declare it on a `Server:` line in each family's
+   head, with this map's IDs (`Server: F13, F15.changes, F16.`), because only
+   their code knows what it calls. `control-agent-server map dependents <ID>`
+   reads them. Keep this map's IDs stable: renaming or retiring one breaks
+   those lines (their `map check --server-map` reports it).
 3. `## Driving it with control-agent-server`: starts with `Preconditions:`
    (run flags, LLM profile, fixtures, earlier bullets) as bullets, then
    labeled bullets that pair one consumer action with its commands, in a
