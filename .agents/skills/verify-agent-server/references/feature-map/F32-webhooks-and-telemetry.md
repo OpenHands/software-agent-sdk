@@ -56,7 +56,7 @@ Routes: none
 - `F32.telemetry-salt-and-kind`: without a salt `conversation_ref` is keyed by `OH_SECRET_KEY` (the same ref across restarts); `OH_TELEMETRY_SALT` re-keys it (again the same across restarts), and `OH_TELEMETRY_DEPLOYMENT_KIND` tags every event.
 - `F32.telemetry-salt-docs`: the `TelemetrySpec.salt` description published in the OpenAPI schema states the real fallback key (reproduces a documentation bug; see Gotchas).
 - `F32.deferred-init`: a dormant pod sends nothing until `POST /api/init` delivers `telemetry` and `webhooks`; then `server_started`, conversation telemetry and webhooks flow.
-- `F32.deferred-init-flag`: events from an initialized deferred pod report `deferred_init: true` (reproduces a real mislabel; see Gotchas).
+- `F32.deferred-init-flag`: events from an initialized deferred pod report `deferred_init: true`.
 
 ## How to get to it (agent POV)
 
@@ -677,16 +677,17 @@ Preconditions:
   delivered endpoint, and its conversation's events and info to the
   delivered webhook. The second server is stopped (the `trap` also stops it
   if a command fails).
-- **Deferred pods are labelled as such (`F32.deferred-init-flag`), known bug.**
+- **Deferred pods are labelled as such (`F32.deferred-init-flag`).**
   The events the initialized pod sent above should say it booted deferred.
+  Requires: `F32.deferred-init`
   ```sh
   control-agent-server sink read --name qa-f32-deferred --path /init --contains agent_server.server_started --expect-min 1
   control-agent-server sink read --name qa-f32-deferred --path /init --contains '"deferred_init": ' --expect-min 1
-  control-agent-server sink read --name qa-f32-deferred --path /init --contains '"deferred_init": true' --expect-min 1 --save F32.deferred-init-flag/events  # bug: requests eq 0
+  control-agent-server sink read --name qa-f32-deferred --path /init --contains '"deferred_init": true' --expect-min 1 --save F32.deferred-init-flag/events
   ```
-  Expected: `deferred_init: true` in the runtime properties. Actual: `false`
-  on every event, because `/api/init` builds the telemetry sink from the
-  merged config, which clears `deferred_init`. See Gotchas.
+  The runtime properties say `deferred_init: true`: `/api/init` builds the
+  telemetry sink with that flag set, although the merged config it boots the
+  services from clears `deferred_init` (the pod is no longer dormant).
 
 ## Gotchas
 
@@ -807,15 +808,12 @@ Preconditions:
   `total_tokens_bucket` and `cost_bucket` are always `unknown`.
   `test_outcome_reports_real_bucketed_usage` only feeds `full_state`
   snapshots, so it passes. Low severity (analytics quality).
-- **`deferred_init` label (`F32.deferred-init-flag`).**
-  `_build_initialized_config` sets `deferred_init=False` and `/api/init`
-  builds the telemetry sink, runtime properties included, from that merged
-  config, and a dormant pod emits nothing in practice (its boot sink exists
-  but `server_started` is withheld and its `/api/*` routes answer 503). So
-  the property is `false` on every event a deferred pod sends; the README
-  lists it among the runtime properties without defining it, so "booted
-  deferred" is the reading this bullet assumes. Low severity (analytics
-  quality).
+- **`deferred_init` label (`F32.deferred-init-flag`).** The telemetry
+  property means "this pod booted deferred". A dormant pod emits nothing in
+  practice (its boot sink exists but `server_started` is withheld and its
+  `/api/*` routes answer 503), so the label shows on the events it sends
+  after `/api/init`, which rebuilds the sink with `deferred_init=True` even
+  though `_build_initialized_config` clears the config's `deferred_init`.
 - `request_failed` is emitted only for unhandled exceptions; a route that
   raises `HTTPException(500)` (for example the workspaces registry on an
   unreadable file) is not reported. `F32.telemetry-request-failed` borrows

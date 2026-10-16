@@ -203,7 +203,8 @@ Properties are limited to:
 - **Envelope** — `schema_version`, `source`.
 - **Release / runtime** — `server_version`, `sdk_version`, `tools_version`,
   `build_git_sha`, `build_git_ref`, `python_version`, `platform`,
-  `deferred_init`.
+  `deferred_init` (`true` when the pod booted dormant and was initialized
+  through `POST /api/init`).
 - **Conversation shape** — `conversation_ref`, `llm_model_family`, `agent_kind`,
   `tool_count`, `is_fork`, `has_agent_profile`, `workspace_kind`,
   `confirmation_policy`.
