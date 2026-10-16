@@ -773,8 +773,20 @@ async def submit_mcp_oauth_callback(
 ) -> MCPOAuthStatusResponse:
     job = _get_oauth_job(job_id)
     _validate_callback_url(request.callback_url, job)
-    async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
-        response = await client.get(request.callback_url)
+    if job.done.is_set():
+        # A replayed or late callback: the probe finished and its callback
+        # server is closed, so report the outcome instead of forwarding.
+        return job.to_status_response()
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+            response = await client.get(request.callback_url)
+    except httpx.TransportError as exc:
+        # The probe may have finished while we were forwarding.
+        if job.done.is_set():
+            return job.to_status_response()
+        raise HTTPException(
+            status_code=409, detail="OAuth callback server is not listening"
+        ) from exc
     if response.status_code >= 400:
         return MCPOAuthStatusResponse(
             ok=False,

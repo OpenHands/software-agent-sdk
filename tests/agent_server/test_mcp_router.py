@@ -17,7 +17,9 @@ from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.mcp_router import (
     _OAUTH_PROBE_JOB_TTL_SECONDS,
+    MCPTestFailure,
     MCPTestRequest,
+    MCPTestSuccess,
     _BrowserCoordinatedOAuth,
     _MCPOAuthProbeJob,
     _oauth_probe_jobs,
@@ -864,6 +866,66 @@ def test_mcp_oauth_callback_rejects_unknown_job(client: TestClient):
     )
 
     assert response.status_code == 404
+
+
+@pytest.fixture
+def closed_callback_job() -> Generator[_MCPOAuthProbeJob]:
+    """A registered job whose local callback server is no longer listening."""
+    job = _MCPOAuthProbeJob(
+        request=MCPTestRequest.model_validate(
+            {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}
+        ),
+        cipher=None,
+    )
+    job.set_authorization_url("https://oauth.example.com/authorize?state=s")
+    job.set_callback_ready(f"http://localhost:{_find_free_port()}/callback")
+    _register_oauth_job(job)
+    try:
+        yield job
+    finally:
+        with _oauth_probe_jobs_lock:
+            _oauth_probe_jobs.pop(job.id, None)
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_status"),
+    [
+        (MCPTestSuccess(tools=["echo"]), "succeeded"),
+        (
+            MCPTestFailure(error="Timed out", error_kind="timeout"),
+            "failed",
+        ),
+    ],
+)
+def test_mcp_oauth_callback_replay_on_finished_job_returns_job_status(
+    client: TestClient,
+    closed_callback_job: _MCPOAuthProbeJob,
+    result,
+    expected_status: str,
+):
+    closed_callback_job.set_result(result)
+
+    response = client.post(
+        f"/api/mcp/oauth/callback/{closed_callback_job.id}",
+        json={"callback_url": f"{closed_callback_job.callback_url}?code=x&state=s"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == expected_status
+    assert closed_callback_job.status == expected_status
+
+
+def test_mcp_oauth_callback_server_gone_on_live_job_returns_409(
+    client: TestClient, closed_callback_job: _MCPOAuthProbeJob
+):
+    response = client.post(
+        f"/api/mcp/oauth/callback/{closed_callback_job.id}",
+        json={"callback_url": f"{closed_callback_job.callback_url}?code=x&state=s"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "OAuth callback server is not listening"
+    assert closed_callback_job.status == "authorizing"
 
 
 def test_register_oauth_job_sweeps_expired_jobs():
