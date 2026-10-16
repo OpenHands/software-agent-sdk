@@ -12,6 +12,12 @@ from openhands.sdk.tool.builtins.classify_and_switch_llm import (
     ClassifyAndSwitchLLMObservation,
     ClassifyAndSwitchLLMTool,
 )
+from openhands.sdk.tool.builtins.conversation_history import (
+    ConversationHistoryAction,
+    ConversationHistoryExecutor,
+    ConversationHistoryObservation,
+    ConversationHistoryTool,
+)
 from openhands.sdk.tool.builtins.finish import (
     FinishAction,
     FinishExecutor,
@@ -55,6 +61,7 @@ BUILT_IN_TOOLS = [FinishTool, ThinkTool]
 # conditional wiring in `Agent._initialize`.
 BUILT_IN_TOOL_CLASSES = {
     **{tool.__name__: tool for tool in BUILT_IN_TOOLS},
+    ConversationHistoryTool.__name__: ConversationHistoryTool,
     InvokeSkillTool.__name__: InvokeSkillTool,
     SwitchLLMTool.__name__: SwitchLLMTool,
     VisionInspectTool.__name__: VisionInspectTool,
@@ -82,6 +89,10 @@ __all__ = [
     "ClassifyAndSwitchLLMAction",
     "ClassifyAndSwitchLLMObservation",
     "ClassifyAndSwitchLLMExecutor",
+    "ConversationHistoryAction",
+    "ConversationHistoryExecutor",
+    "ConversationHistoryObservation",
+    "ConversationHistoryTool",
     "FinishTool",
     "FinishAction",
     "FinishObservation",
