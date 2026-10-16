@@ -35,7 +35,7 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - `F04.create-observability-precedence`: body `observability_span_name`, `observability_tags` and `observability_parent_span_context` win over their headers, header metadata merges under the body's (body keys win), the parent-span header applies when the body has none, and an over-long or malformed span-name header, non-scalar header metadata and an empty body tag are 422.
 - `F04.create-secrets`: start-time `StaticSecret` values appear masked in the create response and are encrypted at rest.
 - `F04.create-secrets-get`: a start-time secret is listed by `GET /api/conversations/{id}` right after the create.
-- `F04.create-secrets-plain`: a plain-string secret value in the create body is accepted or rejected with 422, never a 500.
+- `F04.create-secrets-plain`: a plain-string secret value in the create body is rejected with 422, never a 500.
 - `F04.run-real`: an initial message runs on DeepSeek flash to `finished`; the events socket replays the run, the final response is non-empty and autotitle names the conversation.
 - `F04.final-response`: `agent_final_response` is empty before the agent answers, carries the exact `finish` message afterwards, and is 404 for an unknown id.
 - `F04.title-llm-profile`: with `title_llm_profile` naming a saved LLM profile, autotitle calls that profile and not the agent's LLM; an unknown profile name falls back to the agent's LLM and never fails the create.
@@ -404,17 +404,17 @@ EOF
   live state in place without an autosave, and GET reads the
   `base_state.json` snapshot. The secret appears after the next state save (a
   tags PATCH, a message), so the runtime itself still has it.
-- **Plain-string secret value (`F04.create-secrets-plain`), known bug.**
-  `POST .../secrets` accepts `{"NAME": "value"}`; the create body should either
-  accept it too or refuse it with 422.
+- **Plain-string secret value (`F04.create-secrets-plain`).**
+  `POST .../secrets` accepts `{"NAME": "value"}`, but the create body takes
+  only secret objects, so a plain string there is refused with 422.
   ```sh
   control-agent-server api POST /api/conversations \
     --json "{\"workspace\": {\"working_dir\": \"$W\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false, \"secrets\": {\"QA_F04_PLAIN\": \"qa-f04-plain-value\"}}" \
-    --expect 201,422 --save F04.create-secrets-plain/start  # bug: status eq 500 && response.body.exception contains "'str' object has no attribute 'pop'"
+    --expect 422 --check detail.0.type eq model_attributes_type --check detail.0.loc.2 eq QA_F04_PLAIN \
+    --save F04.create-secrets-plain/start
   ```
-  Today the server answers 500 `"exception": "'str' object has no attribute
-  'pop'"`: `DiscriminatedUnionMixin` calls `.pop("kind")` on the string, an
-  `AttributeError` that escapes request validation.
+  The answer is a standard 422 validation error on
+  `secrets.QA_F04_PLAIN` (`model_attributes_type`), never a 500.
 - **A real run (`F04.run-real`).** DeepSeek flash answers a one-line prompt;
   autotitle is on.
   ```sh
