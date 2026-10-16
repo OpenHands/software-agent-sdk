@@ -101,6 +101,10 @@ class ConversationRunLimitExceeded(RuntimeError):
     """The server has no capacity to start another conversation run."""
 
 
+class CondensationUnavailable(ValueError):
+    """The conversation's agent has no condenser that handles requests."""
+
+
 class _RunPermit:
     """Ref-counted permit shared by the chained runs of one admission session."""
 
@@ -2171,6 +2175,20 @@ class EventService:
         """
         if not self._conversation:
             raise ValueError("inactive_service")
+
+        # A missing or request-ignoring condenser is the caller's agent
+        # configuration, not a server fault: report it as such instead of
+        # letting LocalConversation's ValueError surface as a 500.
+        condenser = self._conversation.agent.condenser
+        if condenser is None:
+            raise CondensationUnavailable(
+                "Cannot condense conversation: No condenser configured"
+            )
+        if not condenser.handles_condensation_requests():
+            raise CondensationUnavailable(
+                f"Cannot condense conversation: Condenser "
+                f"{type(condenser).__name__} does not handle condensation requests"
+            )
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._conversation.condense)

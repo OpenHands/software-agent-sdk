@@ -28,6 +28,7 @@ from openhands.agent_server.conversation_service import (
     InvalidParentConversation,
 )
 from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.event_service import CondensationUnavailable
 from openhands.agent_server.launch import launch_http_exception
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
@@ -765,14 +766,20 @@ async def ask_agent(
 
 @conversation_router.post(
     "/{conversation_id}/condense",
-    responses={404: {"description": "Item not found"}},
+    responses={
+        404: {"description": "Item not found"},
+        409: {"description": "The agent has no condenser that handles requests"},
+    },
 )
 async def condense_conversation(
     conversation_id: UUID,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> Success:
     """Force condensation of the conversation history."""
-    success = await conversation_service.condense(conversation_id)
+    try:
+        success = await conversation_service.condense(conversation_id)
+    except CondensationUnavailable as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if not success:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return Success()

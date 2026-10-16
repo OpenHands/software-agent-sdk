@@ -19,7 +19,11 @@ from pydantic import SecretStr
 
 from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.event_service import EventService, RunSlot
+from openhands.agent_server.event_service import (
+    CondensationUnavailable,
+    EventService,
+    RunSlot,
+)
 from openhands.agent_server.file_router import _create_zip_from_directory
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
@@ -30,6 +34,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import LLM, Agent, AgentBase, Conversation, Message
 from openhands.sdk.agent import ACPAgent
+from openhands.sdk.context.condenser import NoOpCondenser
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.fifo_lock import FIFOLock
@@ -3765,3 +3770,27 @@ async def test_event_service_creates_lease_with_custom_ttl(tmp_path: Path) -> No
     assert service._lease is not None
     assert service._lease._ttl_seconds == 10.0
     assert (tmp_path / stored.id.hex / LEASE_FILE_NAME).exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("condenser", "message"),
+    [
+        (None, "No condenser configured"),
+        (NoOpCondenser(), "NoOpCondenser does not handle condensation requests"),
+    ],
+)
+async def test_condense_without_request_handling_condenser_is_refused(
+    event_service: EventService, condenser, message: str
+) -> None:
+    """A condenser that cannot serve a request is the caller's configuration,
+    so condense raises CondensationUnavailable (mapped to 409) instead of
+    letting LocalConversation's ValueError become a 500."""
+    conversation = MagicMock()
+    conversation.agent.condenser = condenser
+    event_service._conversation = conversation
+
+    with pytest.raises(CondensationUnavailable, match=message):
+        await event_service.condense()
+
+    conversation.condense.assert_not_called()

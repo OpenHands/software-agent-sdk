@@ -14,7 +14,7 @@ from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import CondensationUnavailable, EventService
 from openhands.agent_server.launch import launch_source
 from openhands.agent_server.models import (
     ConversationInfo,
@@ -3064,3 +3064,25 @@ def test_runtime_requires_existing_conversation(
     )
     response = client.request(method, f"/api/conversations/{uuid4()}/runtime{suffix}")
     assert response.status_code == 404
+
+
+def test_condense_conversation_without_condenser_returns_409(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """condense answers 409 with the cause when the agent cannot condense."""
+    mock_conversation_service.condense.side_effect = CondensationUnavailable(
+        "Cannot condense conversation: No condenser configured"
+    )
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(f"/api/conversations/{sample_conversation_id}/condense")
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == (
+            "Cannot condense conversation: No condenser configured"
+        )
+    finally:
+        client.app.dependency_overrides.clear()

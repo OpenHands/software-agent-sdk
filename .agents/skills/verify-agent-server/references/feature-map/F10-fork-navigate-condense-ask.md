@@ -58,7 +58,8 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
   `{"event_id": "<id>" | null}`; `{}` means null; query `include_skills`),
   200 `ConversationInfo` with the new `leaf_event_id`; 404, 422.
 - REST: `POST /api/conversations/{conversation_id}/condense` (no body), 200
-  `{"success": true}` once the condensation step finished; 404, 500.
+  `{"success": true}` once the condensation step finished; 404, 409 (no
+  condenser that handles requests), 500.
 - REST: `POST /api/conversations/{conversation_id}/ask_agent` (body
   `{"question": "..."}`), 200 `{"response": "..."}`; 422, 500.
 - Second views used here: `GET /api/conversations/{conversation_id}`,
@@ -408,22 +409,20 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   ```
   Both calls fail, naming the cause (`Cannot condense conversation: No
   condenser configured` / `Condenser NoOpCondenser does not handle
-  condensation requests`; the check reads the whole body, so it holds
-  whether the cause is in `exception` today or in `detail` once
-  `F10.condense-status` is fixed), and neither conversation gains an event.
-- **Refusal status (`F10.condense-status`), known bug.** A missing condenser
+  condensation requests`; the check reads the whole body), and neither
+  conversation gains an event.
+- **Refusal status (`F10.condense-status`).** A missing condenser
   is the caller's configuration, not a server fault.
   ```sh
   control-agent-server api GET "/api/conversations/$NC" --quiet --check execution_status eq idle
-  control-agent-server api POST "/api/conversations/$NC/condense" --expect 4xx --save F10.condense-status/disabled  # bug: status eq 500 && response.body.exception contains 'No condenser configured'
-  control-agent-server api POST "/api/conversations/$NOOP/condense" --expect 4xx --save F10.condense-status/no-op  # bug: status eq 500 && response.body.exception contains 'NoOpCondenser does not handle condensation requests'
+  control-agent-server api POST "/api/conversations/$NC/condense" --expect 409 --check detail contains 'No condenser configured' --save F10.condense-status/disabled
+  control-agent-server api POST "/api/conversations/$NOOP/condense" --expect 409 --check detail contains 'NoOpCondenser does not handle condensation requests' --save F10.condense-status/no-op
   ```
-  Expected: a 4xx (400, 409 or 422) carrying the cause. Today both answer
-  500 `{"detail": "Internal Server Error", "exception": "Cannot condense
-  conversation: ...", "error_id": ...}`, and the server logs an unhandled
-  traceback: `LocalConversation._condense` raises `ValueError`, which neither
-  `EventService.condense` nor the router maps (the route documents only
-  404).
+  Both answer 409 with the cause in `detail` (`Cannot condense
+  conversation: ...`) and log no traceback: `EventService.condense` checks
+  the agent's condenser before stepping and the route maps that refusal to
+  409, since the same request succeeds once the agent has a condenser that
+  handles requests.
 - **Unreachable condenser model (`F10.condense-llm-failure`).** `OFF` uses
   the default summarizing condenser on an unreachable placeholder model.
   ```sh
