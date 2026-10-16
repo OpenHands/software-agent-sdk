@@ -32,7 +32,7 @@ Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`
 - `F30.chat-header-new-id`: a well-formed but unknown id in the header creates the conversation with exactly that id; a malformed id is 422 and creates nothing.
 - `F30.chat-reuse-keeps-llm`: on a continued conversation the requested model must still exist (404 otherwise) but is not applied: the conversation keeps its own LLM and system suffix, and the other profile's provider is never called.
 - `F30.chat-usage-per-request`: `usage` on a continued conversation reports that request's tokens, not the conversation's running total (reproduces a real bug).
-- `F30.chat-reuse-concurrent`: two overlapping requests on one conversation each get the answer to their own turn (reproduces a real bug: the first request returns the second request's answer).
+- `F30.chat-reuse-concurrent`: a request that overlaps another one on the same continued conversation is refused with 409 before its message is saved; the first request gets its own turn's answer, and the conversation takes the next turn once it returns.
 - `F30.chat-agent-tools`: the agent runs its own tools in the server workspace (a file appears there), the answer carries no `tool_calls`, and the client's `tools`/`tool_choice` are ignored.
 - `F30.chat-input-errors`: bad chat input fails before any conversation exists: 400 without a user message or with a bad content part, 404 for a model without the `openhands_` prefix or an unknown profile, 400 for an invalid profile name, 422 for schema errors.
 - `F30.observability-headers`: `X-OpenHands-Observability-*` headers are stored on the new conversation (chat and responses); invalid values are 422 before anything runs.
@@ -425,12 +425,12 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   `accumulated_token_usage`), so an OpenAI client that sums `usage` per
   request double-counts every earlier turn. The stream's usage chunk carries
   the same value (it is the response's `usage`).
-- **Overlapping turns on one conversation (`F30.chat-reuse-concurrent`), known bug.**
+- **Overlapping turns on one conversation (`F30.chat-reuse-concurrent`).**
   A stub whose second model call answers `QA_F30_RACE_B` after 8 s. The
   `llm-stub` steps cannot delay a reply, so the bullet rewrites the stub's
   script file (the stub rereads it on every request). Request X continues the
   conversation in the background; request Y follows while X's model call is
-  in flight.
+  in flight, then again after X returned.
   ```sh
   RACE=$(control-agent-server fixture llm-stub --name qa-f30-race --step reply:QA_F30_RACE_A \
     --step reply:QA_F30_RACE_B --step reply:QA_F30_RACE_C --print-path)
@@ -450,27 +450,28 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   control-agent-server sink read --name qa-f30-race --contains QA_F30_RACE_X --expect-min 1 --expect-max 1
   control-agent-server api POST /v1/chat/completions --auth bearer --timeout 180 --header "X-OpenHands-ServerConversation-ID: $QCID" \
     --json '{"model": "openhands_qa-f30-race", "messages": [{"role": "user", "content": "QA_F30_RACE_Y"}]}' \
+    --expect 409 --check detail contains 'already running' --expect-max-ms 5000 \
+    --check-header x-openhands-serverconversation-id missing --save F30.chat-reuse-concurrent/refused
+  wait "$XPID" || { cat "$F30/race-x.out"; false; }
+  control-agent-server api POST /v1/chat/completions --auth bearer --timeout 180 --header "X-OpenHands-ServerConversation-ID: $QCID" \
+    --json '{"model": "openhands_qa-f30-race", "messages": [{"role": "user", "content": "QA_F30_RACE_Y"}]}' \
     --check choices.0.message.content eq QA_F30_RACE_C --save F30.chat-reuse-concurrent/second
+  control-agent-server api GET "/api/conversations/$QCID/events/search" --query source=user --query body=QA_F30_RACE_Y \
+    --check items len-eq 1 --save F30.chat-reuse-concurrent/user-y-once
   control-agent-server api GET "/api/conversations/$QCID/events/search" --query source=agent \
     --query kind=openhands.sdk.event.llm_convertible.message.MessageEvent --check items len-eq 3 \
     --check items.1.llm_message.content.0.text eq QA_F30_RACE_B --check items.2.llm_message.content.0.text eq QA_F30_RACE_C \
     --save F30.chat-reuse-concurrent/agent-messages
-  wait "$XPID" || { cat "$F30/race-x.out"; false; }
-  control-agent-server state cat fixtures/qa-f30/race-x.json --check choices.0.message.content eq QA_F30_RACE_B  # bug: content.choices.0.message.content eq QA_F30_RACE_C
+  control-agent-server state cat fixtures/qa-f30/race-x.json --check choices.0.message.content eq QA_F30_RACE_B
   ```
-  The conversation answers X with `QA_F30_RACE_B` and finishes, then reruns
-  for Y and answers `QA_F30_RACE_C`; Y gets `QA_F30_RACE_C`, and X's request
-  succeeds (200). Expected: X gets `QA_F30_RACE_B`, its own turn's answer.
-  Today X also gets `QA_F30_RACE_C`: the `finished` state
-  between the two runs lasts a few milliseconds, the gateway polls a
-  continued conversation every 2 s
-  (`_wait_for_reused_conversation_completion`), so X misses it, waits
-  through Y's rerun, and returns the final answer of the conversation instead
-  of its own turn's. Because the miss depends on a 2 s poll against a window
-  of a few milliseconds, roughly one replay in several hundred may see X get
-  `QA_F30_RACE_B` and report `xpass`; rerun the bullet before removing the
-  marker. A fix that refuses Y with 409 instead of queueing it is also
-  correct; update the expectations for Y if that is the chosen fix.
+  Y, sent while X's turn runs, is refused at once with 409 and its message
+  is not saved (the gateway takes one turn at a time per conversation, and
+  also refuses a conversation that is already running from another API).
+  X gets `QA_F30_RACE_B`, its own turn's answer. Y sent again after X
+  returned gets `QA_F30_RACE_C`, and the conversation holds Y's message
+  once. Without the refusal, Y's message would be queued for a rerun and X,
+  which reads the conversation's latest final answer when its 2 s poll sees
+  a terminal state, would return Y's answer.
 - **The agent runs its own tools (`F30.chat-agent-tools`).** Ask the real
   model to use the terminal, and pass an OpenAI client tool with
   `tool_choice: required`.
@@ -909,11 +910,10 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   observability headers are validated (an unknown model is still 404) but not
   applied; the response's `model` echoes the request, not the LLM that ran.
   `/v1/responses` never reads the conversation header.
-- Do not overlap requests on one conversation. A message sent while the
-  conversation runs is queued for a rerun, and the waiting request returns
-  whatever the conversation's final answer is when its 2 s poll sees a
-  terminal state, which can be the later request's answer (see
-  `F30.chat-reuse-concurrent`).
+- A continued conversation takes one request at a time: a request that
+  overlaps a gateway turn on the same conversation, or arrives while the
+  conversation is running, is 409 and its message is not saved; retry it
+  after the earlier request returns (see `F30.chat-reuse-concurrent`).
 - `usage` is the conversation's accumulated usage (see
   `F30.chat-usage-per-request`); on a fresh conversation that equals the
   request's own usage summed over every model call the agent made.
