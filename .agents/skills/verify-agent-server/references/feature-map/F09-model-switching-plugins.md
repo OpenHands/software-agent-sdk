@@ -437,29 +437,25 @@ Preconditions:
   whitespace-only model on a live session (`model must be a non-empty
   string`, 400). Today the pre-run path skips that check: 200, and
   `agent.acp_model` and `current_model_id` become `"   "`.
-- **LLM switches on an ACP conversation (`F09.switch-llm-acp-refused`), known bug.**
+- **LLM switches on an ACP conversation (`F09.switch-llm-acp-refused`).**
   A third ACP conversation that has not run; its agent carries a
   placeholder LLM that only names the model.
   ```sh
   AID3=$(control-agent-server conversation start --no-autotitle --body-json '{"agent_settings": {"agent_kind": "acp", "acp_server": "claude-code", "acp_model": "sonnet"}}' --print-id)
   control-agent-server api GET "/api/conversations/$AID3" --quiet --check agent.llm.usage_id eq acp-managed --check agent.llm.model eq sonnet
-  control-agent-server api POST "/api/conversations/$AID3/switch_profile" --json '{"profile_name": "deepseek-pro"}' --expect 400,409,422 --save F09.switch-llm-acp-refused/switch-profile  # bug: status eq 200 && response.body.success eq true
+  control-agent-server api POST "/api/conversations/$AID3/switch_profile" --json '{"profile_name": "deepseek-pro"}' --expect 400 --check detail contains switch_acp_model --save F09.switch-llm-acp-refused/switch-profile
   control-agent-server api POST "/api/conversations/$AID3/switch_llm" \
     --json '{"llm": {"model": "openai/qa-f09-acp", "api_key": "sk-qa-f09-acp", "base_url": "http://127.0.0.1:9/v1", "usage_id": "qa-f09-acp"}}' \
-    --expect 400,409,422 --save F09.switch-llm-acp-refused/switch-llm  # bug: status eq 200 && response.body.success eq true
-  control-agent-server api GET "/api/conversations/$AID3" --quiet --check agent.llm.usage_id eq acp-managed --check agent.acp_model eq sonnet  # bug: status eq 200 && checks.0.actual eq qa-f09-acp && checks.1.ok eq true
+    --expect 400 --check detail contains switch_acp_model --save F09.switch-llm-acp-refused/switch-llm
+  control-agent-server api GET "/api/conversations/$AID3" --quiet --check agent.llm.usage_id eq acp-managed --check agent.acp_model eq sonnet
   ```
   The ACP agent starts with `usage_id` `acp-managed` and the model name
-  `sonnet`. Expected: both switches are refused with a 4xx (400 would mirror
-  `switch_acp_model` on a regular conversation; the ACP subprocess makes
-  its own model calls and `LocalConversation.switch_acp_model` says
-  `switch_llm` would not affect it). Today both
-  answer 200 and replace the placeholder in `base_state.json` with the
-  posted LLM (`GET` still shows `model: sonnet`, because the ACP agent
-  overwrites the model name with `acp_model` when it is loaded, but
-  `usage_id` becomes `profile:deepseek-pro`, then `qa-f09-acp`). Nothing the
-  subprocess runs changes, and the `acp-managed` marker that
-  `title_utils` uses to avoid calling the placeholder is gone.
+  `sonnet`. Both switches are refused with 400 and a `detail` that points
+  at `switch_acp_model`, mirroring `switch_acp_model` on a regular
+  conversation: the ACP subprocess makes its own model calls, so swapping
+  OpenHands' LLM would not change what runs. The placeholder stays in place
+  (`usage_id` `acp-managed`, which `title_utils` uses to avoid calling it),
+  and `acp_model` stays `sonnet`.
 - **Live ACP switch (`F09.acp-model-live`).** Translated environment: the
   ACP provider is the real Claude Code adapter (`claude-code`, which the
   server launches with `npx`, so it needs `node` and the network), and

@@ -1660,6 +1660,15 @@ class LocalConversation(BaseConversation):
         condenser_llm.reset_metrics()
         return condenser.model_copy(update={"llm": condenser_llm})
 
+    def _reject_llm_switch_on_acp(self) -> None:
+        # The ACP subprocess owns its model; swapping OpenHands' LLM would only
+        # overwrite the acp-managed placeholder without changing what runs.
+        if isinstance(self.agent, ACPAgent):
+            raise ValueError(
+                "switch_llm and switch_profile are not supported for ACP "
+                "conversations; use switch_acp_model instead."
+            )
+
     def switch_llm(self, llm: LLM) -> None:
         """Swap the agent's LLM to the given object.
 
@@ -1670,7 +1679,11 @@ class LocalConversation(BaseConversation):
 
         Args:
             llm: LLM to install on the agent.
+
+        Raises:
+            ValueError: If the conversation's agent is an :class:`ACPAgent`.
         """
+        self._reject_llm_switch_on_acp()
         try:
             new_llm = self.llm_registry.get(llm.usage_id)
         except KeyError:
@@ -1709,8 +1722,10 @@ class LocalConversation(BaseConversation):
 
         Raises:
             FileNotFoundError: If the profile does not exist.
-            ValueError: If the profile is corrupted or invalid.
+            ValueError: If the profile is corrupted or invalid, or the
+                conversation's agent is an :class:`ACPAgent`.
         """
+        self._reject_llm_switch_on_acp()
         usage_id = f"profile:{profile_name}"
         try:
             cached = self.llm_registry.get(usage_id)

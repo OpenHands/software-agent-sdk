@@ -2606,6 +2606,40 @@ def test_switch_conversation_llm_plaintext_with_cipher_passes_through(
         client.app.dependency_overrides.clear()
 
 
+def test_switch_conversation_llm_acp_agent_returns_400(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """A refused switch_llm (an ACP conversation, #4158) is a 400, not a 500."""
+    mock_conversation = MagicMock()
+    mock_conversation.switch_llm.side_effect = ValueError(
+        "switch_llm and switch_profile are not supported for ACP conversations; "
+        "use switch_acp_model instead."
+    )
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_llm",
+            json={
+                "llm": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "sk-test",
+                    "usage_id": "x",
+                }
+            },
+        )
+
+        assert response.status_code == 400
+        assert "switch_acp_model" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_switch_conversation_llm_not_found(
     client, mock_conversation_service, sample_conversation_id
 ):
