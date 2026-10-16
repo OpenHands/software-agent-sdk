@@ -177,6 +177,11 @@ def _copy_event_for_fork(event: Event) -> Event:
     return Event.model_validate_json(event.model_dump_json(exclude_none=True))
 
 
+def _llm_config(llm: LLM) -> dict[str, Any]:
+    """An LLM's config with secret values, for comparing two configs."""
+    return llm.model_dump(mode="json", context={"expose_secrets": "plaintext"})
+
+
 class LocalConversation(BaseConversation):
     agent: AgentBase
     workspace: LocalWorkspace
@@ -1700,9 +1705,11 @@ class LocalConversation(BaseConversation):
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a profile loaded from disk.
 
-        Loads the profile from :class:`LLMProfileStore` (cached in the
-        registry under ``profile:{profile_name}`` after first load) and
-        delegates the swap to :meth:`switch_llm`.
+        Loads the profile from :class:`LLMProfileStore` on every call and
+        delegates the swap to :meth:`switch_llm` under the usage id
+        ``profile:{profile_name}``. The LLM registered under that id is reused
+        while the profile is unchanged; after the profile was edited it is
+        replaced by the edited config, which keeps the usage recorded so far.
 
         Args:
             profile_name: Name of a profile previously saved via LLMProfileStore.
@@ -1712,12 +1719,20 @@ class LocalConversation(BaseConversation):
             ValueError: If the profile is corrupted or invalid.
         """
         usage_id = f"profile:{profile_name}"
-        try:
-            cached = self.llm_registry.get(usage_id)
-        except KeyError:
-            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
-            cached = loaded.model_copy(update={"usage_id": usage_id})
-        self.switch_llm(cached)
+        loaded = self._profile_store.load(profile_name, cipher=self._cipher)
+        profile_llm = loaded.model_copy(update={"usage_id": usage_id})
+        stale = self.llm_registry.usage_to_llm.get(usage_id)
+        if stale is not None and _llm_config(stale) != _llm_config(profile_llm):
+            # The profile was edited since it was registered: drop the stale
+            # entry so switch_llm installs the edit, then carry its metrics over.
+            # Materialize first so a failure leaves the stale entry in place.
+            profile_llm = create_subscription_llm_from_config(profile_llm)
+            self.llm_registry.remove(usage_id)
+            self.switch_llm(profile_llm)
+            installed = self.llm_registry.get(usage_id)
+            installed.restore_metrics(stale.metrics)
+            return
+        self.switch_llm(profile_llm)
 
     def get_or_create_profile_llm(self, profile_name: str, usage_id: str) -> LLM:
         """Return a saved profile LLM registered for this conversation.

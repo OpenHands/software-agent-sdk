@@ -314,6 +314,40 @@ def test_switch_reuses_registry_entry(profile_store):
     assert llm_first is llm_second
 
 
+def test_switch_profile_installs_edited_profile(profile_store):
+    """Re-switching to an edited profile installs the edited config, not the
+    copy registered at the first switch, and keeps the profile's usage."""
+    conv = _make_conversation()
+    conv.send_message("hello")  # initialize the agent so stats track usage
+    conv.switch_profile("fast")
+    first = conv.llm_registry.get("profile:fast")
+    first.metrics.add_cost(1.5)
+
+    conv.switch_profile("slow")
+    profile_store.save("fast", _make_llm("fast-model-v2", "fast"))
+    conv.switch_profile("fast")
+
+    assert conv.agent.llm.model == "fast-model-v2"
+    assert conv.state.agent.llm.model == "fast-model-v2"
+    installed = conv.llm_registry.get("profile:fast")
+    assert installed is not first
+    assert installed.metrics is first.metrics
+    assert installed.metrics.accumulated_cost == 1.5
+    stats = conv.conversation_stats
+    assert stats.get_metrics_for_usage("profile:fast") is installed.metrics
+
+
+def test_switch_profile_installs_edited_profile_while_active(profile_store):
+    """Editing the active profile and switching to it again applies the edit."""
+    conv = _make_conversation()
+    conv.switch_profile("fast")
+    profile_store.save("fast", _make_llm("fast-model-v2", "fast"))
+
+    conv.switch_profile("fast")
+
+    assert conv.agent.llm.model == "fast-model-v2"
+
+
 def test_switch_nonexistent_raises(profile_store):
     """Switching to a nonexistent profile raises FileNotFoundError."""
     conv = _make_conversation()
