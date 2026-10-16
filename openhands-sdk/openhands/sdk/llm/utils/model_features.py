@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from functools import cache
 from typing import Any, Literal
 
-from litellm import get_supported_openai_params
+from litellm import BadRequestError, get_llm_provider, get_supported_openai_params
 from litellm.utils import supports_vision as litellm_supports_vision
 
 from openhands.sdk.llm.utils.openhands_provider import OPENHANDS_PROVIDER_PREFIX
@@ -149,10 +149,18 @@ def _normalized_supported_openai_params(
     if not normalized:
         return frozenset()
 
-    params = get_supported_openai_params(
-        model=normalized,
-        custom_llm_provider=None,
-    )
+    # Split the provider prefix ourselves: LiteLLM >=1.105 checks the unsplit
+    # name against the OpenAI catalog, so `openai/gpt-4o` looks unknown and is
+    # reported as accepting `reasoning_effort`.
+    try:
+        bare_model, provider, _, _ = get_llm_provider(model=normalized)
+    except BadRequestError:
+        params = None
+    else:
+        params = get_supported_openai_params(
+            model=bare_model,
+            custom_llm_provider=provider,
+        )
     if not params and provider_hint:
         params = get_supported_openai_params(
             model=normalized,
@@ -179,11 +187,6 @@ def _supports_prompt_cache_key_param(
     return "prompt_cache_key" in _normalized_supported_openai_params(
         model, provider_hint
     )
-
-
-REASONING_EFFORT_MODEL_OVERRIDES = {
-    "kimi-k3": "moonshot/kimi-k3",
-}
 
 
 EXTENDED_THINKING_MODELS: list[str] = [
@@ -454,10 +457,7 @@ def get_features(
         overrides=overrides,
         metadata=model_info,
         metadata_key="supports_reasoning",
-        fallback=(
-            model_matches(model, REASONING_EFFORT_MODEL_OVERRIDES)
-            or "reasoning_effort" in supported_params
-        ),
+        fallback="reasoning_effort" in supported_params,
     )
     thinking_mode = _thinking_mode(model, model_info, overrides)
     supports_sampling_params = _optional_bool(overrides, "supports_sampling_params")

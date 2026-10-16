@@ -273,7 +273,7 @@ def test_litellm_translates_claude_5_reasoning_to_adaptive_thinking(
         reasoning_effort="high",
     )
 
-    assert params["thinking"] == {"type": "adaptive"}
+    assert params["thinking"] == {"type": "adaptive", "display": "summarized"}
     assert "budget_tokens" not in params["thinking"]
 
 
