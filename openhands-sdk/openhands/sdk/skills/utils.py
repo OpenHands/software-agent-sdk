@@ -591,6 +591,7 @@ def update_skills_repository(
     repo_url: str,
     ref: str,
     cache_dir: Path,
+    strict: bool = False,
 ) -> Path | None:
     """Clone or update the local skills repository.
 
@@ -601,12 +602,16 @@ def update_skills_repository(
         repo_url: URL of the skills repository.
         ref: Branch name, tag, or full commit SHA to checkout.
         cache_dir: Directory where the repository should be cached.
+        strict: If True, return None when an existing clone cannot be updated
+            (e.g. the fetch fails offline) instead of the stale clone.
 
     Returns:
         Path to the local repository if successful, None otherwise.
     """
     repo_path = cache_dir / "public-skills"
-    return try_cached_clone_or_update(repo_url, repo_path, ref=ref, update=True)
+    return try_cached_clone_or_update(
+        repo_url, repo_path, ref=ref, update=True, strict=strict
+    )
 
 
 def is_skills_repo_pinned(repo_path: Path) -> bool:

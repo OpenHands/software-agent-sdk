@@ -84,6 +84,24 @@ def build_profile_verification(
     )
 
 
+class AgentProfileInfo(BaseModel):
+    """Summary projection of a stored profile (no secret instantiation)."""
+
+    id: str | None = None
+    name: str
+    agent_kind: str = "openhands"
+    revision: int | None = None
+    llm_profile_ref: str | None = None
+    mcp_server_refs: list[str] | None = None
+
+
+class AgentProfileListResponse(BaseModel):
+    """Response body returned by ``GET /api/agent-profiles``."""
+
+    profiles: list[AgentProfileInfo]
+    active_agent_profile_id: str | None = None
+
+
 class AgentProfileBase(BaseModel):
     """Shared identity + provenance fields for every ``AgentProfile`` variant.
 
@@ -212,6 +230,15 @@ class OpenHandsAgentProfile(AgentProfileBase):
             "the catalog drifts. Replaces the former allow-list ``skill_refs`` "
             "(#4017): skills are discovered from many incomplete sources, so "
             "exclusion is the only selection model that can't dangle."
+        ),
+    )
+    public_skills: list[str] | None = Field(
+        default=None,
+        description=(
+            "Which public-catalog skills to load. null = all; [] = none; a list "
+            "= only the named skills, ignoring names the catalog lacks. User and "
+            "project skills are not affected, and `disabled_skills` still "
+            "applies to every skill."
         ),
     )
     condenser: CondenserSettingsConfig = Field(
@@ -358,14 +385,6 @@ class LaunchedAgentProfile(BaseModel):
         description=(
             "Secret allow-list captured at launch, also enforced on resume. "
             "null preserves unrestricted behavior for older conversations."
-        ),
-    )
-    inline: bool = Field(
-        default=False,
-        description=(
-            "True when the conversation was launched from an inline "
-            "`agent_profile` draft rather than a stored profile. The id is then "
-            "the draft's own and may not name a stored profile."
         ),
     )
     llm_profile_ref: str | None = Field(
