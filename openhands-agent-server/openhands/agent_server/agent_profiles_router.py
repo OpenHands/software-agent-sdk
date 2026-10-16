@@ -47,6 +47,8 @@ from openhands.sdk.profiles import (
     ACPAgentProfile,
     AgentProfile,
     AgentProfileDiagnostics,
+    AgentProfileInfo,
+    AgentProfileListResponse,
     AgentProfileStore,
     OpenHandsAgentProfile,
     ProfileLimitExceeded,
@@ -71,22 +73,6 @@ ProfileName = Annotated[
     Path(min_length=1, max_length=64, pattern=PROFILE_NAME_PATTERN),
 ]
 ProfileId = Annotated[str, Path(min_length=1, max_length=128)]
-
-
-class AgentProfileInfo(BaseModel):
-    """Summary projection of a stored profile (no secret instantiation)."""
-
-    id: str | None = None
-    name: str
-    agent_kind: str = "openhands"
-    revision: int | None = None
-    llm_profile_ref: str | None = None
-    mcp_server_refs: list[str] | None = None
-
-
-class AgentProfileListResponse(BaseModel):
-    profiles: list[AgentProfileInfo]
-    active_agent_profile_id: str | None = None
 
 
 class AgentProfileDetailResponse(BaseModel):
