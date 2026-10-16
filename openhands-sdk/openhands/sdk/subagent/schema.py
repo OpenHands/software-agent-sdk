@@ -253,7 +253,10 @@ class AgentDefinition(BaseModel):
     )
     mcp_config: dict[str, MCPServer] | None = Field(
         default=None,
-        description="MCP servers for this agent.",
+        description=(
+            "MCP servers for this agent. Ignored when it runs as a delegated "
+            "sub-agent, which always inherits its parent's MCP servers."
+        ),
         examples=[
             {
                 "fetch": {

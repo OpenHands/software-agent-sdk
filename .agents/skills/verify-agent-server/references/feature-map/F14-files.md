@@ -31,7 +31,7 @@ Routes: `GET /api/file/home`, `GET /api/file/search_subdirs`,
 - `F14.auth`: every global and conversation-scoped file route answers 401 without a valid session key, and nothing is written.
 - `F14.upload-download`: a multipart upload creates missing parent directories, a download returns byte-identical bytes as an `application/octet-stream` attachment named after the basename, and a second upload to the same path replaces the content.
 - `F14.upload-errors`: an upload without the `file` part or without `path` is 422, and a relative `path` is 400 `Path must be absolute`.
-- `F14.upload-onto-directory`: uploading onto an existing directory, or to a path whose parent is a file, is a client error (4xx); today it is a masked 500.
+- `F14.upload-onto-directory`: uploading onto an existing directory, or to a path whose parent is a file, is a client error (400), as `create_directory` answers for the same collisions.
 - `F14.upload-size`: the SDK's `RemoteWorkspace.file_upload` and the TypeScript `RemoteWorkspace.fileUpload` report the uploaded `file_size`, as `LocalWorkspace.file_upload` does; today the server sends only `{"success": true}` and both report no size.
 - `F14.upload-atomic`: an overwrite that fails mid-write leaves the previous file intact; today the target is truncated before streaming and keeps a partial file.
 - `F14.download-errors`: downloading a missing file is 404 `File not found`, a directory 400 `Path is not a file`, a relative path 400.
@@ -186,23 +186,22 @@ Preconditions:
   ```
   A missing `file` part (or one sent under another field name) and a missing
   `path` are 422 with the missing location; a relative path is 400.
-- **Upload onto a directory (`F14.upload-onto-directory`), known bug.** The
-  caller's path is wrong, which `create_directory` reports as 400 for the
-  same collision; each of the two uploads alone encodes the bug.
+- **Upload onto a directory (`F14.upload-onto-directory`).** The caller's
+  path is wrong, which `create_directory` reports as 400 for the same
+  collision.
   ```sh
   mkdir -p "$F/xfer/is-a-dir"
   control-agent-server api POST /api/file/create_directory --query path="$F/v2.txt/child" --expect 400 \
     --check detail eq 'Path exists and is not a directory'
   control-agent-server api POST /api/file/upload --query path="$F/xfer/is-a-dir" --file file="$F/v2.txt" \
-    --expect 4xx --save F14.upload-onto-directory/upload  # bug: status eq 500 && response.body.exception contains 'Is a directory'
+    --expect 400 --check detail eq 'Path is a directory' --save F14.upload-onto-directory/upload
   control-agent-server api POST /api/file/upload --query path="$F/v2.txt/child" --file file="$F/v2.txt" \
-    --expect 4xx --save F14.upload-onto-directory/parent-is-file  # bug: status eq 500 && response.body.exception contains 'File exists'
+    --expect 400 --check detail eq 'A parent of the path is not a directory' --save F14.upload-onto-directory/parent-is-file
+  test -d "$F/xfer/is-a-dir"
   ```
-  Expected: a 4xx such as 400 `Path exists and is not a directory`, as
-  `create_directory` answers for the same collisions. Actual:
-  `500 {"detail": "Internal Server Error", "exception": "500: Failed to upload file: [Errno 21] Is a directory: ..."}`
-  (`_upload_file` maps every exception to 500). A path whose parent is a file
-  (`$F/v2.txt/child`) fails the same way (`[Errno 17] File exists`).
+  Uploading onto an existing directory is 400 `Path is a directory`, and a path
+  whose parent is a file (`$F/v2.txt/child`) is 400 `A parent of the path is
+  not a directory`; neither touches what is already there.
 - **Upload size in the consumers' result (`F14.upload-size`), known bug.**
   The same 70 kB blob through `LocalWorkspace.file_upload` (the contract the
   remote workspaces mirror), the SDK's `RemoteWorkspace.file_upload` and the
