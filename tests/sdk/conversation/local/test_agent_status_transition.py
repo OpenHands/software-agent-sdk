@@ -27,6 +27,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import ImageContent, Message, MessageToolCall, TextContent
+from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool import (
     Action,
@@ -59,10 +60,15 @@ class StatusCheckingExecutor(
 ):
     """Executor that captures the agent status when executed."""
 
-    def __init__(self, status_during_execution: list[ConversationExecutionStatus]):
+    def __init__(
+        self,
+        status_during_execution: list[ConversationExecutionStatus],
+        cost_per_call: float = 0.0,
+    ):
         self.status_during_execution: list[ConversationExecutionStatus] = (
             status_during_execution
         )
+        self.cost_per_call = cost_per_call
 
     def __call__(
         self, action: StatusTransitionMockAction, conversation=None
@@ -70,6 +76,11 @@ class StatusCheckingExecutor(
         # Capture the agent status during execution
         if conversation:
             self.status_during_execution.append(conversation.state.execution_status)
+            if self.cost_per_call:
+                # Accrue real spend mid-run, as a live LLM would, so the
+                # per-run budget check has something to trip on.
+                metrics = conversation.conversation_stats.usage_to_metrics
+                metrics.setdefault("spend", Metrics()).add_cost(self.cost_per_call)
         return StatusTransitionMockObservation(result=f"Executed: {action.command}")
 
 
@@ -547,10 +558,13 @@ def test_execution_status_error_on_max_budget(tmp_path):
     """Run halts with ERROR + MaxBudgetReached when the cost budget is exceeded,
     even before the iteration cap is reached."""
     from openhands.sdk.conversation.impl.local_conversation import LocalConversation
-    from openhands.sdk.llm.utils.metrics import Metrics
 
     events_received: list = []
-    test_tool = StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))[0]
+    # Each executed tool call accrues $0.60 of real spend mid-run, so the second
+    # step pushes the run past the $1.00 ceiling.
+    test_tool = StatusTransitionTestTool.create(
+        executor=StatusCheckingExecutor([], cost_per_call=0.6)
+    )[0]
     register_tool("test_tool", test_tool)
 
     tool_call_message = Message(
@@ -579,10 +593,6 @@ def test_execution_status_error_on_max_budget(tmp_path):
     )
     conversation.send_message(
         Message(role="user", content=[TextContent(text="Execute command")])
-    )
-    # Pre-seed spend over the budget (TestLLM accrues no real cost).
-    conversation.conversation_stats.usage_to_metrics["spend"] = Metrics(
-        accumulated_cost=5.0
     )
     conversation.run()
 

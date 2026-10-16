@@ -131,6 +131,19 @@ class LLMBadRequestError(LLMError):
         super().__init__(message)
 
 
+class LLMBudgetExceededError(LLMError):
+    """The conversation's cost budget cannot admit this call.
+
+    Raised *before* the provider request is sent, so a budget ceiling is never
+    crossed by a call that would exceed it. Deterministic in the reservation
+    state: retrying the same call cannot succeed, so the LLM retry loop must not
+    retry it and model fallback must not mask it.
+    """
+
+    def __init__(self, message: str = "Conversation cost budget exceeded") -> None:
+        super().__init__(message)
+
+
 class LLMContentPolicyViolationError(LLMBadRequestError):
     """Provider blocked the request/response via its content filter.
 

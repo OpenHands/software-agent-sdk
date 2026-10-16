@@ -53,6 +53,11 @@ export interface RemoteConversationOptions extends BaseConversationOptions {
    */
   hookConfig?: HookConfig;
   /**
+   * Optional per-conversation cost ceiling in USD. Must be > 0 when set.
+   * Enforced server-side before each LLM call.
+   */
+  maxBudgetPerRun?: number;
+  /**
    * Optional error callback for non-fatal errors (WebSocket issues, state update failures).
    * If not provided, these errors are silently ignored.
    */
@@ -92,6 +97,7 @@ export class RemoteConversation implements IConversation {
   private onError?: ErrorCallbackType;
   private hookConfig?: HookConfig;
   private userId?: string;
+  private maxBudgetPerRun?: number;
 
   constructor(
     agent: AgentBase,
@@ -105,6 +111,7 @@ export class RemoteConversation implements IConversation {
     this._conversationId = options.conversationId;
     this.hookConfig = options.hookConfig;
     this.userId = options.userId;
+    this.maxBudgetPerRun = options.maxBudgetPerRun;
 
     this.client = new HttpClient({
       baseUrl: workspace.host,
@@ -143,6 +150,8 @@ export class RemoteConversation implements IConversation {
       stuckDetection?: boolean;
       hookConfig?: HookConfig;
       userId?: string;
+      /** Per-conversation cost ceiling in USD. Must be > 0 when set. */
+      maxBudgetPerRun?: number;
     } = {}
   ): Promise<void> {
     if (this._conversationId) {
@@ -166,11 +175,13 @@ export class RemoteConversation implements IConversation {
     // Use hook config from start options, falling back to constructor option
     const hookConfig = options.hookConfig ?? this.hookConfig ?? undefined;
     const userId = options.userId ?? this.userId ?? undefined;
+    const maxBudgetPerRun = options.maxBudgetPerRun ?? this.maxBudgetPerRun;
 
     const request: CreateConversationRequest = {
       agent: this.agent,
       initial_message: initialMessage,
       max_iterations: options.maxIterations || 500,
+      max_budget_per_run: maxBudgetPerRun ?? null,
       stuck_detection: options.stuckDetection ?? true,
       workspace: { type: 'local', working_dir: this.workspace.workingDir },
       hook_config: hookConfig ?? null,

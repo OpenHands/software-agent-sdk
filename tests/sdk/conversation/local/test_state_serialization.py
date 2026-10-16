@@ -814,6 +814,50 @@ def test_conversation_state_stats_preserved_on_resume():
         ), "Context window should be preserved after resume"
 
 
+def test_mark_dirty_flushes_in_place_stats_mutation():
+    """mark_dirty persists in-place metrics that bypass __setattr__ autosave.
+
+    The run loop mutates ``stats.usage_to_metrics[*].accumulated_cost`` in place
+    (same Metrics objects the LLM holds), so no public-field assignment fires.
+    ``mark_dirty()`` + the enclosing ``with state:`` block must still flush a
+    fresh ``base_state.json`` so live cost is observable mid-run.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(llm=llm, tools=[])
+        conv_id = uuid.UUID("12345678-1234-5678-9abc-123456789020")
+        persist_path = LocalConversation.get_persistence_dir(temp_dir, conv_id)
+        state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+        )
+        state.stats.register_llm(RegistryEvent(llm=llm))
+
+        base_state_path = Path(persist_path) / "base_state.json"
+        with state:
+            state.mark_dirty()
+        before = json.loads(base_state_path.read_text())["stats"]["usage_to_metrics"]
+        assert before["test-llm"]["accumulated_cost"] == pytest.approx(0.0)
+
+        # In-place cost mutation on the shared Metrics. No public-field
+        # assignment fires, so the snapshot still reads the old value until a
+        # mark_dirty() flush runs.
+        assert llm.metrics is not None
+        llm.metrics.add_cost(0.25)
+        stale = json.loads(base_state_path.read_text())["stats"]["usage_to_metrics"]
+        assert stale["test-llm"]["accumulated_cost"] == pytest.approx(0.0)
+
+        with state:
+            state.mark_dirty()
+
+        after = json.loads(base_state_path.read_text())["stats"]["usage_to_metrics"]
+        assert after["test-llm"]["accumulated_cost"] == pytest.approx(0.25)
+
+
 def test_resume_with_conversation_id_mismatch_raises_error():
     """Test that resuming with mismatched conversation ID raises error."""
     with tempfile.TemporaryDirectory() as temp_dir:

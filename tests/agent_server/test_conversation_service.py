@@ -37,6 +37,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
 from openhands.sdk import LLM, Agent, AgentBase, Message, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.conversation.exceptions import CostBudgetUnsupportedError
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -143,6 +144,111 @@ async def test_server_resolved_tool_modules_are_persisted(tmp_path):
     assert meta["tool_module_qualnames"]["terminal"] == (
         "openhands.tools.terminal.definition"
     )
+
+
+@pytest.mark.asyncio
+async def test_max_budget_per_run_persisted_and_exposed(tmp_path):
+    """A budget set at creation persists in meta.json and surfaces on GET.
+
+    Reloading through a fresh service (server restart) must keep the bound so a
+    resumed run is still capped, and the composed ConversationInfo must expose
+    it alongside max_iterations.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+        max_budget_per_run=2.5,
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        info, _ = await service.start_conversation(request)
+        assert info.max_budget_per_run == pytest.approx(2.5)
+
+    meta = json.loads((conversations_dir / info.id.hex / "meta.json").read_text())
+    assert meta["max_budget_per_run"] == pytest.approx(2.5)
+
+    async with ConversationService(conversations_dir=conversations_dir) as service2:
+        reloaded = await service2.get_conversation(info.id)
+        assert reloaded is not None
+        assert reloaded.max_budget_per_run == pytest.approx(2.5)
+
+
+@pytest.mark.asyncio
+async def test_start_conversation_rejects_non_positive_budget(tmp_path):
+    """The creation contract validates the budget as strictly positive."""
+    with pytest.raises(ValueError):
+        StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            confirmation_policy=NeverConfirm(),
+            max_budget_per_run=0.0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_start_acp_conversation_rejects_budget(tmp_path):
+    """An ACP conversation cannot enforce a pre-call budget, so creation fails.
+
+    The SDK raises before launching the ACP process (the budget check runs in
+    ``LocalConversation.__init__``), so no subprocess is needed here.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=ACPAgent(acp_command=["echo", "test"]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+        max_budget_per_run=1.0,
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        with pytest.raises(CostBudgetUnsupportedError):
+            await service.start_conversation(request)
+
+
+@pytest.mark.asyncio
+async def test_rejected_acp_budget_does_not_orphan_state_for_retry(tmp_path):
+    """A rejected ACP budget must not leave base_state.json behind.
+
+    Otherwise a retry with the same id but a regular agent would resume the
+    rejected ACP agent from that orphaned file instead of creating the
+    requested conversation.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    conversation_id = uuid4()
+    workspace = LocalWorkspace(working_dir=str(workspace_dir))
+    rejected = StartConversationRequest(
+        conversation_id=conversation_id,
+        agent=ACPAgent(acp_command=["echo", "test"]),
+        workspace=workspace,
+        confirmation_policy=NeverConfirm(),
+        max_budget_per_run=1.0,
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        with pytest.raises(CostBudgetUnsupportedError):
+            await service.start_conversation(rejected)
+        assert not (
+            conversations_dir / conversation_id.hex / "base_state.json"
+        ).exists()
+
+        retry = StartConversationRequest(
+            conversation_id=conversation_id,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=workspace,
+            confirmation_policy=NeverConfirm(),
+        )
+        info, is_new = await service.start_conversation(retry)
+        assert is_new
+        assert info.id == conversation_id
+        assert isinstance(info.agent, Agent)
 
 
 def _create_running_terminal_action(tool_call_id: str = "call_1") -> ActionEvent:

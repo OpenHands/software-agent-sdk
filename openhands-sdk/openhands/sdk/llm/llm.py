@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import inspect
 import json
 import os
 import threading
@@ -16,6 +17,7 @@ from collections.abc import (
     Sequence,
 )
 from contextvars import ContextVar
+from functools import wraps
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -77,6 +79,7 @@ if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
     from openhands.sdk.tool.tool import ToolDefinition
 
 from openhands.sdk.llm.auth.openai import transform_for_subscription
+from openhands.sdk.llm.call_context import resolve_llm_call_context
 
 
 with warnings.catch_warnings():
@@ -123,7 +126,9 @@ from litellm.utils import (
 )
 from tenacity import retry_if_exception, retry_if_exception_type
 
+from openhands.sdk.llm.cost_budget import BudgetReservation
 from openhands.sdk.llm.exceptions import (
+    LLMBudgetExceededError,
     LLMContextWindowTooSmallError,
     LLMNoResponseError,
     is_prompt_cache_too_small,
@@ -167,6 +172,14 @@ from openhands.sdk.logger import ENV_LOG_DIR, get_logger
 logger = get_logger(__name__)
 
 litellm.modify_params = True
+
+# Budget reservations price ``input + output`` at these conservative fallbacks
+# when a route publishes no per-token rate or no token cap, so an unpriced or
+# uncapped model cannot silently spend past a hard ceiling. They only matter
+# when the model metadata is silent; known models use their real rates/caps.
+_DEFAULT_INPUT_COST_PER_TOKEN: Final[float] = 1e-5  # $10 / 1M tokens
+_DEFAULT_OUTPUT_COST_PER_TOKEN: Final[float] = 3e-5  # $30 / 1M tokens
+_DEFAULT_BUDGET_TOKEN_PROJECTION: Final[int] = 32768
 
 _serialized_is_subscription = ContextVar(
     "serialized_is_subscription",
@@ -1749,6 +1762,132 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Chat Completion API
     # =========================================================================
 
+    def _cap_projection(self, tokens: int | None) -> int:
+        if tokens is None or tokens <= 0:
+            return _DEFAULT_BUDGET_TOKEN_PROJECTION
+        return tokens
+
+    def worst_case_cost(
+        self,
+        *,
+        input_tokens: int | None = None,
+        max_output_tokens: int | None = None,
+    ) -> float:
+        """Upper-bound USD for one call, used to reserve against a budget.
+
+        Prices ``input_tokens + output_upper`` at the highest per-token rate
+        the model exposes, so a reservation never under-counts a
+        context-tiered or cache-priced call. Unknown pricing falls back to a
+        conservative rate so an unpriced model cannot silently spend past a
+        hard ceiling.
+        """
+        input_upper = self._cap_projection(input_tokens)
+        output_upper = self._cap_projection(max_output_tokens)
+        in_cost, out_cost = self._cost_per_token_bounds()
+        return input_upper * in_cost + output_upper * out_cost
+
+    def _cost_per_token_bounds(self) -> tuple[float, float]:
+        """Highest input/output per-token rates known for this route."""
+        input_costs = [c for c in (self.input_cost_per_token,) if c is not None]
+        output_costs = [c for c in (self.output_cost_per_token,) if c is not None]
+        info = self._model_info or {}
+        extra = (
+            info.get("input_cost_per_token"),
+            info.get("output_cost_per_token"),
+            info.get("cache_read_input_token_cost"),
+            info.get("cache_creation_input_token_cost"),
+        )
+        for value in extra:
+            if isinstance(value, int | float) and value > 0:
+                input_costs.append(float(value))
+                output_costs.append(float(value))
+        in_cost = max(input_costs) if input_costs else _DEFAULT_INPUT_COST_PER_TOKEN
+        out_cost = max(output_costs) if output_costs else _DEFAULT_OUTPUT_COST_PER_TOKEN
+        return in_cost, out_cost
+
+    def _reserve_budget(
+        self,
+        call_context: LLMCallContext | None,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None,
+    ) -> BudgetReservation | None:
+        """Reserve this call's worst-case cost, or raise if it cannot be met.
+
+        The reservation is taken atomically per conversation, so concurrent
+        callers sharing one budget cannot all pass the same check. Returns
+        ``None`` when no budget is bound to the call.
+        """
+        budget = call_context.cost_budget if call_context else None
+        if budget is None:
+            return None
+        estimated_input = self.get_token_count(messages, tools) or None
+        worst_case = self.worst_case_cost(
+            input_tokens=estimated_input,
+            max_output_tokens=self.effective_max_output_tokens,
+        )
+        reservation = budget.try_reserve(worst_case)
+        if reservation is None:
+            raise LLMBudgetExceededError(budget.denial_detail(worst_case))
+        return reservation
+
+    def _budget_guarded_attempt(
+        self,
+        call_context: LLMCallContext | None,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """Decorator reserving this attempt's worst-case cost before sending.
+
+        Stacked *inside* the retry decorator (closest to the transport call) so
+        each attempt -- including retries -- is admitted and settled on its own
+        and a retry loop cannot spend past the budget invisibly. On success the
+        reservation settles to the cost this LLM actually recorded; on failure
+        it is released. A no-op when no budget is bound.
+        """
+
+        def decorate(attempt: Callable[..., Any]) -> Callable[..., Any]:
+            if inspect.iscoroutinefunction(attempt):
+
+                @wraps(attempt)
+                async def _reserved_async(*args: Any, **kwargs: Any) -> Any:
+                    reservation = self._reserve_budget(call_context, messages, tools)
+                    if reservation is None:
+                        return await attempt(*args, **kwargs)
+                    cost_before = self.metrics.accumulated_cost
+                    try:
+                        result = await attempt(*args, **kwargs)
+                    except BaseException:
+                        reservation.budget.settle(reservation, 0.0)
+                        raise
+                    reservation.budget.settle(
+                        reservation, self._cost_delta(cost_before)
+                    )
+                    return result
+
+                return _reserved_async
+
+            @wraps(attempt)
+            def _reserved_sync(*args: Any, **kwargs: Any) -> Any:
+                reservation = self._reserve_budget(call_context, messages, tools)
+                if reservation is None:
+                    return attempt(*args, **kwargs)
+                cost_before = self.metrics.accumulated_cost
+                try:
+                    result = attempt(*args, **kwargs)
+                except BaseException:
+                    reservation.budget.settle(reservation, 0.0)
+                    raise
+                reservation.budget.settle(reservation, self._cost_delta(cost_before))
+                return result
+
+            return _reserved_sync
+
+        return decorate
+
+    def _cost_delta(self, cost_before: float) -> float:
+        """Cost added to this LLM's own metrics by the call just completed."""
+        return max(0.0, self.metrics.accumulated_cost - cost_before)
+
     def completion(
         self,
         messages: list[Message],
@@ -1785,6 +1924,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # no-op for providers without runtime metadata.
         self.resolve_runtime_metadata()
 
+        call_context = resolve_llm_call_context(call_context)
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming and on_token is None:
@@ -1814,6 +1954,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
 
         @self._make_retry_decorator()
+        @self._budget_guarded_attempt(call_context, messages, tools)
         def _one_attempt(**retry_kwargs: Any) -> ModelResponse:
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
@@ -1850,6 +1991,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     tools,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 )
             # If the credential was rejected (401) and a refresh hook can supply
@@ -1904,6 +2046,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # calls are cheap.
         await self.aresolve_runtime_metadata()
 
+        call_context = resolve_llm_call_context(call_context)
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming and on_token is None:
@@ -1934,6 +2077,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         @self._make_retry_decorator()
         @self._async_hard_timeout_decorator()
+        @self._budget_guarded_attempt(call_context, messages, tools)
         async def _one_attempt(**retry_kwargs: Any) -> ModelResponse:
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
@@ -1970,6 +2114,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     tools,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 )
             # If the credential was rejected (401) and a refresh hook can supply
@@ -2043,6 +2188,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # metadata.
         self.resolve_runtime_metadata()
 
+        call_context = resolve_llm_call_context(call_context)
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming and on_token is None and not self.requires_streaming:
@@ -2076,6 +2222,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
 
         @self._make_retry_decorator()
+        @self._budget_guarded_attempt(call_context, messages, tools)
         def _one_attempt(**retry_kwargs: Any) -> ResponsesAPIResponse:
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
@@ -2151,6 +2298,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     store,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 )
             # If the credential was rejected (401) and a refresh hook can supply
@@ -2208,6 +2356,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # limits. No blocking network I/O in-process.
         await self.aresolve_runtime_metadata()
 
+        call_context = resolve_llm_call_context(call_context)
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming and on_token is None and not self.requires_streaming:
@@ -2242,6 +2391,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         @self._make_retry_decorator()
         @self._async_hard_timeout_decorator()
+        @self._budget_guarded_attempt(call_context, messages, tools)
         async def _one_attempt(
             **retry_kwargs: Any,
         ) -> ResponsesAPIResponse:
@@ -2343,6 +2493,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     store,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 )
             # If the credential was rejected (401) and a refresh hook can supply

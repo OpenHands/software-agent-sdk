@@ -339,6 +339,12 @@ export class ConversationManager {
       stuckDetection?: boolean;
       workingDir?: string;
       userId?: string;
+      /**
+       * Per-conversation cost ceiling in USD. Must be > 0 when set. Note that
+       * ACP prompts are enforced post-hoc, since pre-call reservation cannot
+       * cover the external provider path.
+       */
+      maxBudgetPerRun?: number;
     } = {}
   ): Promise<ACPConversationInfo> {
     let initialMessage: CreateACPConversationRequest['initial_message'];
@@ -353,6 +359,7 @@ export class ConversationManager {
       agent,
       initial_message: initialMessage,
       max_iterations: options.maxIterations || 500,
+      max_budget_per_run: options.maxBudgetPerRun ?? null,
       stuck_detection: options.stuckDetection ?? true,
       workspace: { type: 'local', working_dir: options.workingDir || '/tmp' },
       user_id: options.userId ?? null,

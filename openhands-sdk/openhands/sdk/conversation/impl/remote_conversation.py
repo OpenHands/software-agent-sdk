@@ -729,6 +729,7 @@ class RemoteConversation(BaseConversation):
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
+        max_budget_per_run: float | None = None,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
@@ -848,6 +849,7 @@ class RemoteConversation(BaseConversation):
                 ),
                 "initial_message": None,
                 "max_iterations": max_iteration_per_run,
+                "max_budget_per_run": max_budget_per_run,
                 "stuck_detection": stuck_detection,
                 # We need to convert RemoteWorkspace to LocalWorkspace for the server
                 "workspace": LocalWorkspace(
@@ -921,6 +923,7 @@ class RemoteConversation(BaseConversation):
             conversation_id=conversation_id,
             callbacks=callbacks,
             max_iteration_per_run=max_iteration_per_run,
+            max_budget_per_run=max_budget_per_run,
             client_tools=[*(client_tools or []), *attached_client_tools],
             visualizer=visualizer,
         )
@@ -1040,6 +1043,7 @@ class RemoteConversation(BaseConversation):
             conversation_id=uuid.UUID(info["id"]),
             callbacks=callbacks,
             max_iteration_per_run=info["max_iterations"],
+            max_budget_per_run=info.get("max_budget_per_run"),
             client_tools=[
                 ClientToolSpec.model_validate(spec)
                 for spec in info.get("client_tools") or []
@@ -1060,11 +1064,13 @@ class RemoteConversation(BaseConversation):
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ),
+        max_budget_per_run: float | None = None,
     ) -> None:
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
         self._callbacks = callbacks or []
         self.max_iteration_per_run = max_iteration_per_run
+        self.max_budget_per_run = max_budget_per_run
         self.workspace = workspace
         self._client = workspace.client
         self._cleanup_initiated = False

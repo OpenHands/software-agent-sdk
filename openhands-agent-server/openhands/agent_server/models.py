@@ -168,6 +168,17 @@ class _ConversationInfoBase(BaseModel):
             "Maximum number of iterations the agent can perform in a single run."
         ),
     )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Maximum cost in USD the agent may spend in a single run before "
+            "stopping. Pre-call and reservation-based on the SDK's LLM call "
+            "path; not supported for ACP agents, whose prompts bypass that path "
+            "(a budget supplied with an ACP agent is rejected). ``None`` leaves "
+            "the run unbounded."
+        ),
+    )
     stuck_detection: bool = Field(
         default=True,
         description="Whether to enable stuck detection for the agent.",
