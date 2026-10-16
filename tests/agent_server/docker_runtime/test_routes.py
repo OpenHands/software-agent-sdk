@@ -15,6 +15,7 @@ from starlette.routing import Match
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.agent_server.dependencies import WORKSPACE_SESSION_COOKIE_NAME
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
 from openhands.agent_server.docker_runtime.registry import (
     ConversationContainer,
@@ -137,6 +138,44 @@ def test_root_conversation_proxy_preserves_canonical_path(tmp_path, monkeypatch)
 
     assert response.status_code == 200
     assert captured["upstream_path"] == f"/api/conversations/{conversation_id}"
+
+
+@pytest.mark.parametrize("suffix", ["", "/", "/index.html"])
+def test_workspace_root_accepts_the_workspace_cookie(tmp_path, monkeypatch, suffix):
+    app = create_app(
+        Config(
+            conversation_runtime="docker",
+            conversations_path=tmp_path / "conversations",
+            workspace_path=tmp_path / "workspaces",
+            secret_key=SecretStr("outer-key"),
+            session_api_keys=["outer-session-key"],
+        )
+    )
+    conversation_id = uuid4()
+    captured = {}
+
+    async def container(*_args):
+        return SimpleNamespace(host="http://inner", api_key="inner-key")
+
+    async def proxy(*_args, **kwargs):
+        captured.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.routers._container", container
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.routers.proxy_http", proxy
+    )
+    path = f"/api/conversations/{conversation_id}/workspace{suffix}"
+
+    client = TestClient(app)
+    assert client.get(path).status_code == 401
+    client.cookies.set(WORKSPACE_SESSION_COOKIE_NAME, "outer-session-key")
+    response = client.get(path)
+
+    assert response.status_code == 200
+    assert captured["upstream_path"] == path
 
 
 def test_runtime_credentials_and_release_use_the_existing_sdk_contract(

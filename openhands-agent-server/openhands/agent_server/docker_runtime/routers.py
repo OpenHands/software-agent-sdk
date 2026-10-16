@@ -389,10 +389,16 @@ async def proxy_conversation(
 docker_workspace_router = APIRouter(prefix="/conversations", tags=["Docker Workspace"])
 
 
+@docker_workspace_router.get("/{conversation_id}/workspace")
 @docker_workspace_router.get("/{conversation_id}/workspace/{file_path:path}")
 async def proxy_workspace_file(
-    conversation_id: UUID, file_path: str, request: Request
+    conversation_id: UUID, request: Request, file_path: str | None = None
 ) -> StreamingResponse:
+    # The slashless root is declared here too; otherwise it falls through to
+    # the header-only conversation proxy and the workspace cookie is refused.
+    upstream = f"/api/conversations/{conversation_id}/workspace"
+    if file_path is not None:
+        upstream = f"{upstream}/{file_path}"
     registry = get_registry(request)
     container = await _container(registry, conversation_id)
     return await _proxy_with_session(
@@ -400,9 +406,7 @@ async def proxy_workspace_file(
         conversation_id,
         container,
         request,
-        upstream_path=_upstream_path(
-            request, f"/api/conversations/{conversation_id}/workspace/{file_path}"
-        ),
+        upstream_path=_upstream_path(request, upstream),
     )
 
 
