@@ -783,7 +783,7 @@ Preconditions:
   it reads `request.state.runtime_event_service`, which was never set.
   Nothing runs. Run `doctor` before this bullet, not after (it fails on the
   logged tracebacks).
-- **Idle eviction kills a running command (`F13.scoped-idle-eviction`), known bug.**
+- **Idle eviction keeps a running command (`F13.scoped-idle-eviction`).**
   A second run with a 5 s idle TTL and two never-run conversations:
   `EV_CID` with a running scoped command, then `EV_IDLE` with nothing, the
   positive control. The eviction loop's own 60 s timer is under test, so the
@@ -807,7 +807,7 @@ Preconditions:
   done
   control-agent-server logs --run "$EV" --grep 'Evicted idle' --expect-min 1
   sleep 3
-  control-agent-server assert --value "$(pgrep -fc "$EV_MARK")" --check . ge 1  # bug: value eq 0
+  control-agent-server assert --value "$(pgrep -fc "$EV_MARK")" --check . ge 1
   control-agent-server api POST "/api/conversations/$EV_CID/bash/bash_commands/$EV_CMD/stop" --run "$EV" --expect 200
   control-agent-server api GET "/api/conversations/$EV_CID/bash/bash_events/search" --run "$EV" \
     --query command_id__eq="$EV_CMD" --until-ok 15 --check items.-1.exit_code eq -15
@@ -815,11 +815,10 @@ Preconditions:
   No eviction is logged before the wait; then the idle conversation's lease
   disappears and `Evicted idle conversation` is logged, so an eviction pass
   ran. `EV_CID` was created first, so the same pass reaches it first; the
-  3 s settle covers the rest of the pass. Expected: the command is still running after the pass (then
-  the bullet stops it and its final output reports -15). Today `EV_CID` is
-  evicted in the same pass, its scoped service is closed, the `sleep` is
-  SIGKILLed, and no final `BashOutput` is ever written:
-  `EventService.is_idle_evictable()` ignores running bash commands.
+  3 s settle covers the rest of the pass. The pass skips `EV_CID`:
+  `EventService.is_idle_evictable()` counts a running scoped bash command as
+  in-flight work, so the command is still running after the pass; the
+  bullet then stops it and its final output reports -15.
 
 ## Gotchas
 
@@ -842,8 +841,9 @@ Preconditions:
   times (see `F13.timestamp-offset`).
 - Exit codes: the real code, `-1` for a timeout or a spawn error (missing
   cwd), `-15` (or `-9` after the 1 s escalation) when stopped. A command
-  killed by server shutdown or idle eviction gets no final `BashOutput` at
-  all; pollers wait for an exit code that never comes.
+  killed by server shutdown gets no final `BashOutput` at all; pollers wait
+  for an exit code that never comes. Idle eviction skips a conversation
+  while one of its scoped commands runs.
 - Global cwd is unrestricted and relative to the server process cwd. A
   scoped cwd must be absolute: a relative one is resolved against the server
   process cwd and rejected with 422, even if the directory exists in the

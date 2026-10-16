@@ -2285,7 +2285,10 @@ class EventService:
         return bool(self._pub_sub.subscriber_ids() - self._internal_subscriber_ids)
 
     def is_idle_evictable(self) -> bool:
-        """Safe to evict only with no in-flight work and no external subscriber."""
+        """Safe to evict only with no in-flight work and no external subscriber.
+
+        In-flight work includes running conversation-scoped bash commands.
+        """
         run_active = self._run_task is not None and not self._run_task.done()
         goal_active = (
             self._goal_loop_task is not None and not self._goal_loop_task.done()
@@ -2297,6 +2300,12 @@ class EventService:
             or self._rerun_requested
             or self._acp_internal_rerun_requested
             or self.has_external_subscribers()
+            # Eviction closes the scoped bash service, which kills running
+            # commands before their final output is written.
+            or (
+                self.bash_event_service is not None
+                and self.bash_event_service.has_running_commands()
+            )
         ):
             return False
         return True

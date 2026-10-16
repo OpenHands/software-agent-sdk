@@ -436,6 +436,10 @@ class BashEventService:
             self._processes.pop(command.id, None)
             self._stop_requests.discard(command.id)
 
+    def has_running_commands(self) -> bool:
+        """True while any started command has not finished (or is spawning)."""
+        return bool(self._processes)
+
     async def stop_bash_command(self, command_id: UUID) -> bool:
         """Stop a running command's process group by command id.
 
