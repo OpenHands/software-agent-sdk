@@ -640,6 +640,38 @@ def test_delete_idempotent(client):
     assert response.status_code == 200
 
 
+def test_json_suffix_name_keeps_identity_and_delete_moves_pointer(client, store):
+    """A ``.json``-suffixed name is the bare name (#5873).
+
+    The store strips ``.json`` from the file name, so ``x.json`` and ``x`` are
+    the same profile: an overwrite keeps the id and bumps the revision, and
+    deleting it while active moves the pointer off it (to ``default``).
+    """
+    assert (
+        client.post(
+            "/api/agent-profiles/suffixed.json", json={"llm_profile_ref": "a"}
+        ).status_code
+        == 201
+    )
+    first = client.get("/api/agent-profiles/suffixed.json").json()["profile"]
+    assert first["name"] == "suffixed"
+    assert first["revision"] == 0
+    client.post(f"/api/agent-profiles/{first['id']}/activate")
+
+    client.post("/api/agent-profiles/suffixed.json", json={"llm_profile_ref": "b"})
+    second = client.get("/api/agent-profiles/suffixed").json()["profile"]
+    assert second["id"] == first["id"]
+    assert second["revision"] == 1
+    assert second["llm_profile_ref"] == "b"
+    assert [
+        p["name"] for p in client.get("/api/agent-profiles").json()["profiles"]
+    ] == ["suffixed"]
+
+    assert client.delete("/api/agent-profiles/suffixed.json").status_code == 200
+    default_id = client.get("/api/agent-profiles/default").json()["profile"]["id"]
+    assert client.get("/api/settings").json()["active_agent_profile_id"] == default_id
+
+
 def test_deleting_the_active_profile_activates_default(client, store):
     store.save(OpenHandsAgentProfile(name="active-one", llm_profile_ref="x"))
     profile_id = client.get("/api/agent-profiles/active-one").json()["profile"]["id"]
