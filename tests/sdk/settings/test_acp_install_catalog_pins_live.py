@@ -22,7 +22,10 @@ import subprocess
 
 import pytest
 
-from openhands.sdk.settings.acp_install_catalog import ACP_INSTALL_CATALOG
+from openhands.sdk.settings.acp_install_catalog import (
+    ACP_INSTALL_CATALOG,
+    is_npm_install_spec,
+)
 
 
 def _npm_registry_reachable(timeout: float = 3.0) -> bool:
@@ -40,9 +43,11 @@ requires_npm = pytest.mark.skipif(
 
 pytestmark = pytest.mark.acp_live
 
+_NPM_SPECS = [spec for spec in ACP_INSTALL_CATALOG.values() if is_npm_install_spec(spec)]
+
 _ALL_PINS = [
     pytest.param(spec.key, pkg.name, pkg.version, id=f"{spec.key}:{pkg.pinned}")
-    for spec in ACP_INSTALL_CATALOG.values()
+    for spec in _NPM_SPECS
     for pkg in spec.packages
 ]
 
@@ -121,7 +126,7 @@ def _npm_view_bins(pinned: str) -> set[str]:
 
 @requires_npm
 @pytest.mark.parametrize(
-    "spec", ACP_INSTALL_CATALOG.values(), ids=list(ACP_INSTALL_CATALOG)
+    "spec", _NPM_SPECS, ids=[spec.key for spec in _NPM_SPECS]
 )
 def test_binary_name_is_declared_by_one_of_the_pinned_packages(spec) -> None:
     """``binary_name`` must be a bin some pinned package actually declares.
