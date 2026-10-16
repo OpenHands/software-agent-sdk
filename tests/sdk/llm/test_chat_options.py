@@ -273,7 +273,6 @@ def test_litellm_translates_claude_5_reasoning_to_adaptive_thinking(
     )
 
     assert params["thinking"] == {"type": "adaptive", "display": "summarized"}
-    assert "budget_tokens" not in params["thinking"]
 
 
 def test_bedrock_opus_4_8_strips_temp_top_p_without_thinking_block():
