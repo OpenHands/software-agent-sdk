@@ -333,11 +333,13 @@ Preconditions:
   ```
   Each is 422 with the pydantic error type and location; the list still
   has the two connections.
-- **Blank keys on create (`F23.conn-create-blank-key`), known bug.**
+- **Blank keys on create (`F23.conn-create-blank-key`).**
   An empty key is refused (positive control); then create with a
   whitespace-only key and with the redacted placeholder, record both
   statuses, and assert them together. An `EXIT` trap deletes whatever was
   created, however the bullet ends.
+
+  Requires: `F23.conn-create`
   ```sh
   trap 'BLANK=$(control-agent-server api GET /api/llm/provider-connections --field . \
       | jq -r "[.[] | select(.display_name | startswith(\"qa-f23-blank-\")) | .id] | join(\" \")") || true
@@ -350,15 +352,13 @@ Preconditions:
     --expect 201,422 --save F23.conn-create-blank-key/placeholder | jq -r .status)
   control-agent-server api GET /api/llm/provider-connections --save F23.conn-create-blank-key/list
   echo "whitespace key: $S_SPACE, placeholder key: $S_MASK"
-  control-agent-server assert --value "$S_SPACE $S_MASK" --check . eq '422 422'  # bug: value eq '201 201'
+  control-agent-server assert --value "$S_SPACE $S_MASK" --check . eq '422 422'
   control-agent-server api GET /api/llm/provider-connections --check . len-eq 2 --check . not-contains qa-f23-blank-
   ```
-  Expected: both are 422 like `""`, and nothing is created. Today both are
-  201 and the list shows them with `api_key_set: false`: `min_length=1`
-  accepts them, and the stored model's validator then turns a blank or
-  `**********` key into `null`, so a keyless connection exists although the
-  API says a connection always has a key. The trap deletes them, so later
-  bullets see the same two connections.
+  Both are 422 like `""`, and nothing is created: the list still holds
+  only the two connections from `F23.conn-create`, so a connection always
+  has a usable key. The trap deletes anything a regression would create,
+  so later bullets see the same two connections.
 - **Linked profile runs on the connection (`F23.linked-run`).** Save a
   profile linked to `CONN` with a stray inline key, activate it, and run a
   tiny conversation from the resulting settings.
@@ -434,7 +434,7 @@ Preconditions:
   ```
   Each is refused with the quoted message; the list is byte-for-byte the
   same afterwards (no `updated_at` bump).
-- **Blank keys on update (`F23.conn-patch-blank-key`), known bug.** Link a
+- **Blank keys on update (`F23.conn-patch-blank-key`).** Link a
   probe profile to `DEF` (key `sk-qa-f23-default`), then for an empty, a
   whitespace-only and the placeholder key: `PATCH`, activate the probe,
   record the applied key, and put the original key back.
@@ -461,22 +461,14 @@ Preconditions:
     control-agent-server api PATCH "/api/llm/provider-connections/$DEF" --json '{"api_key": "sk-qa-f23-default"}' --expect 200 --quiet > /dev/null
   done
   echo "applied keys: $APPLIED"
-  control-agent-server assert --value "$APPLIED" --check . eq '[sk-qa-f23-default][sk-qa-f23-default][sk-qa-f23-default]'  # bug: value eq '[null][null][**********]'
+  control-agent-server assert --value "$APPLIED" --check . eq '[sk-qa-f23-default][sk-qa-f23-default][sk-qa-f23-default]'
   ```
   Before any blank `PATCH`, activating the probe applies
   `sk-qa-f23-default` (positive control).
-  Expected: each `PATCH` is 422 (or leaves the key alone), so all three
-  activations apply `sk-qa-f23-default`. Today each is 200 and the key is
-  replaced: `""` and `"   "` clear it (response `api_key_set: false`,
-  activation applies no key, although `api_key: null` is refused as
-  "cannot be cleared"), and `**********` becomes the literal key (response
-  `api_key_set: true`, activation applies `**********`). The handler copies
-  the body into the stored model with `model_copy`, which skips the
-  validator that would drop blank or redacted keys. While the key is blank,
-  `GET /api/profiles` still lists the probe with `api_key_set: true` (it
-  counts the encrypted token without decrypting it) and `GET` of the probe
-  says `false`. An `EXIT` trap restores the key and `qa-f23-linked` as the
-  active profile and deletes the probe, however the bullet ends.
+  Each `PATCH` is 422, like `api_key: null`, and leaves the stored key
+  alone, so all three activations apply `sk-qa-f23-default`. An `EXIT` trap restores the key
+  and `qa-f23-linked` as the active profile and deletes the probe, however
+  the bullet ends.
 - **Rotate the key (`F23.conn-rotate-key`).** Rotate `CONN` to a key
   DeepSeek rejects, check that active settings keep the old key until the
   next activation, run a conversation on the rotated key, then rotate back.
@@ -751,9 +743,9 @@ Preconditions:
 - The connection id is minted by the server (uuid4 hex); a client-chosen
   `id` is 422. There is no `GET` for a single connection: read the list.
 - `PATCH` copies the body onto the stored connection without re-running its
-  validators, which is why blank keys slip through
-  (`F23.conn-patch-blank-key`); the response is built from that copy, not
-  from a re-read.
+  validators, so the request models refuse blank and `**********` keys
+  themselves (`F23.conn-create-blank-key`, `F23.conn-patch-blank-key`); the
+  response is built from that copy, not from a re-read.
 - Resolution is read-at-use: a rotation or `base_url` change reaches a
   profile only on its next activation (or `PATCH /api/settings` with
   `active_profile`, or `switch_llm`); `agent_settings.llm` keeps the copy

@@ -22,6 +22,7 @@ from openhands.sdk.llm.provider_connection_store import (
     ProviderConnectionStore,
 )
 from openhands.sdk.profiles import AgentProfileStore, OpenHandsAgentProfile
+from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
 @pytest.fixture
@@ -1713,6 +1714,69 @@ def test_patch_provider_connection_rejects_clearing_api_key(client):
         },
     )
     assert client.get("/api/profiles/linked").json()["api_key_set"] is True
+
+
+@pytest.mark.parametrize("unusable_key", ["", "   ", REDACTED_SECRET_VALUE])
+def test_create_provider_connection_rejects_unusable_api_key(client, unusable_key):
+    """POST refuses a blank or redacted key instead of storing a keyless one."""
+    response = client.post(
+        "/api/llm/provider-connections",
+        json={"display_name": "Blank", "api_key": unusable_key},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"][-1] == "api_key"
+    assert client.get("/api/llm/provider-connections").json() == []
+
+    created = client.post(
+        "/api/llm/provider-connections",
+        json={"display_name": "Valid", "api_key": "sk-valid"},
+    )
+    assert created.status_code == 201
+    assert created.json()["api_key_set"] is True
+
+
+@pytest.mark.parametrize("unusable_key", ["", "   ", REDACTED_SECRET_VALUE])
+def test_patch_provider_connection_rejects_unusable_api_key(client, unusable_key):
+    """PATCH refuses a blank or redacted key and keeps the stored one."""
+    created = client.post(
+        "/api/llm/provider-connections",
+        json={"display_name": "Anthropic", "api_key": "sk-ant-old"},
+    ).json()
+    connection_id = created["id"]
+    client.post(
+        "/api/profiles/linked",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+
+    response = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"api_key": unusable_key},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"][-1] == "api_key"
+    [stored] = client.get("/api/llm/provider-connections").json()
+    assert stored == created
+
+    assert client.post("/api/profiles/linked/activate").status_code == 200
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-old"
+
+    rotated = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"api_key": "sk-ant-new"},
+    )
+    assert rotated.status_code == 200
+    assert rotated.json()["api_key_set"] is True
 
 
 def test_get_profile_maps_corrupted_provider_file(client, temp_profiles_dir):
