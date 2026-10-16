@@ -29,7 +29,7 @@ Routes: `POST /api/conversations/{conversation_id}/switch_profile`,
 - `F09.switch-llm-errors`: an unknown conversation is 404, a body without `llm` or without `llm.model` is 422, and a dangling `provider_connection_id` is 422; the installed LLM is unchanged.
 - `F09.switch-llm-encrypted-key`: mid-conversation, a switch whose `api_key` is the `gAAAAA` token from an `encrypted` profile read is decrypted before install; the next turn runs on DeepSeek and its usage is recorded under the new `usage_id`.
 - `F09.switch-llm-provider-connection`: a switch that references a saved provider connection instead of a key runs the next turn with the connection's key; `GET` shows the `provider_connection_id` and no key.
-- `F09.switch-llm-registered-usage-id`: after the agent initialized, a switch whose `usage_id` is already registered (the `default` a saved profile's config carries) either installs the posted LLM or is refused, never a silent 200 no-op.
+- `F09.switch-llm-registered-usage-id`: after the agent initialized, a switch whose `usage_id` is already registered (the `default` a saved profile's config carries) with a different config installs the posted LLM, never a silent 200 no-op.
 - `F09.switch-llm-before-first-run`: a switch before the conversation's first run is used by that run, and the run's token usage is recorded under the switched LLM's `usage_id`.
 - `F09.switch-llm-mid-run`: a `switch_llm` while a turn is running (the agent is inside a 20 s tool call) answers 200, the socket pushes the new `agent`, and the same run's next LLM call already uses the switched LLM (usage under both `usage_id`s) and the run finishes.
 - `F09.switch-llm-mid-run-get`: right after a mid-run switch answers 200, `GET` and `base_state.json` show the switched LLM, as the socket already does.
@@ -293,7 +293,7 @@ Preconditions:
   documents nothing and offers no way to refresh, so a REST consumer can
   only apply the edit with `switch_llm` and a fresh `usage_id`. The profile
   is deleted on exit.
-- **Switch onto a registered usage id (`F09.switch-llm-registered-usage-id`), known bug.**
+- **Switch onto a registered usage id (`F09.switch-llm-registered-usage-id`).**
   Forward the saved `deepseek-pro` profile's config, read with
   `X-Expose-Secrets: encrypted` (the per-conversation model switch the
   route's docstring describes), to two offline conversations: one fresh, one
@@ -305,22 +305,18 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$FID" --quiet --check agent.llm.model eq deepseek/deepseek-v4-pro
   KID=$(control-agent-server conversation start --placeholder-agent --tools none --no-autotitle --prompt 'Reply with the single word: ok' --no-run --print-id)
   control-agent-server api GET "/api/conversations/$KID" --quiet --check agent.llm.usage_id eq default --check execution_status eq idle
-  ST=$(control-agent-server api POST "/api/conversations/$KID/switch_llm" --json "{\"llm\": $PRO}" \
-    --expect 200,400,409,422 --save F09.switch-llm-registered-usage-id/switch | jq -r .status)
-  test "$ST" != 200 || control-agent-server api GET "/api/conversations/$KID" --quiet --check agent.llm.model eq deepseek/deepseek-v4-pro --save F09.switch-llm-registered-usage-id/get  # bug: status eq 200 && checks.0.actual eq openai/qa-placeholder
+  control-agent-server api POST "/api/conversations/$KID/switch_llm" --json "{\"llm\": $PRO}" --expect 200 --save F09.switch-llm-registered-usage-id/switch
+  control-agent-server api GET "/api/conversations/$KID" --quiet --check agent.llm.model eq deepseek/deepseek-v4-pro --check agent.llm.usage_id eq default --save F09.switch-llm-registered-usage-id/get
   ```
   The profile config carries `usage_id: default`, and the fresh conversation
-  switches to `deepseek/deepseek-v4-pro`. Expected: the initialized one
-  switches too, or the switch is refused with a 4xx. Today it is 200
-  `{"success": true}` and `GET` still shows `openai/qa-placeholder`: once the
-  agent initialized, `default` is in the conversation's LLM registry, and
-  `switch_llm` reuses the registered LLM for a known `usage_id`
-  (first-write-wins) and drops the posted one. `LocalConversation.switch_llm`
-  documents that contract, but the route answers `{"success": true}` and its
-  docstring offers it for forwarding profile configs, which carry `default`
-  (also the `LLM` default when `usage_id` is omitted). Any conversation that
-  has received a message silently ignores such a switch; a fresh `usage_id`
-  works (as in `F09.switch-llm-encrypted-key`).
+  switches to `deepseek/deepseek-v4-pro`. The initialized one switches too,
+  although `default` is already in its LLM registry (agent initialization
+  registered it): `switch_llm` reuses a registered LLM only when its config
+  equals the posted one, and otherwise replaces the entry, keeping the usage
+  already recorded under that `usage_id` in `stats.usage_to_metrics`. This is
+  what makes forwarding a profile config, which carries `default` (also the
+  `LLM` default when `usage_id` is omitted), work on a conversation that has
+  received a message.
 - **Switch before the first run (`F09.switch-llm-before-first-run`), known bug.**
   Start from an agent whose model is unreachable, switch to DeepSeek before
   anything ran, then run.
@@ -770,14 +766,14 @@ Preconditions:
   While a step is running, `GET` keeps the old LLM until the step ends
   (`F09.switch-llm-mid-run-get`); the socket and the run itself switch at
   once, so wait for the run (or read the socket) before asserting on `GET`.
-- The LLM registry of a conversation is first-write-wins per `usage_id`:
-  `switch_llm` with a `usage_id` that is already registered (the default
-  `default` once the agent initialized, or any id used before) silently
-  keeps the registered LLM, and `switch_profile` reuses the copy cached under
-  `profile:<name>` at its first use. Always send a fresh `usage_id` with
-  `switch_llm` (`F09.switch-llm-registered-usage-id`,
-  `F09.switch-profile-edited`). Switching back to an earlier `usage_id` or
-  profile is cheap for the same reason.
+- `switch_llm` with a `usage_id` that is already registered (the default
+  `default` once the agent initialized, or any id used before) installs the
+  posted config, replacing the registered entry when the config differs and
+  keeping that id's usage in `stats.usage_to_metrics`
+  (`F09.switch-llm-registered-usage-id`); an identical config reuses the
+  registered LLM, so switching back is cheap. `switch_profile` reuses the
+  copy cached under `profile:<name>` at its first use
+  (`F09.switch-profile-edited`).
 - Usage is accounted per `usage_id` in `stats.usage_to_metrics`, but only
   for LLMs registered after the agent initialized
   (`F09.switch-llm-before-first-run`); send one message (or create with an
