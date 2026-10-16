@@ -160,6 +160,41 @@ def test_get_changes_in_repo_mixed_changes():
         assert changes_dict["to_delete.md"] == GitChangeStatus.DELETED
 
 
+def test_get_changes_in_repo_filenames_with_spaces_and_non_ascii():
+    """Filenames with spaces or non-ASCII characters must round-trip
+    exactly.
+
+    Regression for name-status output being split on whitespace (a
+    modified ``my notes.md`` used to raise) and for git's default
+    C-style path quoting mangling non-ASCII names.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "my notes.md").write_text("v1")
+        (Path(temp_dir) / "café.txt").write_text("v1")
+        (Path(temp_dir) / "to rename.txt").write_text("v1")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'Initial commit'", temp_dir)
+
+        (Path(temp_dir) / "my notes.md").write_text("v2")
+        (Path(temp_dir) / "café.txt").write_text("v2")
+        run_bash_command("git mv 'to rename.txt' 'renamed café.txt'", temp_dir)
+        (Path(temp_dir) / "untracked file.txt").write_text("new")
+        (Path(temp_dir) / "naïve untracked.txt").write_text("new")
+
+        changes = get_changes_in_repo(temp_dir)
+
+        changes_by_path = {str(change.path): change.status for change in changes}
+        assert changes_by_path == {
+            "my notes.md": GitChangeStatus.UPDATED,
+            "café.txt": GitChangeStatus.UPDATED,
+            "to rename.txt": GitChangeStatus.DELETED,
+            "renamed café.txt": GitChangeStatus.ADDED,
+            "untracked file.txt": GitChangeStatus.ADDED,
+            "naïve untracked.txt": GitChangeStatus.ADDED,
+        }
+
+
 def test_get_changes_in_repo_nested_directories():
     """Test get_changes_in_repo with files in nested directories."""
     with tempfile.TemporaryDirectory() as temp_dir:
