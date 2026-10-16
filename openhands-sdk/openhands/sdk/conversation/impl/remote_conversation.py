@@ -1063,7 +1063,7 @@ class RemoteConversation(BaseConversation):
     ) -> None:
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
-        self._callbacks = callbacks or []
+        self._callbacks = list(callbacks) if callbacks else []
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
         self._client = workspace.client
