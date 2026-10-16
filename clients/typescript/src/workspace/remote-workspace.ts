@@ -183,6 +183,8 @@ export class RemoteWorkspace implements IWorkspace {
     const response = await this.client.get('/api/file/download', {
       params: { path: sourcePath },
       timeout: 60000,
+      // Keep the raw bytes: 'auto' would decode the octet-stream body as UTF-8 text.
+      responseType: 'blob',
     });
 
     let content: string | Blob;

@@ -271,7 +271,8 @@ describe('RemoteWorkspace Integration Tests', () => {
         const result = await workspace.fileDownload(`${config.agentWorkspaceDir}/${fileName}`);
 
         expect(result.success).toBe(true);
-        expect(result.content).toBe(content);
+        expect(result.content).toBeInstanceOf(Blob);
+        expect(await (result.content as Blob).text()).toBe(content);
 
         // Cleanup
         deleteWorkspaceFile(fileName);
@@ -294,7 +295,8 @@ describe('RemoteWorkspace Integration Tests', () => {
         const result = await workspace.fileDownload(`${config.agentWorkspaceDir}/${fileName}`);
 
         expect(result.success).toBe(true);
-        expect(result.content).toBe(content);
+        expect(result.content).toBeInstanceOf(Blob);
+        expect(await (result.content as Blob).text()).toBe(content);
 
         // Cleanup
         deleteWorkspaceFile(fileName);
