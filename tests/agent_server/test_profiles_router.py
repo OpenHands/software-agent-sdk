@@ -2210,3 +2210,70 @@ def test_validate_profile_subscription_missing_credentials(client):
     body = response.json()
     assert body["valid"] is False
     assert "subscription login" in body["error"]["message"].lower()
+
+
+def test_validate_profile_resolves_provider_connection(client):
+    """A draft linked to a provider connection is checked with its credentials.
+
+    Regression for #5644: the pre-flight sent the posted LLM as is, so a
+    linked draft without an inline key was checked keyless and reported
+    ``valid=False`` even though activating it would run on the connection's
+    key.
+    """
+    from unittest.mock import MagicMock
+
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic Work",
+            "provider": "anthropic",
+            "api_key": "sk-ant-conn",
+            "base_url": "https://conn.example.com",
+        },
+    ).json()["id"]
+
+    captured: dict = {}
+
+    async def fake_acompletion(self, messages, **kwargs):
+        captured["api_key"] = self._get_litellm_api_key_value()
+        captured["base_url"] = self.base_url
+        return MagicMock()
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch("openhands.sdk.llm.llm.LLM.acompletion", fake_acompletion),
+    ):
+        response = client.post(
+            "/api/profiles/draft/validate",
+            json={
+                "llm": {
+                    "model": "anthropic/claude-sonnet-4",
+                    "provider_connection_id": connection_id,
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"valid": True, "error": None}
+    assert captured == {
+        "api_key": "sk-ant-conn",
+        "base_url": "https://conn.example.com",
+    }
+
+
+def test_validate_profile_with_dangling_provider_connection_returns_422(client):
+    """A draft linked to a missing connection names it, like activation does."""
+    with patch("openhands.sdk.llm.llm.LLM.acompletion") as acompletion:
+        response = client.post(
+            "/api/profiles/draft/validate",
+            json={
+                "llm": {
+                    "model": "anthropic/claude-sonnet-4",
+                    "provider_connection_id": "missing-connection",
+                }
+            },
+        )
+
+    assert response.status_code == 422
+    assert "missing-connection" in response.json()["detail"]
+    acompletion.assert_not_called()

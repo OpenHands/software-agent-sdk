@@ -82,8 +82,9 @@ Routes: `GET /api/llm/providers`, `GET /api/llm/models`,
   `active_profile` resolve the connection into `agent_settings.llm`
   (`GET /api/settings` with `X-Expose-Secrets: plaintext` shows it);
   `POST /api/conversations/{conversation_id}/switch_llm` resolves it for a
-  running conversation (model switching family). `POST /api/profiles/{name}/validate`
-  does not resolve it today (`F23.validate-linked-draft`).
+  running conversation (model switching family), and
+  `POST /api/profiles/{name}/validate` resolves it for the pre-flight of a
+  draft (`F23.validate-linked-draft`).
 - SDK: no Python client calls these routes. In-process code uses
   `ProviderConnectionStore` and `LLMProfileStore(provider_store=...)`
   (`openhands-sdk/openhands/sdk/llm/`). `RemoteWorkspace.get_llm()` of a
@@ -505,7 +506,7 @@ Preconditions:
   (`****QA23`). With the real key rotated back and the profile activated
   through `POST /api/profiles/{name}/activate`, a new conversation
   finishes.
-- **Validate a linked draft (`F23.validate-linked-draft`), known bug.**
+- **Validate a linked draft (`F23.validate-linked-draft`).**
   Pre-flight the same DeepSeek model with the key inline (positive
   control), then as a draft linked to `CONN`.
 
@@ -515,15 +516,13 @@ Preconditions:
     | control-agent-server api POST /api/profiles/qa-f23-draft/validate --stdin --timeout 120 --expect 200 --check valid eq true
   control-agent-server api POST /api/profiles/qa-f23-draft/validate --timeout 120 --expect 200 \
     --json "{\"llm\": {\"model\": \"deepseek/deepseek-flash\", \"provider_connection_id\": \"$CONN\", \"num_retries\": 0}}" \
-    --save F23.validate-linked-draft/linked --check valid eq true --check error eq null  # bug: status eq 200 && response.body.valid eq false && response.body.error.type eq LLMAuthenticationError
+    --save F23.validate-linked-draft/linked --check valid eq true --check error eq null
   ```
-  Expected: both `valid: true`, since a linked draft runs on the
-  connection's key once saved and activated. Today the linked draft is
-  `valid: false` with `LLMAuthenticationError` (`Authentication Fails`):
-  `validate_profile` sends the posted LLM unchanged and never calls
-  `resolve_provider_connection`, unlike activation and `switch_llm`. A
-  client cannot work around it by sending the key, because the connection
-  routes never return it.
+  Expected: both `valid: true`. `validate_profile` resolves
+  `provider_connection_id` to the connection's `api_key` and `base_url`
+  before the pre-flight, as activation and `switch_llm` do, so a client
+  never needs the key (the connection routes never return it). A dangling
+  `provider_connection_id` is 422 naming the missing connection.
 - **Restart (`F23.persist-restart`).** Restart the run and read everything
   back.
 
