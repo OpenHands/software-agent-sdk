@@ -181,3 +181,67 @@ async def test_long_lived_proxied_stream_holds_a_session_until_consumed(
     chunks = [chunk async for chunk in response.body_iterator]
     assert chunks == [b"first", b"second"]
     assert not registry.has_attached_sessions(conversation_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "headers", "chunks", "expected_headers", "expected_body"),
+    [
+        ("GET", [], [], {}, b""),
+        (
+            "POST",
+            [(b"content-length", b"13")],
+            [b'{"qa":', b'"body"}'],
+            {"content-length": "13"},
+            b'{"qa":"body"}',
+        ),
+        (
+            "POST",
+            [(b"transfer-encoding", b"chunked")],
+            [b"a", b"b"],
+            {"transfer-encoding": "chunked"},
+            b"ab",
+        ),
+    ],
+)
+async def test_http_request_keeps_the_client_body_framing(
+    monkeypatch, method, headers, chunks, expected_headers, expected_body
+):
+    import httpx
+    from starlette.requests import Request
+
+    from openhands.agent_server.docker_runtime import proxy
+    from openhands.agent_server.docker_runtime.registry import ConversationContainer
+
+    messages = [
+        {"type": "http.request", "body": chunk, "more_body": True} for chunk in chunks
+    ] + [{"type": "http.request", "body": b"", "more_body": False}]
+
+    async def receive():
+        return messages.pop(0)
+
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"ok"
+
+    seen = {}
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        seen["headers"] = {
+            key: request.headers.get(key)
+            for key in ("content-length", "transfer-encoding")
+            if key in request.headers
+        }
+        seen["body"] = await request.aread()
+        return httpx.Response(200, stream=Body())
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kwargs: client)
+    request = Request({"type": "http", "method": method, "headers": headers}, receive)
+    response = await proxy.proxy_http(
+        request,
+        ConversationContainer("http://upstream", "inner-key", "test-container"),
+        upstream_path="/echo",
+    )
+    assert [chunk async for chunk in response.body_iterator] == [b"ok"]
+    assert seen == {"headers": expected_headers, "body": expected_body}

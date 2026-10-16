@@ -36,7 +36,7 @@ from pydantic.fields import FieldInfo
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.conversation.request import SendMessageRequest
+from openhands.sdk.conversation.message_request import SendMessageRequest
 from openhands.sdk.conversation.types import (
     ConversationObservabilityMetadata,
     ConversationObservabilitySpanName,
