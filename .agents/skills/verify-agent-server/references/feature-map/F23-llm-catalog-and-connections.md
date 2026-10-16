@@ -611,7 +611,7 @@ Preconditions:
   The create answers 503 after 29 to 33 seconds (the body's `detail` is the
   generic `Internal Server Error`; the route's message is in `exception`),
   and once the lock is free the list answers at once without `qa-f23-busy`.
-- **Lock wait blocks the server (`F23.store-busy-responsive`), known bug.**
+- **Lock wait does not block the server (`F23.store-busy-responsive`).**
   `/alive` answers within 3 seconds while the lock is free (positive
   control). Then hold the lock for 16 seconds, start a list in the
   background, and probe `/alive` while the list waits. The five-second
@@ -635,21 +635,16 @@ Preconditions:
   control-agent-server api GET /api/llm/provider-connections --timeout 60 --expect 200 --quiet --save F23.store-busy-responsive/list > /dev/null &
   LISTER=$!
   sleep 5
-  control-agent-server api GET /alive --auth none --expect 200 --expect-max-ms 3000 --timeout 60 --save F23.store-busy-responsive/alive  # bug: status eq 200 && elapsed_ms gt 3000
+  control-agent-server api GET /alive --auth none --expect 200 --expect-max-ms 3000 --timeout 60 --save F23.store-busy-responsive/alive
   wait "$LISTER"
   test $((SECONDS - T0)) -ge 10
   wait "$LOCKER"
   ```
-  Expected `/alive` to answer within 3 seconds while the list waits. Today
-  it answers only when the lock is released, about 10 seconds later (17.6 s
-  measured with a 20-second hold and a two-second head start): every
-  connection route is an `async def` that calls the synchronous, file-locked
-  `ProviderConnectionStore` on the event loop
-  (`provider_connections_router.py`), so a lock wait of up to 30 seconds
-  freezes the whole server, liveness and readiness probes included (the
-  same defect as `F20.store-busy-responsive` for the profile store). The
-  marked probe fails with `took N ms, limit 3000 ms` and a `200`, not with a
-  timeout or an error status.
+  `/alive` answers within 3 seconds while the list waits: the connection
+  routes are plain `def` handlers, so FastAPI runs the synchronous,
+  file-locked `ProviderConnectionStore` in its threadpool and the lock wait
+  never holds the event loop (`provider_connections_router.py`; the same
+  boundary as `F20.store-busy-responsive` for the profile store).
 - **Delete guard (`F23.delete-guard`).** Try to delete `CONN` while
   `qa-f23-linked` and the active settings use it, while only the profile
   does, and while only the settings do.
@@ -780,9 +775,10 @@ Preconditions:
   the last four characters of a rejected key (`****QA23`) in its error; if
   the provider changes that message, check the `ConversationErrorEvent` by
   hand before calling it a product failure.
-- The connection store is synchronous inside `async` handlers, so while
-  its lock is held elsewhere the whole server stops answering for up to 30
-  seconds (`F23.store-busy-responsive`). Never hold the lock (`flock` on
+- The connection routes wait for the store lock in a worker thread, so a
+  held lock delays only connection requests (up to the 30-second timeout),
+  not the rest of the server (`F23.store-busy-responsive`). Still, never
+  hold the lock (`flock` on
   `provider-connections/.provider-connections.lock`) longer than a bullet
   needs, and do not run other bullets in parallel with `F23.store-busy`.
 - Writing to `provider_connections.json` by hand (`F23.corrupt-file`) is an

@@ -574,7 +574,7 @@ Preconditions:
   `detail` is the generic `Internal Server Error`; the route's message is in
   `exception`). `qa-busy` does not exist afterwards and `qa-direct` is still
   stored and active. Once the lock is free, the same save succeeds at once.
-- **Lock wait blocks the server (`F22.store-busy-responsive`), known bug.**
+- **Lock wait does not block the server (`F22.store-busy-responsive`).**
   Probe `/alive` once with the store free (it answers within 3 seconds),
   hold the lock again for 40 seconds, start a save in the background, and
   probe `/alive` every 2 seconds for about 12 seconds while the save waits,
@@ -582,12 +582,13 @@ Preconditions:
   one after a fixed pause, so a save that reaches the server late under a
   loaded replay is still overlapped by a later probe. The bullet then waits
   for both background processes (the save must answer 503, which proves it
-  waited out the lock during the probes) before the bug assertion, so later
+  waited out the lock during the probes) before the final assertion, so later
   bullets find the lock free.
   ```sh
   M="$AGENT_SERVER_VERIFY_RUN/home/.openhands/meta-profiles"
   HELD="$F22/lock-held-2"
   rm -f "$HELD"
+  control-agent-server api GET /api/meta-profiles --expect 200 --quiet > /dev/null  # creates the store dir under --only
   control-agent-server api GET /alive --auth none --expect 200 --expect-max-ms 3000 --save F22.store-busy-responsive/alive-idle
   flock -x "$M/.meta-profiles.lock" sh -c "touch '$HELD'; sleep 40" &
   LOCKER=$!
@@ -605,17 +606,16 @@ Preconditions:
   wait "$SAVER"
   wait "$LOCKER"
   control-agent-server api GET /api/meta-profiles/qa-busy --expect 404
-  control-agent-server assert --json "$F22/alive-probe.json" --check ok eq true  # bug: value.status eq 200 && value.elapsed_ms ge 10000
+  control-agent-server assert --json "$F22/alive-probe.json" --check ok eq true
   ```
-  Expected every `/alive` probe to answer within 3 seconds while the save
-  waits. Today the first probe that overlaps the save takes about 28
-  seconds: every meta-profile route is an `async def` that calls the
-  synchronous, file-locked `MetaProfileStore` on the event loop
-  (`meta_profiles_router.py`), so a 30-second lock wait freezes the whole
-  server, probes included (the same defect as `F20.store-busy-responsive`).
-  `SLOW` is the number of the first slow probe; its exchange (with
-  `elapsed_ms`) is in the bullet's transcript and in `alive-probe.json`,
-  which the line marked `# bug` checks.
+  Every `/alive` probe answers within 3 seconds while the save waits: the
+  meta-profile routes are plain `def` handlers, so FastAPI runs the
+  synchronous, file-locked `MetaProfileStore` in its threadpool and the
+  lock wait never holds the event loop (`meta_profiles_router.py`; the
+  same boundary as `F20.store-busy-responsive`). On a regression, `SLOW`
+  is the number of the first slow probe; its exchange (with `elapsed_ms`)
+  is in the bullet's transcript and in `alive-probe.json`, which the last
+  line checks.
 - **Limit (`F22.limit`).** Fill the store to 50, then create and overwrite.
   ```sh
   N=$(control-agent-server api GET /api/meta-profiles --field meta_profiles | jq length)

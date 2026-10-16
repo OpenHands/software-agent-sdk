@@ -145,7 +145,7 @@ def _set_active_profile_if_matches(
 
 
 @profiles_router.get("", response_model=ProfileListResponse)
-async def list_profiles(request: Request) -> ProfileListResponse:
+def list_profiles(request: Request) -> ProfileListResponse:
     """List all saved LLM profiles.
 
     Returns the list of profiles along with the currently active profile name,
@@ -167,7 +167,7 @@ async def list_profiles(request: Request) -> ProfileListResponse:
 
 
 @profiles_router.get("/{name}", response_model=ProfileDetailResponse)
-async def get_profile(request: Request, name: ProfileName) -> ProfileDetailResponse:
+def get_profile(request: Request, name: ProfileName) -> ProfileDetailResponse:
     """Get a profile's configuration.
 
     Use the ``X-Expose-Secrets`` header to control secret exposure:
@@ -211,7 +211,7 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
     response_model=ProfileMutationResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def save_profile(
+def save_profile(
     request: Request,
     name: ProfileName,
     body: SaveProfileRequest,
@@ -377,9 +377,7 @@ async def validate_profile(
 
 
 @profiles_router.delete("/{name}", response_model=ProfileMutationResponse)
-async def delete_profile(
-    request: Request, name: ProfileName
-) -> ProfileMutationResponse:
+def delete_profile(request: Request, name: ProfileName) -> ProfileMutationResponse:
     """Delete a saved profile (idempotent).
 
     Guarded by the agent-profile FK: returns 409 naming the referrers if any
@@ -399,7 +397,7 @@ async def delete_profile(
 
 
 @profiles_router.post("/{name}/rename", response_model=ProfileMutationResponse)
-async def rename_profile(
+def rename_profile(
     request: Request,
     name: ProfileName,
     body: RenameProfileRequest,
@@ -451,9 +449,7 @@ class ActivateProfileResponse(BaseModel):
 
 
 @profiles_router.post("/{name}/activate", response_model=ActivateProfileResponse)
-async def activate_profile(
-    request: Request, name: ProfileName
-) -> ActivateProfileResponse:
+def activate_profile(request: Request, name: ProfileName) -> ActivateProfileResponse:
     """Activate a saved LLM profile.
 
     This endpoint:
