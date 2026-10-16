@@ -548,10 +548,18 @@ async def _run_agent(
         if event_service is not None:
             state_before = await event_service.get_state()
             min_event_count = len(state_before.events) + 1
-            await event_service.send_message(
-                Message(role="user", content=user_content),
-                run=True,
-            )
+            # Claim capacity before saving the message: a 429 must leave
+            # nothing behind so an OpenAI client can retry the same request.
+            run_slot = await event_service.reserve_run_slot()
+            try:
+                await event_service.send_message(
+                    Message(role="user", content=user_content),
+                    run=True,
+                    run_slot=run_slot,
+                )
+            finally:
+                if run_slot is not None:
+                    run_slot.release()
     started_new_conversation = event_service is None
 
     if event_service is None:

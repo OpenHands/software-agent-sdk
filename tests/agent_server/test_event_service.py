@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import io
 import json
+import logging
 import shutil
 import threading
 import time
@@ -1384,17 +1385,73 @@ class TestEventServiceSendMessage:
             assert event_service._run_task is not None
             await event_service._run_task
 
-            # Verify the exception was logged via logger.exception()
-            # (logged by run()'s _run_and_publish handler)
-            mock_logger.exception.assert_called_once_with(
-                "Error during conversation run"
-            )
+            # Verify the failure was logged with its traceback (logged by
+            # run()'s _run_and_publish handler).
+            mock_logger.error.assert_called_once()
+            fmt, detail = mock_logger.error.call_args.args
+            assert fmt == "Error during conversation run\n%s"
+            assert detail.startswith("Traceback (most recent call last):")
+            assert detail.endswith("RuntimeError: Test error")
 
         # Verify send_message was still called
         conversation.send_message.assert_called_once_with(message)
 
         # Verify run was called (and raised the exception)
         conversation.run.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_error_log_has_no_exc_info(self, event_service):
+        """A failed run's traceback is logged as plain text, never as exc_info:
+        the default Rich console handler renders exc_info synchronously on the
+        event loop, which stalled the server for seconds per failed run
+        (issue #5633)."""
+        conversation = MagicMock()
+        state = MagicMock()
+        state.execution_status = ConversationExecutionStatus.ERROR
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation.state = state
+        conversation._state = state
+        conversation.send_message = MagicMock()
+        try:
+            try:
+                raise ConnectionRefusedError("connection refused")
+            except ConnectionRefusedError as cause:
+                raise RuntimeError("LLM call failed") from cause
+        except RuntimeError as chained:
+            conversation.run = MagicMock(side_effect=chained)
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        records: list[logging.LogRecord] = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        capture = _Capture(level=logging.DEBUG)
+        service_logger = logging.getLogger("openhands.agent_server.event_service")
+        service_logger.addHandler(capture)
+        try:
+            await event_service.send_message(Message(role="user", content=[]), run=True)
+            assert event_service._run_task is not None
+            await event_service._run_task
+        finally:
+            service_logger.removeHandler(capture)
+
+        failures = [
+            r
+            for r in records
+            if r.getMessage().startswith("Error during conversation run")
+        ]
+        assert len(failures) == 1
+        record = failures[0]
+        assert record.levelno == logging.ERROR
+        assert record.exc_info is None
+        message = record.getMessage()
+        assert "ConnectionRefusedError: connection refused" in message
+        assert message.endswith("RuntimeError: LLM call failed")
 
     @pytest.mark.asyncio
     async def test_run_exception_forces_error_status(self, event_service):
