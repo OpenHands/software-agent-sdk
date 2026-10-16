@@ -356,3 +356,29 @@ def test_get_git_diff_committed_branch_change_diffs_against_fork_point():
         # Assert — original is the fork-point (main) content.
         assert diff.original == "base"
         assert diff.modified == "changed by agent"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "  indented line\nbody\n",
+        "body\n\n\n",
+        "\n\nbody\n",
+        "one\r\ntwo\r\n",
+    ],
+    ids=["leading-indent", "trailing-blank-lines", "leading-blank-lines", "crlf"],
+)
+def test_get_git_diff_unchanged_file_has_identical_sides(content):
+    """An unchanged file keeps its edge whitespace on both sides of the diff."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        test_file = Path(temp_dir) / "unchanged.txt"
+        test_file.write_bytes(content.encode())
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'Initial commit'", temp_dir)
+
+        diff = run_in_directory(temp_dir, get_git_diff, "unchanged.txt", ref="HEAD")
+
+        assert diff.original == diff.modified
+        assert diff.modified == "\n".join(content.splitlines())

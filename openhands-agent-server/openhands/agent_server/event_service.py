@@ -1,5 +1,6 @@
 import asyncio
 import time
+import traceback
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
@@ -839,8 +840,29 @@ class EventService:
         )
         return results
 
+    async def reserve_run_slot(self) -> RunSlot | None:
+        """Claim run capacity before saving input that must not outlive a 429.
+
+        Returns ``None`` when this conversation already holds a run permit or
+        still has a run task wrapping up: ``run()`` then reuses that permit or
+        re-arms, so no fresh capacity is needed. Pass the returned slot to
+        ``send_message(..., run_slot=...)`` and release it afterwards.
+
+        Raises:
+            ConversationRunLimitExceeded: If all server run slots are occupied.
+        """
+        task = self._run_task
+        if self._run_session_slot is not None or (task is not None and not task.done()):
+            return None
+        return await RunSlot.acquire(self._run_semaphore)
+
     async def send_message(
-        self, message: Message, run: bool = False, _from_goal_loop: bool = False
+        self,
+        message: Message,
+        run: bool = False,
+        _from_goal_loop: bool = False,
+        *,
+        run_slot: RunSlot | None = None,
     ):
         if not self._conversation:
             raise ValueError("inactive_service")
@@ -875,7 +897,8 @@ class EventService:
                     ):
                         return
                     await self.run(
-                        acp_internal_rerun_generation=explicit_interrupt_generation
+                        acp_internal_rerun_generation=explicit_interrupt_generation,
+                        run_slot=run_slot,
                     )
                     self._acp_internal_rerun_requested = False
                 except ValueError as e:
@@ -898,7 +921,8 @@ class EventService:
             else:
                 try:
                     await self.run(
-                        acp_internal_rerun_generation=explicit_interrupt_generation
+                        acp_internal_rerun_generation=explicit_interrupt_generation,
+                        run_slot=run_slot,
                     )
                     self._acp_internal_rerun_requested = False
                 except ConversationRunLimitExceeded as exc:
@@ -1543,7 +1567,14 @@ class EventService:
                         worker.add_done_callback(settle)
                         await asyncio.shield(worker)
                 except Exception as exc:
-                    logger.exception("Error during conversation run")
+                    # Log the traceback as plain text, not via exc_info: the
+                    # default Rich console handler takes seconds to render a
+                    # chained LLM error on this loop, stalling every request,
+                    # socket and run meanwhile (#5633).
+                    logger.error(
+                        "Error during conversation run\n%s",
+                        "".join(traceback.format_exception(exc)).rstrip(),
+                    )
                     # Backstop: a run that raised before reaching its own error
                     # handling (e.g. an ACP cold-start failure in init_state,
                     # which runs outside run()/arun()'s try-block) can leave the

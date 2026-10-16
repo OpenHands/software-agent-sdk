@@ -19,6 +19,7 @@ from fastapi import (
     File,
     HTTPException,
     Query,
+    Request,
     UploadFile,
     status,
 )
@@ -30,7 +31,7 @@ from openhands.agent_server._secret_redaction import (
     redacted_json_bytes,
     should_redact,
 )
-from openhands.agent_server.config import get_default_config
+from openhands.agent_server.config import Config
 from openhands.agent_server.models import Success
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
@@ -110,6 +111,20 @@ async def _upload_file(path: str, file: UploadFile) -> Success:
 
     except HTTPException:
         raise
+    except IsADirectoryError:
+        # The target itself is an existing directory: the caller's path is
+        # wrong, not a server fault (create_directory answers 400 likewise).
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path is a directory",
+        )
+    except (FileExistsError, NotADirectoryError):
+        # mkdir(parents=True) raises FileExistsError when the direct parent is
+        # a file and NotADirectoryError when a component further up is one.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A parent of the path is not a directory",
+        )
     except Exception as e:
         logger.error(f"Failed to upload file: {e}")
         raise HTTPException(
@@ -917,9 +932,10 @@ async def search_subdirs(
 )
 async def download_trajectory(
     conversation_id: UUID,
+    request: Request,
 ) -> FileResponse:
     """Download a zip archive of a conversation trajectory."""
-    config = get_default_config()
+    config: Config = request.app.state.config
     temp_file = config.conversations_path / f"{conversation_id.hex}.zip"
     conversation_dir = config.conversations_path / conversation_id.hex
 

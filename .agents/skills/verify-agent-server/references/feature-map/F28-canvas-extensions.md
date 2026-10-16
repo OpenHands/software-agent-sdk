@@ -95,7 +95,7 @@ Routes: `POST /api/canvas-extensions/install`, `GET /api/canvas-extensions/insta
   routes the browser to a backend through the `/app-backends` bridge (another
   family).
 - Config: everything lives under `OH_PERSISTENCE_DIR`
-  (`canvas-extensions/installed`, `canvas-extensions/backends/{approvals,artifacts,data,downloads}`,
+  (`canvas-extensions/installed`, `canvas-extensions/backends/{approvals,artifacts,data,downloads,run}`,
   `cache/extensions`), which `launch` makes private to the run
   (`home/.openhands`). Backends run only on Linux amd64/arm64.
 
@@ -945,7 +945,7 @@ Preconditions:
   that commit (the second `# bug` line, for a fix that answers 400 but still
   writes the record). Once fixed, the bullet uninstalls the app; while the
   bug lasts the app stays installed, which no later bullet counts.
-- **Health probe latch (`F28.status-probe-latch`), known bug.** Make the
+- **Health probe latch (`F28.status-probe-latch`).** Make the
   running backend answer one status probe slower than the 1 s probe timeout,
   then fast again.
   ```sh
@@ -960,20 +960,18 @@ Preconditions:
   curl -fsS "http://127.0.0.1:$FPORT/fast"
   test "$(curl -fsS -m 3 "http://127.0.0.1:$FPORT/health")" = ok
   control-agent-server api GET /api/canvas-extensions/installed/qa-f28-flaky/backend --until-ok 5 --check state eq ready \
-    --save F28.status-probe-latch/after-recovery  # bug: status eq 200 && response.body.state eq unhealthy
+    --save F28.status-probe-latch/after-recovery
   control-agent-server api POST /api/canvas-extensions/installed/qa-f28-flaky/backend/stop --expect 200 --check state eq stopped --quiet
   ```
   Expected: once `/health` answers in time again (the direct `curl` shows it
   does), the status returns to `ready` (whether or not the slow probe was
-  reported). The slow-probe status is not asserted, so a fix that tolerates
-  one slow probe passes too. Actual: the slow probe reads `unhealthy`
-  ("Backend health probe failed", saved as `slow-probe`) and that latches
-  while the process keeps serving, so the `# bug` line keeps reading
-  `unhealthy` for its 5 s; later status calls never re-probe, `start` with
-  the same revision returns the same `unhealthy` pid without restarting it, a
-  forced install stays refused with 409, and only `stop` followed by `start`
-  recovers. While the bug lasts the backend is left running; the next bullet
-  stops it first.
+  reported). The slow-probe status is not asserted, so a server that
+  tolerates one slow probe passes too. Today the slow probe reads `unhealthy`
+  ("Backend health probe failed", saved as `slow-probe`) with the same pid;
+  each later status call probes that live process again, so the status reads
+  `ready` as soon as `/health` answers in time, and `start` with the same
+  revision re-probes the same pid instead of restarting it. A backend whose
+  process exited stays `unhealthy` until `stop` or `start`.
 - **Status after the leader exits (`F28.status-exit-hang`).** The backend
   forks a child that inherits its stdout, then its leader exits.
   ```sh
@@ -1007,7 +1005,7 @@ Preconditions:
   timed out behind it and the child kept running (baseline `3dcb27b2`
   reproduced it twice, #5689 passed twice). The exit trap kills the
   bullet's own child if a regression leaves it behind.
-- **Backend outlives a crash (`F28.hard-restart-orphan`), known bug.** Start a
+- **Backend outlives a crash (`F28.hard-restart-orphan`).** Start a
   backend, SIGKILL the server and restart it on the same state.
   ```sh
   OX=$(control-agent-server fixture canvas-app --name qa-orphan --backend ok --print-path)
@@ -1020,19 +1018,19 @@ Preconditions:
   control-agent-server restart --hard
   control-agent-server api GET /api/canvas-extensions/installed/qa-orphan/backend --check state eq stopped \
     --check pid eq null --save F28.hard-restart-orphan/status-after-crash
-  control-agent-server assert --value "$(pgrep -f "$BK/artifacts/qa-orphan/" || true)" --check . eq ''  # bug: value matches '^[0-9]+'
+  control-agent-server assert --value "$(pgrep -f "$BK/artifacts/qa-orphan/" || true)" --check . eq ''
   ```
   Expected: no backend process of the dead server remains once the server is
-  back (reaped at startup, or tied to the server's lifetime). Actual: the
-  backend runs in its own session (`start_new_session=True`), so it survives
-  the SIGKILL with parent pid 1; the new server reports `stopped`, a new
-  `start` launches a second process on the same data directory, and
-  `DELETE .../backend/data` succeeds under the live orphan.
-  `control-agent-server stop` reaps it (`orphans_reaped`). The leftover check
-  (the `# bug` line, which prints the survivor's pid) matches the run-private
-  artifact path rather than the pid, so a recycled pid cannot fake a
-  survivor; the `pgrep` before the crash shows the pattern finds the live
-  backend. This is the last bullet because its orphan stays up until `stop`.
+  back. The server records each backend it starts (process group, leader
+  start time and its own pid and start time) under `backends/run/`, and at
+  startup, before serving, stops the group of every record whose server is
+  gone and whose leader still matches (same start time, command line under
+  `artifacts/<name>/`), then drops the record. So the restarted server
+  reports `stopped` with no process left, a new `start` launches the only
+  process on the data directory, and `DELETE .../backend/data` runs with no
+  live backend. The leftover check matches the run-private artifact path
+  rather than the pid, so a recycled pid cannot fake a survivor; the `pgrep`
+  before the crash shows the pattern finds the live backend.
 
 ## Gotchas
 
@@ -1090,13 +1088,13 @@ Preconditions:
   even on uninstall; `DELETE .../backend/data` removes only `backends/data/<name>`.
   A non-root `rm -rf` of the run's state needs `chmod -R u+w` on
   `canvas-extensions/backends/artifacts` first.
-- Backends run in their own session, so a SIGKILLed server leaves them
-  running (`F28.hard-restart-orphan`); a graceful stop or `restart` stops them.
+- Backends run in their own session, so they outlive a SIGKILLed server
+  until it restarts on the same state (`F28.hard-restart-orphan`).
   `control-agent-server stop` reaps leftovers whose `HOME` is inside the run.
 - Every `GET .../backend` of a `ready` backend probes its health path with a
-  1 s timeout. One slow answer latches `unhealthy` until `stop` and `start`
-  (`F28.status-probe-latch`), so fixture backends must answer `/health` from
-  a threaded server, never behind a slow request. Before #5689 a backend
+  1 s timeout. One slow answer reads `unhealthy` until a later probe answers
+  in time (`F28.status-probe-latch`), so fixture backends must answer
+  `/health` from a threaded server, never behind a slow request. Before #5689 a backend
   whose children kept its stdout open after the leader died wedged that
   app's lifecycle routes; the server now reaps them
   (`F28.status-exit-hang`).

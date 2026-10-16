@@ -82,7 +82,7 @@ def test_the_gateway_launches_an_acp_profile_with_its_own_model(config):
     assert launched.profile.llm_profile_ref is None
 
 
-def test_without_an_active_profile_the_gateway_launches_the_global_settings(config):
+def test_without_an_active_profile_the_gateway_activates_default(config):
     get_agent_profile_store().save(
         OpenHandsAgentProfile(name="inactive", llm_profile_ref="slow")
     )
@@ -100,11 +100,12 @@ def test_without_an_active_profile_the_gateway_launches_the_global_settings(conf
     assert launched.settings.llm.model == "fast-model"
     assert launched.settings.agent_context.system_message_suffix == "Global suffix."
     assert launched.profile is not None
-    assert launched.profile.inline
     assert launched.profile.llm_profile_ref == "fast"
+    default = get_agent_profile_store().load("default")
+    assert launched.profile.agent_profile_id == default.id
     settings = get_settings_store(config).load()
     assert settings is not None
-    assert settings.active_agent_profile_id is None
+    assert settings.active_agent_profile_id == str(default.id)
 
 
 @pytest.mark.parametrize(

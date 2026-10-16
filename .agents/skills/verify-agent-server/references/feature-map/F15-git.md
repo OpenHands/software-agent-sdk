@@ -35,14 +35,14 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 - `F15.changes-base`: without `ref` the display base is `HEAD` on a remote-less default branch, the fork point from local `main` on a feature branch (committed work stays visible), the fork point from `origin`'s default branch on a fully pushed clean branch, and the branch's own upstream once the tree is dirty.
 - `F15.changes-ref`: `ref=HEAD` gives `git status`-style changes and an older commit adds its later commits' files; an unknown or option-shaped `ref` is 400 and never runs as a git option; no `path` is 422.
 - `F15.changes-nested-repo`: changes inside a repository nested one level below the requested repository are listed with the nested directory as prefix, the nested directory itself is not listed, and `diff` of such an entry reads the nested repository.
-- `F15.changes-repo-below-path`: a non-repository directory that holds one repository (the layout of a repository-backed conversation) lists that repository's changes with its directory as prefix; today it lists nothing.
+- `F15.changes-repo-below-path`: a non-repository directory that holds one repository (the layout of a repository-backed conversation) lists that repository's changes with its directory as prefix.
 - `F15.changes-special-names`: a modified tracked file whose name has a space or a non-ASCII character is listed under its real name; today a space fails the whole list with 400 and a non-ASCII name comes back as a mangled git-quoted string.
 - `F15.changes-subdir-paths`: `changes` for a subdirectory of a repository returns paths on one base; today tracked paths are repository-relative (and include files outside the subdirectory) while untracked paths are subdirectory-relative.
 - `F15.non-repo`: on a plain directory, a missing directory and a non-repository file every operation answers 200 with an empty result (`[]`, `{"original": null, "modified": null}`, `{"commits": [], "has_more": false}`); a repository without commits lists its files as `ADDED` and has no commits.
 - `F15.diff`: `diff` for a modified file returns the base text as `original` and the disk text as `modified` (final newline dropped on both sides), an untracked file has `original` `""`, and an explicit `ref` moves the base.
 - `F15.diff-commit`: `commit=<sha>` returns the file as that commit changed it, read from git objects: `original` from the first parent (empty for the root commit or an added file), `modified` from the commit (empty for a file it deleted), also for files no longer on disk and for abbreviated SHAs.
 - `F15.diff-errors`: `ref` together with `commit` is 400, a non-hex `commit` 422, an unknown commit or ref 400, a missing file 400, a file over 1 MiB 400, and no `path` 422.
-- `F15.diff-whitespace`: an unchanged file with leading indentation or trailing blank lines diffs to identical `original` and `modified`; today `original` loses them, so a file that `changes` does not list shows a phantom diff.
+- `F15.diff-whitespace`: an unchanged file with leading indentation or trailing blank lines diffs to identical `original` and `modified`, so a file that `changes` does not list shows no diff.
 - `F15.diff-deleted-file`: the working-tree diff of a file that `changes` lists as `DELETED` returns its base text as `original` and `""` as `modified`; today it is 400 `File does not exist`.
 - `F15.commits`: `commits` lists the history newest first with `sha`, `short_sha`, `subject`, `author` and an ISO 8601 `timestamp`, `has_more` tells whether `limit` cut it, and `limit` outside 1..200 is 422.
 - `F15.commit-changes`: `commits/{sha}/changes` lists one commit's files against its first parent (the root commit as all `ADDED`, a rename as `DELETED` plus `ADDED`), accepts abbreviated SHAs, answers 400 for an unknown SHA and 422 for a non-hex or shorter-than-4 SHA.
@@ -243,7 +243,7 @@ Preconditions:
   lists the inner repository's own changes under `inner/` and not the
   directory itself, and the diff of `inner/README.md` is read from the inner
   repository (its committed text against the edit).
-- **Repository below the requested directory (`F15.changes-repo-below-path`), known bug.**
+- **Repository below the requested directory (`F15.changes-repo-below-path`).**
   A plain directory that holds one repository, as a repository-backed
   conversation's workspace does (`{base}/{repo}`).
   ```sh
@@ -253,16 +253,14 @@ Preconditions:
   control-agent-server api GET /api/git/changes --query path="$F/ws/proj" --expect 200 --check . len-eq 2 \
     --check 0.path eq README.md --check 1.path eq notes.txt
   control-agent-server api GET /api/git/changes --query path="$F/ws" --expect 200 --check . len-eq 2 \
-    --check 0.path eq proj/README.md --check 1.path eq proj/notes.txt --save F15.changes-repo-below-path/ws  # bug: status eq 200 && response.body len-eq 0
+    --check 0.path eq proj/README.md --check 1.path eq proj/notes.txt --save F15.changes-repo-below-path/ws
   ```
   `$F/ws` itself is not a repository and the repository below it answers
-  with its two changes (positive control). Expected: the repository's two
-  changes under `proj/`, as for a nested
-  repository (and as `GET /api/file/archive` resolves the same layout).
-  Actual: `200 []`. `get_git_changes` calls `get_changes_in_repo` on the
-  directory first; it raises `GitRepositoryError` before the `./*/.git` scan
-  runs, and the router maps that to `[]`. Consumers that pass the workspace
-  root see "no changes" for a repository-backed conversation.
+  with its two changes (positive control). The directory answers with the
+  repository's two changes under `proj/`, sorted by path, as for a nested
+  repository (and as `GET /api/file/archive` resolves the same layout), so
+  consumers that pass the workspace root of a repository-backed conversation
+  see its changes. The directory contributes no changes of its own.
 - **File names with a space or non-ASCII characters (`F15.changes-special-names`), known bug.**
   ```sh
   mkdir -p "$F/names"
@@ -407,7 +405,7 @@ Preconditions:
   ```
   400, 422, 400, 400, 400 (absolute path in the message), 400 for a file over
   1 MiB, and 422 without `path`.
-- **Phantom whitespace diff (`F15.diff-whitespace`), known bug.** Commit a
+- **Unchanged-file whitespace (`F15.diff-whitespace`).** Commit a
   file with leading indentation and one with trailing blank lines, change
   nothing, ask for their diffs.
   ```sh
@@ -423,16 +421,15 @@ Preconditions:
   for name in crlf lead trail; do
     control-agent-server api GET /api/git/diff --query path="$F/ws-files/$name.txt" --query ref=HEAD --expect 200 \
       --check modified len-ge 1 --raw-out "$F/ws-$name.json" --save "F15.diff-whitespace/$name"
-    jq '{original, modified, same: (.original == .modified), strip_only: (.original == (.modified | gsub("^\\s+|\\s+$"; "")))}' "$F/ws-$name.json" \
-      | control-agent-server assert --check same eq true  # bug: value.same eq false && value.strip_only eq true
+    jq '{original, modified, same: (.original == .modified)}' "$F/ws-$name.json" \
+      | control-agent-server assert --check same eq true
   done
   ```
-  Expected: identical sides for every unchanged file (`changes` is `[]`).
-  Actual: the CRLF file passes (both sides are newline-normalized), but
-  `lead.txt` gives `original` `"indented line\nbody"` against `modified`
-  `"  indented line\nbody"`, and `trail.txt` `"body"` against `"body\n\n"`:
-  `original` comes from `run_git_command`, which `.strip()`s git's stdout,
-  while `modified` is `"\n".join(text.splitlines())`. The commit-mode diff
+  Expected: identical sides for every unchanged file (`changes` is `[]`):
+  `lead.txt` gives `"  indented line\nbody"` and `trail.txt` `"body\n\n"` on
+  both sides, and the CRLF file `"one\ntwo"`: `get_git_diff` reads the
+  `git show` blob verbatim (`strip=False`) and normalizes it like
+  `modified`, `"\n".join(text.splitlines())`. The commit-mode diff
   strips both sides alike, so it shows no phantom change but loses the
   whitespace.
 - **Diff of a deleted file (`F15.diff-deleted-file`), known bug.** `changes`
@@ -788,7 +785,8 @@ Preconditions:
   `git remote show origin`, a network call with a 30 s timeout. Use
   remote-less fixtures or a local bare remote cloned with `git clone` (which
   records `origin/HEAD`), as `F15.changes-base` does.
-- A non-repository `path` is not an error: `changes` is `[]`, commits are
+- A non-repository `path` is not an error: `changes` is `[]` (unless a
+  repository sits directly below it, `F15.changes-repo-below-path`), commits are
   empty and `diff` is `{"original": null, "modified": null}` (null, not `""`).
   A missing file inside a repository is 400, and so is a file over 1 MiB.
 - "Not a repository" means no ancestor holds a `.git`: git searches upward
@@ -805,14 +803,16 @@ Preconditions:
   calling.
 - Both diff sides drop the final newline and line endings are normalized
   (`\r\n` becomes `\n`, so a file whose only change is LF to CRLF is listed as
-  `UPDATED` but diffs to identical sides). Leading and trailing whitespace is
-  lost on `original` only (`F15.diff-whitespace`).
+  `UPDATED` but diffs to identical sides). Other leading and trailing
+  whitespace is kept on both sides (`F15.diff-whitespace`); the commit-mode
+  diff strips it from both.
 - `diff` on a directory inside a repository is not refused: it returns
   `git show`'s tree listing (`"tree <sha>:src\n\napp.py\nutil.py"`) as
   `original` and `""` as `modified`.
-- Nested repositories are only scanned one level below a `path` that is
-  itself a repository (`./*/.git`); deeper ones show up as an untracked
-  directory entry.
+- Nested repositories are only scanned one level below `path`
+  (`./*/.git`), whether or not `path` is itself a repository; deeper ones
+  show up as an untracked directory entry (or not at all below a
+  non-repository `path`).
 - `commits/{sha}/changes` keeps git's output order (renames as
   `DELETED`+`ADDED` pairs), unlike `changes`, which is sorted by path.
 - Git calls reset `idle_time` (`update_last_execution_time`), like file
