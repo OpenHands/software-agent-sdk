@@ -64,6 +64,16 @@ class ProviderConnectionCreateRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    @field_validator("api_key", mode="after")
+    @classmethod
+    def _reject_blank_or_redacted_api_key(cls, v: SecretStr) -> SecretStr:
+        # A blank or redacted key would persist a connection that can never
+        # supply credentials; the masked placeholder is what redacted
+        # responses return, so it must not be accepted as a new key either.
+        if not v.get_secret_value().strip() or is_redacted_secret(v):
+            raise ValueError("api_key must not be blank or the redacted placeholder")
+        return v
+
 
 class ProviderConnectionUpdateRequest(BaseModel):
     display_name: str | None = Field(default=None, min_length=1, max_length=128)

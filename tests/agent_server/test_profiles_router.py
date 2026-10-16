@@ -1795,6 +1795,29 @@ def test_patch_provider_connection_rejects_null_provider(client):
 @pytest.mark.parametrize(
     "rejected_key", ["", "   ", "**********"], ids=["empty", "whitespace", "redacted"]
 )
+def test_create_provider_connection_rejects_blank_or_redacted_api_key(
+    client, rejected_key
+):
+    """POST with a blank or redacted api_key is a 422 and persists no
+    connection."""
+    before = client.get("/api/llm/provider-connections").json()
+
+    response = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic",
+            "provider": "anthropic",
+            "api_key": rejected_key,
+        },
+    )
+
+    assert response.status_code == 422
+    assert client.get("/api/llm/provider-connections").json() == before
+
+
+@pytest.mark.parametrize(
+    "rejected_key", ["", "   ", "**********"], ids=["empty", "whitespace", "redacted"]
+)
 def test_patch_provider_connection_rejects_blank_or_redacted_api_key(
     client, temp_profiles_dir, rejected_key
 ):
