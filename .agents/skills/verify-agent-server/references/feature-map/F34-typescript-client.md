@@ -1325,16 +1325,15 @@ Preconditions:
   queued message was replayed on the new socket, and the message posted
   after the restart arrived on it (live or in that replay). REST shows both
   user messages and the conversation still `idle`.
-- **Reconnect on Node's own WebSocket (`F34.event-stream-reconnect-native`), known bug.**
+- **Reconnect on Node's own WebSocket (`F34.event-stream-reconnect-native`).**
   The same restart with two streams side by side: the `ws`-backed one
   (positive control) and one on Node's global `WebSocket`, which
   `F34.event-stream` uses and the README presents as all the stream
   needs. In Node 22 (undici 6), a handshake to a port that refuses fires
-  `error` but never `close`, and the stream schedules its retries only
-  from `onclose` (`clients/typescript/src/client/conversation-event-stream.ts:145`);
-  its own 10 s handshake abort only calls `close()`, which fires no
-  `close` either. So the first refused attempt during the restart is the
-  last one.
+  `error` but never `close`, so the stream ends an attempt that has not
+  opened on `error` (or on its 10 s handshake timeout) as well as on
+  `close`, and keeps backing off through the refused attempts of the
+  restart.
   ```sh
   RNID=$(control-agent-server conversation start --no-run --placeholder-agent --tools none --no-autotitle --workspace "$F34/scoped" \
     --prompt 'qa-f34-reconnect: never run' --print-id)
@@ -1350,12 +1349,11 @@ Preconditions:
   wait "$RPID"
   cat "$F34/reconnect-native.json"
   jq -e '.ws.reconnected and .ws.sent_after >= 1 and .native.went_down' "$F34/reconnect-native.json"
-  control-agent-server assert --json "$F34/reconnect-native.json" --check native.reconnected eq true --check native.sent_after ge 1  # bug: value.native.reconnected eq false && value.native.last_state.attemptCount eq 1
+  control-agent-server assert --json "$F34/reconnect-native.json" --check native.reconnected eq true --check native.sent_after ge 1
   ```
-  Expected: both streams come back and see the message posted after the
-  restart. Today the `ws`-backed stream does, while the native one stays
-  `{"isConnected": false, "isReconnecting": true, "attemptCount": 1}`
-  for the whole minute the watcher gives it, never retrying.
+  Expected: both streams come back, end at
+  `{"isConnected": true, "isReconnecting": false, "attemptCount": 0}`
+  and see the message posted after the restart.
 - **Endpoint audit against this checkout (`F34.endpoint-audit`).** The
   client's own drift tooling, offline, in a fixture directory (nothing is
   written into `clients/typescript`).
@@ -1460,12 +1458,10 @@ Preconditions:
   (`F34.ws-callback-client`, `F34.bash-websocket`). The unit tests pass
   because vitest provides `require` and a fake `window`.
 - Node 22's global `WebSocket` (undici 6) fires `error` but no `close` when
-  a handshake is refused, so a `ConversationEventStream` on it stops
-  retrying after the first refused reconnect attempt (a server restart
-  always produces one) and stays `isReconnecting` forever
-  (`F34.event-stream-reconnect-native`). Pass the `ws` package's
-  constructor as `createWebSocket` for a Node consumer that must survive a
-  restart (`F34.event-stream-reconnect`).
+  a handshake is refused, and `close()` on such a socket fires no `close`
+  either. `ConversationEventStream` treats `error` before `open` as the end
+  of the attempt, so it reconnects on either transport
+  (`F34.event-stream-reconnect-native`, `F34.event-stream-reconnect`).
 - A real model shown a `UserRejectObservation` often refuses to propose
   the same command again ("a deliberate block"), so a recipe that needs
   both an accept and a reject accepts first and rejects a later, different
