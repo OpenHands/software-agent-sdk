@@ -13,6 +13,7 @@ from openhands.agent_server.skills_service import (
     SkillLoadResult,
     create_sandbox_skill,
     discover_profile_skills,
+    discover_public_skill_names,
     load_all_skills,
     load_org_skills_from_url,
     load_registered_marketplace_skills,
@@ -766,6 +767,20 @@ class TestDiscoverProfileSkills:
                 discover_profile_skills()
 
 
+class TestDiscoverPublicSkillNames:
+    _LOAD = "openhands.agent_server.skills_service.load_available_skills"
+
+    def test_a_user_skill_shadowing_a_public_one_is_not_public(self):
+        def load(*, include_public=False, include_user=False):
+            names = (["alpha", "shared"] if include_public else []) + (
+                ["shared", "mine"] if include_user else []
+            )
+            return {name: Skill(name=name, content="x") for name in names}
+
+        with patch(self._LOAD, side_effect=load):
+            assert discover_public_skill_names() == {"alpha"}
+
+
 class TestSyncPublicSkills:
     """Tests for sync_public_skills function."""
 
@@ -860,6 +875,54 @@ class TestSyncPublicSkills:
 
             assert success is False
             mock_invalidate.assert_not_called()
+
+    def test_sync_public_skills_reports_unreachable_origin(self, tmp_path):
+        """A sync whose fetch fails must report failure, not the stale clone."""
+        import subprocess
+
+        def git(*args: str, cwd: Path) -> None:
+            subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        git("init", "-q", "-b", "main", cwd=origin)
+        (origin / "README.md").write_text("skills\n")
+        git("add", "README.md", cwd=origin)
+        git(
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-qm",
+            "init",
+            cwd=origin,
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch(
+                "openhands.agent_server.skills_service.get_skills_cache_dir",
+                return_value=cache_dir,
+            ),
+            patch(
+                "openhands.agent_server.skills_service.PUBLIC_SKILLS_REPO",
+                str(origin),
+            ),
+            patch("openhands.agent_server.skills_service.PUBLIC_SKILLS_REF", "main"),
+        ):
+            assert sync_public_skills()[0] is True
+            clone = cache_dir / "public-skills"
+
+            # The origin becomes unreachable once the clone exists.
+            origin.rename(tmp_path / "moved")
+            success, message = sync_public_skills()
+
+        assert success is False
+        assert "failed" in message.lower()
+        # The stale clone stays usable for offline skill loading.
+        assert (clone / "README.md").read_text() == "skills\n"
 
 
 class TestSkillLoadResult:
@@ -1002,3 +1065,82 @@ class TestMarketplaceCatalogCache:
             service_get_marketplace_catalog()
 
         assert mock_fetch.call_count == 2  # fetched again after expiry
+
+    def test_empty_result_is_not_cached(self):
+        """A failed or empty fetch is retried on the next call instead of
+        blanking the catalog for the whole TTL."""
+        import openhands.agent_server.skills_service as svc
+
+        entries = [("github", "GitHub skill", "github:org/repo")]
+        with (
+            patch(
+                "openhands.agent_server.skills_service._fetch_catalog_entries",
+                side_effect=[[], entries],
+            ) as mock_fetch,
+            patch(
+                "openhands.agent_server.skills_service.service_list_installed_skills",
+                return_value=[],
+            ),
+        ):
+            assert svc.service_get_marketplace_catalog() == []
+            assert svc._catalog_cache is None
+            result = svc.service_get_marketplace_catalog()
+
+        assert mock_fetch.call_count == 2
+        assert [s.name for s in result] == ["github"]
+
+    def test_sync_clears_catalog_cache(self):
+        """A successful sync makes the next catalog read pick up new entries."""
+        import openhands.agent_server.skills_service as svc
+
+        before = [("github", "GitHub skill", "github:org/repo")]
+        after = [*before, ("jira", "Jira skill", "github:org/repo/jira")]
+        with (
+            patch(
+                "openhands.agent_server.skills_service._fetch_catalog_entries",
+                side_effect=[before, after],
+            ) as mock_fetch,
+            patch(
+                "openhands.agent_server.skills_service.service_list_installed_skills",
+                return_value=[],
+            ),
+            patch("openhands.agent_server.skills_service.get_skills_cache_dir"),
+            patch(
+                "openhands.agent_server.skills_service.update_skills_repository",
+                return_value=Path("/tmp/cache/public-skills"),
+            ),
+        ):
+            assert len(svc.service_get_marketplace_catalog()) == 1
+            success, _ = svc.sync_public_skills()
+            result = svc.service_get_marketplace_catalog()
+
+        assert success is True
+        assert mock_fetch.call_count == 2
+        assert [s.name for s in result] == ["github", "jira"]
+
+    def test_failed_sync_keeps_catalog_cache(self):
+        """A failed sync leaves the cached catalog in place."""
+        import openhands.agent_server.skills_service as svc
+
+        entries = [("github", "GitHub skill", "github:org/repo")]
+        with (
+            patch(
+                "openhands.agent_server.skills_service._fetch_catalog_entries",
+                return_value=entries,
+            ) as mock_fetch,
+            patch(
+                "openhands.agent_server.skills_service.service_list_installed_skills",
+                return_value=[],
+            ),
+            patch("openhands.agent_server.skills_service.get_skills_cache_dir"),
+            patch(
+                "openhands.agent_server.skills_service.update_skills_repository",
+                return_value=None,
+            ),
+        ):
+            svc.service_get_marketplace_catalog()
+            success, _ = svc.sync_public_skills()
+            svc.service_get_marketplace_catalog()
+
+        assert success is False
+        mock_fetch.assert_called_once()

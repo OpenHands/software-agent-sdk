@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 from uuid import UUID
+
+from pydantic import SecretStr
 
 from openhands.sdk.launch.errors import (
     AgentLaunchError,
@@ -19,10 +21,11 @@ from openhands.sdk.profiles.agent_profile import (
 )
 from openhands.sdk.profiles.resolver import (
     ProfileNotFound,
-    _apply_disabled_skills,
     _build_acp_settings,
     _build_openhands_settings,
     _compute_mcp_filter,
+    _profile_skills,
+    _select_skills,
 )
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.skills import Skill
@@ -51,6 +54,12 @@ class LaunchStores:
     llm_profiles: LLMProfileLoader
     mcp_config: Mapping[str, MCPServer]
     skills: Callable[[], Sequence[Skill]]
+    # Names of the public catalog tier that `public_skills` filters; None
+    # counts every catalog skill as public.
+    public_skill_names: Callable[[], Collection[str]] | None = None
+    # Server-wide credential: a profile is secret-free, so every OpenHands
+    # profile launch uses this one.
+    critic_api_key: SecretStr | None = None
     agent_profiles: AgentProfileLoader | None = None
     meta_profiles: MetaProfileLoader | None = None
     llm_profile_names: Callable[[], Sequence[str]] | None = None
@@ -74,7 +83,12 @@ class ResolvedLaunch:
 AgentProfileSource = UUID | OpenHandsAgentProfile | ACPAgentProfile
 
 
-def resolve(source: AgentProfileSource, stores: LaunchStores) -> ResolvedLaunch:
+def resolve(
+    source: AgentProfileSource,
+    stores: LaunchStores,
+    *,
+    llm_profile_ref: str | None = None,
+) -> ResolvedLaunch:
     """Resolve a stored profile id or a profile into a ``ResolvedLaunch``.
 
     Every reference is copied into the result, so the runtime that finalizes it
@@ -85,6 +99,12 @@ def resolve(source: AgentProfileSource, stores: LaunchStores) -> ResolvedLaunch:
     profile = (
         _load_stored_profile(source, stores) if isinstance(source, UUID) else source
     )
+    if llm_profile_ref is not None and not isinstance(profile, OpenHandsAgentProfile):
+        raise AgentLaunchError(
+            "agent_launch_additions.llm_profile_ref applies only to an "
+            "OpenHands Agent Profile"
+        )
+
     mcp_config, _, dangling_mcp = _compute_mcp_filter(
         dict(stores.mcp_config), profile.mcp_server_refs
     )
@@ -94,13 +114,16 @@ def resolve(source: AgentProfileSource, stores: LaunchStores) -> ResolvedLaunch:
             raise UnresolvedProfileReferences(mcp_server_refs=dangling_mcp)
         try:
             settings = _build_acp_settings(
-                profile, mcp_config, _apply_disabled_skills(catalog, [])
+                profile, mcp_config, _select_skills(catalog, [])
             )
         except ValueError as exc:
             raise AgentLaunchError(str(exc)) from exc
     else:
+        skills = _profile_skills(
+            profile, catalog, _load_public_skill_names(profile, stores)
+        )
         settings = _resolve_openhands(
-            profile, stores, mcp_config, catalog, dangling_mcp
+            profile, stores, mcp_config, skills, dangling_mcp, llm_profile_ref
         )
     if not isinstance(settings, OpenHandsAgentSettings | ACPAgentSettings):
         raise AgentLaunchError(f"Unsupported agent kind {settings.agent_kind!r}")
@@ -110,6 +133,7 @@ def resolve(source: AgentProfileSource, stores: LaunchStores) -> ResolvedLaunch:
             agent_profile_id=profile.id,
             revision=profile.revision,
             secret_refs=profile.secret_refs,
+            llm_profile_ref=llm_profile_ref,
         ),
     )
 
@@ -118,16 +142,18 @@ def _resolve_openhands(
     profile: OpenHandsAgentProfile,
     stores: LaunchStores,
     mcp_config: dict[str, MCPServer],
-    catalog: list[Skill],
+    skills: list[Skill],
     dangling_mcp: list[str],
+    llm_profile_ref: str | None,
 ) -> OpenHandsAgentSettings | ACPAgentSettings:
-    llm = _load_llm(stores, profile.llm_profile_ref)
+    llm_ref = llm_profile_ref or profile.llm_profile_ref
+    llm = _load_llm(stores, llm_ref)
     meta_profile, meta_llms, dangling_meta, dangling_meta_llms = _load_meta_profile(
         profile, stores
     )
     if llm is None or dangling_mcp or dangling_meta or dangling_meta_llms:
         raise UnresolvedProfileReferences(
-            llm_profile_ref=profile.llm_profile_ref if llm is None else None,
+            llm_profile_ref=llm_ref if llm is None else None,
             mcp_server_refs=dangling_mcp,
             meta_profile_ref=dangling_meta,
             meta_profile_llm_refs=dangling_meta_llms,
@@ -139,10 +165,11 @@ def _resolve_openhands(
             # when the runtime wires no token callback.
             llm.model_copy(update={"stream": True}),
             mcp_config,
-            _apply_disabled_skills(catalog, profile.disabled_skills),
+            skills,
             browser_available=None,
             meta_profile=meta_profile,
             meta_profile_llms=meta_llms,
+            critic_api_key=stores.critic_api_key,
         )
     except ValueError as exc:
         raise AgentLaunchError(str(exc)) from exc
@@ -173,6 +200,17 @@ def _load_stored_profile(
 def _load_skills(stores: LaunchStores) -> list[Skill]:
     try:
         return list(stores.skills())
+    except Exception as exc:
+        raise LaunchStoreError(f"Skill discovery failed: {exc}") from exc
+
+
+def _load_public_skill_names(
+    profile: OpenHandsAgentProfile, stores: LaunchStores
+) -> frozenset[str] | None:
+    if profile.public_skills is None or stores.public_skill_names is None:
+        return None
+    try:
+        return frozenset(stores.public_skill_names())
     except Exception as exc:
         raise LaunchStoreError(f"Skill discovery failed: {exc}") from exc
 

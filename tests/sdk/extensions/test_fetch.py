@@ -37,7 +37,19 @@ def test_parse_github_shorthand_invalid_format():
         parse_extension_source("github:invalid")
 
     with pytest.raises(ExtensionFetchError, match="Invalid GitHub shorthand"):
-        parse_extension_source("github:too/many/parts")
+        parse_extension_source("github:/repo")
+
+    with pytest.raises(ExtensionFetchError, match="Invalid GitHub shorthand"):
+        parse_extension_source("github:owner/")
+
+
+def test_parse_github_shorthand_with_subpath():
+    """The repository URL ignores the subpath, which fetch() uses as repo_path."""
+    source_type, url = parse_extension_source(
+        "github:OpenHands/extensions/skills/github"
+    )
+    assert source_type == SourceType.GITHUB
+    assert url == "https://github.com/OpenHands/extensions.git"
 
 
 def test_parse_https_git_url():
@@ -68,6 +80,30 @@ def test_parse_https_bitbucket_url():
     source_type, url = parse_extension_source("https://bitbucket.org/org/repo")
     assert source_type == SourceType.GIT
     assert url == "https://bitbucket.org/org/repo.git"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "https://dev.azure.com/org/project/_git/repo",
+        "https://org@dev.azure.com/org/Web%20Apps/_git/skills",
+        "https://org.visualstudio.com/project/_git/repo",
+        "https://tfs.example.com/tfs/Collection/project/_git/repo",
+    ],
+)
+def test_parse_azure_devops_url_keeps_path_without_git_suffix(source):
+    """Azure DevOps treats ``<repo>.git`` as a different, missing repository."""
+    source_type, url = parse_extension_source(source)
+    assert source_type == SourceType.GIT
+    assert url == source
+
+
+def test_parse_azure_devops_url_strips_trailing_slash():
+    source_type, url = parse_extension_source(
+        "https://dev.azure.com/org/project/_git/repo/"
+    )
+    assert source_type == SourceType.GIT
+    assert url == "https://dev.azure.com/org/project/_git/repo"
 
 
 def test_parse_ssh_git_url():
@@ -474,6 +510,50 @@ def test_fetch_github_with_repo_path(tmp_path: Path):
     assert result.exists()
     assert result.name == "sub-ext"
     assert "extensions" in str(result)
+
+
+def _clone_monorepo(url, dest, **kwargs):
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / ".git").mkdir()
+    (dest / "plugins" / "city-weather").mkdir(parents=True)
+
+
+def test_fetch_github_shorthand_subpath_is_repo_path(tmp_path: Path):
+    mock_git = create_autospec(GitHelper, instance=True)
+    mock_git.clone.side_effect = _clone_monorepo
+
+    result = fetch(
+        "github:OpenHands/extensions/plugins/city-weather/",
+        cache_dir=tmp_path,
+        git_helper=mock_git,
+    )
+
+    assert (
+        mock_git.clone.call_args[0][0] == "https://github.com/OpenHands/extensions.git"
+    )
+    assert result.name == "city-weather"
+    assert result.parent.name == "plugins"
+
+
+def test_fetch_github_shorthand_subpath_and_repo_path_conflict(tmp_path: Path):
+    mock_git = create_autospec(GitHelper, instance=True)
+
+    with pytest.raises(ExtensionFetchError, match="do not also pass repo_path"):
+        fetch(
+            "github:OpenHands/extensions/plugins/city-weather",
+            cache_dir=tmp_path,
+            repo_path="plugins/city-weather",
+            git_helper=mock_git,
+        )
+    mock_git.clone.assert_not_called()
+
+
+def test_fetch_github_shorthand_subpath_cannot_escape(tmp_path: Path):
+    mock_git = create_autospec(GitHelper, instance=True)
+    mock_git.clone.side_effect = _clone_monorepo
+
+    with pytest.raises(ExtensionFetchError, match="escapes"):
+        fetch("github:owner/repo/../..", cache_dir=tmp_path, git_helper=mock_git)
 
 
 def test_fetch_github_with_nonexistent_repo_path(tmp_path: Path):

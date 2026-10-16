@@ -793,6 +793,47 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
         shutil.rmtree(cwd_conversations)
 
 
+@pytest.mark.parametrize(
+    "tags", [None, {"purpose": "debugging"}, {"title": "user tag"}]
+)
+def test_remote_fork_title_stays_out_of_tags(server_env, tags: dict[str, str] | None):
+    agent = Agent(llm=LLM(model="gpt-4o-mini", usage_id="test"), tools=[])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    source = Conversation(agent=agent, workspace=workspace, tags={"source": "original"})
+    expected_tags = tags or {}
+    assert isinstance(source, RemoteConversation)
+    try:
+        fork = source.fork(title="Debug investigation", tags=tags)
+        try:
+            response = httpx.get(f"{server_env['host']}/api/conversations/{fork.id}")
+            response.raise_for_status()
+            assert response.json()["title"] == "Debug investigation"
+            assert response.json()["tags"] == expected_tags
+
+            pause = httpx.post(
+                f"{server_env['host']}/api/conversations/prepare-for-sandbox-pause"
+            )
+            pause.raise_for_status()
+            state_file = (
+                server_env["conversation_service"].conversations_dir
+                / fork.id.hex
+                / "base_state.json"
+            )
+            assert json.loads(state_file.read_text())["tags"] == expected_tags
+            metadata_file = state_file.with_name("meta.json")
+            assert json.loads(metadata_file.read_text())["tags"] == expected_tags
+            reloaded = httpx.get(f"{server_env['host']}/api/conversations/{fork.id}")
+            reloaded.raise_for_status()
+            assert reloaded.json()["title"] == "Debug investigation"
+            assert reloaded.json()["tags"] == expected_tags
+        finally:
+            fork.close()
+    finally:
+        source.close()
+
+
 def test_remote_conversation_created_from_agent_settings(server_env):
     from openhands.sdk.conversation.request import StartConversationRequest
     from openhands.sdk.workspace import LocalWorkspace
@@ -836,9 +877,14 @@ def test_openai_chat_completions_gateway_over_real_server(
         include_secrets=True,
     )
 
-    with patch(
-        "openhands.agent_server.openai.service.get_llm_profile_store",
-        lambda: LLMProfileStore(base_dir=profiles_dir),
+    def llm_profiles() -> LLMProfileStore:
+        return LLMProfileStore(base_dir=profiles_dir)
+
+    with (
+        patch(
+            "openhands.agent_server.openai.service.get_llm_profile_store", llm_profiles
+        ),
+        patch("openhands.agent_server.launch.get_llm_profile_store", llm_profiles),
     ):
         with live_server_env(tmp_path, monkeypatch) as env:
             with httpx.Client() as client:
