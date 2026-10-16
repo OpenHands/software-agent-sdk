@@ -31,7 +31,7 @@ Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`
 - `F30.chat-reuse-after-restart`: after a server restart the header still continues the persisted conversation.
 - `F30.chat-header-new-id`: a well-formed but unknown id in the header creates the conversation with exactly that id; a malformed id is 422 and creates nothing.
 - `F30.chat-reuse-keeps-llm`: on a continued conversation the requested model must still exist (404 otherwise) but is not applied: the conversation keeps its own LLM and system suffix, and the other profile's provider is never called.
-- `F30.chat-usage-per-request`: `usage` on a continued conversation reports that request's tokens, not the conversation's running total (reproduces a real bug).
+- `F30.chat-usage-per-request`: `usage` on a continued conversation reports that request's tokens, not the conversation's running total.
 - `F30.chat-reuse-concurrent`: two overlapping requests on one conversation each get the answer to their own turn (reproduces a real bug: the first request returns the second request's answer).
 - `F30.chat-agent-tools`: the agent runs its own tools in the server workspace (a file appears there), the answer carries no `tool_calls`, and the client's `tools`/`tool_choice` are ignored.
 - `F30.chat-input-errors`: bad chat input fails before any conversation exists: 400 without a user message or with a bad content part, 404 for a model without the `openhands_` prefix or an unknown profile, 400 for an invalid profile name, 422 for schema errors.
@@ -390,7 +390,7 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   the response echoes the requested model. An unknown model is still 404 and
   appends nothing. The last call is the positive control: a new conversation
   on the same profile does call the stub.
-- **Usage per request (`F30.chat-usage-per-request`), known bug.** A stub
+- **Usage per request (`F30.chat-usage-per-request`).** A stub
   that reports 10/5 tokens on the first model call and 3/2 on the second; one
   gateway turn is one model call here.
   ```sh
@@ -414,17 +414,17 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
     --check stats.usage_to_metrics.default.accumulated_token_usage.prompt_tokens eq 13 \
     --check stats.usage_to_metrics.default.accumulated_token_usage.completion_tokens eq 7 --quiet
   control-agent-server state cat fixtures/qa-f30/usage-2.json --check usage.prompt_tokens eq 3 \
-    --check usage.completion_tokens eq 2 --check usage.total_tokens eq 5  # bug: content.usage.prompt_tokens eq 13 && content.usage.completion_tokens eq 7 && content.usage.total_tokens eq 20
+    --check usage.completion_tokens eq 2 --check usage.total_tokens eq 5
   ```
   The stub got exactly two model calls, one per request, so the second
   request's own usage is the stub's 3/2/5: the conversation's stats hold one
   `token_usages` entry per model call (10/5, then 3/2) and a running total
   of 13/7 (the positive control: the server has the per-call numbers).
-  Expected: the second response reports 3/2/5. Today it reports the
-  conversation's accumulated 13/7/20 (`_openai_usage_from_state` reads
-  `accumulated_token_usage`), so an OpenAI client that sums `usage` per
-  request double-counts every earlier turn. The stream's usage chunk carries
-  the same value (it is the response's `usage`).
+  The second response reports 3/2/5, not the conversation's accumulated
+  13/7/20: the gateway snapshots the combined metrics before the turn and
+  reports the difference, so an OpenAI client that sums `usage` per request
+  counts every model call once. The stream's usage chunk carries the same
+  value (it is the response's `usage`).
 - **Overlapping turns on one conversation (`F30.chat-reuse-concurrent`), known bug.**
   A stub whose second model call answers `QA_F30_RACE_B` after 8 s. The
   `llm-stub` steps cannot delay a reply, so the bullet rewrites the stub's
@@ -914,9 +914,10 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   whatever the conversation's final answer is when its 2 s poll sees a
   terminal state, which can be the later request's answer (see
   `F30.chat-reuse-concurrent`).
-- `usage` is the conversation's accumulated usage (see
-  `F30.chat-usage-per-request`); on a fresh conversation that equals the
-  request's own usage summed over every model call the agent made.
+- `usage` is the request's own usage summed over every model call the agent
+  made while serving it; on a continued conversation earlier turns are not
+  included (see `F30.chat-usage-per-request`). Overlapping requests on one
+  conversation still mix their usage (see `F30.chat-reuse-concurrent`).
 - Streaming is simulated: the router runs the whole agent first
   (`stream` is forced off for the run), then sends three or four frames and
   `[DONE]` at once. Errors are plain JSON with a status code, never SSE error
