@@ -690,7 +690,7 @@ Preconditions:
   field, 404 for the unknown conversation; none of them changed `QID`, and
   the bare name `qa-f09-mkt-plugin` then resolves through the only
   registered marketplace and loads.
-- **Load the same plugin twice (`F09.load-plugin-twice`), known bug.** Load
+- **Load the same plugin twice (`F09.load-plugin-twice`).** Load
   the plugin into `QID` again, now by its full ref.
 
   Requires: `F09.load-plugin-errors`
@@ -698,15 +698,13 @@ Preconditions:
   control-agent-server api POST "/api/conversations/$QID/load_plugin" --json '{"plugin_ref": "qa-f09-mkt-plugin@qa-f09-mkt"}' --expect 200 --save F09.load-plugin-twice/second-load
   control-agent-server api GET "/api/conversations/$QID" --query include_skills=true --quiet \
     --check agent.agent_context.skills len-eq 2 --check agent.agent_context.skills contains qa-f09-mkt-plugin-skill --check hook_config.user_prompt_submit len-ge 1
-  control-agent-server api GET "/api/conversations/$QID" --quiet --check hook_config.user_prompt_submit len-eq 1 --save F09.load-plugin-twice/get  # bug: status eq 200 && checks.0.actual contains 'echo QA_PLUGIN_HOOK'
+  control-agent-server api GET "/api/conversations/$QID" --quiet --check hook_config.user_prompt_submit len-eq 1 --save F09.load-plugin-twice/get
   ```
-  The second load is 200 and the skills are not duplicated (still two).
-  Expected: one copy of the hook as well. Today `hook_config.user_prompt_submit`
-  has two identical entries, because `_merge_runtime_plugin_hooks` appends
-  with `HookConfig.merge` without de-duplicating, and the hook then runs
-  twice per message (seen live: two `HookExecutionEvent`s for one user
-  message). A client that retries `load_plugin` doubles every hook's side
-  effects.
+  The second load is 200, the skills are not duplicated (still two), and
+  `hook_config.user_prompt_submit` keeps one copy of the plugin's hook:
+  `_merge_runtime_plugin_hooks` adds only the matchers the live config does
+  not already hold, so the hook still runs once per message and a client that
+  retries `load_plugin` does not double its side effects.
 - **Load a plugin from the Python SDK (`F09.load-plugin-sdk`).** A fresh
   conversation `SID` with the marketplace registered, reattached from an SDK
   program.
