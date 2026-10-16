@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import copy
+import functools
 import itertools
 import shutil
+import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
 from pathlib import Path
@@ -75,6 +77,10 @@ from openhands.sdk.utils.pydantic_secrets import (
 )
 from openhands.sdk.workspace import LocalWorkspace
 
+from .acp_install_catalog import (
+    ACP_VERSION_RE,
+    get_acp_pinned_version,
+)
 from .acp_providers import (
     ACPFileSecretSpec,
     ACPProviderInfo,
@@ -1638,6 +1644,30 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         )
 
 
+@functools.lru_cache(maxsize=32)
+def _probe_acp_binary_version(binary_path: str) -> str | None:
+    """Probe an executable for its version string via ``<binary> --version``.
+
+    Returns the first semver string found in stdout/stderr, or ``None`` if the
+    command fails, times out, or produces unparseable output.
+    """
+    try:
+        proc = subprocess.run(
+            [binary_path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return None
+        output = f"{proc.stdout}\n{proc.stderr}".strip()
+        match = ACP_VERSION_RE.search(output)
+        return match.group(1) if match else None
+    except Exception:
+        return None
+
+
 class ACPAgentSettings(AgentSettingsBase):
     """Settings for an ACP (Agent Client Protocol) agent.
 
@@ -1975,12 +2005,15 @@ class ACPAgentSettings(AgentSettingsBase):
         """Swap an ``npx -y <pkg>`` command for the provider's pinned binary.
 
         When *command* is an ``npx`` invocation of this provider's package and
-        the provider's ``binary_name`` resolves via :func:`shutil.which`, return
-        ``[binary_name, *extra]`` (preserving trailing args like gemini's
+        the provider's ``binary_name`` resolves via :func:`shutil.which` to a
+        binary reporting the exact pinned version declared in
+        :data:`~openhands.sdk.settings.acp_install_catalog.ACP_INSTALL_CATALOG`,
+        return ``[binary_name, *extra]`` (preserving trailing args like gemini's
         ``--acp``) — running the agent-server image's pinned wrapper instead of
         downloading npm-latest. Returned unchanged otherwise: no pinned binary
-        (custom server), a non-matching/non-npx command, or the binary not on
-        ``PATH`` (local dev).
+        (custom server), a non-matching/non-npx command, the binary not on
+        ``PATH`` (local dev), or a binary on ``PATH`` reporting a non-pinned
+        version.
 
         Package matching ignores any ``@version`` suffix: the registry default
         is version-pinned (so the native fallback can't drift to npm ``latest``),
@@ -2002,7 +2035,18 @@ class ACPAgentSettings(AgentSettingsBase):
         same_package = self._npm_package_name(actual_pkg) == self._npm_package_name(
             default_pkg
         )
-        if not same_package or shutil.which(info.binary_name) is None:
+        if not same_package:
+            return command
+
+        binary_path = shutil.which(info.binary_name)
+        if binary_path is None:
+            return command
+
+        pinned_version = get_acp_pinned_version(info.key)
+        if pinned_version is None:
+            return command
+
+        if _probe_acp_binary_version(binary_path) != pinned_version:
             return command
 
         return [info.binary_name, *extra]
