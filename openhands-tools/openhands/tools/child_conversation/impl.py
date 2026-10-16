@@ -44,7 +44,14 @@ def default_launch_url(parent_conversation_id: UUID) -> str:
 
 
 def session_api_key_headers() -> dict[str, str]:
-    """Auth header for the launcher, taken from the agent-server's own env."""
+    """Auth header for the launcher, taken from the agent-server's own env.
+
+    The key identifies this server to its launcher, as it does for the
+    server's webhook subscribers. ``launch_url`` is chosen by whoever assembles
+    the conversation's agent, and the header grants that party nothing new: a
+    hosting backend minted the key, and a direct caller had to present one to
+    create the conversation.
+    """
     for env_name in SESSION_API_KEY_ENVS:
         value = os.getenv(env_name)
         if value:

@@ -17,7 +17,11 @@ from openhands.agent_server.conversation_service import (
     InvalidParentConversation,
 )
 from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import (
+    ConversationRunLimitExceeded,
+    EventService,
+    RunSlot,
+)
 from openhands.agent_server.models import (
     ConversationInfo,
     StartChildConversationRequest,
@@ -363,8 +367,12 @@ async def test_start_child_conversation_delivers_task_as_first_message(
     assert launch.result is not None
     child_service = launch.services[launch.result.conversation_id]
     child_service.send_message.assert_awaited_once_with(
-        Message(role="user", content=[TextContent(text="Write the docs")]), True
+        Message(role="user", content=[TextContent(text="Write the docs")]), False
     )
+    # The run is admitted with the slot acquired before the child was persisted.
+    child_service.run.assert_awaited_once()
+    assert child_service.run.await_args is not None
+    assert isinstance(child_service.run.await_args.kwargs["run_slot"], RunSlot)
 
 
 @pytest.mark.asyncio
@@ -431,6 +439,36 @@ async def test_start_child_conversation_shared_isolation_keeps_parent_directory(
     assert launch.result.isolation == "shared"
     assert launch.result.workspace == str(repo_dir)
     assert not (launch.worktree_root / str(launch.result.conversation_id)).exists()
+
+
+@pytest.mark.asyncio
+async def test_start_child_conversation_refused_when_run_limit_reached(tmp_path):
+    """A full server refuses the launch before anything is persisted."""
+    repo_dir = tmp_path / "repo"
+    _init_git_repo(repo_dir)
+    services: dict[UUID, Any] = {}
+    worktree_root = tmp_path / "conversation-worktrees"
+    request = StartChildConversationRequest(task="Fix the bug", isolation="worktree")
+
+    with patch(
+        "openhands.agent_server.conversation_service.EventService",
+        side_effect=_event_service_factory(services),
+    ):
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations",
+            conversation_worktree_root=worktree_root,
+            max_concurrent_runs=1,
+        ) as service:
+            parent_info, _ = await service.start_conversation(_start_request(repo_dir))
+            with await RunSlot.acquire(service._run_semaphore):
+                with pytest.raises(ConversationRunLimitExceeded):
+                    await service.start_child_conversation(parent_info.id, request)
+            parent = await service.get_conversation(parent_info.id)
+
+    assert parent is not None
+    assert parent.sub_conversation_ids == []
+    assert set(services) == {parent_info.id}
+    assert not worktree_root.exists()
 
 
 @pytest.mark.asyncio

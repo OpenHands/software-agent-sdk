@@ -1648,29 +1648,60 @@ class ConversationService:
                 launched_agent_profile=launched_agent_profile,
                 **request_data,
             )
-        async with self._conversation_lifecycle(conversation_id):
-            # Re-check under the lock. Preparing ``stored`` above awaits, so a
+        initial_message = request.initial_message
+        return await self._launch_prepared_conversation(
+            stored,
+            launched,
+            run_slot=run_slot,
+            initial_message=(
+                Message(role=initial_message.role, content=initial_message.content)
+                if initial_message
+                else None
+            ),
+            reuse_request=request,
+        )
+
+    async def _launch_prepared_conversation(
+        self,
+        stored: StoredConversation,
+        launched: LaunchedAgent,
+        *,
+        run_slot: RunSlot,
+        initial_message: Message | None,
+        reuse_request: StartConversationRequest | None = None,
+    ) -> tuple[ConversationInfo, bool]:
+        """Persist a prepared conversation, deliver its first message and notify.
+
+        The tail of a launch shared by a normal start and a child launch:
+        everything after the agent and ``stored`` configuration are prepared.
+        The caller acquires ``run_slot`` before preparing anything, so a full
+        server refuses the launch before a worktree or a persistence directory
+        exists; the slot is handed to the first run.
+
+        If the id already exists once the lifecycle lock is held (a client-chosen
+        id raced with a concurrent create), the existing conversation is reused
+        for ``reuse_request`` as ``start_conversation`` does; without a request
+        the collision is an error.
+        """
+        async with self._conversation_lifecycle(stored.id):
+            # Re-check under the lock. Preparing ``stored`` awaits, so a
             # concurrent create for this same id can have committed since the
-            # check at the top of this method. Without this the loser would
-            # start a second EventService for an id that already exists,
-            # re-running its initial message.
-            if self._has_conversation(conversation_id):
+            # caller's check. Without this the loser would start a second
+            # EventService for an id that already exists, re-running its
+            # initial message.
+            if self._has_conversation(stored.id):
+                if reuse_request is None:
+                    raise ValueError(f"Conversation with id {stored.id} already exists")
                 return await self._reuse_existing_conversation_locked(
-                    conversation_id, request
+                    stored.id, reuse_request
                 )
             # New conversation: the agent is written to base_state.json (its
             # single source of truth), not to meta.json. Pass it explicitly.
-            # ``new_agent`` is ``request.agent`` (decrypted when the request was
-            # secrets_encrypted).
             event_service = await self._start_event_service(
                 stored, is_new_conversation=True, launched=launched
             )
-        initial_message = request.initial_message
-        if initial_message:
-            message = Message(
-                role=initial_message.role, content=initial_message.content
-            )
-            await event_service.send_message(message, False)
+        if initial_message is not None:
+            await event_service.send_message(initial_message, False)
             await event_service.run(run_slot=run_slot)
 
         state = await event_service.get_state()
@@ -2008,6 +2039,10 @@ class ConversationService:
         directory. The link is recorded via ``parent_conversation_id``.
 
         Returns ``None`` when *parent_id* does not exist.
+
+        Raises:
+            ConversationRunLimitExceeded: If all server run slots are occupied.
+                Nothing is persisted in that case.
         """
         if self._event_services is None:
             raise ValueError("inactive_service")
@@ -2016,70 +2051,61 @@ class ConversationService:
         if parent_service is None:
             return None
 
-        parent_stored = parent_service.stored
-        parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
-        child_id = uuid4()
+        # Admission first, as in a normal start: a full server refuses the
+        # launch before a worktree or the child's persistence directory exists.
+        with await RunSlot.acquire(self._run_semaphore) as run_slot:
+            parent_stored = parent_service.stored
+            parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
+            child_id = uuid4()
 
-        # Reuse the worktree machinery of a regular start: a worktree is planned
-        # (and its guidance appended to the child's agent) only when the parent
-        # workspace is a git repository; otherwise the child shares it.
-        worktree = (
-            _plan_conversation_worktree(
-                parent_stored.workspace, child_id, self.conversation_worktree_root
-            )
-            if request.isolation == "worktree"
-            else None
-        )
-        launched = await asyncio.to_thread(
-            lambda: finalize(
-                parent_agent,
-                live_launch_runtime(
-                    self.acp_skill_sourcing, enable_browser=self.enable_browser
-                ),
-                extra_suffixes=[worktree.guidance] if worktree else (),
-            )
-        )
-        workspace = (
-            _create_conversation_worktree(worktree)
-            if worktree is not None
-            else parent_stored.workspace
-        )
-        now = utc_now()
-        child_stored = parent_stored.model_copy(
-            update={
-                "id": child_id,
-                "workspace": workspace,
-                "worktree": request.isolation == "worktree",
-                "title": request.title,
-                "metrics": None,
-                "created_at": now,
-                "updated_at": now,
-                "parent_conversation_id": parent_id,
-                "forked_from_conversation_id": None,
-                "forked_from_event_id": None,
-            }
-        )
-        child_dir = self.conversations_dir / child_id.hex
-        try:
-            async with self._conversation_lifecycle(child_id):
-                event_service = await self._start_event_service(
-                    child_stored, is_new_conversation=True, launched=launched
+            # Reuse the worktree machinery of a regular start: a worktree is
+            # planned (and its guidance appended to the child's agent) only when
+            # the parent workspace is a git repository; otherwise the child
+            # shares it.
+            worktree = (
+                _plan_conversation_worktree(
+                    parent_stored.workspace, child_id, self.conversation_worktree_root
                 )
-        except Exception:
-            safe_rmtree(child_dir)
-            raise
-
-        await event_service.send_message(
-            Message(role="user", content=[TextContent(text=request.task)]), True
-        )
-
-        state = await event_service.get_state()
-        info = _compose_conversation_info(
-            event_service.stored, state, self._children_of(child_id)
-        )
-        await self._notify_conversation_webhooks(
-            _compose_webhook_conversation_info(event_service.stored, state)
-        )
+                if request.isolation == "worktree"
+                else None
+            )
+            launched = await asyncio.to_thread(
+                lambda: finalize(
+                    parent_agent,
+                    live_launch_runtime(
+                        self.acp_skill_sourcing, enable_browser=self.enable_browser
+                    ),
+                    extra_suffixes=[worktree.guidance] if worktree else (),
+                )
+            )
+            workspace = (
+                _create_conversation_worktree(worktree)
+                if worktree is not None
+                else parent_stored.workspace
+            )
+            now = utc_now()
+            child_stored = parent_stored.model_copy(
+                update={
+                    "id": child_id,
+                    "workspace": workspace,
+                    "worktree": request.isolation == "worktree",
+                    "title": request.title,
+                    "metrics": None,
+                    "created_at": now,
+                    "updated_at": now,
+                    "parent_conversation_id": parent_id,
+                    "forked_from_conversation_id": None,
+                    "forked_from_event_id": None,
+                }
+            )
+            info, _ = await self._launch_prepared_conversation(
+                child_stored,
+                launched,
+                run_slot=run_slot,
+                initial_message=Message(
+                    role="user", content=[TextContent(text=request.task)]
+                ),
+            )
 
         return StartChildConversationResponse(
             conversation_id=child_id,
