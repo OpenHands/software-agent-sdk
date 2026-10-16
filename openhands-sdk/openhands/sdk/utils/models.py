@@ -211,6 +211,10 @@ class DiscriminatedUnionMixin(OpenHandsModel):
     ) -> Self:
         if isinstance(data, cls):
             return data
+        if isinstance(data, dict):
+            # Never mutate the caller's dict: callers such as RemoteState
+            # validate the same cached payload more than once.
+            data = dict(data)
         if not _is_abstract(cls):
             has_kind_alias_field = any(
                 field_name != "kind" and field_info.alias == "kind"
@@ -229,7 +233,6 @@ class DiscriminatedUnionMixin(OpenHandsModel):
                         None,
                     )
                     if internal_kind_field in data:
-                        data = data.copy()
                         data.pop("kind", None)
                 return handler(data)
             kind = data.pop("kind", None)

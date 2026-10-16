@@ -1054,12 +1054,11 @@ Preconditions:
   stored event in the server's order plus the one full-state snapshot the
   socket sent on connect (never persisted), the 110 messages in order, and
   the first read of each state field equals the server's GET.
-- **Read the state twice (`F33.conversation-state-reread`), known bug.**
-  `RemoteState` validates its cached conversation info on every read, and
-  the discriminated-union validator pops `kind` from the dict it is given
-  (`openhands/sdk/utils/models.py`), so the first read of a polymorphic
-  field strips the cache. The correct behavior asserted here is that a
-  second read returns the same value.
+- **Read the state twice (`F33.conversation-state-reread`).**
+  `RemoteState` validates its cached conversation info on every read, so
+  validating a polymorphic field must not change the dict it is given: the
+  discriminated-union validator (`openhands/sdk/utils/models.py`) copies its
+  input before it removes `kind`, and a second read returns the same value.
 
   Requires: `F33.conversation-attach-large`
   ```sh
@@ -1088,14 +1087,13 @@ Preconditions:
   assert reads["agent"][0] == "Agent" and reads["is_confirmation_mode_active"][0] is True, reads
   f33.emit("reread", reads=reads, stable=all(first == second for first, second in reads.values()))
   PY
-  control-agent-server assert --json "$F33/reread.json" --check stable eq true  # bug: value.reads.confirmation_policy.1 eq 'error: ValidationError' && value.reads.security_analyzer.1 eq NoneType
+  control-agent-server assert --json "$F33/reread.json" --check stable eq true
   ```
   Each field is read on a freshly attached conversation, and every first
-  read is right (control). Today the second read of `confirmation_policy`
-  and `agent` raises `ValidationError` (`Unknown kind ''`), the second read
-  of `security_analyzer` returns `None`, and so the second
-  `is_confirmation_mode_active` is `False`. A full-state socket snapshot or
-  `state.refresh_from_server()` restores the cache until the next read.
+  read is right (control). The second reads return `AlwaysConfirm`,
+  `LLMSecurityAnalyzer` and `Agent` again, and `is_confirmation_mode_active`
+  stays `True`, without a socket snapshot or `state.refresh_from_server()`
+  in between.
 - **Ask, generate and set a title (`F33.conversation-ask-title`).**
 
   Requires: `F33.conversation-run`
@@ -2061,12 +2059,6 @@ Preconditions:
   without waiting for the client's handler. The client learns of the call
   only through callbacks, so a client tool called while the socket is down
   is missed by the handler (the reconnect gap above).
-- `RemoteState`'s polymorphic readers (`confirmation_policy`,
-  `security_analyzer`, `agent`) validate the cached conversation info in
-  place, so only the first read after a refresh is right
-  (`F33.conversation-state-reread`, known bug); call
-  `state.refresh_from_server()` before each read, or read once and keep the
-  value. `RemoteConversation.agent` (the attribute) is unaffected.
 - With a `stream=True` LLM the events socket also carries
   `StreamingDeltaEvent` frames: callbacks get them, the server stores none,
   but `state.events` keeps them (`F33.conversation-streaming-state`, known
