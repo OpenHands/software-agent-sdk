@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from typing import Final, Protocol
 from urllib.parse import unquote, urlparse
 
+import httpx
 from fastapi import HTTPException, Request, Response, WebSocket, status
 from pydantic import BaseModel
 
@@ -464,12 +465,23 @@ async def proxy_app_backend_http(
     upstream_path = f"/{path}" if path else "/"
     if query:
         upstream_path = f"{upstream_path}?{query}"
-    return await proxy_http(
-        request,
-        _target(endpoint),
-        upstream_path=upstream_path,
-        reject_redirects=True,
-    )
+    try:
+        return await proxy_http(
+            request,
+            _target(endpoint),
+            upstream_path=upstream_path,
+            reject_redirects=True,
+        )
+    except HTTPException as exc:
+        # proxy_http words connection failures for the Docker runtime
+        # ("Conversation container unreachable"); name the Canvas backend.
+        if exc.status_code == status.HTTP_502_BAD_GATEWAY and isinstance(
+            exc.__cause__, httpx.HTTPError
+        ):
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY, "Canvas App backend unreachable"
+            ) from exc.__cause__
+        raise
 
 
 async def proxy_app_backend_websocket(

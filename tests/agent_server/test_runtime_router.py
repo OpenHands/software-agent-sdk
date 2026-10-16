@@ -225,3 +225,28 @@ async def test_scoped_bash_routes_reject_malformed_conversation_id(runtime_clien
             assert response.status_code == 422, (method, path, response.text)
             locs = [error["loc"] for error in response.json()["detail"]]
             assert ["path", "runtime_conversation_id"] in locs, response.text
+
+
+@pytest.mark.asyncio
+async def test_runtime_upload_onto_directory_or_under_file_is_400(
+    runtime_client, tmp_path
+):
+    client, _ = runtime_client
+    workspace = tmp_path / "upload-ws"
+    prefix = f"/api/conversations/{await _create(client, workspace)}"
+    (workspace / "is-a-dir").mkdir(parents=True)
+    (workspace / "a-file.txt").write_bytes(b"keep me")
+
+    for target, detail in (
+        ("is-a-dir", "Path is a directory"),
+        ("a-file.txt/child.txt", "A parent of the path is not a directory"),
+    ):
+        response = await client.post(
+            prefix + "/file/upload",
+            params={"path": str(workspace / target)},
+            files={"file": ("test.txt", b"content", "text/plain")},
+        )
+        assert response.status_code == 400, response.text
+        assert response.json()["detail"] == detail
+    assert (workspace / "is-a-dir").is_dir()
+    assert (workspace / "a-file.txt").read_bytes() == b"keep me"

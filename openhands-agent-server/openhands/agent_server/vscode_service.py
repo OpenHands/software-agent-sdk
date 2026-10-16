@@ -120,9 +120,11 @@ class VSCodeService:
             workspace_dir: Path to workspace directory
 
         Returns:
-            VSCode URL with token, or None if not available
+            VSCode URL with token, or None if the server is not running
         """
-        if self.connection_token is None:
+        # A keyed server seeds the token before start() runs, so the token
+        # alone does not mean a server is there to open.
+        if self.connection_token is None or not self.is_running():
             return None
 
         if base_url is None:

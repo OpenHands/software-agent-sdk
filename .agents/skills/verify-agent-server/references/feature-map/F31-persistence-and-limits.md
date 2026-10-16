@@ -661,7 +661,7 @@ Preconditions:
   file stops startup with pydantic's `literal_error`, as a non-numeric
   integer variable does (`F31.config-invalid-fails-fast`): only the
   environment parser is lenient for booleans and choices.
-- **Per-process tmux directory removed on stop (`F31.tmux-dir-cleanup`), known bug.**
+- **Per-process tmux directory removed on stop (`F31.tmux-dir-cleanup`).**
   A second run whose `TMUX_TMPDIR` is empty, so the server picks its own.
   ```sh
   B=$(control-agent-server launch --new --name f31-tmux --env TMUX_TMPDIR= --print-run)
@@ -672,17 +672,17 @@ Preconditions:
   test -d "$TD"
   control-agent-server stop --run "$B" | jq -e '.server == "terminated"'
   trap 'rm -rf -- "$TD" || true' EXIT
-  control-agent-server assert --value "$([ -e "$TD" ] && echo true || echo false)" --check . eq false  # bug: value eq true
+  control-agent-server assert --value "$([ -e "$TD" ] && echo true || echo false)" --check . eq false
   trap - EXIT
   ```
   Expected: the directory is gone after a graceful stop (`stop` reports
   `terminated`, not `killed`, so the lifespan shutdown ran). The log line
   and the directory existing while `B` runs are the positive controls.
-  Today the server logs `TMUX_TMPDIR not set; defaulting to per-server tmux
+  The server logs `TMUX_TMPDIR not set; defaulting to per-server tmux
   directory /tmp/openhands-agent-server-<pid>`, creates it, and at shutdown
-  only removes the variable from its environment (`api_lifespan`), so every
-  such start leaves a directory in the temp dir and the `assert` fails. The
-  `trap` removes the leftover after the assertion.
+  (`api_lifespan`) restores the variable and removes that directory. A
+  `TMUX_TMPDIR` the user provided is kept and never removed. The `trap`
+  removes a leftover if the assertion fails.
 - **Storage retention and disk budget (`F31.storage-retention`), blocked.**
   Needs a Docker daemon and the `conversation_image` pulled
   (`control-agent-server capabilities` reports `docker`): the storage
