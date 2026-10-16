@@ -1913,7 +1913,13 @@ class EventService:
             judge_llm,
             max_iterations=max_iterations or int(last["max_iterations"]),
         )
-        controller.iteration = int(last["iteration"])
+        # Every resume runs at least one more audit round, so keep one round
+        # in hand: a status persisted with the count already at the cap (by
+        # an older server, or a lower max_iterations override) must not let
+        # the resumed loop report more rounds than max_iterations.
+        controller.iteration = min(
+            int(last["iteration"]), controller.max_iterations - 1
+        )
         # Same busy guard as start_goal_loop: refuse a goal loop or active run.
         async with self._run_lock:
             if self._closing:
