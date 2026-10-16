@@ -45,11 +45,11 @@ Routes: `GET /api/conversations/{conversation_id}/workspace`,
 - `F16.vscode-scoped-guards`: the conversation-scoped VS Code routes answer 404 for an unknown conversation, 422 for a non-UUID id, and 422 `workspace_dir must be inside the conversation workspace` for a relative or outside folder, before looking at VS Code.
 - `F16.vscode-auth`: all four VS Code routes need the header (401 otherwise), and the workspace cookie, whose path covers the scoped routes, does not open them.
 - `F16.vscode-enabled-status`: with `enable_vscode` on and VS Code unable to start (its port taken, or no binary), both status routes answer `{"running": false, "enabled": true}` and the server keeps serving.
-- `F16.vscode-url-shape`: the URL is `http://localhost:<vscode_port>/?tkn=<first session key>&folder=workspace`; `base_url` replaces the origin, `workspace_dir` sets the folder, the scoped route defaults the folder to the conversation's `workspace.working_dir`, and `vscode_base_path` is inserted after the origin.
-- `F16.vscode-url-not-running`: a VS Code that is not running must not be advertised: `url` is null while `running` is false (known bug: a keyed server returns a URL carrying the session key).
+- `F16.vscode-url-shape`: while VS Code runs, the URL is `http://localhost:<vscode_port>/?tkn=<first session key>&folder=workspace`; `base_url` replaces the origin, `workspace_dir` sets the folder, the scoped route defaults the folder to the conversation's `workspace.working_dir`, and `vscode_base_path` is inserted after the origin (blocked on this machine: no binary).
+- `F16.vscode-url-not-running`: a VS Code that is not running must not be advertised: `url` is null while `running` is false, also on a server booted with a session key.
 - `F16.vscode-url-no-key`: a server without session keys, with VS Code enabled but not running (no binary), answers `{"url": null}` on both URL routes.
 - `F16.vscode-url-after-init`: a deferred-init server that receives its session key through `POST /api/init`, with VS Code enabled but not running (no binary), answers `{"url": null}`.
-- `F16.vscode-folder-encoding`: the URL's `folder` parameter decodes back to the workspace path even when the path contains `&` or `#` (known bug: the value is not URL-encoded).
+- `F16.vscode-folder-encoding`: the URL's `folder` parameter decodes back to the workspace path even when the path contains `&` or `#` (known bug: the value is not URL-encoded; blocked on this machine: no binary).
 - `F16.docker-root-cookie`: in Docker runtime mode the slashless workspace root accepts the workspace cookie like the slashed form does (known bug: it falls into the header-only proxy and answers 401).
 - `F16.vscode-running`: with the OpenVSCode Server binary installed and its port free, status reports `running: true` and the URL opens the editor (blocked on this machine: no binary).
 
@@ -390,11 +390,18 @@ Preconditions:
   The log says `VSCode service failed to start, continuing without VSCode`;
   both status routes answer exactly `{"running": false, "enabled": true}`
   (no `message`) and the server is otherwise healthy.
-- **URL shape (`F16.vscode-url-shape`).** Global and scoped URLs, with and
-  without overrides, then with a base path.
+- **URL shape (`F16.vscode-url-shape`), blocked.** Global and scoped URLs,
+  with and without overrides, then with a base path. A URL is advertised only
+  while VS Code runs (`F16.vscode-url-not-running`), so this needs the
+  OpenVSCode Server binary (see `F16.vscode-running`). Start VS Code on a
+  free port first, and put the held port back at the end.
 
   Requires: `F16.vscode-enabled-status`
   ```sh
+  VPORT_HELD=$VPORT
+  VPORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+  control-agent-server restart --config-json '{"vscode_port": '"$VPORT"'}'
+  control-agent-server api GET /api/vscode/status --expect 200 --check running eq true
   KEY=$(cat "$AGENT_SERVER_VERIFY_RUN/private/session_api_key")
   control-agent-server api GET /api/vscode/url --expect 200 --check url eq "http://localhost:$VPORT/?tkn=$KEY&folder=workspace" --save F16.vscode-url-shape/global
   control-agent-server api GET /api/vscode/url --query base_url=https://qa-f16.example:9443/ --query workspace_dir=/qa/f16 --expect 200 \
@@ -406,33 +413,34 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$CID/vscode/url" --query base_url=https://qa-f16.example --expect 200 \
     --check url eq "https://qa-f16.example/qa-f16/vscode/?tkn=$KEY&folder=$WS"
   unset KEY
+  VPORT=$VPORT_HELD
+  control-agent-server restart --reset-config --config-json '{"enable_vscode": true, "vscode_port": '"$VPORT"'}'
   ```
   The token is the run's session key (redacted in output and evidence), the
   port is `vscode_port`, `base_url` loses its trailing slash, the scoped
   default folder is the conversation's working directory, and the base path
   sits between the origin and `/?tkn=`.
-- **Not running, still advertised (`F16.vscode-url-not-running`), known bug.**
+- **Not running, not advertised (`F16.vscode-url-not-running`).**
   Read status and URL on the keyed run, where VS Code is not running.
+
+  Requires: `F16.vscode-enabled-status`
   ```sh
   control-agent-server api GET /api/vscode/status --expect 200 --check enabled eq true --check running eq false
-  control-agent-server api GET /api/vscode/url --expect 200 --check . eq '{"url": null}' --save F16.vscode-url-not-running/global  # bug: status eq 200 && response.body.url contains tkn=
-  control-agent-server api GET "/api/conversations/$CID/vscode/url" --expect 200 --check . eq '{"url": null}'  # bug: status eq 200 && response.body.url contains tkn=
+  control-agent-server api GET /api/vscode/url --expect 200 --check . eq '{"url": null}' --save F16.vscode-url-not-running/global
+  control-agent-server api GET "/api/conversations/$CID/vscode/url" --expect 200 --check . eq '{"url": null}'
   ```
-  `running` is false, so the body should be exactly `{"url": null}` on both
-  routes (each `# bug` line alone shows the defect), as the service intends
-  (`VSCodeService.set_connection_token`: a server that is not running keeps
-  its token "so `get_vscode_url` doesn't advertise a server that isn't there
-  (for example, in images without VSCode)"), as a keyless server answers
-  (`F16.vscode-url-no-key`), and as a server that receives the very same key
-  through `POST /api/init` answers (`F16.vscode-url-after-init`). A server
-  booted with the key instead returns
-  `http://localhost:<port>/?tkn=<session key>&folder=...`, because
-  `get_vscode_service()` seeds the token from `session_api_keys[0]` before
-  `start()` fails. Consumers that show an "open VS Code" link get a dead one.
-  Low severity: the URL only reaches callers that already hold the key.
-- **Folder with `&` and `#` (`F16.vscode-folder-encoding`), known bug.**
+  `running` is false, so the body is exactly `{"url": null}` on both routes,
+  as a keyless server answers (`F16.vscode-url-no-key`) and as a server that
+  receives the very same key through `POST /api/init` answers
+  (`F16.vscode-url-after-init`). `get_vscode_service()` seeds the token from
+  `session_api_keys[0]` before `start()` runs, but `get_vscode_url` returns a
+  URL only while the server is running, so no dead "open VS Code" link (and no
+  session key) is handed out for a server that is not there.
+- **Folder with `&` and `#` (`F16.vscode-folder-encoding`), known bug, blocked.**
   Parse the scoped URL as a browser would, first for the normal workspace,
-  then for a workspace named `qa f16&x=1#frag`.
+  then for a workspace named `qa f16&x=1#frag`. Needs VS Code running (the
+  OpenVSCode Server binary, see `F16.vscode-running`): a server that is not
+  running advertises no URL.
   ```sh
   ROUNDTRIP='import sys, urllib.parse as u; p = u.urlsplit(sys.stdin.read().strip()); q = u.parse_qs(p.query); sys.exit(0 if q.get("folder") == [sys.argv[1]] and not p.fragment else 1)'
   control-agent-server api GET "/api/conversations/$CID/vscode/url" --expect 200 --field url | python3 -c "$ROUNDTRIP" "$WS"
@@ -447,9 +455,7 @@ Preconditions:
   The normal workspace round-trips. For the odd one the `folder` parameter
   should decode back to `.../qa f16&x=1#frag`; today the value is pasted
   unencoded, so a parser reads `folder=.../qa f16`, an extra `x=1` parameter
-  and a `#frag` fragment, and VS Code would open the wrong folder. Without
-  the OpenVSCode binary the URL is only readable through the defect of
-  `F16.vscode-url-not-running` (see Gotchas).
+  and a `#frag` fragment, and VS Code would open the wrong folder.
 - **No key, no URL (`F16.vscode-url-no-key`).** A second server without
   session keys, VS Code enabled on the port the sink still holds.
 
@@ -486,9 +492,9 @@ Preconditions:
   ```
   The delivered key is enforced (401 without it) and status is
   `{"running": false, "enabled": true}`. The URL is null: `/api/init` hands
-  the key to VS Code only when it is running (`set_connection_token`), so this
-  server and the keyed boot of `F16.vscode-url-not-running` answer
-  differently for the same configuration.
+  the key to VS Code only when it is running (`set_connection_token`), and a
+  server that is not running advertises no URL, like the keyed boot of
+  `F16.vscode-url-not-running`.
 - **Docker-mode root and the cookie (`F16.docker-root-cookie`), known bug.**
   A second server with `OH_CONVERSATION_RUNTIME=docker`. Translated: no
   Docker daemon is needed, because the route table and its auth groups are
@@ -545,23 +551,18 @@ Preconditions:
   a process singleton built from the config file and environment, so toggle
   it with `restart --config-json` (overrides accumulate across restarts until
   `--reset-config`).
-- `F16.vscode-url-shape`, and the arrange steps of
-  `F16.vscode-folder-encoding`, read the URL the server advertises while VS
-  Code is not running (see `F16.vscode-url-not-running`). When that bug is
-  fixed, the shape and the folder encoding are only observable with the
-  binary installed; move those checks into `F16.vscode-running` at the same
-  time (until then `vscode-url-shape` fails and `vscode-folder-encoding`
-  fails before its `# bug` line, which is the signal to move them).
+- A URL is advertised only while VS Code runs (`F16.vscode-url-not-running`),
+  so `F16.vscode-url-shape` and `F16.vscode-folder-encoding` are only
+  observable with the OpenVSCode binary installed, like `F16.vscode-running`;
+  on a machine without it they are blocked.
 - A null URL is asserted on the whole body (`--check . eq '{"url": null}'`):
   `--check url missing` and `--check url eq null` also pass when the key is
   absent, which would break the SDK and TypeScript models that expect it.
-- `F16.vscode-url-no-key` and `F16.vscode-url-after-init` hold for a machine
-  without the OpenVSCode binary (like this one). With the binary, `start()`
-  mints a random token before its port check
-  (`tests/agent_server/test_vscode_service.py::test_start_port_unavailable`),
-  so a keyless or deferred server whose VS Code failed on the held port also
-  advertises a URL for a server that is not running; on such a machine those
-  two bullets fail on the same defect as `F16.vscode-url-not-running`.
+- With the OpenVSCode binary, `start()` mints a random token before its port
+  check (`tests/agent_server/test_vscode_service.py::test_start_port_unavailable`),
+  so a keyless or deferred server whose VS Code failed on the held port holds
+  a token too; `F16.vscode-url-no-key` and `F16.vscode-url-after-init` still
+  answer `{"url": null}` there, because the URL needs a running server.
 - The scoped VS Code routes run the conversation lookup and the
   `workspace_dir` guard before the enabled check, so their 404 and 422 answers
   do not depend on configuration. The global `/api/vscode/url` does not check

@@ -26,8 +26,9 @@ from openhands.tools.workflow import WorkflowToolSet
 from openhands.tools.workflow.definition import WorkflowObservation, WorkflowTool
 
 
-TOOLS_ONLY = {"tools": True, "mcp_servers": False}
-TOOLS_AND_MCP = {"tools": True, "mcp_servers": True}
+TOOLS_ONLY = {"tools": True}
+# The shape profiles stored before MCP servers were always inherited.
+LEGACY_TOOLS_AND_MCP = {"tools": True, "mcp_servers": True}
 
 
 @pytest.fixture(autouse=True)
@@ -116,13 +117,12 @@ def test_a_scoped_task_tool_offers_only_sub_agents_within_the_parent() -> None:
     parent = _parent(Tool(name="terminal"))
 
     tools_only = _offered(parent, TOOLS_ONLY)
-    tools_and_mcp = _offered(parent, TOOLS_AND_MCP)
+    legacy = _offered(parent, LEGACY_TOOLS_AND_MCP)
     unscoped = _offered(parent, None)
 
-    assert "**shell**" in tools_only and "**fetcher**" in tools_only
-    assert "**surfer**" not in tools_only
-    assert "**shell**" in tools_and_mcp
-    assert "**fetcher**" not in tools_and_mcp
+    for offered in (tools_only, legacy):
+        assert "**shell**" in offered and "**fetcher**" in offered
+        assert "**surfer**" not in offered
     assert all(f"**{n}**" in unscoped for n in ("shell", "surfer", "fetcher"))
 
 
@@ -135,7 +135,9 @@ def test_a_scoped_task_tool_refuses_a_sub_agent_beyond_the_parent(
     )
     agent = Agent(
         llm=parent_llm,
-        tools=[Tool(name="task_tool_set", params={"sub_agent_scope": TOOLS_AND_MCP})],
+        tools=[
+            Tool(name="task_tool_set", params={"sub_agent_scope": LEGACY_TOOLS_AND_MCP})
+        ],
     )
     conversation = Conversation(agent=agent, workspace=str(tmp_path), visualizer=None)
 
@@ -145,8 +147,8 @@ def test_a_scoped_task_tool_refuses_a_sub_agent_beyond_the_parent(
     (observation,) = _observations(conversation, TaskObservation)
     assert observation.is_error
     assert (
-        "Agent 'surfer' uses browser_tool_set, MCP server 'fetch', "
-        "which this agent does not have." in observation.text
+        "Agent 'surfer' uses browser_tool_set, which this agent does not have."
+        in observation.text
     )
 
 
@@ -168,11 +170,16 @@ def test_a_scope_refuses_a_sub_agent_whose_tools_it_cannot_see(
 ) -> None:
     register_agent(
         name="cli",
-        factory_func=lambda llm: ACPAgent(acp_command=["true"]),  # type: ignore[arg-type,return-value]
+        factory_func=lambda llm: ACPAgent(  # type: ignore[arg-type,return-value]
+            acp_command=["true"], mcp_config={"own": MCPServer(command="own")}
+        ),
         description="ACP CLI agent",
     )
+    parent_agent = _parent(Tool(name="grep")).model_copy(
+        update={"mcp_config": {"fetch": MCPServer(command="uvx")}}
+    )
     parent = LocalConversation(
-        agent=_parent(Tool(name="grep")), workspace=str(tmp_path), visualizer=None
+        agent=parent_agent, workspace=str(tmp_path), visualizer=None
     )
     scoped = TaskManager(sub_agent_scope=SubAgentScope(tools=True))
     scoped.attach_parent(parent)
@@ -181,7 +188,10 @@ def test_a_scope_refuses_a_sub_agent_whose_tools_it_cannot_see(
 
     with pytest.raises(ValueError, match="'cli' runs as ACPAgent, whose tools cannot"):
         scoped._get_sub_agent("cli")
-    assert isinstance(unscoped._get_sub_agent("cli"), ACPAgent)
+    acp_sub_agent = unscoped._get_sub_agent("cli")
+    assert isinstance(acp_sub_agent, ACPAgent)
+    # These are the servers an ACP sub-agent forwards to its subprocess.
+    assert acp_sub_agent.mcp_config == {"fetch": MCPServer(command="uvx")}
 
 
 def test_a_scope_lets_a_sub_agent_keep_its_conversation_local_tools(
