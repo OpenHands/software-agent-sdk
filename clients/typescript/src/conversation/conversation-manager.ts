@@ -41,7 +41,9 @@ export class ACPConversationNamespace {
     return this.manager.searchACPConversations(options);
   }
 
-  countConversations(options: { status?: ConversationExecutionStatus } = {}): Promise<number> {
+  countConversations(
+    options: { status?: ConversationExecutionStatus; archived?: boolean } = {}
+  ): Promise<number> {
     return this.manager.countACPConversations(options);
   }
 
@@ -148,7 +150,7 @@ export class ConversationManager {
    * Count conversations matching the provided filters.
    */
   async countConversations(
-    options: { status?: ConversationExecutionStatus } = {}
+    options: { status?: ConversationExecutionStatus; archived?: boolean } = {}
   ): Promise<number> {
     const response = await this.client.get<number>('/api/conversations/count', {
       params: options as Record<string, unknown>,
@@ -275,7 +277,7 @@ export class ConversationManager {
    * Count ACP-capable conversations.
    */
   async countACPConversations(
-    options: { status?: ConversationExecutionStatus } = {}
+    options: { status?: ConversationExecutionStatus; archived?: boolean } = {}
   ): Promise<number> {
     const response = await this.client.get<number>('/api/conversations/count', {
       params: options,

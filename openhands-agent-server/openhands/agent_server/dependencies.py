@@ -110,3 +110,40 @@ async def get_event_service(
             detail=f"Conversation not found: {conversation_id}",
         )
     return event_service
+
+
+async def get_read_event_service(
+    conversation_id: UUID,
+    request: Request,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> EventService:
+    """Resolve a conversation's readable event history.
+
+    Runtime and write routes use :func:`get_event_service`, which 404s for an
+    archived conversation because archiving released its runtime. History reads
+    must survive archiving, so this seam mirrors the Docker runtime's
+    ``serves_persisted_event_reads`` behaviour: archived conversations are read
+    from the shared persisted event log rather than 404ing.
+    """
+    registry = getattr(request.app.state, "conversation_registry", None)
+    if (
+        isinstance(registry, ConversationRegistry)
+        and registry.serves_persisted_event_reads
+    ):
+        event_service = await conversation_service.get_persisted_event_service(
+            conversation_id
+        )
+    else:
+        event_service = await conversation_service.get_event_service(conversation_id)
+        if event_service is None and (
+            await conversation_service.is_conversation_archived(conversation_id)
+        ):
+            event_service = await conversation_service.get_persisted_event_service(
+                conversation_id
+            )
+    if event_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Conversation not found: {conversation_id}",
+        )
+    return event_service
