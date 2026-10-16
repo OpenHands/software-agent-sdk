@@ -430,6 +430,45 @@ def test_get_marketplace_reads_skills_folder_named_by_repo_path(
     assert [(s.name, s.source) for s in marketplace.skills] == [("greet", "./greet")]
 
 
+def test_get_marketplace_warns_that_a_plugin_loads_only_its_skills(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A plugin registered as a marketplace keeps only its skills, and says so."""
+    repo = tmp_path / "repo"
+    (repo / ".plugin").mkdir(parents=True)
+    (repo / ".plugin" / "plugin.json").write_text(json.dumps({"name": "tools"}))
+    _write_skill(repo / "skills" / "greet", "greet")
+    registry = MarketplaceRegistry(
+        [MarketplaceRegistration(name="team", source=str(repo))]
+    )
+
+    marketplace, _ = registry.get_marketplace("team")
+
+    assert [s.name for s in marketplace.skills] == ["greet"]
+    assert "'team' is a plugin (.plugin/plugin.json)" in caplog.text
+    assert "hooks, MCP servers and commands are ignored" in caplog.text
+
+
+def test_get_marketplace_warns_about_a_duplicate_skill_name(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two folders with the same skill name keep the first, and say so."""
+    repo = tmp_path / "repo"
+    _write_skill(repo / "skills" / "a", "shared")
+    _write_skill(repo / ".skills" / "b", "shared")
+    registry = MarketplaceRegistry(
+        [MarketplaceRegistration(name="team", source=str(repo))]
+    )
+
+    marketplace, _ = registry.get_marketplace("team")
+
+    assert [(s.name, s.source) for s in marketplace.skills] == [
+        ("shared", "./skills/a")
+    ]
+    assert "Skill 'shared' in ./.skills/b" in caplog.text
+    assert "keeping ./skills/a" in caplog.text
+
+
 def test_get_marketplace_without_manifest_or_skills_still_fails(
     tmp_path: Path,
 ) -> None:
