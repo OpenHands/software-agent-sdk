@@ -11,8 +11,15 @@ from pydantic_core import PydanticSerializationError
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm import LLM_SECRET_FIELDS
 from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFound
+from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
-from openhands.sdk.utils.pydantic_secrets import MissingCipherError
+from openhands.sdk.utils.pydantic_secrets import (
+    MissingCipherError,
+    SecretDecryptionError,
+)
+
+
+_logger = get_logger(__name__)
 
 
 ExposeSecretsMode = Literal["encrypted", "plaintext"]
@@ -121,6 +128,18 @@ def translate_missing_cipher() -> Iterator[None]:
                 ),
             )
         raise
+
+
+def profile_key_mismatch(name: str, error: SecretDecryptionError) -> HTTPException:
+    """409 for a profile whose stored key the current cipher cannot decrypt."""
+    _logger.error(f"Refusing to use profile '{name}': {error}")
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            f"Profile '{name}' is encrypted with a different key: restore that "
+            "key as OH_SECRET_KEY or add it to OH_PREVIOUS_SECRET_KEYS"
+        ),
+    )
 
 
 @contextmanager

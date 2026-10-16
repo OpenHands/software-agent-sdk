@@ -163,3 +163,65 @@ def test_init_secret_key_with_surrounding_whitespace_is_kept_verbatim(
 
     assert merged.secret_key is not None
     assert merged.secret_key.get_secret_value() == " mykey "
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"OH_PREVIOUS_SECRET_KEYS": '["old-1", "old-2"]'},
+        {"OH_PREVIOUS_SECRET_KEYS_0": "old-1", "OH_PREVIOUS_SECRET_KEYS_1": "old-2"},
+    ],
+    ids=["json-list", "indexed"],
+)
+def test_load_config_reads_previous_secret_keys(monkeypatch, tmp_path, env):
+    monkeypatch.setenv(CONFIG_PATH_ENV, str(tmp_path / "missing.json"))
+    monkeypatch.setenv("OH_SECRET_KEY", "new")
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    config = load_config()
+    assert [k.get_secret_value() for k in config.previous_secret_keys] == [
+        "old-1",
+        "old-2",
+    ]
+    assert config.cipher is not None
+    assert config.cipher.secret_key == "new"
+    assert config.cipher.previous_keys == ("old-1", "old-2")
+
+
+def test_rotated_session_key_fallback_reads_with_previous_key(monkeypatch, tmp_path):
+    """Without OH_SECRET_KEY the cipher key is the first session API key, so a
+    rotated session key needs the old one in OH_PREVIOUS_SECRET_KEYS."""
+    monkeypatch.setenv(CONFIG_PATH_ENV, str(tmp_path / "missing.json"))
+    monkeypatch.delenv("OH_SECRET_KEY", raising=False)
+    monkeypatch.delenv(V0_SESSION_API_KEY_ENV, raising=False)
+    monkeypatch.setenv(V1_SESSION_API_KEY_ENV, "old-session-key")
+    old_cipher = load_config().cipher
+    assert old_cipher is not None
+    token = old_cipher.encrypt(SecretStr("value"))
+    assert token is not None
+
+    monkeypatch.setenv(V1_SESSION_API_KEY_ENV, "new-session-key")
+    rotated_without_old = load_config().cipher
+    assert rotated_without_old is not None
+    assert rotated_without_old.try_decrypt_str(token) is None
+
+    monkeypatch.setenv("OH_PREVIOUS_SECRET_KEYS_0", "old-session-key")
+    cipher = load_config().cipher
+    assert cipher is not None
+    assert cipher.secret_key == "new-session-key"
+    assert cipher.try_decrypt_str(token) == "value"
+
+
+def test_cipher_follows_keys_changed_by_model_copy():
+    base = Config(secret_key=SecretStr("a"), session_api_keys=[])
+    assert base.cipher is not None
+    copy = base.model_copy(
+        update={
+            "secret_key": SecretStr("b"),
+            "previous_secret_keys": [SecretStr("a")],
+        }
+    )
+    assert copy.cipher is not None
+    assert copy.cipher.secret_key == "b"
+    assert copy.cipher.previous_keys == ("a",)

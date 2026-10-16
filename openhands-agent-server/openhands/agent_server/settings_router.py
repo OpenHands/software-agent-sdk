@@ -10,6 +10,7 @@ from openhands.agent_server._secrets_exposure import (
     get_cipher,
     get_config,
     parse_expose_secrets_header,
+    profile_key_mismatch,
     store_errors,
     translate_missing_cipher,
 )
@@ -37,7 +38,10 @@ from openhands.sdk.settings import (
     export_agent_settings_schema,
 )
 from openhands.sdk.settings.api_models import MCPServerPatch
-from openhands.sdk.utils.pydantic_secrets import is_redacted_secret
+from openhands.sdk.utils.pydantic_secrets import (
+    SecretDecryptionError,
+    is_redacted_secret,
+)
 
 
 logger = get_logger(__name__)
@@ -254,10 +258,13 @@ def _load_active_profile_llm(
     profile_store = get_llm_profile_store()
     # ``load`` resolves any referenced provider connection (read-at-use); a
     # dangling reference raises ProviderConnectionNotFound, which
-    # store_errors() maps to 422.
+    # store_errors() maps to 422. A key the cipher cannot decrypt is refused
+    # (409) rather than applied to settings as ``null``.
     try:
         with store_errors():
-            llm = profile_store.load(profile_name, cipher=cipher)
+            llm = profile_store.load(profile_name, cipher=cipher, strict=True)
+    except SecretDecryptionError as e:
+        raise profile_key_mismatch(profile_name, e)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -349,7 +356,11 @@ def _apply_settings_update(
         logger.error(f"Settings update blocked: {e}")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Settings file is corrupted or encrypted with a different key",
+            detail=(
+                "Settings file is corrupted or encrypted with a different key: "
+                "restore that key as OH_SECRET_KEY or add it to "
+                "OH_PREVIOUS_SECRET_KEYS"
+            ),
         )
     except (OSError, PermissionError):
         # Note: exc_info omitted to prevent secrets in scope from leaking in tracebacks
@@ -555,7 +566,11 @@ async def create_secret(
         logger.error(f"Secret create blocked: {e}")
         raise HTTPException(
             status_code=500,
-            detail="Secrets file is corrupted or encrypted with a different key",
+            detail=(
+                "Secrets file is corrupted or encrypted with a different key: "
+                "restore that key as OH_SECRET_KEY or add it to "
+                "OH_PREVIOUS_SECRET_KEYS"
+            ),
         )
     except (OSError, PermissionError):
         # Note: exc_info omitted to prevent secret values from leaking in tracebacks
@@ -593,7 +608,11 @@ async def delete_secret(request: Request, name: str) -> dict[str, bool]:
         logger.error(f"Secret delete blocked: {e}")
         raise HTTPException(
             status_code=500,
-            detail="Secrets file is corrupted or encrypted with a different key",
+            detail=(
+                "Secrets file is corrupted or encrypted with a different key: "
+                "restore that key as OH_SECRET_KEY or add it to "
+                "OH_PREVIOUS_SECRET_KEYS"
+            ),
         )
 
     if not deleted:

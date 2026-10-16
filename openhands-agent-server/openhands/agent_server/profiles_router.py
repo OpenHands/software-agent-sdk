@@ -12,6 +12,7 @@ from openhands.agent_server._secrets_exposure import (
     get_cipher,
     get_config,
     parse_expose_secrets_header,
+    profile_key_mismatch,
     store_errors,
     translate_missing_cipher,
 )
@@ -40,6 +41,7 @@ from openhands.sdk.profiles import (
     rename_llm_profile,
 )
 from openhands.sdk.settings import OpenHandsAgentSettings
+from openhands.sdk.utils.pydantic_secrets import SecretDecryptionError
 from openhands.sdk.utils.redact import redact_text_secrets
 
 
@@ -219,7 +221,9 @@ async def save_profile(
     """Save an LLM configuration as a named profile.
 
     Overwrites an existing profile of the same name. Returns 409 if creating
-    a new profile would exceed ``MAX_PROFILES``.
+    a new profile would exceed ``MAX_PROFILES``, or if the existing profile
+    holds a key the current cipher cannot decrypt (saved under another
+    ``OH_SECRET_KEY``): overwriting it would lose that key.
 
     When ``OH_SECRET_KEY`` is configured, secrets are encrypted at rest.
     Clients can submit cipher-encrypted secrets which will be decrypted
@@ -237,6 +241,8 @@ async def save_profile(
                 cipher=cipher,
                 max_profiles=MAX_PROFILES,
             )
+    except SecretDecryptionError as e:
+        raise profile_key_mismatch(name, e)
     except ProfileLimitExceeded:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -462,7 +468,9 @@ async def activate_profile(
        ``agent_settings.llm``); ACP settings have no LLM to update
     3. Records the profile name as the active profile for frontend tracking
 
-    Returns 404 if the profile does not exist.
+    Returns 404 if the profile does not exist, and 409 if its stored key
+    cannot be decrypted with the current cipher (saved under another
+    ``OH_SECRET_KEY``) instead of applying an LLM without a key.
 
     Use ``GET /api/profiles`` to see which profile is currently active via
     the ``active_profile`` field.
@@ -479,7 +487,9 @@ async def activate_profile(
     # store_errors() maps to 422.
     try:
         with store_errors():
-            llm = profile_store.load(name, cipher=cipher)
+            llm = profile_store.load(name, cipher=cipher, strict=True)
+    except SecretDecryptionError as e:
+        raise profile_key_mismatch(name, e)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -508,7 +518,11 @@ async def activate_profile(
         logger.error(f"Failed to activate profile: {e}")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Settings file is corrupted or encrypted with a different key",
+            detail=(
+                "Settings file is corrupted or encrypted with a different key: "
+                "restore that key as OH_SECRET_KEY or add it to "
+                "OH_PREVIOUS_SECRET_KEYS"
+            ),
         )
 
     logger.info(f"Activated profile '{name}'")

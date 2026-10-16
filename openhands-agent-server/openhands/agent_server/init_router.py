@@ -37,6 +37,7 @@ from openhands.agent_server.conversation_registry import (
     create_conversation_registry,
 )
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.persistence import reencrypt_stale_stores
 from openhands.agent_server.server_details_router import mark_initialization_complete
 from openhands.agent_server.telemetry import (
     build_telemetry_sink,
@@ -90,6 +91,14 @@ class InitRequest(BaseModel):
             "Symmetric secret used to encrypt persisted secrets. If not "
             "provided, falls back to the first session_api_key (matching the "
             "default Config behavior)."
+        ),
+    )
+    previous_secret_keys: list[SecretStr] | None = Field(
+        default=None,
+        description=(
+            "Earlier values of secret_key (or of the first session_api_key it "
+            "falls back to), used only to decrypt values saved under them; "
+            "they are re-encrypted under the current key when next saved."
         ),
     )
     conversations_path: Path | None = Field(
@@ -182,6 +191,8 @@ def _build_initialized_config(base: Config, req: InitRequest) -> Config:
         # Match the Config default: fall back to first session key when no
         # secret_key was provided.
         updates["secret_key"] = SecretStr(req.session_api_keys[0])
+    if req.previous_secret_keys is not None:
+        updates["previous_secret_keys"] = req.previous_secret_keys
     if req.conversations_path is not None:
         updates["conversations_path"] = req.conversations_path
     if req.bash_events_dir is not None:
@@ -265,6 +276,7 @@ class InitService:
             # instance built from the merged config.
             from openhands.agent_server import conversation_service as cs_mod
 
+            await asyncio.to_thread(reencrypt_stale_stores, new_config)
             service = ConversationService.get_instance(new_config)
             cs_mod._conversation_service = service
             conversation_registry = create_conversation_registry(new_config)

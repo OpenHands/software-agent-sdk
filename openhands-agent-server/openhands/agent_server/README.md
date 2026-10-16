@@ -53,7 +53,8 @@ The server can be configured using environment variables or a JSON configuration
 |----------|-------------|---------|
 | `OPENHANDS_AGENT_SERVER_CONFIG_PATH` | Path to JSON configuration file | `workspace/openhands_agent_server_config.json` |
 | `SESSION_API_KEY` | API key for authentication (optional) | None |
-| `OH_SECRET_KEY` | Secret key for encrypting sensitive data (LLM API keys, secrets) in stored conversations. **Required for persistence across restarts.** | None |
+| `OH_SECRET_KEY` | Secret key for encrypting sensitive data (LLM API keys, secrets) in stored conversations. **Required for persistence across restarts.** Falls back to the first session API key. | None |
+| `OH_PREVIOUS_SECRET_KEYS` | Earlier secret keys, used only to decrypt, as a JSON list (or `OH_PREVIOUS_SECRET_KEYS_0`, `_1`, ...). See [Rotating the key](#rotating-the-key). | None |
 | `OH_ALLOW_CORS_ORIGIN_REGEX` | Regular expression for additional allowed CORS origins. Use `https?://.+` to allow any HTTP(S) origin while echoing the concrete origin. | None |
 | `OH_TELEMETRY_EXPORTER` | Where events go: `none`, `posthog`, or `http`. See [Telemetry](#telemetry). | `none` |
 | `OH_TELEMETRY_POSTHOG_API_KEY` | PostHog project API key. Required by the `posthog` exporter. | None |
@@ -266,8 +267,23 @@ export OH_SECRET_KEY="your-secret-key-here"
 **Important Security Notes:**
 - Use a strong, randomly generated key with at least 256 bits of entropy
 - Store this key securely (e.g., in a secrets manager or environment variable)
-- **If you change this key, previously encrypted secrets cannot be decrypted**
+- **If you change this key without listing the old one in `OH_PREVIOUS_SECRET_KEYS`, previously encrypted secrets cannot be decrypted** (see below)
 - Without `OH_SECRET_KEY`, secrets will be redacted (not encrypted) and will be lost on restart
+
+#### Rotating the key
+
+To rotate, set the new key as `OH_SECRET_KEY` and the old one in `OH_PREVIOUS_SECRET_KEYS`, then restart:
+
+```bash
+export OH_PREVIOUS_SECRET_KEYS="[\"$OLD_KEY\"]"   # or OH_PREVIOUS_SECRET_KEYS_0="$OLD_KEY"
+export OH_SECRET_KEY=$(openssl rand -hex 32)
+```
+
+The server encrypts only with `OH_SECRET_KEY` and decrypts with it first, then with each previous key in order. Values saved under a previous key are re-encrypted under the new key the next time they are saved; the settings and secrets stores are re-encrypted at startup. Other encrypted files (conversations, LLM profiles, provider connections) move to the new key when next saved, so keep the old key listed for as long as they matter.
+
+Without `OH_SECRET_KEY` the encryption key is the first session API key, so rotating the session key rotates the encryption key too: put the old session key in `OH_PREVIOUS_SECRET_KEYS`. Setting `OH_SECRET_KEY` explicitly keeps the two independent and is recommended.
+
+If a stored value cannot be decrypted with any configured key, reads return it as unset, and writes to the settings and secrets stores are refused (409 for `PATCH /api/settings`) instead of overwriting it, until the key it was saved under is restored or listed.
 
 #### What Gets Encrypted
 
