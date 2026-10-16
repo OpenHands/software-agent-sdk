@@ -381,15 +381,15 @@ Preconditions:
   At least three flush cycles re-sent the same queue, oldest event (the
   snapshot) included. The delete ends the loop after one last cycle and
   still answers 200.
-- **A slow receiver blocks the next run (`F32.slow-receiver`), known bug.**
+- **A slow receiver does not block the next run (`F32.slow-receiver`).**
   An `llm-stub` fixture stands in for a webhook receiver that takes 15 s to
   answer (its `hang` step; `http-sink` cannot delay). It expects
   chat-completion bodies, so after the hang it drops event-batch connections
   and the server logs a failed attempt; the 15 s, not the failure, is what
-  holds the run. With `event_buffer_size` 1 an event of the run is posted
-  inline and its publish waits for the receiver. The same stand-in answers
+  would hold the run. With `event_buffer_size` 1 every event of the run
+  fills the buffer and starts a POST to the receiver. The same stand-in answers
   at once first (`reply:ok`): that run is the positive control, so the 409
-  is the receiver's latency and nothing else. The `trap` makes the stand-in
+  would be the receiver's latency and nothing else. The `trap` makes the stand-in
   fast again so later restarts are not slowed.
   ```sh
   SLOW=$(control-agent-server fixture llm-stub --name qa-f32-slow --step reply:ok --print-path)
@@ -401,14 +401,13 @@ Preconditions:
   WCID=$(control-agent-server conversation start --tools none --no-autotitle --prompt 'Reply with exactly: ok' --wait --print-id)
   control-agent-server api GET "/api/conversations/$WCID" --check execution_status eq finished
   control-agent-server sink read --name qa-f32-slow --path "/events/${WCID//-/}" --expect-min 1
-  control-agent-server api POST "/api/conversations/$WCID/run" --expect 200 --save F32.slow-receiver/run-after-finished  # bug: status eq 409 && response.body.detail contains 'Conversation already running'
+  control-agent-server api POST "/api/conversations/$WCID/run" --expect 200 --save F32.slow-receiver/run-after-finished
   ```
   With the fast stand-in, `POST .../run` right after `finished` answers 200
   (the conversation is finished, so that run ends without a model call).
-  Expected: the same with the slow stand-in. Actual: 409 `Conversation
-  already running` until the receiver answers (about 15 s here; up to 30 s),
-  because the run task waits for the pending webhook publish before it
-  clears itself. See Gotchas.
+  It answers 200 with the slow stand-in too, while that receiver has not
+  answered yet: the full-buffer POST runs in a background task, so the run
+  does not wait for it before it clears itself. See Gotchas.
 - **Webhooks from the environment (`F32.env-config`).** Put the failing sink
   with a 1 s timer in the config file and override only `base_url` and
   `headers` of `webhooks[0]` through the environment.
@@ -717,9 +716,10 @@ Preconditions:
   before the `MessageEvent` it names, although the event store (and
   `timestamp`) has the message first.
 - **Stranded events (`F32.buffer-stranded`).** When the buffer fills, the
-  batch is posted inline while `_post_lock` is held; an event published
-  during that POST only starts the flush timer (`if
-  self._post_lock.locked(): self._start_flush_timer(); return`), and
+  batch is posted by a background task that holds `_post_lock`; an event
+  published during that POST only starts the flush timer (`if
+  self._post_lock.locked() or self._post_in_flight():
+  self._start_flush_timer(); return`), and
   `_post_events` only drains what was queued when it started. So events
   that arrive during an in-flight POST wait for `flush_delay` (30 s by
   default), the next burst, or the conversation's close, although the
@@ -729,19 +729,18 @@ Preconditions:
   during that POST. The unit test
   `test_concurrent_event_delivery_has_one_request_in_flight` calls
   `close()` before counting, which hides it. Low severity (latency).
-- **Slow receiver (`F32.slow-receiver`).** With a full buffer the POST runs
-  inside the fan-out of that event, so its publish future stays pending
-  while the receiver is slow (httpx timeout 30 s per attempt, plus
-  `num_retries` × `retry_delay`). The run's `finally` waits up to 30 s for
-  pending publishes (`wait_for_pending(30.0)` in `event_service.py`) before
-  clearing its task, so `POST .../run` answers 409 `Conversation already
-  running` for that long while `GET` already reports `finished`. A message
-  sent with `run: true` in that window is re-armed instead. Medium-low
-  severity: automations that chain runs see spurious 409s. With
-  `event_buffer_size` 1 a slow receiver also costs the attach-time
-  snapshot: its inline POST runs inside the 0.5 s initial-push timeout
-  (`INITIAL_STATE_PUSH_TIMEOUT_SECONDS`), is cancelled (the log says
-  `Initial state push ... timed out after 0.5s`) and is not retried.
+- **Slow receiver (`F32.slow-receiver`).** With a full buffer the POST
+  runs in a background task (`WebhookSubscriber._post_task`), not inside
+  the event's publish. The run's `finally` waits up to 30 s for pending
+  publishes (`wait_for_pending(30.0)` in `event_service.py`) before
+  clearing its task; were the POST part of the publish, a slow receiver
+  (httpx timeout 30 s per attempt, plus `num_retries` × `retry_delay`)
+  would keep `POST .../run` answering 409 `Conversation already running`
+  while `GET` already reports `finished`, and a message sent with
+  `run: true` in that window would only be re-armed. For the same reason
+  the attach-time snapshot is no longer cut off by the 0.5 s initial-push
+  timeout (`INITIAL_STATE_PUSH_TIMEOUT_SECONDS`) when the receiver is slow.
+  `close()` waits for the in-flight POST before posting what is left.
 - Conversation posts are fire-and-forget tasks (unordered, never awaited,
   no retained reference), so recipes poll for them. They are sent on
   create (a new id only), pause, interrupt, `PATCH` and `DELETE` (status
