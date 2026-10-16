@@ -1105,12 +1105,11 @@ def test_pause_conversation_success(
         client.app.dependency_overrides.clear()
 
 
-def test_pause_conversation_failure(
+def test_pause_conversation_not_found(
     client, mock_conversation_service, sample_conversation_id
 ):
-    """Test pause_conversation endpoint with pause failure."""
+    """An unknown conversation is the 404 the route declares, not a 400."""
 
-    # Mock the service response - pause failed
     mock_conversation_service.pause_conversation.return_value = False
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
@@ -1120,10 +1119,32 @@ def test_pause_conversation_failure(
     try:
         response = client.post(f"/api/conversations/{sample_conversation_id}/pause")
 
-        assert response.status_code == 400  # Bad Request
+        assert response.status_code == 404
 
         # Verify service was called
         mock_conversation_service.pause_conversation.assert_called_once_with(
+            sample_conversation_id
+        )
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_interrupt_conversation_not_found(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """An unknown conversation is the 404 the route declares, not a 400."""
+
+    mock_conversation_service.interrupt_conversation.return_value = False
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(f"/api/conversations/{sample_conversation_id}/interrupt")
+
+        assert response.status_code == 404
+        mock_conversation_service.interrupt_conversation.assert_called_once_with(
             sample_conversation_id
         )
     finally:
@@ -1157,12 +1178,11 @@ def test_delete_conversation_success(
         client.app.dependency_overrides.clear()
 
 
-def test_delete_conversation_failure(
+def test_delete_conversation_not_found(
     client, mock_conversation_service, sample_conversation_id
 ):
-    """Test delete_conversation endpoint with deletion failure."""
+    """An unknown or already deleted conversation is 404, not 400."""
 
-    # Mock the service response - deletion failed
     mock_conversation_service.delete_conversation.return_value = False
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
@@ -1172,7 +1192,7 @@ def test_delete_conversation_failure(
     try:
         response = client.delete(f"/api/conversations/{sample_conversation_id}")
 
-        assert response.status_code == 400  # Bad Request
+        assert response.status_code == 404
 
         # Verify service was called
         mock_conversation_service.delete_conversation.assert_called_once_with(
@@ -1780,12 +1800,11 @@ def test_update_conversation_success(
         client.app.dependency_overrides.clear()
 
 
-def test_update_conversation_failure(
+def test_update_conversation_not_found(
     client, mock_conversation_service, sample_conversation_id
 ):
-    """Test update_conversation endpoint with update failure."""
+    """An unknown conversation is 404, not 200 with success=false."""
 
-    # Mock the service response - update failed
     mock_conversation_service.update_conversation.return_value = False
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
@@ -1799,9 +1818,7 @@ def test_update_conversation_failure(
             f"/api/conversations/{sample_conversation_id}", json=request_data
         )
 
-        assert response.status_code == 200
-        data = response.json()
-        assert data["success"] is False
+        assert response.status_code == 404
 
         # Verify service was called
         mock_conversation_service.update_conversation.assert_called_once()
