@@ -156,9 +156,7 @@ Preconditions:
   flash that answers one tiny prompt and finishes. No tool needs `tmux`
   (`--tools none`).
 - Several bullets call `prepare-for-sandbox-pause`, which unloads every
-  conversation of the run, so each bullet loads what it needs first. `N` is
-  left requiring a credential binding by `F12.binding-native-cold` (a known
-  bug), so later bullets do not use it.
+  conversation of the run, so each bullet loads what it needs first.
 - The bullets from `F12.runtime-launched-profile` on each launch and stop
   their own second server (a local one with `OH_RUNTIME_LAUNCHED_PROFILE`
   or the managed-key variables, or one with
@@ -484,7 +482,7 @@ control-agent-server api GET "/api/conversations/$R" --check execution_status eq
   control-agent-server state cat meta.json --conversation "$N" --check required_runtime_credential_bindings len-eq 0
   ```
   409 and no recorded requirement.
-- **Regular conversation, not loaded (`F12.binding-native-cold`), known bug.**
+- **Regular conversation, not loaded (`F12.binding-native-cold`).**
   The same binding sent while `N` is unloaded, then a load and a pause.
   ```sh
   control-agent-server api POST /api/conversations/prepare-for-sandbox-pause --expect 204
@@ -492,24 +490,16 @@ control-agent-server api GET "/api/conversations/$R" --check execution_status eq
     --save F12.binding-native-cold/put
   control-agent-server api GET "/api/conversations/$N/events/count" --expect 200
   control-agent-server api POST /api/conversations/prepare-for-sandbox-pause --expect 204
-  control-agent-server api GET "/api/conversations/$N/events/count" --expect 200 --save F12.binding-native-cold/events-after-pause  # bug: status eq 409 && response.body contains credential_binding_activation_required
-  control-agent-server state cat meta.json --conversation "$N" --check required_runtime_credential_bindings len-eq 0  # bug: checks.0.actual contains CODEX_AUTH_JSON
+  control-agent-server api GET "/api/conversations/$N/events/count" --expect 200 --save F12.binding-native-cold/events-after-pause
+  control-agent-server state cat meta.json --conversation "$N" --check required_runtime_credential_bindings len-eq 0
   ```
-  Correct behavior: a regular conversation either refuses the binding (409,
-  as it does when loaded) or ignores it, and stays readable after the next
-  pause. Today the unloaded PUT is accepted as pending (204), consumed when
-  `N` loads, and written to `meta.json` as
-  `required_runtime_credential_bindings: ["CODEX_AUTH_JSON"]`: after the
-  pause every event read is 409 `credential_binding_activation_required` and
-  the sockets close with 1013, for a conversation that never uses Codex.
-  The same happens when a regular conversation is created with an id that
-  has a pending binding, and then its own `CODEX_AUTH_JSON` secret is also
-  dropped from `meta.json` (`secrets: {}`), although the create path strips
-  that secret only for Codex sources. `_resolve_credential_bindings` filters
-  pending bindings by profile only, not by agent kind, and
-  `EventService.start` records every HTTP binding as required. Low severity:
-  only an orchestrator that binds conversations without knowing their agent
-  kind hits it.
+  A regular conversation either refuses the binding (409, as it does when
+  loaded) or ignores it, and stays readable after the next pause. The
+  unloaded PUT is accepted as pending (204) and dropped when `N` loads,
+  because only ACP agents take file credential bindings: `meta.json` keeps
+  `required_runtime_credential_bindings: []`, and a regular conversation
+  created with an id that has a pending binding keeps its own
+  `CODEX_AUTH_JSON` secret.
 - **Bind a loaded ACP Codex conversation (`F12.binding-live-acp`).** `A` has
   never run, so its ACP agent is not initialized yet.
   ```sh
