@@ -89,7 +89,7 @@ class AgentProfileInfo(BaseModel):
 
     id: str | None = None
     name: str
-    agent_kind: AgentKind = "openhands"
+    agent_kind: str = "openhands"
     revision: int | None = None
     llm_profile_ref: str | None = None
     mcp_server_refs: list[str] | None = None

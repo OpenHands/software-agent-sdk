@@ -32,6 +32,14 @@ _ADAPTER: TypeAdapter[OpenHandsAgentProfile | ACPAgentProfile] = TypeAdapter(
 )
 
 
+def test_agent_profile_info_agent_kind_schema_stays_string_compatible() -> None:
+    schema = AgentProfileInfo.model_json_schema()
+
+    agent_kind_schema = schema["properties"]["agent_kind"]
+    assert agent_kind_schema["type"] == "string"
+    assert "enum" not in agent_kind_schema
+
+
 def test_agent_profile_info_accepts_acp_summary_with_null_llm_ref() -> None:
     summary = AgentProfileInfo.model_validate(
         {
