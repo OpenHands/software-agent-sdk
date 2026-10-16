@@ -925,6 +925,7 @@ class LocalConversation(BaseConversation):
             # Reset or copy metrics
             if not reset_metrics:
                 fork_conv._state.stats = self._state.stats.model_copy(deep=True)
+                fork_conv.llm_registry.subscribe(fork_conv._state.stats.register_llm)
 
             event_count = len(source_events)
 
