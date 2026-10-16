@@ -342,34 +342,35 @@ Preconditions:
   content type: the 422 lists the `TextContent` errors first, then
   `ImageContent.image_urls: Field required`, and no second user message
   was stored.
-- **Non-user role (`F06.send-non-user-role`), known bug.** `role` accepts
+- **Non-user role (`F06.send-non-user-role`).** `role` accepts
   `user`, `system`, `assistant` and `tool` in the schema, but a conversation
   only takes user messages. `QA_ROLE` is a second conversation whose log is
   still empty (count 0); `CID` already took the same body with role `user`
   in `F06.send-no-run`.
+
+  Requires: `F06.send-no-run`
   ```sh
   QA_ROLE=$(control-agent-server conversation start --no-autotitle --tools none --print-id)
   control-agent-server api GET "/api/conversations/$QA_ROLE/events/count" --check . eq 0
   control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq 5
   control-agent-server api POST "/api/conversations/$CID/events" \
-    --json '{"role":"assistant","content":[{"type":"text","text":"QA_F06_ASSISTANT"}]}' --expect 4xx \
-    --save F06.send-non-user-role/assistant  # bug: status eq 500 && response.body.exception contains 'Only user messages are allowed'
+    --json '{"role":"assistant","content":[{"type":"text","text":"QA_F06_ASSISTANT"}]}' --expect 422 \
+    --check detail contains 'Only user messages are allowed' \
+    --save F06.send-non-user-role/assistant
   control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq 5
   control-agent-server api POST "/api/conversations/$QA_ROLE/events" \
-    --json '{"role":"assistant","content":[{"type":"text","text":"QA_F06_ASSISTANT"}]}' --expect 4xx \
-    --save F06.send-non-user-role/assistant-empty-log  # bug: status eq 500 && response.body.exception contains 'Only user messages are allowed'
+    --json '{"role":"assistant","content":[{"type":"text","text":"QA_F06_ASSISTANT"}]}' --expect 422 \
+    --save F06.send-non-user-role/assistant-empty-log
   control-agent-server api GET "/api/conversations/$QA_ROLE/events/count" --check . eq 0 \
-    --save F06.send-non-user-role/empty-log-count  # bug: status eq 200 && response.body eq 1
+    --save F06.send-non-user-role/empty-log-count
   ```
-  Correct behavior: a 4xx client error and nothing appended. Today it is 500
-  `{"exception": "Only user messages are allowed to be sent to the agent."}`:
-  `LocalConversation.send_message` asserts `role == "user"` and the
-  `AssertionError` reaches the catch-all handler. On `CID` nothing is
-  appended, but the assert runs after the agent is initialized, so on a
-  conversation with an empty log the refused message still writes the
-  `SystemPromptEvent` (count 1, not 0); while the 500 lasts the replay stops
-  at the first marked POST, so a fix that only changes the status still
-  fails at the last marked count.
+  The route refuses any role but `user` with 422 (`detail`: "Only user
+  messages are allowed to be sent to the agent (got role 'assistant')."),
+  before the conversation is touched: nothing is appended, and a
+  conversation with an empty log stays empty (no `SystemPromptEvent`).
+  `LocalConversation.send_message` keeps its own check and runs it before
+  initializing the agent, so the socket path (`F06.ws-bad-frame`) also
+  writes nothing.
 - **First frame is a state snapshot (`F06.ws-snapshot`).**
   ```sh
   control-agent-server ws listen "/sockets/events/$CID" --count 1 --until-kind ConversationStateUpdateEvent \

@@ -133,7 +133,7 @@ class TestSendMessageEndpoint:
 
         try:
             request_data = {
-                "role": "assistant",
+                "role": "user",
                 "content": [{"type": "text", "text": "I understand."}],
                 "run": False,
             }
@@ -151,7 +151,7 @@ class TestSendMessageEndpoint:
             message, run_flag = call_args[0]
 
             assert isinstance(message, Message)
-            assert message.role == "assistant"
+            assert message.role == "user"
             assert run_flag is False
         finally:
             # Clean up the dependency override
@@ -266,38 +266,27 @@ class TestSendMessageEndpoint:
             # Clean up the dependency override
             client.app.dependency_overrides.clear()
 
-    @pytest.mark.asyncio
-    async def test_send_message_with_system_role(
-        self, client, sample_conversation_id, mock_event_service
+    @pytest.mark.parametrize("role", ["system", "assistant", "tool"])
+    def test_send_message_rejects_non_user_role(
+        self, client, sample_conversation_id, mock_event_service, role
     ):
-        """Test send_message endpoint with system role."""
-        # Override the dependency to return our mock
+        """A schema-valid non-user role is a 422 client error, and nothing is sent."""
         client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
 
         try:
-            request_data = {
-                "role": "system",
-                "content": [{"type": "text", "text": "System initialization message"}],
-                "run": True,
-            }
-
             response = client.post(
-                f"/api/conversations/{sample_conversation_id}/events", json=request_data
+                f"/api/conversations/{sample_conversation_id}/events",
+                json={
+                    "role": role,
+                    "content": [{"type": "text", "text": "not from the user"}],
+                    "run": True,
+                },
             )
 
-            assert response.status_code == 200
-            assert response.json() == {"success": True}
-
-            # Verify system message was processed correctly
-            mock_event_service.send_message.assert_called_once()
-            call_args = mock_event_service.send_message.call_args
-            message, run_flag = call_args[0]
-
-            assert isinstance(message, Message)
-            assert message.role == "system"
-            assert run_flag is True
+            assert response.status_code == 422
+            assert "Only user messages are allowed" in response.json()["detail"]
+            mock_event_service.send_message.assert_not_called()
         finally:
-            # Clean up the dependency override
             client.app.dependency_overrides.clear()
 
     @pytest.mark.asyncio

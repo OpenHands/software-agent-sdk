@@ -169,6 +169,20 @@ def test_send_message_with_message_object():
     assert user_event.llm_message.content[0].text == test_text
 
 
+@pytest.mark.parametrize("role", ["system", "assistant", "tool"])
+def test_send_message_rejects_non_user_role_without_writing_events(role):
+    """A refused non-user message leaves an empty log empty (no system prompt)."""
+    conversation = Conversation(agent=SendMessageDummyAgent())
+    assert len(conversation.state.events) == 0
+
+    with pytest.raises(AssertionError, match="Only user messages are allowed"):
+        conversation.send_message(
+            Message(role=role, content=[TextContent(text="not from the user")])
+        )
+
+    assert len(conversation.state.events) == 0
+
+
 def test_acp_send_message_defers_initialization_until_run(tmp_path):
     """ACP conversations should enqueue messages before starting ACP bootstrap."""
 

@@ -1831,6 +1831,15 @@ class LocalConversation(BaseConversation):
                    one agent delegates to another, the sender can be set to
                    identify which agent is sending the message.
         """
+        if isinstance(message, str):
+            message = Message(role="user", content=[TextContent(text=message)])
+
+        # Check the role before initializing the agent, so a refused message
+        # does not write the system prompt into an empty log.
+        assert message.role == "user", (
+            "Only user messages are allowed to be sent to the agent."
+        )
+
         # ACPAgent startup can take much longer than a normal send_message()
         # round-trip because it launches and initializes a subprocess-backed
         # session. Defer that work to run() so enqueueing the user message
@@ -1838,12 +1847,6 @@ class LocalConversation(BaseConversation):
         if self._should_initialize_agent_on_send_message():
             self._ensure_agent_ready()
 
-        if isinstance(message, str):
-            message = Message(role="user", content=[TextContent(text=message)])
-
-        assert message.role == "user", (
-            "Only user messages are allowed to be sent to the agent."
-        )
         with self._state:
             if self._state.execution_status in (
                 ConversationExecutionStatus.FINISHED,
