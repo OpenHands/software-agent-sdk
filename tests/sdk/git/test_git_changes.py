@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
-from openhands.sdk.git.git_changes import get_changes_in_repo, get_git_changes
+from openhands.sdk.git.git_changes import (
+    _parse_name_status,
+    get_changes_in_repo,
+    get_git_changes,
+)
 from openhands.sdk.git.models import GitChange, GitChangeStatus
 
 
@@ -806,3 +810,69 @@ def test_get_git_changes_non_repo_without_repo_below_still_raises():
 
         with pytest.raises(GitRepositoryError):
             get_git_changes(temp_dir)
+
+
+@pytest.mark.parametrize(
+    "output, expected",
+    [
+        ("M\0my notes.md\0", [(GitChangeStatus.UPDATED, "my notes.md")]),
+        ("M\0café.txt\0", [(GitChangeStatus.UPDATED, "café.txt")]),
+        (
+            "R100\0old name.txt\0new name.txt\0",
+            [
+                (GitChangeStatus.DELETED, "old name.txt"),
+                (GitChangeStatus.ADDED, "new name.txt"),
+            ],
+        ),
+        ("C75\0a b.txt\0c d.txt\0", [(GitChangeStatus.ADDED, "c d.txt")]),
+        (
+            'A\0tab\there\0D\0new\nline "q" \\b\0',
+            [
+                (GitChangeStatus.ADDED, "tab\there"),
+                (GitChangeStatus.DELETED, 'new\nline "q" \\b'),
+            ],
+        ),
+        ("", []),
+    ],
+)
+def test_parse_name_status_keeps_names_verbatim(output, expected):
+    """``-z`` name-status fields are parsed without whitespace splitting."""
+    changes = _parse_name_status(output)
+
+    assert [(c.status, c.path) for c in changes] == [
+        (status, Path(path)) for status, path in expected
+    ]
+
+
+def test_parse_name_status_rejects_truncated_output():
+    with pytest.raises(GitCommandError):
+        _parse_name_status("R100\0only-old.txt\0")
+
+
+def test_get_changes_in_repo_lists_special_names_verbatim():
+    """Names with spaces and non-ASCII characters keep their real names,
+    for modified, renamed and untracked files alike."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        repo = Path(temp_dir)
+        (repo / "my notes.md").write_text("a\n")
+        (repo / "café.txt").write_text("b\n")
+        (repo / "old name.txt").write_text("rename me\n")
+        run_bash_command("git add -A && git commit -qm names", temp_dir)
+
+        (repo / "my notes.md").write_text("a2\n")
+        (repo / "café.txt").write_text("b2\n")
+        run_bash_command("git mv 'old name.txt' 'new name.txt'", temp_dir)
+        (repo / "ünïcode untracked.txt").write_text("u\n")
+
+        changes = get_changes_in_repo(temp_dir, ref="HEAD")
+
+        assert sorted((str(c.path), c.status) for c in changes) == sorted(
+            [
+                ("my notes.md", GitChangeStatus.UPDATED),
+                ("café.txt", GitChangeStatus.UPDATED),
+                ("old name.txt", GitChangeStatus.DELETED),
+                ("new name.txt", GitChangeStatus.ADDED),
+                ("ünïcode untracked.txt", GitChangeStatus.ADDED),
+            ]
+        )
