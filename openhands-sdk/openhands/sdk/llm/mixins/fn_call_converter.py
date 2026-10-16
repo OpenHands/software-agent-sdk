@@ -598,6 +598,11 @@ _TOOL_CALL_WRAPPER_PATTERN = re.compile(
     re.DOTALL,
 )
 
+# Only normalize a single wrapper. Several wrappers are a protocol violation,
+# and rewriting one of them would emit a call from a response we do not
+# understand, so those are left for the layers above.
+_TOOL_CALL_OPENER_PATTERN = re.compile(r"<tool_call>\s*[A-Za-z_][\w.-]*\s*\n")
+
 
 def _preprocess_model_output(content: str) -> str:
     """Clean up model-specific formatting before parsing function calls.
@@ -615,7 +620,9 @@ def _preprocess_model_output(content: str) -> str:
     # Strip </tool_call> when it appears right after </function>
     content = re.sub(r"(?<=</function>)\s*</tool_call>", "", content)
 
-    if "<function=" not in content:
+    if "<function=" not in content and (
+        len(_TOOL_CALL_OPENER_PATTERN.findall(content)) == 1
+    ):
         content, replaced = _TOOL_CALL_WRAPPER_PATTERN.subn(
             r"<function=\1>\n", content, count=1
         )

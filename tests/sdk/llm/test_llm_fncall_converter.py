@@ -1111,6 +1111,41 @@ def test_tool_call_documentation_is_not_converted(content):
     assert result[1]["content"] == content
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        "<tool_call>terminal\n<parameter=command>ls",
+        "<tool_call>terminal\n<parameter=command>ls</tool_call>",
+    ],
+)
+def test_tool_call_wrapper_without_complete_body_is_not_converted(content):
+    messages = [
+        {"role": "user", "content": "run ls"},
+        {"role": "assistant", "content": content},
+    ]
+
+    result = convert_non_fncall_messages_to_fncall_messages(messages, FNCALL_TOOLS)
+
+    assert not result[1].get("tool_calls")
+    assert result[1]["content"] == content
+
+
+def test_multiple_tool_call_wrappers_are_not_normalized():
+    content = (
+        "<tool_call>terminal\n<parameter=command>ls</parameter>\n</tool_call>\n"
+        "<tool_call>finish\n</tool_call>"
+    )
+    messages = [
+        {"role": "user", "content": "run ls"},
+        {"role": "assistant", "content": content},
+    ]
+
+    result = convert_non_fncall_messages_to_fncall_messages(messages, FNCALL_TOOLS)
+
+    assert not result[1].get("tool_calls")
+    assert result[1]["content"] == content
+
+
 def test_tool_call_mention_in_plain_text_is_not_converted():
     content = (
         "Here is how you write a tool call:\n\n"
