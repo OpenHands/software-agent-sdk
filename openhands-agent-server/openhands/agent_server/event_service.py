@@ -1281,8 +1281,12 @@ class EventService:
             mcp_tool_provider=self.mcp_tool_provider,
         )
 
-        conversation.set_confirmation_policy(self.stored.confirmation_policy)
-        conversation.set_security_analyzer(self.stored.security_analyzer)
+        # meta.json holds the create-time policy and analyzer. On resume,
+        # base_state.json already holds the current ones (possibly changed via
+        # the API since), so only seed them on a new conversation.
+        if not base_state_exists:
+            conversation.set_confirmation_policy(self.stored.confirmation_policy)
+            conversation.set_security_analyzer(self.stored.security_analyzer)
         # On resume the agent was unknown at construction time (loaded from
         # base_state.json), so decide token streaming now and disable it when the
         # resolved agent can't emit token callbacks.
@@ -2008,6 +2012,21 @@ class EventService:
             secrets.pop(CODEX_AUTH_SECRET_NAME, None)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.update_secrets, secrets)
+        # base_state.json now holds these values. meta.json's create-time
+        # secrets are re-applied on resume, so drop the names posted here or a
+        # restart would revert them to their create-time values.
+        overridden = self.stored.secrets.keys() & secrets.keys()
+        if overridden:
+            self.stored = self.stored.model_copy(
+                update={
+                    "secrets": {
+                        name: value
+                        for name, value in self.stored.secrets.items()
+                        if name not in overridden
+                    }
+                }
+            )
+            await self.save_meta()
 
     async def set_confirmation_policy(self, policy: ConfirmationPolicyBase):
         """Set the confirmation policy for the conversation."""

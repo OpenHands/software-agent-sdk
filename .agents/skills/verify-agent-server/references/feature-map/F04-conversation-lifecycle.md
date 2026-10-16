@@ -391,19 +391,17 @@ EOF
   ```
   The response lists the secret with its value masked; on disk it is
   encrypted.
-- **Start-time secret visible to GET (`F04.create-secrets-get`), known bug.**
+- **Start-time secret visible to GET (`F04.create-secrets-get`).**
   Read the conversation created in the previous bullet.
 
   Requires: `F04.create-secrets`
   ```sh
   control-agent-server api GET "/api/conversations/$SECID" --expect 200 \
-    --check secret_registry.secret_sources.QA_F04_TOKEN.kind eq StaticSecret --save F04.create-secrets-get/get  # bug: status eq 200 && response.body.secret_registry.secret_sources exists && checks.0.actual eq null
+    --check secret_registry.secret_sources.QA_F04_TOKEN.kind eq StaticSecret --save F04.create-secrets-get/get
   ```
-  Expected: the GET lists `QA_F04_TOKEN` like the create response did. Today
-  it returns `{"secret_sources": {}}`: start-time secrets are applied to the
-  live state in place without an autosave, and GET reads the
-  `base_state.json` snapshot. The secret appears after the next state save (a
-  tags PATCH, a message), so the runtime itself still has it.
+  The GET lists `QA_F04_TOKEN` like the create response did:
+  `LocalConversation.update_secrets` assigns an updated registry to the
+  state, which saves `base_state.json` before the create returns.
 - **Plain-string secret value (`F04.create-secrets-plain`), known bug.**
   `POST .../secrets` accepts `{"NAME": "value"}`; the create body should either
   accept it too or refuse it with 422.
@@ -728,9 +726,9 @@ EOF
   `.../events` with `"run": false`; `conversation start --prompt ... --no-run`
   does exactly that.
 - `GET`, `search` and the batch get read the autosaved `base_state.json`
-  snapshot (plus `meta.json`), not live memory. Changes applied in place
-  without an autosave (start-time secrets, `POST .../secrets`) stay invisible
-  until the next state save: see `F04.create-secrets-get`.
+  snapshot (plus `meta.json`), not live memory. A change applied in place
+  without an autosave would stay invisible until the next state save;
+  secrets are saved at once (`F04.create-secrets-get`).
 - Secrets never come back: `agent.llm.api_key` is `null` in REST responses
   (the masked value is re-parsed as "no secret") and `**********` in the
   socket's `full_state` frame. Assert with `ne`, never by printing a key.
