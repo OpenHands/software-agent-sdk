@@ -772,13 +772,12 @@ Preconditions:
   events; the user filter returns the one message, the fully-qualified kind
   only actions, the body filter is case-insensitive, pages do not overlap,
   and the lookups by id return the stored events.
-- **Unknown event id (`F34.events-unknown-id`), known bug.** The same server
-  bug as `F06.unknown-event`, reached through the client: `getEventById`
-  expects the documented 404 and `getEventsById` maps it to `null`
-  (`clients/typescript/src/events/remote-events-list.ts:110`), but the
-  server answers 500 (`Unknown event_id`). Runs on `SCID`, whose first
-  event is read back by id first (positive control); the program records
-  how each call settled.
+- **Unknown event id (`F34.events-unknown-id`).** `F06.unknown-event`
+  reached through the client: `getEventById` expects the documented 404 and
+  `getEventsById` maps it to `null`
+  (`clients/typescript/src/events/remote-events-list.ts:110`). Runs on
+  `SCID`, whose first event is read back by id first (positive control); the
+  program records how each call settled.
   ```sh
   cat > "$F34/unknown-event.mjs" <<'JS'
   import { writeFileSync } from 'node:fs';
@@ -795,14 +794,12 @@ Preconditions:
   JS
   control-agent-server exec --timeout 60 --expect-output QA_F34_UNKNOWN_EVENT_READ --save F34.events-unknown-id/program -- node "$F34/unknown-event.mjs" "$SCID"
   cat "$F34/unknown-event.json"
-  control-agent-server assert --json "$F34/unknown-event.json" --check single.http_error eq true --check single.status eq 404  # bug: value.single.status eq 500 && value.single.response.exception contains 'Unknown event_id'
+  control-agent-server assert --json "$F34/unknown-event.json" --check single.http_error eq true --check single.status eq 404
   control-agent-server assert --json "$F34/unknown-event.json" --check batch.value len-eq 2 --check batch.value.0 eq "$(jq -r .first "$F34/unknown-event.json")" \
-    --check batch.value.1 missing  # bug: value.batch.status eq 500 && value.batch.response.exception contains 'Unknown event_id'
+    --check batch.value.1 missing
   ```
-  Expected: a 404 `HttpError`, and `[<event>, null]`. Today both calls
-  reject with a 500 `HttpError` whose `response.exception` is
-  `'Unknown event_id: 00000000-0000-0000-0000-000000000000'`, so one missing
-  id fails the whole `getEventsById`.
+  `getEventById` rejects with a 404 `HttpError`, and `getEventsById`
+  resolves to `[<event>, null]`, so one missing id does not fail the batch.
 - **Short event kinds (`F34.events-search-kind`), known bug.** The same
   server bug as `F06.search-kind-short`, reached through the client: the
   service compares `kind` with `<module>.<ClassName>`

@@ -234,6 +234,8 @@ Preconditions:
   Every count equals the matching search length.
 - **Get one event (`F06.get-one`).** The second message by id, then the same
   event on disk.
+
+  Requires: `F06.send-no-run`
   ```sh
   E2=$(control-agent-server api GET "/api/conversations/$CID/events/search" --query body=QA_F06_SECOND --field items.0.id)
   control-agent-server api GET "/api/conversations/$CID/events/$E2" --expect 200 --check id eq "$E2" \
@@ -245,9 +247,9 @@ Preconditions:
   The body matches the search item; unlike search it is serialized without
   dropping `null` fields. On disk it is `event-00003-<id>.json`: the file
   index is the event's position in the log.
-- **Unknown event id (`F06.unknown-event`), known bug.** The route documents
-  404 and batch-get documents "null for any missing item"; the TypeScript
-  `getEvents()` relies on that 404. The known id `E2` is found by both
+- **Unknown event id (`F06.unknown-event`).** The route documents 404 and
+  batch-get documents "null for any missing item"; the TypeScript
+  `getEventById` relies on that 404. The known id `E2` is found by both
   routes first.
 
   Requires: `F06.get-one`
@@ -256,15 +258,13 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$CID/events" --json "[\"$E2\"]" --expect 200 \
     --check . len-eq 1 --check 0.id eq "$E2"
   control-agent-server api GET "/api/conversations/$CID/events/00000000-0000-4000-8000-0000000000e6" --expect 404 \
-    --save F06.unknown-event/get-one  # bug: status eq 500 && response.body.exception contains 'Unknown event_id'
+    --save F06.unknown-event/get-one
   control-agent-server api GET "/api/conversations/$CID/events" --json "[\"$E2\", \"qa-missing-event\"]" --expect 200 \
-    --check . len-eq 2 --check 0.id eq "$E2" --check 1 missing --save F06.unknown-event/batch  # bug: status eq 500 && response.body.exception contains 'Unknown event_id'
+    --check . len-eq 2 --check 0.id eq "$E2" --check 1 missing --save F06.unknown-event/batch
   ```
-  Correct behavior: 404, and `[<event>, null]`. Today both are 500
-  `{"detail": "Internal Server Error", "exception": "'Unknown event_id: ...'"}`:
-  `EventLog.get_index` raises `KeyError` before the router's `None` check
-  (`event_service.py` `_get_event_sync`), and one missing id fails the whole
-  batch.
+  The unknown id is a 404, and the batch is `[<event>, null]`: a missing id
+  reads as `None` (`event_service.py` `_get_event_sync`), so it does not
+  fail the rest of the batch.
 - **Batch get (`F06.batch-get`).** A GET with a JSON array body.
 
   Requires: `F06.search-time-window`, `F06.get-one`
@@ -699,7 +699,7 @@ Preconditions:
   memory).
 - Search drops `null` fields (`exclude_none`); get-one and batch-get keep
   them. Compare ids, not raw JSON.
-- An unknown event id is a 500 today, and one missing id fails a whole batch
+- An unknown event id is a 404, and `null` in its slot of a batch
   (`F06.unknown-event`); batch-get is a GET with a JSON body, which browsers
   cannot send.
 - The `SystemPromptEvent` is written on the first message, not at creation;

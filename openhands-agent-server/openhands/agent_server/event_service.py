@@ -531,10 +531,13 @@ class EventService:
 
         Reads directly from the EventLog without acquiring the state lock.
         EventLog reads are safe without the FIFOLock because events are
-        append-only and immutable once written.
+        append-only and immutable once written. Returns None for an unknown id.
         """
         events = self._events_for_read()
-        index = events.get_index(event_id)
+        try:
+            index = events.get_index(event_id)
+        except KeyError:
+            return None
         return events[index]
 
     async def get_event(self, event_id: str) -> Event | None:
