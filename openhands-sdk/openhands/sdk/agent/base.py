@@ -9,7 +9,7 @@ from collections import Counter
 from collections.abc import Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from pydantic import (
     BaseModel,
@@ -58,6 +58,10 @@ if TYPE_CHECKING:
     )
 
 logger = get_logger(__name__)
+
+# Agent payloads serialized before selection provenance was introduced always
+# included the then-default built-ins, even when the caller omitted the field.
+_LEGACY_IMPLICIT_DEFAULT_TOOL_NAMES = ("FinishTool", "ThinkTool")
 
 
 # -- SOUL.md loader -------------------------------------------------------
@@ -108,6 +112,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     This base class provides the common interface and functionality that all
     agent implementations must follow.
     """
+
+    _supports_conditional_default_tool_attachment: ClassVar[bool] = True
 
     model_config = ConfigDict(
         frozen=True,
@@ -163,11 +169,13 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     include_default_tools: list[str] = Field(
         default_factory=lambda: [tool.__name__ for tool in BUILT_IN_TOOLS],
         description=(
-            "List of default tool class names to include. By default, the agent "
-            "includes 'FinishTool' and 'ThinkTool'. Set to an empty list to disable "
-            "all default tools, or provide a subset to include only specific ones. "
-            "Example: include_default_tools=['FinishTool'] to only include FinishTool, "
-            "or include_default_tools=[] to disable all default tools."
+            "List of default tool class names to include. When omitted, the agent "
+            "includes 'FinishTool' and 'ThinkTool' and may conditionally attach "
+            "'InvokeSkillTool' or 'VisionInspectTool'. When explicitly set, only "
+            "the listed built-in tools are included. Use an empty list to disable "
+            "all built-in tools, or provide a subset to include specific ones. "
+            "Example: include_default_tools=['FinishTool'] to include only "
+            "FinishTool, or include_default_tools=[] to disable all built-in tools."
         ),
         examples=[["FinishTool", "ThinkTool"], ["FinishTool"], []],
     )
@@ -326,6 +334,64 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
     _tools_lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
     _initialized: bool = PrivateAttr(default=False)
+    _include_default_tools_explicit: bool | None = PrivateAttr(default=None)
+
+    @classmethod
+    def _prepare_serialized_input(cls, data: dict[str, Any]) -> dict[str, Any]:
+        """Mark markerless serialized default lists as implicit selections."""
+        if (
+            cls._supports_conditional_default_tool_attachment
+            and "kind" in data
+            and "_include_default_tools_explicit" not in data
+            and data.get("include_default_tools")
+            in (
+                list(_LEGACY_IMPLICIT_DEFAULT_TOOL_NAMES),
+                [*_LEGACY_IMPLICIT_DEFAULT_TOOL_NAMES, "SwitchLLMTool"],
+            )
+        ):
+            data = data.copy()
+            data["_include_default_tools_explicit"] = False
+        return data
+
+    def _add_serialization_metadata(self, result: Any) -> Any:
+        if (
+            self._supports_conditional_default_tool_attachment
+            and self._include_default_tools_explicit is not None
+            and isinstance(result, dict)
+        ):
+            result["_include_default_tools_explicit"] = (
+                self._include_default_tools_explicit
+            )
+        return result
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _restore_default_tool_selection_provenance(cls, data: Any, handler: Any) -> Any:
+        """Preserve whether ``include_default_tools`` was omitted or explicit.
+
+        The resolved default list is serialized for compatibility, so the list
+        value alone cannot tell an implicit default from an explicitly supplied
+        list. Keep that distinction in private serialization metadata.
+        """
+        explicit = None
+        if isinstance(data, dict):
+            data = cls._prepare_serialized_input(data).copy()
+            explicit = data.pop("_include_default_tools_explicit", None)
+
+        agent = handler(data)
+        if not cls._supports_conditional_default_tool_attachment:
+            return agent
+        if explicit is None:
+            explicit = agent._include_default_tools_explicit
+        if explicit is None:
+            explicit = "include_default_tools" in agent.model_fields_set
+
+        object.__setattr__(agent, "_include_default_tools_explicit", bool(explicit))
+        return agent
+
+    def _mark_include_default_tools_implicit(self) -> None:
+        """Mark factory-generated default tool names as implicit configuration."""
+        object.__setattr__(self, "_include_default_tools_explicit", False)
 
     @property
     def prompt_dir(self) -> str:
@@ -612,7 +678,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         )
         default_tool_names = list(self.include_default_tools)
         if (
-            has_invocable_agentskills
+            not self._include_default_tools_explicit
+            and has_invocable_agentskills
             and InvokeSkillTool.__name__ not in default_tool_names
         ):
             default_tool_names.append(InvokeSkillTool.__name__)
@@ -621,7 +688,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 InvokeSkillTool.__name__,
             )
         if (
-            not self.llm.vision_is_active()
+            not self._include_default_tools_explicit
+            and not self.llm.vision_is_active()
             and VisionInspectTool.__name__ not in default_tool_names
             and has_vision_profile_available()
         ):

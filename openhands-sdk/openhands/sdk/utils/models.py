@@ -204,6 +204,10 @@ class DiscriminatedUnionMixin(OpenHandsModel):
     def kind(self) -> str:
         return self.__class__.__name__
 
+    @classmethod
+    def _prepare_serialized_input(cls, data: dict[str, Any]) -> dict[str, Any]:
+        return data
+
     @model_validator(mode="wrap")
     @classmethod
     def _validate_subtype(
@@ -211,6 +215,8 @@ class DiscriminatedUnionMixin(OpenHandsModel):
     ) -> Self:
         if isinstance(data, cls):
             return data
+        if isinstance(data, dict):
+            data = cls._prepare_serialized_input(data)
         if not _is_abstract(cls):
             has_kind_alias_field = any(
                 field_name != "kind" and field_info.alias == "kind"
@@ -266,7 +272,7 @@ class DiscriminatedUnionMixin(OpenHandsModel):
             return self
         if self._is_handler_for_current_class(handler):
             result = handler(self)
-            return result
+            return self._add_serialization_metadata(result)
 
         # Delegate to the implementing class
         result = self.model_dump(
@@ -280,6 +286,9 @@ class DiscriminatedUnionMixin(OpenHandsModel):
             round_trip=info.round_trip,
             serialize_as_any=info.serialize_as_any,
         )
+        return self._add_serialization_metadata(result)
+
+    def _add_serialization_metadata(self, result: Any) -> Any:
         return result
 
     def _is_handler_for_current_class(
