@@ -21,7 +21,7 @@ import pytest
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import Message, TextContent
-from tests.agent_server.stress.budgets import CONCURRENT_CONVERSATIONS
+from tests.agent_server.stress.budgets import CONCURRENT_CONVERSATIONS, CPU
 from tests.agent_server.stress.probe import ResourceProbe
 from tests.agent_server.stress.scripts import (
     SlowTestLLM,
@@ -120,7 +120,13 @@ async def test_concurrent_conversations_isolated_and_fast(
         ]
     )
 
+    # The wall clock and the CPU window both start after the conversations are
+    # created, so the CPU numerator and the wall denominator cover the same
+    # span. Creation runs a burst of CPU that is not part of the run path; if
+    # the CPU window included it while the wall clock did not, setup CPU would
+    # inflate the ratio without any run-path regression.
     t0 = time.monotonic()
+    pre_concurrent_cpu_s = probe.cpu_time_s()
     results = await asyncio.gather(
         *[_run_and_wait(client, conv_id) for conv_id, _llm in started]
     )
@@ -179,4 +185,19 @@ async def test_concurrent_conversations_isolated_and_fast(
         f"RSS grew {rss_growth:.2f}× during concurrent run (budget < "
         f"{CONCURRENT_CONVERSATIONS.rss_growth_factor}×). Conversation "
         f"teardown may not be releasing memory."
+    )
+
+    # 8. CPU budget. Compared per unit of work: the concurrent phase runs n
+    #    conversations against a reference of one, so per-conversation CPU must
+    #    not blow up. A busy-wait or a spin loop in the run path raises CPU
+    #    without necessarily moving wall time, so the wall-clock budget above
+    #    would not catch it.
+    concurrent_cpu_s = probe.cpu_time_s() - pre_concurrent_cpu_s
+    cpu_per_wall = concurrent_cpu_s / max(concurrent_wall, 1e-6)
+    assert cpu_per_wall < CPU.concurrent_conversations_max_cpu_per_wall_second, (
+        f"CPU/wall ratio ({cpu_per_wall:.2f}, {concurrent_cpu_s:.2f}s CPU over "
+        f"{concurrent_wall:.2f}s wall) exceeded "
+        f"{CPU.concurrent_conversations_max_cpu_per_wall_second}. CPU is "
+        f"growing faster than the work — likely a busy-wait or an extra worker "
+        f"spinning on the run path."
     )
