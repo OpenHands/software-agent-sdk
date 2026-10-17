@@ -494,7 +494,7 @@ def _default_llm_settings() -> LLM:
 _RequestT = TypeVar("_RequestT")
 
 type AgentKind = Literal["openhands", "llm", "acp"]
-AGENT_SETTINGS_SCHEMA_VERSION = 8
+AGENT_SETTINGS_SCHEMA_VERSION = 9
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
@@ -760,6 +760,26 @@ def _migrate_agent_settings_v7_to_v8_request(
 ) -> dict[str, Any]:
     """Advance a request to v8, leaving its switches to be folded as input."""
     return {**payload, "schema_version": 8}
+
+
+def _migrate_agent_settings_v8_to_v9(payload: dict[str, Any]) -> dict[str, Any]:
+    """Drop persisted runtime timestamps while preserving an explicit no-time value."""
+    migrated = dict(payload)
+    agent_context = migrated.get("agent_context")
+    if isinstance(agent_context, Mapping):
+        agent_context = dict(agent_context)
+        if agent_context.get("current_datetime") is not None:
+            agent_context.pop("current_datetime")
+        migrated["agent_context"] = agent_context
+    migrated["schema_version"] = 9
+    return migrated
+
+
+def _migrate_agent_settings_v8_to_v9_request(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Advance a request without dropping its runtime timestamp."""
+    return {**payload, "schema_version": 9}
 
 
 def _migrate_agent_settings_payload(
@@ -1084,10 +1104,12 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     5: _migrate_agent_settings_v5_to_v6,
     6: _migrate_agent_settings_v6_to_v7,
     7: _migrate_agent_settings_v7_to_v8,
+    8: _migrate_agent_settings_v8_to_v9,
 }
 _REQUEST_AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     **_AGENT_SETTINGS_MIGRATIONS,
     7: _migrate_agent_settings_v7_to_v8_request,
+    8: _migrate_agent_settings_v8_to_v9_request,
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,
