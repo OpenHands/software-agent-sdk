@@ -4,6 +4,7 @@ import tempfile
 import time
 import warnings
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -2044,6 +2045,156 @@ def test_validate_profile_unknown_error_returns_error(client):
     assert body["valid"] is False
     assert body["error"]["type"] == "RuntimeError"
     assert "Connection refused" in body["error"]["message"]
+
+
+def _stub_litellm_error(error: Exception) -> tuple[Any, list[dict[str, Any]]]:
+    """A litellm acompletion stub that records each call and raises ``error``."""
+    calls: list[dict[str, Any]] = []
+
+    async def fake_litellm_acompletion(*args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        raise error
+
+    return fake_litellm_acompletion, calls
+
+
+def test_validate_profile_does_not_retry_unreachable_endpoint(client):
+    """Pre-flight answers after one attempt, whatever the profile's retry policy.
+
+    Regression for #5100: the ping ran through the profile's runtime retry
+    policy (5 attempts with 8-64 s backoff by default), so an unreachable
+    ``base_url`` held the request for about two minutes.
+    """
+    from litellm.exceptions import APIConnectionError
+
+    fake, calls = _stub_litellm_error(
+        APIConnectionError(
+            message="Connection refused", llm_provider="openai", model="gpt-4o"
+        )
+    )
+    with patch("openhands.sdk.llm.llm.litellm_acompletion", new=fake):
+        response = client.post(
+            "/api/profiles/unreachable/validate",
+            json={
+                "llm": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "sk-test",
+                    "base_url": "http://127.0.0.1:9/v1",
+                    "num_retries": 5,
+                    "retry_min_wait": 0,
+                    "retry_max_wait": 0,
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["error"]["type"] == "LLMServiceUnavailableError"
+    assert len(calls) == 1
+
+
+def test_validate_profile_caps_the_attempt_timeout(client):
+    """The pre-flight attempt uses a short timeout, not the 300 s runtime one."""
+    from unittest.mock import MagicMock
+
+    seen: dict[str, Any] = {}
+
+    async def fake_acompletion(self, messages, **kwargs):
+        seen["timeout"] = self.timeout
+        seen["num_retries"] = self.num_retries
+        seen["fallback_strategy"] = self.fallback_strategy
+        return MagicMock()
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch("openhands.sdk.llm.llm.LLM.acompletion", new=fake_acompletion),
+    ):
+        default = client.post(
+            "/api/profiles/slow/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": "sk-test"}},
+        )
+        default_timeout = seen["timeout"]
+        shorter = client.post(
+            "/api/profiles/slow/validate",
+            json={
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_key": "sk-test",
+                    "timeout": 3,
+                    "fallback_strategy": {"fallback_llms": ["backup"]},
+                }
+            },
+        )
+
+    assert default.status_code == 200 and shorter.status_code == 200
+    assert default_timeout == profiles_router_module.PREFLIGHT_TIMEOUT_SECONDS
+    assert seen["timeout"] == 3
+    assert seen["num_retries"] == 0
+    assert seen["fallback_strategy"] is None
+
+
+def test_validate_profile_budget_exceeded_rate_limit_blocks(client):
+    """A 429 that reports an exhausted budget is a failed validation (#5100)."""
+    from litellm.exceptions import RateLimitError
+
+    fake, calls = _stub_litellm_error(
+        RateLimitError(
+            message=(
+                '{"error":{"message":"Budget has been exceeded! Current cost: '
+                '1060.95, Max budget: 1016.82","type":"budget_exceeded",'
+                '"code":"429"}}'
+            ),
+            llm_provider="litellm_proxy",
+            model="litellm_proxy/gpt-5.5",
+        )
+    )
+    with (
+        patch("openhands.sdk.llm.llm.litellm_acompletion", new=fake),
+        patch("openhands.sdk.llm.llm.litellm_aresponses", new=fake),
+    ):
+        response = client.post(
+            "/api/profiles/over-budget/validate",
+            json={
+                "llm": {
+                    "model": "litellm_proxy/gpt-5.5",
+                    "api_key": "sk-test",
+                    "base_url": "http://proxy.invalid",
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["error"]["type"] == "LLMRateLimitError"
+    assert "Budget has been exceeded" in body["error"]["message"]
+    assert len(calls) == 1
+
+
+def test_validate_profile_insufficient_quota_blocks(client):
+    """OpenAI's ``insufficient_quota`` 429 is also a failed validation."""
+    from openhands.sdk.llm.exceptions import LLMRateLimitError
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            side_effect=LLMRateLimitError(
+                'RateLimitError: OpenAIException - {"error":{"type":'
+                '"insufficient_quota","message":"You exceeded your current quota"}}'
+            ),
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/no-quota/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": "sk-test"}},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["error"]["type"] == "LLMRateLimitError"
 
 
 def test_validate_profile_invalid_name(client):

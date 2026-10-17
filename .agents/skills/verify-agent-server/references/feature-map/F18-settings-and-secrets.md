@@ -53,7 +53,7 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
 - `F18.secret-empty-value`: a PUT whose value is empty, blank or the redaction placeholder is refused with 422 and neither wipes an existing value nor leaves a listed but unreadable secret (fixed by #5682).
 - `F18.dangling-pointers`: PATCH must refuse an `active_agent_profile_id` or `active_meta_profile` that names nothing, as the dedicated activate routes do (404).
 - `F18.secret-scope-profile-errors`: `GET /api/settings/secrets?agent_profile_id=` naming an agent profile whose file no longer validates, or arriving while the agent-profile store's lock is held elsewhere, must answer as the agent-profile routes do (400 and 503), not with an unhandled 500.
-- `F18.secret-name-contract`: the published OpenAPI description of the secret routes must name the status an invalid secret name actually gets (it says 400; the code answers 422).
+- `F18.secret-name-contract`: the published OpenAPI description of the secret routes names the status an invalid secret name actually gets, 422 (fixed by #5846).
 - `F18.secret-key-rotation`: after a restart with a new cipher key, a write must not destroy values stored under the old key, so rotating back recovers them.
 
 ## How to get to it (agent POV)
@@ -804,20 +804,19 @@ Preconditions:
   well. Today it waits the same 30 seconds and answers an unhandled 500
   (`Agent profile store lock acquisition timed out after 30.0s`). The trap
   waits until `flock` lets go.
-- **Documented status for an invalid name (`F18.secret-name-contract`), known bug.**
+- **Documented status for an invalid name (`F18.secret-name-contract`).**
   Read the status the published OpenAPI description promises for an invalid
   secret name, then send one.
   ```sh
   control-agent-server api GET /openapi.json --expect 200 --quiet --raw-out "$F18/openapi.json"
   CLAIMED=$(jq -r '.paths["/api/settings/secrets/{name}"].get.description // ""' "$F18/openapi.json" | sed -n 's/.* \([0-9][0-9][0-9]\) if name format is invalid.*/\1/p')
-  control-agent-server api GET /api/settings/secrets/1bad --expect "${CLAIMED:-422}" --save F18.secret-name-contract/invalid-name  # bug: status eq 422 && response.body.detail contains 'Invalid secret name format'
+  control-agent-server api GET /api/settings/secrets/1bad --expect "${CLAIMED:-422}" --save F18.secret-name-contract/invalid-name
   ```
-  Expected: the documented and the real status agree (either the docstring
-  says 422 or the code answers 400). Today the description of `GET`,
-  `DELETE /api/settings/secrets/{name}` and `PUT /api/settings/secrets`
-  says `400 if name format is invalid` while every one answers 422
-  (`F18.secret-name-validation`); clients generated from the OpenAPI
-  document inherit the wrong promise.
+  Expected: the documented and the real status agree. The descriptions of
+  `GET` and `DELETE /api/settings/secrets/{name}` say `422 if name format is
+  invalid` (`PUT /api/settings/secrets` says `422 if the name or value is
+  invalid`), and every one answers 422 (`F18.secret-name-validation`), so
+  clients generated from the OpenAPI document get the right promise.
 - **Cipher key rotation (`F18.secret-key-rotation`), known bug.** Store a
   secret and an LLM key; rotate the cipher key and rotate back with no write
   in between (the control); then rotate again, write something unrelated
@@ -895,8 +894,8 @@ Preconditions:
   empty; PUT and DELETE answer 500.
 - 5xx bodies are rewritten to `{"detail": "Internal Server Error",
   "exception": "<code>: <reason>"}`; assert on the status and `exception`.
-- Invalid secret names are 422, although the route docstrings, and so the
-  OpenAPI descriptions, say 400 (`F18.secret-name-contract`). The 404 detail
+- Invalid secret names are 422, as the route docstrings, and so the OpenAPI
+  descriptions, say (`F18.secret-name-contract`). The 404 detail
   is always `Secret not found`, also for a stored `null` value.
 - `?agent_profile_id=` loads the agent profile outside the store's error
   mapping: a profile file that no longer validates, or a lock held by

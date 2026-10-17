@@ -1915,6 +1915,29 @@ def test_secret_name_validation_on_delete(client_with_settings):
     assert response.status_code == 422
 
 
+@pytest.mark.parametrize(
+    ("method", "path", "request_kwargs"),
+    [
+        ("get", "/api/settings/secrets/{name}", {}),
+        ("delete", "/api/settings/secrets/{name}", {}),
+        ("put", "/api/settings/secrets", {"json": {"name": "1bad", "value": "x"}}),
+    ],
+)
+def test_secret_routes_document_the_invalid_name_status(
+    client_with_settings, method, path, request_kwargs
+):
+    """The OpenAPI description names the status an invalid secret name gets."""
+    url = path.replace("{name}", "1bad")
+    response = client_with_settings.request(method.upper(), url, **request_kwargs)
+    assert response.status_code == 422
+
+    description = client_with_settings.get("/openapi.json").json()["paths"][path][
+        method
+    ]["description"]
+    assert "422 if" in description
+    assert "400" not in description
+
+
 # ── Concurrent update tests ────────────────────────────────────────────────
 
 
