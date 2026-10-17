@@ -36,13 +36,29 @@ class TokenUsage(BaseModel):
 
     model: str = Field(default="")
     prompt_tokens: int = Field(
-        default=0, ge=0, description="Prompt tokens must be non-negative"
+        default=0,
+        ge=0,
+        description=(
+            "Non-negative prompt token count. Includes cache_read_tokens for "
+            "LiteLLM/OpenAI-style usage; some providers/ACP report cached reads "
+            "separately. To match cache_hit_rate's input denominator, use "
+            "prompt_tokens, adding cache_read_tokens only when "
+            "cache_read_tokens > prompt_tokens."
+        ),
     )
     completion_tokens: int = Field(
         default=0, ge=0, description="Completion tokens must be non-negative"
     )
     cache_read_tokens: int = Field(
-        default=0, ge=0, description="Cache read tokens must be non-negative"
+        default=0,
+        ge=0,
+        description=(
+            "Non-negative cached-read token count. A subset of prompt_tokens "
+            "for LiteLLM/OpenAI-style usage, so do not add it to prompt_tokens "
+            "again. Some providers/ACP report cached reads separately, which "
+            "can make cache_read_tokens exceed prompt_tokens; see "
+            "MetricsSnapshot.cache_hit_rate for the denominator rule."
+        ),
     )
     cache_write_tokens: int = Field(
         default=0, ge=0, description="Cache write tokens must be non-negative"
@@ -94,10 +110,22 @@ class MetricsSnapshot(BaseModel):
     def cache_hit_rate(self) -> float | None:
         """Fraction of accumulated input tokens served from cache (0.0-1.0).
 
-        None when there is no input to measure. litellm/OpenAI count cached
-        reads inside ``prompt_tokens`` (the denominator); ACP reports them
-        separately, so when ``cache_read_tokens`` exceeds ``prompt_tokens`` the
-        denominator is their sum.
+        None when there is no input to measure. LiteLLM/OpenAI-style usage
+        includes cached reads in ``prompt_tokens``. Some providers/ACP report
+        them separately, so ``cache_read_tokens`` may exceed ``prompt_tokens``.
+        The current heuristic uses ``prompt_tokens`` as the denominator,
+        switching to ``prompt_tokens + cache_read_tokens`` only when
+        ``cache_read_tokens > prompt_tokens``. This does not normalize all
+        provider reporting conventions.
+
+        For an OpenAI-style usage object with ``prompt_tokens=100`` and
+        ``prompt_tokens_details.cached_tokens=40``, the normalized counts give:
+
+        >>> usage = TokenUsage(prompt_tokens=100, cache_read_tokens=40)
+        >>> MetricsSnapshot(accumulated_token_usage=usage).cache_hit_rate
+        0.4
+
+        The input total is 100, not 140: cached reads are already included.
         """
         usage = self.accumulated_token_usage
         if usage is None:
