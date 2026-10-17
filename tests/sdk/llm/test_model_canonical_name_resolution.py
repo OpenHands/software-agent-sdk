@@ -11,6 +11,7 @@ class DummyFeatures:
         # Treat only the canonical model as feature-enabled
         self.supports_prompt_cache = model == "openai/gpt-5-mini"
         self.supports_responses_api = model == "openai/gpt-5-mini"
+        self.thinking_mode = "none"
         self.force_string_serializer = False
         self.send_reasoning_content = False
         self.requires_inline_image_data = False

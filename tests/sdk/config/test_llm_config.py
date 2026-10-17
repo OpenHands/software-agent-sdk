@@ -229,7 +229,7 @@ def test_llm_config_optional_fields():
     assert config.max_input_tokens is None
     assert config.max_output_tokens is None
     assert config.effective_max_input_tokens == 128000
-    assert config.effective_max_output_tokens == 16384
+    assert config.effective_max_output_tokens is None
     assert config.input_cost_per_token is None
     assert config.output_cost_per_token is None
     assert config.ollama_base_url is None

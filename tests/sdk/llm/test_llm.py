@@ -1879,218 +1879,70 @@ def test_telemetry_callback_preserved_across_revalidation():
     assert fired == [True]
 
 
-# max_output_tokens Capping Tests
+# Advertised limits are not requested generation budgets (#5181).
 
 
+@pytest.mark.parametrize(
+    "model,metadata",
+    [
+        (
+            "openrouter/anthropic/claude-3-haiku",
+            {"max_tokens": 200000, "max_input_tokens": 200000},
+        ),
+        ("anthropic/claude-3-5-sonnet-latest", {"max_output_tokens": 8192}),
+        ("moonshot/kimi-k2.5", {"max_output_tokens": 131072}),
+        ("claude-opus-4-5", {"max_output_tokens": 64000}),
+        ("litellm_proxy/custom-deployment", {"max_output_tokens": 384000}),
+    ],
+)
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
-def test_max_output_tokens_capped_when_using_max_tokens_fallback(mock_get_model_info):
-    """Test that max_output_tokens is capped when falling back to max_tokens.
-
-    Some providers (e.g., OpenRouter) set max_tokens to the context window size
-    rather than the output limit. Without capping, this could request output
-    that exceeds the context window.
-
-    See: https://github.com/OpenHands/software-agent-sdk/pull/2264
-    """
-    from openhands.sdk.llm.llm import DEFAULT_MAX_OUTPUT_TOKENS_CAP
-
-    # Simulate a model where max_tokens = context window (200k) but
-    # max_output_tokens is not set
-    mock_get_model_info.return_value = {
-        "max_tokens": 200000,  # This is the context window, not output limit
-        "max_output_tokens": None,
-        "max_input_tokens": 200000,
-    }
-
-    llm = LLM(
-        model="openrouter/anthropic/claude-3-haiku",
-        api_key=SecretStr("test-key"),
-        usage_id="test-llm",
-    )
-
-    # Config remains unset; the effective runtime value is capped.
+def test_advertised_output_limit_is_not_a_request_default(mock_info, model, metadata):
+    mock_info.return_value = metadata
+    llm = LLM(model=model, api_key=SecretStr("test-key"), usage_id="test")
     assert llm.max_output_tokens is None
-    effective_max_output_tokens = llm.effective_max_output_tokens
-    assert effective_max_output_tokens is not None
-    assert effective_max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS_CAP
-    assert effective_max_output_tokens < 200000
+    assert llm.effective_max_output_tokens is None
+    options = llm._finalize_completion_params(
+        formatted_messages=[{"role": "user", "content": "hello"}],
+        tools=None,
+        add_security_risk_prediction=False,
+        kwargs={},
+    )[3]
+    assert "max_completion_tokens" not in options
+    assert "max_tokens" not in options
 
 
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
-def test_max_output_tokens_uses_actual_value_when_available(mock_get_model_info):
-    """Test that actual max_output_tokens is used when available."""
-    # Simulate a model with proper max_output_tokens
-    mock_get_model_info.return_value = {
-        "max_tokens": 8192,
-        "max_output_tokens": 8192,
-        "max_input_tokens": 200000,
-    }
-
-    llm = LLM(
-        model="anthropic/claude-3-5-sonnet-latest",
-        api_key=SecretStr("test-key"),
-        usage_id="test-llm",
-    )
-
-    # Should use the actual effective max_output_tokens, not capped
-    assert llm.max_output_tokens is None
-    assert llm.effective_max_output_tokens == 8192
-
-
-@patch("openhands.sdk.llm.llm.get_litellm_model_info")
-def test_max_output_tokens_capped_when_model_info_exceeds_default_cap(
-    mock_get_model_info,
-):
-    """High LiteLLM max_output_tokens metadata is capped for custom gateways."""
-    from openhands.sdk.llm.llm import DEFAULT_MAX_OUTPUT_TOKENS_CAP
-
-    mock_get_model_info.return_value = {
-        "max_tokens": 262144,
-        "max_output_tokens": 131072,
-        "max_input_tokens": 262144,
-    }
-
-    llm = LLM(
-        model="moonshot/kimi-k2.5",
-        api_key=SecretStr("test-key"),
-        usage_id="test-llm",
-        base_url="https://qianfan.example.com/v1",
-    )
-
-    assert llm.max_output_tokens is None
-    assert llm.effective_max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS_CAP
-
-
-@patch("openhands.sdk.llm.llm.get_litellm_model_info")
-def test_max_output_tokens_not_capped_without_custom_base_url(mock_get_model_info):
-    """Direct API (no base_url) keeps litellm's real max_output_tokens."""
-    mock_get_model_info.return_value = {
-        "max_output_tokens": 64000,
-        "max_tokens": 64000,
-        "max_input_tokens": 200000,
-    }
-    llm = LLM(
-        model="claude-opus-4-5",
-        api_key=SecretStr("test-key"),
-        usage_id="test-llm",
-    )
-    assert llm.effective_max_output_tokens == 64000
-
-
-@patch("openhands.sdk.llm.llm.get_litellm_model_info")
-def test_max_output_tokens_small_max_tokens_not_capped(mock_get_model_info):
-    """Test that small max_tokens fallback is not unnecessarily capped."""
-    from openhands.sdk.llm.llm import DEFAULT_MAX_OUTPUT_TOKENS_CAP
-
-    # Simulate a model where max_tokens is small (actual output limit)
-    mock_get_model_info.return_value = {
-        "max_tokens": 4096,  # This is the actual output limit
-        "max_output_tokens": None,
-        "max_input_tokens": None,
-    }
-
-    llm = LLM(
-        model="openrouter/test/small-model",
-        api_key=SecretStr("test-key"),
-        usage_id="test-llm",
-    )
-
-    # Should use the actual effective value since it's below the cap
-    assert llm.max_output_tokens is None
-    assert llm.effective_max_output_tokens == 4096
-    assert llm.effective_max_output_tokens < DEFAULT_MAX_OUTPUT_TOKENS_CAP
-
-
-@patch("openhands.sdk.llm.llm.get_litellm_model_info")
-def test_explicit_max_output_tokens_not_overridden(mock_get_model_info):
-    """Test that explicitly set max_output_tokens is respected."""
-    mock_get_model_info.return_value = {
-        "max_tokens": 262144,
-        "max_output_tokens": 131072,
-        "max_input_tokens": 262144,
-    }
-
-    llm = LLM(
-        model="gpt-4o",
-        api_key=SecretStr("test-key"),
-        usage_id="test-llm",
-        max_output_tokens=32768,  # Explicitly set higher than cap
-    )
-
-    # Should respect the explicit value
-    assert llm.max_output_tokens == 32768
+def test_explicit_max_output_tokens_not_overridden(mock_info):
+    mock_info.return_value = {"max_output_tokens": 131072}
+    llm = LLM(model="gpt-4o", api_key=SecretStr("test-key"), max_output_tokens=32768)
     assert llm.effective_max_output_tokens == 32768
 
 
-@patch("openhands.sdk.llm.llm.get_litellm_model_info")
-def test_max_output_tokens_capped_when_equal_to_context_window(
-    mock_get_model_info,
-):
-    """max_output_tokens == context window leaves zero input headroom.
-
-    Strict providers (e.g. AWS Bedrock) reject every call when
-    max_output_tokens fills the entire context window.
-    """
-    mock_get_model_info.return_value = {
-        "max_output_tokens": 262144,
-        "max_input_tokens": 262144,
-    }
-
-    llm = LLM(
-        model="litellm_proxy/test-model-equal-windows",
-        api_key=SecretStr("test-key"),
-        usage_id="test-llm",
-    )
-
-    assert llm.max_output_tokens is None
-    assert llm.effective_max_output_tokens == 131072
-    assert llm.max_input_tokens is None
-    assert llm.effective_max_input_tokens == 262144
-
-
-@patch("openhands.sdk.llm.llm.get_litellm_model_info")
-def test_max_output_tokens_capped_when_equal_to_max_tokens(
-    mock_get_model_info,
-):
-    """max_output_tokens == max_tokens should also be halved.
-
-    Some registries only provide max_tokens (context window) without
-    max_input_tokens. The guard should still fire.
-    """
-    mock_get_model_info.return_value = {
-        "max_output_tokens": 131072,
-        "max_tokens": 131072,
-        "max_input_tokens": None,
-    }
-
-    llm = LLM(
-        model="litellm_proxy/test-model-max-tokens-only",
-        api_key=SecretStr("test-key"),
-        usage_id="test-llm",
-    )
-
-    assert llm.max_output_tokens is None
-    assert llm.effective_max_output_tokens == 131072 // 2
-
-
-@patch("openhands.sdk.llm.llm.get_litellm_model_info")
-def test_max_output_tokens_not_capped_when_below_context_window(
-    mock_get_model_info,
-):
-    """max_output_tokens < context window should be used as-is."""
-    mock_get_model_info.return_value = {
-        "max_output_tokens": 8192,
-        "max_input_tokens": 200000,
-    }
-
-    llm = LLM(
-        model="anthropic/claude-3-5-sonnet-latest",
-        api_key=SecretStr("test-key"),
-        usage_id="test-llm",
-    )
-
-    assert llm.max_output_tokens is None
-    assert llm.effective_max_output_tokens == 8192
-
-
 # LLM Registry Tests
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "anthropic/claude-sonnet-4-5",
+        "anthropic/claude-sonnet-4-6",
+        "anthropic/claude-haiku-4-5",
+    ],
+)
+def test_default_manual_thinking_budget_is_bounded(model):
+    llm = LLM(model=model, api_key="local-test")
+    output = llm.effective_max_output_tokens
+    assert output is not None and output <= 16384
+    options = llm._finalize_completion_params(
+        formatted_messages=[
+            {"role": "system", "content": "test"},
+            {"role": "user", "content": "hello"},
+        ],
+        tools=None,
+        add_security_risk_prediction=False,
+        kwargs={},
+    )[3]
+    assert 1024 <= options["thinking"]["budget_tokens"] < output
+    advertised = (llm.model_info or {}).get("max_output_tokens")
+    if isinstance(advertised, int):
+        assert output <= advertised

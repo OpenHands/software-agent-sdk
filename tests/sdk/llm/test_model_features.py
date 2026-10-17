@@ -13,12 +13,8 @@ day it does (#4877).
 
 import pytest
 from litellm import get_supported_openai_params
-from litellm.utils import supports_vision
 
 from openhands.sdk.llm.utils.model_features import (
-    REASONING_EFFORT_MODEL_OVERRIDES,
-    VISION_MODEL_OVERRIDES,
-    _normalized_supported_openai_params,
     get_features,
     model_matches,
 )
@@ -445,21 +441,6 @@ def test_litellm_vision_support_is_exposed_as_model_feature(model: str):
     assert get_features(model).supports_vision is True
 
 
-def test_reasoning_effort_overrides_are_not_redundant():
-    for pattern, litellm_model in REASONING_EFFORT_MODEL_OVERRIDES.items():
-        params = _normalized_supported_openai_params(litellm_model)
-        assert "reasoning_effort" not in params, (
-            f"Remove {pattern!r}: LiteLLM now supports {litellm_model!r}"
-        )
-
-
-def test_vision_overrides_are_not_redundant():
-    for pattern, litellm_model in VISION_MODEL_OVERRIDES.items():
-        assert not supports_vision(litellm_model), (
-            f"Remove {pattern!r}: LiteLLM now supports {litellm_model!r}"
-        )
-
-
 def test_model_matches_with_provider_pattern():
     """model_matches uses substring on raw model name incl. provider prefixes."""
     assert model_matches("openai/gpt-4", ["openai/"])
@@ -736,3 +717,98 @@ def test_send_reasoning_content_support(model, expected_send_reasoning):
     """Test that models like kimi-k2-thinking require send_reasoning_content."""
     features = get_features(model)
     assert features.send_reasoning_content is expected_send_reasoning
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash",
+        "openai/deepseek-v4.1-flash",
+        "openhands/deepseek-v4.1-flash",
+        "litellm_proxy/deepseek/deepseek-v4.1-flash",
+        "openrouter/deepseek/deepseek-v4.1-flash",
+    ],
+)
+def test_owned_vision_capability_survives_stale_registry(model):
+    features = get_features(
+        model,
+        model_info={"_capability_source": "litellm", "supports_vision": False},
+    )
+    assert features.supports_vision
+    assert features.sources["supports_vision"] == "sdk"
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_endpoint_and_caller_vision_decisions_are_authoritative(value):
+    model = "openhands/deepseek-v4.1-flash"
+    metadata = {"_capability_source": "proxy", "supports_vision": value}
+    endpoint = get_features(model, model_info=metadata)
+    assert endpoint.supports_vision is value
+    assert endpoint.sources["supports_vision"] == "endpoint"
+    caller = get_features(
+        model, model_info=metadata, overrides={"supports_vision": not value}
+    )
+    assert caller.supports_vision is not value
+    assert caller.sources["supports_vision"] == "caller"
+
+
+@pytest.mark.parametrize(
+    "model", ["my-deepseek-v4.1-flash-deployment", "custom/deepseek-v4.1-flash"]
+)
+def test_unrecognized_deployment_names_do_not_acquire_owned_capabilities(model):
+    features = get_features(
+        model, model_info={"_capability_source": "litellm", "supports_vision": False}
+    )
+    assert not features.supports_vision
+    assert features.sources["supports_vision"] == "litellm"
+
+
+def test_reasoning_is_not_the_reasoning_effort_parameter():
+    features = get_features(
+        "minimax/MiniMax-M3", model_info={"supports_reasoning": True}
+    )
+    assert not features.supports_reasoning_effort
+
+
+@pytest.mark.parametrize("field", ["supported_openai_params", "allowed_openai_params"])
+def test_proxy_exact_parameter_declaration(field):
+    features = get_features(
+        "litellm_proxy/custom-deployment", model_info={field: ["reasoning_effort"]}
+    )
+    assert features.supports_reasoning_effort
+    assert not features.supports_vision
+    assert not features.supports_prompt_cache_key
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_exact_parameter_override_wins_over_advertised_allowance(value):
+    features = get_features(
+        "litellm_proxy/acme-alias",
+        model_info={
+            "supports_reasoning_effort": value,
+            "allowed_openai_params": ["reasoning_effort"],
+        },
+    )
+    assert features.supports_reasoning_effort is value
+
+
+def test_nullable_exact_parameter_metadata_is_not_a_denial():
+    features = get_features(
+        "litellm_proxy/acme-alias",
+        model_info={
+            "supports_reasoning_effort": None,
+            "allowed_openai_params": ["reasoning_effort"],
+        },
+    )
+    assert features.supports_reasoning_effort
+    assert features.sources["supports_reasoning_effort"] == "endpoint"
+
+
+def test_stale_registry_cannot_disable_owned_manual_thinking():
+    features = get_features(
+        "anthropic/claude-sonnet-4-5",
+        model_info={"_capability_source": "litellm", "supports_reasoning": False},
+    )
+    assert features.thinking_mode == "manual"
+    assert features.sources["thinking_mode"] == "sdk"

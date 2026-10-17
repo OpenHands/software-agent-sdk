@@ -50,6 +50,14 @@ def select_chat_options(
     if supports_reasoning_effort:
         if llm.reasoning_effort is not None:
             out["reasoning_effort"] = llm.reasoning_effort
+        explicit_reasoning = model_features.sources.get(
+            "supports_reasoning_effort"
+        ) in {"caller", "endpoint", "sdk"}
+        if explicit_reasoning and out.get("reasoning_effort") is not None:
+            allowed = list(out.get("allowed_openai_params") or [])
+            if "reasoning_effort" not in allowed:
+                allowed.append("reasoning_effort")
+            out["allowed_openai_params"] = allowed
 
     model_name = llm._model_name_for_capabilities()
     if model_features.supports_sampling_params is False or (

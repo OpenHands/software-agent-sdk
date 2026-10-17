@@ -53,8 +53,10 @@ from openhands.sdk.llm._tokenizer import (
     count_tokenized_output,
     load_chat_template_tokenizer,
 )
+from openhands.sdk.llm.exceptions import LLMBadRequestError
 from openhands.sdk.llm.exceptions.classifier import is_transient_http_error
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
+from openhands.sdk.llm.utils.image_delivery import image_delivery_client
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 from openhands.sdk.llm.utils.runtime_metadata import (
     ModelRuntimeMetadata,
@@ -1374,6 +1376,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             (formatted_messages, cc_tools, use_mock_tools, call_kwargs,
              telemetry_ctx)
         """
+        self._validate_image_request(messages)
         formatted_messages = self.format_messages_for_llm(messages)
         return self._finalize_completion_params(
             formatted_messages,
@@ -1403,6 +1406,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         image-inlining pass is offloaded to a worker thread instead of running
         on the event loop.
         """
+        self._validate_image_request(messages)
         formatted_messages = await self.aformat_messages_for_llm(messages)
         return self._finalize_completion_params(
             formatted_messages,
@@ -1527,6 +1531,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             (instructions, input_items, resp_tools, call_kwargs,
              telemetry_ctx)
         """
+        self._validate_image_request(messages)
         instructions, input_items = self.format_messages_for_responses(messages)
         return self._finalize_responses_params(
             instructions,
@@ -1560,6 +1565,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Uses :meth:`aformat_messages_for_responses` so the image-inlining
         pass runs off the event loop.
         """
+        self._validate_image_request(messages)
         instructions, input_items = await self.aformat_messages_for_responses(messages)
         return self._finalize_responses_params(
             instructions,
@@ -2526,23 +2532,32 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         on_token: TokenCallbackType | None = None,
         **kwargs,
     ) -> ModelResponse:
-        ret = litellm_completion(
-            **self._prepare_transport_kwargs(
-                messages=messages, enable_streaming=enable_streaming, **kwargs
+        provider = self._provider_info
+        with image_delivery_client(
+            provider.name if provider else None,
+            messages,
+            self.timeout,
+            asynchronous=False,
+        ) as guarded:
+            ret = litellm_completion(
+                **self._prepare_transport_kwargs(
+                    messages=messages,
+                    enable_streaming=enable_streaming,
+                    **{**kwargs, **guarded},
+                )
             )
-        )
-        if enable_streaming and on_token is not None:
-            chunks: list[ModelResponseStream] = []
-            stream = cast(Iterable[ModelResponseStream], ret)
-            for chunk in stream:
-                on_token(chunk)
-                chunks.append(chunk)
-            ret = litellm.stream_chunk_builder(chunks, messages=messages)
+            if enable_streaming and on_token is not None:
+                chunks: list[ModelResponseStream] = []
+                stream = cast(Iterable[ModelResponseStream], ret)
+                for chunk in stream:
+                    on_token(chunk)
+                    chunks.append(chunk)
+                ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
-        assert isinstance(ret, ModelResponse), (
-            f"Expected ModelResponse, got {type(ret)}"
-        )
-        return ret
+            assert isinstance(ret, ModelResponse), (
+                f"Expected ModelResponse, got {type(ret)}"
+            )
+            return ret
 
     async def _atransport_call(
         self,
@@ -2554,41 +2569,69 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> ModelResponse:
         """Async variant of :meth:`_transport_call`."""
         auth_values = await self._aget_litellm_auth_values()
-        ret = await litellm_acompletion(
-            **self._prepare_transport_kwargs(
-                messages=messages,
-                enable_streaming=enable_streaming,
-                auth_values=auth_values,
-                **kwargs,
-            )
-        )
-        if enable_streaming and on_token is not None:
-            chunks: list[ModelResponseStream] = []
-            # Some litellm wrappers (lmnr 0.7.47's instrumentor) hand
-            # back a plain sync generator from ``litellm_acompletion``
-            if isinstance(ret, AsyncIterable):
-                stream = cast(AsyncIterable[ModelResponseStream], ret)
-                async for chunk in self._aiter_with_idle_timeout(stream):
-                    await _invoke_token_callback(on_token, chunk)
-                    chunks.append(chunk)
-            else:
-                loop = asyncio.get_running_loop()
-                synced_chunks: list[ModelResponseStream] = await loop.run_in_executor(
-                    None, list, cast(Iterable[ModelResponseStream], ret)
+        provider = self._provider_info
+        with image_delivery_client(
+            provider.name if provider else None,
+            messages,
+            self.timeout,
+            asynchronous=True,
+        ) as guarded:
+            try:
+                ret = await litellm_acompletion(
+                    **self._prepare_transport_kwargs(
+                        messages=messages,
+                        enable_streaming=enable_streaming,
+                        auth_values=auth_values,
+                        **{**kwargs, **guarded},
+                    )
                 )
-                for chunk in synced_chunks:
-                    await _invoke_token_callback(on_token, chunk)
-                    chunks.append(chunk)
-            ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
-        assert isinstance(ret, ModelResponse), (
-            f"Expected ModelResponse, got {type(ret)}"
-        )
-        return ret
+                if enable_streaming and on_token is not None:
+                    chunks: list[ModelResponseStream] = []
+                    # Some litellm wrappers (lmnr 0.7.47's instrumentor) hand
+                    # back a plain sync generator from ``litellm_acompletion``
+                    if isinstance(ret, AsyncIterable):
+                        stream = cast(AsyncIterable[ModelResponseStream], ret)
+                        async for chunk in self._aiter_with_idle_timeout(stream):
+                            await _invoke_token_callback(on_token, chunk)
+                            chunks.append(chunk)
+                    else:
+                        loop = asyncio.get_running_loop()
+                        synced_chunks: list[
+                            ModelResponseStream
+                        ] = await loop.run_in_executor(
+                            None, list, cast(Iterable[ModelResponseStream], ret)
+                        )
+                        for chunk in synced_chunks:
+                            await _invoke_token_callback(on_token, chunk)
+                            chunks.append(chunk)
+                    ret = litellm.stream_chunk_builder(chunks, messages=messages)
+
+                assert isinstance(ret, ModelResponse), (
+                    f"Expected ModelResponse, got {type(ret)}"
+                )
+                return ret
+
+            finally:
+                if guarded:
+                    await guarded["client"].close()
 
     # =========================================================================
     # Capabilities, formatting, and info
     # =========================================================================
+    def _validate_image_request(self, messages: list[Message]) -> None:
+        # Token counting shares the formatters and must still work before an
+        # agent delegates images to a vision tool. Reject only actual requests.
+        if (
+            any(message.contains_image for message in messages)
+            and not self.vision_is_active()
+        ):
+            raise LLMBadRequestError(
+                f"Image-bearing request cannot be sent to {self.model!r}: vision "
+                "is disabled or unsupported. Configure a vision-capable model, "
+                "an explicit capability override, or delegate the images first."
+            )
+
     def _model_name_for_capabilities(self) -> str:
         """Return canonical name for capability lookups (e.g., vision support)."""
         return self.model_canonical_name or self.model
@@ -2715,102 +2758,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Validate context window size
         self._validate_context_window_size()
 
-        effective_max_output_tokens = self.max_output_tokens
-        if effective_max_output_tokens is None:
-            if any(
-                m in self.model
-                for m in [
-                    "claude-3-7-sonnet",
-                    "claude-sonnet-4",
-                    "kimi-k2-thinking",
-                ]
-            ):
-                effective_max_output_tokens = (
-                    64000  # practical cap (litellm may allow 128k with header)
-                )
-                logger.debug(
-                    f"Setting effective max_output_tokens to "
-                    f"{effective_max_output_tokens} "
-                    f"for {self.model}"
-                )
-            elif self._model_info is not None:
-                if isinstance(self._model_info.get("max_output_tokens"), int):
-                    effective_max_output_tokens = self._model_info.get(
-                        "max_output_tokens"
-                    )
-                    # Guard: if max_output_tokens >= the context window,
-                    # requesting that many output tokens would leave zero
-                    # room for input and strict providers (e.g. AWS Bedrock)
-                    # will reject every call. Halve it so input has
-                    # headroom. We check both max_input_tokens and
-                    # max_tokens since either may represent the context
-                    # window depending on the provider.
-                    context_window = (
-                        self.effective_max_input_tokens
-                        or self._model_info.get("max_tokens")
-                    )
-                    if (
-                        context_window is not None
-                        and effective_max_output_tokens is not None
-                        and effective_max_output_tokens >= context_window
-                    ):
-                        capped = effective_max_output_tokens // 2
-                        logger.debug(
-                            "Capping max_output_tokens from %s to %s "
-                            "for %s (max_output_tokens >= context "
-                            "window %s)",
-                            effective_max_output_tokens,
-                            capped,
-                            self.model,
-                            context_window,
-                        )
-                        effective_max_output_tokens = capped
-                    if (
-                        self.base_url is not None
-                        and not self.model.startswith("litellm_proxy/")
-                        and effective_max_output_tokens is not None
-                        and effective_max_output_tokens > DEFAULT_MAX_OUTPUT_TOKENS_CAP
-                    ):
-                        logger.debug(
-                            "Capping max_output_tokens from %s to %s for %s "
-                            "(model metadata may exceed provider limit)",
-                            effective_max_output_tokens,
-                            DEFAULT_MAX_OUTPUT_TOKENS_CAP,
-                            self.model,
-                        )
-                        effective_max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS_CAP
-                elif isinstance(self._model_info.get("max_tokens"), int):
-                    # 'max_tokens' is ambiguous: some providers use it for total
-                    # context window, not output limit. Cap it to avoid requesting
-                    # output that exceeds the context window.
-                    max_tokens_value = self._model_info.get("max_tokens")
-                    assert isinstance(max_tokens_value, int)  # for type checker
-                    effective_max_output_tokens = min(
-                        max_tokens_value, DEFAULT_MAX_OUTPUT_TOKENS_CAP
-                    )
-                    if max_tokens_value > DEFAULT_MAX_OUTPUT_TOKENS_CAP:
-                        logger.debug(
-                            "Capping max_output_tokens from %s to %s for %s "
-                            "(max_tokens may be context window, not output)",
-                            max_tokens_value,
-                            effective_max_output_tokens,
-                            self.model,
-                        )
-
-        if "o3" in self.model:
-            o3_limit = 100000
-            if (
-                effective_max_output_tokens is None
-                or effective_max_output_tokens > o3_limit
-            ):
-                effective_max_output_tokens = o3_limit
-                logger.debug(
-                    "Clamping effective max_output_tokens to %s for %s",
-                    effective_max_output_tokens,
-                    self.model,
-                )
-
-        self._effective_max_output_tokens = effective_max_output_tokens
+        # Advertised maximums constrain a request; they are not a requested
+        # generation budget. In particular, requesting the largest proxy limit
+        # can exclude otherwise valid lower-limit upstream routes (#5181).
+        self._effective_max_output_tokens = self.max_output_tokens
+        if (
+            self._effective_max_output_tokens is None
+            and self._model_features().thinking_mode == "manual"
+            and self.extended_thinking_budget
+        ):
+            advertised_limit = (self._model_info or {}).get("max_output_tokens")
+            self._effective_max_output_tokens = min(
+                DEFAULT_MAX_OUTPUT_TOKENS_CAP,
+                advertised_limit
+                if isinstance(advertised_limit, int) and advertised_limit > 0
+                else DEFAULT_MAX_OUTPUT_TOKENS_CAP,
+            )
 
     def _validate_context_window_size(self) -> None:
         """Validate that the context window is large enough for OpenHands."""
