@@ -3055,6 +3055,7 @@ class ACPAgent(AgentBase):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                cwd=working_dir,
                 limit=_STREAM_READER_LIMIT,
             )
             assert process.stdin is not None

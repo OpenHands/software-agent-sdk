@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import sys
+import textwrap
 import threading
 import time
 import uuid
@@ -173,6 +175,64 @@ def _make_state(tmp_path) -> ConversationState:
         agent=agent,
         workspace=workspace,
     )
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_acp_process_starts_in_workspace(tmp_path: Path, resume: bool) -> None:
+    workspace = tmp_path / "workspace with spaces"
+    workspace.mkdir()
+    server = tmp_path / "cwd server.py"
+    server.write_text(
+        textwrap.dedent("""\
+            import json
+            import sys
+            from pathlib import Path
+
+            startup_cwd = str(Path.cwd())
+            for line in sys.stdin:
+                request = json.loads(line)
+                if "id" not in request:
+                    continue
+                result = {}
+                if request["method"] == "initialize":
+                    result = {
+                        "protocolVersion": 1,
+                        "agentInfo": {"name": startup_cwd, "version": "1.0"},
+                        "agentCapabilities": {"loadSession": True},
+                    }
+                elif request["method"] == "session/new":
+                    result = {"sessionId": "cwd-session"}
+                print(json.dumps({
+                    "jsonrpc": "2.0", "id": request["id"], "result": result,
+                }), flush=True)
+            """),
+        encoding="utf-8",
+    )
+    agent = ACPAgent(acp_command=[sys.executable, str(server)])
+    state = ConversationState.create(
+        id=uuid.uuid4(),
+        agent=agent,
+        workspace=LocalWorkspace(working_dir=str(workspace)),
+    )
+    if resume:
+        state.agent_state = {
+            "acp_session_id": "cwd-session",
+            "acp_session_cwd": str(workspace),
+        }
+
+    try:
+        with state:
+            agent.init_state(state, on_event=lambda _: None)
+        process = agent._process
+        assert process is not None
+        # The child reports its own startup directory through the real ACP handshake.
+        assert state.agent_state["acp_agent_name"] == str(workspace)
+        assert state.agent_state["acp_session_id"] == "cwd-session"
+    finally:
+        process = agent._process
+        agent.close()
+        if process is not None:
+            assert process.returncode is not None
 
 
 def test_logs_matching_acp_provider_version(caplog):
