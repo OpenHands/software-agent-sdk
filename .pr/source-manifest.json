@@ -1,0 +1,42 @@
+{
+  "baseline_commit": "3311ba9eec5044f40ab5d0b3d7eddc9f7e1e2d14",
+  "candidate": "Source contents tested in this review packet; compare SHA-256 hashes after checkout.",
+  "sha256": {
+    "openhands-sdk/openhands/sdk/context/view/properties/batch_atomicity.py": "ed7ef69aa82a977578edab1084d226749911c1865e7a99363e69ca021b22fae3",
+    "openhands-sdk/openhands/sdk/event/base.py": "5937e70ea4ab4ede688446a2ca58291a4f700a7dd4172019494df7828157e266",
+    "tests/sdk/agent/conftest.py": "dbec56661a11d0b9700ab7d2acc58c8766d3de84605f2c052758defe2f82caeb",
+    "tests/sdk/agent/test_validation_error_batch.py": "ed1bcc371e2117c360b24084d295befc8e421d2a4af55e65d23adb10ade9f08a",
+    "tests/sdk/context/view/test_view_manipulation_indices.py": "fd3afbbb3566468e1eea2779d50c889403d98ff3a88b01aceec7075658973764",
+    "tests/sdk/event/test_events_to_messages.py": "4488e72bb8191c89429718bc19edb1cf280fef5817d9ad11de2f3c7c2738e124",
+    ".pr/repro_mixed_validation.py": "1a853ba121519cba793b424326d1706f3cf2761904a87bb5d6ea017b0f36a58a",
+    ".pr/live_deepseek.py": "ec4a5ed1007b3b42d560d4dc14b7bc3c7ce0cd2893e856d05eb0104f4e1913bf"
+  },
+  "runtime_reproduction": {
+    "log": "after.txt",
+    "original_batch_preserved": true
+  },
+  "pytest": {
+    "log": "tests.txt",
+    "passed": 2398,
+    "deselected": 6,
+    "warnings": 42
+  },
+  "live_candidate_requests": {
+    "source": "Contributor-supplied reruns; inspected without repeating API calls.",
+    "provider": "DeepSeek via OpenRouter Chat Completions",
+    "records": [
+      "live_deepseek/candidate-case1.json",
+      "live_deepseek/candidate-case2.json",
+      "live_deepseek/candidate-case3.json"
+    ],
+    "http_statuses": [
+      200,
+      200,
+      200
+    ],
+    "real_api_calls_total": 3,
+    "comparison": "Normalized baseline parameters, system/tools hashes, user message, tool calls, and result contents/order match; combining baseline assistant calls exactly produces candidate messages.",
+    "provenance_limit": "The raw recorder captures package versions but no Git revision or source hashes. The sha256 map above identifies the local regression/offline snapshot, not an independently attested source revision for these live records.",
+    "outcome_scope": "Request acceptance only. Returned tool calls and final ERROR are consistent with the two-iteration limit; final error-event payload is not recorded."
+  }
+}

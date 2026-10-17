@@ -1,0 +1,173 @@
+[09/28/26 18:48:10] WARNING  No persistence_dir provided; falling   state.py:515
+                             back to InMemoryFileStore. EventLog
+                             data will not persist across requests.
+[09/28/26 18:48:10] INFO     Created new conversation               state.py:592
+                             e17e2090-07fc-493d-b01a-5e3238f67125
+[09/28/26 18:48:10] INFO     Loaded 0 tools from spec                base.py:564
+<repo>/openhands-sdk/openhands/sdk/llm/utils/telemetry.py:391: UserWarning: Cost calculation failed: litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=test-model
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+  warnings.warn(f"Cost calculation failed: {e}")
+{
+  "python": "3.13.12",
+  "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+  "sdk_version": "1.49.6",
+  "litellm_version": "1.93.0",
+  "pydantic_version": "2.12.5",
+  "tool_call_groups_in_common_history": [
+    [
+      "call_A",
+      "call_B",
+      "call_C"
+    ]
+  ],
+  "tool_call_groups_in_next_request": [
+    [
+      "call_A",
+      "call_B",
+      "call_C"
+    ]
+  ],
+  "original_batch_preserved": true
+}
+Chat Completions payload at scripted transport boundary:
+assistant ['call_A', 'call_B', 'call_C']
+tool call_B [{'type': 'text', 'text': "Error validating tool 'think': 1 validation error for ThinkAction\nthought\n  Field required [type=missing, input_value={}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing. Parameters provided: []"}]
+tool call_A [{'type': 'text', 'text': 'Your thought has been logged.'}]
+tool call_C [{'type': 'text', 'text': 'Your thought has been logged.'}]
+Responses SDK serialization of the SAME history (no API request):
+[
+  {
+    "type": "message",
+    "role": "user",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "Execute the scripted batch."
+      }
+    ]
+  },
+  {
+    "type": "message",
+    "role": "assistant",
+    "content": [
+      {
+        "type": "output_text",
+        "text": "One batch."
+      }
+    ]
+  },
+  {
+    "type": "function_call",
+    "id": "fc_call_A",
+    "call_id": "call_A",
+    "name": "think",
+    "arguments": "{\"thought\": \"A succeeds\"}"
+  },
+  {
+    "type": "function_call",
+    "id": "fc_call_B",
+    "call_id": "call_B",
+    "name": "think",
+    "arguments": "{}"
+  },
+  {
+    "type": "function_call",
+    "id": "fc_call_C",
+    "call_id": "call_C",
+    "name": "think",
+    "arguments": "{\"thought\": \"C succeeds\"}"
+  },
+  {
+    "type": "function_call_output",
+    "call_id": "call_B",
+    "output": "Error validating tool 'think': 1 validation error for ThinkAction\nthought\n  Field required [type=missing, input_value={}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing. Parameters provided: []"
+  },
+  {
+    "type": "function_call_output",
+    "call_id": "call_A",
+    "output": "Your thought has been logged."
+  },
+  {
+    "type": "function_call_output",
+    "call_id": "call_C",
+    "output": "Your thought has been logged."
+  }
+]
+Anthropic LiteLLM serialization of the SAME history (no API request):
+[
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "Execute the scripted batch."
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "text",
+        "text": "One batch."
+      },
+      {
+        "type": "tool_use",
+        "id": "call_A",
+        "name": "think",
+        "input": {
+          "thought": "A succeeds"
+        }
+      },
+      {
+        "type": "tool_use",
+        "id": "call_B",
+        "name": "think",
+        "input": {}
+      },
+      {
+        "type": "tool_use",
+        "id": "call_C",
+        "name": "think",
+        "input": {
+          "thought": "C succeeds"
+        }
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "tool_result",
+        "tool_use_id": "call_B",
+        "content": [
+          {
+            "type": "text",
+            "text": "Error validating tool 'think': 1 validation error for ThinkAction\nthought\n  Field required [type=missing, input_value={}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing. Parameters provided: []"
+          }
+        ]
+      },
+      {
+        "type": "tool_result",
+        "tool_use_id": "call_A",
+        "content": [
+          {
+            "type": "text",
+            "text": "Your thought has been logged."
+          }
+        ]
+      },
+      {
+        "type": "tool_result",
+        "tool_use_id": "call_C",
+        "content": [
+          {
+            "type": "text",
+            "text": "Your thought has been logged."
+          }
+        ]
+      }
+    ]
+  }
+]
