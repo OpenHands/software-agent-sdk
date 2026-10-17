@@ -509,7 +509,7 @@ Preconditions:
   `qa-f26-mismatch` (manifest name `qa-f26-other`), leaving it on disk.
   `POST /api/plugins` and new conversations reconcile the same way, so a
   copied plugin is loaded although its single view said 404.
-- **Unfetchable refresh (`F26.refresh-unfetchable`), known bug.**
+- **Unfetchable refresh (`F26.refresh-unfetchable`).**
   Install two plugins from temporary directories and adopt a third copied
   into the store; then delete the first source, break the second one's
   manifest, and refresh all three. The bullet arranges everything itself,
@@ -525,23 +525,18 @@ Preconditions:
   control-agent-server api GET /api/plugins/installed/qa-f26-adopted --expect 200 --check source eq local
   rm -rf "$F/tmp/qa-f26-gone"
   printf '{bad json' > "$F/tmp/qa-f26-broken/.plugin/plugin.json"
-  control-agent-server api POST /api/plugins/installed/qa-f26-gone/refresh --expect 400,422 --save F26.refresh-unfetchable/vanished  # bug: status eq 500 && response.body.exception contains 'Local extension path does not exist'
+  control-agent-server api POST /api/plugins/installed/qa-f26-gone/refresh --expect 400,422 --save F26.refresh-unfetchable/vanished
   control-agent-server api GET /api/plugins/installed/qa-f26-gone --expect 200 --check enabled eq true
-  control-agent-server api POST /api/plugins/installed/qa-f26-broken/refresh --expect 422 --save F26.refresh-unfetchable/invalid  # bug: status eq 500 && response.body.exception contains 'Invalid JSON'
+  control-agent-server api POST /api/plugins/installed/qa-f26-broken/refresh --expect 422 --save F26.refresh-unfetchable/invalid
   control-agent-server api GET /api/plugins/installed/qa-f26-broken --expect 200 --check version eq 0.1.0
-  control-agent-server api POST /api/plugins/installed/qa-f26-adopted/refresh --expect 400,422 --save F26.refresh-unfetchable/local  # bug: status eq 500 && response.body.exception contains 'Unable to parse extension source'
+  control-agent-server api POST /api/plugins/installed/qa-f26-adopted/refresh --expect 400,422 --save F26.refresh-unfetchable/local
   control-agent-server api GET /api/plugins/installed/qa-f26-adopted --expect 200 --check source eq local
   ```
   The install route answers an unfetchable source with 400 and an invalid
-  plugin with 422; the refresh route should do the same and keep the
-  installed copy. Today all three refreshes are `500` with the exception
-  text: `Local extension path does not exist: ...`, `Invalid JSON in ...`
-  and `Unable to parse extension source: local`.
-  `refresh_plugin_endpoint` does not catch `ExtensionFetchError` or
-  `ValueError` as the install route does. The installed copies survive.
-  Each refresh alone encodes the bug, so each is marked `# bug`; a replay
-  stops at the first one still failing (today the vanished source), and the
-  reads after a fixed refresh check that the installation was kept.
+  plugin with 422; the refresh route does the same and keeps the installed
+  copy: the vanished source and the adopted `local` one are `400` (nothing
+  can be fetched), the broken manifest `422`. The reads after each refresh
+  check that the installation was kept.
 - **Uninstall (`F26.uninstall`).** Remove the Agent Plugins layout plugin,
   read it back everywhere, remove it again; then clear the leftovers of the
   earlier bullets.
@@ -850,7 +845,8 @@ Preconditions:
   dropped. A plugin installed from a marketplace entry records the absolute
   path into the public clone, so its refresh copies whatever the clone holds
   (only refreshed by a later catalog fetch). A plugin adopted from disk has
-  source `local` and cannot be refreshed (`F26.refresh-unfetchable`).
+  source `local` and cannot be refreshed: its refresh is `400`
+  (`F26.refresh-unfetchable`).
 - The marketplace always reads `https://github.com/OpenHands/extensions` at
   `EXTENSIONS_REF` (default `main`); an existing clone is updated from its own
   `origin`, which is what makes the local stand-in work. A non-empty catalog

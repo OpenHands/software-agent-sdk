@@ -44,7 +44,7 @@ Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
 - `F25.refresh`: refresh re-fetches from the recorded source: a new commit in the git source updates `resolved_ref` and the installed files, an edited local source updates the description, and the enabled flag is preserved.
 - `F25.install-ref`: installing a git source with `ref` pins that commit (`resolved_ref`, the installed files, `requested_ref` in `.installed.json`); refresh moves it to the source's latest commit and drops `requested_ref`.
 - `F25.install-unknown-ref`: a `ref` the git source does not have is 400 and leaves the installation unchanged; today that holds only for a first clone, while a source whose clone is cached installs the cached HEAD with 200.
-- `F25.refresh-unfetchable`: refreshing a skill whose recorded source no longer exists is a client error and keeps the installation; today it is a 500.
+- `F25.refresh-unfetchable`: refreshing a skill whose recorded source no longer exists is a client error (400) and keeps the installation.
 - `F25.name-errors`: an unknown skill name is 404 and a name outside `^[a-z0-9]+(-[a-z0-9]+)*$` is 422 on get, enable/disable, uninstall and refresh.
 - `F25.self-heal`: a skill directory copied into the store by hand is invisible to the single view until the list call discovers it with source `local`; a tracked directory removed by hand is pruned from the metadata by the list call.
 - `F25.sync`: `POST /api/skills/sync` updates the cached public repository from its origin and clears the 60 s public-skills cache, so a skill committed upstream is listed immediately (translated: a local git origin stands in for GitHub).
@@ -507,7 +507,7 @@ Preconditions:
   version.` and `fetch_with_resolution` resolves whatever is checked out.
   From source, a real ref that the cache does not hold yet ends the same way
   when the fetch fails (offline).
-- **Refresh of a vanished source (`F25.refresh-unfetchable`), known bug.**
+- **Refresh of a vanished source (`F25.refresh-unfetchable`).**
   Install from a temporary directory, delete it, refresh.
   ```sh
   mkdir -p "$F/tmp/qa-f25-gone"
@@ -515,16 +515,16 @@ Preconditions:
   control-agent-server api POST /api/skills/install --json '{"source": "'"$F/tmp/qa-f25-gone"'"}' --expect 200
   rm -rf "$F/tmp/qa-f25-gone"
   control-agent-server api POST /api/skills/install --json '{"source": "'"$F/tmp/qa-f25-gone"'"}' --expect 400 --check detail contains 'Failed to fetch'
-  control-agent-server api POST /api/skills/installed/qa-f25-gone/refresh --expect 400,422 --save F25.refresh-unfetchable/refresh  # bug: status eq 500 && response.body.exception contains 'Local extension path does not exist'
+  control-agent-server api POST /api/skills/installed/qa-f25-gone/refresh --expect 400,422 --save F25.refresh-unfetchable/refresh
   control-agent-server api GET /api/skills/installed/qa-f25-gone --expect 200 --check enabled eq true
   ```
   The source cannot be fetched: installing from the vanished path again is
   `400 Failed to fetch skill source` (the positive control), so the refresh
-  route should report a client error too and keep the installed copy. Today it is
-  `500` (`Local extension path does not exist: ...`): `refresh_skill_endpoint`
-  does not catch `ExtensionFetchError`/`SkillValidationError`. The installed
-  copy does survive. A skill discovered by `F25.self-heal` (source `local`)
-  fails the same way.
+  route reports a client error too and keeps the installed copy:
+  `refresh_skill_endpoint` maps `SkillFetchError`/`ExtensionFetchError` to
+  `400` and `SkillValidationError` to `422`, as install does. A skill
+  discovered by `F25.self-heal` (source `local`) has nothing to fetch from and
+  is `400` the same way.
 - **Unknown and invalid names (`F25.name-errors`).** Address a skill that is
   not installed, then a name that breaks the pattern.
   ```sh
