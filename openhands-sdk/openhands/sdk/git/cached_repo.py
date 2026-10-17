@@ -201,6 +201,7 @@ def try_cached_clone_or_update(
     update: bool = True,
     git_helper: GitHelper | None = None,
     lock_timeout: float = DEFAULT_LOCK_TIMEOUT,
+    strict: bool = False,
 ) -> Path | None:
     """Clone or update a git repository in a cache directory.
 
@@ -227,6 +228,9 @@ def try_cached_clone_or_update(
         update: If True and repo exists, fetch and update it. If False, skip fetch.
         git_helper: GitHelper instance for git operations. If None, creates one.
         lock_timeout: Timeout in seconds for acquiring the lock. Default is 5 minutes.
+        strict: If True, an update whose fetch (or checkout of ``ref`` after the
+            fetch) fails returns None instead of the stale cached repository.
+            The cached repository is left on disk either way.
 
     Returns:
         Path to the local repository if successful, None on failure.
@@ -243,7 +247,7 @@ def try_cached_clone_or_update(
 
     try:
         with lock.acquire(timeout=lock_timeout):
-            return _do_clone_or_update(url, repo_path, ref, update, git)
+            return _do_clone_or_update(url, repo_path, ref, update, git, strict)
     except Timeout:
         logger.warning(
             f"Timed out waiting for lock on {repo_path} after {lock_timeout}s"
@@ -263,6 +267,7 @@ def _do_clone_or_update(
     ref: str | None,
     update: bool,
     git: GitHelper,
+    strict: bool = False,
 ) -> Path:
     """Perform the actual clone or update operation (called while holding lock).
 
@@ -272,6 +277,7 @@ def _do_clone_or_update(
         ref: Branch, tag, or commit to checkout.
         update: Whether to update existing repos.
         git: GitHelper instance.
+        strict: Whether a failed update raises instead of keeping the cache.
 
     Returns:
         Path to the repository.
@@ -282,7 +288,7 @@ def _do_clone_or_update(
     if repo_path.exists() and (repo_path / ".git").exists():
         if update:
             logger.debug(f"Updating repository at {repo_path}")
-            _update_repository(repo_path, ref, git)
+            _update_repository(repo_path, ref, git, strict=strict)
         elif ref:
             logger.debug(f"Checking out ref {ref} at {repo_path}")
             _checkout_ref(repo_path, ref, git)
@@ -329,6 +335,7 @@ def _update_repository(
     repo_path: Path,
     ref: str | None,
     git: GitHelper,
+    strict: bool = False,
 ) -> None:
     """Update an existing cached repository to the latest remote state.
 
@@ -354,6 +361,8 @@ def _update_repository(
         ref: Branch, tag, or commit to update to. If None, uses current branch
             or falls back to the remote's default branch.
         git: GitHelper instance.
+        strict: If True, a failed fetch, or a failed checkout of ``ref`` after
+            the fetch, raises ``GitCommandError`` instead of keeping the cache.
     """
     if ref:
         # Optimistically attempt a local checkout before touching the network.
@@ -367,13 +376,19 @@ def _update_repository(
         except GitCommandError:
             pass  # ref not cached locally; fall through to fetch
 
-    # Fetch from origin - if this fails, we still have a usable (stale) cache
-    if not _try_fetch(repo_path, git):
+    # Fetch from origin - if this fails, we still have a usable (stale) cache;
+    # strict callers need to know the update did not happen.
+    if strict:
+        git.fetch(repo_path)
+    elif not _try_fetch(repo_path, git):
         return
 
     # If a specific ref was requested, check it out
     if ref:
-        _try_checkout_and_reset(repo_path, ref, git)
+        if strict:
+            _checkout_ref(repo_path, ref, git)
+        else:
+            _try_checkout_and_reset(repo_path, ref, git)
         return
 
     # No ref specified - update based on current state

@@ -605,18 +605,18 @@ EOF
   ```
   Every refused update leaves the stored title and tags unchanged. The
   unknown-id case is `F04.patch-unknown-id`.
-- **Whitespace-only title (`F04.patch-whitespace-title`), known bug.** On the
-  child conversation, so the bug cannot leak into later bullets.
+- **Whitespace-only title (`F04.patch-whitespace-title`).** On the child
+  conversation, so a regression cannot leak into later bullets.
 
   Requires: `F04.create-parent`
   ```sh
   control-agent-server api PATCH "/api/conversations/$CHILD" --json '{"title": "QA F04 child"}' --check success eq true
-  control-agent-server api PATCH "/api/conversations/$CHILD" --json '{"title": "   "}' --expect 422 --save F04.patch-whitespace-title/patch  # bug: status eq 200 && response.body.success eq true
+  control-agent-server api PATCH "/api/conversations/$CHILD" --json '{"title": "   "}' --expect 422 --save F04.patch-whitespace-title/patch
   control-agent-server api GET "/api/conversations/$CHILD" --check title eq 'QA F04 child'
   ```
-  Expected: 422 (like an empty title) and the title kept. Today `min_length=1`
-  accepts `"   "`, the service stores `title.strip()`, and the title becomes
-  `""` (which also stops autotitle).
+  A whitespace-only title is rejected with 422 (like an empty title) and the
+  stored title is kept; without that, the service would store
+  `title.strip()`, `""`, which also stops autotitle.
 - **PATCH on an unknown id (`F04.patch-unknown-id`), known bug.** The OpenAPI
   document declares 404 for this route; the same id is 404 on GET.
   ```sh

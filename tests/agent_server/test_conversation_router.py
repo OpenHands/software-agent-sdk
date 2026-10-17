@@ -1837,6 +1837,27 @@ def test_update_conversation_invalid_title(
         client.app.dependency_overrides.clear()
 
 
+@pytest.mark.parametrize("title", ["   ", "\t\n"])
+def test_update_conversation_whitespace_only_title_rejected(
+    client, mock_conversation_service, sample_conversation_id, title
+):
+    """A whitespace-only title is rejected like an empty one (422) and the
+    service is never called, so the stored title is kept."""
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.patch(
+            f"/api/conversations/{sample_conversation_id}", json={"title": title}
+        )
+        assert response.status_code == 422
+        mock_conversation_service.update_conversation.assert_not_called()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_generate_title_endpoint_removed_from_openapi(client):
     response = client.get("/openapi.json")
     assert response.status_code == 200

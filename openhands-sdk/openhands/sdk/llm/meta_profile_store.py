@@ -10,7 +10,6 @@ string — credentials/provider settings resolve through that store.
 from __future__ import annotations
 
 import json
-import os
 import re
 import tempfile
 from collections.abc import Iterator
@@ -23,6 +22,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_REGEX
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 _LOCK_TIMEOUT_SECONDS: Final[float] = 30.0
@@ -37,11 +37,10 @@ def default_meta_profile_dir() -> Path:
     persisted state. Honor that for bare ``MetaProfileStore()`` instances so
     runtime tools read the same meta-profiles exposed by the HTTP API. Without
     that env var, keep the standalone SDK default under ``~/.openhands``.
+    Resolved at call time through ``get_user_persistence_dir`` so ``~`` and
+    relative values land where the other stores put their files.
     """
-    env_dir = os.environ.get("OH_PERSISTENCE_DIR")
-    if env_dir:
-        return Path(env_dir) / "meta-profiles"
-    return Path.home() / ".openhands" / "meta-profiles"
+    return get_user_persistence_dir() / "meta-profiles"
 
 
 class MetaProfileLimitExceeded(Exception):

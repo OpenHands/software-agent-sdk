@@ -205,7 +205,7 @@ Preconditions:
   the OpenRouter list has only `openrouter/` ids, although
   `deepseek/deepseek-chat` is also an OpenRouter verified entry; an unknown
   provider gets `{"models": []}`.
-- **No Bedrock ids under a provider (`F23.models-no-bedrock`), known bug.**
+- **No Bedrock ids under a provider (`F23.models-no-bedrock`).**
   The route says Bedrock models are excluded without AWS credentials. Both
   lists are first shown to hold the provider's own ids (positive controls),
   then each is searched for Bedrock ids, which the `assert` prints.
@@ -214,18 +214,15 @@ Preconditions:
     --save F23.models-no-bedrock/deepseek
   control-agent-server api GET /api/llm/models --query provider=anthropic --quiet --check models len-ge 1 --save F23.models-no-bedrock/anthropic
   control-agent-server api GET /api/llm/models --query provider=anthropic --field models | jq -e 'any(.[]; startswith("claude-"))'
-  control-agent-server api GET /api/llm/models --query provider=deepseek --field models | jq -c 'map(select(test("^deepseek\\.")))' | control-agent-server assert --check . len-eq 0  # bug: value len-ge 1 && value contains deepseek.
-  control-agent-server api GET /api/llm/models --query provider=anthropic --field models | jq -c 'map(select(test("^anthropic\\.")))' | control-agent-server assert --check . len-eq 0  # bug: value len-ge 1 && value contains anthropic.claude-
+  control-agent-server api GET /api/llm/models --query provider=deepseek --field models | jq -c 'map(select(test("^deepseek\\.")))' | control-agent-server assert --check . len-eq 0
+  control-agent-server api GET /api/llm/models --query provider=anthropic --field models | jq -c 'map(select(test("^anthropic\\.")))' | control-agent-server assert --check . len-eq 0
   ```
-  Expected: no id in the Bedrock `vendor.model` form under either provider.
-  Today `?provider=deepseek` lists `deepseek.r1-v1:0`, `deepseek.v3-v1:0`
-  and `deepseek.v3.2`, and `?provider=anthropic` about 30
-  `anthropic.claude-...` ids (29 with the installed LiteLLM). LiteLLM files them under `bedrock_converse`, but `get_supported_llm_models`
-  only drops ids that start with `bedrock`, and `_extract_model_and_provider`
-  reads the part before the first `.` as the provider. The unfiltered list
-  carries about 330 such ids (`us.anthropic.*`, `amazon.nova-*`). A picker
-  that offers them under DeepSeek or Anthropic sends a direct-API user to a
-  Bedrock route that needs AWS credentials.
+  No id in the Bedrock `vendor.model` form under either provider:
+  `get_supported_llm_models` drops every id LiteLLM's model-cost map files
+  under a Bedrock provider (`bedrock`, `bedrock_converse`, `bedrock_mantle`),
+  not only `bedrock`-prefixed ids, so `deepseek.r1-v1:0`,
+  `anthropic.claude-...-v1:0`, `us.anthropic.*` and `amazon.nova-*` are
+  absent from every list without AWS credentials.
 - **Verified models (`F23.verified-models`).** The curated short list.
   ```sh
   control-agent-server api GET /api/llm/models/verified --expect 200 --check models.deepseek contains deepseek-chat \
@@ -740,8 +737,8 @@ Preconditions:
   to the two latest versions per model line). Assert membership, ordering
   and filtering, never exact counts or a specific new model.
 - `GET /api/llm/models?provider=` (empty value) is not "no filter": it
-  returns the ids whose provider is not recognized (LiteLLM image sizes,
-  region-prefixed Bedrock ids). A verified bare id (`deepseek-chat`) is
+  returns the ids whose provider is not recognized (for example LiteLLM
+  image sizes). A verified bare id (`deepseek-chat`) is
   attributed to its verified provider; an unknown prefix (`moonshotai/...`)
   to none.
 - `?provider=X` only filters ids the installed LiteLLM knows: a verified

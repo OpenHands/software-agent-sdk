@@ -109,8 +109,8 @@ Routes: none
   auth, `queryParams`, optional reconnect) uses the global `WebSocket` unless
   given `createWebSocket`; `WebSocketCallbackClient` (used by
   `RemoteConversation.startWebSocketClient`) and `BashWebSocketClient`
-  (`/sockets/bash-events`, deprecated `session_api_key` query auth) pick
-  `window.WebSocket` or `require('ws')` when their module loads.
+  (`/sockets/bash-events`, deprecated `session_api_key` query auth) look up
+  `globalThis.WebSocket` on every connect (browsers, Node 22+).
 - Version gate: `HooksClient`, `WorkspacesClient` and `MCPClient` call
   `assertAgentServerSupports` (hooks, workspaces and MCP test need 1.23.0, MCP
   OAuth 1.31.0), which caches one `/server_info` per `HttpClient`.
@@ -561,11 +561,9 @@ Preconditions:
   command resolves. REST serves the command with its `cwd`, the bash socket
   replays both kinds, and after `clearEvents` the history is empty and the
   command is 404.
-- **Bash events socket from Node (`F34.bash-websocket`), known bug.**
-  `BashWebSocketClient` resolves its constructor with `require('ws')` when
-  the module loads, and `require` does not exist in the package's ESM build,
-  so it never opens a socket in Node 22 although `ws` is a dependency and a
-  global `WebSocket` exists (`clients/typescript/src/events/bash-websocket-client.ts:19`).
+- **Bash events socket from Node (`F34.bash-websocket`).**
+  `BashWebSocketClient` opens its socket with Node's global `WebSocket`,
+  looked up at connect time (`clients/typescript/src/events/global-websocket.ts`).
   The bullet runs its own command, and the CLI first replays its output on
   the same socket (positive control); the program then gives the client
   10 seconds and records the outputs and errors it saw.
@@ -591,13 +589,10 @@ Preconditions:
   JS
   control-agent-server exec --timeout 60 --expect-output QA_F34_BASH_WS_DONE --save F34.bash-websocket/program -- node "$F34/bash-ws.mjs"
   cat "$F34/bash-ws.json"
-  control-agent-server assert --json "$F34/bash-ws.json" --check saw_output eq true --check errors len-eq 0  # bug: value.saw_output eq false && value.errors contains 'WebSocket implementation not available'
+  control-agent-server assert --json "$F34/bash-ws.json" --check saw_output eq true --check errors len-eq 0
   ```
   Expected: the replayed `BashOutput` reaches the callback and `onError` is
-  never called. Today `saw_output` is false with no frame, and `errors`
-  holds "Failed to create bash WebSocket connection: WebSocket
-  implementation not available. Install the `ws` package, ..." (once per
-  reconnect attempt).
+  never called.
 - **Workspace session (`F34.workspace-session`).** The cookie mint and its
   base URL; Node's `fetch` keeps no cookie jar, so the URL is fetched with the
   header (F02 proves the cookie itself).
@@ -886,11 +881,10 @@ Preconditions:
   `WebSocket closed with code 4001: Authentication failed`, and a key in the
   URL is refused before connecting. REST shows the second user message and
   `finished`.
-- **Conversation callback socket from Node (`F34.ws-callback-client`), known bug.**
+- **Conversation callback socket from Node (`F34.ws-callback-client`).**
   `WebSocketCallbackClient`, which `RemoteConversation.startWebSocketClient()`
-  uses, resolves its constructor with `require('ws')` at module load, which
-  fails in the ESM build, so in Node it never connects
-  (`clients/typescript/src/events/websocket-client.ts:29`). The server sends
+  uses, connects with Node's global `WebSocket`, looked up at connect time
+  (`clients/typescript/src/events/global-websocket.ts`). The server sends
   a state snapshot to every new subscriber, as the CLI shows first on
   `SCID` (positive control); the program then gives the client 10 seconds
   and records the event kinds and errors it saw.
@@ -914,12 +908,10 @@ Preconditions:
   JS
   control-agent-server exec --timeout 60 --expect-output QA_F34_CALLBACK_DONE --save F34.ws-callback-client/program -- node "$F34/callback.mjs" "$SCID"
   cat "$F34/callback.json"
-  control-agent-server assert --json "$F34/callback.json" --check kinds contains ConversationStateUpdateEvent --check errors len-eq 0  # bug: value.kinds len-eq 0 && value.errors contains 'WebSocket implementation not available'
+  control-agent-server assert --json "$F34/callback.json" --check kinds contains ConversationStateUpdateEvent --check errors len-eq 0
   ```
   Expected: the snapshot reaches the conversation callback and `onError` is
-  never called. Today `kinds` is empty and `errors` holds "WebSocket
-  implementation not available. Install the `ws` package, or run in an
-  environment with a global WebSocket constructor." (once per retry).
+  never called.
 - **Title and confirmation policy (`F34.conversation-controls`).** Two
   mutations, each read back through REST; the policy is restored.
 
@@ -1452,13 +1444,15 @@ Preconditions:
   rebuilt by anything but `npm run build` in `clients/typescript`; a stale
   build silently verifies old client code, which is why `Preconditions:`
   rebuilds whenever `src/` is newer.
-- In Node, only `ConversationEventStream` streams events (it uses the global
-  `WebSocket`, Node 22 or later). `WebSocketCallbackClient`,
-  `RemoteConversation.startWebSocketClient()` and `BashWebSocketClient` look
-  for `window.WebSocket` or `require('ws')` when their module loads; the ESM
-  build has no `require`, so they only report errors through `onError`
-  (`F34.ws-callback-client`, `F34.bash-websocket`). The unit tests pass
-  because vitest provides `require` and a fake `window`.
+- In Node, `ConversationEventStream`, `WebSocketCallbackClient`
+  (`RemoteConversation.startWebSocketClient()`) and `BashWebSocketClient` all
+  use the global `WebSocket` (Node 22 or later), looked up when a socket
+  opens. Only `ConversationEventStream` takes a constructor
+  (`createWebSocket`); on an older Node the callback clients need one
+  assigned to `globalThis.WebSocket`, else they report "WebSocket
+  implementation not available" through `onError`. `WebSocketCallbackClient`
+  reconnects through `ConversationEventStream`, so the refused-handshake
+  gotcha below applies to it too.
 - Node 22's global `WebSocket` (undici 6) fires `error` but no `close` when
   a handshake is refused, so a `ConversationEventStream` on it stops
   retrying after the first refused reconnect attempt (a server restart
@@ -1478,11 +1472,11 @@ Preconditions:
   `state.refresh()` when waiting for a status.
 - `executeCommand` always reports `timeout_occurred: false`; a command killed
   by its own timeout shows exit `-1` (the server sends no timeout marker), and
-  `exit_code` defaults to 0 when the server sends none. The HTTP request
+  `exit_code` is -1 when the server sends none. The HTTP request
   waits `timeout + 10` seconds.
-- `executeCommand` returns only the last `BashOutput` chunk; output beyond
-  1 MiB is split into several chunks server-side, and only `bash.searchEvents`
-  sees all of them.
+- `executeCommand` returns the server's joined output: output beyond 1 MiB
+  is stored as several chunks server-side (`bash.searchEvents` lists them),
+  and `execute_bash_command` concatenates them (`F13.execute-large-output`).
 - `RemoteWorkspace.fileDownload`, `downloadAsBlob` and `downloadAsText`
   decode the body as text (`F34.workspace-binary-download`); use
   `FileClient.downloadFile` for bytes.
