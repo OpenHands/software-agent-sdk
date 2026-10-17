@@ -16,7 +16,7 @@ from urllib.parse import quote, unquote
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import UploadFile
+from fastapi import Request, UploadFile
 from fastapi.testclient import TestClient
 
 from openhands.agent_server import (
@@ -862,6 +862,85 @@ def test_deferred_init_trajectory_downloads_follow_init_conversations_path(tmp_p
     finally:
         cs_mod._conversation_service = None
         bash_mod._bash_event_service = None
+
+
+def _app_request(client) -> Request:
+    """A bare request whose ``app`` carries the client's live config."""
+    return Request({"type": "http", "app": client.app})
+
+
+async def test_download_trajectory_repeat_survives_previous_cleanup(
+    client, monkeypatch, tmp_path
+):
+    """A download's cleanup must not delete the zip a later download built.
+
+    On a keep-alive connection uvicorn starts the next request once the first
+    body is sent, before the first response's background cleanup runs.
+    """
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    conversations_path = conversation_dir.parent
+
+    first = await file_router_module.download_trajectory(
+        conversation_id, _app_request(client)
+    )
+    second = await file_router_module.download_trajectory(
+        conversation_id, _app_request(client)
+    )
+    assert first.background is not None and second.background is not None
+    await first.background()
+
+    with zipfile.ZipFile(second.path) as archive:
+        assert f"{conversation_id.hex}/base_state.json" in archive.namelist()
+    await second.background()
+    assert list(conversations_path.glob("*.zip")) == []
+
+
+async def test_download_trajectory_concurrent_downloads_use_own_files(
+    client, monkeypatch, tmp_path
+):
+    """Concurrent downloads each get their own complete zip, all cleaned up."""
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+    conversations_path = conversation_dir.parent
+
+    responses = await asyncio.gather(
+        *(
+            file_router_module.download_trajectory(
+                conversation_id, _app_request(client)
+            )
+            for _ in range(6)
+        )
+    )
+
+    assert len({response.path for response in responses}) == 6
+    for response in responses:
+        assert response.headers["content-disposition"] == (
+            f'attachment; filename="{conversation_id.hex}.zip"'
+        )
+        with zipfile.ZipFile(response.path) as archive:
+            assert archive.testzip() is None
+            assert f"{conversation_id.hex}/base_state.json" in archive.namelist()
+    for response in responses:
+        assert response.background is not None
+        await response.background()
+    assert list(conversations_path.glob("*.zip")) == []
+
+
+async def test_download_trajectory_removes_temp_zip_when_zipping_fails(
+    client, monkeypatch, tmp_path
+):
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
+
+    def fail(source_dir, output_path):
+        output_path.write_bytes(b"partial")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(file_router_module, "_create_zip_from_directory", fail)
+
+    with pytest.raises(OSError, match="disk full"):
+        await file_router_module.download_trajectory(
+            conversation_id, _app_request(client)
+        )
+    assert list(conversation_dir.parent.glob("*.zip")) == []
 
 
 def test_download_file_with_special_characters_in_path(client, tmp_path):

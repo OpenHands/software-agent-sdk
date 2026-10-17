@@ -945,7 +945,6 @@ async def download_trajectory(
 ) -> FileResponse:
     """Download a zip archive of a conversation trajectory."""
     config: Config = request.app.state.config
-    temp_file = config.conversations_path / f"{conversation_id.hex}.zip"
     conversation_dir = config.conversations_path / conversation_id.hex
 
     if not conversation_dir.is_dir():
@@ -954,12 +953,24 @@ async def download_trajectory(
             detail="Conversation not found",
         )
 
-    await asyncio.to_thread(_create_zip_from_directory, conversation_dir, temp_file)
+    # Each request gets its own temp zip: a shared path would let one
+    # response's cleanup, or another request's rewrite, break a download of
+    # the same trajectory that is still being built or streamed.
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{conversation_id.hex}-", suffix=".zip", dir=config.conversations_path
+    )
+    os.close(fd)
+    temp_file = Path(tmp_name)
+    try:
+        await asyncio.to_thread(_create_zip_from_directory, conversation_dir, temp_file)
+    except BaseException:
+        temp_file.unlink(missing_ok=True)
+        raise
     return FileResponse(
         path=temp_file,
-        filename=temp_file.name,
+        filename=f"{conversation_id.hex}.zip",
         media_type="application/octet-stream",
-        background=BackgroundTask(temp_file.unlink),
+        background=BackgroundTask(temp_file.unlink, missing_ok=True),
     )
 
 
