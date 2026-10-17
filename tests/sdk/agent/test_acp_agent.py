@@ -8768,6 +8768,95 @@ class TestMcpConfigToAcpServers:
             ("Authorization", "Bearer token-y")
         ]
 
+    def test_oauth_access_token_maps_to_bearer_header(self):
+        from acp.schema import HttpMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "linear": {
+                    "url": "https://mcp.linear.app/mcp",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {
+                            "tokens": {"access_token": "oauth-access-token"},
+                            "token_expires_at": 4102444800.0,
+                        },
+                    },
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
+        assert len(out) == 1
+        assert isinstance(out[0], HttpMcpServer)
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("Authorization", "Bearer oauth-access-token")
+        ]
+
+    def test_oauth_access_token_keeps_static_headers(self):
+        cfg = {
+            "mcpServers": {
+                "linear": {
+                    "url": "https://mcp.linear.app/mcp",
+                    "headers": {"X-Client": "canvas"},
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {"tokens": {"access_token": "oauth-access-token"}},
+                    },
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("X-Client", "canvas"),
+            ("Authorization", "Bearer oauth-access-token"),
+        ]
+
+    def test_oauth_without_stored_token_omits_authorization_header(self):
+        from acp.schema import HttpMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "granola": {
+                    "url": "https://mcp.granola.ai/mcp",
+                    "auth": {"strategy": "oauth2"},
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
+        assert len(out) == 1
+        assert isinstance(out[0], HttpMcpServer)
+        assert out[0].headers == []
+
+    def test_oauth_access_token_maps_to_bearer_header_for_sse(self):
+        from acp.schema import SseMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "linear": {
+                    "url": "https://mcp.linear.app/sse",
+                    "transport": "sse",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {"tokens": {"access_token": "oauth-access-token"}},
+                    },
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=True)
+        )
+        assert len(out) == 1
+        assert isinstance(out[0], SseMcpServer)
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("Authorization", "Bearer oauth-access-token")
+        ]
+
     def test_http_header_auth_forwards_authorization_header(self):
         cfg = {
             "mcpServers": {
