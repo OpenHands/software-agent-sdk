@@ -151,6 +151,14 @@ describe('ACP provider credential descriptors', () => {
       );
       expect(forwarded).toEqual(settings);
     });
+
+    it('keeps the startup timeout that bounds a model switch when the prompt timeout is 0', () => {
+      const settings = { acp_prompt_timeout: 0, acp_startup_timeout: 30 };
+      const forwarded = Object.fromEntries(
+        Object.entries(settings).filter(([key]) => ACP_SETTINGS_KEYS.includes(key))
+      );
+      expect(forwarded).toEqual(settings);
+    });
   });
 
   describe('getAcpProvider', () => {

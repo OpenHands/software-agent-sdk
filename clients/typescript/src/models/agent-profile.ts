@@ -84,6 +84,7 @@ export interface ACPAgentProfile extends AgentProfileBase {
   acp_model: string | null;
   acp_session_mode: string | null;
   acp_prompt_timeout: number;
+  acp_startup_timeout: number;
   acp_command: string | null;
   acp_args: string[] | null;
 }

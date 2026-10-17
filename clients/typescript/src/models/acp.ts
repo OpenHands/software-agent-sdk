@@ -167,6 +167,7 @@ export const ACP_SETTINGS_KEYS: readonly string[] = [
   'acp_model',
   'acp_session_mode',
   'acp_prompt_timeout',
+  'acp_startup_timeout',
   'acp_server',
   'acp_isolate_data_dir',
 ];

@@ -2075,6 +2075,14 @@ def test_acp_custom_server_requires_explicit_command() -> None:
         raise AssertionError("expected ValueError")
 
 
+def test_acp_prompt_timeout_zero_reaches_agent_and_negative_is_rejected() -> None:
+    agent = ACPAgentSettings(acp_server="codex", acp_prompt_timeout=0).create_agent()
+    assert agent.acp_prompt_timeout == 0
+
+    with pytest.raises(ValidationError):
+        ACPAgentSettings(acp_server="codex", acp_prompt_timeout=-1)
+
+
 def test_acp_create_agent_forwards_isolate_data_dir() -> None:
     """``acp_isolate_data_dir`` propagates from settings to the built agent.
 

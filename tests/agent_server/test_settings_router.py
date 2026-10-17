@@ -769,6 +769,25 @@ def test_patch_settings_active_profile_leaves_acp_settings_without_llm(
     assert "llm" not in body["agent_settings"]
 
 
+def test_patch_settings_persists_zero_acp_prompt_timeout(
+    client_with_settings, temp_persistence_dir, secret_key
+):
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"agent_kind": "acp", "acp_prompt_timeout": 0}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["agent_settings"]["acp_prompt_timeout"] == 0
+    store = FileSettingsStore(
+        persistence_dir=temp_persistence_dir, cipher=Cipher(secret_key)
+    )
+    loaded = store.load()
+    assert loaded is not None
+    assert isinstance(loaded.agent_settings, ACPAgentSettings)
+    assert loaded.agent_settings.acp_prompt_timeout == 0
+
+
 def test_patch_settings_active_profile_applies_llm_when_switching_to_openhands(
     client_with_settings,
 ):

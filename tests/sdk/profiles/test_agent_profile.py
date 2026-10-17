@@ -210,6 +210,19 @@ def test_acp_profile_round_trips() -> None:
     assert reloaded.mcp_server_refs is None
 
 
+def test_acp_profile_prompt_timeout_accepts_zero_and_rejects_negative() -> None:
+    profile = validate_agent_profile(
+        {"agent_kind": "acp", "name": "acp", "acp_prompt_timeout": 0}
+    )
+    assert isinstance(profile, ACPAgentProfile)
+    assert profile.acp_prompt_timeout == 0
+
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            {"agent_kind": "acp", "name": "acp", "acp_prompt_timeout": -1}
+        )
+
+
 def test_acp_profile_minimal_defaults() -> None:
     profile = validate_agent_profile({"agent_kind": "acp", "name": "minimal"})
 

@@ -338,10 +338,10 @@ class ACPAgentProfile(AgentProfileBase):
     )
     acp_prompt_timeout: float = Field(
         default=1800.0,
-        gt=0,
+        ge=0,
         description=(
             "Inactivity timeout (seconds) for a single ACP prompt() round-trip; "
-            "resets on every update from the server."
+            "resets on every update from the server. 0 disables the deadline."
         ),
     )
     acp_startup_timeout: float = Field(

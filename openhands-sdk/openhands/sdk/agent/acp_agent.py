@@ -1768,7 +1768,15 @@ class ACPAgent(AgentBase):
             "agent runs as long as it keeps making progress; the prompt is "
             "only aborted after this many seconds with no activity at all. "
             "Prevents indefinite hangs when the ACP server stops responding "
-            "without killing legitimately long-running work."
+            "without killing legitimately long-running work. 0 disables the "
+            "idle deadline: the prompt is awaited until the ACP server answers "
+            "or the turn is cancelled, however long it stays silent. A "
+            "synchronous run() cannot be interrupted during that wait, since "
+            "interrupt() falls back to pause(), which waits for the step to "
+            "end; pair 0 with arun(), whose task interrupt() cancels, or with "
+            "external supervision of the ACP process. Also bounds a runtime "
+            "model switch, which falls back to acp_startup_timeout when this "
+            "is 0."
         ),
     )
     acp_startup_timeout: float = Field(
@@ -3657,9 +3665,14 @@ class ACPAgent(AgentBase):
                 )
         return response
 
+    def _idle_timeout_label(self) -> str:
+        if self.acp_prompt_timeout == 0:
+            return "disabled"
+        return f"{self.acp_prompt_timeout:.0f}s"
+
     def _idle_timeout_message(self) -> str:
         return (
-            f"ACP prompt timed out after {self.acp_prompt_timeout:.0f}s "
+            f"ACP prompt timed out after {self._idle_timeout_label()} "
             "with no activity from the ACP server"
         )
 
@@ -3677,7 +3690,8 @@ class ACPAgent(AgentBase):
         progressing agent runs as long as it keeps making progress while a
         genuinely silent (hung) server is still cut off after the idle window.
         This is what keeps long-running ACP commands alive (issue
-        agent-canvas#1245).
+        agent-canvas#1245). ``acp_prompt_timeout=0`` removes the cut-off:
+        the prompt is awaited until it finishes, with the same cleanup below.
 
         ``asyncio.wait`` (not ``wait_for``) drives the polling so an idle-check
         slice elapsing never cancels the underlying prompt — only a true idle
@@ -3689,6 +3703,9 @@ class ACPAgent(AgentBase):
         idle_limit = self.acp_prompt_timeout
         fut = asyncio.ensure_future(awaitable)
         try:
+            if idle_limit == 0:
+                await asyncio.wait({fut})
+                return fut.result()
             while True:
                 remaining = idle_limit - self._client.seconds_since_last_activity()
                 if remaining <= 0:
@@ -3820,10 +3837,10 @@ class ACPAgent(AgentBase):
         """Error path when ``conn.prompt`` went idle past ``acp_prompt_timeout``."""
         logger.error(
             "ACP prompt timed out after %.1fs with no activity for the last "
-            "%.0fs. The ACP server may have stalled or failed to send the "
+            "%s. The ACP server may have stalled or failed to send the "
             "JSON-RPC response. Accumulated %d text chunks, %d tool calls.",
             elapsed,
-            self.acp_prompt_timeout,
+            self._idle_timeout_label(),
             len(self._client.accumulated_text),
             len(self._client.accumulated_tool_calls),
         )
@@ -3833,7 +3850,7 @@ class ACPAgent(AgentBase):
                 TextContent(
                     text=(
                         "ACP prompt timed out after "
-                        f"{self.acp_prompt_timeout:.0f}s with no activity from "
+                        f"{self._idle_timeout_label()} with no activity from "
                         "the agent. The agent may have stalled, or it may have "
                         "completed its work but the response was not received."
                     )
@@ -4006,8 +4023,8 @@ class ACPAgent(AgentBase):
         t0 = time.monotonic()
         try:
             logger.info(
-                "Sending ACP prompt (idle_timeout=%.0fs, blocks=%d)",
-                self.acp_prompt_timeout,
+                "Sending ACP prompt (idle_timeout=%s, blocks=%d)",
+                self._idle_timeout_label(),
                 len(prompt_blocks),
             )
             response: PromptResponse | None = None
@@ -4185,8 +4202,8 @@ class ACPAgent(AgentBase):
         prompt_future: Future[PromptResponse | None] | None = None
         try:
             logger.info(
-                "Sending ACP prompt (idle_timeout=%.0fs, blocks=%d, async)",
-                self.acp_prompt_timeout,
+                "Sending ACP prompt (idle_timeout=%s, blocks=%d, async)",
+                self._idle_timeout_label(),
                 len(prompt_blocks),
             )
             portal = self._executor.portal
@@ -4449,7 +4466,8 @@ class ACPAgent(AgentBase):
             RuntimeError: If the ACP session has not been initialized yet
                 (i.e. before the first ``run()``).
             TimeoutError: If the server does not answer within
-                ``acp_prompt_timeout`` seconds.
+                ``acp_prompt_timeout`` seconds (``acp_startup_timeout`` when
+                ``acp_prompt_timeout`` is 0).
 
         Note:
             A timeout means the client stopped waiting, not that the switch was
@@ -4502,7 +4520,11 @@ class ACPAgent(AgentBase):
                     agent_name=self._agent_name,
                     via_config_option=self._model_via_config_option,
                 ),
-                timeout=self.acp_prompt_timeout,
+                timeout=(
+                    self.acp_startup_timeout
+                    if self.acp_prompt_timeout == 0
+                    else self.acp_prompt_timeout
+                ),
             )
         except ACPRequestError as e:
             # Server-internal failures (JSON-RPC -32603) are not the caller's

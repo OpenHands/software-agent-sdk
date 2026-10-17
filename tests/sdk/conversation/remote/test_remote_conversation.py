@@ -1,5 +1,6 @@
 """Tests for RemoteConversation."""
 
+import copy
 import time
 import uuid
 from unittest.mock import Mock, patch
@@ -383,6 +384,40 @@ class TestRemoteConversation:
             and c.kwargs["json"] == {"title": "Scheduled run"}
             for c in client.request.call_args_list
         )
+        conversation.close()
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_create_sends_disabled_acp_prompt_timeout(self, mock_ws_client):
+        cid = uuid.uuid4()
+        agent = ACPAgent(acp_command=["echo", "test"], acp_prompt_timeout=0)
+        client = self.setup_mock_client(str(cid))
+        original = client.request.side_effect
+        sent: dict = {}
+
+        def respond(method, url, **kwargs):
+            response = original(method, url, **kwargs)
+            if method == "POST" and url == "/api/conversations":
+                sent.update(copy.deepcopy(kwargs["json"]))
+                response.json.return_value["agent"] = kwargs["json"]["agent"]
+                response.json.return_value["max_iterations"] = 500
+            return response
+
+        client.request.side_effect = respond
+        conversation = RemoteConversation.create(
+            workspace=self.workspace,
+            request=StartConversationRequest(
+                workspace=LocalWorkspace(working_dir=self.workspace.working_dir),
+                conversation_id=cid,
+                agent=agent,
+            ),
+            visualizer=None,
+        )
+        assert sent["agent"]["acp_prompt_timeout"] == 0
+        parsed = StartConversationRequest.model_validate(sent)
+        assert isinstance(parsed.agent, ACPAgent)
+        assert parsed.agent.acp_prompt_timeout == 0
         conversation.close()
 
     @pytest.mark.parametrize("status", [403, 404])

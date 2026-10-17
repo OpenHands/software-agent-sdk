@@ -1818,6 +1818,46 @@ class TestACPPromptIdleTimeout:
                 _active_then_silent(), cancel_on_exit=True
             )
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("acp_prompt_timeout", [0.05, 0])
+    async def test_zero_disables_idle_deadline(self, acp_prompt_timeout: float):
+        """A silent prompt outlasting a small window only times out if one is set."""
+        agent = _make_agent(acp_prompt_timeout=acp_prompt_timeout)
+        client = _OpenHandsACPBridge()
+        agent._client = client
+        client.arm_activity_clock()
+
+        sentinel = object()
+
+        async def _silent_prompt() -> Any:
+            await asyncio.sleep(0.3)
+            return sentinel
+
+        awaited = agent._await_with_idle_deadline(_silent_prompt(), cancel_on_exit=True)
+        if acp_prompt_timeout == 0:
+            assert await awaited is sentinel
+        else:
+            with pytest.raises(TimeoutError, match="no activity"):
+                await awaited
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cancel_on_exit", [True, False])
+    async def test_zero_cancellation_honours_cancel_on_exit(self, cancel_on_exit: bool):
+        """Cancelling the waiter only cancels the prompt it owns."""
+        agent = _make_agent(acp_prompt_timeout=0)
+        agent._client = _OpenHandsACPBridge()
+
+        prompt: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        waiter = asyncio.create_task(
+            agent._await_with_idle_deadline(prompt, cancel_on_exit=cancel_on_exit)
+        )
+        await asyncio.sleep(0.05)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+
+        assert prompt.cancelled() is cancel_on_exit
+
 
 # ---------------------------------------------------------------------------
 # step
@@ -5926,6 +5966,15 @@ class TestSetACPModel:
         agent.set_acp_model("gpt-5.5")
         _, kwargs = agent._executor.run_async.call_args
         assert kwargs["timeout"] == 42.0
+
+    def test_disabled_prompt_timeout_still_bounds_the_switch(self):
+        agent = self._wire(
+            _make_agent(acp_prompt_timeout=0, acp_startup_timeout=7.0),
+            "codex-acp",
+        )
+        agent.set_acp_model("gpt-5.5")
+        _, kwargs = agent._executor.run_async.call_args
+        assert kwargs["timeout"] == 7.0
 
 
 # ---------------------------------------------------------------------------

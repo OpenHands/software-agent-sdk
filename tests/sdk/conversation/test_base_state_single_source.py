@@ -13,6 +13,7 @@ import uuid
 import pytest
 
 from openhands.sdk import LLM, Agent
+from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.io import LocalFileStore
 from openhands.sdk.workspace import LocalWorkspace
@@ -46,6 +47,26 @@ def test_resume_with_agent_none_keeps_persisted_agent(tmp_path):
         file_store=LocalFileStore(str(tmp_path)),
     )
     assert reloaded.agent.llm.model == "model-b"
+
+
+def test_resume_with_agent_none_keeps_disabled_acp_prompt_timeout(tmp_path):
+    workspace = LocalWorkspace(working_dir=str(tmp_path))
+    cid = uuid.uuid4()
+    ConversationState.create(
+        id=cid,
+        agent=ACPAgent(acp_command=["echo", "test"], acp_prompt_timeout=0),
+        workspace=workspace,
+        file_store=LocalFileStore(str(tmp_path)),
+    )
+
+    reloaded = ConversationState.create(
+        id=cid,
+        agent=None,
+        workspace=workspace,
+        file_store=LocalFileStore(str(tmp_path)),
+    )
+    assert isinstance(reloaded.agent, ACPAgent)
+    assert reloaded.agent.acp_prompt_timeout == 0
 
 
 def test_resume_with_explicit_agent_overrides(tmp_path):

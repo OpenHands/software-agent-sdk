@@ -38,6 +38,7 @@ const acpBase: ACPAgentProfile = {
   acp_model: 'claude-sonnet-4-6',
   acp_session_mode: null,
   acp_prompt_timeout: 1800,
+  acp_startup_timeout: 90,
   acp_command: null,
   acp_args: null,
   mcp_server_refs: null,

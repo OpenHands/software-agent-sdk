@@ -1786,7 +1786,8 @@ class LocalConversation(BaseConversation):
                 or (for a live switch) the provider does not support runtime
                 model switching, or the ACP server rejects the switch.
             TimeoutError: If a live switch's ``session/set_model`` round-trip
-                exceeds ``acp_prompt_timeout`` seconds.
+                exceeds ``acp_prompt_timeout`` seconds (``acp_startup_timeout``
+                when ``acp_prompt_timeout`` is 0).
         """
         if not isinstance(self.agent, ACPAgent):
             raise ValueError(
