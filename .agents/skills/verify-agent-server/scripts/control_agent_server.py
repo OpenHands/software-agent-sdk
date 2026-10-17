@@ -65,11 +65,13 @@ FERNET_TOKEN = re.compile(r"gAAAAA[A-Za-z0-9_\-]{40,}={0,2}")
 # Environment forwarded from the caller into a launched server. Everything
 # else (LLM keys, OH_* overrides, cloud tokens) stays out unless passed with
 # --env or --pass-env, so a run never inherits a developer's configuration.
+# PLAYWRIGHT_BROWSERS_PATH stays out too: the server's browser probe reads it,
+# and the browser recipes decide where the server finds Chromium.
 FORWARDED_ENV = re.compile(
     r"^(PATH|LANG|LC_[A-Z]+|TZ|TERM|SHELL|USER|LOGNAME|TMPDIR"
     r"|(HTTP|HTTPS|NO|ALL)_PROXY|(http|https|no|all)_proxy"
     r"|SSL_CERT_FILE|SSL_CERT_DIR|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE"
-    r"|NODE_EXTRA_CA_CERTS|PLAYWRIGHT_BROWSERS_PATH|DOCKER_HOST|UV_[A-Z_]+)$"
+    r"|NODE_EXTRA_CA_CERTS|DOCKER_HOST|UV_[A-Z_]+)$"
 )
 
 
