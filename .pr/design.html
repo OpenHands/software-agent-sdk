@@ -1,0 +1,132 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Canonical settings schema</title>
+<style>
+  :root{
+    --fg:#1a1a1a; --muted:#5a5a5a; --subtle:#8a8a82;
+    --bg:#fdfdfb; --card:#ffffff; --elevated:#f7f6f1;
+    --accent:#2b4eaa; --accent-soft:#e6ecfa;
+    --rule:#e2e2dc; --rule-strong:#bdbcb4;
+    --code-bg:#f3f1ec; --warn:#b25b0e; --ok:#2f7a3a; --crit:#a02020;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box} html,body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans)}
+  body{line-height:1.6;font-size:16px}
+  .wrap{display:grid;grid-template-columns:240px minmax(0,1fr);gap:48px;max-width:1180px;margin:0 auto;padding:32px 28px 96px}
+  nav.toc{position:sticky;top:24px;align-self:start;font-size:13px}
+  nav.toc h2{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+  nav.toc ol{list-style:none;padding:0;margin:0;counter-reset:toc}
+  nav.toc li{counter-increment:toc;margin:4px 0}
+  nav.toc li::before{content:counter(toc) ". ";color:var(--muted)}
+  nav.toc a{color:var(--fg);text-decoration:none} nav.toc a:hover{color:var(--accent)}
+  header.title{border-bottom:1px solid var(--rule);padding-bottom:22px;margin-bottom:28px}
+  header.title .eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:700}
+  header.title h1{font-size:34px;margin:6px 0 4px;letter-spacing:-.01em}
+  header.title .sub{color:var(--muted);max-width:740px}
+  h2{font-size:22px;margin:44px 0 10px} h2 .num{color:var(--muted);font-weight:500;margin-right:8px}
+  h3{font-size:16px;margin:22px 0 8px}
+  code{font-family:var(--mono);font-size:.88em;background:var(--code-bg);padding:1px 5px;border-radius:3px}
+  table{border-collapse:collapse;width:100%;font-size:14px;margin:12px 0}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--rule);vertical-align:top}
+  th{font-weight:600;background:var(--code-bg)}
+  .callout{border-left:3px solid var(--accent);background:var(--accent-soft);padding:10px 14px;margin:14px 0;border-radius:0 4px 4px 0;font-size:14.5px}
+  .callout.warn{border-color:var(--warn);background:#fbf1e6}
+  .fig{margin:18px 0 22px}
+  .fig svg{display:block;max-width:100%;height:auto;background:#fff;border:1px solid var(--rule);border-radius:6px}
+  .fig figcaption{font-size:13px;color:var(--muted);margin-top:6px;text-align:center}
+  a.src{font-family:var(--mono);font-size:12px;color:var(--accent);text-decoration:none;border-bottom:1px dotted var(--accent)}
+  .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.04em;padding:1px 6px;border-radius:99px;background:var(--elevated);color:var(--muted)}
+  @media(max-width:760px){.wrap{grid-template-columns:1fr}}
+</style></head><body>
+<div class="wrap">
+  <nav class="toc"><h2>Contents</h2><ol>
+    <li><a href="#what">What changed</a></li>
+    <li><a href="#api">API before / after</a></li>
+    <li><a href="#files">Files</a></li>
+    <li><a href="#condenser">Condenser variants</a></li>
+    <li><a href="#risk">Out of scope</a></li>
+  </ol></nav>
+  <main>
+    <header class="title">
+      <div class="eyebrow">Draft · SDK settings schema · #5535</div>
+      <h1>One annotated model, one structural schema</h1>
+      <p class="sub"><code>export_settings_schema()</code> still returns <code>SettingsSchema</code> for <code>GET /api/settings/agent-schema</code>. Type, default, choices, secret-ness, and numeric bounds now come from Pydantic JSON Schema. Labels, prominence, and dependencies stay on the field annotations.</p>
+    </header>
+
+    <section id="what">
+      <h2><span class="num">1</span>What changed</h2>
+      <div class="callout">★ Additive response fields only. Existing keys, section grouping, and the decision to keep <code>condenser_kind</code> visible are unchanged. <code>minimum</code> / <code>applies_to</code> / <code>variant_selector</code> are new optional fields on <a class="src" href="https://github.com/MdTanwer/software-agent-sdk/blob/2a14ccc3051aae7a4cb867b63599e3cf409ff70c/openhands-sdk/openhands/sdk/settings/model.py#L140">SettingsFieldSchema</a>.</div>
+      <figure class="fig">
+        <svg viewBox="0 0 880 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Before and after schema derivation">
+          <style>
+            .box{fill:#f7f6f1;stroke:#bdbcb4}
+            .new{fill:#fff4e8;stroke:#b25b0e}
+            .t{font:13px Inter,Helvetica,sans-serif;fill:#1a1a1a}
+            .s{font:11px ui-monospace,Menlo,monospace;fill:#5a5a5a}
+            .h{font:12px Inter,Helvetica,sans-serif;font-weight:700;fill:#2b4eaa}
+          </style>
+          <text class="h" x="20" y="24">Before</text>
+          <rect class="box" x="20" y="40" width="250" height="70" rx="6"/>
+          <text class="t" x="34" y="68">Pydantic field annotation</text>
+          <text class="s" x="34" y="90">_infer_value_type · _extract_choices</text>
+          <rect class="box" x="20" y="140" width="250" height="70" rx="6"/>
+          <text class="t" x="34" y="168">SettingsFieldMetadata</text>
+          <text class="s" x="34" y="190">label · prominence · depends_on</text>
+          <text class="t" x="290" y="128">→</text>
+          <rect class="box" x="320" y="90" width="120" height="56" rx="6"/>
+          <text class="t" x="334" y="122">SettingsSchema</text>
+          <text class="h" x="500" y="24">After</text>
+          <rect class="new" x="500" y="40" width="250" height="70" rx="6"/>
+          <text class="t" x="514" y="68">model_json_schema()</text>
+          <text class="s" x="514" y="90">structural_facts()</text>
+          <rect class="box" x="500" y="140" width="250" height="70" rx="6"/>
+          <text class="t" x="514" y="168">openhands_settings annotation</text>
+          <text class="s" x="514" y="190">presentation keys only</text>
+          <text class="t" x="770" y="128">→</text>
+          <rect class="new" x="790" y="90" width="70" height="56" rx="6"/>
+          <text class="s" x="804" y="122">same</text>
+        </svg>
+        <figcaption>Structural facts move onto JSON Schema. Presentation annotations stay beside the model.</figcaption>
+      </figure>
+      <p>Before: <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/aae9c437f029d45d7a64924285015d3da87ade94/openhands-sdk/openhands/sdk/settings/model.py#L2451">_infer_value_type</a> and <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/aae9c437f029d45d7a64924285015d3da87ade94/openhands-sdk/openhands/sdk/settings/model.py#L2522">_extract_choices</a> re-walked typing. After: <a class="src" href="https://github.com/MdTanwer/software-agent-sdk/blob/2a14ccc3051aae7a4cb867b63599e3cf409ff70c/openhands-sdk/openhands/sdk/settings/canonical_schema.py#L42">structural_facts</a> reads the property, and <a class="src" href="https://github.com/MdTanwer/software-agent-sdk/blob/2a14ccc3051aae7a4cb867b63599e3cf409ff70c/openhands-sdk/openhands/sdk/settings/model.py#L2387">export_settings_schema</a> still owns sections.</p>
+    </section>
+
+    <section id="api">
+      <h2><span class="num">2</span>API before / after</h2>
+      <p>Compatibility: additive. Clients that ignore unknown <code>SettingsFieldSchema</code> keys keep working. <code>default_factory</code> values are not emitted by JSON Schema, so the exporter still fills those from the normalized factory result.</p>
+      <table>
+        <tr><th></th><th>Before</th><th>After</th></tr>
+        <tr><td>value_type, choices, secret, default</td><td>annotation walk</td><td>JSON Schema <code>type</code> / <code>enum</code> / <code>const</code> / <code>format: password</code> / <code>default</code></td></tr>
+        <tr><td>numeric bounds</td><td>not exported</td><td><code>minimum</code>, <code>exclusive_minimum</code>, <code>maximum</code>, <code>exclusive_maximum</code>, <code>min_length</code>, <code>max_length</code></td></tr>
+        <tr><td>condenser variants</td><td>merged choices only</td><td><code>applies_to</code> and <code>variant_selector</code></td></tr>
+        <tr><td>label, prominence, depends_on, variant</td><td>annotation</td><td>unchanged annotation</td></tr>
+      </table>
+    </section>
+
+    <section id="files">
+      <h2><span class="num">3</span>Files</h2>
+      <table>
+        <tr><th>File</th><th></th><th>Role</th></tr>
+        <tr><td><code>settings/canonical_schema.py</code></td><td><span class="tag">added</span></td><td>Read structural facts from JSON Schema.</td></tr>
+        <tr><td><code>settings/model.py</code></td><td><span class="tag">changed</span></td><td>Exporter uses those facts. Annotation walkers for type and choices are gone.</td></tr>
+        <tr><td><code>tests/sdk/test_settings_canonical_schema.py</code></td><td><span class="tag">added</span></td><td>Constraints, condenser membership, presentation-key purity.</td></tr>
+      </table>
+    </section>
+
+    <section id="condenser">
+      <h2><span class="num">4</span>Condenser variants</h2>
+      <p><code>condenser_kind</code> stays a visible selector (<code>variant_selector: true</code>, choices <code>llm_summarizing</code> and <code>no_op</code>). <code>max_size</code> applies only to <code>llm_summarizing</code>. <code>NoOpCondenserSettings.max_size</code> is a <code>ClassVar</code> and is absent from that model's JSON Schema, so it is not exported. A persisted condenser payload with no <code>condenser_kind</code> still validates as <code>llm_summarizing</code>; this change does not touch that discriminator.</p>
+      <div class="callout warn">This draft does not decide whether Agent Canvas should hide condenser selection. That product choice stays with #5495 / #5531. The frontend rewrite that consumes these constraints is OpenHands/OpenHands#18049.</div>
+    </section>
+
+    <section id="risk">
+      <h2><span class="num">5</span>Out of scope</h2>
+      <ul>
+        <li>Rewriting Agent Canvas onto raw JSON Schema.</li>
+        <li>Persisted settings shape, <code>schema_version</code>, or the API discriminator contract.</li>
+        <li>Regenerating the pinned TypeScript OpenAPI snapshot. New response fields are optional and appear on the live schema endpoint.</li>
+      </ul>
+    </section>
+  </main>
+</div></body></html>
