@@ -636,9 +636,13 @@ class BashEventBase(DiscriminatedUnionMixin, ABC):
 class ExecuteBashRequest(BaseModel):
     command: str = Field(description="The bash command to execute")
     cwd: str | None = Field(default=None, description="The current working directory")
-    timeout: int = Field(
+    timeout: int | None = Field(
         default=300,
-        description="The max number of seconds a command may be permitted to run.",
+        description=(
+            "The max number of seconds a command may be permitted to run. "
+            "None lets the command run until it exits or is stopped through "
+            "the bash_commands/{command_id}/stop route."
+        ),
     )
 
 

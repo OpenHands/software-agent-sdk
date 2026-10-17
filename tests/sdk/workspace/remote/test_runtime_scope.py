@@ -153,3 +153,36 @@ def test_rejects_missing_runtime_credential(payload):
             )
             with pytest.raises(ValueError, match="empty session credential"):
                 workspace.get_runtime_session_key()
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.asyncio
+async def test_execute_command_rejects_none_timeout_before_any_request(async_mode):
+    requests: list[httpx.Request] = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={"id": "command-one"})
+
+    cls = AsyncRemoteWorkspace if async_mode else RemoteWorkspace
+    http_cls = httpx.AsyncClient if async_mode else httpx.Client
+    client = http_cls(transport=httpx.MockTransport(respond), base_url="http://test")
+    workspace = cls(host="http://test", working_dir="/workspace")
+
+    with patch.object(
+        httpx, "AsyncClient" if async_mode else "Client", return_value=client
+    ):
+        try:
+            with pytest.raises(ValueError, match="start_command"):
+                result = workspace.execute_command(
+                    "sleep 600",
+                    timeout=None,  # type: ignore[arg-type]
+                )
+                if inspect.isawaitable(result):
+                    await result
+        finally:
+            reset = workspace.reset_client()
+            if inspect.isawaitable(reset):
+                await reset
+
+    assert requests == []

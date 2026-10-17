@@ -48,6 +48,7 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/bash/bash_events/searc
 - `F13.timeout`: a command that outlives its `timeout` is killed with its process group and reports `exit_code` -1.
 - `F13.stop`: stopping a running command by id terminates only that command (final `exit_code` -15, process gone) while another command finishes normally.
 - `F13.stop-idempotent`: stopping an already finished command (hex or dashed id) returns 200, an unknown id 404 and a non-UUID id 422.
+- `F13.timeout-none`: a command started with `timeout: null` (REST or the SDK's `start_command(timeout=None)`) keeps running past any short deadline until it is stopped, then reports `exit_code` -15; the blocking `execute_bash_command` rejects `timeout: null` with 422.
 - `F13.scoped-cwd`: conversation-scoped commands run in the conversation workspace by default, accept an absolute cwd inside it (also through the SDK's `runtime_conversation_id`), and reject a cwd outside it, an escaping `..` path or a relative path with 422.
 - `F13.scoped-routes`: the conversation-scoped execute, start, stop, get, batch get and search routes work on the conversation's own history, and the command's files land in the workspace.
 - `F13.scoped-isolation`: scoped events are invisible to the global search, the global socket, the global stop route and other conversations, and are stored under the conversation's directory.
@@ -67,7 +68,9 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/bash/bash_events/searc
   `GET /api/bash/bash_events/search`, `GET /api/bash/bash_events/{event_id}`,
   `GET /api/bash/bash_events/` (batch, a GET with a JSON array body) and
   `DELETE /api/bash/bash_events`. Bodies are `ExecuteBashRequest`
-  (`command`, optional `cwd`, `timeout` in whole seconds, default 300).
+  (`command`, optional `cwd`, `timeout` in whole seconds, default 300,
+  `null` to run until the command exits or is stopped; only
+  `start_bash_command` accepts `null`, `execute_bash_command` answers 422).
 - REST, conversation scope: the same seven routes under
   `/api/conversations/{runtime_conversation_id}/bash/...`, advertised by the
   `conversation_runtime_routes_v1` capability in `/server_info`. They act on
@@ -564,6 +567,57 @@ Preconditions:
   Finished commands (by hex or dashed id) return `{"success": true}`; an id
   that was never started is 404 (the SDK and TS client treat that as already
   stopped); a non-UUID is 422.
+- **No timeout (`F13.timeout-none`).** A command with `timeout: null`
+  over REST and one started by the SDK with `timeout=None`, each still
+  running after the 2 s that ends `F13.timeout`, then stopped. As in the
+  timeout bullet, the sleeps are forked children with unique durations.
+  ```sh
+  SLP=30.$RANDOM
+  BODY="{\"command\": \"sleep $SLP; echo QA_F13_NOT_REACHED\", \"timeout\": null}"
+  NONE_CMD=$(control-agent-server api POST /api/bash/start_bash_command --json "$BODY" \
+    --check . contains '"timeout": null' --save F13.timeout-none/start --field id)
+  for i in $(seq 1 40); do pgrep -fx "sleep $SLP" > /dev/null && break; sleep 0.1; done
+  sleep 3
+  pgrep -fx "sleep $SLP"
+  control-agent-server api GET /api/bash/bash_events/search --query command_id__eq="$NONE_CMD" \
+    --check items len-eq 0
+  control-agent-server api POST "/api/bash/bash_commands/$NONE_CMD/stop" --expect 200 \
+    --check success eq true
+  control-agent-server api GET /api/bash/bash_events/search --query command_id__eq="$NONE_CMD" --until-ok 15 \
+    --check items len-eq 1 --check items.0.exit_code eq -15 --check items.0.stdout missing \
+    --save F13.timeout-none/stopped-output
+  test -z "$(pgrep -fx "sleep $SLP" || true)"
+  SDK_SLP=30.$RANDOM
+  cat > "$AGENT_SERVER_VERIFY_RUN/fixtures/qa_f13_sdk_timeout_none.py" <<'PY'
+  import os, sys, time
+  from openhands.sdk.workspace import RemoteWorkspace
+  ws = RemoteWorkspace(host=os.environ["AGENT_SERVER_URL"], api_key=os.environ["SESSION_API_KEY"],
+                       working_dir=os.getcwd())
+  cmd = ws.start_command(f"sleep {sys.argv[1]}", timeout=None)
+  time.sleep(3)
+  out = ws.get_command_output(cmd)
+  assert out is None or out.get("exit_code") is None, out
+  ws.stop_command(cmd)
+  deadline = time.monotonic() + 15
+  while (out := ws.get_command_output(cmd)) is None or out.get("exit_code") is None:
+      assert time.monotonic() < deadline, out
+      time.sleep(0.2)
+  assert out["exit_code"] == -15, out
+  print("QA_F13_SDK_TIMEOUT_NONE_OK")
+  PY
+  control-agent-server exec --expect-output QA_F13_SDK_TIMEOUT_NONE_OK --save F13.timeout-none/sdk -- \
+    .venv/bin/python "$AGENT_SERVER_VERIFY_RUN/fixtures/qa_f13_sdk_timeout_none.py" "$SDK_SLP"
+  test -z "$(pgrep -fx "sleep $SDK_SLP" || true)"
+  control-agent-server api POST /api/bash/execute_bash_command \
+    --json '{"command": "echo QA_F13_NULL_EXEC", "timeout": null}' --expect 422 \
+    --check detail contains start_bash_command --save F13.timeout-none/execute-null
+  control-agent-server api GET /api/bash/bash_events/search --query kind__eq=BashCommand \
+    --check items not-contains QA_F13_NULL_EXEC
+  ```
+  Both commands are still running after three seconds with no output event;
+  after the stop each has one output with `exit_code` -15, and the child
+  `sleep` is gone. The blocking execute route refuses `timeout: null` with
+  422 and starts nothing.
 - **Scoped cwd (`F13.scoped-cwd`).** Default, inside, outside, escaping,
   relative, and the SDK's scoped workspace.
   ```sh

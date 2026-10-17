@@ -10,7 +10,7 @@ recipe.
 
 Maintenance baseline: main@8ba966d1d3af49f08e04349c055009e1614b48d6 (2026-10-07). The first pass; the next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **935 sub-features**.
+The map has **936 sub-features**.
 
 ## Baseline preconditions
 
@@ -77,7 +77,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | F10 | [Fork, navigate, condense and ask_agent](F10-fork-navigate-condense-ask.md) | fork, navigate between branches, condense with a real summarizer, ask the agent a side question; state after restart | `POST /api/conversations/{id}/fork`, `/navigate`, `/condense`, `/ask_agent` | llm | 25 |
 | F11 | [Goal loop](F11-goals.md) | goal loops: start, LLM-judged completion and caps, stop, resume, supersede, interrupt, failures, busy and capacity limits | `POST /api/conversations/{id}/goal`, `/goal/stop`, `/goal/resume` | llm, tmux; launch `--config-json '{"max_concurrent_runs": 1}'` | 25 |
 | F12 | [Conversation runtime info, sandbox pause and credential bindings](F12-runtime-and-credentials.md) | runtime info and reprovision, prepare-for-sandbox-pause, credential bindings for ACP agents, managed LLM key refresh, the Docker runtime mode's routes and contract | `GET /api/conversations/{id}/runtime`, `POST .../runtime/reprovision`, `POST /api/conversations/prepare-for-sandbox-pause`, `PUT .../credential-bindings/{name}`, Docker mode `DELETE .../runtime`, `POST .../runtime/credentials` | llm, node, network | 30 |
-| F13 | [Bash commands and bash events](F13-bash.md) | global and conversation-scoped shell commands: execute, start, stop, timeouts, large output, events search and clear, retention, the bash events socket | `/api/bash/*`, `/api/conversations/{id}/bash/*`, `WS /sockets/bash-events` | baseline | 29 |
+| F13 | [Bash commands and bash events](F13-bash.md) | global and conversation-scoped shell commands: execute, start, stop, timeouts, large output, events search and clear, retention, the bash events socket | `/api/bash/*`, `/api/conversations/{id}/bash/*`, `WS /sockets/bash-events` | baseline | 30 |
 | F14 | [File upload, download, archive and directory helpers](F14-files.md) | upload, download, create directory, home and subdirectory search, git-delta and tar.gz archives, trajectory zips, conversation-scoped variants and their path guard | `/api/file/*`, `/api/conversations/{id}/file/*` | llm, git, node | 30 |
 | F15 | [Git changes, diffs, commits and repository search](F15-git.md) | working-tree changes and diffs, explicit refs, nested repositories, commit history and per-commit changes, scoped variants, GitHub repository search | `/api/git/*`, `/api/conversations/{id}/git/*`, `GET /api/git/repositories/search` | llm, git, node | 28 |
 | F16 | [Workspace file serving and VS Code endpoints](F16-workspace-serving-and-vscode.md) | the per-conversation static workspace server (index, content types, ranges, traversal, cookie auth) and the VS Code status and URL routes | `GET /api/conversations/{id}/workspace[/{path}]`, `/api/vscode/*`, `/api/conversations/{id}/vscode/*` | llm, git | 26 |
