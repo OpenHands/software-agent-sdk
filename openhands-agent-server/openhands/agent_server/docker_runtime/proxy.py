@@ -45,10 +45,16 @@ _HOP_BY_HOP_HEADERS = frozenset(
         "upgrade",
         # ``host`` and ``content-length`` are recomputed by httpx; forwarding
         # the original values causes spurious 400s when bodies are re-chunked.
+        # ``proxy_http`` re-adds the client's ``content-length`` when it
+        # streams that client's body unchanged.
         "host",
         "content-length",
     }
 )
+
+# The serving uvicorn adds its own ``date`` and ``server`` to every response
+# without de-duplicating, so copying the upstream's would send two of each.
+_RESPONSE_DROP_HEADERS = frozenset({"date", "server"})
 
 # Stream chunk size for request/response bodies. Set it explicitly so proxy
 # behavior does not depend on an httpx implementation default.
@@ -82,6 +88,7 @@ async def proxy_http(
     timeout: float | None = None,
     body: bytes | None = None,
     on_close: Callable[[], Awaitable[None]] | None = None,
+    reject_redirects: bool = False,
 ) -> StreamingResponse:
     """Forward ``request`` to the per-conversation container.
 
@@ -99,6 +106,8 @@ async def proxy_http(
             client disconnects. Callers use this to release a session
             attachment that must outlive the route handler (see
             ``DockerConversationRegistry.attach_session``).
+        reject_redirects: Reject upstream redirects instead of forwarding a
+            location that could escape a fixed-destination proxy.
 
     Notes:
         A fresh :class:`httpx.AsyncClient` is created per request. We avoid a
@@ -120,12 +129,19 @@ async def proxy_http(
         headers["X-Session-API-Key"] = workspace.api_key
 
     async def _request_body() -> AsyncIterator[bytes]:
-        if body is not None:
-            yield body
-            return
         async for chunk in request.stream():
             if chunk:
                 yield chunk
+
+    # Keep the client's body framing: a fixed-length body stays fixed-length
+    # (httpx skips chunking when Content-Length is set) and a request without
+    # a body is sent without one, instead of an empty chunked body.
+    content: bytes | AsyncIterator[bytes] | None = body
+    if body is None and "transfer-encoding" in request.headers:
+        content = _request_body()
+    elif body is None and "content-length" in request.headers:
+        headers["Content-Length"] = request.headers["content-length"]
+        content = _request_body()
 
     # Keep HTTPX's contexts open until StreamingResponse consumes the body.
     stack = AsyncExitStack()
@@ -136,7 +152,7 @@ async def proxy_http(
             )
         )
         upstream = await stack.enter_async_context(
-            client.stream(request.method, url, headers=headers, content=_request_body())
+            client.stream(request.method, url, headers=headers, content=content)
         )
     except BaseException as exc:
         await stack.aclose()
@@ -148,9 +164,18 @@ async def proxy_http(
             detail="Conversation container unreachable",
         ) from exc
 
+    if reject_redirects and upstream.is_redirect:
+        await stack.aclose()
+        if on_close is not None:
+            await on_close()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Upstream redirect is not allowed",
+        )
+
     async def _response_body() -> AsyncIterator[bytes]:
         try:
-            async for chunk in upstream.aiter_raw(chunk_size=_CHUNK_SIZE):
+            async for chunk in upstream.aiter_raw():
                 yield chunk
         finally:
             await stack.aclose()
@@ -160,7 +185,11 @@ async def proxy_http(
     return StreamingResponse(
         _response_body(),
         status_code=upstream.status_code,
-        headers=_filter_headers(upstream.headers),
+        headers={
+            k: v
+            for k, v in _filter_headers(upstream.headers).items()
+            if k.lower() not in _RESPONSE_DROP_HEADERS
+        },
         media_type=upstream.headers.get("content-type"),
     )
 

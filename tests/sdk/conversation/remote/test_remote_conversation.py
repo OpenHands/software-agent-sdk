@@ -10,16 +10,18 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.exceptions import (
     ConversationRunError,
     WebSocketConnectionError,
 )
+from openhands.sdk.conversation.impl import remote_conversation as remote_module
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
-from openhands.sdk.event import MessageEvent
+from openhands.sdk.event import Event, MessageEvent, StreamingDeltaEvent
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import (
     FULL_STATE_KEY,
@@ -28,6 +30,7 @@ from openhands.sdk.event.conversation_state import (
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, Metrics, TextContent
+from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
@@ -208,6 +211,113 @@ class TestRemoteConversation:
         conversation.close()
         assert all(call.args[0] == "GET" for call in client.request.call_args_list)
         client.close.assert_not_called()  # The caller still owns the workspace.
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation._restore_tool_registrations"
+    )
+    def test_attach_restores_persisted_tool_modules(
+        self, restore_tool_registrations, mock_ws_client
+    ):
+        mock_ws_client.return_value.wait_until_ready.return_value = True
+        cid = uuid.uuid4()
+        client = self.setup_mock_client(str(cid))
+        original = client.request.side_effect
+
+        def respond(method, url, **kwargs):
+            response = original(method, url, **kwargs)
+            if method == "GET" and url == f"/api/conversations/{cid}":
+                response.json.return_value.update(
+                    agent=self.agent.model_dump(mode="json"),
+                    max_iterations=500,
+                    tool_module_qualnames={
+                        "TerminalTool": "openhands.tools.terminal.definition"
+                    },
+                )
+            return response
+
+        client.request.side_effect = respond
+
+        conversation = RemoteConversation.attach(
+            workspace=self.workspace, conversation_id=cid, visualizer=None
+        )
+
+        restore_tool_registrations.assert_called_once_with(
+            {"TerminalTool": "openhands.tools.terminal.definition"}
+        )
+        conversation.close()
+
+    def test_attach_reports_a_missing_tool_module(self):
+        with (
+            patch.object(
+                remote_module.importlib,
+                "import_module",
+                side_effect=ModuleNotFoundError("No module named 'optional_tools'"),
+            ) as import_module,
+            pytest.raises(
+                ImportError,
+                match=(
+                    "Cannot attach to a conversation that uses tool "
+                    "'OptionalTool'.*optional_tools.definition"
+                ),
+            ),
+        ):
+            remote_module._restore_tool_registrations(
+                {"OptionalTool": "optional_tools.definition"}
+            )
+
+        import_module.assert_called_once_with("optional_tools.definition")
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation._restore_tool_registrations"
+    )
+    def test_constructor_attach_restores_persisted_tool_modules(
+        self, restore_tool_registrations, mock_ws_client
+    ):
+        """The ``RemoteConversation(conversation_id=...)`` path must also restore.
+
+        ``Conversation(..., conversation_id=...)`` routes here rather than
+        through ``attach``/``create``, so skipping the restore would leave the
+        persisted tools unregistered and their events undeserializable.
+        """
+        mock_ws_client.return_value.wait_until_ready.return_value = True
+        cid = uuid.uuid4()
+        client = self.setup_mock_client(str(cid))
+        original = client.request.side_effect
+
+        def respond(method, url, **kwargs):
+            response = original(method, url, **kwargs)
+            if method == "GET" and url == f"/api/conversations/{cid}":
+                response.json.return_value.update(
+                    agent=self.agent.model_dump(mode="json"),
+                    max_iterations=500,
+                    tool_module_qualnames={
+                        "TerminalTool": "openhands.tools.terminal.definition"
+                    },
+                )
+            return response
+
+        client.request.side_effect = respond
+
+        conversation = RemoteConversation(
+            agent=self.agent, workspace=self.workspace, conversation_id=cid
+        )
+
+        restore_tool_registrations.assert_called_once_with(
+            {"TerminalTool": "openhands.tools.terminal.definition"}
+        )
+        # An attach must not create a conversation.
+        assert not [
+            call
+            for call in client.request.call_args_list
+            if call.args[0] == "POST" and call.args[1] == "/api/conversations"
+        ]
+        conversation.close()
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
@@ -524,6 +634,34 @@ class TestRemoteConversation:
         assert (tmp_path / "completion.json").read_text(encoding="utf-8") == (
             event.log_data
         )
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_token_callbacks_receive_streamed_deltas(self, mock_ws_client):
+        self.setup_mock_client()
+        mock_ws_client.return_value = Mock()
+        chunks: list[LLMStreamChunk] = []
+        events: list[Event] = []
+
+        Conversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            visualizer=None,
+            callbacks=[events.append],
+            token_callbacks=[chunks.append],
+        )
+        socket_callback = mock_ws_client.call_args.kwargs["callback"]
+        delta = StreamingDeltaEvent(content="Hel", reasoning_content="think")
+        socket_callback(delta)
+        socket_callback(
+            MessageEvent(source="agent", llm_message=Message(role="assistant"))
+        )
+
+        assert len(chunks) == 1
+        assert chunks[0].choices[0].delta.content == "Hel"
+        assert chunks[0].choices[0].delta.reasoning_content == "think"
+        assert delta in events
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"

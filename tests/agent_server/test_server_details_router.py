@@ -73,6 +73,42 @@ def test_server_info_reports_usable_tools(client, monkeypatch: pytest.MonkeyPatc
     assert response.json()["usable_tools"] == ["terminal", "file_editor"]
 
 
+def test_server_info_leaves_out_browser_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """With enable_browser=False, usable_tools agrees with the catalog."""
+    monkeypatch.setattr(
+        sdr,
+        "list_usable_tools",
+        lambda: ["terminal", "browser_tool_set", "file_editor"],
+    )
+    client = TestClient(
+        create_app(Config(static_files_path=None, enable_browser=False))
+    )
+
+    response = client.get("/server_info")
+
+    assert response.status_code == 200
+    assert response.json()["usable_tools"] == ["terminal", "file_editor"]
+
+
+def test_server_info_browser_follows_configured_availability(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A config-fixed browser availability overrides the process probe."""
+    monkeypatch.setattr(sdr, "list_usable_tools", lambda: ["terminal"])
+    monkeypatch.setattr(
+        sdr, "list_registered_tools", lambda: ["terminal", "browser_tool_set"]
+    )
+
+    assert sdr.build_server_info(browser_available=None).usable_tools == ["terminal"]
+    assert sdr.build_server_info(browser_available=True).usable_tools == [
+        "terminal",
+        "browser_tool_set",
+    ]
+    assert sdr.build_server_info(browser_available=False).usable_tools == ["terminal"]
+
+
 def test_server_info_reports_credential_binding_probe(client):
     response = client.get("/server_info")
 
@@ -80,12 +116,36 @@ def test_server_info_reports_credential_binding_probe(client):
     payload = response.json()
     assert {
         "profile_secret_scope_v1",
+        "profile_persona_v1",
         "credential_binding_v1",
         "credential_binding_readiness_probe_v1",
         "credential_binding_activation_guard_v1",
         "conversation_runtime_routes_v1",
+        "agent_launch_pipeline_v1",
+        "profile_public_skills_v1",
     } <= set(payload["capabilities"])
     assert payload["conversation_runtime"] == "local"
+
+
+def test_server_info_reports_configured_app_backend_bridge():
+    app = create_app(
+        Config(
+            static_files_path=None,
+            app_backend_public_url="https://apps.example.test",
+        )
+    )
+    with TestClient(app) as bridge_client:
+        payload = bridge_client.get("/server_info").json()
+
+    assert payload["app_backend_ingress_url"] == "https://apps.example.test"
+    assert "canvas_app_backend_bridge_v1" in payload["capabilities"]
+
+
+def test_server_info_omits_unconfigured_app_backend_bridge(client):
+    payload = client.get("/server_info").json()
+
+    assert payload["app_backend_ingress_url"] is None
+    assert "canvas_app_backend_bridge_v1" not in payload["capabilities"]
 
 
 def test_server_info_reports_configured_conversation_runtime(tmp_path, monkeypatch):
@@ -124,3 +184,9 @@ def test_server_info_advertises_profile_secret_enforcement(client):
     response = client.get("/server_info")
     assert response.status_code == 200
     assert "profile_secret_scope_v1" in response.json()["capabilities"]
+
+
+def test_server_info_advertises_tool_catalog_and_draft_materialize(client):
+    capabilities = client.get("/server_info").json()["capabilities"]
+    assert "tool_catalog_v1" in capabilities
+    assert "agent_profile_draft_materialize_v1" in capabilities

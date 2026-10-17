@@ -11,7 +11,19 @@ Apply this guide with the general code-review skill and the closest `AGENTS.md`
 for every changed package. This file identifies the repository-specific checks
 that should affect the review decision; it does not replace those sources.
 
-## Review decision
+## Issue triage: ownership and scope
+
+Use the ownership guidance below to choose the repository and scope. Ask only
+for missing details needed to understand the problem, expected result,
+reproduction, or agreed scope (including non-goals). Logs, API responses, or a
+small reproducer can explain nonvisual bugs; media is optional.
+
+Issue readiness means the work is clear enough to start—not that the fix is
+complete. Do not require a PR, passing implementation tests, or before-and-after
+fix evidence. Reconsider readiness when new information leaves scope or expected
+behavior unresolved.
+
+## Implementation review: decision
 
 Use **APPROVE** when the current PR head has no material correctness, security,
 compatibility, or acceptance-criterion defect. Use **COMMENT** when there is a
@@ -43,13 +55,46 @@ Backend behavior and endpoints must be defined in Python before being exposed by
 generated or handwritten clients. If a change belongs to another repository,
 recommend moving it rather than adding a second implementation here.
 
+### New AI providers
+
+Treat new provider-specific integrations as out of scope unless the provider is broadly popular
+and commonly used by OpenHands users. Prefer the existing generic provider interfaces and reusable
+extension points over maintaining a long tail of provider-specific code in the SDK.
+
+When reviewing an issue or pull request that adds a provider below this bar, recommend marking it
+out of scope and closing it politely. Do not approve or merge it solely because the implementation
+is technically correct. Reconsider only when there is credible evidence of broad user demand and a
+maintainable integration benefit.
+
 For a change that crosses layers, trace the value or operation through every
 affected public entry point. Check factories, constructors, registries,
 serialization, REST/WebSocket transport, the TypeScript client, and resume or
 fork paths as applicable. A field added to one model or a method added to one
 client is incomplete if another supported path drops, renames, or ignores it.
 
+## Acceptance review
+
+Check that the current head delivers each agreed outcome, default, and non-goal.
+An alternative approach does not prove the original goal was met; note any
+agreed scope change. Separate new bugs and unmet requirements from unrelated
+existing bugs; do not require fixing the latter.
+
 ## Blocking architecture checkpoints
+
+Check only changed behavior and affected supported paths; report concrete failures.
+
+### Versions and agent construction
+
+When a change crosses repositories, check the SDK, server, client, and app
+versions actually used. A fix on `main` may not be in a pinned release.
+Coordinate API changes with consumers.
+
+When settings, tools, or delegation change, extend the cross-layer checks above
+to saved profiles and nested delegates. Check individual tools and toolsets
+(e.g. `workflow` and `workflow_tool_set`) and the agent actually built.
+An `ACPAgent` delegates execution externally: its visible `tools` list does not
+prove tool/MCP restrictions are enforced. Check restricted, rejected, and
+unrestricted requests, including restrictions inherited by nested delegates.
 
 ### Public and persisted compatibility
 
@@ -81,6 +126,19 @@ the change. Verify that:
 - resumed or forked conversations preserve the same observable configuration
   and behavior as newly created conversations.
 
+Start at the first file/database write or resource creation, even before a lock
+or service registration. Check that a losing create/fork cannot overwrite the
+winner's files. Inspect the locked recheck and registration before claiming a
+race. Check rollback after failed startup attaches to a parent or acquires resources.
+On resume, keep old waiters and workers tied to their original run; record its
+result and notify waiters together, without clearing or reusing completion
+signals. Join only owned worker threads, not caller or pool threads.
+
+When archive, resume, or storage changes, check affected local, Docker, and Cloud
+backends for promised status/error responses, retained history, up-to-date
+shutdown/archive metadata, and matching search/count filters. Their internals
+need not match.
+
 Do not require a speculative cleanup abstraction. Identify a resource that can
 actually outlive its owner or a state transition that produces a wrong result.
 
@@ -92,6 +150,20 @@ the helpers in `openhands.sdk.utils.pydantic_secrets`; do not accept custom
 redaction sentinels or one-off serializers. Verify that secrets cannot appear in
 logs, exceptions, command strings, persisted plaintext, or ordinary model dumps,
 and that resume and plugin-loading paths apply the same policy as creation.
+
+When authentication or redaction changes, check the deployed request path:
+`root_path`, route matching, trusted versus untrusted proxy headers, and repeated
+path/host decoding or normalization before trusting either. Check expiry on existing
+connections, not just new handshakes. Use configured trust and expiry rules,
+not hypothetical deployments.
+
+### Timeouts and cancellation
+
+When timeouts or cancellation change, check which layer sets each deadline and
+raises each error: provider/transport, retry attempt, stream idle, or whole run.
+Check error propagation, retries, and cleanup; do not misreport an inner error
+as an outer timeout. Preserve disabled timers (`None` or zero where documented)
+and test the affected enabled/disabled paths.
 
 ### Production runtime parity
 

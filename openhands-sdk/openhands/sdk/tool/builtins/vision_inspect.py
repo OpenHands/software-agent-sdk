@@ -293,6 +293,8 @@ _DESCRIPTION_TEMPLATE = (
 class VisionInspectTool(ToolDefinition[VisionInspectAction, VisionInspectObservation]):
     """Tool for one-off image inspection through a saved vision profile."""
 
+    user_selectable: ClassVar[bool] = False
+
     name: ClassVar[str] = VISION_INSPECT_TOOL_NAME
 
     @classmethod

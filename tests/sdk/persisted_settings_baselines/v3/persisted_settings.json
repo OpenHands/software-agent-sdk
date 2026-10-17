@@ -1,8 +1,8 @@
 {
   "__expected__": {
-    "schema_version": 3,
+    "schema_version": 5,
     "active_profile": "fixture-v3-profile",
-    "agent_settings.schema_version": 6,
+    "agent_settings.schema_version": 8,
     "agent_settings.agent_kind": "openhands",
     "agent_settings.llm.model": "fixture-v3-persisted-llm",
     "conversation_settings.max_iterations": 240,

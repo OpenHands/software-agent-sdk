@@ -10,6 +10,10 @@
       {
         "name": "FileEditorTool",
         "params": {}
+      },
+      {
+        "name": "switch_llm",
+        "params": {}
       }
     ],
     "verification.critic_enabled": true

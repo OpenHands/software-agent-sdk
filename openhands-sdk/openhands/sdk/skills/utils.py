@@ -591,6 +591,7 @@ def update_skills_repository(
     repo_url: str,
     ref: str,
     cache_dir: Path,
+    strict: bool = False,
 ) -> Path | None:
     """Clone or update the local skills repository.
 
@@ -601,12 +602,16 @@ def update_skills_repository(
         repo_url: URL of the skills repository.
         ref: Branch name, tag, or full commit SHA to checkout.
         cache_dir: Directory where the repository should be cached.
+        strict: If True, return None when an existing clone cannot be updated
+            (e.g. the fetch fails offline) instead of the stale clone.
 
     Returns:
         Path to the local repository if successful, None otherwise.
     """
     repo_path = cache_dir / "public-skills"
-    return try_cached_clone_or_update(repo_url, repo_path, ref=ref, update=True)
+    return try_cached_clone_or_update(
+        repo_url, repo_path, ref=ref, update=True, strict=strict
+    )
 
 
 def is_skills_repo_pinned(repo_path: Path) -> bool:
@@ -642,15 +647,18 @@ def discover_skill_resources(skill_dir: Path) -> SkillResources:
     # Import here to avoid circular dependency
     from openhands.sdk.skills.skill import SkillResources
 
-    resources = SkillResources(skill_root=to_posix_path(skill_dir.resolve()))
-
+    collected: dict[str, list[str]] = {}
     for resource_type in RESOURCE_DIRECTORIES:
         resource_dir = skill_dir / resource_type
         if resource_dir.is_dir():
-            files = _list_resource_files(resource_dir, resource_type)
-            setattr(resources, resource_type, files)
+            collected[resource_type] = _list_resource_files(resource_dir, resource_type)
 
-    return resources
+    return SkillResources(
+        skill_root=to_posix_path(skill_dir.resolve()),
+        scripts=collected.get("scripts", []),
+        references=collected.get("references", []),
+        assets=collected.get("assets", []),
+    )
 
 
 def _list_resource_files(

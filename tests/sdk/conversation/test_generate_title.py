@@ -19,6 +19,7 @@ from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import LLM, LLMResponse, Message, MetricsSnapshot, TextContent
 from openhands.sdk.llm.auth.credentials import CredentialStore, OAuthCredentials
 from openhands.sdk.llm.auth.openai import OpenAISubscriptionAuth
+from openhands.sdk.settings import ACPAgentSettings
 
 
 def create_test_agent() -> Agent:
@@ -92,6 +93,22 @@ def test_generate_title_without_llm_uses_agent_llm(mock_completion):
 
     assert title == "Create Python Script"
     mock_completion.assert_called_once()
+
+
+def test_generate_title_skips_llm_for_settings_built_acp_agent(tmp_path):
+    agent = ACPAgentSettings(
+        acp_server="custom", acp_command=["true"], acp_model="claude-opus-4-7"
+    ).create_agent()
+    conv = Conversation(agent=agent, workspace=str(tmp_path), visualizer=None)
+    conv.state.events.append(create_user_message_event("Fix the login bug"))
+
+    with patch(
+        "openhands.sdk.conversation.title_utils.generate_title_with_llm"
+    ) as mock_llm_title:
+        title = conv.generate_title()
+
+    assert title == "Fix the login bug"
+    mock_llm_title.assert_not_called()
 
 
 def test_generate_title_no_user_messages():

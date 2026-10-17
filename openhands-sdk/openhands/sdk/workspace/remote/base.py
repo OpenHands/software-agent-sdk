@@ -145,6 +145,14 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         """Read the latest output; a missing exit code means it is still running."""
         return self._execute(self._get_command_output_generator(command_id))
 
+    def stop_command(self, command_id: str) -> None:
+        """Stop a running bash command by id.
+
+        Unknown or already-finished ids are no-ops, matching the server's
+        idempotency contract.
+        """
+        self._execute(self._stop_command_generator(command_id))
+
     def get_runtime_session_key(self) -> str:
         """Get the scoped worker credential for this conversation runtime."""
         return self._execute(self._runtime_lifecycle_generator(release=False))
@@ -416,6 +424,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             FileNotFoundError: If ``profile_name`` does not exist.
             httpx.HTTPStatusError: If the API request fails.
             RuntimeError: If the workspace host is not set.
+            ValueError: If no profile is active and the agent settings are for
+                an ACP agent, which has no LLM.
 
         Example:
             >>> with DockerWorkspace(...) as workspace:
@@ -423,6 +433,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             ...     agent = Agent(llm=llm, tools=get_default_tools())
         """
         from openhands.sdk.llm.llm import LLM
+        from openhands.sdk.settings import OpenHandsAgentSettings
 
         if not self.host or self.host == "undefined":
             raise RuntimeError("Workspace host is not set")
@@ -433,6 +444,11 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             if resolved_profile_name in (None, ""):
                 settings_response = self._fetch_settings_response()
                 agent_settings = settings_response.get_agent_settings()
+                if not isinstance(agent_settings, OpenHandsAgentSettings):
+                    raise ValueError(
+                        "No LLM profile is active and the agent settings are for "
+                        "an ACP agent, which has no LLM; pass profile_name."
+                    )
                 if not llm_kwargs:
                     return agent_settings.llm
                 llm_data = agent_settings.llm.model_dump(

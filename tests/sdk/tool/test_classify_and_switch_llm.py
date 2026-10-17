@@ -18,6 +18,7 @@ from openhands.sdk.tool.builtins import (
 )
 from openhands.sdk.tool.builtins.classify_and_switch_llm import (
     _recent_messages_text,
+    build_classifier_messages,
     build_classifier_prompt,
     parse_class_index,
     parse_direct_model,
@@ -133,10 +134,52 @@ def test_render_direct_prompt_replaces_supported_placeholders() -> None:
         "user: add parser tests",
     )
 
-    assert prompt.startswith("You are a model-routing classifier.")
+    # The rendered body no longer includes the system prefix; it lives in the
+    # system message assembled by build_classifier_messages.
+    assert "You are a model-routing classifier." not in prompt
     assert "{{" not in prompt
     assert "- GPT-5.4" in prompt
     assert "user: add parser tests" in prompt
+
+
+def test_build_classifier_messages_class_mode_has_system_and_user() -> None:
+    from openhands.sdk.llm.meta_profile_store import MetaProfile
+
+    messages = build_classifier_messages(MetaProfile.model_validate(META), "user: hi")
+
+    assert [m.role for m in messages] == ["system", "user"]
+    system_text = "".join(
+        c.text for c in messages[0].content if isinstance(c, TextContent)
+    )
+    user_text = "".join(
+        c.text for c in messages[1].content if isinstance(c, TextContent)
+    )
+    assert system_text.startswith("You are a model-routing classifier.")
+    assert "1. UI / images" in system_text
+    assert "user: hi" in user_text
+    assert "Category number:" in user_text
+
+
+def test_build_classifier_messages_direct_mode_has_system_and_user() -> None:
+    from openhands.sdk.llm.meta_profile_store import MetaProfile
+
+    messages = build_classifier_messages(
+        MetaProfile.model_validate(DIRECT_META), "user: add parser tests"
+    )
+
+    # Direct-routing must not send a system-only request: some providers
+    # (e.g. MiniMax) reject "chat content is empty" when there is no user turn.
+    assert [m.role for m in messages] == ["system", "user"]
+    system_text = "".join(
+        c.text for c in messages[0].content if isinstance(c, TextContent)
+    )
+    user_text = "".join(
+        c.text for c in messages[1].content if isinstance(c, TextContent)
+    )
+    assert system_text == "You are a model-routing classifier."
+    assert "user: add parser tests" in user_text
+    assert "- GPT-5.4" in user_text
+    assert user_text  # non-empty
 
 
 @pytest.mark.parametrize(
@@ -408,6 +451,49 @@ def test_classifier_call_is_accounted_in_conversation_stats(
     # its spend is included in the combined (budget-enforced) metrics.
     assert usage_id in conversation.llm_registry.list_usage_ids()
     assert usage_id in conversation.conversation_stats.usage_to_metrics
+
+
+def test_classifier_call_receives_conversation_call_context(
+    profile_store, meta_store, monkeypatch
+) -> None:
+    """The classifier completion must carry the conversation's call context.
+
+    Regression: the classifier LLM is not reachable from ``Agent.step()``, so
+    nothing else threads context into its completion. Without an explicit
+    ``call_context`` the call would send no ``x-litellm-session-id`` header and
+    would not participate in the conversation's prompt cache.
+    """
+    conversation = _make_conversation()
+    _register_tool(conversation, meta_store)
+
+    seen: list[object] = []
+
+    real_load = conversation._profile_store.load
+
+    class RecordingClassifier(TestLLM):
+        __test__ = False
+
+        def completion(self, messages, *args, **kwargs):
+            seen.append(kwargs.get("call_context"))
+            return super().completion(messages, *args, **kwargs)
+
+    def fake_load(name: str, *, cipher=None):
+        if name != "classifier":
+            return real_load(name, cipher=cipher)
+        return RecordingClassifier.from_messages(
+            [Message(role="assistant", content=[TextContent(text="1")])],
+            usage_id="classifier",
+        )
+
+    monkeypatch.setattr(conversation._profile_store, "load", fake_load)
+
+    obs = conversation.execute_tool("route_task_to_model", ClassifyAndSwitchLLMAction())
+
+    assert isinstance(obs, ClassifyAndSwitchLLMObservation)
+    assert not obs.is_error
+    expected = conversation.get_llm_call_context()
+    assert seen == [expected]
+    assert expected.session_id == str(conversation._state.id)
 
 
 def test_repeated_routing_reuses_one_classifier_usage_bucket(

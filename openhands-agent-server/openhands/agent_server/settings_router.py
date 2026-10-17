@@ -23,6 +23,7 @@ from openhands.agent_server.persistence import (
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
 from openhands.agent_server.telemetry import notify_misc_settings_changed
+from openhands.sdk.llm import LLM
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.settings import (
@@ -36,6 +37,7 @@ from openhands.sdk.settings import (
     export_agent_settings_schema,
 )
 from openhands.sdk.settings.api_models import MCPServerPatch
+from openhands.sdk.utils.pydantic_secrets import is_redacted_secret
 
 
 logger = get_logger(__name__)
@@ -238,16 +240,15 @@ async def update_settings(
     )
 
 
-def _resolve_active_profile_llm(
+def _load_active_profile_llm(
     request: Request, update_data: SettingsUpdatePayload
-) -> SettingsUpdatePayload:
-    """Fold the named profile's LLM into ``agent_settings_diff`` unless the
-    caller already gave one explicitly. Mirrors ``/activate``."""
+) -> LLM | None:
+    """Load the named profile's LLM unless the caller already gave one."""
     profile_name = update_data.get("active_profile")
     agent_diff = update_data.get("agent_settings_diff")
     explicit_llm_diff = isinstance(agent_diff, dict) and "llm" in agent_diff
     if not profile_name or explicit_llm_diff:
-        return update_data
+        return None
 
     cipher = get_cipher(request)
     profile_store = get_llm_profile_store()
@@ -262,13 +263,26 @@ def _resolve_active_profile_llm(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Profile '{profile_name}' not found",
         )
+    return llm
 
+
+def _with_profile_llm(
+    update_data: SettingsUpdatePayload,
+    llm: LLM | None,
+    settings: PersistedSettings,
+) -> SettingsUpdatePayload:
+    """Fold the profile's LLM into OpenHands settings. Mirrors ``/activate``."""
+    agent_diff = update_data.get("agent_settings_diff")
+    agent_diff = agent_diff if isinstance(agent_diff, dict) else {}
+    agent_kind = agent_diff.get("agent_kind") or settings.agent_settings.agent_kind
+    if llm is None or agent_kind == "acp":
+        return update_data
     return cast(
         SettingsUpdatePayload,
         {
             **update_data,
             "agent_settings_diff": {
-                **(agent_diff if isinstance(agent_diff, dict) else {}),
+                **agent_diff,
                 "llm": llm.model_dump(mode="json", context={"expose_secrets": True}),
             },
         },
@@ -280,14 +294,17 @@ def _apply_settings_update(
     update_data: SettingsUpdatePayload,
     before_update: Callable[[PersistedSettings], None] | None = None,
 ) -> SettingsResponse:
-    update_data = _resolve_active_profile_llm(request, update_data)
+    profile_llm = _load_active_profile_llm(request, update_data)
+    applied_update = update_data
 
     # Apply updates atomically with file locking
     def apply_update(settings: PersistedSettings) -> PersistedSettings:
+        nonlocal applied_update
         if before_update is not None:
             before_update(settings)
         context = {"cipher": config.cipher} if config.cipher is not None else None
-        settings.update(update_data, context=context)
+        applied_update = _with_profile_llm(update_data, profile_llm, settings)
+        settings.update(applied_update, context=context)
         return settings
 
     config = get_config(request)
@@ -300,7 +317,7 @@ def _apply_settings_update(
             "Settings updated",
             extra={
                 "client_host": client_host,
-                "agent_settings_modified": "agent_settings_diff" in update_data,
+                "agent_settings_modified": "agent_settings_diff" in applied_update,
                 "conversation_settings_modified": (
                     "conversation_settings_diff" in update_data
                 ),
@@ -447,10 +464,13 @@ async def list_secrets(
     allowed_names: set[str] | None = None
     if agent_profile_id is not None:
         profile_store = get_agent_profile_store()
-        profile_name = profile_store.name_for_id(agent_profile_id)
-        if profile_name is None:
-            raise HTTPException(status_code=404, detail="Agent profile not found")
-        profile = profile_store.load(profile_name)
+        # store_errors() answers an unloadable profile (400) and a busy store
+        # (503) the way the agent-profile routes do.
+        with store_errors():
+            profile_name = profile_store.name_for_id(agent_profile_id)
+            if profile_name is None:
+                raise HTTPException(status_code=404, detail="Agent profile not found")
+            profile = profile_store.load(profile_name)
         if profile.secret_refs is not None:
             allowed_names = set(profile.secret_refs)
 
@@ -481,7 +501,7 @@ async def get_secret_value(request: Request, name: str) -> Response:
     to be used with LookupSecret for lazy secret resolution.
 
     Raises:
-        HTTPException: 400 if name format is invalid, 404 if secret not found.
+        HTTPException: 422 if name format is invalid, 404 if secret not found.
     """
     _validate_secret_name(name)
 
@@ -513,9 +533,16 @@ async def create_secret(
     """Create or update a custom secret (upsert).
 
     Raises:
-        HTTPException: 400 if secret name format is invalid, 500 if file is corrupted.
+        HTTPException: 422 if the name or value is invalid, 500 if file is corrupted.
     """
     _validate_secret_name(secret.name)
+
+    value = secret.value.get_secret_value()
+    if not value.strip() or is_redacted_secret(value):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Secret value must not be empty or redacted",
+        )
 
     config = get_config(request)
     store = get_secrets_store(config)
@@ -523,7 +550,7 @@ async def create_secret(
     try:
         store.set_secret(
             name=secret.name,
-            value=secret.value.get_secret_value(),
+            value=value,
             description=secret.description,
         )
     except RuntimeError as e:
@@ -553,7 +580,7 @@ async def delete_secret(request: Request, name: str) -> dict[str, bool]:
     """Delete a custom secret by name.
 
     Raises:
-        HTTPException: 400 if name format is invalid, 404 if secret not found,
+        HTTPException: 422 if name format is invalid, 404 if secret not found,
         500 if file is corrupted.
     """
     _validate_secret_name(name)

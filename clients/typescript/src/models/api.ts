@@ -442,6 +442,22 @@ export interface DeleteSecretResponse {
   deleted: boolean;
 }
 
+export interface GitProviderRepository {
+  id: string;
+  full_name: string;
+  git_provider: string;
+  is_public: boolean;
+  stargazers_count?: number | null;
+  pushed_at?: string | null;
+  main_branch?: string | null;
+}
+
+export interface GitProviderRepositoryPage {
+  items: GitProviderRepository[];
+  next_page_id: string | null;
+  missing_token: boolean;
+}
+
 export type SecretValueResponse = string;
 
 export interface FileSubdirectoryEntry {

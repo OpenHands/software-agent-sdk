@@ -1,4 +1,5 @@
 import { HttpClient, HttpError } from './http-client';
+import { getCachedAgentServerInfo } from './agent-server-compatibility';
 import { ConversationExecutionStatus, LLM, Success } from '../types/base';
 import type {
   AgentResponseResult,
@@ -68,8 +69,44 @@ export class ConversationClient {
   async createConversation<TConversation = ConversationInfo>(
     payload: CreateConversationPayload
   ): Promise<TConversation> {
-    const response = await this.client.post<TConversation>('/api/conversations', payload);
-    return response.data;
+    try {
+      const response = await this.client.post<TConversation>('/api/conversations', payload);
+      return response.data;
+    } catch (error) {
+      // A lost response does not mean the create was not applied: the server
+      // may have committed it and the initial message may already be running.
+      // Re-sending is only safe where the server deduplicates concurrent
+      // creates for one id, which it advertises as a capability. There is no
+      // caller-supplied id to reconcile against otherwise, and even with one, a
+      // server without the capability would double-create on a re-send, so
+      // surface the original transport error instead.
+      if (
+        error instanceof HttpError ||
+        typeof payload.conversation_id !== 'string' ||
+        !(await this.supportsCreateRetry())
+      ) {
+        throw error;
+      }
+
+      const response = await this.client.post<TConversation>('/api/conversations', payload);
+      return response.data;
+    }
+  }
+
+  /**
+   * Whether the server deduplicates concurrent creates for one conversation id.
+   *
+   * A server that cannot be probed is treated as unsupported, so an older or
+   * unreachable backend keeps the previous behavior rather than risking a
+   * duplicate conversation.
+   */
+  private async supportsCreateRetry(): Promise<boolean> {
+    try {
+      const serverInfo = await getCachedAgentServerInfo(this.client);
+      return serverInfo.capabilities?.includes('idempotent_conversation_create_v1') === true;
+    } catch {
+      return false;
+    }
   }
 
   async searchConversations(
@@ -374,11 +411,11 @@ export class ConversationClient {
   }
 
   /**
-   * Switch the model of a running ACP conversation in place (the ACP analog of
-   * {@link switchLLM}). Calls the wrapper's `session/set_model` on the live
-   * session; context is preserved. Only valid once the ACP session exists —
-   * the server returns 409 before the first message (set the default via
-   * settings instead) and 400 for non-ACP conversations.
+   * Switch the model of an ACP conversation (the ACP analog of
+   * {@link switchLLM}). On a live session the server calls the wrapper's
+   * `session/set_model` in place; context is preserved. Before the first run
+   * there is no session yet, so the server answers 200 and stores the model for
+   * the first session. Non-ACP conversations get 400.
    */
   async switchAcpModel(conversationId: string, model: string): Promise<void> {
     await this.client.post<Success>(`/api/conversations/${conversationId}/switch_acp_model`, {
@@ -390,15 +427,17 @@ export class ConversationClient {
     await this.client.delete<Success>(`/api/conversations/${conversationId}`);
   }
 
+  /**
+   * Update conversation metadata (e.g. title) and resolve with the updated
+   * conversation. The PATCH endpoint answers only `Success`, so the
+   * conversation is read back after the update.
+   */
   async updateConversation<TConversation = ConversationInfo>(
     conversationId: string,
     update: UpdateConversationRequest
   ): Promise<TConversation> {
-    const response = await this.client.patch<TConversation>(
-      `/api/conversations/${conversationId}`,
-      update
-    );
-    return response.data;
+    await this.client.patch<Success>(`/api/conversations/${conversationId}`, update);
+    return this.getConversation<TConversation>(conversationId);
   }
 
   close(): void {

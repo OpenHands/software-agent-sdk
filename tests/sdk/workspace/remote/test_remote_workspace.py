@@ -564,6 +564,26 @@ def test_get_llm_without_active_profile_falls_back_to_legacy(
     }
 
 
+def test_get_llm_without_active_profile_rejects_acp_settings():
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+    settings_response = Mock()
+    settings_response.json.return_value = {
+        "agent_settings": {"agent_kind": "acp", "acp_server": "claude-code"},
+        "conversation_settings": {},
+        "llm_api_key_is_set": False,
+        "active_profile": None,
+    }
+    settings_response.raise_for_status = Mock()
+    client = MagicMock()
+    client.get.return_value = settings_response
+    workspace._client = client
+
+    with pytest.raises(ValueError, match="ACP agent"):
+        workspace.get_llm()
+
+
 def test_get_llm_with_kwargs_override(monkeypatch):
     """Test get_llm allows kwargs to override persisted settings."""
     from pydantic import SecretStr
@@ -1321,6 +1341,49 @@ def test_send_completion_callback_on_success(monkeypatch):
         assert payload["run_id"] == "run-42"
         assert "error" not in payload
         assert headers["Authorization"] == "Bearer test-api-key"
+
+
+def test_send_completion_callback_includes_observability_headers(monkeypatch):
+    """Test _send_completion_callback propagates generic observability context."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    monkeypatch.setenv("AUTOMATION_CALLBACK_API_KEY", "test-api-key")
+    monkeypatch.setenv("OPENHANDS_OBSERVABILITY_METADATA", '{"automation.id":"auto-1"}')
+    monkeypatch.setenv(
+        "OPENHANDS_OBSERVABILITY_TAGS", "automation,automation.trigger:cron"
+    )
+    monkeypatch.setenv("OPENHANDS_OBSERVABILITY_SPAN_NAME", "automation.conversation")
+    monkeypatch.setenv(
+        "OPENHANDS_OBSERVABILITY_PARENT_SPAN_CONTEXT", "serialized-parent-context"
+    )
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace._send_completion_callback(None, None)
+
+        headers = mock_client.post.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer test-api-key"
+        assert headers["X-OpenHands-Observability-Metadata"] == (
+            '{"automation.id":"auto-1"}'
+        )
+        assert headers["X-OpenHands-Observability-Tags"] == (
+            "automation,automation.trigger:cron"
+        )
+        assert headers["X-OpenHands-Observability-Span-Name"] == (
+            "automation.conversation"
+        )
+        assert headers["X-OpenHands-Observability-Parent-Span-Context"] == (
+            "serialized-parent-context"
+        )
 
 
 def test_send_completion_callback_on_failure(monkeypatch):

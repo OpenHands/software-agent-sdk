@@ -341,6 +341,67 @@ def test_mixed_typed_and_generic_items():
     assert {tc.name for tc in msg.tool_calls} == {"think", "terminal"}
 
 
+@pytest.mark.parametrize("as_objects", [False, True])
+def test_response_output_preserves_replay_metadata(as_objects):
+    def item(**fields):
+        return SimpleNamespace(**fields) if as_objects else fields
+
+    message = Message.from_llm_responses_output(
+        [
+            item(type="unknown"),
+            item(type="message", content=[item(type="output_text", text="Answer")]),
+            item(
+                type="function_call",
+                id="fc_item",
+                call_id="call_tool",
+                name="terminal",
+                arguments="{}",
+            ),
+            item(
+                type="reasoning",
+                id="rs_item",
+                summary=[item(text="summary")],
+                content=[item(text="reasoning")],
+                encrypted_content="encrypted",
+                status="completed",
+            ),
+        ]
+    )
+    assert message.tool_calls
+    assert message.tool_calls[0].id == "call_tool"
+    assert message.tool_calls[0].responses_item_id == "fc_item"
+    assert message.responses_reasoning_item
+    assert message.responses_reasoning_item.model_dump() == {
+        "id": "rs_item",
+        "summary": ["summary"],
+        "content": ["reasoning"],
+        "encrypted_content": "encrypted",
+        "status": "completed",
+    }
+    restored = Message.model_validate_json(message.model_dump_json())
+    assert restored.to_responses_dict(vision_enabled=False) == (
+        message.to_responses_dict(vision_enabled=False)
+    )
+
+
+def test_response_output_missing_optional_fields():
+    message = Message.from_llm_responses_output(
+        [
+            object(),
+            {"type": "message"},
+            {"type": "function_call", "id": "fc_fallback"},
+            {"type": "reasoning", "summary": [{}]},
+        ]
+    )
+    assert message.content == []
+    assert message.tool_calls
+    assert message.tool_calls[0].id == "fc_fallback"
+    assert message.tool_calls[0].arguments == ""
+    assert message.responses_reasoning_item
+    assert message.responses_reasoning_item.summary == [""]
+    assert message.responses_reasoning_item.content is None
+
+
 # ---------------------------------------------------------------------------
 # Bug 4: Reasoning item IDs must be stripped in subscription mode
 # ---------------------------------------------------------------------------

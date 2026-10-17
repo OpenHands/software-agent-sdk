@@ -4,6 +4,11 @@
 ``static_system_message`` produces and asserts the snapshot reproduces them.
 """
 
+import warnings
+
+import pytest
+from deprecation import DeprecatedWarning
+
 import openhands.sdk.agent.base as agent_base
 from openhands.sdk import Agent
 from openhands.sdk.context.agent_context import AgentContext
@@ -44,26 +49,25 @@ def test_equivalent_to_static_template_kwargs(monkeypatch) -> None:
     _ = agent.static_system_message  # populates `captured`
 
     ctx = agent._build_prompt_context()
-    assert ctx.template_kwargs == captured
+    # Only a custom Jinja template still receives the deprecated enable_browser.
+    assert captured == {**ctx.template_kwargs, "enable_browser": True}
 
 
-def test_browser_auto_detected() -> None:
-    agent = Agent(llm=_make_llm(), tools=[Tool(name="browser_tool_set")])
-    assert agent._build_prompt_context().enable_browser is True
-
-
-def test_browser_absent_without_tool() -> None:
-    agent = Agent(llm=_make_llm(), tools=[Tool(name="terminal_tool")])
-    assert agent._build_prompt_context().enable_browser is False
-
-
-def test_browser_explicit_override_wins() -> None:
-    agent = Agent(
-        llm=_make_llm(),
-        tools=[Tool(name="browser_tool_set")],
-        system_prompt_kwargs={"enable_browser": False},
+@pytest.fixture
+def enable_browser_deprecated(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "openhands.sdk.utils.deprecation._current_version", lambda: "1.51.0"
     )
-    assert agent._build_prompt_context().enable_browser is False
+
+
+@pytest.mark.usefixtures("enable_browser_deprecated")
+def test_enable_browser_kwarg_is_deprecated() -> None:
+    with pytest.warns(DeprecatedWarning, match="enable_browser"):
+        Agent(llm=_make_llm(), system_prompt_kwargs={"enable_browser": True})
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecatedWarning)
+        Agent(llm=_make_llm(), system_prompt_kwargs={"cli_mode": True})
 
 
 def test_model_family_from_spec() -> None:
