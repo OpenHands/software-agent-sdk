@@ -108,9 +108,9 @@ Preconditions:
 - `F22.persist-restart` restarts the run; `F22.store-busy` holds the store
   lock for about 66 seconds and `F22.store-busy-responsive` for about 40;
   `F22.persistence-dir` launches and stops a second server.
-- The known-bug bullets that change shared state (`F22.empty-router`,
+- The bullets that change shared state (`F22.empty-router`,
   `F22.activate-acp`, `F22.corrupt-settings`) undo it in an `EXIT` trap, so
-  the bullets after them find the same state whether the bug reproduced or
+  the bullets after them find the same state whether their assertion held or
   not.
 
   ```sh
@@ -510,10 +510,10 @@ Preconditions:
   Both broken files are missing from the list, `GET` and `activate` are 400
   with the parser's message (not 500) and `qa-direct` stays active; saving
   over `qa-corrupt` repairs it and both deletes remove the files.
-- **Unreadable settings (`F22.corrupt-settings`), known bug.** Truncate
+- **Unreadable settings (`F22.corrupt-settings`).** Truncate
   `settings.json`, show that LLM-profile activation refuses it with 409, then
   activate a meta-profile, check the file was left alone, put it back, and
-  assert the activation's status last (the bug assertion). An `EXIT` trap
+  assert the activation's status last. An `EXIT` trap
   puts the saved `settings.json` back if an earlier step breaks.
   ```sh
   S="$AGENT_SERVER_VERIFY_RUN/home/.openhands/settings.json"
@@ -529,15 +529,14 @@ Preconditions:
   test "$(cat "$S")" = '{"agent_settings": '
   restore_settings
   control-agent-server api GET /api/meta-profiles --check active_meta_profile eq qa-direct
-  control-agent-server assert --json "$F22/corrupt-settings-activate.json" --check status eq 409  # bug: value.status eq 500 && value.response.body.exception contains 'Cannot load settings from'
+  control-agent-server assert --json "$F22/corrupt-settings-activate.json" --check status eq 409 \
+    --check response.body.detail eq 'Settings file is corrupted or encrypted with a different key'
   ```
-  Expected 409, as `POST /api/profiles/{name}/activate` answers for the same
-  file (`Settings file is corrupted or encrypted with a different key`; the
-  positive control above). Today the meta-profile activation is an unmapped
-  500 whose `exception` field carries the `RuntimeError` text with the
-  absolute settings path: the route catches only `OSError` around
-  `settings_store.update`. The file is left as written in both cases and is
-  put back afterwards.
+  The meta-profile activation answers 409 `Settings file is corrupted or
+  encrypted with a different key`, as `POST /api/profiles/{name}/activate`
+  does for the same file (the control above), without naming the settings
+  path. The file is left as written in both cases and is put back
+  afterwards.
 - **Store busy (`F22.store-busy`).** Another process (here `flock`, standing
   in for a second server or an SDK `MetaProfileStore` on the same
   persistence directory) holds the store's lock for 66 seconds while a save
