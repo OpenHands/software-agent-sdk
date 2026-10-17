@@ -194,6 +194,17 @@ def extract_model_config_option(response: Any) -> ACPConfigSelectOption | None:
     Normalizes across agent-client-protocol 0.8.x (RootModel wrapped) and 0.10.x+
     (direct union members), as well as dictionary payloads.
     """
+    return extract_config_select_option(response, _MODEL_CONFIG_OPTION_ID)
+
+
+def extract_config_select_option(
+    response: Any, option_id: str
+) -> ACPConfigSelectOption | None:
+    """Extract the select option ``option_id`` from a session response.
+
+    Same normalization as :func:`extract_model_config_option`, for any select
+    (e.g. codex-acp's ``reasoning_effort``).
+    """
     if response is None:
         return None
 
@@ -211,7 +222,7 @@ def extract_model_config_option(response: Any) -> ACPConfigSelectOption | None:
         if isinstance(opt, Mapping):
             opt_type = opt.get("type")
             opt_id = opt.get("id")
-            if opt_type == "select" and opt_id == _MODEL_CONFIG_OPTION_ID:
+            if opt_type == "select" and opt_id == option_id:
                 val = opt.get("current_value")
                 opts = opt.get("options")
                 return ACPConfigSelectOption(
@@ -221,7 +232,7 @@ def extract_model_config_option(response: Any) -> ACPConfigSelectOption | None:
                     options=list(opts) if isinstance(opts, (list, tuple)) else [],
                 )
         elif isinstance(opt, ACPConfigOptionBasicProtocol):
-            if opt.type == "select" and opt.id == _MODEL_CONFIG_OPTION_ID:
+            if opt.type == "select" and opt.id == option_id:
                 val = (
                     opt.current_value
                     if isinstance(opt, ACPConfigOptionValueProtocol)

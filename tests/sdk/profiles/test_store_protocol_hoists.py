@@ -313,11 +313,21 @@ def test_build_seed_profile_acp_branch():
     assert isinstance(profile, ACPAgentProfile)
     assert profile.name == SEED_PROFILE_NAME
     assert profile.acp_server == "claude-code"
+    assert profile.acp_strict_model is False
     assert profile.mcp_server_refs is None
     # ACP profiles have no skill-selection field — they own their tooling.
     assert not hasattr(profile, "skill_refs")
     assert not hasattr(profile, "disabled_skills")
     assert not hasattr(profile, "llm_profile_ref")
+
+
+def test_build_seed_profile_copies_acp_strict_model():
+    settings = validate_agent_settings(
+        {"agent_kind": "acp", "acp_server": "claude-code", "acp_strict_model": True}
+    )
+    profile = build_seed_profile(settings, active_llm_profile="ignored")
+    assert isinstance(profile, ACPAgentProfile)
+    assert profile.acp_strict_model is True
 
 
 def test_build_profile_verification_drops_critic_api_key():

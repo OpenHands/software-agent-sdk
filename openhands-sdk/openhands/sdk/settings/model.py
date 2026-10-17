@@ -1738,6 +1738,26 @@ class ACPAgentSettings(AgentSettingsBase):
             ).model_dump(),
         },
     )
+    acp_strict_model: bool = Field(
+        default=False,
+        description=(
+            "Fail session start when the ACP server rejects ``acp_model`` "
+            "instead of continuing on the server's default model. Forwarded to "
+            ":attr:`~openhands.sdk.agent.ACPAgent.acp_strict_model`; off by "
+            "default."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Fail if the ACP model is rejected",
+                prominence=SettingProminence.MINOR,
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="acp",
+                label="ACP (Agent Client Protocol)",
+                variant="acp",
+            ).model_dump(),
+        },
+    )
     acp_session_mode: str | None = Field(
         default=None,
         description=(
@@ -2037,6 +2057,7 @@ class ACPAgentSettings(AgentSettingsBase):
             acp_prompt_timeout=self.acp_prompt_timeout,
             acp_startup_timeout=self.acp_startup_timeout,
             acp_isolate_data_dir=self.acp_isolate_data_dir,
+            acp_strict_model=self.acp_strict_model,
             acp_file_secrets=list(self.acp_file_secrets),
             agent_context=self.agent_context,
             mcp_config=self.mcp_config,

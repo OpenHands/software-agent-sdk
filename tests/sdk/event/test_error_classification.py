@@ -74,6 +74,21 @@ def test_code_based_classification_takes_priority_over_detail(
     assert classify_error(code, detail).kind == expected_kind
 
 
+def test_acp_model_selection_rejected_is_a_settings_config_error() -> None:
+    event = ConversationErrorEvent(
+        source="agent",
+        code="ACPModelSelectionRejected",
+        detail=(
+            "ACP server claude-agent-acp rejected model 'sonnet': [-32603] "
+            "Invalid value for config option model: sonnet (timeout)"
+        ),
+    )
+
+    assert event.classification == ErrorClassification(
+        kind=FailureKind.CONFIG, retryable=False, user_action="settings"
+    )
+
+
 def test_agent_error_event_defaults_to_unknown() -> None:
     """Without an explicit classification, AgentErrorEvent is UNKNOWN (diagnostic)."""
     event = AgentErrorEvent(

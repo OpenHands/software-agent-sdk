@@ -178,6 +178,7 @@ def test_acp_agent_settings_export_schema_has_acp_section() -> None:
         "acp_command",
         "acp_args",
         "acp_model",
+        "acp_strict_model",
         "acp_session_mode",
         "acp_prompt_timeout",
         "acp_startup_timeout",
@@ -2089,6 +2090,14 @@ def test_acp_create_agent_forwards_isolate_data_dir() -> None:
         acp_server="codex", acp_isolate_data_dir=True
     ).create_agent()
     assert isolated.acp_isolate_data_dir is True
+
+
+def test_acp_create_agent_forwards_strict_model() -> None:
+    default_agent = ACPAgentSettings(acp_server="codex").create_agent()
+    assert default_agent.acp_strict_model is False
+
+    strict = ACPAgentSettings(acp_server="codex", acp_strict_model=True).create_agent()
+    assert strict.acp_strict_model is True
 
 
 def test_acp_custom_server_with_command_resolves() -> None:
