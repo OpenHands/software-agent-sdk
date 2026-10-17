@@ -31,7 +31,13 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from starlette.requests import HTTPConnection
 
 from openhands.agent_server.bash_service import BashEventService
-from openhands.agent_server.config import Config, TelemetrySpec, WebhookSpec
+from openhands.agent_server.config import (
+    V1_SESSION_API_KEY_ENV,
+    Config,
+    TelemetrySpec,
+    WebhookSpec,
+    export_session_api_key,
+)
 from openhands.agent_server.conversation_registry import (
     ConversationRegistry,
     create_conversation_registry,
@@ -218,6 +224,12 @@ class InitService:
         self._entered_service: ConversationService | None = None
         self._entered_conversation_registry: ConversationRegistry | None = None
         self._entered_bash_service: BashEventService | None = None
+        # ``initialize`` exports the delivered session key to the environment;
+        # ``(None, None)`` means nothing to put back.
+        self._session_api_key_env_before_init: tuple[bool, str | None] = (
+            False,
+            None,
+        )
 
     @property
     def state(self) -> InitState:
@@ -250,6 +262,16 @@ class InitService:
                 # tools pick up credentials.
                 for key, value in req.env.items():
                     os.environ[key] = value
+            # The key this server now authenticates with must also reach the
+            # in-process callers that read it from the environment (the
+            # start_child_conversation tool, the managed LLM key refresh); it
+            # replaces whatever key the dormant process booted with, and
+            # ``teardown`` puts the previous value back.
+            self._session_api_key_env_before_init = (
+                True,
+                os.environ.get(V1_SESSION_API_KEY_ENV),
+            )
+            export_session_api_key(new_config)
             maybe_init_laminar()
 
             # Must precede get_instance(), which captures the sink. The
@@ -307,6 +329,7 @@ class InitService:
             return self.snapshot()
         except Exception as exc:  # pragma: no cover - logged + re-raised
             logger.exception("deferred_init: /api/init failed; rolling back to dormant")
+            self._restore_session_api_key_env()
             self._error = f"{type(exc).__name__}: {exc}"
             self._state = "dormant"
             raise HTTPException(
@@ -329,6 +352,18 @@ class InitService:
         if self._entered_bash_service is not None:
             await self._entered_bash_service.__aexit__(None, None, None)
             self._entered_bash_service = None
+        self._restore_session_api_key_env()
+
+    def _restore_session_api_key_env(self) -> None:
+        """Undo the export ``initialize`` made, if it made one."""
+        exported, previous = self._session_api_key_env_before_init
+        if not exported:
+            return
+        self._session_api_key_env_before_init = (False, None)
+        if previous is None:
+            os.environ.pop(V1_SESSION_API_KEY_ENV, None)
+        else:
+            os.environ[V1_SESSION_API_KEY_ENV] = previous
 
 
 def get_init_service(request: Request) -> InitService:

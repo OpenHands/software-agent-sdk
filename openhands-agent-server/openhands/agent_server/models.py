@@ -15,6 +15,8 @@ from openhands.sdk.conversation.request import (  # re-export for backward compa
     ACPEnabledAgent as ACPEnabledAgent,
     ConversationConfig as ConversationConfig,
     SendMessageRequest as SendMessageRequest,
+    StartChildConversationRequest as StartChildConversationRequest,
+    StartChildConversationResponse as StartChildConversationResponse,
     StartConversationRequest as StartConversationRequest,
 )
 from openhands.sdk.conversation.secret_registry import SecretRegistry
