@@ -164,6 +164,14 @@ delete conversations a recipe no longer needs. Without a key, run every
 credential-free recipe and record model-dependent ones as `blocked` with the
 missing prerequisite; never substitute a mock and call it a pass.
 
+For critic checks, use an available, authorized OpenHands (`openhands/…`) or
+compatible OpenHands LLM-proxy profile, regardless of the main profile used
+for the pass. The SDK reuses its LLM key when `verification.critic_api_key`
+is unset. Restore the previous profile afterwards. Do not declare the critic
+blocked merely because the main model uses another provider. This does not
+authorize new credentials, additional budget, or sending private test data
+to another service; require real scored events before recording a pass.
+
 ## Choose the job
 
 - **Verify a change or a PR**: map the changed paths to feature IDs with
