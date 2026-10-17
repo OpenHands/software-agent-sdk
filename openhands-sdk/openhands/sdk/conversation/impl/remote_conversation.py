@@ -49,6 +49,7 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
 from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, TextContent
@@ -493,9 +494,16 @@ class RemoteEventsList(EventsListBase):
         return len(self._cached_events) - 1
 
     def create_default_callback(self) -> ConversationCallbackType:
-        """Create a default callback that adds events to this list."""
+        """Create a default callback that adds events to this list.
+
+        Streamed ``StreamingDeltaEvent`` frames are transient: the server never
+        stores them, so they reach the other callbacks but stay out of this
+        list, which keeps matching the server's event log.
+        """
 
         def callback(event: Event) -> None:
+            if isinstance(event, StreamingDeltaEvent):
+                return
             self.add_event(event)
 
         return callback

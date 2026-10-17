@@ -36,7 +36,7 @@ Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
 - `F25.enable-disable`: `PATCH {"enabled": false}` keeps the files but hides the skill from the catalog, `{"enabled": true}` restores it, and a body without `enabled` is 422.
 - `F25.install-conflict`: re-installing an installed skill is 409 and changes nothing; `force: true` reinstalls it and keeps the disabled flag.
 - `F25.install-errors`: an unfetchable source (missing path, unparsable source, escaping `repo_path`) is 400, an invalid skill (no SKILL.md, name mismatch, invalid directory name) is 422, an empty source is 422, and nothing is installed.
-- `F25.install-bad-frontmatter`: a SKILL.md with malformed YAML frontmatter is rejected as an invalid skill (422); today it is a 500.
+- `F25.install-bad-frontmatter`: a SKILL.md with malformed YAML frontmatter is rejected as an invalid skill (422) and nothing is installed.
 - `F25.install-git`: a `file://` git source with `repo_path` installs offline and records the source, `repo_path` and the resolved commit SHA.
 - `F25.sdk-load-skills`: `RemoteWorkspace.load_skills_from_agent_server()` turns the merged catalog of its `working_dir` into SDK `Skill` objects (project, user and enabled installed skills, keyword triggers kept) and an `AgentContext` that does not reload public skills.
 - `F25.install-github`: the working GitHub form (`github:OpenHands/extensions` plus `repo_path`) installs a public skill from github.com at a full commit SHA, and uninstalling it removes it.
@@ -337,17 +337,17 @@ Preconditions:
   Fetch failures are `400 Failed to fetch skill source...`, invalid skills
   `422 Invalid skill. Ensure the source contains a valid SKILL.md.`, and the
   store still holds only `qa-f25-skill`.
-- **Malformed frontmatter (`F25.install-bad-frontmatter`), known bug.**
+- **Malformed frontmatter (`F25.install-bad-frontmatter`).**
   Install a SKILL.md whose YAML does not parse.
   ```sh
   control-agent-server api POST /api/skills/install --json '{"source": "'"$F/qa-f25-badyaml"'"}' --expect 422 \
-    --save F25.install-bad-frontmatter/install  # bug: status eq 500 && response.body.exception contains 'while parsing'
+    --save F25.install-bad-frontmatter/install
   test ! -e "$I/qa-f25-badyaml"
   ```
-  An unparsable skill should be the documented 422 like the other invalid
-  skills. Today it is `500 Internal Server Error` (with the YAML parser
-  message): `Skill.load` lets `yaml` errors escape instead of raising
-  `SkillValidationError`, and the route maps only that.
+  An unparsable skill is the documented
+  `422 Invalid skill. Ensure the source contains a valid SKILL.md.`, like the
+  other invalid skills: the install loader turns the YAML error into
+  `SkillValidationError`, and nothing is copied into the store.
 - **Install from a git source (`F25.install-git`).** Install the skill
   directory of the `qa-f25-src` repository through `file://`.
   ```sh

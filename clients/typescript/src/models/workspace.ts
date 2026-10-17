@@ -1,6 +1,7 @@
 /**
  * Workspace and bash operation result models
  */
+import type { GitChangeStatus } from '../generated/agent-server-schema';
 
 export interface CommandResult {
   command: string;
@@ -26,9 +27,12 @@ export interface FileDownloadResult {
   error?: string;
 }
 
+export type { GitChangeStatus };
+
 export interface GitChange {
   path: string;
-  status: 'added' | 'modified' | 'deleted' | 'renamed';
+  /** The server's wire value: 'ADDED', 'UPDATED', 'DELETED' or 'MOVED'. */
+  status: GitChangeStatus;
   [key: string]: unknown;
 }
 

@@ -593,21 +593,20 @@ Preconditions:
   which changed `TID`; `switchAcpModel` on the ACP conversation that has not
   run resolves (no 409) and `acp_model` and `current_model_id` become
   `opus`, also in `base_state.json`.
-- **TypeScript docstrings for a pre-run ACP switch (`F09.ts-client-acp-docs`), known bug.**
+- **TypeScript docstrings for a pre-run ACP switch (`F09.ts-client-acp-docs`).**
   Both `switchAcpModel` methods exist; their docstrings should not promise a
   409 the server never sends.
   ```sh
   grep -n 'async switchAcpModel(' clients/typescript/src/client/conversation-client.ts
   grep -n 'async switchAcpModel(' clients/typescript/src/conversation/remote-conversation.ts
-  control-agent-server assert --value "$(cat clients/typescript/src/client/conversation-client.ts clients/typescript/src/conversation/remote-conversation.ts | grep -c 'returns 409 before the first message')" --check . eq 0  # bug: value ge 1
+  control-agent-server assert --value "$(cat clients/typescript/src/client/conversation-client.ts clients/typescript/src/conversation/remote-conversation.ts | grep -c 'returns 409 before the first message')" --check . eq 0
+  control-agent-server assert --value "$(cat clients/typescript/src/client/conversation-client.ts clients/typescript/src/conversation/remote-conversation.ts | grep -c 'the first session. Non-ACP conversations get 400.')" --check . eq 2
   ```
   Expected: the docstrings of `ConversationClient.switchAcpModel` and
   `RemoteConversation.switchAcpModel` say what `F09.acp-model-deferred` and
   `F09.ts-client` observe: before the first run the server answers 200 and
-  stores the model for the first session. Today both say "the server
-  returns 409 before the first message", so a TypeScript consumer that
-  follows them handles a 409 that never comes (and may tell its user to set
-  the model through settings instead).
+  stores the model for the first session, and a non-ACP conversation gets
+  400. Neither promises a 409.
 - **Load a plugin (`F09.load-plugin`).** Start `PID` from the saved settings
   with the `qa-f09-mkt` marketplace registered on its `agent_context` (not
   auto-loaded), then load the plugin while capturing the socket.
@@ -811,9 +810,8 @@ Preconditions:
   `available_models` are unknown (`false`, `[]`) until a session started. A
   504 from a live switch has its `detail` rewritten to `Internal Server
   Error`; read `exception`. The TypeScript client's `switchAcpModel`
-  docstrings still say the server returns 409 before the first message; the
-  server answers 200 and defers (`F09.acp-model-deferred`, `F09.ts-client`,
-  `F09.ts-client-acp-docs`).
+  docstrings document this 200-and-defer behaviour (`F09.acp-model-deferred`,
+  `F09.ts-client`, `F09.ts-client-acp-docs`).
 - A live ACP session needs the provider's CLI and an account for it. For
   `claude-code`, DeepSeek's Anthropic-compatible API works as the account
   (secrets `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic` and

@@ -190,6 +190,7 @@ export type {
   FileOperationResult,
   FileDownloadResult,
   GitChange,
+  GitChangeStatus,
   GitDiff,
   ExecuteBashRequest,
   BashEventBase,

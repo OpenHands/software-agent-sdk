@@ -6,7 +6,7 @@ import logging
 import sys
 import time
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
@@ -490,6 +490,35 @@ def test_delete_events_older_than_returns_correct_count(tmp_path: Path):
 
     assert count == 3
     assert len(service._get_event_files_by_pattern("*")) == 1
+
+
+async def test_search_bash_events_timestamp_bounds_honor_utc_offset(
+    tmp_path: Path,
+):
+    """A +02:00 bound selects the same events as its UTC spelling."""
+    service = BashEventService(bash_events_dir=tmp_path / "bash_events")
+    event = BashCommand(
+        command="echo tz", timestamp=datetime(2021, 6, 1, 10, tzinfo=UTC)
+    )
+    service._save_event_to_file(event)
+    plus_two = timezone(timedelta(hours=2))
+
+    async def search(
+        gte: datetime | None = None, lt: datetime | None = None
+    ) -> list[UUID]:
+        page = await service.search_bash_events(timestamp__gte=gte, timestamp__lt=lt)
+        return [e.id for e in page.items]
+
+    # 11:00+02:00 is 09:00Z (before the event); 12:30+02:00 is 10:30Z (after).
+    before = datetime(2021, 6, 1, 11, tzinfo=plus_two)
+    after = datetime(2021, 6, 1, 12, 30, tzinfo=plus_two)
+    assert await search(gte=before) == [event.id]
+    assert await search(lt=after) == [event.id]
+    assert await search(gte=after) == []
+    assert await search(lt=before) == []
+    # A naive bound is still read as UTC.
+    assert await search(gte=datetime(2021, 6, 1, 9)) == [event.id]
+    assert await search(gte=datetime(2021, 6, 1, 11)) == []
 
 
 # ---------------------------------------------------------------------------
