@@ -336,8 +336,18 @@ def _response_id() -> str:
     return f"{_RESPONSE_ID_PREFIX}{uuid4().hex}"
 
 
+# A run also stops, without being terminal, when it waits for the user; the
+# fresh-conversation path sees this because its run task ends there.
+_STOPPED_RUN_STATUSES = frozenset(
+    {
+        ConversationExecutionStatus.PAUSED,
+        ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
+    }
+)
+
+
 # Reused Chat Completions conversations do not expose a request-specific run
-# task, so wait for both new events and a terminal state. Fresh conversations
+# task, so wait for both new events and a stopped state. Fresh conversations
 # use EventService.wait_for_run_completion() below.
 async def _wait_for_reused_conversation_completion(
     event_service: EventService,
@@ -355,7 +365,9 @@ async def _wait_for_reused_conversation_completion(
         enough_new_events = len(state.events) > min_event_count
         if last_status == ConversationExecutionStatus.RUNNING:
             observed_run = True
-        elif last_status.is_terminal() and (observed_run or enough_new_events):
+        elif (last_status.is_terminal() or last_status in _STOPPED_RUN_STATUSES) and (
+            observed_run or enough_new_events
+        ):
             return last_status
 
         if time.monotonic() >= deadline:

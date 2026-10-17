@@ -427,15 +427,17 @@ export class ConversationClient {
     await this.client.delete<Success>(`/api/conversations/${conversationId}`);
   }
 
+  /**
+   * Update conversation metadata (e.g. title) and resolve with the updated
+   * conversation. The PATCH endpoint answers only `Success`, so the
+   * conversation is read back after the update.
+   */
   async updateConversation<TConversation = ConversationInfo>(
     conversationId: string,
     update: UpdateConversationRequest
   ): Promise<TConversation> {
-    const response = await this.client.patch<TConversation>(
-      `/api/conversations/${conversationId}`,
-      update
-    );
-    return response.data;
+    await this.client.patch<Success>(`/api/conversations/${conversationId}`, update);
+    return this.getConversation<TConversation>(conversationId);
   }
 
   close(): void {

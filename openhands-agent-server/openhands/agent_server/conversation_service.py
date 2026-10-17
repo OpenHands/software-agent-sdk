@@ -85,7 +85,7 @@ from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
 from openhands.sdk.tool.client_tool import register_client_tools
-from openhands.sdk.tool.registry import get_tool_module_qualnames
+from openhands.sdk.tool.registry import get_tool_module_qualnames, is_tool_available
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -268,6 +268,11 @@ logger = logging.getLogger(__name__)
 class InvalidParentConversation(ValueError):
     """``parent_conversation_id`` is unknown, self-referential, or in
     a different workspace."""
+
+
+class UnavailableAgentTool(ValueError):
+    """The agent names a tool whose ``tool_module_qualnames`` module the server
+    cannot import, so the agent could never be built."""
 
 
 def _same_workspace(a: LocalWorkspace, b: LocalWorkspace) -> bool:
@@ -1525,6 +1530,7 @@ class ConversationService:
             secrets.pop(CODEX_AUTH_SECRET_NAME, None)
 
         # Dynamically register tools from client's registry
+        unimportable_tools: dict[str, str] = {}
         if request.tool_module_qualnames:
             for tool_name, module_qualname in request.tool_module_qualnames.items():
                 try:
@@ -1538,9 +1544,10 @@ class ConversationService:
                         f"Failed to import module '{module_qualname}' for tool "
                         f"'{tool_name}': {e}. Tool will not be available."
                     )
-                    # Continue even if some tools fail to register
-                    # The agent will fail gracefully if it tries to use unregistered
-                    # tools
+                    # The client registry lists every tool it knows, not only
+                    # the agent's: a module is fatal only if the agent uses its
+                    # tool (checked once the agent is launched below).
+                    unimportable_tools[tool_name] = f"{module_qualname}: {e}"
             logger.info(
                 "Dynamically registered %d tools for conversation %s",
                 len(request.tool_module_qualnames),
@@ -1577,6 +1584,19 @@ class ConversationService:
                 ),
             )
         )
+        # Building the agent would raise KeyError on the first message, so
+        # reject the create while the caller can still act on it.
+        missing_tools = [
+            f"'{tool.name}' ({unimportable_tools[tool.name]})"
+            for tool in launched.agent.tools
+            if tool.name in unimportable_tools
+            and not is_tool_available(tool.name, check_usable=False)
+        ]
+        if missing_tools:
+            raise UnavailableAgentTool(
+                "The agent uses tools whose modules the agent server cannot "
+                f"import: {', '.join(missing_tools)}"
+            )
         workspace = (
             _create_conversation_worktree(worktree)
             if worktree is not None
@@ -2587,15 +2607,20 @@ class WebhookSubscriber(Subscriber):
         default_factory=lambda: asyncio.sleep, init=False
     )
 
+    def _buffer_full(self) -> bool:
+        return (
+            len(self.queue) >= self.spec.event_buffer_size
+            or self._queue_bytes >= self.spec.max_batch_bytes
+        )
+
     async def __call__(self, event: Event):
         """Add event to queue and post to webhook when buffer size is reached."""
         self._enqueue(event)
 
-        if (
-            len(self.queue) >= self.spec.event_buffer_size
-            or self._queue_bytes >= self.spec.max_batch_bytes
-        ):
+        if self._buffer_full():
             if self._post_lock.locked():
+                # The in-flight _post_events re-checks the buffer when it is
+                # done; the timer covers a failed post.
                 self._start_flush_timer()
                 return
             # Cancel timer since we're flushing due to buffer size
@@ -2625,6 +2650,12 @@ class WebhookSubscriber(Subscriber):
                     self._requeue(events_to_post)
                     return
                 events_remaining -= len(events_to_post)
+                if not events_remaining and self._buffer_full():
+                    # Events published during the POST filled the buffer again.
+                    events_remaining = len(self.queue)
+            # A timer started during the POST has nothing left to flush.
+            if not self.queue and self._flush_timer is not asyncio.current_task():
+                self._cancel_flush_timer()
 
     async def _post_batch(self, event_data: list[dict[str, Any]]) -> bool:
         """Post one serialized batch with retry logic."""

@@ -64,7 +64,7 @@ Routes: none
 - `F33.conversation-reconnect-callbacks`: an event the server records while a live `RemoteConversation`'s events socket is down reaches its callbacks once the socket is back, not only `state.events`.
 - `F33.conversation-restart`: after a restart a new program reattaches to a finished conversation, sees the same history, and continues it to `finished`.
 - `F33.custom-tool-module`: a tool registered in the client process is sent as `tool_module_qualnames`, imported by a server started with `OH_EXTRA_PYTHON_PATH`, and runs on the server when the agent calls it; a client-registered module the server cannot import is only a logged warning; reattaching from a process without the module raises `ImportError` naming the tool.
-- `F33.custom-tool-module-unimportable`: a conversation whose agent names a tool from a module the server cannot import fails with a client error (a 4xx, or a recorded conversation error), never with a 500.
+- `F33.custom-tool-module-unimportable`: a conversation whose agent names a tool from a module the server cannot import is rejected at create with a 422 naming the tool and the module, never a 500 on a later message.
 - `F33.conversation-close`: `close()` keeps the server conversation when `delete_on_close=False` and deletes it when the `Conversation(...)` factory's default `delete_on_close=True` applies.
 
 ## How to get to it (agent POV)
@@ -846,7 +846,7 @@ Preconditions:
 - **Streamed tokens (`F33.conversation-streaming`).** An agent LLM with
   `stream=True`, a token callback, and an event callback that keeps
   `StreamingDeltaEvent` frames. The token and `state.events` outcomes are
-  recorded for the two known-bug bullets after this one.
+  recorded for the two bullets after this one.
   ```sh
   control-agent-server exec --env PYTHONPATH="$F33" --save F33.conversation-streaming/probe -- .venv/bin/python - <<'PY'
   import f33
@@ -874,20 +874,20 @@ Preconditions:
   (dozens for one sentence), and the server's stored events hold none: the
   deltas are transient frames, while the reply itself is stored as a
   `MessageEvent` (or `finish` action).
-- **Token callbacks on a remote conversation (`F33.conversation-token-callbacks`), known bug.**
+- **Token callbacks on a remote conversation (`F33.conversation-token-callbacks`).**
   The `Conversation(...)` factory forwards `token_callbacks` to
-  `RemoteConversation`, whose constructor swallows it in `**_`, so the
-  callbacks are never called although the server streamed the same tokens
-  to the socket. The correct behavior asserted here is that they receive the
-  run's deltas.
+  `RemoteConversation`, which hands each `StreamingDeltaEvent` frame from the
+  events socket to them as an `LLMStreamChunk` (the delta's `content` and
+  `reasoning_content` in `choices[0].delta`), so they receive the run's
+  deltas.
 
   Requires: `F33.conversation-streaming`
   ```sh
   test "$(jq .deltas "$F33/stream.json")" -gt 0
-  control-agent-server assert --json "$F33/stream.json" --check tokens gt 0  # bug: value.tokens eq 0 && value.deltas gt 0
+  control-agent-server assert --json "$F33/stream.json" --check tokens gt 0
   ```
-  The event callback got the deltas (control); today the token callback got
-  `0` calls.
+  The event callback got the deltas (control), and the token callback got
+  them too.
 - **Deltas kept out of `state.events` (`F33.conversation-streaming-state`).**
   `RemoteConversation`'s default callback skips the transient deltas the
   server never stores, so they reach the callbacks only and `state.events`
@@ -1898,15 +1898,13 @@ Preconditions:
   the server cannot import is only a logged `Failed to import module`
   warning while the agent does not use its tool: that conversation runs
   normally and the server's registry never lists `qa_f33_ghost`.
-- **An agent tool the server cannot import (`F33.custom-tool-module-unimportable`), known bug.**
-  The agent now names `qa_f33_ghost`. The create only logs the import
-  warning and answers 201 (`conversation_service.py`: "The agent will fail
-  gracefully if it tries to use unregistered tools"); the agent is built on
-  the first message, where `resolve_tool` raises `KeyError: "ToolDefinition
-  'qa_f33_ghost' is not registered"` and `POST .../events` answers an
-  unhandled 500, as does every later message. The correct behavior asserted
-  here is a client error that the caller can act on (a 4xx at create or on
-  the message, or a recorded conversation error), never a 500.
+- **An agent tool the server cannot import (`F33.custom-tool-module-unimportable`).**
+  The agent now names `qa_f33_ghost`. The create answers 422, with a
+  `detail` naming the tool and the module the server could not import, and
+  no conversation is created: the agent could never be built, since
+  `resolve_tool` would raise `KeyError: "ToolDefinition 'qa_f33_ghost' is
+  not registered"` on the first message. A client error the caller can act
+  on, never a 500.
 
   Requires: `F33.custom-tool-module`
   ```sh
@@ -1933,11 +1931,11 @@ Preconditions:
   f33.emit("ghost", cid=cid, statuses=statuses, server_errors=sum(s >= 500 for s in statuses.values()))
   PY
   control-agent-server api GET /api/tools/ --check . contains terminal --check . not-contains qa_f33_ghost
-  control-agent-server assert --json "$F33/ghost.json" --check server_errors eq 0  # bug: value.statuses.create eq 201 && value.statuses.message eq 500
+  control-agent-server assert --json "$F33/ghost.json" --check server_errors eq 0 --check statuses.create eq 422
   ```
-  The server's registry lacks `qa_f33_ghost` (control). Today the probe
-  records `{"create": 201, "message": 500}`; the server log has the
-  `KeyError` traceback for the message `POST`.
+  The server's registry lacks `qa_f33_ghost` (control). The probe records
+  `{"create": 422}`; the server log has only the `Failed to import module`
+  warning.
 - **Close keeps or deletes (`F33.conversation-close`).**
   ```sh
   control-agent-server exec --env PYTHONPATH="$F33" --save F33.conversation-close/probe -- .venv/bin/python - <<'PY'
@@ -1993,9 +1991,9 @@ Preconditions:
   sends on connect and after each run are never persisted, so
   `len(conversation.state.events)` is not the server's event count; compare
   kinds other than state updates, as the recipes do. Count kinds with
-  `conversation events --kinds`, not `events/count?kind=ActionEvent`: the
-  server only matches the full `<module>.<Class>` name there (the
-  `F06.search-kind-short` known bug), so a short name always counts `0`.
+  `conversation events --kinds` or `events/count?kind=ActionEvent` (the
+  server accepts the short name or the full `<module>.<Class>` name, see
+  `F06.search-kind-short`).
 - A live `RemoteConversation` reconnects its events socket with exponential
   backoff (1 s doubling to 30 s) after a server restart or a dropped
   connection; events emitted before it reconnects reach `state.events`
@@ -2050,7 +2048,7 @@ Preconditions:
   them: a program that cannot import one of those modules cannot attach,
   even if the agent never used that tool (`ImportError` names the first
   missing one). A client-registered module the server cannot import is only
-  a warning, until an agent names its tool (then every message is a 500,
+  a warning, until an agent names its tool (then the create is a 422,
   `F33.custom-tool-module-unimportable`). `OH_EXTRA_PYTHON_PATH` only
   extends the server's `sys.path`; F27 drives the server side
   (`F27.custom-tool-modules`, and `F27.custom-tool-missing-on-resume` for a
@@ -2069,8 +2067,8 @@ Preconditions:
 - With a `stream=True` LLM the events socket also carries
   `StreamingDeltaEvent` frames: callbacks get them, the server stores none,
   and they stay out of `state.events` (`F33.conversation-streaming-state`);
-  `token_callbacks` passed to `Conversation(...)` are ignored for a remote
-  workspace (`F33.conversation-token-callbacks`, known bug).
+  `token_callbacks` passed to `Conversation(...)` receive the same deltas
+  (`F33.conversation-token-callbacks`).
 - `log_completions=True` on a remote agent writes the log files on the
   client (relative folders resolve against the client's working directory),
   from `LLMCompletionLogEvent`s that the server also stores and serves like

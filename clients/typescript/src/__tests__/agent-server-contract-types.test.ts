@@ -6,11 +6,21 @@ import type {
 } from '../index';
 import type { SettingsClient } from '../client/settings-client';
 import type {
+  AcpAgentProfile as GeneratedACPAgentProfile,
+  AgentProfileDiagnostics as GeneratedAgentProfileDiagnostics,
+  AgentProfileInfo as GeneratedAgentProfileSummary,
   GitChange as GeneratedGitChange,
   GitChangeStatus as GeneratedGitChangeStatus,
   McpConfigPatchWritable,
   McpServerPatchWritable,
+  OpenHandsAgentProfile as GeneratedOpenHandsAgentProfile,
 } from '../generated/agent-server-schema';
+import type {
+  ACPAgentProfile,
+  AgentProfileDiagnostics,
+  AgentProfileSummary,
+  OpenHandsAgentProfile,
+} from '../models/agent-profile';
 import type {
   AgentServerMCPOAuthCallbackRequest,
   AgentServerMCPOAuthCallbackResponse,
@@ -149,5 +159,12 @@ describe('Agent Server generated contract aliases', () => {
     assertType<Equal<MCPServerPatch['headers'], Record<string, string | null> | null | undefined>>(
       true
     );
+  });
+
+  it('declares every agent-profile payload field the server sends, and no others', () => {
+    assertType<Equal<keyof AgentProfileSummary, keyof GeneratedAgentProfileSummary>>(true);
+    assertType<Equal<keyof OpenHandsAgentProfile, keyof GeneratedOpenHandsAgentProfile>>(true);
+    assertType<Equal<keyof ACPAgentProfile, keyof GeneratedACPAgentProfile>>(true);
+    assertType<Equal<keyof AgentProfileDiagnostics, keyof GeneratedAgentProfileDiagnostics>>(true);
   });
 });

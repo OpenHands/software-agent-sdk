@@ -92,6 +92,8 @@ export class RemoteConversation implements IConversation {
   private onError?: ErrorCallbackType;
   private hookConfig?: HookConfig;
   private userId?: string;
+  private maxIterations?: number;
+  private stuckDetection?: boolean;
 
   constructor(
     agent: AgentBase,
@@ -105,6 +107,8 @@ export class RemoteConversation implements IConversation {
     this._conversationId = options.conversationId;
     this.hookConfig = options.hookConfig;
     this.userId = options.userId;
+    this.maxIterations = options.maxIterations;
+    this.stuckDetection = options.stuckDetection;
 
     this.client = new HttpClient({
       baseUrl: workspace.host,
@@ -163,15 +167,15 @@ export class RemoteConversation implements IConversation {
       };
     }
 
-    // Use hook config from start options, falling back to constructor option
+    // Start options take precedence over the constructor options
     const hookConfig = options.hookConfig ?? this.hookConfig ?? undefined;
     const userId = options.userId ?? this.userId ?? undefined;
 
     const request: CreateConversationRequest = {
       agent: this.agent,
       initial_message: initialMessage,
-      max_iterations: options.maxIterations || 500,
-      stuck_detection: options.stuckDetection ?? true,
+      max_iterations: options.maxIterations || this.maxIterations || 500,
+      stuck_detection: options.stuckDetection ?? this.stuckDetection ?? true,
       workspace: { type: 'local', working_dir: this.workspace.workingDir },
       hook_config: hookConfig ?? null,
       user_id: userId ?? null,

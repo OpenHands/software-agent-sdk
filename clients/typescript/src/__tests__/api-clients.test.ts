@@ -428,7 +428,7 @@ describe('Auxiliary API clients', () => {
         llm_profile_resolved: true,
         llm_api_key_set: true,
         mcp_server_refs: null,
-        resolved_mcp_servers: [],
+        resolved_mcp_config_keys: [],
         dangling_mcp_server_refs: [],
         acp_api_key_secret_name: null,
         acp_base_url_secret_name: null,
@@ -2234,6 +2234,40 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('updateConversation resolves with the updated ConversationInfo, not the PATCH Success body', async () => {
+    const updated = { id: 'c1', title: 'New title', execution_status: 'idle' };
+    const jsonResponse = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    const mockFetch = () =>
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ success: true }))
+        .mockResolvedValueOnce(jsonResponse(updated)) as typeof fetch;
+
+    for (const client of [
+      new ConversationManager({ host: 'http://example.com' }),
+      new ConversationClient({ host: 'http://example.com' }),
+    ]) {
+      global.fetch = mockFetch();
+      const result = await client.updateConversation('c1', { title: 'New title' });
+
+      expect(result).toEqual(updated);
+      expect(global.fetch).toHaveBeenNthCalledWith(
+        1,
+        'http://example.com/api/conversations/c1',
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ title: 'New title' }) })
+      );
+      expect(global.fetch).toHaveBeenNthCalledWith(
+        2,
+        'http://example.com/api/conversations/c1',
+        expect.objectContaining({ method: 'GET' })
+      );
+    }
+  });
+
   it('SettingsClient fetches and updates settings and secrets', async () => {
     const responses = [
       { agent_settings: { llm_model: 'gpt-4o' }, conversation_settings: {} },
@@ -2473,11 +2507,16 @@ describe('Auxiliary API clients', () => {
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       9,
-      'http://example.com/api/conversations/c1/runtime',
+      'http://example.com/api/conversations/c1',
       expect.objectContaining({ method: 'GET' })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       10,
+      'http://example.com/api/conversations/c1/runtime',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      11,
       'http://example.com/api/conversations/c1/runtime/reprovision',
       expect.objectContaining({ method: 'POST', body: JSON.stringify({}) })
     );

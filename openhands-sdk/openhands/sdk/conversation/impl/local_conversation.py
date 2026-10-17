@@ -1783,7 +1783,8 @@ class LocalConversation(BaseConversation):
 
         Raises:
             ValueError: If the conversation's agent is not an :class:`ACPAgent`,
-                or (for a live switch) the provider does not support runtime
+                if ``model`` is empty or whitespace-only (live or not), or
+                (for a live switch) the provider does not support runtime
                 model switching, or the ACP server rejects the switch.
             TimeoutError: If a live switch's ``session/set_model`` round-trip
                 exceeds ``acp_prompt_timeout`` seconds.
@@ -1792,6 +1793,10 @@ class LocalConversation(BaseConversation):
             raise ValueError(
                 "switch_acp_model is only supported for ACP conversations."
             )
+        # Check here, not only in set_acp_model: the pre-run path below skips
+        # that call and would persist a blank model unchecked.
+        if not model or not model.strip():
+            raise ValueError("model must be a non-empty string")
         with self._state:
             # With a live session, perform the protocol switch first; if it
             # fails we leave the persisted state untouched. Without one (pre
