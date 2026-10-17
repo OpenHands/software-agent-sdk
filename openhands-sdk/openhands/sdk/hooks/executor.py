@@ -266,12 +266,13 @@ class HookExecutor:
                 include_default_tools=["FinishTool"],
                 system_prompt=hook.system_prompt,
             )
-            # hook_config=None disables hooks in the sub-conversation (no recursion)
+            # Ambient plugin hooks must not run or recurse inside the evaluator.
             conversation = LocalConversation(
                 agent=agent,
                 workspace=self.working_dir,
                 plugins=None,
                 hook_config=None,
+                _load_ambient_plugins=False,
                 persistence_dir=self.persistence_dir,
                 visualizer=hook_visualizer,
                 max_iteration_per_run=hook.max_iterations,
