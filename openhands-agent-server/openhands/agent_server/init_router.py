@@ -31,7 +31,12 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from starlette.requests import HTTPConnection
 
 from openhands.agent_server.bash_service import BashEventService
-from openhands.agent_server.config import Config, TelemetrySpec, WebhookSpec
+from openhands.agent_server.config import (
+    Config,
+    TelemetrySpec,
+    WebhookSpec,
+    export_session_api_key,
+)
 from openhands.agent_server.conversation_registry import (
     ConversationRegistry,
     create_conversation_registry,
@@ -250,6 +255,11 @@ class InitService:
                 # tools pick up credentials.
                 for key, value in req.env.items():
                     os.environ[key] = value
+            # The key this server now authenticates with must also reach the
+            # in-process callers that read it from the environment (the
+            # start_child_conversation tool, the managed LLM key refresh); it
+            # replaces whatever key the dormant process booted with.
+            export_session_api_key(new_config)
             maybe_init_laminar()
 
             # Must precede get_instance(), which captures the sink. The

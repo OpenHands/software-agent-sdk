@@ -833,6 +833,7 @@ async def fork_conversation(
     responses={
         201: {"description": "Child conversation created"},
         404: {"description": "Parent conversation not found"},
+        429: {"description": "Server conversation run capacity is full"},
     },
     status_code=status.HTTP_201_CREATED,
 )

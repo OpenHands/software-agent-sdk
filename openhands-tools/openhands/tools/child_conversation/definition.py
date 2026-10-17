@@ -1,7 +1,7 @@
 """Action, observation, and tool definitions for start_child_conversation."""
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, ClassVar, Literal, Self
 
 from pydantic import Field
 from rich.text import Text
@@ -92,9 +92,11 @@ _DESCRIPTION = (
     "conversation's history, so include the goal, relevant paths, constraints "
     "and the expected deliverable. Use `title` to name it. `isolation` controls "
     "the workspace: `worktree` (default) gives the child its own git worktree "
-    "and branch when the workspace is a git repository, `shared` runs it in the "
-    "same directory; backends that manage workspaces themselves may ignore this "
-    "and report what was applied.\n\n"
+    "and branch when the workspace is a git repository; the worktree starts "
+    "from the repository's default branch, not from this conversation's branch "
+    "or uncommitted changes, so use `shared` when the child must see them. "
+    "`shared` runs it in the same directory; backends that manage workspaces "
+    "themselves may ignore this and report what was applied.\n\n"
     "The result contains the child's conversation id, its initial status and, "
     "when available, a URL. Report the id and URL to the user. A launch is not "
     "idempotent: call this once per task and do not retry a launch that already "
@@ -106,6 +108,10 @@ class StartChildConversationTool(
     ToolDefinition[StartChildConversationAction, StartChildConversationObservation]
 ):
     """Tool that launches a same-backend child conversation."""
+
+    # Attached by the host that provides the launcher (the agent-server, or a
+    # hosting backend through ``launch_url``), not picked from the catalog.
+    user_selectable: ClassVar[bool] = False
 
     @classmethod
     def create(
