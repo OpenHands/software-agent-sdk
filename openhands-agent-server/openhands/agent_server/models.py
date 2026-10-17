@@ -446,6 +446,10 @@ class Success(BaseModel):
     success: bool = True
 
 
+class FileUploadResult(Success):
+    file_size: int = Field(description="Number of bytes written to the destination")
+
+
 class EventPage(OpenHandsModel):
     items: list[Event]
     next_page_id: str | None = None
@@ -527,6 +531,15 @@ class UpdateConversationRequest(BaseModel):
             "Replaces all existing tags when provided."
         ),
     )
+
+    @field_validator("title")
+    @classmethod
+    def _reject_blank_title(cls, v: str | None) -> str | None:
+        # The service stores title.strip(); a whitespace-only title would
+        # erase the stored title to "" instead of failing like "" does.
+        if v is not None and not v.strip():
+            raise ValueError("title must not be blank")
+        return v
 
 
 class ForkConversationRequest(BaseModel):

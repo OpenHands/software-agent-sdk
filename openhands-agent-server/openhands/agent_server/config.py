@@ -204,8 +204,11 @@ class TelemetrySpec(BaseModel):
         default=None,
         description=(
             "Key used to pseudonymize conversation identifiers. Falls back to "
-            "a per-process random salt, which keeps pseudonyms stable within a "
-            "run but unlinkable across runs."
+            "the server's secret key (OH_SECRET_KEY, which defaults to the "
+            "first session API key), so pseudonyms stay stable and linkable "
+            "across restarts until that key changes. Only when there is no "
+            "secret key either is a random key generated per process, which "
+            "makes pseudonyms unlinkable across runs."
         ),
     )
     max_queue_size: int = Field(
@@ -578,7 +581,8 @@ def load_config(config_path: Path | None = None) -> Config:
     if env_data is MISSING:
         data = file_data
     else:
-        data = merge(file_data, env_data)
+        # An explicit environment null (OH_<FIELD>_IS_NONE=1) clears a file value.
+        data = merge(file_data, env_data, none_overrides=True)
 
     if not data:
         return Config()

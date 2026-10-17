@@ -37,7 +37,7 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 - `F15.changes-nested-repo`: changes inside a repository nested one level below the requested repository are listed with the nested directory as prefix, the nested directory itself is not listed, and `diff` of such an entry reads the nested repository.
 - `F15.changes-repo-below-path`: a non-repository directory that holds one repository (the layout of a repository-backed conversation) lists that repository's changes with its directory as prefix.
 - `F15.changes-special-names`: a modified tracked file whose name has a space or a non-ASCII character is listed under its real name; today a space fails the whole list with 400 and a non-ASCII name comes back as a mangled git-quoted string.
-- `F15.changes-subdir-paths`: `changes` for a subdirectory of a repository returns paths on one base; today tracked paths are repository-relative (and include files outside the subdirectory) while untracked paths are subdirectory-relative.
+- `F15.changes-subdir-paths`: `changes` for a subdirectory of a repository lists only the changes under it, tracked and untracked alike, as paths relative to the requested directory.
 - `F15.non-repo`: on a plain directory, a missing directory and a non-repository file every operation answers 200 with an empty result (`[]`, `{"original": null, "modified": null}`, `{"commits": [], "has_more": false}`); a repository without commits lists its files as `ADDED` and has no commits.
 - `F15.diff`: `diff` for a modified file returns the base text as `original` and the disk text as `modified` (final newline dropped on both sides), an untracked file has `original` `""`, and an explicit `ref` moves the base.
 - `F15.diff-commit`: `commit=<sha>` returns the file as that commit changed it, read from git objects: `original` from the first parent (empty for the root commit or an added file), `modified` from the commit (empty for a file it deleted), also for files no longer on disk and for abbreviated SHAs.
@@ -293,7 +293,7 @@ Preconditions:
   (`core.quotePath`), with quotes kept and backslashes turned into slashes by
   the POSIX path serializer. Untracked names with a space are fine; untracked
   non-ASCII names are mangled the same way.
-- **Subdirectory of a repository (`F15.changes-subdir-paths`), known bug.**
+- **Subdirectory of a repository (`F15.changes-subdir-paths`).**
   `path` is `src/` of a copy with a modified `src/app.py` and an untracked
   `src/new.py`.
   ```sh
@@ -304,7 +304,7 @@ Preconditions:
     --check 0.path eq README.md --check 1.path eq notes.txt --check 2.path eq src/app.py --check 3.path eq src/new.py
   control-agent-server api GET /api/git/changes --query path="$F/subdir/src" --expect 200 \
     --raw-out "$F/subdir.json" --save F15.changes-subdir-paths/src
-  python3 - "$F/subdir.json" "$F/subdir/src" "$F/subdir" <<'PY' | control-agent-server assert --check paths len-ge 1 --check bases len-ge 1  # bug: value.paths eq '["README.md", "new.py", "src/app.py"]' && value.bases len-eq 0
+  python3 - "$F/subdir.json" "$F/subdir/src" "$F/subdir" <<'PY' | control-agent-server assert --check paths eq '["app.py", "new.py"]' --check bases len-eq 1 --check 'bases.0' eq "$F/subdir/src"
   import json, os, sys
   changes = json.load(open(sys.argv[1]))
   paths = sorted(c["path"] for c in changes if c["status"] != "DELETED")
@@ -313,14 +313,12 @@ Preconditions:
   PY
   ```
   The repository root lists all four changes on one base (positive
-  control). Expected: every returned path for `src/` resolves against one
-  base (the requested directory or the repository root). Actual:
-  `[UPDATED README.md, ADDED new.py, UPDATED src/app.py]`: tracked paths come
-  from `git diff --name-status` (repository-relative, whole repository, so
-  `README.md` outside `src/` is listed) and untracked ones from
-  `git ls-files --others` run in `src/` (subdirectory-relative, so the root's
-  `notes.txt` is missing). Joined to `path`, `README.md` and `src/app.py`
-  name files that do not exist.
+  control). For `src/` the list is `[UPDATED app.py, ADDED new.py]`: only the
+  changes under `src/` (the root's `README.md` and `notes.txt` are left out),
+  every path relative to the requested directory, so each one joined to
+  `path` names a file that exists. `get_changes_in_repo` runs
+  `git diff --name-status --relative`, which is scoped and relative the same
+  way as `git ls-files --others` for untracked files.
 - **Not a repository, or no commits yet (`F15.non-repo`).**
   ```sh
   mkdir -p "$F/plain"

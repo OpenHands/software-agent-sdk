@@ -4,6 +4,7 @@ import asyncio
 import os
 import signal
 from pathlib import Path
+from urllib.parse import quote, urlencode
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import sanitized_env
@@ -134,7 +135,14 @@ class VSCodeService:
         if self.server_base_path:
             base = f"{base}/{self.server_base_path.strip('/')}"
 
-        return f"{base}/?tkn={self.connection_token}&folder={workspace_dir}"
+        # Encode the values so a path with '&', '#', '?' or spaces decodes back
+        # to the same folder; '/' stays readable.
+        query = urlencode(
+            {"tkn": self.connection_token, "folder": workspace_dir},
+            quote_via=quote,
+            safe="/",
+        )
+        return f"{base}/?{query}"
 
     def is_running(self) -> bool:
         """Check if VSCode server is running.

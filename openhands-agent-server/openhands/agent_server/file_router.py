@@ -32,7 +32,7 @@ from openhands.agent_server._secret_redaction import (
     should_redact,
 )
 from openhands.agent_server.config import Config
-from openhands.agent_server.models import Success
+from openhands.agent_server.models import FileUploadResult, Success
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import (
@@ -83,7 +83,7 @@ _FILE_DOWNLOAD_RESPONSES: dict[int | str, dict[str, Any]] = {
 }
 
 
-async def _upload_file(path: str, file: UploadFile) -> Success:
+async def _upload_file(path: str, file: UploadFile) -> FileUploadResult:
     """Internal helper to upload a file to the workspace."""
     update_last_execution_time()
     logger.info(f"Uploading file: {path}")
@@ -102,12 +102,14 @@ async def _upload_file(path: str, file: UploadFile) -> Success:
         # Offload writes to a worker thread so slow storage (NFS, FUSE,
         # encrypted FS) cannot starve the event loop for the upload's
         # duration.
+        file_size = 0
         with open(target_path, "wb") as f:
             while chunk := await file.read(8192):  # Read in 8KB chunks
                 await asyncio.to_thread(f.write, chunk)
+                file_size += len(chunk)
 
         logger.info(f"Uploaded file to {target_path}")
-        return Success()
+        return FileUploadResult(file_size=file_size)
 
     except HTTPException:
         raise
@@ -708,7 +710,7 @@ def _create_tar_gz_archive(root: Path, output_path: Path, excludes: list[str]) -
 async def upload_file_query(
     path: Annotated[str, Query(description="Absolute file path")],
     file: Annotated[UploadFile, File()],
-) -> Success:
+) -> FileUploadResult:
     """Upload a file to the workspace using query parameter (preferred method)."""
     return await _upload_file(path, file)
 
@@ -866,9 +868,9 @@ async def search_subdirs(
     True. Returns absolute paths so the GUI can use a result directly as
     ``workspace.working_dir``.
 
-    Results are sorted case-insensitively by name and paginated. ``page_id`` is
-    the ``next_page_id`` returned by the previous page (the lowercase name of
-    the first item to include on the next page).
+    Results are sorted case-insensitively by name (ties broken by the exact
+    name) and paginated. ``page_id`` is the ``next_page_id`` returned by the
+    previous page (the name of the first item to include on the next page).
     """
 
     target = Path(path)
@@ -908,19 +910,26 @@ async def search_subdirs(
             detail=f"Permission denied: {e}",
         )
 
-    entries.sort(key=lambda e: e.name.lower())
+    # Break case-insensitive ties by the exact name so that names differing
+    # only by case ("Foo", "foo") have a stable order and distinct cursors.
+    entries.sort(key=lambda e: (e.name.lower(), e.name))
 
     start_index = 0
     if page_id:
-        for i, entry in enumerate(entries):
-            if entry.name.lower() == page_id:
-                start_index = i
-                break
+        names = [entry.name for entry in entries]
+        if page_id in names:
+            start_index = names.index(page_id)
+        else:
+            # Lowercase cursors issued by older servers.
+            for i, name in enumerate(names):
+                if name.lower() == page_id:
+                    start_index = i
+                    break
 
     page_items = entries[start_index : start_index + limit]
     next_page_id: str | None = None
     if start_index + limit < len(entries):
-        next_page_id = entries[start_index + limit].name.lower()
+        next_page_id = entries[start_index + limit].name
 
     return SubdirectoryPage(items=page_items, next_page_id=next_page_id)
 
