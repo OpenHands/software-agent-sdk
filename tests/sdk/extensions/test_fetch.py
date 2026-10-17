@@ -26,6 +26,12 @@ def test_parse_github_shorthand():
     assert url == "https://github.com/owner/repo.git"
 
 
+def test_parse_github_shorthand_with_git_suffix():
+    source_type, url = parse_extension_source("github:owner/repo.git")
+    assert source_type == SourceType.GITHUB
+    assert url == "https://github.com/owner/repo.git"
+
+
 def test_parse_github_shorthand_with_whitespace():
     source_type, url = parse_extension_source("  github:owner/repo  ")
     assert source_type == SourceType.GITHUB
