@@ -30,6 +30,7 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect
 
 from openhands.agent_server.__main__ import preload_modules
+from openhands.agent_server.config import load_config
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.event import (
@@ -120,6 +121,7 @@ def live_server_env(
     # Ensure default config uses our file and disable any env key override
     monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg_file))
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / ".openhands"))
+    monkeypatch.delenv("OH_CONVERSATIONS_PATH", raising=False)
     monkeypatch.delenv("SESSION_API_KEY", raising=False)
     monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
     monkeypatch.delenv("TMUX_TMPDIR", raising=False)
@@ -295,6 +297,12 @@ def test_live_server_does_not_use_inherited_session_key(tmp_path, monkeypatch):
     monkeypatch.setenv("OH_SESSION_API_KEYS_0", "host-session-key")
     with live_server_env(tmp_path, monkeypatch):
         assert "OH_SESSION_API_KEYS_0" not in os.environ
+
+
+def test_live_server_uses_configured_conversations_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("OH_CONVERSATIONS_PATH", str(tmp_path / "host-conversations"))
+    with live_server_env(tmp_path, monkeypatch):
+        assert load_config().conversations_path == tmp_path / "conversations"
 
 
 def test_prepare_for_sandbox_pause_drains_conversations(server_env):
