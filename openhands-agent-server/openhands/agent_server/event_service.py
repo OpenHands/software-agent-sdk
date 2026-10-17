@@ -286,17 +286,24 @@ class EventService:
             },
         )
 
-    async def save_meta(self):
+    async def save_meta(self, stored: StoredConversation | None = None) -> None:
+        """Persist ``stored`` (default: the current metadata) to ``meta.json``.
+
+        A new ``stored`` becomes ``self.stored`` only after the write succeeds,
+        so a refused write (e.g. lost lease ownership) leaves no visible change.
+        """
+        new_stored = self.stored if stored is None else stored
         with self._write_guard():
             meta_file = self.conversation_dir / "meta.json"
             atomic_write_text(
                 meta_file,
-                self.stored.model_dump_json(
+                new_stored.model_dump_json(
                     context={
                         "cipher": self.cipher,
                     }
                 ),
             )
+        self.stored = new_stored
 
     def _without_stored_secret(self, secret_name: str) -> StoredConversation:
         # meta.json (StoredConversation) no longer carries the agent, so there is
@@ -462,10 +469,11 @@ class EventService:
                     agent.restart_for_updated_credentials(secrets)
 
         await asyncio.to_thread(_update)
-        self.stored = self.stored.model_copy(
-            update={"secrets": {**self.stored.secrets, **secrets}}
+        await self.save_meta(
+            self.stored.model_copy(
+                update={"secrets": {**self.stored.secrets, **secrets}}
+            )
         )
-        await self.save_meta()
 
     def _write_guard(self):
         if self._lease is None or self._lease_generation is None:
@@ -2257,15 +2265,17 @@ class EventService:
         )
 
     def _get_agent_final_response_sync(self) -> str:
-        """Extract the agent's final response from the conversation events.
+        """Extract the agent's final response from the active branch.
 
+        Only the active branch counts: after ``navigate`` moves HEAD back, an
+        answer on the abandoned branch is not the conversation's response.
         Reads directly from the EventLog without acquiring the state lock.
         EventLog reads are safe without the FIFOLock because events are
         append-only and immutable once written.
         """
         if not self._conversation:
             raise ValueError("inactive_service")
-        return get_agent_final_response(self._conversation._state.events)
+        return get_agent_final_response(self._conversation._state.active_branch())
 
     async def get_agent_final_response(self) -> str:
         """Extract the agent's final response from the conversation events.

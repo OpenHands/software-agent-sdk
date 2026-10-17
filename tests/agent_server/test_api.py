@@ -188,7 +188,9 @@ def test_cleanup_stale_tmux_sessions_spares_live_sibling_socket(monkeypatch):
     silently destroying the terminals of every other running agent-server.
     A socket whose owner is gone must still be reclaimed.
     """
-    with tempfile.TemporaryDirectory(prefix="oh-shared-tmux-") as socket_dir:
+    with tempfile.TemporaryDirectory(
+        prefix="oh-shared-tmux-", dir="/tmp"
+    ) as socket_dir:
         monkeypatch.setenv("TMUX_TMPDIR", socket_dir)
 
         # Conversation A: a live pool whose long-running command must survive.
@@ -295,7 +297,9 @@ def test_cleanup_stale_tmux_sessions_serializes_with_socket_creation(monkeypatch
         if "mark_socket_owner(" in line
     )
 
-    with tempfile.TemporaryDirectory(prefix="oh-concurrent-init-") as socket_dir:
+    with tempfile.TemporaryDirectory(
+        prefix="oh-concurrent-init-", dir="/tmp"
+    ) as socket_dir:
         monkeypatch.setenv("TMUX_TMPDIR", socket_dir)
         env = {**os.environ, "TMUX_TMPDIR": socket_dir}
         child = subprocess.Popen(

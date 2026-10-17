@@ -208,6 +208,26 @@ async def test_concurrent_runtime_requests_share_event_loop_bash_service(
 
 
 @pytest.mark.asyncio
+async def test_scoped_bash_routes_reject_malformed_conversation_id(runtime_client):
+    client, app = runtime_client
+    prefix = "/api/conversations/{runtime_conversation_id}/bash/"
+    routes = [
+        route
+        for route in app.routes
+        if isinstance(route, APIRoute) and route.path.startswith(prefix)
+    ]
+    assert len(routes) == 7
+    for route in routes:
+        path = route.path.replace("{runtime_conversation_id}", "not-a-uuid")
+        path = path.replace("{event_id}", "x").replace("{command_id}", "x")
+        for method in route.methods:
+            response = await client.request(method, path)
+            assert response.status_code == 422, (method, path, response.text)
+            locs = [error["loc"] for error in response.json()["detail"]]
+            assert ["path", "runtime_conversation_id"] in locs, response.text
+
+
+@pytest.mark.asyncio
 async def test_runtime_upload_onto_directory_or_under_file_is_400(
     runtime_client, tmp_path
 ):
