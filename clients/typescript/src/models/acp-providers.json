@@ -33,7 +33,7 @@
       "npx",
       "-y",
       "--prefer-offline",
-      "@agentclientprotocol/claude-agent-acp@0.90.0"
+      "@agentclientprotocol/claude-agent-acp@0.89.0"
     ],
     "default_model": "opus[1m]",
     "default_session_mode": "bypassPermissions",
