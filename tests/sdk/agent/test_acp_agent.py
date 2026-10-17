@@ -5159,6 +5159,20 @@ class TestSelectAuthMethod:
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, {}) is None
 
+    def test_devin_browser_with_api_key(self):
+        """devin acp's lone ``devin-browser`` method is selected when
+        WINDSURF_API_KEY is present — the key rides ``_meta.api_key`` on the
+        ``authenticate`` request rather than being read from the env by the
+        subprocess (devin ignores local CLI credentials in ACP mode)."""
+        methods = [self._make_auth_method("devin-browser")]
+        env = {"WINDSURF_API_KEY": "wk-test"}
+        assert _select_auth_method(methods, env) == "devin-browser"
+
+    def test_devin_browser_without_api_key(self, tmp_path):
+        methods = [self._make_auth_method("devin-browser")]
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, {}) is None
+
     def test_empty_auth_methods(self):
         assert _select_auth_method([], {}) is None
 
@@ -9203,6 +9217,28 @@ class TestACPFileSecretMaterialisation:
             self._run_start(agent, state, conn=conn)
 
         mock_warn.assert_called_once()
+
+    def test_devin_auth_passes_api_key_on_the_request(self, tmp_path):
+        """devin-browser authenticates out of the ``authenticate`` payload
+        itself — the SDK must send the WINDSURF_API_KEY secret as
+        ``api_key`` (serialised to ``_meta.api_key``), since devin acp
+        refuses to read local CLI credentials."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"WINDSURF_API_KEY": StaticSecret(value=SecretStr("wk-test"))}
+        )
+        conn = self._make_conn(agent_name="affogato", auth_method="devin-browser")
+
+        self._run_start(agent, state, conn=conn)
+
+        conn.authenticate.assert_awaited_once()
+        _, kwargs = conn.authenticate.call_args
+        assert kwargs["method_id"] == "devin-browser"
+        assert kwargs["api_key"] == "wk-test"
+        conn.new_session.assert_called_once()
 
     def test_pi_initialization_skips_set_session_mode(self, tmp_path):
         """Pi has default_session_mode=None, so set_session_mode is not called."""
