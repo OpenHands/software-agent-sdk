@@ -1359,6 +1359,54 @@ class TestEventServiceSendMessage:
         assert event_service._acp_internal_rerun_requested is False
 
     @pytest.mark.asyncio
+    async def test_late_stop_during_run_lock_wait_drops_internal_acp_rerun(
+        self, event_service, tmp_path
+    ):
+        """A stop that lands while run() waits on _run_lock must win, even when
+        the old run task is still alive (its interrupt drain timed out)."""
+        agent = ACPAgent(acp_command=["echo", "test"])
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            max_iteration_per_run=3,
+            stuck_detection=False,
+        )
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+        event_service._mark_running_acp_prompt_superseded = AsyncMock(
+            return_value=(True, False)
+        )
+        event_service.interrupt = AsyncMock()
+        event_service._get_execution_status = AsyncMock(
+            return_value=ConversationExecutionStatus.PAUSED
+        )
+        run_task = asyncio.create_task(asyncio.Event().wait())
+        event_service._run_task = run_task
+        await event_service._run_lock.acquire()
+        try:
+            send = asyncio.create_task(
+                event_service.send_message(Message(role="user", content=[]), run=True)
+            )
+            for _ in range(200):
+                if event_service.interrupt.await_count:
+                    break
+                await asyncio.sleep(0.01)
+            event_service.interrupt.assert_awaited_once_with(internal_acp_rerun=True)
+            for _ in range(5):
+                await asyncio.sleep(0)
+
+            event_service._explicit_interrupt_generation += 1
+            event_service._rerun_requested = False
+            event_service._acp_internal_rerun_requested = False
+            event_service._run_lock.release()
+            await asyncio.wait_for(send, timeout=2)
+        finally:
+            run_task.cancel()
+
+        assert event_service._rerun_requested is False
+        assert event_service._acp_internal_rerun_requested is False
+
+    @pytest.mark.asyncio
     async def test_send_message_with_run_true_logs_exception(self, event_service):
         """Test that exceptions from conversation.run() are caught and logged."""
         # Mock conversation and its methods
@@ -1974,6 +2022,33 @@ class TestEventServiceRun:
 
         with pytest.raises(ValueError, match="conversation_already_running"):
             await event_service.run()
+
+    @pytest.mark.asyncio
+    async def test_run_already_running_does_not_wait_for_state_lock(
+        self, event_service
+    ):
+        """A live run holds the state lock for its whole step (e.g. a long tool
+        call); run() must refuse at once instead of blocking behind it."""
+        lock_released = threading.Event()
+        state = MagicMock(spec=ConversationState)
+        state.execution_status = ConversationExecutionStatus.RUNNING
+        state.__enter__ = MagicMock(
+            side_effect=lambda: (lock_released.wait(10), state)[1]
+        )
+        state.__exit__ = MagicMock(return_value=None)
+        conversation = MagicMock(spec=Conversation)
+        conversation._state = state
+        event_service._conversation = conversation
+
+        run_task = asyncio.create_task(asyncio.Event().wait())
+        event_service._run_task = run_task
+        try:
+            with pytest.raises(ValueError, match="conversation_already_running"):
+                await asyncio.wait_for(event_service.run(), timeout=2)
+            state.__enter__.assert_not_called()
+        finally:
+            lock_released.set()
+            run_task.cancel()
 
     @pytest.mark.asyncio
     async def test_run_starts_background_task(self, event_service):

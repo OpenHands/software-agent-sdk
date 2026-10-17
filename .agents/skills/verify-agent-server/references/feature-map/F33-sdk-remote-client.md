@@ -1394,19 +1394,19 @@ Preconditions:
   `running`; the second `run()` posts `/run`, gets 409 (already running),
   keeps waiting and returns at `finished`; the file the 15 s command wrote
   exists and the conversation has its one user message.
-- **Join a run during a long tool call (`F33.conversation-run-join-long-tool`), known bug.**
-  The same join as above, but the agent's command runs 45 s. The server's
-  `/run` reads the status under the conversation's state lock, which the run
-  loop holds for the whole tool call (`event_service.py`
-  `_get_execution_status_sync`, see `F05.pause-tool-step`), and the SDK gives
-  the run trigger a 30 s HTTP timeout (`remote_conversation.py`, `run()`), so
-  today the second `run()` raises `ConversationRunError` wrapping
-  `ReadTimeout` after 30 s while the server run goes on and finishes. The
-  agent's model is `LONG_STUB`, which asks for exactly that `terminal` call
-  with a 90 s tool timeout: a real model chooses its own `timeout`, and
-  without one the terminal tool returns after 30 s of silence, which races
-  the SDK's own 30 s. The probe records how the second `run()` ended; the
-  correct behavior asserted here is that it waits and returns at `finished`.
+- **Join a run during a long tool call (`F33.conversation-run-join-long-tool`).**
+  The same join as above, but the agent's command runs 45 s. The run loop
+  holds the conversation's state lock for the whole tool call (see
+  `F05.pause-tool-step`), and the SDK gives the run trigger a 30 s HTTP
+  timeout (`remote_conversation.py`, `run()`). The server's `/run` checks its
+  live run task before reading the status under that lock, so it answers 409
+  at once and the second `run()` joins the run instead of raising
+  `ConversationRunError` wrapping `ReadTimeout`. The agent's model is
+  `LONG_STUB`, which asks for exactly that `terminal` call with a 90 s tool
+  timeout: a real model chooses its own `timeout`, and without one the
+  terminal tool returns after 30 s of silence, which races the SDK's own
+  30 s. The probe records how the second `run()` ended and asserts that it
+  waited and returned at `finished`.
   ```sh
   control-agent-server exec --env PYTHONPATH="$F33" --save F33.conversation-run-join-long-tool/probe -- .venv/bin/python - <<'PY'
   import os
@@ -1441,13 +1441,11 @@ Preconditions:
   test "$(cat "$F33/longtool/qa-f33-long.txt")" = late
   control-agent-server conversation events "$LONG" --kinds ActionEvent --contains '"timeout": 90.0' --expect-count 1
   control-agent-server api GET "/api/conversations/$LONG" --check execution_status eq finished --save F33.conversation-run-join-long-tool/get
-  control-agent-server assert --json "$F33/longtool.json" --check joined eq true  # bug: value.error contains ReadTimeout && value.status eq running
+  control-agent-server assert --json "$F33/longtool.json" --check joined eq true
   ```
   `run(blocking=False)` returns at once; once the 45 s command is running,
-  the blocking `run()` should wait for it and return at `finished`. Today
-  the probe records `ReadTimeout('timed out')` after 30.0 s with the
-  conversation still `running`; the server run goes on, the file appears and
-  the conversation finishes.
+  the blocking `run()` waits for it (about 45 s, no error) and returns at
+  `finished`; the file appears and the conversation has finished.
 - **A stuck agent (`F33.conversation-stuck`).** The agent's model is
   `LOOP_STUB`, which repeats the same `think` call, so the server's stuck
   detector stops the run.
@@ -2007,11 +2005,10 @@ Preconditions:
   restart (a restart's window between "server ready" and the next retry
   varies from under a second to many seconds).
 - `run()` posts `/run` with a 30 s timeout. While the agent's tool call is
-  executing, the server's `/run` (and `/pause`) wait for the conversation's
-  state lock, so `run()` on a conversation that is already running a command
-  longer than 30 s raises `ConversationRunError` (`ReadTimeout`) although
-  the run is healthy (`F33.conversation-run-join-long-tool`, known bug); a
-  shorter command is joined normally (`F33.conversation-run-timeout`).
+  executing, the run loop holds the conversation's state lock (`/pause`
+  waits for it); `/run` answers 409 from the live run task without taking
+  that lock, so `run()` joins a run whatever its current command's length
+  (`F33.conversation-run-join-long-tool`, `F33.conversation-run-timeout`).
 - `RemoteConversation.create(...)` with an `initial_message` starts a run on
   the server whatever `initial_message.run` says (see F04); repeating the
   request with the same `conversation_id` returns the existing conversation

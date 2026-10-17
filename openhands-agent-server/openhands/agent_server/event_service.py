@@ -1485,22 +1485,30 @@ class EventService:
 
         # Use lock to make check-and-set atomic, preventing race conditions
         async with self._run_lock:
+            # A stale internal ACP rerun is dropped before any refusal: an
+            # explicit stop that landed while we waited on _run_lock must win,
+            # and a refusal would make the caller re-arm the rerun.
             if (
+                acp_internal_rerun_generation is not None
+                and self._explicit_interrupt_generation != acp_internal_rerun_generation
+            ):
+                return
+            # _run_task first: a live run holds the state lock across its step
+            # (a tool call can last minutes), so reading execution status would
+            # block this request behind it instead of answering at once.
+            if (self._run_task is not None and not self._run_task.done()) or (
                 await self._get_execution_status()
                 == ConversationExecutionStatus.RUNNING
             ):
                 raise ValueError("conversation_already_running")
             if self._closing:
                 raise ValueError("inactive_service")
+            # Re-check: the status read above can yield to a late stop too.
             if (
                 acp_internal_rerun_generation is not None
                 and self._explicit_interrupt_generation != acp_internal_rerun_generation
             ):
                 return
-
-            # Check if there's already a running task
-            if self._run_task is not None and not self._run_task.done():
-                raise ValueError("conversation_already_running")
 
             # Capture conversation reference for the closure
             conversation = self._conversation
