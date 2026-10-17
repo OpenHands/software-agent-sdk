@@ -1,13 +1,17 @@
 import asyncio
 import json
+import threading
+from collections.abc import Awaitable
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
-from uuid import uuid4
+from unittest.mock import AsyncMock, patch
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from litellm.types.utils import ModelResponse
 from pydantic import SecretStr
 from starlette.requests import Request
 from starlette.responses import Response
@@ -15,6 +19,7 @@ from starlette.routing import Match
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_service import AutoTitleSubscriber
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
 from openhands.agent_server.docker_runtime.registry import (
     ConversationContainer,
@@ -24,11 +29,22 @@ from openhands.agent_server.docker_runtime.routers import (
     delete_conversation,
     docker_conversation_router,
     proxy_conversation,
+    start_conversation,
 )
 from openhands.agent_server.event_router import event_read_router
-from openhands.agent_server.models import UpdateSecretsRequest
+from openhands.agent_server.event_service import EventService
+from openhands.agent_server.models import StoredConversation, UpdateSecretsRequest
+from openhands.agent_server.persistence import get_llm_profile_store
+from openhands.agent_server.persistence.store import get_provider_connections_store
+from openhands.sdk import LLM, Agent, Conversation
+from openhands.sdk.event import MessageEvent
+from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.provider_connection_store import ProviderConnection
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.secret import LookupSecret
+from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.workspace import LocalWorkspace
 
 
 def test_docker_mode_replaces_local_conversation_execution_routes(tmp_path):
@@ -542,3 +558,354 @@ def test_a_symlinked_conversation_dir_is_rejected(tmp_path, monkeypatch):
         )
 
     assert response.status_code == 422
+
+
+@pytest.fixture
+def title_start(tmp_path, monkeypatch):
+    app, registry = _docker_start_app(tmp_path, monkeypatch)
+    host = get_llm_profile_store()
+    for name in ("title-aux", "other"):
+        host.save(
+            name,
+            LLM(model=f"openai/{name}", api_key=SecretStr(f"{name}-key")),
+            include_secrets=True,
+            cipher=registry.config.cipher,
+        )
+    attempts = SimpleNamespace(fail=False, forwarded={})
+
+    async def get_or_create(_conversation_id):
+        registry.provisioning.load(_conversation_id)
+        return SimpleNamespace(host="http://inner", api_key="inner-key")
+
+    async def post(self, url, **kwargs):
+        body = kwargs["json"]
+        conversation_id = UUID(body["conversation_id"])
+        if attempts.fail:
+            return httpx.Response(500, request=httpx.Request("POST", url))
+        attempts.forwarded.setdefault(conversation_id, body)
+        directory = registry.conversation_dir(conversation_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "meta.json").write_text("{}")
+        return httpx.Response(200, json={"id": str(conversation_id)})
+
+    monkeypatch.setattr(registry, "get_or_create", get_or_create)
+    monkeypatch.setattr(registry, "stop", AsyncMock())
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+
+    def profiles(conversation_id):
+        return LLMProfileStore(
+            base_dir=registry.provisioning.runtime_dir(conversation_id)
+            / "persistence"
+            / "profiles"
+        )
+
+    with TestClient(app) as client:
+
+        def start(name="title-aux", conversation_id=None):
+            conversation_id = conversation_id or uuid4()
+            response = client.post(
+                "/api/conversations",
+                json={
+                    "conversation_id": str(conversation_id),
+                    "agent": {
+                        "kind": "Agent",
+                        "llm": {"model": "openai/agent", "api_key": "agent-key"},
+                        "tools": [],
+                    },
+                    "title_llm_profile": name,
+                },
+            )
+            return conversation_id, response
+
+        yield SimpleNamespace(
+            start=start,
+            profiles=profiles,
+            host=host,
+            registry=registry,
+            attempts=attempts,
+            client=client,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("linked", [False, True])
+async def test_docker_title_uses_only_selected_profile_with_runtime_credentials(
+    title_start, tmp_path, linked
+):
+    t = title_start
+    if linked:
+        get_provider_connections_store().create(
+            ProviderConnection(
+                id="provider",
+                display_name="Provider",
+                provider="openai",
+                api_key=SecretStr("title-aux-key"),
+                base_url="http://title-provider/v1",
+                created_at=0,
+                updated_at=0,
+            ),
+            cipher=t.registry.config.cipher,
+        )
+        t.host.save(
+            "title-aux",
+            LLM(model="openai/title-aux", provider_connection_id="provider"),
+            cipher=t.registry.config.cipher,
+        )
+    conversation_id, response = t.start()
+    assert response.status_code == 200
+    identity = t.registry.provisioning.load(conversation_id)
+    profiles = t.profiles(conversation_id)
+    assert profiles.list() == ["title-aux.json"]
+    llm = profiles.load("title-aux", cipher=identity.cipher)
+    assert llm.provider_connection_id is None
+    assert llm.api_key == SecretStr("title-aux-key")
+    if linked:
+        assert llm.base_url == "http://title-provider/v1"
+    payload = json.loads((profiles.base_dir / "title-aux.json").read_text())
+    assert identity.cipher.decrypt(payload["api_key"]) == SecretStr("title-aux-key")
+    assert t.registry.config.cipher.decrypt(payload["api_key"]) is None
+    assert not list((profiles.base_dir.parent / "provider-connections").glob("*.json"))
+    assert not any(
+        b"title-aux-key" in path.read_bytes() or b"other-key" in path.read_bytes()
+        for path in profiles.base_dir.parent.rglob("*")
+        if path.is_file()
+    )
+
+    # The inner subscriber consumes the encrypted runtime store, not the host store.
+    service = AsyncMock(spec=EventService)
+    service.stored = StoredConversation(
+        id=conversation_id,
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        confirmation_policy=NeverConfirm(),
+        title_llm_profile="title-aux",
+    )
+    service.cipher = identity.cipher
+    saved = asyncio.Event()
+    service.save_meta.side_effect = saved.set
+    calls = []
+
+    def completion(**kwargs):
+        calls.append((kwargs["model"], kwargs["api_key"], kwargs.get("api_base")))
+        return ModelResponse(
+            choices=[
+                {
+                    "message": {"role": "assistant", "content": "Auxiliary title"},
+                    "finish_reason": "stop",
+                    "index": 0,
+                }
+            ]
+        )
+
+    conversation = Conversation(
+        agent=Agent(llm=LLM(model="acp-managed", usage_id="acp-managed"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+    )
+    try:
+        service._conversation = conversation
+        with (
+            patch(
+                "openhands.agent_server.persistence.store.get_llm_profile_store",
+                return_value=profiles,
+            ),
+            patch("openhands.sdk.llm.llm.litellm_completion", side_effect=completion),
+        ):
+            await AutoTitleSubscriber(service)(
+                MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user", content=[TextContent(text="Fix the login bug")]
+                    ),
+                )
+            )
+            await asyncio.wait_for(saved.wait(), timeout=5)
+    finally:
+        conversation.close()
+    assert service.stored.title == "Auxiliary title"
+    assert calls == [
+        (
+            "title-aux",
+            "title-aux-key",
+            "http://title-provider/v1" if linked else None,
+        )
+    ]
+
+
+def test_docker_title_snapshot_survives_host_edits_repeat_and_release(title_start):
+    t = title_start
+    conversation_id, response = t.start()
+    assert response.status_code == 200
+    profile = t.profiles(conversation_id).base_dir / "title-aux.json"
+    snapshot = profile.read_bytes()
+    t.host.save(
+        "title-aux",
+        LLM(model="openai/edited", api_key=SecretStr("edited")),
+        include_secrets=True,
+        cipher=t.registry.config.cipher,
+    )
+    for name in ("title-aux", "other", None):
+        assert t.start(name, conversation_id)[1].status_code == 200
+        assert profile.read_bytes() == snapshot
+        assert t.profiles(conversation_id).list() == ["title-aux.json"]
+    assert (
+        t.client.delete(f"/api/conversations/{conversation_id}/runtime").status_code
+        == 204
+    )
+    assert t.start("other", conversation_id)[1].status_code == 200
+    assert profile.read_bytes() == snapshot
+    assert t.profiles(conversation_id).list() == ["title-aux.json"]
+
+
+@pytest.mark.parametrize("retry_name", ["other", None, "missing"])
+def test_failed_docker_start_replaces_title_snapshot_on_retry(title_start, retry_name):
+    t = title_start
+    t.attempts.fail = True
+    conversation_id, response = t.start()
+    assert response.status_code == 500
+    assert t.profiles(conversation_id).list() == ["title-aux.json"]
+    t.attempts.fail = False
+    assert t.start(retry_name, conversation_id)[1].status_code == 200
+    assert t.profiles(conversation_id).list() == (
+        ["other.json"] if retry_name == "other" else []
+    )
+
+
+@pytest.mark.parametrize("name", [None, "missing", "../escape", "broken", "dangling"])
+def test_unavailable_docker_title_profile_keeps_creation_nonfatal(title_start, name):
+    t = title_start
+    (t.host.base_dir / "broken.json").write_text("not json")
+    t.host.save("dangling", LLM(model="openai/aux", provider_connection_id="missing"))
+    conversation_id, response = t.start(name)
+    assert response.status_code == 200
+    assert t.profiles(conversation_id).list() == []
+    assert t.attempts.forwarded[conversation_id]["title_llm_profile"] == name
+
+
+def test_concurrent_docker_starts_keep_the_winning_title_profile(
+    title_start, monkeypatch
+):
+    t = title_start
+    conversation_id = uuid4()
+    first_forwarded = threading.Event()
+    second_requested = threading.Event()
+    original_post = httpx.AsyncClient.post
+    snapshots = []
+
+    async def post(self, url, **kwargs):
+        if kwargs["json"]["title_llm_profile"] == "title-aux":
+            first_forwarded.set()
+            assert await asyncio.to_thread(second_requested.wait, 5)
+            # Let the competing request reach the same creation window.
+            await asyncio.sleep(0.1)
+            snapshots.append(t.profiles(conversation_id).list())
+        return await original_post(self, url, **kwargs)
+
+    def second_start():
+        assert first_forwarded.wait(5)
+        second_requested.set()
+        return t.start("other", conversation_id)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(t.start, "title-aux", conversation_id)
+        second = pool.submit(second_start)
+        assert first.result(timeout=10)[1].status_code == 200
+        assert second.result(timeout=10)[1].status_code == 200
+    assert snapshots == [["title-aux.json"]]
+    assert t.profiles(conversation_id).list() == ["title-aux.json"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancellations", [0, 1, 3])
+@pytest.mark.parametrize("worker_fails", [False, True])
+async def test_delete_waits_for_title_preparation_before_removing_runtime(
+    title_start, monkeypatch, cancellations, worker_fails
+):
+    t = title_start
+    conversation_id = uuid4()
+    preparing = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    order = []
+    worker_error = OSError("synthetic profile preparation failure")
+    prepare = t.registry.provisioning.prepare_title_profile
+    begin_delete = t.registry.begin_delete
+
+    def blocked_prepare(*args):
+        preparing.set()
+        try:
+            assert release.wait(10)
+            prepare(*args)
+            if worker_fails:
+                raise worker_error
+        finally:
+            order.append("worker finished")
+            finished.set()
+
+    async def observed_delete(deleting_id):
+        order.append("delete entered")
+        return await begin_delete(deleting_id)
+
+    async def receive():
+        return {
+            "type": "http.request",
+            "body": json.dumps(
+                {
+                    "conversation_id": str(conversation_id),
+                    "agent": {"kind": "Agent", "llm": {"model": "test"}},
+                    "title_llm_profile": "title-aux",
+                }
+            ).encode(),
+        }
+
+    async def checkpoint():
+        # Let previously scheduled task wakeups run before the next cancellation.
+        loop = asyncio.get_running_loop()
+        resumed = loop.create_future()
+        loop.call_soon(resumed.set_result, None)
+        await resumed
+
+    request = Request({"type": "http", "app": t.client.app}, receive)
+    monkeypatch.setattr(
+        t.registry.provisioning, "prepare_title_profile", blocked_prepare
+    )
+    monkeypatch.setattr(t.registry, "begin_delete", observed_delete)
+    starting = asyncio.create_task(start_conversation(request, include_skills=False))
+    deletion = None
+    try:
+        assert await asyncio.to_thread(preparing.wait, 5)
+        for _ in range(cancellations):
+            starting.cancel()
+            await checkpoint()
+        exited_before_worker = starting.done()
+        deletion = asyncio.create_task(delete_conversation(conversation_id, request))
+        await checkpoint()
+        assert not finished.is_set()
+        release.set()
+        if cancellations:
+            with pytest.raises(asyncio.CancelledError) as cancelled:
+                await asyncio.wait_for(starting, 5)
+            assert starting.cancelled()
+            assert cancelled.value.__cause__ is (worker_error if worker_fails else None)
+        elif worker_fails:
+            with pytest.raises(HTTPException) as failure:
+                await asyncio.wait_for(starting, 5)
+            assert failure.value.status_code == 502
+            assert failure.value.__cause__ is worker_error
+        else:
+            assert (await asyncio.wait_for(starting, 5)).status_code == 200
+        assert (await asyncio.wait_for(deletion, 5)).status_code == 200
+        assert await asyncio.to_thread(finished.wait, 5)
+        assert not exited_before_worker
+        assert order == ["worker finished", "delete entered"]
+        assert not t.registry.provisioning.runtime_dir(conversation_id).exists()
+        assert not t.registry.provisioning.manifest_path(conversation_id).exists()
+        assert not t.registry.conversation_dir(conversation_id).exists()
+    finally:
+        release.set()
+        tasks: list[Awaitable[Response]] = [
+            task for task in (starting, deletion) if task is not None
+        ]
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 10)
+        if preparing.is_set():
+            assert await asyncio.to_thread(finished.wait, 5)
+        assert starting.done() and (deletion is None or deletion.done())
