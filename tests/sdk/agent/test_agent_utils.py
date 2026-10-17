@@ -1,13 +1,14 @@
 """Tests for agent message preparation utilities."""
 
+from typing import Literal
 from unittest.mock import Mock, patch
 
 import pytest
 
-from openhands.sdk.agent.utils import prepare_llm_messages
+from openhands.sdk.agent.utils import aprepare_llm_messages, prepare_llm_messages
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
-from openhands.sdk.event import Condensation, MessageEvent
+from openhands.sdk.event import Condensation, MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import Message, TextContent
 
 
@@ -198,3 +199,68 @@ def test_prepare_llm_messages_does_not_rebuild_view(monkeypatch, sample_events) 
     assert enforce_calls == 0, (
         "prepare_llm_messages must not call enforce_properties on the hot path"
     )
+
+
+def _system(text: str) -> SystemPromptEvent:
+    return SystemPromptEvent(system_prompt=TextContent(text=text), tools=[])
+
+
+def _turn(
+    source: Literal["user", "agent"],
+    role: Literal["user", "assistant"],
+    text: str,
+) -> MessageEvent:
+    return MessageEvent(
+        source=source,
+        llm_message=Message(role=role, content=[TextContent(text=text)]),
+    )
+
+
+async def test_prepare_llm_messages_drops_duplicate_system_message() -> None:
+    """A resumed log must not send the appended system prompt again."""
+    view = View.from_events(
+        [
+            _system("original"),
+            _turn("user", "user", "task"),
+            _system("duplicate"),
+            _turn("agent", "assistant", "done"),
+        ]
+    )
+
+    messages = prepare_llm_messages(view)
+    async_messages = await aprepare_llm_messages(view)
+
+    for prepared in (messages, async_messages):
+        assert isinstance(prepared, list)
+        assert [message.role for message in prepared] == [
+            "system",
+            "user",
+            "assistant",
+        ]
+        leading = prepared[0].content[0]
+        assert isinstance(leading, TextContent)
+        assert leading.text == "original"
+
+
+async def test_prepare_llm_messages_moves_lone_system_message_to_front() -> None:
+    view = View.from_events(
+        [
+            _turn("user", "user", "task"),
+            _system("original"),
+            _turn("agent", "assistant", "done"),
+        ]
+    )
+
+    messages = prepare_llm_messages(view)
+    async_messages = await aprepare_llm_messages(view)
+
+    for prepared in (messages, async_messages):
+        assert isinstance(prepared, list)
+        assert [message.role for message in prepared] == [
+            "system",
+            "user",
+            "assistant",
+        ]
+        leading = prepared[0].content[0]
+        assert isinstance(leading, TextContent)
+        assert leading.text == "original"
