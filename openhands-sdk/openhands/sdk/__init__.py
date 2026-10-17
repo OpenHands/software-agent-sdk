@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
+from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.agent import (
     Agent,
@@ -51,7 +52,6 @@ from openhands.sdk.settings import (
     ACP_PROVIDERS,
     ACPAgentSettings,
     ACPFileSecretSpec,
-    ACPModelOption,
     ACPProviderInfo,
     AgentSettingsBase,
     AgentSettingsConfig,
@@ -107,6 +107,10 @@ from openhands.sdk.workspace import (
     RemoteWorkspace,
     Workspace,
 )
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.settings.acp_providers import ACPModelOption
 
 
 try:
@@ -207,3 +211,11 @@ __all__ = [
     "page_iterator",
     "__version__",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name == "ACPModelOption":
+        from openhands.sdk.settings.acp_providers import _deprecated_model_option
+
+        return _deprecated_model_option()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

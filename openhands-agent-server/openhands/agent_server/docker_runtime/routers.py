@@ -218,9 +218,10 @@ async def _prepare_forward(
     context = settings.agent_settings.agent_context
     load_memory = context is not None and context.load_memory
     secrets = await asyncio.to_thread(request_secrets, start, config.cipher)
+    has_profile = start.agent_profile_id is not None or start.agent_profile is not None
     source = (
         None
-        if existing and start.agent_profile_id is not None
+        if existing and has_profile
         else await asyncio.to_thread(
             launch_source,
             start,

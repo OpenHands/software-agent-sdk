@@ -1,7 +1,9 @@
 import asyncio
 import contextlib
+import errno
 import io
 import json
+import os
 import shutil
 import threading
 import time
@@ -17,7 +19,10 @@ import pytest
 import pytest_asyncio
 from pydantic import SecretStr
 
-from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
+from openhands.agent_server.conversation_lease import (
+    LEASE_FILE_NAME,
+    ConversationLease,
+)
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService, RunSlot
 from openhands.agent_server.file_router import _create_zip_from_directory
@@ -51,12 +56,13 @@ from openhands.sdk.event.llm_convertible import (
     MessageEvent,
     ObservationEvent,
 )
+from openhands.sdk.io import DurabilityError
 from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.secret import StaticSecret
-from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.security.confirmation_policy import AlwaysConfirm, NeverConfirm
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
@@ -813,12 +819,212 @@ class TestEventServiceCountEvents:
         assert result == 5
 
 
+@pytest.mark.asyncio
+async def test_start_without_initial_message_waits_for_durability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    stored = StoredConversation(
+        id=uuid4(),
+        workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+        confirmation_policy=NeverConfirm(),
+        initial_message=None,
+        metrics=None,
+    )
+    service = EventService(
+        stored=stored,
+        agent=_sample_agent(),
+        conversations_dir=tmp_path,
+        lease_ttl_seconds=0,
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    original_fsync = os.fsync
+
+    def latched_fsync(fd: int) -> None:
+        entered.set()
+        if not release.wait(10):
+            raise TimeoutError("startup fsync latch was not released")
+        original_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", latched_fsync)
+    task = asyncio.create_task(service.start())
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        heartbeat = asyncio.Event()
+        asyncio.get_running_loop().call_soon(heartbeat.set)
+        await heartbeat.wait()
+        assert not task.done(), "start returned before startup writes were durable"
+    finally:
+        release.set()
+    await task
+    await service.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["navigate", "policy"])
+async def test_persisted_mutation_surfaces_fsync_failure_off_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+):
+    stored = StoredConversation(
+        id=uuid4(),
+        workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+        confirmation_policy=NeverConfirm(),
+        initial_message=None,
+        metrics=None,
+    )
+    service = EventService(
+        stored=stored,
+        agent=_sample_agent(),
+        conversations_dir=tmp_path,
+        lease_ttl_seconds=0,
+    )
+    await service.start()
+    if mutation == "navigate":
+        await service.send_message(
+            Message(role="user", content=[TextContent(text="hi")])
+        )
+    entered = threading.Event()
+    release = threading.Event()
+    caller_thread = threading.current_thread().name
+
+    def failing_fsync(fd: int) -> None:
+        assert threading.current_thread().name != caller_thread
+        entered.set()
+        if not release.wait(10):
+            raise TimeoutError("mutation fsync latch was not released")
+        raise OSError(errno.EIO, "injected fsync failure")
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+    if mutation == "navigate":
+        task = asyncio.create_task(service.navigate_to(None))
+    else:
+        task = asyncio.create_task(service.set_confirmation_policy(AlwaysConfirm()))
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        heartbeat = asyncio.Event()
+        asyncio.get_running_loop().call_soon(heartbeat.set)
+        await heartbeat.wait()
+        assert not task.done(), "mutation returned before fsync settled"
+    finally:
+        release.set()
+    with pytest.raises(DurabilityError, match="Deferred durability failed"):
+        await task
+    with suppress(DurabilityError):
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_policy_mutation_settles_accepted_flush(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    stored = StoredConversation(
+        id=uuid4(),
+        workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+        confirmation_policy=NeverConfirm(),
+        initial_message=None,
+        metrics=None,
+    )
+    service = EventService(
+        stored=stored,
+        agent=_sample_agent(),
+        conversations_dir=tmp_path,
+        lease_ttl_seconds=0,
+    )
+    await service.start()
+    entered = threading.Event()
+    release = threading.Event()
+    original_fsync = os.fsync
+
+    def latched_fsync(fd: int) -> None:
+        entered.set()
+        if not release.wait(10):
+            raise TimeoutError("policy fsync latch was not released")
+        original_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", latched_fsync)
+    task = asyncio.create_task(service.set_confirmation_policy(AlwaysConfirm()))
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        task.cancel()
+        heartbeat = asyncio.Event()
+        asyncio.get_running_loop().call_soon(heartbeat.set)
+        await heartbeat.wait()
+        assert not task.done(), "cancellation abandoned accepted fsync work"
+        task.cancel()
+        heartbeat.clear()
+        asyncio.get_running_loop().call_soon(heartbeat.set)
+        await heartbeat.wait()
+        assert not task.done(), "repeated cancellation abandoned accepted work"
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    conv = service.get_conversation()
+    assert isinstance(conv._state.confirmation_policy, AlwaysConfirm)
+    store = conv._state._fs
+    assert isinstance(store, LocalFileStore)
+    writer = store._durability
+    assert writer is not None and writer._queue.unfinished_tasks == 0
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_mutation_error_precedes_secondary_flush_error(event_service):
+    conversation = MagicMock()
+    conversation.navigate_to.side_effect = ValueError("invalid branch")
+    conversation._state.flush.side_effect = OSError("secondary flush failure")
+    event_service._conversation = conversation
+
+    with pytest.raises(ValueError, match="invalid branch"):
+        await event_service.navigate_to("unknown")
+    conversation._state.flush.assert_called_once()
+
+
 class TestEventServiceSendMessage:
     """Test cases for EventService.send_message method."""
 
-    async def _mock_executor(self, *args):
-        """Helper to create a mock coroutine for run_in_executor."""
-        return None
+    @pytest.mark.asyncio
+    async def test_send_waits_for_message_durability_failure(
+        self,
+        event_service: EventService,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        conv = Conversation(
+            agent=_sample_agent(),
+            persistence_dir=str(tmp_path / "persist"),
+            workspace=str(tmp_path),
+        )
+        conv._ensure_agent_ready()
+        conv._state.flush()
+        event_service._conversation = conv
+        entered = threading.Event()
+        release = threading.Event()
+        caller_thread = threading.current_thread().name
+
+        def failing_fsync(fd: int) -> None:
+            assert threading.current_thread().name != caller_thread
+            entered.set()
+            if not release.wait(10):
+                raise TimeoutError("fsync latch was not released")
+            raise OSError(errno.EIO, "injected fsync failure")
+
+        monkeypatch.setattr(os, "fsync", failing_fsync)
+        task = asyncio.create_task(
+            event_service.send_message(
+                Message(role="user", content=[TextContent(text="hello")]), run=False
+            )
+        )
+        try:
+            assert await asyncio.to_thread(entered.wait, 10)
+            assert not task.done(), "send acknowledged before fsync settled"
+        finally:
+            release.set()
+        with pytest.raises(DurabilityError, match="Deferred durability failed"):
+            await task
+        assert any(isinstance(event, MessageEvent) for event in conv._state.events)
+        with suppress(DurabilityError):
+            conv.close()
 
     @pytest.mark.asyncio
     async def test_send_message_inactive_service(self, event_service):
@@ -846,24 +1052,10 @@ class TestEventServiceSendMessage:
         event_service._conversation = conversation
         message = Message(role="user", content=[])
 
-        # Mock the event loop and executor
-        with patch("asyncio.get_running_loop") as mock_get_loop:
-            mock_loop = MagicMock()
-            mock_get_loop.return_value = mock_loop
-            mock_loop.run_in_executor.side_effect = lambda *args: self._mock_executor()
-
-            # Call send_message with default run=True
-            await event_service.send_message(message)
-
-            # Verify send_message was called via executor
-            mock_loop.run_in_executor.assert_any_call(
-                None, conversation.send_message, message
-            )
-            # Verify run was called via executor since run=True and agent is not running
-            assert (
-                None,
-                conversation.run,
-            ) not in mock_loop.run_in_executor.call_args_list
+        await event_service.send_message(message)
+        conversation.send_message.assert_called_once_with(message)
+        conversation._state.flush.assert_called_once()
+        conversation.run.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_send_message_with_run_false(self, event_service):
@@ -876,21 +1068,10 @@ class TestEventServiceSendMessage:
         event_service._conversation = conversation
         message = Message(role="user", content=[])
 
-        # Mock the event loop and executor
-        with patch("asyncio.get_running_loop") as mock_get_loop:
-            mock_loop = MagicMock()
-            mock_get_loop.return_value = mock_loop
-            mock_loop.run_in_executor.side_effect = lambda *args: self._mock_executor()
-
-            # Call send_message with run=False
-            await event_service.send_message(message, run=False)
-
-            # Verify send_message was called via executor
-            mock_loop.run_in_executor.assert_called_once_with(
-                None, conversation.send_message, message
-            )
-            # Verify run was NOT called since run=False
-            assert mock_loop.run_in_executor.call_count == 1  # Only send_message call
+        await event_service.send_message(message, run=False)
+        conversation.send_message.assert_called_once_with(message)
+        conversation._state.flush.assert_called_once()
+        conversation.run.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_send_message_with_run_true_agent_already_running(
@@ -1528,33 +1709,12 @@ class TestEventServiceSendMessage:
 
         event_service._conversation = conversation
 
-        # Mock the event loop and executor
-        with patch("asyncio.get_running_loop") as mock_get_loop:
-            mock_loop = MagicMock()
-            mock_get_loop.return_value = mock_loop
-            # Create a side effect that returns a new coroutine each time
-            mock_loop.run_in_executor.side_effect = lambda *args: self._mock_executor()
-
-            # Test with user message (run=False to avoid state checking)
-            user_message = Message(role="user", content=[])
-            await event_service.send_message(user_message, run=False)
-            mock_loop.run_in_executor.assert_any_call(
-                None, conversation.send_message, user_message
-            )
-
-            # Test with assistant message
-            assistant_message = Message(role="assistant", content=[])
-            await event_service.send_message(assistant_message, run=False)
-            mock_loop.run_in_executor.assert_any_call(
-                None, conversation.send_message, assistant_message
-            )
-
-            # Test with system message
-            system_message = Message(role="system", content=[])
-            await event_service.send_message(system_message, run=False)
-            mock_loop.run_in_executor.assert_any_call(
-                None, conversation.send_message, system_message
-            )
+        for role in ("user", "assistant", "system"):
+            message = Message(role=role, content=[])
+            await event_service.send_message(message, run=False)
+            conversation.send_message.assert_any_call(message)
+        assert conversation.send_message.call_count == 3
+        assert conversation._state.flush.call_count == 3
 
     @pytest.mark.asyncio
     async def test_load_plugin_delegates_to_conversation(self, event_service):
@@ -1563,16 +1723,9 @@ class TestEventServiceSendMessage:
         conversation.load_plugin = MagicMock()
         event_service._conversation = conversation
 
-        with patch("asyncio.get_running_loop") as mock_get_loop:
-            mock_loop = MagicMock()
-            mock_get_loop.return_value = mock_loop
-            mock_loop.run_in_executor.side_effect = lambda *args: self._mock_executor()
-
-            await event_service.load_plugin("plugin@team")
-
-        mock_loop.run_in_executor.assert_called_once_with(
-            None, conversation.load_plugin, "plugin@team"
-        )
+        await event_service.load_plugin("plugin@team")
+        conversation.load_plugin.assert_called_once_with("plugin@team")
+        conversation._state.flush.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_load_plugin_inactive_service(self, event_service):
@@ -1630,19 +1783,9 @@ class TestEventServiceRespondToConfirmation:
         conversation.reject_pending_actions = MagicMock()
         event_service._conversation = conversation
 
-        async def _mock_executor(*_args, **_kwargs):
-            return None
-
-        with patch("asyncio.get_running_loop") as mock_get_loop:
-            mock_loop = MagicMock()
-            mock_get_loop.return_value = mock_loop
-            mock_loop.run_in_executor.return_value = _mock_executor()
-
-            await event_service.reject_pending_actions("custom reason")
-
-            mock_loop.run_in_executor.assert_called_once_with(
-                None, conversation.reject_pending_actions, "custom reason"
-            )
+        await event_service.reject_pending_actions("custom reason")
+        conversation.reject_pending_actions.assert_called_once_with("custom reason")
+        conversation._state.flush.assert_called_once()
 
 
 class TestEventServiceIsOpen:
@@ -3765,3 +3908,43 @@ async def test_event_service_creates_lease_with_custom_ttl(tmp_path: Path) -> No
     assert service._lease is not None
     assert service._lease._ttl_seconds == 10.0
     assert (tmp_path / stored.id.hex / LEASE_FILE_NAME).exists()
+
+
+@pytest.mark.asyncio
+async def test_close_releases_real_lease_after_settled_durability_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stored = _make_stored(tmp_path)
+    service = EventService(
+        stored=stored,
+        agent=_sample_agent(),
+        conversations_dir=tmp_path,
+        lease_ttl_seconds=60.0,
+    )
+    service._external_lease_renewal = True
+    await service.start()
+    assert service._lease is not None
+    assert (tmp_path / stored.id.hex / LEASE_FILE_NAME).exists()
+
+    def failing_fsync(fd: int) -> None:
+        raise OSError(errno.EIO, "injected fsync failure")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(os, "fsync", failing_fsync)
+        with pytest.raises(DurabilityError, match="Deferred durability failed"):
+            await service.send_message(
+                Message(role="user", content=[TextContent(text="hello")]), run=False
+            )
+        with pytest.raises(DurabilityError, match="Deferred durability failed"):
+            await service.close()
+
+    assert service._conversation is None
+    assert service.credential_bindings == {}
+    assert service._lease is None
+    next_owner = ConversationLease(
+        conversation_dir=tmp_path / stored.id.hex,
+        owner_instance_id="next-owner",
+        ttl_seconds=60.0,
+    )
+    claim = next_owner.claim()
+    next_owner.release(claim.generation)

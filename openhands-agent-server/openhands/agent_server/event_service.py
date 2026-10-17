@@ -1,6 +1,6 @@
 import asyncio
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
@@ -77,7 +77,7 @@ from openhands.sdk.event.error_classification import ErrorClassification, Failur
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
-from openhands.sdk.io import LocalFileStore
+from openhands.sdk.io import DurabilityError, LocalFileStore
 from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -839,6 +839,44 @@ class EventService:
         )
         return results
 
+    async def _persist_mutation(
+        self, operation: Callable[[LocalConversation], None]
+    ) -> None:
+        """Settle an accepted mutation and its durability work before returning."""
+        conversation = self._conversation
+        if conversation is None:
+            raise ValueError("inactive_service")
+
+        def run() -> None:
+            try:
+                operation(conversation)
+            except Exception:
+                try:
+                    conversation._state.flush()
+                except Exception:
+                    logger.exception("Durability flush failed after mutation error")
+                raise
+            conversation._state.flush()
+
+        worker = asyncio.create_task(asyncio.to_thread(run))
+        cancelled: asyncio.CancelledError | None = None
+        while True:
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError as error:
+                if worker.cancelled():
+                    raise
+                cancelled = error
+            except Exception:
+                if cancelled is None:
+                    raise
+                logger.exception("Mutation failed after caller cancellation")
+                raise cancelled
+            else:
+                if cancelled is not None:
+                    raise cancelled
+                return
+
     async def send_message(
         self, message: Message, run: bool = False, _from_goal_loop: bool = False
     ):
@@ -849,8 +887,9 @@ class EventService:
         if not _from_goal_loop:
             await self.stop_goal_loop()
         explicit_interrupt_generation = self._explicit_interrupt_generation
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._conversation.send_message, message)
+        await self._persist_mutation(
+            lambda conversation: conversation.send_message(message)
+        )
         if run:
             if self._explicit_interrupt_generation != explicit_interrupt_generation:
                 return
@@ -1369,6 +1408,8 @@ class EventService:
                         ),
                     )
                     self._conversation._on_event(error_event)
+
+        await self._persist_mutation(lambda _: None)
 
         # Publish initial state update
         await self._publish_state_update()
@@ -1949,9 +1990,8 @@ class EventService:
         """Reject all pending actions and publish updated state."""
         if not self._conversation:
             raise ValueError("inactive_service")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None, self._conversation.reject_pending_actions, reason
+        await self._persist_mutation(
+            lambda conversation: conversation.reject_pending_actions(reason)
         )
 
     async def pause(self):
@@ -1959,8 +1999,7 @@ class EventService:
             self._explicit_interrupt_generation += 1
             self._rerun_requested = False
             self._acp_internal_rerun_requested = False
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._conversation.pause)
+            await self._persist_mutation(lambda conversation: conversation.pause())
             # Publish state update after pause to ensure stats are updated
             await self._publish_state_update()
 
@@ -1990,6 +2029,7 @@ class EventService:
                 # start while the first is still in progress.
                 if self._run_task is not None and self._run_task.done():
                     self._run_task = None
+            await self._persist_mutation(lambda _: None)
             await self._publish_state_update()
 
     async def update_secrets(self, secrets: dict[str, SecretValue]):
@@ -2006,16 +2046,16 @@ class EventService:
         if CODEX_AUTH_SECRET_NAME in self.credential_bindings:
             secrets = dict(secrets)
             secrets.pop(CODEX_AUTH_SECRET_NAME, None)
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._conversation.update_secrets, secrets)
+        await self._persist_mutation(
+            lambda conversation: conversation.update_secrets(secrets)
+        )
 
     async def set_confirmation_policy(self, policy: ConfirmationPolicyBase):
         """Set the confirmation policy for the conversation."""
         if not self._conversation:
             raise ValueError("inactive_service")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None, self._conversation.set_confirmation_policy, policy
+        await self._persist_mutation(
+            lambda conversation: conversation.set_confirmation_policy(policy)
         )
 
     async def set_security_analyzer(
@@ -2024,17 +2064,17 @@ class EventService:
         """Set the security analyzer for the conversation."""
         if not self._conversation:
             raise ValueError("inactive_service")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None, self._conversation.set_security_analyzer, security_analyzer
+        await self._persist_mutation(
+            lambda conversation: conversation.set_security_analyzer(security_analyzer)
         )
 
     async def load_plugin(self, plugin_ref: str) -> None:
         """Load a marketplace plugin into the active conversation."""
         if self._conversation is None:
             raise ValueError("inactive_service")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._conversation.load_plugin, plugin_ref)
+        await self._persist_mutation(
+            lambda conversation: conversation.load_plugin(plugin_ref)
+        )
 
     async def switch_acp_model(self, model: str) -> None:
         """Switch the model on an ACP conversation.
@@ -2055,8 +2095,9 @@ class EventService:
             # longer raises for a created-but-not-yet-run conversation, so a
             # pre-first-run switch is a normal 200 deferral, not an error.
             raise ValueError("inactive_service")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
+        await self._persist_mutation(
+            lambda conversation: conversation.switch_acp_model(model)
+        )
 
     async def close(self):
         if self.bash_event_service is not None:
@@ -2116,16 +2157,31 @@ class EventService:
 
         await self._pub_sub.close()
         await self._stream_pub_sub.close()
-        if self._conversation:
+        durability_error: DurabilityError | None = None
+        conversation = self._conversation
+        if conversation:
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._conversation.close)
+            try:
+                await loop.run_in_executor(None, conversation.close)
+            except DurabilityError as error:
+                if conversation._cleanup_complete is not True:
+                    raise
+                durability_error = error
             self._conversation = None
         self.credential_bindings = {}
 
         if self._lease is not None and self._lease_generation is not None:
-            self._lease.release(self._lease_generation)
+            try:
+                self._lease.release(self._lease_generation)
+            except Exception:
+                if durability_error is None:
+                    raise
+                logger.exception("Failed to release lease after durability failure")
+                raise durability_error
         self._lease_generation = None
         self._lease = None
+        if durability_error is not None:
+            raise durability_error
 
     async def generate_title(
         self, llm: "LLM | None" = None, max_length: int = 50
@@ -2172,8 +2228,7 @@ class EventService:
         if not self._conversation:
             raise ValueError("inactive_service")
 
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._conversation.condense)
+        await self._persist_mutation(lambda conversation: conversation.condense())
 
     async def navigate_to(self, event_id: str | None) -> None:
         """Move the conversation HEAD to an existing event (in-place re-root).
@@ -2186,9 +2241,8 @@ class EventService:
         if not self._conversation:
             raise ValueError("inactive_service")
 
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None, self._conversation.navigate_to, event_id
+        await self._persist_mutation(
+            lambda conversation: conversation.navigate_to(event_id)
         )
 
     def _get_agent_final_response_sync(self) -> str:

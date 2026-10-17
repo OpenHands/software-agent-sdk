@@ -16,9 +16,10 @@ directory entries still follow the existing atomic-write implementation's
 filesystem guarantees. The worker keeps draining after a failure so later
 files still get their fsync attempt.
 
-Acknowledgment boundaries: callers use :meth:`DurabilityWriter.flush` (at
-the end of a run) and :meth:`DurabilityWriter.close` (on store close) to
-drain acknowledged writes before the run returns or the store closes.
+Acknowledgment boundaries: callers use :meth:`DurabilityWriter.flush` for
+SDK message, fork and run completion and Agent Server startup/mutation
+responses, and :meth:`DurabilityWriter.close` on store close. These drain
+acknowledged writes before the operation returns or the store closes.
 Intermediate state/event visibility is not a durability acknowledgment.
 Failures are sticky: the first worker exception is
 recorded and re-raised by ``raise_if_failed``/``flush``/``close`` so

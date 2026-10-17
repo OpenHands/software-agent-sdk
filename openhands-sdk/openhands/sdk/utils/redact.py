@@ -279,6 +279,13 @@ def sanitize_config(config: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
+_SENSITIVE_ENTRY_RE = re.compile(
+    r"(?P<head>(?P<kq>\\?[\"'])[\w-]*(?:key|secret|token|password|authorization)"
+    r"[\w-]*(?P=kq)\s*:\s*)(?P<q>\\?[\"'])(?P<value>.*?)(?P=q)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
 def redact_text_secrets(text: str) -> str:
     """Redact secrets from a string representation of a config object.
 
@@ -288,9 +295,9 @@ def redact_text_secrets(text: str) -> str:
 
     Redacts:
     - ``api_key='...'`` patterns
-    - Dict entries whose keys contain KEY, SECRET, TOKEN, or PASSWORD
+    - Dict, JSON and header entries whose keys contain KEY, SECRET, TOKEN,
+      PASSWORD or AUTHORIZATION, in either quote style and any case
     - URL query params matching common secret names
-    - Authorization and X-Session-API-Key header values
 
     Args:
         text: The string to redact.
@@ -302,19 +309,10 @@ def redact_text_secrets(text: str) -> str:
     text = re.sub(r"api_key='[^']*'", "api_key='<redacted>'", text)
     text = re.sub(r'api_key="[^"]*"', 'api_key="<redacted>"', text)
 
-    # Dict entries with sensitive key names (case-insensitive, like is_secret_key)
-    text = re.sub(
-        r"('[A-Z_]*(?:KEY|SECRET|TOKEN|PASSWORD)[A-Z_]*':\s*')[^']*(')",
-        r"\g<1><redacted>\2",
-        text,
-        flags=re.IGNORECASE,
-    )
-    text = re.sub(
-        r'("[A-Z_]*(?:KEY|SECRET|TOKEN|PASSWORD)[A-Z_]*":\s*")[^"]*(")',
-        r"\g<1><redacted>\2",
-        text,
-        flags=re.IGNORECASE,
-    )
+    # Dict, JSON and header entries with sensitive key names: either quote
+    # style (also backslash-escaped, as in JSON embedded in a message), any
+    # case, and hyphenated header names such as x-api-key.
+    text = _SENSITIVE_ENTRY_RE.sub(r"\g<head>\g<q><redacted>\g<q>", text)
 
     # URL query params
     text = re.sub(
@@ -323,20 +321,6 @@ def redact_text_secrets(text: str) -> str:
         r"\g<1><redacted>",
         text,
         flags=re.IGNORECASE,
-    )
-
-    # Authorization header values
-    text = re.sub(
-        r"('Authorization':\s*')[^']*(')",
-        r"\g<1><redacted>\2",
-        text,
-    )
-
-    # X-Session-API-Key header values
-    text = re.sub(
-        r"('X-Session-API-Key':\s*')[^']*(')",
-        r"\g<1><redacted>\2",
-        text,
     )
 
     # Bare API key literals (common provider formats)

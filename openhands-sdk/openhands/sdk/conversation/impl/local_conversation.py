@@ -113,6 +113,7 @@ from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -233,6 +234,7 @@ class LocalConversation(BaseConversation):
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _mcp_tool_provider: MCPToolProvider
+    _mcp_config_from_parent: bool
     _llm_call_context: LLMCallContext
 
     def __init__(
@@ -272,6 +274,7 @@ class LocalConversation(BaseConversation):
         profile_store_dir: str | Path | None = None,
         stream_callbacks: list[StreamProgressCallbackType] | None = None,
         _parent_llm_call_context: LLMCallContext | None = None,
+        _mcp_config_from_parent: bool = False,
         **_: object,
     ):
         """Initialize the conversation.
@@ -336,6 +339,9 @@ class LocalConversation(BaseConversation):
                 this store. The caller must close it after its last user.
             _parent_llm_call_context: Runtime LLM context inherited by an internal
                 child conversation. Conversation-local identity is always replaced.
+            _mcp_config_from_parent: The agent's ``mcp_config`` is the resolved
+                config of a delegating parent. It is used as-is: no plugin MCP
+                servers are merged into it and no ``${VAR}`` is expanded again.
             profile_store_dir: Optional directory containing saved LLM profiles.
                 Defaults to ``~/.openhands/profiles``.
         """
@@ -356,6 +362,7 @@ class LocalConversation(BaseConversation):
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
+        self._mcp_config_from_parent = _mcp_config_from_parent
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
@@ -846,7 +853,10 @@ class LocalConversation(BaseConversation):
                 if ``None``).
             agent: Agent for the fork. Defaults to a deep-copy of the
                 source agent.
-            title: Optional title for the forked conversation.
+            title: Deprecated. ``LocalConversation`` has no title field;
+                ``ConversationState`` does not store titles (they live on
+                ``StoredConversation`` in the agent-server layer). Passing a
+                value is accepted for backwards compatibility but has no effect.
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
@@ -861,6 +871,17 @@ class LocalConversation(BaseConversation):
         Raises:
             ValueError: If ``from_event_id`` is not an event in this conversation.
         """
+        if title is not None:
+            warn_deprecated(
+                "LocalConversation.fork() title parameter",
+                deprecated_in="1.54.0",
+                removed_in="1.60.0",
+                details=(
+                    "LocalConversation has no title field; titles are managed by "
+                    "StoredConversation in the agent-server layer."
+                ),
+                stacklevel=2,
+            )
         fork_id = conversation_id or uuid.uuid4()
         # Always deep-copy the agent (supplied or source) so the fork owns
         # its own object graph. Required because __init__ binds
@@ -876,84 +897,91 @@ class LocalConversation(BaseConversation):
 
         # Hold the state lock while reading mutable state from the source
         # conversation to avoid torn reads if run() is executing concurrently.
-        with self._state:
-            # Validate before constructing the fork so an unknown branch point
-            # does not leave an orphaned persistence directory behind.
-            if from_event_id is not None and from_event_id not in self._state.events:
-                raise ValueError(f"Unknown from_event_id: {from_event_id}")
+        fork_conv: LocalConversation | None = None
+        try:
+            with self._state:
+                # Validate before constructing the fork so an unknown branch point
+                # does not leave an orphaned persistence directory behind.
+                if (
+                    from_event_id is not None
+                    and from_event_id not in self._state.events
+                ):
+                    raise ValueError(f"Unknown from_event_id: {from_event_id}")
 
-            # Determine persistence_dir for the fork.
-            # Pass the *base* directory only — __init__ calls
-            # get_persistence_dir() which appends the conversation ID hex,
-            # so we must not do that here.
-            source_persistence = self._state.persistence_dir
-            fork_persistence: str | None = None
-            if source_persistence is not None:
-                source_path = Path(source_persistence)
-                fork_persistence = str(source_path.parent)
+                # Determine persistence_dir for the fork.
+                # Pass the *base* directory only — __init__ calls
+                # get_persistence_dir() which appends the conversation ID hex,
+                # so we must not do that here.
+                source_persistence = self._state.persistence_dir
+                fork_persistence: str | None = None
+                if source_persistence is not None:
+                    source_path = Path(source_persistence)
+                    fork_persistence = str(source_path.parent)
 
-            # Build the fork conversation (empty – no events yet)
-            fork_conv = LocalConversation(
-                agent=fork_agent,
-                workspace=self.workspace,
-                plugins=self._plugin_specs,
-                persistence_dir=fork_persistence,
-                conversation_id=fork_id,
-                max_iteration_per_run=self.max_iteration_per_run,
-                stuck_detection=self._stuck_detector is not None,
-                visualizer=type(self._visualizer) if self._visualizer else None,
-                delete_on_close=self.delete_on_close,
-                tags=tags,
-                _parent_llm_call_context=self._llm_call_context,
-            )
-
-            # Branch slice copies path_to_root(event) (root-first, re-rootable);
-            # a full fork copies the whole log and inherits the source's HEAD.
-            if from_event_id is not None:
-                source_events: list[Event] = self._state.events.path_to_root(
-                    from_event_id
+                # Build the fork conversation (empty – no events yet)
+                fork_conv = LocalConversation(
+                    agent=fork_agent,
+                    workspace=self.workspace,
+                    plugins=self._plugin_specs,
+                    persistence_dir=fork_persistence,
+                    conversation_id=fork_id,
+                    max_iteration_per_run=self.max_iteration_per_run,
+                    stuck_detection=self._stuck_detector is not None,
+                    visualizer=type(self._visualizer) if self._visualizer else None,
+                    delete_on_close=self.delete_on_close,
+                    tags=tags,
+                    _parent_llm_call_context=self._llm_call_context,
                 )
-                fork_leaf: EventID | None = from_event_id
-            else:
-                source_events = list(self._state.events)
-                fork_leaf = self._state.leaf_event_id
 
-            for event in source_events:
-                fork_conv._state.events.append(_copy_event_for_fork(event))
-            fork_conv._state.leaf_event_id = fork_leaf
-            # A full fork inherits the source's empty-HEAD state; a branch slice
-            # roots HEAD at a real event (from_event_id), so it is never empty.
-            fork_conv._state.head_is_empty = (
-                self._state.head_is_empty if from_event_id is None else False
-            )
-            # Full rebuild: the copied events may need property enforcement
-            # (same posture as cold load).
-            fork_conv._state.rebuild_view()
+                # Branch slice copies path_to_root(event) (root-first, re-rootable);
+                # a full fork copies the whole log and inherits the source's HEAD.
+                if from_event_id is not None:
+                    source_events: list[Event] = self._state.events.path_to_root(
+                        from_event_id
+                    )
+                    fork_leaf: EventID | None = from_event_id
+                else:
+                    source_events = list(self._state.events)
+                    fork_leaf = self._state.leaf_event_id
 
-            # Copy runtime state that accumulated during the source
-            # conversation. activated_knowledge_skills is list[str] – strings
-            # are immutable so a shallow list copy is sufficient.
-            # agent_state can hold arbitrary mutable values, so deep-copy it.
-            fork_conv._state.activated_knowledge_skills = list(
-                self._state.activated_knowledge_skills
-            )
-            fork_conv._state.activated_path_rules = list(
-                self._state.activated_path_rules
-            )
-            fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
+                for event in source_events:
+                    fork_conv._state.events.append(_copy_event_for_fork(event))
+                fork_conv._state.leaf_event_id = fork_leaf
+                # A full fork inherits the source's empty-HEAD state; a branch slice
+                # roots HEAD at a real event (from_event_id), so it is never empty.
+                fork_conv._state.head_is_empty = (
+                    self._state.head_is_empty if from_event_id is None else False
+                )
+                # Full rebuild: the copied events may need property enforcement
+                # (same posture as cold load).
+                fork_conv._state.rebuild_view()
 
-            # Copy title via tags if provided
-            if title is not None:
-                fork_conv._state.tags = {
-                    **fork_conv._state.tags,
-                    "title": title,
-                }
+                # Copy runtime state that accumulated during the source
+                # conversation. activated_knowledge_skills is list[str] – strings
+                # are immutable so a shallow list copy is sufficient.
+                # agent_state can hold arbitrary mutable values, so deep-copy it.
+                fork_conv._state.activated_knowledge_skills = list(
+                    self._state.activated_knowledge_skills
+                )
+                fork_conv._state.activated_path_rules = list(
+                    self._state.activated_path_rules
+                )
+                fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
 
-            # Reset or copy metrics
-            if not reset_metrics:
-                fork_conv._state.stats = self._state.stats.model_copy(deep=True)
+                # Reset or copy metrics
+                if not reset_metrics:
+                    fork_conv._state.stats = self._state.stats.model_copy(deep=True)
 
-            event_count = len(source_events)
+                event_count = len(source_events)
+
+            fork_conv._state.flush()
+        except Exception:
+            if fork_conv is not None:
+                try:
+                    fork_conv.close()
+                except Exception:
+                    logger.exception("Failed to close incomplete fork")
+            raise
 
         logger.info(
             f"Forked conversation {self.id} → {fork_id} "
@@ -1246,7 +1274,9 @@ class LocalConversation(BaseConversation):
         # - This is the ONLY place where defaults are applied (plugin loading preserves
         #   placeholders with expand_defaults=False to avoid double-expansion)
         # Agent Plugins servers are left literal (see expand_mcp_servers).
-        if merged_mcp:
+        if self._mcp_config_from_parent:
+            merged_mcp = dict(self.agent.mcp_config)
+        elif merged_mcp:
             # Pass the registry's lookup method as a callback - secrets are retrieved
             # lazily, one at a time, only when actually referenced in the config
             merged_mcp = expand_mcp_servers(
@@ -1898,6 +1928,8 @@ class LocalConversation(BaseConversation):
                 sender=sender,
             )
             self._on_event(user_msg_event)
+
+        self._state.flush()
 
     def _on_event_with_state_lock(self, event: Event) -> None:
         """Emit an event while holding the conversation state lock."""

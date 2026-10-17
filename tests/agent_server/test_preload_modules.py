@@ -481,3 +481,55 @@ def test_auth_enabled_reads_env_key(monkeypatch, tmp_path):
     monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
     monkeypatch.setenv("SESSION_API_KEY", "from-env")
     assert _auth_enabled() is True
+
+
+def test_auth_enabled_ignores_empty_env_key(monkeypatch, tmp_path):
+    from openhands.agent_server.__main__ import _auth_enabled
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text("{}")
+    monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg))
+    monkeypatch.delenv("SESSION_API_KEY", raising=False)
+    monkeypatch.setenv("OH_SESSION_API_KEYS_0", "")
+    assert _auth_enabled() is False
+
+
+@pytest.mark.parametrize(
+    ("config_json", "expected"),
+    [
+        ("{}", False),
+        ('{"trust_forwarded_headers": false}', False),
+        ('{"trust_forwarded_headers": true}', True),
+    ],
+)
+def test_main_ties_uvicorn_proxy_headers_to_trust_forwarded_headers(
+    monkeypatch, tmp_path, config_json, expected
+):
+    """uvicorn rewrites the request scheme from X-Forwarded-Proto only when
+    trust_forwarded_headers is on, so a client cannot change the origin the
+    Canvas bridge derives while it is off."""
+    cfg = tmp_path / "config.json"
+    cfg.write_text(config_json)
+    monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg))
+    monkeypatch.delenv("SESSION_API_KEY", raising=False)
+    monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
+    captured: dict = {}
+
+    def capture_config(app, **kwargs):
+        captured.update(kwargs)
+        return MagicMock()
+
+    with (
+        patch("sys.argv", ["prog", "--port", "4321"]),
+        patch("openhands.agent_server.__main__.preload_modules"),
+        patch("openhands.agent_server.__main__._setup_crash_diagnostics"),
+        patch("openhands.agent_server.__main__.LoggingServer") as mock_server,
+        patch("openhands.agent_server.__main__.Config", side_effect=capture_config),
+    ):
+        mock_server.return_value.run.side_effect = SystemExit(0)
+        from openhands.agent_server.__main__ import main
+
+        with pytest.raises(SystemExit):
+            main()
+
+    assert captured["proxy_headers"] is expected

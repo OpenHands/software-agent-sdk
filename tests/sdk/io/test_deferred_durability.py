@@ -447,6 +447,125 @@ def _make_conversation(tmp_path: Path, llm: LLM) -> LocalConversation:
     )
 
 
+def test_fork_closes_owned_state_after_copy_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    conv = _make_conversation(tmp_path, TestLLM.from_messages([]))
+    conv.send_message("source message")
+    fork_id = uuid.uuid4()
+    closed_forks: list[LocalConversation] = []
+    original_close = LocalConversation.close
+    original_rebuild = ConversationState.rebuild_view
+
+    def fail_fork_rebuild(state: ConversationState) -> None:
+        if state.id == fork_id:
+            raise ValueError("copy failed")
+        original_rebuild(state)
+
+    def close_and_record(conversation: LocalConversation) -> None:
+        if conversation.id == fork_id:
+            closed_forks.append(conversation)
+        original_close(conversation)
+
+    monkeypatch.setattr(ConversationState, "rebuild_view", fail_fork_rebuild)
+    monkeypatch.setattr(LocalConversation, "close", close_and_record)
+    with pytest.raises(ValueError, match="copy failed"):
+        conv.fork(conversation_id=fork_id)
+    assert len(closed_forks) == 1
+    fork = closed_forks[0]
+    assert fork._cleanup_complete
+    store = fork._state._fs
+    assert isinstance(store, LocalFileStore)
+    writer = store._durability
+    assert writer is not None and writer._closed
+    assert Path(str(conv._state.persistence_dir)).exists()
+    conv.send_message("source still open")
+    conv.close()
+
+
+def test_fork_preserves_copy_error_if_cleanup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    conv = _make_conversation(tmp_path, TestLLM.from_messages([]))
+    fork_id = uuid.uuid4()
+    original_rebuild = ConversationState.rebuild_view
+    original_close = LocalConversation.close
+    closed_forks: list[LocalConversation] = []
+
+    def fail_fork_rebuild(state: ConversationState) -> None:
+        if state.id == fork_id:
+            raise ValueError("primary copy error")
+        original_rebuild(state)
+
+    def close_then_fail(conversation: LocalConversation) -> None:
+        original_close(conversation)
+        if conversation.id == fork_id:
+            closed_forks.append(conversation)
+            raise RuntimeError("secondary cleanup error")
+
+    monkeypatch.setattr(ConversationState, "rebuild_view", fail_fork_rebuild)
+    monkeypatch.setattr(LocalConversation, "close", close_then_fail)
+    with pytest.raises(ValueError, match="primary copy error"):
+        conv.fork(conversation_id=fork_id)
+    assert len(closed_forks) == 1
+    assert closed_forks[0]._cleanup_complete
+    store = closed_forks[0]._state._fs
+    assert isinstance(store, LocalFileStore)
+    writer = store._durability
+    assert writer is not None and writer._closed
+    conv.close()
+
+
+def test_fork_flushes_copied_state_before_return(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    conv = _make_conversation(tmp_path, TestLLM.from_messages([]))
+    conv.send_message("source message")
+    fork_id = uuid.uuid4()
+    original_flush = ConversationState.flush
+    flushed: list[uuid.UUID] = []
+
+    def record_flush(state: ConversationState) -> None:
+        original_flush(state)
+        flushed.append(state.id)
+
+    monkeypatch.setattr(ConversationState, "flush", record_flush)
+    fork = conv.fork(conversation_id=fork_id)
+    assert fork_id in flushed
+    fork.close()
+    conv.close()
+
+
+def test_fork_closes_owned_state_when_final_flush_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    conv = _make_conversation(tmp_path, TestLLM.from_messages([]))
+    conv.send_message("source message")
+    fork_id = uuid.uuid4()
+    original_flush = ConversationState.flush
+    original_close = LocalConversation.close
+    closed_forks: list[LocalConversation] = []
+
+    def fail_fork_flush(state: ConversationState) -> None:
+        original_flush(state)
+        if state.id == fork_id:
+            raise OSError("fork flush failed")
+
+    def close_and_record(conversation: LocalConversation) -> None:
+        original_close(conversation)
+        if conversation.id == fork_id:
+            closed_forks.append(conversation)
+
+    monkeypatch.setattr(ConversationState, "flush", fail_fork_flush)
+    monkeypatch.setattr(LocalConversation, "close", close_and_record)
+    with pytest.raises(OSError, match="fork flush failed"):
+        conv.fork(conversation_id=fork_id)
+    assert len(closed_forks) == 1
+    assert closed_forks[0]._cleanup_complete
+    assert Path(str(conv._state.persistence_dir)).exists()
+    conv.close()
+
+
 def test_state_without_store_has_no_durability_work(tmp_path: Path):
     llm = TestLLM.from_messages([])
     state = ConversationState(
