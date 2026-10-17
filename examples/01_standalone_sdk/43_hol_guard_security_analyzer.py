@@ -72,12 +72,10 @@ class HolGuardSecurityAnalyzer(SecurityAnalyzerBase):
             return SecurityRisk.HIGH
 
         minimum_action = str(payload.get("minimum_action") or "").lower()
-        if minimum_action in {
-            "review",
-            "block",
-            "require-reapproval",
-            "sandbox-required",
-        }:
+        # Only an explicit Guard allow can authorize low-risk classification.
+        # Unknown/missing policy actions must fail closed even if a malformed
+        # response includes explicitly_benign=True.
+        if minimum_action != "allow":
             return SecurityRisk.HIGH
 
         classification = payload.get("classification")
