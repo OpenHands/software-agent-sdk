@@ -176,6 +176,15 @@ class TerminalInterface(ABC):
         """
         return False
 
+    def shell_exit_code(self) -> int | None:
+        """Return the shell process exit code if that process has already exited.
+
+        None means the shell is still alive, or this backend has no process to
+        check. An int, including 0, means the shell is dead and no new prompt
+        will appear.
+        """
+        return None
+
 
 class TerminalSessionBase(ABC):
     """Abstract base class for terminal sessions.

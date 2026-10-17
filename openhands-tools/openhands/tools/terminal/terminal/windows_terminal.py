@@ -433,6 +433,22 @@ if ($toStop.Count -gt 0) {{ exit 0 }} else {{ exit 1 }}
         self._command_running_event.clear()
         return sent_ctrl_break or terminated_children or sent_ctrl_c_input
 
+    def shell_exit_code(self) -> int | None:
+        if self.process is None:
+            return None
+        code = self.process.poll()
+        if code is None:
+            return None
+        # Reader stops at stdout EOF. Join so the final output is buffered.
+        reader = self.reader_thread
+        if (
+            reader is not None
+            and reader.is_alive()
+            and reader is not threading.current_thread()
+        ):
+            reader.join(timeout=1.0)
+        return code
+
     def is_running(self) -> bool:
         """Return whether a command is still running in the PowerShell session."""
         if not self._initialized or self.process is None:
