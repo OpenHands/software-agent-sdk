@@ -2132,6 +2132,10 @@ class EventService:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
 
+    async def close_connections(self, code: int, reason: str) -> None:
+        """Close the client sockets subscribed to this conversation."""
+        await self._pub_sub.close_connections(code, reason)
+
     async def close(self):
         if self.bash_event_service is not None:
             await self.bash_event_service.close()

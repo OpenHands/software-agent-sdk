@@ -767,9 +767,8 @@ EOF
   does not cascade: children keep a dangling `parent_conversation_id`, and a
   worktree and its `openhands/<id>` branch stay behind.
 - An events socket that was already open during a DELETE receives the pause
-  frames and then stays open with no further events (no close frame within
-  10 s, observed live); only new connections get 4004. Watch for 404 on the
-  REST side rather than waiting for a close.
+  frames and then a 4004 close before the DELETE answers; new connections
+  get 4004 too (`F06.ws-delete-close`).
 - Saved LLM profiles cannot be named in `agent_settings`; start from one with
   `agent_profile_id` (an Agent Profile whose `llm_profile_ref` names it), as
   in `F04.create-agent-profile`.

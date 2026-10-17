@@ -95,6 +95,11 @@ if TYPE_CHECKING:
 
 
 _AUTOMATION_TAG_KEYS = ("automationtrigger", "automationid", "automationrunid")
+# Close codes for the sockets of a conversation the server tears down. A
+# sandbox pause closes none: a reconnect would load the conversation again
+# before the sandbox freezes.
+CONVERSATION_DELETED_WS_CLOSE = (4004, "Conversation deleted")
+SERVER_SHUTDOWN_WS_CLOSE = (1012, "Server shutting down")
 
 
 class CredentialBindingActivationRequired(RuntimeError):
@@ -1770,6 +1775,10 @@ class ConversationService:
                     f"Failed to notify webhooks for conversation {conversation_id}: {e}"
                 )
 
+            # Tell open sockets the conversation is gone: 4004 is final for
+            # clients, so they stop instead of reconnecting to a 4004.
+            await event_service.close_connections(*CONVERSATION_DELETED_WS_CLOSE)
+
             # Close the event service
             try:
                 await event_service.close()
@@ -2185,6 +2194,14 @@ class ConversationService:
             if event_services is None:
                 return
             services = tuple(event_services.items())
+            # "Service restart": clients reconnect once the server is back.
+            await asyncio.gather(
+                *[
+                    event_service.close_connections(*SERVER_SHUTDOWN_WS_CLOSE)
+                    for _, event_service in services
+                ],
+                return_exceptions=True,
+            )
             results = await asyncio.gather(
                 *[
                     event_service.__aexit__(exc_type, exc_value, traceback)
