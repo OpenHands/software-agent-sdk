@@ -6,13 +6,17 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import Agent
+from openhands.sdk.agent.utils import aprepare_llm_messages, prepare_llm_messages
+from openhands.sdk.context.view import View
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.event import (
     ConversationStateUpdateEvent,
+    Event,
+    HookExecutionEvent,
     MessageEvent,
     SystemPromptEvent,
 )
-from openhands.sdk.llm import LLM, TextContent
+from openhands.sdk.llm import LLM, Message, TextContent
 
 
 def _make_agent() -> Agent:
@@ -98,8 +102,6 @@ def test_agent_init_state_raises_if_user_message_before_system_prompt_in_prefix(
 ) -> None:
     agent = _make_agent()
     state = _make_state(agent, tmp_path)
-    from openhands.sdk.llm import Message
-
     state.events.append(
         MessageEvent(
             source="user",
@@ -109,5 +111,89 @@ def test_agent_init_state_raises_if_user_message_before_system_prompt_in_prefix(
 
     with pytest.raises(
         AssertionError, match=r"user message exists before SystemPromptEvent"
+    ):
+        agent.init_state(state, on_event=lambda _e: None)
+
+
+@pytest.fixture
+def non_llm_preamble() -> list[Event]:
+    return [
+        ConversationStateUpdateEvent(key="stats", value={}),
+        ConversationStateUpdateEvent(key="execution_status", value="idle"),
+        HookExecutionEvent(
+            hook_event_type="SessionStart",
+            hook_command="true",
+            success=True,
+            exit_code=0,
+        ),
+    ]
+
+
+@pytest.mark.parametrize("extra_preamble_events", [0, 8])
+async def test_agent_init_state_skips_system_prompt_after_non_llm_preamble(
+    tmp_path, non_llm_preamble: list[Event], extra_preamble_events: int
+) -> None:
+    agent = _make_agent()
+    state = _make_state(agent, tmp_path)
+    events = non_llm_preamble + [
+        ConversationStateUpdateEvent(key="stats", value={})
+        for _ in range(extra_preamble_events)
+    ]
+    events.extend(
+        [
+            SystemPromptEvent(system_prompt=TextContent(text="original"), tools=[]),
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text="task")]),
+            ),
+            MessageEvent(
+                source="agent",
+                llm_message=Message(
+                    role="assistant", content=[TextContent(text="done")]
+                ),
+            ),
+        ]
+    )
+    for event in events:
+        state.events.append(event)
+
+    emitted: list[Event] = []
+    agent.init_state(state, on_event=emitted.append)
+    agent.init_state(state, on_event=emitted.append)
+
+    assert emitted == []
+    view = View.from_events(state.events)
+    messages = prepare_llm_messages(view, condenser=None)
+    async_messages = await aprepare_llm_messages(view, condenser=None)
+    assert isinstance(async_messages, list)
+    assert [message.role for message in messages] == ["system", "user", "assistant"]
+    assert [message.role for message in async_messages] == [
+        "system",
+        "user",
+        "assistant",
+    ]
+
+
+@pytest.mark.parametrize("include_system_prompt", [False, True])
+def test_agent_init_state_rejects_user_before_system_after_non_llm_preamble(
+    tmp_path, non_llm_preamble: list[Event], include_system_prompt: bool
+) -> None:
+    agent = _make_agent()
+    state = _make_state(agent, tmp_path)
+    for event in non_llm_preamble:
+        state.events.append(event)
+    state.events.append(
+        MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="task")]),
+        )
+    )
+    if include_system_prompt:
+        state.events.append(
+            SystemPromptEvent(system_prompt=TextContent(text="too late"), tools=[])
+        )
+
+    with pytest.raises(
+        AssertionError, match="user message exists before SystemPromptEvent"
     ):
         agent.init_state(state, on_event=lambda _e: None)

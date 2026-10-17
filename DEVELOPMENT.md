@@ -57,9 +57,10 @@ For questions, join our [Slack community](https://openhands.dev/joinslack).
 the first `user` message.**
 
 The canonical enforcement lives in `Agent.init_state()`
-(`openhands-sdk/openhands/sdk/agent/agent.py`): it guarantees the `SystemPromptEvent`
-sits at the head of the event stream (index 0/1) and raises `AssertionError` if a user
-`MessageEvent` appears before it. `LLMConvertibleEvent.events_to_messages()`
+(`openhands-sdk/openhands/sdk/agent/agent.py`): it recognizes an existing
+`SystemPromptEvent` at the head of the LLM-convertible stream, even when state
+updates or hook events precede it in storage. It raises `AssertionError` if a user
+`MessageEvent` is the first LLM-convertible event. `LLMConvertibleEvent.events_to_messages()`
 (`openhands-sdk/openhands/sdk/event/base.py`) projects the event stream to messages in
 order, preserving the system lead-in on the main agent loop.
 

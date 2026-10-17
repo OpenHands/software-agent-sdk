@@ -40,6 +40,7 @@ from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
     Event,
+    LLMConvertibleEvent,
     MessageEvent,
     ObservationEvent,
     SystemPromptEvent,
@@ -115,11 +116,6 @@ def _tool_has_summary_param(tool: ToolDefinition) -> bool:
         if "summary" in props:
             return True
     return False
-
-
-# Maximum number of events to scan during init_state defensive checks.
-# SystemPromptEvent must appear within this prefix (at index 0 or 1).
-INIT_STATE_PREFIX_SCAN_WINDOW = 3
 
 
 def _latest_user_message_contains_image(messages: list[Message]) -> bool:
@@ -503,9 +499,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         """Initialize conversation state.
 
         Invariants enforced by this method:
-        - If a SystemPromptEvent is already present, it must be within the first 3
-          events (index 0 or 1 in practice; index 2 is included in the scan window
-          to detect a user message appearing before the system prompt).
+        - Non-LLM preamble events do not hide an existing SystemPromptEvent.
         - A user MessageEvent should not appear before the SystemPromptEvent.
 
         These invariants keep event ordering predictable for downstream components
@@ -524,25 +518,13 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # NOTE: state.events is intentionally an EventsListBase (Sequence-like), not
         # a plain list. Avoid materializing the full history via list(state.events)
         # here (conversations can reach 30k+ events).
-        #
-        # Invariant: when init_state is called, SystemPromptEvent (if present) must be
-        # at index 0 or 1.
-        #
-        # Rationale:
-        # - Local conversations start empty and init_state is responsible for adding
-        #   the SystemPromptEvent as the first event.
-        # - Remote conversations may receive an initial ConversationStateUpdateEvent
-        #   from the agent-server immediately after subscription. In a typical remote
-        #   session prefix you may see:
-        #     [ConversationStateUpdateEvent, SystemPromptEvent, MessageEvent, ...]
-        #
-        # We intentionally only inspect the first few events (cheap for both local and
-        # remote) to enforce this invariant.
-        prefix_events = state.events[:INIT_STATE_PREFIX_SCAN_WINDOW]
-
-        has_system_prompt = any(isinstance(e, SystemPromptEvent) for e in prefix_events)
-        has_user_message = any(
-            isinstance(e, MessageEvent) and e.source == "user" for e in prefix_events
+        first_llm_event = next(
+            (e for e in state.events if isinstance(e, LLMConvertibleEvent)), None
+        )
+        has_system_prompt = isinstance(first_llm_event, SystemPromptEvent)
+        has_user_message = (
+            isinstance(first_llm_event, MessageEvent)
+            and first_llm_event.source == "user"
         )
         # Log state for debugging initialization order issues
         logger.debug(
@@ -562,12 +544,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             return
 
         # Assert: A user message should never appear before the system prompt.
-        #
-        # NOTE: This is a best-effort check based on the first few events only.
-        # Remote conversations can include a ConversationStateUpdateEvent near the
-        # start, so we scan a small prefix window.
         if has_user_message:
-            event_types = [type(e).__name__ for e in prefix_events]
+            event_types = [type(first_llm_event).__name__]
             logger.error(
                 f"init_state: User message found in prefix before SystemPromptEvent! "
                 f"conversation_id={state.id}, prefix_events={event_types}"
