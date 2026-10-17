@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 import httpx
 import websockets
+from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
 from websockets.exceptions import ConnectionClosed
 
 from openhands.sdk.agent.base import AgentBase
@@ -34,6 +35,7 @@ from openhands.sdk.conversation.title_utils import generate_conversation_title
 from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationID,
+    ConversationTokenCallbackType,
     StuckDetectionThresholds,
     TraceMetadataValue,
 )
@@ -49,6 +51,7 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
 from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, TextContent
@@ -90,6 +93,26 @@ def _validate_remote_agent(agent_data: dict) -> AgentBase:
 
         return ACPAgent.model_validate(agent_data)
     return AgentBase.model_validate(agent_data)
+
+
+def _token_delta_callback(
+    token_callbacks: list[ConversationTokenCallbackType],
+) -> ConversationCallbackType:
+    """Hand each streamed delta from the events socket to the token callbacks."""
+    on_token = BaseConversation.compose_callbacks(token_callbacks)
+
+    def callback(event: Event) -> None:
+        if isinstance(event, StreamingDeltaEvent):
+            delta = Delta(
+                content=event.content, reasoning_content=event.reasoning_content
+            )
+            on_token(
+                ModelResponseStream(
+                    id=event.id, choices=[StreamingChoices(index=0, delta=delta)]
+                )
+            )
+
+    return callback
 
 
 def _restore_tool_registrations(tool_module_qualnames: Mapping[str, str]) -> None:
@@ -493,9 +516,16 @@ class RemoteEventsList(EventsListBase):
         return len(self._cached_events) - 1
 
     def create_default_callback(self) -> ConversationCallbackType:
-        """Create a default callback that adds events to this list."""
+        """Create a default callback that adds events to this list.
+
+        Streamed ``StreamingDeltaEvent`` frames are transient: the server never
+        stores them, so they reach the other callbacks but stay out of this
+        list, which keeps matching the server's event log.
+        """
 
         def callback(event: Event) -> None:
+            if isinstance(event, StreamingDeltaEvent):
+                return
             self.add_event(event)
 
         return callback
@@ -746,6 +776,7 @@ class RemoteConversation(BaseConversation):
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
         observability_parent_span_context: str | None = None,
+        token_callbacks: list[ConversationTokenCallbackType] | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -783,6 +814,8 @@ class RemoteConversation(BaseConversation):
             observability_tags: Optional root span tags for observability backends.
             observability_span_name: Optional child span name for observability
                       backends. The root span remains named "conversation".
+            token_callbacks: Optional callbacks invoked with each streamed token
+                      delta the server sends (agent LLM with ``stream=True``).
         """
         observability_metadata = merge_observability_metadata(observability_metadata)
         observability_parent_span_context = (
@@ -920,6 +953,7 @@ class RemoteConversation(BaseConversation):
             workspace=workspace,
             conversation_id=conversation_id,
             callbacks=callbacks,
+            token_callbacks=token_callbacks,
             max_iteration_per_run=max_iteration_per_run,
             client_tools=[*(client_tools or []), *attached_client_tools],
             visualizer=visualizer,
@@ -1060,10 +1094,13 @@ class RemoteConversation(BaseConversation):
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ),
+        token_callbacks: list[ConversationTokenCallbackType] | None = None,
     ) -> None:
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
         self._callbacks = callbacks or []
+        if token_callbacks:
+            self._callbacks.append(_token_delta_callback(token_callbacks))
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
         self._client = workspace.client

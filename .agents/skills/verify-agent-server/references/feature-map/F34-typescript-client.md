@@ -109,8 +109,8 @@ Routes: none
   auth, `queryParams`, optional reconnect) uses the global `WebSocket` unless
   given `createWebSocket`; `WebSocketCallbackClient` (used by
   `RemoteConversation.startWebSocketClient`) and `BashWebSocketClient`
-  (`/sockets/bash-events`, deprecated `session_api_key` query auth) pick
-  `window.WebSocket` or `require('ws')` when their module loads.
+  (`/sockets/bash-events`, deprecated `session_api_key` query auth) look up
+  `globalThis.WebSocket` on every connect (browsers, Node 22+).
 - Version gate: `HooksClient`, `WorkspacesClient` and `MCPClient` call
   `assertAgentServerSupports` (hooks, workspaces and MCP test need 1.23.0, MCP
   OAuth 1.31.0), which caches one `/server_info` per `HttpClient`.
@@ -474,14 +474,12 @@ Preconditions:
   fixture's own path, outside the conversation workspace). Both methods wrap a refusal in a plain `Error` (`Failed to get git changes:
   ...`) whose `cause` is the `HttpError`: 422 for a path outside the
   conversation workspace, 401 without a key. REST agrees.
-- **Git status type (`F34.workspace-git-types`), known bug.** The exported
-  `GitChange` type declares `status: 'added' | 'modified' | 'deleted' |
-  'renamed'` (`clients/typescript/src/models/workspace.ts:31`), while the
-  server and the client's own generated contract (`GitChangeStatus`) use
-  `'MOVED' | 'ADDED' | 'DELETED' | 'UPDATED'`, so a TypeScript consumer's
-  `change.status === 'modified'` compiles and never matches. The program
-  writes what `gitChanges` returned into three tiny `.mts` files and the
-  client's own `tsc` type-checks them: the statuses against the generated
+- **Git status type (`F34.workspace-git-types`).** The exported `GitChange`
+  types `status` as the generated contract's `GitChangeStatus`
+  (`'MOVED' | 'ADDED' | 'DELETED' | 'UPDATED'`), the values the server
+  sends, so a TypeScript consumer compares against the wire values. The
+  program writes what `gitChanges` returned into three tiny `.mts` files and
+  the client's own `tsc` type-checks them: the statuses against the generated
   contract and the paths against the exported `GitChange` (positive
   controls: the same compiler, flags and import resolve), then the statuses
   against the exported `GitChange`.
@@ -507,11 +505,10 @@ Preconditions:
   TSC="node clients/typescript/node_modules/typescript/bin/tsc --noEmit --strict --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022"
   $TSC "$F34/git-contract.mts"
   $TSC "$F34/git-paths.mts"
-  $TSC "$F34/git-types.mts" | control-agent-server assert --check . eq ''  # bug: value matches 'TS2322: Type ..UPDATED.. is not assignable'
+  $TSC "$F34/git-types.mts" | control-agent-server assert --check . eq ''
   ```
-  Expected: both files type-check. Today the contract file compiles and
-  the exported type fails with `Type '"UPDATED"' is not assignable to type
-  '"added" | "modified" | "deleted" | "renamed"'`.
+  Expected: all three files type-check, the statuses against both the
+  generated contract and the exported `GitChange`.
 - **Bash client (`F34.bash-client`).** Background command, lookups, stop and
   clear, with the socket and the REST history as second views.
   ```sh
@@ -561,11 +558,9 @@ Preconditions:
   command resolves. REST serves the command with its `cwd`, the bash socket
   replays both kinds, and after `clearEvents` the history is empty and the
   command is 404.
-- **Bash events socket from Node (`F34.bash-websocket`), known bug.**
-  `BashWebSocketClient` resolves its constructor with `require('ws')` when
-  the module loads, and `require` does not exist in the package's ESM build,
-  so it never opens a socket in Node 22 although `ws` is a dependency and a
-  global `WebSocket` exists (`clients/typescript/src/events/bash-websocket-client.ts:19`).
+- **Bash events socket from Node (`F34.bash-websocket`).**
+  `BashWebSocketClient` opens its socket with Node's global `WebSocket`,
+  looked up at connect time (`clients/typescript/src/events/global-websocket.ts`).
   The bullet runs its own command, and the CLI first replays its output on
   the same socket (positive control); the program then gives the client
   10 seconds and records the outputs and errors it saw.
@@ -591,13 +586,10 @@ Preconditions:
   JS
   control-agent-server exec --timeout 60 --expect-output QA_F34_BASH_WS_DONE --save F34.bash-websocket/program -- node "$F34/bash-ws.mjs"
   cat "$F34/bash-ws.json"
-  control-agent-server assert --json "$F34/bash-ws.json" --check saw_output eq true --check errors len-eq 0  # bug: value.saw_output eq false && value.errors contains 'WebSocket implementation not available'
+  control-agent-server assert --json "$F34/bash-ws.json" --check saw_output eq true --check errors len-eq 0
   ```
   Expected: the replayed `BashOutput` reaches the callback and `onError` is
-  never called. Today `saw_output` is false with no frame, and `errors`
-  holds "Failed to create bash WebSocket connection: WebSocket
-  implementation not available. Install the `ws` package, ..." (once per
-  reconnect attempt).
+  never called.
 - **Workspace session (`F34.workspace-session`).** The cookie mint and its
   base URL; Node's `fetch` keeps no cookie jar, so the URL is fetched with the
   header (F02 proves the cookie itself).
@@ -886,11 +878,10 @@ Preconditions:
   `WebSocket closed with code 4001: Authentication failed`, and a key in the
   URL is refused before connecting. REST shows the second user message and
   `finished`.
-- **Conversation callback socket from Node (`F34.ws-callback-client`), known bug.**
+- **Conversation callback socket from Node (`F34.ws-callback-client`).**
   `WebSocketCallbackClient`, which `RemoteConversation.startWebSocketClient()`
-  uses, resolves its constructor with `require('ws')` at module load, which
-  fails in the ESM build, so in Node it never connects
-  (`clients/typescript/src/events/websocket-client.ts:29`). The server sends
+  uses, connects with Node's global `WebSocket`, looked up at connect time
+  (`clients/typescript/src/events/global-websocket.ts`). The server sends
   a state snapshot to every new subscriber, as the CLI shows first on
   `SCID` (positive control); the program then gives the client 10 seconds
   and records the event kinds and errors it saw.
@@ -914,12 +905,10 @@ Preconditions:
   JS
   control-agent-server exec --timeout 60 --expect-output QA_F34_CALLBACK_DONE --save F34.ws-callback-client/program -- node "$F34/callback.mjs" "$SCID"
   cat "$F34/callback.json"
-  control-agent-server assert --json "$F34/callback.json" --check kinds contains ConversationStateUpdateEvent --check errors len-eq 0  # bug: value.kinds len-eq 0 && value.errors contains 'WebSocket implementation not available'
+  control-agent-server assert --json "$F34/callback.json" --check kinds contains ConversationStateUpdateEvent --check errors len-eq 0
   ```
   Expected: the snapshot reaches the conversation callback and `onError` is
-  never called. Today `kinds` is empty and `errors` holds "WebSocket
-  implementation not available. Install the `ws` package, or run in an
-  environment with a global WebSocket constructor." (once per retry).
+  never called.
 - **Title and confirmation policy (`F34.conversation-controls`).** Two
   mutations, each read back through REST; the policy is restored.
 
@@ -984,12 +973,12 @@ Preconditions:
   input order with `null` for the unknown id, the loaded conversation carries
   its server working directory, and the created conversation is gone after
   the delete (404, count back to `COUNT`).
-- **Update result (`F34.manager-update-result`), known bug.** `PATCH
+- **Update result (`F34.manager-update-result`).** `PATCH
   /api/conversations/{id}` answers `Success` (`{"success": true}`, also in
-  the client's generated contract), but `ConversationManager.updateConversation`
-  and `ConversationClient.updateConversation` are typed to resolve with the
-  updated `ConversationInfo` (`clients/typescript/src/conversation/conversation-manager.ts:384`,
-  `clients/typescript/src/client/conversation-client.ts:430`).
+  the client's generated contract), so `ConversationManager.updateConversation`
+  and `ConversationClient.updateConversation` read the conversation back
+  after the PATCH and resolve with the updated `ConversationInfo` they are
+  typed to return.
   The program checks that the title was stored (positive control, also
   through REST) and records what the call resolved with.
   ```sh
@@ -1006,11 +995,10 @@ Preconditions:
   control-agent-server exec --timeout 60 --expect-output QA_F34_UPDATE_READ --save F34.manager-update-result/program -- node "$F34/update.mjs" "$SCID"
   control-agent-server api GET "/api/conversations/$SCID" --max-chars 300 --check title eq qa-f34-renamed
   cat "$F34/update.json"
-  control-agent-server assert --json "$F34/update.json" --check id eq "$SCID" --check title eq qa-f34-renamed  # bug: value.success eq true && value.id missing
+  control-agent-server assert --json "$F34/update.json" --check id eq "$SCID" --check title eq qa-f34-renamed
   ```
   Expected: the stored title and a `ConversationInfo` with the conversation's
-  `id` and new title. Today the title is stored but the promise resolves with
-  `{success: true}`, so `result.id` and `result.title` are `undefined`.
+  `id` and new title.
 - **Create options (`F34.manager-create-options`), known bug.**
   `ConversationManager.createConversation` hands `maxIterations` and
   `stuckDetection` to the `RemoteConversation` constructor, which ignores
@@ -1452,13 +1440,15 @@ Preconditions:
   rebuilt by anything but `npm run build` in `clients/typescript`; a stale
   build silently verifies old client code, which is why `Preconditions:`
   rebuilds whenever `src/` is newer.
-- In Node, only `ConversationEventStream` streams events (it uses the global
-  `WebSocket`, Node 22 or later). `WebSocketCallbackClient`,
-  `RemoteConversation.startWebSocketClient()` and `BashWebSocketClient` look
-  for `window.WebSocket` or `require('ws')` when their module loads; the ESM
-  build has no `require`, so they only report errors through `onError`
-  (`F34.ws-callback-client`, `F34.bash-websocket`). The unit tests pass
-  because vitest provides `require` and a fake `window`.
+- In Node, `ConversationEventStream`, `WebSocketCallbackClient`
+  (`RemoteConversation.startWebSocketClient()`) and `BashWebSocketClient` all
+  use the global `WebSocket` (Node 22 or later), looked up when a socket
+  opens. Only `ConversationEventStream` takes a constructor
+  (`createWebSocket`); on an older Node the callback clients need one
+  assigned to `globalThis.WebSocket`, else they report "WebSocket
+  implementation not available" through `onError`. `WebSocketCallbackClient`
+  reconnects through `ConversationEventStream`, so the refused-handshake
+  gotcha below applies to it too.
 - Node 22's global `WebSocket` (undici 6) fires `error` but no `close` when
   a handshake is refused, so a `ConversationEventStream` on it stops
   retrying after the first refused reconnect attempt (a server restart
@@ -1478,18 +1468,17 @@ Preconditions:
   `state.refresh()` when waiting for a status.
 - `executeCommand` always reports `timeout_occurred: false`; a command killed
   by its own timeout shows exit `-1` (the server sends no timeout marker), and
-  `exit_code` defaults to 0 when the server sends none. The HTTP request
+  `exit_code` is -1 when the server sends none. The HTTP request
   waits `timeout + 10` seconds.
-- `executeCommand` returns only the last `BashOutput` chunk; output beyond
-  1 MiB is split into several chunks server-side, and only `bash.searchEvents`
-  sees all of them.
+- `executeCommand` returns the server's joined output: output beyond 1 MiB
+  is stored as several chunks server-side (`bash.searchEvents` lists them),
+  and `execute_bash_command` concatenates them (`F13.execute-large-output`).
 - `RemoteWorkspace.fileDownload`, `downloadAsBlob` and `downloadAsText`
   decode the body as text (`F34.workspace-binary-download`); use
   `FileClient.downloadFile` for bytes.
-- `GitChange` (main entry) types `status` as lowercase
-  `added|modified|deleted|renamed`, but the server sends
-  `UPDATED|ADDED|DELETED|MOVED` (`F34.workspace-git-types`); compare against
-  the server's values, typed with the generated `GitChangeStatus`.
+- `GitChange['status']` (main entry, also exported as `GitChangeStatus`) is
+  the server's `UPDATED|ADDED|DELETED|MOVED`, not lowercase words
+  (`F34.workspace-git-types`).
   `gitChanges` and `gitDiff` wrap every refusal in a plain `Error`, so read
   the status from `isHttpError(e.cause)`, not from `e`.
 - The `kind` filter of `RemoteEventsList.search` and `count` needs the
@@ -1501,9 +1490,9 @@ Preconditions:
   agent field) can be passed directly; without `tools` the server agent has
   none. `RemoteConversation.start()` sends `max_iterations` 500 and
   `stuck_detection: true` unless told otherwise.
-- `updateConversation` resolves with `{success: true}`, not the conversation
-  (`F34.manager-update-result`); read the conversation back with
-  `getConversation`.
+- `PATCH /api/conversations/{id}` answers only `{success: true}`;
+  `updateConversation` reads the conversation back with a second `GET`
+  (`F34.manager-update-result`).
 - The version gate only reads `version` from `/server_info`; a server
   reporting `unknown` (a build without package metadata) fails every gated
   call. `F34.version-gate-old` needs PyPI (or a cached `uvx` environment) for

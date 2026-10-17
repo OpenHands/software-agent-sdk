@@ -846,7 +846,7 @@ Preconditions:
 - **Streamed tokens (`F33.conversation-streaming`).** An agent LLM with
   `stream=True`, a token callback, and an event callback that keeps
   `StreamingDeltaEvent` frames. The token and `state.events` outcomes are
-  recorded for the two known-bug bullets after this one.
+  recorded for the two bullets after this one.
   ```sh
   control-agent-server exec --env PYTHONPATH="$F33" --save F33.conversation-streaming/probe -- .venv/bin/python - <<'PY'
   import f33
@@ -874,33 +874,32 @@ Preconditions:
   (dozens for one sentence), and the server's stored events hold none: the
   deltas are transient frames, while the reply itself is stored as a
   `MessageEvent` (or `finish` action).
-- **Token callbacks on a remote conversation (`F33.conversation-token-callbacks`), known bug.**
+- **Token callbacks on a remote conversation (`F33.conversation-token-callbacks`).**
   The `Conversation(...)` factory forwards `token_callbacks` to
-  `RemoteConversation`, whose constructor swallows it in `**_`, so the
-  callbacks are never called although the server streamed the same tokens
-  to the socket. The correct behavior asserted here is that they receive the
-  run's deltas.
+  `RemoteConversation`, which hands each `StreamingDeltaEvent` frame from the
+  events socket to them as an `LLMStreamChunk` (the delta's `content` and
+  `reasoning_content` in `choices[0].delta`), so they receive the run's
+  deltas.
 
   Requires: `F33.conversation-streaming`
   ```sh
   test "$(jq .deltas "$F33/stream.json")" -gt 0
-  control-agent-server assert --json "$F33/stream.json" --check tokens gt 0  # bug: value.tokens eq 0 && value.deltas gt 0
+  control-agent-server assert --json "$F33/stream.json" --check tokens gt 0
   ```
-  The event callback got the deltas (control); today the token callback got
-  `0` calls.
-- **Deltas kept out of `state.events` (`F33.conversation-streaming-state`), known bug.**
-  `RemoteConversation`'s default callback adds every socket frame to
-  `state.events`, so the transient deltas become part of the client's
-  history although the server never stores them. The correct behavior
-  asserted here is that `state.events` keeps matching the server.
+  The event callback got the deltas (control), and the token callback got
+  them too.
+- **Deltas kept out of `state.events` (`F33.conversation-streaming-state`).**
+  `RemoteConversation`'s default callback skips the transient deltas the
+  server never stores, so they reach the callbacks only and `state.events`
+  keeps matching the server.
 
   Requires: `F33.conversation-streaming`
   ```sh
   test "$(jq '.local.MessageEvent // 0' "$F33/stream.json")" -eq "$(control-agent-server conversation events "$STREAM" --kinds MessageEvent | jq .matching)"
-  control-agent-server assert --json "$F33/stream.json" --check local.StreamingDeltaEvent missing  # bug: value.local.StreamingDeltaEvent gt 0
+  control-agent-server assert --json "$F33/stream.json" --check local.StreamingDeltaEvent missing
   ```
-  The stored kinds agree (control); today `state.events` also holds one
-  `StreamingDeltaEvent` per delta (the same count as the callback saw).
+  The stored kinds agree, and `state.events` holds no `StreamingDeltaEvent`
+  although the callback saw one per delta.
 - **Completion logs on the client (`F33.completion-logs`).** An agent LLM
   with `log_completions=True` and a relative `log_completions_folder`. The
   server replaces file logging with `LLMCompletionLogEvent`s; the client
@@ -2069,10 +2068,9 @@ Preconditions:
   value. `RemoteConversation.agent` (the attribute) is unaffected.
 - With a `stream=True` LLM the events socket also carries
   `StreamingDeltaEvent` frames: callbacks get them, the server stores none,
-  but `state.events` keeps them (`F33.conversation-streaming-state`, known
-  bug), so `len(state.events)` and kind counts include one entry per delta;
-  `token_callbacks` passed to `Conversation(...)` are ignored for a remote
-  workspace (`F33.conversation-token-callbacks`, known bug).
+  and they stay out of `state.events` (`F33.conversation-streaming-state`);
+  `token_callbacks` passed to `Conversation(...)` receive the same deltas
+  (`F33.conversation-token-callbacks`).
 - `log_completions=True` on a remote agent writes the log files on the
   client (relative folders resolve against the client's working directory),
   from `LLMCompletionLogEvent`s that the server also stores and serves like

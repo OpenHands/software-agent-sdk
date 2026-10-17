@@ -464,10 +464,13 @@ async def list_secrets(
     allowed_names: set[str] | None = None
     if agent_profile_id is not None:
         profile_store = get_agent_profile_store()
-        profile_name = profile_store.name_for_id(agent_profile_id)
-        if profile_name is None:
-            raise HTTPException(status_code=404, detail="Agent profile not found")
-        profile = profile_store.load(profile_name)
+        # store_errors() answers an unloadable profile (400) and a busy store
+        # (503) the way the agent-profile routes do.
+        with store_errors():
+            profile_name = profile_store.name_for_id(agent_profile_id)
+            if profile_name is None:
+                raise HTTPException(status_code=404, detail="Agent profile not found")
+            profile = profile_store.load(profile_name)
         if profile.secret_refs is not None:
             allowed_names = set(profile.secret_refs)
 
@@ -498,7 +501,7 @@ async def get_secret_value(request: Request, name: str) -> Response:
     to be used with LookupSecret for lazy secret resolution.
 
     Raises:
-        HTTPException: 400 if name format is invalid, 404 if secret not found.
+        HTTPException: 422 if name format is invalid, 404 if secret not found.
     """
     _validate_secret_name(name)
 
@@ -577,7 +580,7 @@ async def delete_secret(request: Request, name: str) -> dict[str, bool]:
     """Delete a custom secret by name.
 
     Raises:
-        HTTPException: 400 if name format is invalid, 404 if secret not found,
+        HTTPException: 422 if name format is invalid, 404 if secret not found,
         500 if file is corrupted.
     """
     _validate_secret_name(name)

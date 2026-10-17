@@ -177,6 +177,16 @@ def _copy_event_for_fork(event: Event) -> Event:
     return Event.model_validate_json(event.model_dump_json(exclude_none=True))
 
 
+def _same_llm_config(a: LLM, b: LLM) -> bool:
+    """Return whether two LLMs serialize to the same config, secrets included."""
+    if a is b:
+        return True
+    context = {"expose_secrets": True}
+    return a.model_dump(mode="json", context=context) == b.model_dump(
+        mode="json", context=context
+    )
+
+
 class LocalConversation(BaseConversation):
     agent: AgentBase
     workspace: LocalWorkspace
@@ -205,6 +215,7 @@ class LocalConversation(BaseConversation):
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _mcp_tool_provider: MCPToolProvider
+    _mcp_config_from_parent: bool
     _llm_call_context: LLMCallContext
 
     def __init__(
@@ -244,6 +255,7 @@ class LocalConversation(BaseConversation):
         profile_store_dir: str | Path | None = None,
         stream_callbacks: list[StreamProgressCallbackType] | None = None,
         _parent_llm_call_context: LLMCallContext | None = None,
+        _mcp_config_from_parent: bool = False,
         **_: object,
     ):
         """Initialize the conversation.
@@ -306,6 +318,9 @@ class LocalConversation(BaseConversation):
                 for state and EventLog storage.
             _parent_llm_call_context: Runtime LLM context inherited by an internal
                 child conversation. Conversation-local identity is always replaced.
+            _mcp_config_from_parent: The agent's ``mcp_config`` is the resolved
+                config of a delegating parent. It is used as-is: no plugin MCP
+                servers are merged into it and no ``${VAR}`` is expanded again.
             profile_store_dir: Optional directory containing saved LLM profiles.
                 Defaults to ``~/.openhands/profiles``.
         """
@@ -326,6 +341,7 @@ class LocalConversation(BaseConversation):
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
+        self._mcp_config_from_parent = _mcp_config_from_parent
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
@@ -1223,7 +1239,9 @@ class LocalConversation(BaseConversation):
         # - This is the ONLY place where defaults are applied (plugin loading preserves
         #   placeholders with expand_defaults=False to avoid double-expansion)
         # Agent Plugins servers are left literal (see expand_mcp_servers).
-        if merged_mcp:
+        if self._mcp_config_from_parent:
+            merged_mcp = dict(self.agent.mcp_config)
+        elif merged_mcp:
             # Pass the registry's lookup method as a callback - secrets are retrieved
             # lazily, one at a time, only when actually referenced in the config
             merged_mcp = expand_mcp_servers(
@@ -1656,18 +1674,31 @@ class LocalConversation(BaseConversation):
         """Swap the agent's LLM to the given object.
 
         The caller owns ``llm.usage_id``; it is the registry key. If an
-        entry with that key already exists, the cached LLM is reused and
-        the passed ``llm`` is dropped — matching the rest of the
-        registry's "first-write-wins" contract.
+        entry with that key already exists and has the same config, the
+        cached LLM is reused. If its config differs (e.g. ``default``, which
+        agent initialization registers, posted with another model), the
+        passed ``llm`` replaces the entry and takes over the metrics already
+        recorded under that ``usage_id``.
 
         Args:
             llm: LLM to install on the agent.
         """
+        usage_id = llm.usage_id
         try:
-            new_llm = self.llm_registry.get(llm.usage_id)
+            registered = self.llm_registry.get(usage_id)
         except KeyError:
+            registered = None
+        if registered is not None and _same_llm_config(registered, llm):
+            new_llm = registered
+        else:
             new_llm = create_subscription_llm_from_config(llm)
+            if registered is not None:
+                self.llm_registry.remove(usage_id)
             self.llm_registry.add(new_llm)
+            if registered is not None:
+                # Keep one metrics object per usage_id: ConversationStats
+                # tracks the registered LLM's, so accrued usage is retained.
+                new_llm.restore_metrics(registered.metrics)
         # A switch_llm tool runs on a worker thread while run()/arun() holds the
         # state lock across the agent step on another thread, blocked awaiting
         # this very tool. Re-acquiring _state here would deadlock, so skip it:

@@ -1,9 +1,16 @@
 import type { MCPClient } from '../client/mcp-client';
+import type { RemoteWorkspace } from '../workspace/remote-workspace';
+import type {
+  GitChange as PublicGitChange,
+  GitChangeStatus as PublicGitChangeStatus,
+} from '../index';
 import type { SettingsClient } from '../client/settings-client';
 import type {
   AcpAgentProfile as GeneratedACPAgentProfile,
   AgentProfileDiagnostics as GeneratedAgentProfileDiagnostics,
   AgentProfileInfo as GeneratedAgentProfileSummary,
+  GitChange as GeneratedGitChange,
+  GitChangeStatus as GeneratedGitChangeStatus,
   McpConfigPatchWritable,
   McpServerPatchWritable,
   OpenHandsAgentProfile as GeneratedOpenHandsAgentProfile,
@@ -119,6 +126,20 @@ describe('Agent Server generated contract aliases', () => {
         AgentServerMCPOAuthCallbackResponse
       >
     >(true);
+  });
+
+  it('types git change statuses with the generated wire enum', () => {
+    assertType<Equal<PublicGitChange['status'], GeneratedGitChange['status']>>(true);
+    assertType<Equal<PublicGitChangeStatus, GeneratedGitChangeStatus>>(true);
+    assertType<
+      Equal<
+        Awaited<ReturnType<RemoteWorkspace['gitChanges']>>[number]['status'],
+        GeneratedGitChangeStatus
+      >
+    >(true);
+
+    const statuses = ['ADDED', 'UPDATED', 'DELETED', 'MOVED'] satisfies PublicGitChange['status'][];
+    expect(statuses).toHaveLength(4);
   });
 
   it('distinguishes omitted patch fields from explicit clearing', () => {

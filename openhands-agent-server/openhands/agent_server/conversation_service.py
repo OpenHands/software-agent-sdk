@@ -1623,7 +1623,6 @@ class ConversationService:
                 "agent",
                 "agent_settings",
                 "agent_profile_id",
-                "agent_profile",
                 "agent_launch_additions",
             },
         )
@@ -1803,22 +1802,24 @@ class ConversationService:
 
         loop = asyncio.get_running_loop()
         state = await event_service.get_state()
+        update: dict[str, Any] = {"updated_at": utc_now()}
         if request.title is not None:
-            event_service.stored.title = request.title.strip()
+            update["title"] = request.title.strip()
         if request.tags is not None:
-            event_service.stored.tags = request.tags
+            update["tags"] = request.tags
+        # Persist first: a refused write (e.g. lost lease ownership) must leave
+        # the in-memory metadata and state untouched.
+        await event_service.save_meta(event_service.stored.model_copy(update=update))
+        if request.tags is not None:
             # Keep the persisted ConversationState update under the state lock so
             # autosave and state-change callbacks observe a consistent mutation.
             state = await loop.run_in_executor(
                 None, _update_state_tags_sync, state, request.tags
             )
-        event_service.stored.updated_at = utc_now()
         record = self._conversation_records.get(conversation_id)
         if record is not None:
             record.stored = event_service.stored
             record.cached_info = None
-        # Save the updated metadata to disk
-        await event_service.save_meta()
 
         # Notify conversation webhooks about the updated conversation. Compose the
         # full-state snapshot under the state lock, but do the synchronous wait in a
@@ -2525,9 +2526,11 @@ class AutoTitleSubscriber(Subscriber):
                     _on_title_error,
                 )
                 if title and self.service.stored.title is None:
-                    self.service.stored.title = title
-                    self.service.stored.updated_at = utc_now()
-                    await self.service.save_meta()
+                    await self.service.save_meta(
+                        self.service.stored.model_copy(
+                            update={"title": title, "updated_at": utc_now()}
+                        )
+                    )
             except Exception:
                 logger.warning(
                     f"Auto-title generation failed for "
