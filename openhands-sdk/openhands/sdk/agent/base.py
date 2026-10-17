@@ -16,6 +16,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    ValidationError,
     field_validator,
     model_validator,
 )
@@ -38,6 +39,7 @@ from openhands.sdk.tool import (
     BUILT_IN_TOOLS,
     Tool,
     ToolDefinition,
+    is_tool_available,
     resolve_tool,
 )
 from openhands.sdk.tool.builtins import InvokeSkillTool
@@ -56,8 +58,34 @@ if TYPE_CHECKING:
         ConversationCallbackType,
         ConversationTokenCallbackType,
     )
+    from openhands.sdk.event import Event
 
 logger = get_logger(__name__)
+
+
+# The system prompt is event 0 or 1 (a remote session may start with a
+# ConversationStateUpdateEvent), so a few events show whether it exists.
+INIT_STATE_PREFIX_SCAN_WINDOW = 3
+
+
+def _readable_prefix(state: ConversationState) -> list[Event]:
+    """The first events of ``state``, leaving out stored events that no longer
+    validate (e.g. a custom tool's events once its module is gone, #4080)."""
+    events = state.events
+    prefix: list[Event] = []
+    for i in range(min(len(events), INIT_STATE_PREFIX_SCAN_WINDOW)):
+        try:
+            prefix.append(events[i])
+        except ValidationError:
+            continue
+    return prefix
+
+
+def _has_system_prompt(state: ConversationState) -> bool:
+    """Whether the agent was initialized on ``state`` before (a resume)."""
+    from openhands.sdk.event import SystemPromptEvent
+
+    return any(isinstance(e, SystemPromptEvent) for e in _readable_prefix(state))
 
 
 # -- SOUL.md loader -------------------------------------------------------
@@ -578,6 +606,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             return
 
         tools: list[ToolDefinition] = []
+        resuming = _has_system_prompt(state)
 
         # Use ThreadPoolExecutor to parallelize tool resolution
         with ThreadPoolExecutor(max_workers=4) as executor:
@@ -585,6 +614,18 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
             # Submit tool resolution tasks
             for tool_spec in self.tools:
+                if resuming and not is_tool_available(
+                    tool_spec.name, check_usable=False
+                ):
+                    # e.g. a custom tool whose module is gone after a restart:
+                    # go on without it rather than strand the conversation.
+                    logger.warning(
+                        "Tool '%s' is not registered; resuming conversation %s "
+                        "without it.",
+                        tool_spec.name,
+                        state.id,
+                    )
+                    continue
                 future = executor.submit(resolve_tool, tool_spec, state)
                 futures.append(future)
 

@@ -361,9 +361,9 @@ class ConversationState(OpenHandsModel):
                 cur_id: EventID | None = leaf
                 while cur_id is not None and cur_id != self._view_branch_leaf:
                     idx = self._events.get_index(cur_id)
-                    evt = self._events[idx]
-                    tail.append(evt)
-                    cur_id = self._events._effective_parent_id(idx, evt)
+                    evt, cur_id = self._events._read_branch_node(idx)
+                    if evt is not None:
+                        tail.append(evt)
                 if cur_id == self._view_branch_leaf:
                     for evt in reversed(tail):
                         self._view.append_event(evt)

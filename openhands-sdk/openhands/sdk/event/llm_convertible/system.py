@@ -1,12 +1,17 @@
 import json
+from typing import Any
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from rich.text import Text
 
 from openhands.sdk.event.base import N_CHAR_PREVIEW, LLMConvertibleEvent
 from openhands.sdk.event.types import SourceType
 from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import ToolDefinition
+
+
+logger = get_logger(__name__)
 
 
 class SystemPromptEvent(LLMConvertibleEvent):
@@ -39,6 +44,30 @@ class SystemPromptEvent(LLMConvertibleEvent):
             "the system message (not cached)."
         ),
     )
+
+    @field_validator("tools", mode="before")
+    @classmethod
+    def _drop_unknown_tools(cls, tools: Any) -> Any:
+        """Leave out stored tools whose class is not loaded (e.g. a custom tool
+        whose module is gone after a restart), so the conversation still loads.
+        """
+        if not isinstance(tools, list):
+            return tools
+        kept = []
+        for tool in tools:
+            kind = tool.get("kind") if isinstance(tool, dict) else None
+            if isinstance(kind, str):
+                try:
+                    ToolDefinition.resolve_kind(kind)
+                except ValueError:
+                    logger.warning(
+                        "Leaving out tool of unknown kind %r from a stored "
+                        "system prompt.",
+                        kind,
+                    )
+                    continue
+            kept.append(tool)
+        return kept
 
     @property
     def visualize(self) -> Text:

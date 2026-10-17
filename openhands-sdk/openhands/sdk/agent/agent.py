@@ -11,7 +11,7 @@ from pydantic import Field, PrivateAttr, ValidationError, model_validator
 
 import openhands.sdk.security.analyzer as analyzer
 import openhands.sdk.security.risk as risk
-from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.base import AgentBase, _readable_prefix
 from openhands.sdk.agent.critic_mixin import CriticMixin
 from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
 from openhands.sdk.agent.response_dispatch import (
@@ -115,11 +115,6 @@ def _tool_has_summary_param(tool: ToolDefinition) -> bool:
         if "summary" in props:
             return True
     return False
-
-
-# Maximum number of events to scan during init_state defensive checks.
-# SystemPromptEvent must appear within this prefix (at index 0 or 1).
-INIT_STATE_PREFIX_SCAN_WINDOW = 3
 
 
 def _latest_user_message_contains_image(messages: list[Message]) -> bool:
@@ -538,7 +533,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         #
         # We intentionally only inspect the first few events (cheap for both local and
         # remote) to enforce this invariant.
-        prefix_events = state.events[:INIT_STATE_PREFIX_SCAN_WINDOW]
+        prefix_events = _readable_prefix(state)
 
         has_system_prompt = any(isinstance(e, SystemPromptEvent) for e in prefix_events)
         has_user_message = any(
