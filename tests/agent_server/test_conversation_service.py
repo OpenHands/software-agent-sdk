@@ -21,6 +21,7 @@ from openhands.agent_server.conversation_lease import (
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationService,
+    UnavailableAgentTool,
     _compose_conversation_info,
     _ConversationRecord,
     _get_worktree_start_point,
@@ -143,6 +144,34 @@ async def test_server_resolved_tool_modules_are_persisted(tmp_path):
     assert meta["tool_module_qualnames"]["terminal"] == (
         "openhands.tools.terminal.definition"
     )
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_from_unimportable_module_rejects_create(tmp_path):
+    """The create fails with a client error instead of every message failing."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    qualnames = {"qa_ghost_tool": "qa_ghost_tool_missing_module"}
+
+    def request(tools: list[Tool]) -> StartConversationRequest:
+        return StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=tools),
+            workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+            confirmation_policy=NeverConfirm(),
+            tool_module_qualnames=qualnames,
+        )
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        with pytest.raises(UnavailableAgentTool) as exc_info:
+            await service.start_conversation(request([Tool(name="qa_ghost_tool")]))
+        assert "'qa_ghost_tool'" in str(exc_info.value)
+        assert "qa_ghost_tool_missing_module" in str(exc_info.value)
+        assert not conversations_dir.exists() or not any(conversations_dir.iterdir())
+
+        # An unimportable module whose tool the agent does not use stays a warning.
+        info, is_new = await service.start_conversation(request([]))
+        assert is_new and info.id is not None
 
 
 def _create_running_terminal_action(tool_call_id: str = "call_1") -> ActionEvent:

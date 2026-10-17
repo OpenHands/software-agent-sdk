@@ -49,7 +49,7 @@ Routes: `GET /api/conversations/{conversation_id}/workspace`,
 - `F16.vscode-url-not-running`: a VS Code that is not running must not be advertised: `url` is null while `running` is false, also on a server booted with a session key.
 - `F16.vscode-url-no-key`: a server without session keys, with VS Code enabled but not running (no binary), answers `{"url": null}` on both URL routes.
 - `F16.vscode-url-after-init`: a deferred-init server that receives its session key through `POST /api/init`, with VS Code enabled but not running (no binary), answers `{"url": null}`.
-- `F16.vscode-folder-encoding`: the URL's `folder` parameter decodes back to the workspace path even when the path contains `&` or `#` (known bug: the value is not URL-encoded; blocked on this machine: no binary).
+- `F16.vscode-folder-encoding`: the URL's `folder` parameter decodes back to the workspace path even when the path contains `&` or `#` (blocked on this machine: no binary).
 - `F16.docker-root-cookie`: in Docker runtime mode the slashless workspace root accepts the workspace cookie like the slashed form does (known bug: it falls into the header-only proxy and answers 401).
 - `F16.vscode-running`: with the OpenVSCode Server binary installed and its port free, status reports `running: true` and the URL opens the editor (blocked on this machine: no binary).
 
@@ -436,11 +436,13 @@ Preconditions:
   `session_api_keys[0]` before `start()` runs, but `get_vscode_url` returns a
   URL only while the server is running, so no dead "open VS Code" link (and no
   session key) is handed out for a server that is not there.
-- **Folder with `&` and `#` (`F16.vscode-folder-encoding`), known bug, blocked.**
+- **Folder with `&` and `#` (`F16.vscode-folder-encoding`), blocked.**
   Parse the scoped URL as a browser would, first for the normal workspace,
   then for a workspace named `qa f16&x=1#frag`. Needs VS Code running (the
   OpenVSCode Server binary, see `F16.vscode-running`): a server that is not
   running advertises no URL.
+
+  Requires: `F16.vscode-enabled-status`
   ```sh
   ROUNDTRIP='import sys, urllib.parse as u; p = u.urlsplit(sys.stdin.read().strip()); q = u.parse_qs(p.query); sys.exit(0 if q.get("folder") == [sys.argv[1]] and not p.fragment else 1)'
   control-agent-server api GET "/api/conversations/$CID/vscode/url" --expect 200 --field url | python3 -c "$ROUNDTRIP" "$WS"
@@ -450,12 +452,12 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$ODD/vscode/url" --expect 200 --save F16.vscode-folder-encoding/odd-folder
   control-agent-server api GET "/api/conversations/$ODD/vscode/url" --expect 200 --field url \
     | python3 -c 'import sys, json, urllib.parse as u; p = u.urlsplit(sys.stdin.read().strip()); print(json.dumps({"folder": u.parse_qs(p.query).get("folder"), "fragment": p.fragment}))' \
-    | control-agent-server assert --check folder len-eq 1 --check folder.0 eq "$OWS" --check fragment eq ''  # bug: value.fragment eq frag && value.folder.0 matches '/qa f16$'
+    | control-agent-server assert --check folder len-eq 1 --check folder.0 eq "$OWS" --check fragment eq ''
   ```
   The normal workspace round-trips. For the odd one the `folder` parameter
-  should decode back to `.../qa f16&x=1#frag`; today the value is pasted
-  unencoded, so a parser reads `folder=.../qa f16`, an extra `x=1` parameter
-  and a `#frag` fragment, and VS Code would open the wrong folder.
+  decodes back to `.../qa f16&x=1#frag` with no fragment: the query values
+  are percent-encoded (`/` stays as is), so a parser does not read
+  `folder=.../qa f16`, an extra `x=1` parameter and a `#frag` fragment.
 - **No key, no URL (`F16.vscode-url-no-key`).** A second server without
   session keys, VS Code enabled on the port the sink still holds.
 

@@ -761,8 +761,8 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   `conversation wait`, the events socket or the event log. A provider failure
   is a 200 from `/run` followed by `error` and a `ConversationErrorEvent`.
 - `events/count` and `events/search` filter `kind` by the fully-qualified
-  class path (`openhands.sdk.event.user_action.PauseEvent`), not the short
-  `kind` value the events carry (F06).
+  class path (`openhands.sdk.event.user_action.PauseEvent`) or the short
+  `kind` value the events carry (`PauseEvent`, `F06.search-kind-short`).
 - Every state change is also persisted as a `ConversationStateUpdateEvent`,
   so count specific kinds instead of total events, except to prove that
   nothing happened (`F05.run-finished-noop`).

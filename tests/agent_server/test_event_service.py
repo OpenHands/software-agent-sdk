@@ -275,6 +275,31 @@ class TestEventServiceSearchEvents:
         assert len(result.items) == 0
 
     @pytest.mark.asyncio
+    async def test_search_events_short_kind_matches_qualified_kind(
+        self, event_service, mock_conversation_with_events
+    ):
+        """The bare class name (the wire ``kind``) filters like the full path."""
+        event_service._conversation = mock_conversation_with_events
+
+        qualified = await event_service.search_events(
+            kind="openhands.sdk.event.llm_convertible.message.MessageEvent"
+        )
+        short = await event_service.search_events(kind="MessageEvent")
+        assert len(short.items) == 5
+        assert [e.id for e in short.items] == [e.id for e in qualified.items]
+        assert short.next_page_id == qualified.next_page_id
+
+        # Combined with another filter, both apply.
+        result = await event_service.search_events(kind="MessageEvent", source="user")
+        assert len(result.items) == 5
+        result = await event_service.search_events(kind="MessageEvent", source="agent")
+        assert len(result.items) == 0
+
+        # A partial module path is neither the short nor the full name.
+        result = await event_service.search_events(kind="message.MessageEvent")
+        assert len(result.items) == 0
+
+    @pytest.mark.asyncio
     async def test_search_events_sorting(
         self, event_service, mock_conversation_with_events
     ):
@@ -717,6 +742,12 @@ class TestEventServiceCountEvents:
             kind="openhands.sdk.event.llm_convertible.message.MessageEvent"
         )
         assert result == 5
+
+        # The bare class name (the wire ``kind``) counts the same events
+        result = await event_service.count_events(kind="MessageEvent")
+        assert result == 5
+        result = await event_service.count_events(kind="MessageEvent", source="agent")
+        assert result == 0
 
         # Count non-existent event type (should be 0)
         result = await event_service.count_events(kind="NonExistentEvent")

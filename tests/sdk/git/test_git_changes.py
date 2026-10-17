@@ -189,6 +189,30 @@ def test_get_changes_in_repo_nested_directories():
             assert change.status == GitChangeStatus.ADDED
 
 
+def test_get_changes_in_repo_subdirectory_paths_are_relative_to_it(tmp_path):
+    """A subdirectory of a repository lists only its own changes, on its base."""
+    setup_git_repo(str(tmp_path))
+    (tmp_path / "src").mkdir()
+    (tmp_path / "README.md").write_text("hello\n")
+    (tmp_path / "src" / "app.py").write_text("x = 1\n")
+    (tmp_path / "src" / "old.py").write_text("old\n")
+    run_bash_command("git add . && git commit -m init", str(tmp_path))
+
+    (tmp_path / "README.md").write_text("edited\n")
+    (tmp_path / "notes.txt").write_text("note\n")
+    (tmp_path / "src" / "app.py").write_text("x = 2\n")
+    (tmp_path / "src" / "old.py").unlink()
+    (tmp_path / "src" / "new.py").write_text("new\n")
+
+    changes = get_changes_in_repo(tmp_path / "src", ref="HEAD")
+
+    assert sorted((str(c.path), c.status) for c in changes) == [
+        ("app.py", GitChangeStatus.UPDATED),
+        ("new.py", GitChangeStatus.ADDED),
+        ("old.py", GitChangeStatus.DELETED),
+    ]
+
+
 def test_get_changes_in_repo_staged_and_unstaged():
     """Test get_changes_in_repo with both staged and unstaged changes."""
     with tempfile.TemporaryDirectory() as temp_dir:

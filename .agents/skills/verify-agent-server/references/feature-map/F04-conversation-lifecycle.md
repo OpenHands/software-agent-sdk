@@ -507,15 +507,14 @@ EOF
   ```
   Three ids return `[IID, null, FID]`; 99 unknown ids return 99 nulls; missing
   or malformed ids are 422.
-- **100 ids in one batch (`F04.batch-get-limit`), known bug.** The router
+- **100 ids in one batch (`F04.batch-get-limit`).** The router
   limits a batch to 99 ids.
   ```sh
   IDS100=$(python3 -c 'import uuid; print(",".join(str(uuid.uuid4()) for _ in range(100)))')
-  control-agent-server exec --expect-output QA_BATCH_OK --save F04.batch-get-limit/hundred -- python3 "$F/qa-f04-batch.py" "$IDS100" 400,422  # bug: exit_code eq 1 && stdout_tail contains '"status": 500'
+  control-agent-server exec --expect-output QA_BATCH_OK --expect-output 'at most 99 items' --save F04.batch-get-limit/hundred -- python3 "$F/qa-f04-batch.py" "$IDS100" 422
   ```
-  Expected: a 4xx that names the limit. Today it is 500 with an empty
-  `exception`: the limit is a bare `assert len(ids) < 100` in
-  `batch_get_conversations` (and disappears under `python -O`).
+  100 ids are a 422 whose detail names the limit ("List should have at most
+  99 items"); the OpenAPI schema declares `maxItems: 99` on `ids`.
 - **Search pages (`F04.search-page`).** Two new conversations make the newest
   two deterministic.
   ```sh
@@ -746,7 +745,7 @@ EOF
   404 for PATCH and DELETE (the router tests lock the current codes; known
   bugs `F04.patch-unknown-id` and `F04.delete-unknown-id`). Check `success`
   on a PATCH, not only the status.
-- `GET /api/conversations` takes fewer than 100 ids (see
+- `GET /api/conversations` takes at most 99 ids; more are a 422 (see
   `F04.batch-get-limit`). Repeat `--query ids=...` once per id.
 - PATCH `tags` replaces the whole map; PATCH `title` alone leaves tags alone.
   A set title stops autotitle. PATCH, DELETE and `agent_final_response` load

@@ -33,6 +33,7 @@ from openhands.sdk.llm.exceptions import (
 from openhands.sdk.llm.llm_profile_store import (
     PROFILE_NAME_PATTERN,
     ProfileLimitExceeded,
+    canonical_profile_name,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
@@ -134,11 +135,17 @@ def _set_active_profile_if_matches(
     config = get_config(request)
     settings_store = get_settings_store(config)
     settings = settings_store.load() or PersistedSettings()
-    if settings.active_profile != old_name:
+    active = settings.active_profile
+    # ``foo.json`` addresses profile ``foo`` in the store, so compare store keys.
+    if active is None or canonical_profile_name(active) != canonical_profile_name(
+        old_name
+    ):
         return False
 
     def update_active(settings: PersistedSettings) -> PersistedSettings:
-        settings.active_profile = new_name
+        settings.active_profile = (
+            canonical_profile_name(new_name) if new_name is not None else None
+        )
         return settings
 
     settings_store.update(update_active)
@@ -525,7 +532,7 @@ async def activate_profile(
                 update={"llm": llm}
             )
             llm_applied = True
-        settings.active_profile = name
+        settings.active_profile = canonical_profile_name(name)
         return settings
 
     try:

@@ -560,11 +560,12 @@ class EventService:
         timestamp_lt_str: str | None,
     ) -> bool:
         """Return True if ``event`` matches all of the provided filters."""
-        if (
-            kind is not None
-            and f"{event.__class__.__module__}.{event.__class__.__name__}" != kind
-        ):
-            return False
+        if kind is not None:
+            # Accept the bare class name (the wire ``kind`` value, as the route
+            # docs and the TypeScript client use) or the fully-qualified path.
+            cls = type(event)
+            if kind != cls.__name__ and kind != f"{cls.__module__}.{cls.__name__}":
+                return False
         if source is not None and event.source != source:
             return False
         if timestamp_gte_str is not None and event.timestamp < timestamp_gte_str:

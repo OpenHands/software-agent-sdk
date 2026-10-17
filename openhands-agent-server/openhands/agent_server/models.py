@@ -444,6 +444,10 @@ class Success(BaseModel):
     success: bool = True
 
 
+class FileUploadResult(Success):
+    file_size: int = Field(description="Number of bytes written to the destination")
+
+
 class EventPage(OpenHandsModel):
     items: list[Event]
     next_page_id: str | None = None

@@ -60,7 +60,7 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
 - REST: `POST /api/conversations/{conversation_id}/condense` (no body), 200
   `{"success": true}` once the condensation step finished; 404, 500.
 - REST: `POST /api/conversations/{conversation_id}/ask_agent` (body
-  `{"question": "..."}`), 200 `{"response": "..."}`; 422, 500.
+  `{"question": "..."}`), 200 `{"response": "..."}`; 404, 422, 500.
 - Second views used here: `GET /api/conversations/{conversation_id}`,
   `.../events/search`, `.../events/count`, `.../events/{event_id}`,
   `.../agent_final_response` (other families), the conversation's
@@ -503,17 +503,16 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   the step holds nor waits for it. `R` is still `running`, its event count is
   unchanged, and after the interrupt (which frees the run slot) no event
   carries the side answer.
-- **Unknown conversation (`F10.ask-agent-unknown`), known bug.** The route
+- **Unknown conversation (`F10.ask-agent-unknown`).** The route
   documents 404, like condense and navigate.
   ```sh
   control-agent-server api GET /openapi.json --auth none --quiet \
     --check 'paths./api/conversations/{conversation_id}/ask_agent.post.responses.404' exists
-  control-agent-server api POST "/api/conversations/$NOPE/ask_agent" --json '{"question": "hi"}' --expect 404 --save F10.ask-agent-unknown/unknown  # bug: status eq 500 && response.body.exception contains '500: Internal Server Error'
+  control-agent-server api POST "/api/conversations/$NOPE/ask_agent" --json '{"question": "hi"}' --expect 404 --check detail eq 'Conversation not found' --save F10.ask-agent-unknown/unknown
   ```
-  Expected: 404. Today it is 500 `{"detail": "Internal Server Error",
-  "exception": "500: Internal Server Error"}`:
-  `ConversationService.ask_agent` returns `None` for an unknown id and the
-  router turns `None` into a bare 500.
+  Expected: 404 `{"detail": "Conversation not found"}`, the same answer
+  condense gives (`ConversationService.ask_agent` returns `None` for an
+  unknown id and the router maps it to 404).
 - **State after a restart (`F10.restart-persist`).** Restart, then read the
   forks and `S`'s empty HEAD back.
 

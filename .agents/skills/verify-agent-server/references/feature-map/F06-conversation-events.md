@@ -184,26 +184,28 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$CID/events/search" --query body=QA_F06 --query source=user \
     --query sort_order=TIMESTAMP_DESC --check items len-eq 2 --check items.0.llm_message.content.0.text eq 'QA_F06_SECOND again'
   ```
-  `kind` needs the fully-qualified class path, `source` is an exact match
+  `kind` takes the fully-qualified class path (or the bare class name, see
+  `F06.search-kind-short`), `source` is an exact match
   (an unknown value is just empty), `body` is a case-insensitive substring of
   message text, and filters combine with sort order.
-- **Short kind names (`F06.search-kind-short`), known bug.** The query
+- **Short kind names (`F06.search-kind-short`).** The query
   parameter's documentation and the TypeScript client say
   `kind=MessageEvent`, the value every event carries in its `kind` field.
   The fully-qualified filter first shows the two messages and that their
   `kind` field is exactly that short name.
+
+  Requires: `F06.send-no-run`
   ```sh
   control-agent-server api GET "/api/conversations/$CID/events/search" \
     --query kind=openhands.sdk.event.llm_convertible.message.MessageEvent \
     --check items len-eq 2 --check items.0.kind eq MessageEvent --check items.1.kind eq MessageEvent
   control-agent-server api GET "/api/conversations/$CID/events/search" --query kind=MessageEvent --expect 200 \
-    --check items len-eq 2 --save F06.search-kind-short/short-name  # bug: status eq 200 && response.body.items len-eq 0
-  control-agent-server api GET "/api/conversations/$CID/events/count" --query kind=MessageEvent --check . eq 2  # bug: status eq 200 && response.body eq 0
+    --check items len-eq 2 --save F06.search-kind-short/short-name
+  control-agent-server api GET "/api/conversations/$CID/events/count" --query kind=MessageEvent --check . eq 2
   ```
-  Correct behavior: the two messages. Today both return nothing (`items: []`
-  and `0`, with status 200): the service compares `kind` with
-  `<module>.<ClassName>` (`event_service.py`, `_event_matches_filters`), so a
-  client that follows the docs silently gets an empty history.
+  Search returns the two messages and count says `2`: the service
+  (`event_service.py`, `_event_matches_filters`) accepts either the bare
+  class name or the fully-qualified `<module>.<ClassName>`.
 - **Time window (`F06.search-time-window`).** `T1` is the first message's
   timestamp, a naive server-local (here UTC) ISO string.
   ```sh
@@ -674,14 +676,12 @@ Preconditions:
 
 ## Gotchas
 
-- `kind` filters need the fully-qualified class path
+- `kind` filters take either the bare class name events carry in `kind`
+  (`MessageEvent`) or the fully-qualified class path
   (`openhands.sdk.event.llm_convertible.message.MessageEvent`,
-  `...llm_convertible.action.ActionEvent`,
-  `...llm_convertible.observation.ObservationEvent`,
-  `...llm_convertible.system.SystemPromptEvent`,
-  `openhands.sdk.event.conversation_state.ConversationStateUpdateEvent`),
-  while events carry the bare name in `kind`; a short name returns an empty
-  page, not an error (`F06.search-kind-short`).
+  `openhands.sdk.event.conversation_state.ConversationStateUpdateEvent`);
+  an unknown or partial name (`message.MessageEvent`) returns an empty page,
+  not an error (`F06.search-kind-short`).
 - `page_id` is inclusive and an unknown `page_id` silently restarts from the
   first event (the newest for `TIMESTAMP_DESC`), so a stale cursor looks like
   a fresh first page.
