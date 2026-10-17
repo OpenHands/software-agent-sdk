@@ -531,28 +531,26 @@ Preconditions:
   Today the `# bug` line gets 500 `All connection attempts failed`. The same
   500 (with an empty message) is returned for a callback submitted after a
   job failed on its consent timeout.
-- **Port out of range (`F19.oauth-callback-bad-port`), known bug.**
+- **Port out of range (`F19.oauth-callback-bad-port`).**
   `_validate_callback_url` reads `urlparse(...).port`, which raises
-  `ValueError` for `99999` or a non-numeric port; the route lets it escape as
-  500. The bullet uses its own job that is waiting for consent, so only the
-  URL check is under test. The in-range wrong port is the positive control
-  (400 `Unexpected OAuth callback URL`); the two `# bug` lines assert the
-  correct behavior, 400 like every other malformed URL, with the job still
-  waiting.
+  `ValueError` for `99999` or a non-numeric port; the route turns that into
+  the same 400 as any other port that does not match. The bullet uses its own
+  job that is waiting for consent, so only the URL check is under test. The
+  in-range wrong port is the control.
   ```sh
   JB=$(control-agent-server api POST /api/mcp/oauth/start --json "$(jq -nc --argjson s "$OAUTH_SRV" '{server: $s, timeout: 30}')" \
     --check authorization_url exists --field job_id)
   control-agent-server api GET "/api/mcp/oauth/status/$JB" --check callback_ready eq true --until-ok 20
   control-agent-server api POST "/api/mcp/oauth/callback/$JB" --json '{"callback_url":"http://localhost:1/callback?code=x"}' --expect 400 \
     --check detail eq 'Unexpected OAuth callback URL'
-  control-agent-server api POST "/api/mcp/oauth/callback/$JB" --json '{"callback_url":"http://localhost:99999/callback?code=x"}' --expect 400 --save F19.oauth-callback-bad-port/port-99999  # bug: status eq 500 && response.body.exception contains 'Port out of range'
-  control-agent-server api POST "/api/mcp/oauth/callback/$JB" --json '{"callback_url":"http://localhost:abc/callback?code=x"}' --expect 400 --save F19.oauth-callback-bad-port/port-abc  # bug: status eq 500 && response.body.exception contains 'Port could not be cast to integer'
+  control-agent-server api POST "/api/mcp/oauth/callback/$JB" --json '{"callback_url":"http://localhost:99999/callback?code=x"}' --expect 400 \
+    --check detail eq 'Unexpected OAuth callback URL' --save F19.oauth-callback-bad-port/port-99999
+  control-agent-server api POST "/api/mcp/oauth/callback/$JB" --json '{"callback_url":"http://localhost:abc/callback?code=x"}' --expect 400 \
+    --check detail eq 'Unexpected OAuth callback URL' --save F19.oauth-callback-bad-port/port-abc
   control-agent-server api GET "/api/mcp/oauth/status/$JB" --check status eq authorizing
   ```
-  Today both `# bug` posts are 500 (`Port out of range 0-65535`,
-  `Port could not be cast to integer value as 'abc'`) although the job keeps
-  waiting; port `0` and other in-range ports already get the 400
-  `Unexpected OAuth callback URL`.
+  Both posts answer 400 `Unexpected OAuth callback URL`, like port `0` and
+  any other in-range port that does not match, and the job keeps waiting.
 - **Callback URL checks on a live job (`F19.oauth-callback-validation`).** A
   fresh job, four wrong URLs, then the right one with `127.0.0.1`.
   ```sh

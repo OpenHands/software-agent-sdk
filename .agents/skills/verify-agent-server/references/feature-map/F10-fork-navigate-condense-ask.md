@@ -358,22 +358,21 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   a missing body (an empty body is not `{}`) and a malformed id, 401 without
   a key (the same request with the key worked in `F10.navigate-event`). HEAD
   is still empty.
-- **Final response after navigating back (`F10.navigate-final-response`), known bug.**
+- **Final response after navigating back (`F10.navigate-final-response`).**
   Use a fork of `A` so `A` keeps its history for the condense bullets.
   ```sh
   AN=$(control-agent-server api POST "/api/conversations/$A/fork" --expect 201 --field id)
   U1=$(control-agent-server api GET "/api/conversations/$AN/events/search" --query kind=$MSG --query source=user --check items len-eq 1 --field items.0.id)
   control-agent-server api GET "/api/conversations/$AN/agent_final_response" --check response matches '\S'
   control-agent-server api POST "/api/conversations/$AN/navigate" --json "{\"event_id\": \"$U1\"}" --expect 200 --quiet --check leaf_event_id eq "$U1"
-  control-agent-server api GET "/api/conversations/$AN/agent_final_response" --check response eq '' --save F10.navigate-final-response/after-navigate  # bug: status eq 200 && response.body.response matches '\S'
+  control-agent-server api GET "/api/conversations/$AN/agent_final_response" --check response eq '' --save F10.navigate-final-response/after-navigate
   ```
-  Expected: once HEAD is back on the user's message, the active branch has no
-  agent answer, so `agent_final_response` is `""` (the agent's context, title
-  generation, pending-action and stuck checks all use the active branch).
-  Today it still returns the abandoned answer (`OK`): the route scans the
-  whole event log (`EventService._get_agent_final_response_sync`). The
-  status also stays `finished`, so `POST /run` right after such a navigate
-  does nothing; send a new message to regenerate.
+  Once HEAD is back on the user's message, the active branch has no agent
+  answer, so `agent_final_response` is `""`: like the agent's context, title
+  generation, pending-action and stuck checks, it reads only the active
+  branch, not the abandoned answer (`OK`). The status stays `finished`, so
+  `POST /run` right after such a navigate does nothing; send a new message to
+  regenerate.
 - **Condense with DeepSeek (`F10.condense-llm`).** `A` uses the default
   `LLMSummarizingCondenser` on DeepSeek flash.
   ```sh

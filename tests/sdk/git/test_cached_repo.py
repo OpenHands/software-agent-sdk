@@ -166,6 +166,29 @@ def test_update_continues_on_checkout_error(tmp_path: Path):
     _update_repository(tmp_path, "nonexistent", mock_git)
 
 
+def test_update_strict_raises_on_fetch_error(tmp_path: Path):
+    """strict=True surfaces a failed fetch instead of keeping the stale cache."""
+    mock_git = create_autospec(GitHelper)
+    mock_git.get_current_branch.return_value = "main"
+    mock_git.fetch.side_effect = GitCommandError(
+        "offline", command=["git", "fetch"], exit_code=128
+    )
+
+    _update_repository(tmp_path, "main", mock_git)  # lenient: keeps the cache
+    with pytest.raises(GitCommandError):
+        _update_repository(tmp_path, "main", mock_git, strict=True)
+
+
+def test_update_strict_skips_fetch_for_local_pinned_ref(tmp_path: Path):
+    """A pinned ref already present locally needs no fetch, even when strict."""
+    mock_git = create_autospec(GitHelper)
+    mock_git.get_current_branch.return_value = None  # detached HEAD
+
+    _update_repository(tmp_path, "v1.0.0", mock_git, strict=True)
+
+    mock_git.fetch.assert_not_called()
+
+
 # -- _checkout_ref -------------------------------------------------------------
 
 

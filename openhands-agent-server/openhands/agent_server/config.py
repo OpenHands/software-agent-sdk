@@ -578,7 +578,8 @@ def load_config(config_path: Path | None = None) -> Config:
     if env_data is MISSING:
         data = file_data
     else:
-        data = merge(file_data, env_data)
+        # An explicit environment null (OH_<FIELD>_IS_NONE=1) clears a file value.
+        data = merge(file_data, env_data, none_overrides=True)
 
     if not data:
         return Config()
