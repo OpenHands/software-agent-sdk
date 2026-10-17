@@ -2,6 +2,7 @@ import sys
 from unittest.mock import patch
 
 import litellm
+from pydantic import SecretStr
 
 from openhands.sdk.llm.utils.unverified_models import (
     _list_bedrock_foundation_models,
@@ -161,6 +162,54 @@ def test_openrouter_models_remain_discoverable_without_litellm_catalog(monkeypat
     assert "bedrock/anthropic.claude-3" not in models
     assert "openrouter/openai/gpt-5.6" not in models
     assert "openrouter" not in get_unverified_models()
+
+
+def test_bedrock_ids_without_bedrock_prefix_are_excluded(monkeypatch):
+    """LiteLLM files Bedrock ids like ``deepseek.r1-v1:0`` under a Bedrock
+    provider; they must not leak into the list as other providers' models."""
+    monkeypatch.setattr(litellm, "model_list", ["deepseek/deepseek-chat"])
+    monkeypatch.setattr(
+        litellm,
+        "model_cost",
+        {
+            "deepseek.r1-v1:0": {"litellm_provider": "bedrock_converse"},
+            "anthropic.claude-v2:1": {"litellm_provider": "bedrock"},
+            "us.anthropic.claude-3-5-haiku-20241022-v1:0": {
+                "litellm_provider": "bedrock_converse"
+            },
+            "bedrock_mantle/openai.gpt-oss-120b": {
+                "litellm_provider": "bedrock_mantle"
+            },
+            "deepseek/deepseek-chat": {"litellm_provider": "deepseek"},
+            "claude-3-5-haiku-20241022": {"litellm_provider": "anthropic"},
+        },
+    )
+
+    models = get_supported_llm_models()
+
+    assert "deepseek/deepseek-chat" in models
+    assert "claude-3-5-haiku-20241022" in models
+    assert not any(".claude-" in m or m.startswith("deepseek.") for m in models)
+    assert not any(m.startswith("bedrock") for m in models)
+
+
+def test_bedrock_models_from_aws_are_kept_when_credentials_are_set(monkeypatch):
+    monkeypatch.setattr(litellm, "model_list", [])
+    monkeypatch.setattr(
+        litellm,
+        "model_cost",
+        {"deepseek.r1-v1:0": {"litellm_provider": "bedrock_converse"}},
+    )
+    with patch(
+        "openhands.sdk.llm.utils.unverified_models._list_bedrock_foundation_models",
+        return_value=["bedrock/deepseek.r1-v1:0"],
+    ):
+        models = get_supported_llm_models(
+            "us-east-1", SecretStr("key"), SecretStr("secret")
+        )
+
+    assert "bedrock/deepseek.r1-v1:0" in models
+    assert "deepseek.r1-v1:0" not in models
 
 
 def test_nemotron_3_super_uses_full_infra_name():
