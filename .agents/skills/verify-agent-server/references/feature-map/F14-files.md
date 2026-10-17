@@ -828,7 +828,7 @@ Preconditions:
   as many events as before) are all served after the restart, the restored
   conversation still binds its scope (the guard still refuses `WS` through
   `CID2`), and `doctor` is ok.
-- **Init-time conversations path (`F14.trajectory-init-path`), known bug.**
+- **Init-time conversations path (`F14.trajectory-init-path`).**
   A second server starts dormant;
   `POST /api/init` (`--auth init` sends that run's secret key in
   `X-Init-API-Key`) moves its conversations to a fixture directory. The trap
@@ -845,16 +845,14 @@ Preconditions:
   BCID=$(control-agent-server conversation start --run "$B" --tools file_editor --no-autotitle --print-id)
   test -d "$BP/$(printf '%s' "$BCID" | tr -d -)"
   control-agent-server api GET "/api/conversations/$BCID" --run "$B" --expect 200 --check id eq "$BCID"
-  control-agent-server api GET "/api/file/download-trajectory/$BCID" --run "$B" --expect 200 --save F14.trajectory-init-path/global  # bug: status eq 404 && response.body.detail eq 'Conversation not found'
+  control-agent-server api GET "/api/file/download-trajectory/$BCID" --run "$B" --expect 200 --save F14.trajectory-init-path/global
   control-agent-server api GET "/api/conversations/$BCID/file/download-trajectory/$BCID" --run "$B" --expect 200 \
-    --save F14.trajectory-init-path/scoped  # bug: status eq 404 && response.body.detail eq 'Conversation not found'
+    --save F14.trajectory-init-path/scoped
   ```
   The conversation is persisted under the init-time path and `GET` finds it.
-  Expected: both trajectory routes return the zip (each alone encodes the
-  bug). Actual: both answer `404 Conversation not found`:
-  `download_trajectory` reads `get_default_config().conversations_path` (the
-  launch-time default) instead of the config `POST /api/init` installed on
-  `app.state`.
+  Both trajectory routes return its zip: `download_trajectory` reads
+  `conversations_path` from the config `POST /api/init` installed on
+  `app.state`, not the launch-time default.
 
 ## Gotchas
 
@@ -924,7 +922,8 @@ Preconditions:
   not that the conversation is loaded; it includes lease files and every
   event file, skips a top-level `acp/` directory, and redacts JSON/JSONL
   credential fields plus any Fernet token. It writes a fixed temp name
-  (`F14.trajectory-concurrent`) and ignores an init-time `conversations_path`
+  (`F14.trajectory-concurrent`) and reads `conversations_path` from the live
+  `app.state.config`, so it follows an init-time path
   (`F14.trajectory-init-path`).
 - No file route emits conversation events or WebSocket frames; their second
   views are downloads, listings, archives and the disk.
