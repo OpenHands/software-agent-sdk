@@ -5,8 +5,10 @@ while keeping the LLM deterministic via monkeypatching.
 """
 
 import json
+import os
 import shutil
 import sys
+import tempfile
 import textwrap
 import threading
 import time
@@ -119,6 +121,8 @@ def live_server_env(
     monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg_file))
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / ".openhands"))
     monkeypatch.delenv("SESSION_API_KEY", raising=False)
+    monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
+    monkeypatch.delenv("TMUX_TMPDIR", raising=False)
 
     if import_modules is not None:
         preload_modules(import_modules)
@@ -275,6 +279,22 @@ def test_health_endpoints_return_ok_json(server_env):
             response = client.get(f"{server_env['host']}{endpoint}", timeout=1.0)
             assert response.status_code == 200
             assert response.json() == {"status": "ok"}
+
+
+@pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix sockets")
+def test_live_server_does_not_use_inherited_tmux_namespace(tmp_path, monkeypatch):
+    with tempfile.TemporaryDirectory(prefix="oh-host-tmux-", dir="/tmp") as shared:
+        monkeypatch.setenv("TMUX_TMPDIR", shared)
+        with live_server_env(tmp_path, monkeypatch):
+            socket_root = os.environ.get("TMUX_TMPDIR")
+            assert socket_root != shared
+            assert socket_root is not None and Path(socket_root).is_dir()
+
+
+def test_live_server_does_not_use_inherited_session_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("OH_SESSION_API_KEYS_0", "host-session-key")
+    with live_server_env(tmp_path, monkeypatch):
+        assert "OH_SESSION_API_KEYS_0" not in os.environ
 
 
 def test_prepare_for_sandbox_pause_drains_conversations(server_env):
