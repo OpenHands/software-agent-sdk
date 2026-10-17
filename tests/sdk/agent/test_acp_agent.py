@@ -5919,6 +5919,25 @@ class TestSetACPModel:
         # The sentinel LLM must not be mutated when the switch fails.
         assert agent.llm.model != "some-model"
 
+    def test_internal_error_for_unoffered_model_raises_value_error(self):
+        # claude-agent-acp answers a model id it does not offer with -32603.
+        # When the session's available_models shows the id is not offered,
+        # that is a client error (-> 400), not a server failure (-> 500).
+        agent = self._wire(_make_agent(), "claude-agent-acp", via_config_option=True)
+        agent._available_models = [
+            ACPModelInfo(model_id="sonnet"),
+            ACPModelInfo(model_id="haiku"),
+        ]
+        _agent_conn(agent).set_config_option.side_effect = ACPRequestError(
+            code=-32603, message="Internal error"
+        )
+        with pytest.raises(ValueError, match="not offered"):
+            agent.set_acp_model("qa-nope")
+        assert agent.llm.model != "qa-nope"
+        # An offered model failing with -32603 is still a server failure.
+        with pytest.raises(ACPRequestError):
+            agent.set_acp_model("haiku")
+
     def test_passes_timeout_to_run_async(self):
         # The protocol round-trip runs under the conversation state lock, so it
         # must be bounded to avoid wedging the lock if the server never answers.
