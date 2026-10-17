@@ -356,13 +356,20 @@ def main() -> None:
                 )
             )
         finally:
-            for conversation in reversed(conversations):
-                conversation.close()
-            for client in clients:
-                client.stop()
-            workspace.reset_client()
-            stop_server()
-            log.close()
+            try:
+                for conversation in reversed(conversations):
+                    conversation.close()
+                assert all(
+                    client.stopped.is_set()
+                    and (client.thread is None or not client.thread.is_alive())
+                    for client in clients
+                ), "SDK close returned with a live custom transport"
+            finally:
+                for client in clients:
+                    client.stop()
+                workspace.reset_client()
+                stop_server()
+                log.close()
         assert all(
             client.thread is None or not client.thread.is_alive() for client in clients
         )
