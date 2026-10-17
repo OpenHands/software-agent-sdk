@@ -107,6 +107,21 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
 
 ## Driving it with control-agent-server
 
+**Critic-check precondition.**
+
+If an authorized OpenHands (`openhands/…`) or compatible OpenHands LLM-proxy
+profile is available, use it for a critic check, regardless of the profile
+used for the rest of the pass. With the critic enabled and
+`verification.critic_api_key` unset, `OpenHandsAgentSettings.build_critic()`
+reuses the selected LLM profile's key; no separate critic key is required.
+The default critic endpoint is `https://llm-proxy.app.all-hands.dev/vllm`.
+A profile for a different proxy deployment must use that deployment's
+compatible critic endpoint rather than assume its credential works on the
+default endpoint. Restore the previous profile and verification settings
+afterwards. Availability is not a scored result: report the actual service
+response, and record `blocked` only when the authorized prerequisites are
+unavailable. Do not send an unrelated provider's key to the critic service.
+
 Preconditions:
 
 - A fresh run (`launch --new`, default flags) whose persistence directory has
