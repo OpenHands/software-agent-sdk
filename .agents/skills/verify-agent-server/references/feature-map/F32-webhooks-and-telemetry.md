@@ -37,7 +37,7 @@ Routes: none
 - `F32.buffer-size`: once `event_buffer_size` events are queued they are posted at once, without waiting for `flush_delay`.
 - `F32.buffer-stranded`: events that arrive while a batch is in flight are posted as soon as the buffer is full again, not held until `flush_delay` (see Gotchas).
 - `F32.flush-delay`: a partial buffer is posted `flush_delay` seconds after its first event; later events do not restart the timer.
-- `F32.webhook-spec-docs`: the `WebhookSpec` field descriptions published in the OpenAPI schema (the item type of `POST /api/init`'s `webhooks`) state the real event path and flush timer (reproduces a documentation bug; see Gotchas).
+- `F32.webhook-spec-docs`: the `WebhookSpec` field descriptions published in the OpenAPI schema (the item type of `POST /api/init`'s `webhooks`) state the real event path and flush timer (see Gotchas).
 - `F32.flush-on-close`: deleting a conversation posts its queued events before the `DELETE` returns, and a graceful server stop posts every conversation's queue.
 - `F32.backpressure`: `max_batch_bytes` caps each request (an event larger than it is posted alone), and `max_queue_size` and `max_queue_bytes` drop the oldest queued events with a warning.
 - `F32.retry`: a receiver that answers 500 gets `num_retries + 1` attempts per event batch and per conversation post.
@@ -296,24 +296,22 @@ Preconditions:
   control-agent-server sink read --path "/qa-f32-d/events/${TID//-/}" --contains '"key": "full_state"' --expect-min 1 --expect-max 1
   ```
   Nothing was posted after 3 s; one batch with the snapshot and the message
-  arrived 5 to 8 s after creation. The field's own description claims the
-  opposite (see Gotchas).
-- **Webhook field descriptions (`F32.webhook-spec-docs`), known bug.** An
+  arrived 5 to 8 s after creation, as the field's description says.
+- **Webhook field descriptions (`F32.webhook-spec-docs`).** An
   orchestrator learns `WebhookSpec` from the OpenAPI document, where it is
-  the item type of `POST /api/init`'s `webhooks`. Its descriptions should
+  the item type of `POST /api/init`'s `webhooks`. Its descriptions
   match what `F32.events-post` and `F32.flush-delay` proved: events go to
   `{base_url}/events/<conversation id hex>`, and the timer starts at the
   first queued event and is not reset.
   ```sh
   control-agent-server api GET /openapi.json --auth none --quiet --check 'components.schemas.InitRequest.properties.webhooks.anyOf.0.items.$ref' eq '#/components/schemas/WebhookSpec' --check components.schemas.WebhookSpec.properties.base_url.description exists --check components.schemas.WebhookSpec.properties.flush_delay.description exists
-  control-agent-server api GET /openapi.json --auth none --quiet --check components.schemas.WebhookSpec.properties.flush_delay.description not-contains 'Timer is reset on each new event'  # bug: status eq 200 && checks.0.actual contains 'Timer is reset on each new event'
-  control-agent-server api GET /openapi.json --auth none --quiet --check components.schemas.WebhookSpec.properties.base_url.description not-contains 'Events will be sent to {base_url}/events and'  # bug: status eq 200 && checks.0.actual contains 'Events will be sent to {base_url}/events and'
+  control-agent-server api GET /openapi.json --auth none --quiet --check components.schemas.WebhookSpec.properties.flush_delay.description not-contains 'Timer is reset on each new event'
+  control-agent-server api GET /openapi.json --auth none --quiet --check components.schemas.WebhookSpec.properties.base_url.description not-contains 'Events will be sent to {base_url}/events and'
   ```
-  Expected: descriptions that state the per-conversation path and a timer
-  from the first event. Actual: `flush_delay` says "Timer is reset on each
-  new event" and `base_url` says "Events will be sent to {base_url}/events
-  and conversation info to {base_url}/conversations". The failing check
-  prints the published text. See Gotchas.
+  The descriptions state the per-conversation path
+  (`{base_url}/events/{conversation_id.hex}`) and a timer that starts at the
+  first queued event and is not reset by later ones. A failing check prints
+  the published text. See Gotchas.
 - **Batch and queue limits (`F32.backpressure`).** Three webhooks on one
   restart, all with a large buffer and a 600 s timer: one with
   `max_batch_bytes` 1 (every event is bigger), one with `max_queue_size` 2,
@@ -690,14 +688,13 @@ Preconditions:
 
 - **Field descriptions (`F32.webhook-spec-docs`).** Event batches go to
   `{base_url}/events/{conversation_id.hex}` (no dashes) and conversation
-  info to `{base_url}/conversations`. The `WebhookSpec` field descriptions,
-  which the OpenAPI document publishes for `POST /api/init`'s `webhooks`,
-  are wrong twice: `base_url` says events go to `{base_url}/events`, and
-  `flush_delay` says "Timer is reset on each new event", while
-  `_start_flush_timer` only starts a timer when none is running (and
-  `test_flush_delay_not_reset_on_new_event` asserts that);
-  `F32.events-post` and `F32.flush-delay` prove the code. Documentation
-  bug, trivial severity.
+  info to `{base_url}/conversations`, and the flush timer starts at the
+  first queued event: `_start_flush_timer` only starts a timer when none is
+  running (`test_flush_delay_not_reset_on_new_event` asserts that). The
+  `WebhookSpec` field descriptions in the OpenAPI document say the same;
+  `F32.events-post` and `F32.flush-delay` prove the code. The TypeScript
+  client's generated schema follows its pinned release, so it keeps the old
+  text until its next agent-server bump.
 - The server forwards its own first session key to every webhook as
   `X-Session-API-Key` (event batches and conversation posts alike), so a
   receiver can call the server back. Point webhooks only at trusted
