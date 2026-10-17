@@ -2,6 +2,7 @@
 
 import logging
 import os
+import sys
 import time
 import uuid
 from collections.abc import Iterator, Mapping
@@ -75,7 +76,7 @@ def _install_libtmux_redaction_filter() -> None:
 
 
 @contextmanager
-def _socket_creation_lock() -> Iterator[None]:
+def _socket_creation_lock(socket_dir: Path | None = None) -> Iterator[None]:
     """Serialize socket creation with the agent-server's startup cleanup.
 
     A tmux socket exists between ``new-session`` and the recording of its owner
@@ -85,7 +86,8 @@ def _socket_creation_lock() -> Iterator[None]:
     directory, which is the one path every process sharing ``TMUX_TMPDIR``
     agrees on even while tmux has not created any socket yet.
     """
-    socket_dir = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
+    if socket_dir is None:
+        socket_dir = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
     # tmux refuses a socket directory that is group/world accessible, and
     # FileLock would create it with the umask default, so create it 0700 first.
     socket_dir.mkdir(parents=True, exist_ok=True)
@@ -124,9 +126,26 @@ def _new_owned_session(
     lock. Startup cleanup in another process takes the same lock, so it can
     never observe the socket before its owner is published.
     """
-    with _socket_creation_lock():
+    socket_name = f"{TMUX_SOCKET_NAME}-{uuid.uuid4().hex}"
+    socket_dir = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
+    socket_path = socket_dir / socket_name
+    # sun_path includes a NUL byte; limits are 108 on Linux and 104 on macOS/BSD.
+    max_socket_path = 107 if sys.platform.startswith("linux") else 103
+    fallback = (
+        os.name == "posix"
+        and len(os.fsencode(os.path.realpath(socket_path))) > max_socket_path
+    )
+    if fallback:
+        socket_dir = Path("/tmp") / f"tmux-{os.getuid()}"
+        # libtmux resolves socket_name using the process-wide TMUX_TMPDIR, so
+        # use an explicit path without changing other sessions' environment.
+        logger.warning("tmux socket path is too long; using %s", socket_dir)
+
+    with _socket_creation_lock(socket_dir):
         server = libtmux.Server(
-            socket_name=f"{TMUX_SOCKET_NAME}-{uuid.uuid4().hex}", environment=dict(env)
+            socket_name=None if fallback else socket_name,
+            socket_path=str(socket_dir / socket_name) if fallback else None,
+            environment=dict(env),
         )
         session = server.new_session(
             session_name=session_name,

@@ -16,6 +16,7 @@ from openhands.agent_server.persistence import (
     PERSISTED_SETTINGS_SCHEMA_VERSION,
     FileSettingsStore,
     PersistedSettings,
+    get_agent_profile_store,
     get_llm_profile_store,
     reset_stores,
 )
@@ -1767,6 +1768,53 @@ def test_list_secrets_rejects_unknown_agent_profile(client_with_settings):
     assert response.status_code == 404
 
 
+def test_list_secrets_unloadable_agent_profile_is_400(
+    client_with_settings, temp_persistence_dir
+):
+    """A scoping profile that no longer validates answers 400, as the
+    agent-profile routes do, not an unhandled 500."""
+    create = client_with_settings.post(
+        "/api/agent-profiles/broken",
+        json={"llm_profile_ref": "default", "secret_refs": ["ALLOWED"]},
+    )
+    assert create.status_code == 201
+    profile_id = client_with_settings.get("/api/agent-profiles/broken").json()[
+        "profile"
+    ]["id"]
+    path = temp_persistence_dir / "agent-profiles" / "broken.json"
+    data = json.loads(path.read_text())
+    data["secret_refs"] = "ALLOWED"
+    path.write_text(json.dumps(data))
+    assert client_with_settings.get("/api/agent-profiles/broken").status_code == 400
+
+    response = client_with_settings.get(
+        "/api/settings/secrets", params={"agent_profile_id": profile_id}
+    )
+
+    assert response.status_code == 400
+    assert "Failed to load profile" in response.json()["detail"]
+
+
+def test_list_secrets_busy_agent_profile_store_is_503(
+    client_with_settings, monkeypatch
+):
+    """A lock timeout on the agent-profile store answers 503, not 500."""
+    store = get_agent_profile_store()
+
+    def _timeout(*_args, **_kwargs):
+        raise TimeoutError("Agent profile store lock acquisition timed out")
+
+    monkeypatch.setattr(store, "name_for_id", _timeout)
+
+    response = client_with_settings.get(
+        "/api/settings/secrets",
+        params={"agent_profile_id": "00000000-0000-4000-8000-0000000000f1"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["exception"] == "503: Profile store is busy. Please retry."
+
+
 def test_get_secret_value(client_with_settings):
     """GET /api/settings/secrets/{name} returns the raw secret value."""
     # Create a secret
@@ -1913,6 +1961,29 @@ def test_secret_name_validation_on_delete(client_with_settings):
     # Invalid name format
     response = client_with_settings.delete("/api/settings/secrets/invalid-name")
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "request_kwargs"),
+    [
+        ("get", "/api/settings/secrets/{name}", {}),
+        ("delete", "/api/settings/secrets/{name}", {}),
+        ("put", "/api/settings/secrets", {"json": {"name": "1bad", "value": "x"}}),
+    ],
+)
+def test_secret_routes_document_the_invalid_name_status(
+    client_with_settings, method, path, request_kwargs
+):
+    """The OpenAPI description names the status an invalid secret name gets."""
+    url = path.replace("{name}", "1bad")
+    response = client_with_settings.request(method.upper(), url, **request_kwargs)
+    assert response.status_code == 422
+
+    description = client_with_settings.get("/openapi.json").json()["paths"][path][
+        method
+    ]["description"]
+    assert "422 if" in description
+    assert "400" not in description
 
 
 # ── Concurrent update tests ────────────────────────────────────────────────

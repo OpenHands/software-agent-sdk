@@ -36,7 +36,10 @@ from openhands.agent_server.config import (
     Config,
     get_default_config,
 )
-from openhands.agent_server.conversation_lease import _is_pid_alive
+from openhands.agent_server.conversation_lease import (
+    ConversationOwnershipLostError,
+    _is_pid_alive,
+)
 from openhands.agent_server.conversation_registry import (
     create_conversation_registry,
 )
@@ -693,6 +696,22 @@ def _add_exception_handlers(api: FastAPI) -> None:
         _request: Request, exc: ConversationRunLimitExceeded
     ) -> JSONResponse:
         return JSONResponse(status_code=429, content={"detail": str(exc)})
+
+    @api.exception_handler(ConversationOwnershipLostError)
+    async def _ownership_lost_handler(
+        _request: Request, _exc: ConversationOwnershipLostError
+    ) -> JSONResponse:
+        # Another server instance took over this conversation's lease, so the
+        # guarded write was refused: a conflict, not a server fault.
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": (
+                    "Conversation is owned by another agent server instance; "
+                    "the write was refused"
+                )
+            },
+        )
 
     @api.exception_handler(CredentialBindingActivationRequired)
     async def _credential_binding_activation_required_handler(
