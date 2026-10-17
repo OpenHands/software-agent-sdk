@@ -345,6 +345,9 @@ export class HttpClient {
     return new Promise<HttpResponse<T>>((resolve, reject) => {
       const req = transport.request(url, { method: options.method, headers }, (res) => {
         const chunks: Buffer[] = [];
+        res.on('error', (error: Error) => {
+          reject(new Error(`Request failed: ${error.message}`, { cause: error }));
+        });
         res.on('data', (chunk: Buffer) => chunks.push(chunk));
         res.on('end', () => {
           try {
