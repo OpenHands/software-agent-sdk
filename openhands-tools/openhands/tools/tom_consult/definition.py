@@ -187,7 +187,10 @@ class TomConsultTool(ToolDefinition[ConsultTomAction, ConsultTomObservation]):
         # Import here to avoid circular imports and make tom-swe optional
         from openhands.tools.tom_consult.executor import TomConsultExecutor
 
-        file_store = LocalFileStore(root=str(get_user_persistence_dir()))
+        # The executor does not own a background durability lifecycle.
+        file_store = LocalFileStore(
+            root=str(get_user_persistence_dir()), deferred_durability=False
+        )
 
         # Initialize the executor
         executor = TomConsultExecutor(
@@ -242,7 +245,10 @@ class SleeptimeComputeTool(
         # Import here to avoid circular imports and make tom-swe optional
         from openhands.tools.tom_consult.executor import TomConsultExecutor
 
-        file_store = LocalFileStore(root=str(get_user_persistence_dir()))
+        # The executor does not own a background durability lifecycle.
+        file_store = LocalFileStore(
+            root=str(get_user_persistence_dir()), deferred_durability=False
+        )
 
         # Initialize the executor
         executor = TomConsultExecutor(

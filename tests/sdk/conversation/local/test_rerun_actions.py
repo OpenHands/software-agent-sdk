@@ -1,5 +1,7 @@
 """Tests for conversation.rerun_actions() functionality."""
 
+import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -485,6 +487,15 @@ def test_rerun_non_idempotent_with_log(tmp_path: Path, monkeypatch: pytest.Monke
     from openhands.sdk.event import ObservationEvent
     from openhands.sdk.io import LocalFileStore
 
+    fsync_threads: list[str] = []
+    original_fsync = os.fsync
+
+    def spy_fsync(fd: int) -> None:
+        original_fsync(fd)
+        fsync_threads.append(threading.current_thread().name)
+
+    monkeypatch.setattr(os, "fsync", spy_fsync)
+
     # Register the file create tool (non-idempotent)
     register_tool_public(FileCreateTool.name, FileCreateTool)
 
@@ -503,6 +514,9 @@ def test_rerun_non_idempotent_with_log(tmp_path: Path, monkeypatch: pytest.Monke
     result = conversation.rerun_actions(rerun_log_path=log_dir)
     assert result is True
     assert test_file.exists()
+    # Rerun has no background-store owner: appends must be durable at return.
+    assert fsync_threads
+    assert all(name == threading.current_thread().name for name in fsync_threads)
 
     # Check the log using EventLog
     file_store = LocalFileStore(str(log_dir))
