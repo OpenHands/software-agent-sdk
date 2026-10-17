@@ -766,15 +766,24 @@ def test_stream_delta_chunks_carry_the_output_item_id():
         ),
     ],
 )
-async def test_responses_stream_missing_item_id_preserves_final_output(
-    mode, with_callback, event_class, event_type
+@pytest.mark.parametrize(
+    "item_id_fields",
+    [{}, {"item_id": None}, {"item_id": 123}, {"item_id": ""}],
+    ids=["missing", "null", "non-string", "empty"],
+)
+async def test_responses_stream_invalid_item_id_preserves_final_output(
+    mode, with_callback, event_class, event_type, item_id_fields
 ):
     events, completed = _make_wrapped_response_stream_events()
     output_item = completed.output[0]
     completed.output = []
     # LiteLLM can bypass required-field validation when decoding provider events.
     malformed = event_class.model_construct(
-        type=event_type, output_index=0, content_index=0, delta="unidentified"
+        type=event_type,
+        output_index=0,
+        content_index=0,
+        delta="unidentified",
+        **item_id_fields,
     )
     events.insert(0, malformed)
     events.insert(
