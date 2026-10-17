@@ -229,18 +229,21 @@ def _plan_conversation_worktree(
 
 def _create_conversation_worktree(plan: _WorktreePlan) -> LocalWorkspace:
     repo_root = plan.repo_root
-    plan.worktree_root.parent.mkdir(parents=True, exist_ok=True)
+    worktree_root = plan.worktree_root
+    worktree_root.parent.mkdir(parents=True, exist_ok=True)
 
-    if plan.worktree_root.exists():
-        try:
-            run_git_command(
-                ["git", "worktree", "remove", "--force", str(plan.worktree_root)],
-                repo_root,
-            )
-        except GitCommandError:
-            safe_rmtree(plan.worktree_root)
-
-    run_git_command(["git", "worktree", "prune"], repo_root)
+    # Other containers' worktrees are not mounted here. Global pruning would
+    # unregister those live siblings, so remove only this conversation's entry.
+    registered_worktrees = run_git_command(
+        ["git", "worktree", "list", "--porcelain", "-z"], repo_root
+    ).split("\0")
+    if f"worktree {worktree_root}" in registered_worktrees:
+        run_git_command(
+            ["git", "worktree", "remove", "--force", str(worktree_root)],
+            repo_root,
+        )
+    elif worktree_root.exists():
+        safe_rmtree(worktree_root)
 
     if run_git_command(["git", "branch", "--list", plan.branch], repo_root):
         run_git_command(["git", "branch", "-D", plan.branch], repo_root)
