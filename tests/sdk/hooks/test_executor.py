@@ -268,6 +268,51 @@ class TestAsyncHookExecution:
         assert content["tool_name"] == "TestTool"
         assert content["event_type"] == "PostToolUse"
 
+    def test_execute_async_hook_large_stdin_returns_immediately(
+        self, executor, sample_event
+    ):
+        """An async hook must stay fire-and-forget even when the event JSON is
+        larger than the OS pipe buffer and the command never reads stdin.
+
+        A PostToolUse event carries the full tool response, which can easily
+        exceed the ~64KB pipe capacity. Writing it to a child that does not
+        drain stdin must never block the conversation run: delivery happens in
+        the background and execute() returns immediately.
+        """
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        big_event = HookEvent(
+            event_type=HookEventType.POST_TOOL_USE,
+            tool_name="BashTool",
+            tool_input={"command": "cat huge.log"},
+            tool_response={"output": "x" * (1024 * 1024)},
+            session_id="test-session",
+        )
+        # Long-lived child that never reads stdin and never exits on its own
+        # within the test window.
+        hook = HookDefinition.model_validate(
+            {
+                "command": python_command("import time; time.sleep(20)"),
+                "async": True,
+                "timeout": 30,
+            }
+        )
+
+        start = time.time()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(executor.execute, hook, big_event)
+            # Raises concurrent.futures.TimeoutError if the stdin write blocks
+            # the calling thread instead of being handed to a background task.
+            result = future.result(timeout=5)
+        elapsed = time.time() - start
+
+        assert result.success
+        assert result.async_started
+        assert elapsed < 10.0
+
+        executor.async_process_manager.cleanup_all()
+
     def test_execute_async_hook_uses_windows_process_group(
         self, executor, sample_event, monkeypatch
     ):
