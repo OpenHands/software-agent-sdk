@@ -1119,6 +1119,39 @@ def test_mcp_server_crud_endpoints_enforce_key_preconditions(client_with_setting
     assert plaintext["github"]["url"] == "https://github.example/mcp"
 
 
+def test_mcp_server_create_rejects_server_without_command_or_url(
+    client_with_settings,
+):
+    for body in ({}, {"enabled": True}, {"description": "No endpoint"}):
+        response = client_with_settings.post("/api/settings/mcp/qa-empty", json=body)
+        assert response.status_code == 422, response.text
+        assert "require 'command' or 'url'" in response.text
+
+    mcp_config = client_with_settings.get("/api/settings").json()["agent_settings"][
+        "mcp_config"
+    ]
+    assert "qa-empty" not in mcp_config
+
+
+def test_mcp_server_patch_rejects_removing_command_from_untyped_server(
+    client_with_settings,
+):
+    created = client_with_settings.post(
+        "/api/settings/mcp/local", json={"command": "uvx", "args": ["fetch"]}
+    )
+    assert created.status_code == 201, created.text
+
+    patched = client_with_settings.patch(
+        "/api/settings/mcp/local", json={"command": None}
+    )
+    assert patched.status_code == 422, patched.text
+
+    mcp_config = client_with_settings.get("/api/settings").json()["agent_settings"][
+        "mcp_config"
+    ]
+    assert mcp_config["local"]["command"] == "uvx"
+
+
 def test_mcp_server_crud_endpoints_normalize_key_paths(client_with_settings):
     server = {"transport": "http", "url": "https://github.example/mcp"}
     created = client_with_settings.post("/api/settings/mcp/github", json=server)

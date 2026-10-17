@@ -1,0 +1,23 @@
+{
+  "__expected__": {
+    "agent_kind": "openhands",
+    "llm.model": "fixture-v9-llm",
+    "mcp_config.fetch.command": "uvx",
+    "mcp_config.remote.url": "https://example.invalid/mcp"
+  },
+  "schema_version": 9,
+  "agent_kind": "openhands",
+  "llm": {
+    "model": "fixture-v9-llm"
+  },
+  "mcp_config": {
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    },
+    "remote": {
+      "transport": "http",
+      "url": "https://example.invalid/mcp"
+    }
+  }
+}

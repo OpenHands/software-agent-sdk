@@ -821,6 +821,37 @@ def test_openhands_mcp_config_reject_unknown_server_fields() -> None:
         )
 
 
+def test_validate_agent_settings_migrates_v8_drops_mcp_server_without_endpoint() -> (
+    None
+):
+    settings = validate_agent_settings(
+        {
+            "schema_version": 8,
+            "agent_kind": "openhands",
+            "llm": {"model": "gpt-4o"},
+            "mcp_config": {
+                "good": {"command": "uvx", "args": ["fetch"]},
+                "qa-empty": {"enabled": True},
+            },
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert list(settings.mcp_config) == ["good"]
+
+
+@pytest.mark.parametrize("schema_version", [None, AGENT_SETTINGS_SCHEMA_VERSION])
+def test_agent_settings_reject_mcp_server_without_endpoint(
+    schema_version: int | None,
+) -> None:
+    payload: dict = {"agent_kind": "openhands", "mcp_config": {"qa-empty": {}}}
+    if schema_version is not None:
+        payload["schema_version"] = schema_version
+    with pytest.raises(ValidationError, match="require 'command' or 'url'"):
+        validate_agent_settings(payload)
+
+
 def test_current_agent_settings_reject_legacy_mcp_wrapper_without_migration() -> None:
     with pytest.raises(ValidationError):
         validate_agent_settings(
@@ -1336,7 +1367,7 @@ def test_v6_settings_fold_the_retired_switches(
     )
 
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.schema_version == 8
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     assert [t.name for t in settings.tools or []] == expected
 
 
@@ -1454,7 +1485,7 @@ def test_unversioned_settings_get_no_retired_switch_defaults(
     settings = validate_agent_settings(payload)
 
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.schema_version == 8
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     assert (
         None if settings.tools is None else [t.name for t in settings.tools]
     ) == expected

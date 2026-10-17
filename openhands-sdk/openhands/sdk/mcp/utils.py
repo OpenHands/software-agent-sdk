@@ -4,7 +4,7 @@ import asyncio
 import inspect
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 import mcp.types
@@ -15,6 +15,7 @@ from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.protocols import AsyncKeyValue
 from mcp.shared._httpx_utils import create_mcp_http_client
+from pydantic import ValidationError
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient, ToolsReconciledCallback
@@ -170,8 +171,27 @@ def _prepare_mcp_config(
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
     mcp_oauth_factory: MCPOAuthFactory | None = None,
 ) -> FastMCPConfig:
-    """Validate MCP config and apply explicit OpenHands runtime auth metadata."""
-    prepared = FastMCPConfig.model_validate(to_fastmcp_mcp_config(mcp_config))
+    """Validate MCP config and apply explicit OpenHands runtime auth metadata.
+
+    Servers are validated one by one: a server FastMCP rejects is skipped with
+    a warning naming it, so it cannot cost its siblings their tools.
+    """
+    servers = to_fastmcp_mcp_config(mcp_config)["mcpServers"]
+    valid: dict[str, Any] = {}
+    for server_name, server in servers.items():
+        try:
+            FastMCPConfig.model_validate({"mcpServers": {server_name: server}})
+        except ValidationError as exc:
+            logger.warning(
+                "Skipping invalid MCP server %s; continuing without its tools: %s",
+                server_name,
+                exc,
+            )
+            continue
+        valid[server_name] = server
+    if servers and not valid:
+        raise ValueError(f"No valid MCP servers among: {', '.join(sorted(servers))}")
+    prepared = FastMCPConfig.model_validate({"mcpServers": valid})
 
     for server_name, server_spec in mcp_config.items():
         server = prepared.mcpServers.get(server_name)

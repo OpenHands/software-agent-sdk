@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Self
 
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.view import View
@@ -32,6 +32,7 @@ from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import drop_mcp_servers_without_endpoint
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -255,6 +256,22 @@ class ConversationState(OpenHandsModel):
     )  # FIFO lock for thread safety
     _save_depth: int = PrivateAttr(default=0)  # context-manager nesting depth
     _dirty: bool = PrivateAttr(default=False)  # pending unsaved field changes
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_stored_mcp_servers_without_endpoint(cls, data: Any) -> Any:
+        """Let a persisted state with an endpoint-less MCP server still load.
+
+        Such a server was accepted before ``MCPServer`` required ``command``
+        or ``url``; it never contributed tools, so drop it rather than fail.
+        """
+        if not isinstance(data, dict):
+            return data
+        agent = data.get("agent")
+        if isinstance(agent, dict) and isinstance(agent.get("mcp_config"), dict):
+            mcp_config = drop_mcp_servers_without_endpoint(agent["mcp_config"])
+            data = {**data, "agent": {**agent, "mcp_config": mcp_config}}
+        return data
 
     @property
     def events(self) -> EventLog:
