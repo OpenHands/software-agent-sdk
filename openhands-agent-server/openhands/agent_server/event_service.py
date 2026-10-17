@@ -81,6 +81,7 @@ from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.mcp.utils import MCPToolProvider
+from openhands.sdk.secret import SecretSource
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
@@ -221,6 +222,13 @@ class EventService:
     bash_event_service: BashEventService | None = field(default=None, init=False)
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
+    # On resume ``stored`` is the catalog copy read at server startup; another
+    # server sharing the conversations directory may have written meta.json
+    # since. When set, start() re-reads meta.json after claiming the lease and
+    # before any write, then layers ``resume_secrets`` (secrets supplied by the
+    # resuming request) on top.
+    reload_meta: bool = False
+    resume_secrets: dict[str, SecretSource] = field(default_factory=dict)
     _conversation: LocalConversation | None = field(default=None, init=False)
     _persisted_events: EventLog | None = field(default=None, init=False)
     _pub_sub: PubSub[Event] = field(
@@ -1192,6 +1200,14 @@ class EventService:
             )
             lease_claim = self._lease.claim()
             self._lease_generation = lease_claim.generation
+        if self.reload_meta:
+            meta_file = self.conversation_dir / "meta.json"
+            if await asyncio.to_thread(meta_file.exists):
+                await self.load_meta()
+            if self.resume_secrets:
+                self.stored = self.stored.model_copy(
+                    update={"secrets": {**self.stored.secrets, **self.resume_secrets}}
+                )
         await self._scrub_persisted_credentials()
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)

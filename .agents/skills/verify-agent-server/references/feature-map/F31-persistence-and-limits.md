@@ -352,7 +352,7 @@ Preconditions:
   Refused a moment before, `B` loads `X` right after the SIGKILL (same host,
   dead pid, lease not yet expired) as generation 2 with the same events; the
   restarted owner now gets 404. `B`'s graceful stop releases the lease.
-- **Takeover keeps newer metadata (`F31.takeover-keeps-metadata`), known bug.**
+- **Takeover keeps newer metadata (`F31.takeover-keeps-metadata`).**
   The owner renames `Y` after `B` started; then the owner dies and `B` takes
   `Y` over.
   ```sh
@@ -365,20 +365,18 @@ Preconditions:
   control-agent-server restart --hard
   control-agent-server api GET "/api/conversations/$Y/events/count" --run "$B" --expect 200
   control-agent-server state cat owner_lease.json --conversation "$Y" --check owner_pid eq "$PIDB" --check generation eq 2
-  control-agent-server state cat meta.json --conversation "$Y" --check title eq 'QA F31 after B'  # bug: content.title eq 'QA F31 before B'
-  control-agent-server api GET "/api/conversations/$Y" --run "$B" --check title eq 'QA F31 after B' --save F31.takeover-keeps-metadata/get-after-takeover  # bug: status eq 200 && response.body.title eq 'QA F31 before B'
+  control-agent-server state cat meta.json --conversation "$Y" --check title eq 'QA F31 after B'
+  control-agent-server api GET "/api/conversations/$Y" --run "$B" --check title eq 'QA F31 after B' --save F31.takeover-keeps-metadata/get-after-takeover
   ```
   Expected: `B` reports and keeps the title the owner stored last. The
   owner's rename reached `meta.json` and `B`'s first load took `Y` over
-  (generation 2 under `B`'s pid) before the two `# bug` assertions. Today
-  `B` loads `Y` from the catalog snapshot it read at its own startup and
-  saves it right away (`_start_event_service` calls `save_meta()`; nothing
-  calls `EventService.load_meta()`), so `meta.json` is rewritten with
-  `QA F31 before B` (the first assertion fails there) and `B`'s GET reports
-  it too: the owner's later title (and `updated_at`) is lost. Takeover is
-  not required: a plain generation 1 load on `B` after the owner released
-  `Y` with a graceful restart (or an idle eviction) reverts it the same way.
-  The `trap` stops `B`.
+  (generation 2 under `B`'s pid) before the last two assertions. `B`'s
+  catalog copy of `Y` is the one it read at its own startup, but a load
+  re-reads `meta.json` once it holds the lease and before it writes, so
+  `meta.json` and `B`'s GET keep `QA F31 after B` (and the owner's
+  `updated_at`, tags and stored secrets). The same holds without takeover:
+  a plain generation 1 load on `B` after the owner released `Y` with a
+  graceful restart (or an idle eviction). The `trap` stops `B`.
 - **Lease expiry fences a frozen owner (`F31.lease-expiry-fencing`).** With
   a 20 s lease, this server is frozen with SIGSTOP so it stops renewing
   while its pid stays alive.
@@ -731,9 +729,9 @@ Preconditions:
   keeps every earlier start of the run.
 - A second server reads the catalog once, at its own startup. Conversations
   created on the owner afterwards are 404 there until it restarts, and its
-  copy of the metadata goes stale; the first time it loads such a
-  conversation (takeover or not) it writes that stale copy to `meta.json`
-  (`F31.takeover-keeps-metadata`).
+  catalog copy of the metadata (title, tags in list and GET) goes stale
+  until it loads the conversation: a load re-reads `meta.json` after the
+  lease claim (`F31.takeover-keeps-metadata`).
 - A conversation whose lease is held elsewhere looks exactly like an unknown
   id on the second server (404, 400, `success: false`, close 4004), while its
   GET is 200 from the catalog. Only the lease file tells the two apart.
