@@ -1005,6 +1005,34 @@ class TestSessionKeyExport:
             finally:
                 _reset_conversation_singleton()
 
+    @pytest.mark.asyncio
+    async def test_teardown_restores_the_env_after_a_direct_init(self, tmp_path):
+        """Driving InitService without the lifespan (as other tests do) must
+        not leak the delivered key into the process environment."""
+        _reset_conversation_singleton()
+        _reset_bash_singleton()
+        base = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        app = SimpleNamespace(state=SimpleNamespace(config=base))
+        svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+        try:
+            await svc.initialize(
+                InitRequest(
+                    session_api_keys=["user-key"],
+                    conversations_path=tmp_path / "user" / "convs",
+                    bash_events_dir=tmp_path / "user" / "bash",
+                )
+            )
+            assert os.environ["OH_SESSION_API_KEYS_0"] == "user-key"
+        finally:
+            await svc.teardown()
+            _reset_conversation_singleton()
+            _reset_bash_singleton()
+        assert "OH_SESSION_API_KEYS_0" not in os.environ
+
     def test_init_without_keys_leaves_env_untouched(self, tmp_path):
         _reset_conversation_singleton()
         cfg = Config(
