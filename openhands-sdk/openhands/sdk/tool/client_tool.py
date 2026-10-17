@@ -267,6 +267,7 @@ class ClientTool(ToolDefinition[Action, ClientToolObservation]):
         self,
         add_security_risk_prediction: bool = False,
         action_type: type[Schema] | None = None,
+        risk_description: str | None = None,
     ) -> dict[str, Any]:
         """Build the provider-facing schema from the original client schema.
 
@@ -286,6 +287,7 @@ class ClientTool(ToolDefinition[Action, ClientToolObservation]):
         # base implementation would, then lift just those properties over.
         sdk_schema = super()._get_tool_schema(
             add_security_risk_prediction=add_security_risk_prediction,
+            risk_description=risk_description,
         )
         sdk_props: dict[str, Any] = sdk_schema.get("properties", {})
         sdk_required: list[str] = sdk_schema.get("required", []) or []

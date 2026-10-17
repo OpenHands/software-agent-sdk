@@ -32,6 +32,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.mcp.tool import MCPToolDefinition, MCPToolExecutor
+from openhands.sdk.security.risk import get_security_risk_description
 from openhands.sdk.tool import (
     BROWSER_TOOL_NAME,
     BUILT_IN_TOOL_CLASSES,
@@ -512,6 +513,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 "security_policy_content": policy_content,
             }
 
+        has_custom_system_prompt = bool(
+            self.system_prompt is not None or self._prompt_preset is None
+        )
         return PromptContext(
             template_kwargs=template_kwargs,
             tool_names=tuple(t.name for t in self.tools),
@@ -526,7 +530,30 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             custom_suffix=custom_suffix,
             memory_context=memory_context,
             secret_infos=secret_infos,
+            has_custom_system_prompt=has_custom_system_prompt,
         )
+
+    @property
+    def has_custom_system_prompt(self) -> bool:
+        """Whether the agent uses an inline custom system prompt or non-default
+        preset.
+        """
+        return self.system_prompt is not None or self._prompt_preset is None
+
+    @property
+    def security_risk_description(self) -> str | None:
+        """Concise tier definitions for tool schemas when using a custom system prompt.
+
+        Returns None under default system prompts so the guidance lives exclusively
+        in <SECURITY_RISK_ASSESSMENT>, avoiding token-wasteful duplication.
+        """
+        risk_prediction_on = bool(
+            self.system_prompt_kwargs.get("llm_security_analyzer", True)
+        )
+        if not (self.has_custom_system_prompt and risk_prediction_on):
+            return None
+        cli_mode = bool(self.system_prompt_kwargs.get("cli_mode", True))
+        return get_security_risk_description(cli_mode=cli_mode)
 
     @property
     def dynamic_context(self) -> str | None:
@@ -547,7 +574,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         Returns:
             The dynamic context string, or None if no context is configured.
         """
-        if not self.agent_context:
+        if not self.agent_context and self.security_risk_description is None:
             return None
         # The dynamic tier is preset-independent, so a custom Jinja template (preset
         # None) still gets the default dynamic block, exactly as before.

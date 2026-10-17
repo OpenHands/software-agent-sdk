@@ -31,6 +31,7 @@ from openhands.sdk.context.prompts.sections.dynamic import (
     DateTimeSection,
     MemoryContextSection,
     RepoContextSection,
+    SecurityRiskEscalationSection,
 )
 from openhands.sdk.context.prompts.sections.static import (
     EfficiencySection,
@@ -307,6 +308,37 @@ def test_custom_secrets_section() -> None:
         section.render(PromptContext(secret_infos=(("API_KEY", "prod key"),))) or ""
     )
     assert "* **$API_KEY** - prod key" in described
+
+
+def test_security_risk_escalation_section() -> None:
+    section = SecurityRiskEscalationSection()
+    # Guard is False by default (no custom system prompt)
+    assert (
+        section.guard(PromptContext(template_kwargs={"llm_security_analyzer": True}))
+        is False
+    )
+    # Guard is False when has_custom_system_prompt is True but analyzer is disabled
+    assert (
+        section.guard(
+            PromptContext(
+                has_custom_system_prompt=True,
+                template_kwargs={"llm_security_analyzer": False},
+            )
+        )
+        is False
+    )
+    # Guard is True when has_custom_system_prompt is True and analyzer is enabled
+    ctx = PromptContext(
+        has_custom_system_prompt=True,
+        template_kwargs={"llm_security_analyzer": True},
+    )
+    assert section.guard(ctx) is True
+    out = section.render(ctx) or ""
+    assert out.startswith("<SECURITY_RISK_ASSESSMENT>")
+    assert out.endswith("</SECURITY_RISK_ASSESSMENT>")
+    assert "**Global Rules**" in out
+    assert "**Repository Context Supply Chain Rules**" in out
+    assert "UNTRUSTED_CONTENT" in out
 
 
 def test_dynamic_sections_render_into_dynamic_block() -> None:
