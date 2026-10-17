@@ -130,41 +130,6 @@
         "hash": "09cb8fcdbf2f2742d279d873b054ece03eb4d8362f0dffe5c58f34e22c45fb66"
     },
     {
-        "file": "openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py",
-        "name": "getattr",
-        "hash": "13e85f83c28c8128bf7d3351721af90cf477f8a6cb068c34d49044f163e40429"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py",
-        "name": "getattr",
-        "hash": "449c0a2bf53536ae90534440fbb4517fcfafd4f49c4f860762df8f5cf8ac4880"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py",
-        "name": "getattr",
-        "hash": "56d43cbac8d37c56e6e20f7952d4c9bd04e28f717eae5e6cd47198a5f41e7d63"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py",
-        "name": "getattr",
-        "hash": "643df67697c54065898bae822ed007b40fa69517a588295e77b4d251cf77bfb0"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py",
-        "name": "getattr",
-        "hash": "cffbf49aac4e818f959b7953c7556e0f0d54d5ad671c9b08ffb8386ddc80e52d"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py",
-        "name": "setattr",
-        "hash": "54d825e87ca15618b0c0bd3a08b59e8120610cc4ef5dada540338d06bec10bbc"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py",
-        "name": "setattr",
-        "hash": "d4ecbffdea4079a4ee8eddd421135d7f9d89b32e3d84e567fc6277758c1aef37"
-    },
-    {
         "file": "openhands-sdk/openhands/sdk/marketplace/__init__.py",
         "name": "getattr",
         "hash": "9aa4828d48dae647719893510d2619568cbda8ac9f10643d4f3471a3a9fa07b1"
