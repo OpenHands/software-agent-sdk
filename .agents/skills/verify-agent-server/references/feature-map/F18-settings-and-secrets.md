@@ -51,7 +51,7 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
 - `F18.corrupted-files`: with an unparsable `settings.json`, GET silently returns defaults and PATCH is 409 without touching the file; with an unparsable `secrets.json` the list is empty, GET by name 404, PUT and DELETE 500; restoring the files restores the values.
 - `F18.no-cipher`: without any cipher key, `X-Expose-Secrets: encrypted` is 503, `plaintext` still works, both files store plaintext, and the secrets routes are open without a key.
 - `F18.secret-empty-value`: a PUT whose value is empty, blank or the redaction placeholder is refused with 422 and neither wipes an existing value nor leaves a listed but unreadable secret (fixed by #5682).
-- `F18.dangling-pointers`: PATCH must refuse an `active_agent_profile_id` or `active_meta_profile` that names nothing, as the dedicated activate routes do (404).
+- `F18.dangling-pointers`: PATCH refuses an `active_agent_profile_id` or `active_meta_profile` that names nothing with 404, as the dedicated activate routes do, and stores nothing (fixed by #5847).
 - `F18.secret-scope-profile-errors`: `GET /api/settings/secrets?agent_profile_id=` naming an agent profile whose file no longer validates, or arriving while the agent-profile store's lock is held elsewhere, must answer as the agent-profile routes do (400 and 503), not with an unhandled 500.
 - `F18.secret-name-contract`: the published OpenAPI description of the secret routes names the status an invalid secret name actually gets, 422 (fixed by #5846).
 - `F18.secret-key-rotation`: after a restart with a new cipher key, a write must not destroy values stored under the old key, so rotating back recovers them.
@@ -721,7 +721,7 @@ Preconditions:
   blank value is refused with 422 and leaves nothing behind: the name is not
   listed and a read is 404. Before #5682 the PUT answered 200 and listed an
   unreadable `QA_F18_EMPTY`. The trap deletes it in case a PUT succeeds.
-- **Dangling agent-profile pointer (`F18.dangling-pointers`), known bug.** The
+- **Dangling agent-profile pointer (`F18.dangling-pointers`).** The
   activate route, and PATCH itself for an LLM profile name, refuse targets
   that do not exist; PATCH an `active_agent_profile_id` that names nothing.
   ```sh
@@ -733,16 +733,15 @@ Preconditions:
     --check detail contains 'not found' --save F18.dangling-pointers/activate-agent-profile
   control-agent-server api PATCH /api/settings --json '{"active_profile": "qa-f18-nope"}' --expect 404 --check detail eq "Profile 'qa-f18-nope' not found"
   control-agent-server api PATCH /api/settings --json '{"active_agent_profile_id": "00000000-0000-4000-8000-0000000000f1"}' \
-    --expect 404,422 --save F18.dangling-pointers/agent-profile-id  # bug: status eq 200 && response.body.active_agent_profile_id eq 00000000-0000-4000-8000-0000000000f1
+    --expect 404 --check detail eq "Agent profile with id '00000000-0000-4000-8000-0000000000f1' not found" --save F18.dangling-pointers/agent-profile-id
   ```
   `POST /api/agent-profiles/{id}/activate` answers 404 `Agent profile with id
   ... not found`, and PATCH refuses an unknown `active_profile` with 404.
-  Expected: PATCH refuses the unknown agent profile id the same way. Today it
-  answers 200 and stores the pointer (only the UUID format is checked); a
-  dangling `active_agent_profile_id` also suppresses the lazy default-profile
-  seed (`GET /api/agent-profiles` then returns `profiles: []` with that id as
-  active). The trap clears the pointer.
-- **Dangling meta-profile pointer (`F18.dangling-pointers`), known bug.** The
+  PATCH refuses the unknown agent profile id the same way (404, same detail
+  as the activate route) and stores nothing; before #5847 it answered 200 and
+  stored the pointer, which also suppressed the lazy default-profile seed.
+  The trap clears the pointer in case a PATCH succeeds.
+- **Dangling meta-profile pointer (`F18.dangling-pointers`).** The
   same for `active_meta_profile`.
   ```sh
   clear_pointers() {
@@ -752,12 +751,14 @@ Preconditions:
   control-agent-server api POST /api/meta-profiles/qa-f18-no-router/activate --expect 404 \
     --check detail eq "Meta-profile 'qa-f18-no-router' not found" --save F18.dangling-pointers/activate-meta-profile
   control-agent-server api GET /api/settings --check active_meta_profile missing --check agent_settings.enable_classify_and_switch_llm_tool eq false
-  control-agent-server api PATCH /api/settings --json '{"active_meta_profile": "qa-f18-no-router"}' --expect 404,422 --save F18.dangling-pointers/meta-profile  # bug: status eq 200 && response.body.active_meta_profile eq qa-f18-no-router
+  control-agent-server api PATCH /api/settings --json '{"active_meta_profile": "qa-f18-no-router"}' --expect 404 \
+    --check detail eq "Meta-profile 'qa-f18-no-router' not found" --save F18.dangling-pointers/meta-profile
+  control-agent-server api GET /api/settings --check active_meta_profile missing --check agent_settings.enable_classify_and_switch_llm_tool eq false
   ```
-  The activate route answers 404. Expected: PATCH refuses the name too.
-  Today it answers 200, stores the pointer and turns on
+  The activate route and PATCH both answer 404, and the switch tool stays
+  off; before #5847 PATCH answered 200, stored the pointer and turned on
   `enable_classify_and_switch_llm_tool` with no meta-profile behind it. The
-  trap clears the pointer, which turns the switch tool off again.
+  trap clears the pointer in case a PATCH succeeds.
 - **Agent profile that no longer loads (`F18.secret-scope-profile-errors`).**
   Save an agent profile that scopes `QA_F18_TOKEN` (arrange), break its file
   so it no longer validates (`secret_refs` a string instead of a list), then

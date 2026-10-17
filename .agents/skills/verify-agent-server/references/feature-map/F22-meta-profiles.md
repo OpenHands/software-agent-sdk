@@ -62,9 +62,9 @@ Routes: `GET /api/meta-profiles`, `GET /api/meta-profiles/{name}`,
 - REST, second views: `GET /api/settings` (`active_meta_profile` and
   `agent_settings.{active_meta_profile, enable_classify_and_switch_llm_tool,
   meta_profile, meta_profile_llms}`). `PATCH /api/settings` with
-  `active_meta_profile` sets the same pointer without the existence check or
-  the inline copy (owned by the settings family; its dangling-pointer case is
-  `F18.dangling-pointers`).
+  `active_meta_profile` sets the same pointer after the same existence check
+  (404 for an unknown name) but without the inline copy (owned by the settings
+  family; its dangling-pointer case is `F18.dangling-pointers`).
 - Runtime: a conversation created with `agent_settings` from
   `GET /api/settings` (the Agent Canvas path, which `conversation start`
   follows) gets the `ClassifyAndSwitchLLMTool` spec with
@@ -692,8 +692,8 @@ Preconditions:
   `agent_settings.meta_profile` copy is only a fallback for runtimes without
   the store. Overwriting the active meta-profile does not refresh the inline
   copy (re-activate to refresh it), and `PATCH /api/settings` with
-  `active_meta_profile` sets the pointer and enables the tool without any
-  existence check or inline copy (`F18.dangling-pointers`). With the tool
+  `active_meta_profile` sets the pointer and enables the tool without the
+  inline copy; an unknown name is 404 (`F18.dangling-pointers`). With the tool
   enabled, no pointer and no inline copy, it falls back to the alphabetically
   first meta-profile in the store.
 - Routing needs the agent to call `route_task_to_model`; the classifier then
