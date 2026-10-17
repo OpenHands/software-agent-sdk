@@ -2921,7 +2921,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "binaryornot", specifier = ">=0.6.0" },
-    { name = "browser-use", specifier = ">=0.8.0" },
+    { name = "browser-use", specifier = ">=0.8.0,<0.12" },
     { name = "cachetools" },
     { name = "filelock", specifier = ">=3.20.1" },
     { name = "func-timeout", specifier = ">=4.3.5" },
