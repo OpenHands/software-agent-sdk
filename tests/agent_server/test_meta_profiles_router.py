@@ -149,6 +149,37 @@ def test_save_invalid_body_returns_422(client):
     assert response.status_code == 422
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"classifier_model": "minimax"},
+        {"classifier_model": "minimax", "classes": [], "prompt_template": None},
+        {"classifier_model": "minimax", "model_table": "a: cheap"},
+    ],
+)
+def test_save_router_without_route_returns_422(client, store, body):
+    """A body with neither classes nor a prompt_template can never route."""
+    response = client.post("/api/meta-profiles/empty", json=body)
+    assert response.status_code == 422
+    assert "classes or a prompt_template" in response.text
+    assert store.list() == []
+
+
+def test_save_direct_mode_without_classes_is_accepted(client, store):
+    body = {"classifier_model": "minimax", "prompt_template": "{{ instance_text }}"}
+    response = client.post("/api/meta-profiles/direct", json=body)
+    assert response.status_code == 201
+    assert store.load("direct").classes == []
+
+
+def test_stored_router_without_route_still_loads(client, store):
+    """Files saved before the 422 existed stay readable and activatable."""
+    store.save("legacy", MetaProfile(classifier_model="minimax"))
+    assert client.get("/api/meta-profiles/legacy").status_code == 200
+    assert client.post("/api/meta-profiles/legacy/activate").status_code == 200
+    assert client.get("/api/meta-profiles").status_code == 200
+
+
 def test_save_invalid_name_returns_422(client):
     response = client.post("/api/meta-profiles/..bad..", json=_meta())
     assert response.status_code == 422

@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Path, Request, status
-from pydantic import BaseModel
+from pydantic import AfterValidator, BaseModel
 
 from openhands.agent_server._secrets_exposure import get_config
 from openhands.agent_server.persistence import (
@@ -36,6 +36,23 @@ MetaProfileName = Annotated[
     str,
     Path(min_length=1, max_length=64, pattern=PROFILE_NAME_PATTERN),
 ]
+
+
+def _require_route(meta_profile: MetaProfile) -> MetaProfile:
+    """Refuse a meta-profile that has nothing to route to.
+
+    Checked on save only, not in ``MetaProfile`` itself, so meta-profiles
+    already persisted without classes or a template (store files, the inline
+    copy in ``settings.json``, conversation tool params) still load.
+    """
+    if not meta_profile.classes and meta_profile.prompt_template is None:
+        raise ValueError(
+            "A meta-profile needs either classes or a prompt_template to route."
+        )
+    return meta_profile
+
+
+RoutableMetaProfile = Annotated[MetaProfile, AfterValidator(_require_route)]
 
 
 def _get_meta_profile_store() -> MetaProfileStore:
@@ -160,7 +177,7 @@ async def get_meta_profile(name: MetaProfileName) -> MetaProfileDetailResponse:
 )
 async def save_meta_profile(
     name: MetaProfileName,
-    body: MetaProfile,
+    body: RoutableMetaProfile,
 ) -> MetaProfileMutationResponse:
     """Save (create or overwrite) a meta-profile.
 
