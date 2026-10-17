@@ -53,6 +53,25 @@ def test_map_typed_permission_denied_error():
     assert isinstance(mapped, LLMAuthenticationError)
 
 
+def test_map_bad_request_with_401_status_to_auth_error():
+    # LiteLLM raises DeepSeek's invalid-key 401 as BadRequestError but keeps
+    # the provider's status code; the message matches no auth pattern.
+    response = httpx.Response(
+        status_code=401,
+        request=httpx.Request("POST", "https://api.deepseek.com/chat/completions"),
+    )
+    e = BadRequestError(
+        'DeepseekException - {"error":{"message":"Authentication Fails, '
+        'Your api key: ****alid is invalid","type":"authentication_error"}}',
+        MODEL,
+        "deepseek",
+        response=response,
+    )
+    assert e.status_code == 401
+    mapped = map_provider_exception(e)
+    assert isinstance(mapped, LLMAuthenticationError)
+
+
 def test_map_malformed_tool_history_bad_request():
     e = BadRequestError(
         (
