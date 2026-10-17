@@ -1102,3 +1102,14 @@ Preconditions:
   Linux host where the CLI and the server share a network and pid namespace;
   an attached remote server cannot be checked this way. The browser route to
   a backend (`/app-backends/...`) belongs to the bridge family.
+
+
+## Revision-bound secret consent and enable lifecycle
+
+Managed Apps accept `revision` and optional exact `secret_refs` on PATCH enabled=true.
+Explicit enable consent prepares and starts the backend, waits for readiness, and
+only then marks the app enabled. Failure stops it and leaves enabled=false.
+Disable stops the process and active bridge sessions while retaining same-revision
+secret consent. Explicit secret-grant DELETE also disables and clears consent.
+Install and ordinary mounts never start code. Browser-only toggles are unchanged.
+The prepare/start endpoints remain diagnostic APIs, not normal Canvas controls.
