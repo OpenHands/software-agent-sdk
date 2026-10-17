@@ -75,6 +75,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
+from openhands.sdk.event.error_origin import origin_from_exception
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
@@ -799,6 +800,7 @@ class EventService:
                 source="environment",
                 code=type(exc).__name__,
                 detail=str(exc),
+                origin=origin_from_exception(exc),
             )
             with self._conversation._state:
                 self._conversation._on_event(error_event)

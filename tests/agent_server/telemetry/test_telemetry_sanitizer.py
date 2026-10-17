@@ -16,6 +16,7 @@ from openhands.agent_server.telemetry.sanitizer import (
     COST_BOUNDS,
     COUNT_BOUNDS,
     DURATION_BOUNDS,
+    UNKNOWN_ERROR_CLASS,
     Bounds,
     bucket,
     model_family,
@@ -183,6 +184,7 @@ def test_safe_token(value, expected):
 
 
 def test_safe_identifier_rejects_secret_and_path_shapes():
+    assert UNKNOWN_ERROR_CLASS == "UnknownError"
     assert safe_identifier("ValueError") == "ValueError"
     assert safe_identifier("openhands.sdk.Foo") == "openhands.sdk.Foo"
     assert safe_identifier(SECRET) == "UnknownError"

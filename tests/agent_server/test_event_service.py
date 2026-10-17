@@ -1570,6 +1570,9 @@ class TestEventServiceSendMessage:
         assert error_events[0].code == "RuntimeError"
         assert error_events[0].detail == "model does not exist"
         assert error_events[0].source == "environment"
+        assert error_events[0].origin is not None
+        assert "model does not exist" not in error_events[0].origin
+        assert "model does not exist" not in (error_events[0].grouping_key or "")
         assert state.execution_status == ConversationExecutionStatus.ERROR
 
     @pytest.mark.asyncio

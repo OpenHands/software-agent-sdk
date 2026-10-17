@@ -124,6 +124,7 @@ from openhands.sdk.event import (
     SystemPromptEvent,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.event.error_origin import origin_from_exception
 from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
@@ -2341,6 +2342,7 @@ class ACPAgent(AgentBase):
                         source="agent",
                         code=_classify_acp_init_error(e),
                         detail=_acp_error_detail(e, state.secret_registry),
+                        origin=origin_from_exception(e),
                     )
                 )
             except Exception:
@@ -3886,6 +3888,7 @@ class ACPAgent(AgentBase):
                 source="agent",
                 code=_classify_acp_turn_error(effective_exc),
                 detail=error_detail,
+                origin=origin_from_exception(effective_exc),
             )
         )
         state.execution_status = ConversationExecutionStatus.ERROR

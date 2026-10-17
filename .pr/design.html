@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Error origin and grouping key</title>
+<style>
+  :root{
+    --fg:#1a1a1a; --muted:#5a5a5a; --subtle:#8a8a82;
+    --bg:#fdfdfb; --card:#ffffff; --elevated:#f7f6f1;
+    --accent:#2b4eaa; --accent-soft:#e6ecfa;
+    --rule:#e2e2dc; --rule-strong:#bdbcb4;
+    --code-bg:#f3f1ec; --warn:#b25b0e; --ok:#2f7a3a; --crit:#a02020;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Helvetica,Arial,sans-serif;
+    --delta:#c45c12;
+  }
+  *{box-sizing:border-box} html,body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans)}
+  body{line-height:1.6;font-size:16px}
+  .wrap{display:grid;grid-template-columns:240px minmax(0,1fr);gap:48px;max-width:1180px;margin:0 auto;padding:32px 28px 96px}
+  nav.toc{position:sticky;top:24px;align-self:start;font-size:13px}
+  nav.toc h2{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+  nav.toc ol{list-style:none;padding:0;margin:0;counter-reset:toc}
+  nav.toc li{counter-increment:toc;margin:4px 0}
+  nav.toc li::before{content:counter(toc) ". ";color:var(--muted)}
+  nav.toc a{color:var(--fg);text-decoration:none} nav.toc a:hover{color:var(--accent)}
+  header.title{border-bottom:1px solid var(--rule);padding-bottom:22px;margin-bottom:28px}
+  header.title .eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:700}
+  header.title h1{font-size:34px;margin:6px 0 4px;letter-spacing:-.01em}
+  header.title .sub{color:var(--muted);max-width:740px}
+  h2{font-size:22px;margin:44px 0 10px} h2 .num{color:var(--muted);font-weight:500;margin-right:8px}
+  h3{font-size:16px;margin:22px 0 8px}
+  code{font-family:var(--mono);font-size:.88em;background:var(--code-bg);padding:1px 5px;border-radius:3px}
+  pre{font-family:var(--mono);font-size:13px;background:var(--code-bg);padding:14px 16px;border-radius:6px;overflow-x:auto;border:1px solid var(--rule)}
+  pre code{background:transparent;padding:0}
+  table{border-collapse:collapse;width:100%;font-size:14px;margin:12px 0}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--rule);vertical-align:top}
+  th{font-weight:600;background:var(--code-bg)}
+  .callout{border-left:3px solid var(--accent);background:var(--accent-soft);padding:10px 14px;margin:14px 0;border-radius:0 4px 4px 0;font-size:14.5px}
+  .callout.warn{border-color:var(--warn);background:#fbf1e6}
+  .fig{margin:18px 0 22px}
+  .fig svg{display:block;max-width:100%;height:auto;background:#fff;border:1px solid var(--rule);border-radius:6px}
+  .fig figcaption{font-size:13px;color:var(--muted);margin-top:6px;text-align:center}
+  a.src{font-family:var(--mono);font-size:12px;color:var(--accent);text-decoration:none;border-bottom:1px dotted var(--accent)}
+  details{border:1px solid var(--rule);border-radius:6px;margin:12px 0}
+  details>summary{cursor:pointer;padding:8px 12px;color:var(--muted);font-size:13px}
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+  .card{background:var(--card);border:1px solid var(--rule);border-radius:8px;padding:16px 18px;margin:18px 0}
+  .tag{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+  .tag.add{color:var(--ok)} .tag.edit{color:var(--delta)} .tag.mech{color:var(--muted)}
+  @media(max-width:760px){.wrap{grid-template-columns:1fr}.ba{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="toc"><h2>Contents</h2><ol>
+    <li><a href="#change">What changed</a></li>
+    <li><a href="#api">API before → after</a></li>
+    <li><a href="#flow">How a failure is labeled</a></li>
+    <li><a href="#files">Files</a></li>
+    <li><a href="#origin">Origin derivation</a></li>
+    <li><a href="#events">Event models</a></li>
+    <li><a href="#sites">Producers</a></li>
+    <li><a href="#risk">Risk</a></li>
+  </ol></nav>
+  <main>
+    <header class="title">
+      <div class="eyebrow">Draft · issue 6051 · additive</div>
+      <h1>Conversation errors keep their origin</h1>
+      <p class="sub">Two <code>TypeError</code>s from different SDK functions no longer collapse into one class. Error events gain an optional module/function <code>origin</code> and a stable <code>grouping_key</code>. User-facing classification is unchanged, and the telemetry fingerprint still hashes module and line.</p>
+    </header>
+
+    <section id="change">
+      <h2><span class="num">1</span>What changed</h2>
+      <div class="callout">★ Additive and privacy-bounded. <code>origin</code> and <code>grouping_key</code> are optional, default <code>null</code>, and are built only from dotted identifiers. Exception text, paths, and secrets never enter them. <a class="src" href="https://github.com/MdTanwer/software-agent-sdk/blob/8de881b78a5321c80f5d0aad6898c0010e1959d9/openhands-sdk/openhands/sdk/event/error_origin.py#L1">error_origin.py:1</a></div>
+      <p>19 files · +716 / −42. The behavior change is the new derivation module plus two event fields. Call sites only pass the caught exception into that derivation. Older payloads that omit the fields still validate.</p>
+    </section>
+
+    <section id="api">
+      <h2><span class="num">2</span>API before → after</h2>
+      <p>Compatibility: <strong>additive</strong>. Missing fields default to <code>null</code>. <code>extra="forbid"</code> is unchanged, so unknown keys still fail, and events written by this version still load on older readers that ignore unknown JSON keys only if those readers are lenient — strict old clients that reject unknown properties will see the new keys. In-repo clients use the current models.</p>
+      <div class="ba">
+        <div>
+          <h3>Before</h3>
+          <pre><code>ConversationErrorEvent
+  code: str
+  detail: str
+  classification: ErrorClassification | None
+
+AgentErrorEvent
+  error: str
+  classification: ErrorClassification | None</code></pre>
+          <p><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/1fbfd37f6fb21491ed733fc92d409aff1517ff4a/openhands-sdk/openhands/sdk/event/conversation_error.py#L29">conversation_error.py:29</a> at merge-base <code>1fbfd37f6</code></p>
+        </div>
+        <div>
+          <h3>After</h3>
+          <pre><code>ConversationErrorEvent
+  code, detail, classification   # unchanged
+  origin: str | None = None
+  grouping_key: str | None = None
+
+AgentErrorEvent
+  error, classification          # unchanged
+  origin: str | None = None
+  grouping_key: str | None = None</code></pre>
+          <p><a class="src" href="https://github.com/MdTanwer/software-agent-sdk/blob/8de881b78a5321c80f5d0aad6898c0010e1959d9/openhands-sdk/openhands/sdk/event/conversation_error.py#L40">conversation_error.py:40</a> · <a class="src" href="https://github.com/MdTanwer/software-agent-sdk/blob/8de881b78a5321c80f5d0aad6898c0010e1959d9/openhands-sdk/openhands/sdk/event/llm_convertible/observation.py#L152">observation.py:152</a></p>
+        </div>
+      </div>
+      <p><code>grouping_key</code> is blake2s-16 over <code>origin|code</code> (32 hex chars). When a conversation event omits the key, the model fills it from <code>origin</code> and <code>code</code>. A supplied 32-char hex key is kept. Agent events never fill the key themselves: <code>error</code> is the message, so the producer passes the digest of the exception class name.</p>
+    </section>
+
+    <section id="flow">
+      <h2><span class="num">3</span>How a failure is labeled</h2>
+      <div class="fig">
+        <svg viewBox="0 0 760 250" role="img" aria-label="Before and after error labeling">
+          <text x="20" y="22" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="700" fill="#5a5a5a">BEFORE</text>
+          <rect x="20" y="36" width="150" height="44" rx="6" fill="#f7f6f1" stroke="#bdbcb4"/>
+          <text x="95" y="62" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#1a1a1a">llm.completion</text>
+          <rect x="20" y="100" width="150" height="44" rx="6" fill="#f7f6f1" stroke="#bdbcb4"/>
+          <text x="95" y="126" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#1a1a1a">tool.__call__</text>
+          <text x="178" y="64" font-size="16" fill="#8a8a82">→</text>
+          <text x="178" y="128" font-size="16" fill="#8a8a82">→</text>
+          <rect x="200" y="56" width="160" height="72" rx="6" fill="#fff" stroke="#bdbcb4"/>
+          <text x="280" y="84" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#1a1a1a">code=TypeError</text>
+          <text x="280" y="104" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#1a1a1a">kind=internal</text>
+          <text x="20" y="180" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="700" fill="#5a5a5a">AFTER</text>
+          <rect x="20" y="196" width="150" height="40" rx="6" fill="#f7f6f1" stroke="#bdbcb4"/>
+          <text x="95" y="220" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#1a1a1a">same two raises</text>
+          <text x="178" y="222" font-size="16" fill="#c45c12">→</text>
+          <rect x="200" y="196" width="250" height="40" rx="6" fill="#fff" stroke="#c45c12" stroke-width="2"/>
+          <text x="325" y="220" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#c45c12">origin_from_exception</text>
+          <text x="458" y="222" font-size="16" fill="#c45c12">→</text>
+          <rect x="478" y="188" width="262" height="56" rx="6" fill="#fff" stroke="#c45c12" stroke-width="2"/>
+          <text x="609" y="210" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#1a1a1a">origin = module.function</text>
+          <text x="609" y="228" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#1a1a1a">key = blake2s(origin|code)</text>
+        </svg>
+        <figcaption>Orange nodes are new. Classification still comes from <code>classify_error(code, detail)</code> and is not overwritten.</figcaption>
+      </div>
+      <div class="fig">
+        <svg viewBox="0 0 760 120" role="img" aria-label="What the traceback walk is allowed to read">
+          <text x="20" y="28" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="700" fill="#5a5a5a">WALKER READS</text>
+          <rect x="20" y="42" width="150" height="36" rx="6" fill="#e6ecfa" stroke="#2b4eaa"/>
+          <text x="95" y="64" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#1a1a1a">__name__</text>
+          <rect x="184" y="42" width="170" height="36" rx="6" fill="#e6ecfa" stroke="#2b4eaa"/>
+          <text x="269" y="64" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#1a1a1a">co_qualname / co_name</text>
+          <rect x="368" y="42" width="110" height="36" rx="6" fill="#f7f6f1" stroke="#bdbcb4"/>
+          <text x="423" y="64" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#1a1a1a">tb_lineno</text>
+          <text x="490" y="64" font-size="12" fill="#8a8a82">lineno → fingerprint only</text>
+          <text x="20" y="108" font-family="ui-sans-serif,system-ui,sans-serif" font-size="12" fill="#a02020">Never read: str(exc), f_locals, traceback.format_exception, source lines</text>
+        </svg>
+        <figcaption><code>iter_traceback_frames</code> is shared. Event keys drop the line number; <code>ErrorFingerprint</code> still uses it. <a class="src" href="https://github.com/MdTanwer/software-agent-sdk/blob/8de881b78a5321c80f5d0aad6898c0010e1959d9/openhands-sdk/openhands/sdk/event/error_origin.py#L85">error_origin.py:85</a></figcaption>
+      </div>
+    </section>
+
+    <section id="files">
+      <h2><span class="num">4</span>Files</h2>
+      <table>
+        <tr><th>File</th><th></th><th>Role</th></tr>
+        <tr><td><code>sdk/event/error_origin.py</code></td><td><span class="tag add">added</span></td><td>Single derivation and privacy rules</td></tr>
+        <tr><td><code>sdk/event/conversation_error.py</code></td><td><span class="tag edit">changed</span></td><td>Optional fields; key from origin + code</td></tr>
+        <tr><td><code>sdk/event/.../observation.py</code></td><td><span class="tag edit">changed</span></td><td>Same fields on <code>AgentErrorEvent</code></td></tr>
+        <tr><td><code>sdk/event/error_classification.py</code></td><td><span class="tag mech">mechanical</span></td><td>Docstring points at the new module</td></tr>
+        <tr><td><code>agent_server/telemetry/sanitizer.py</code></td><td><span class="tag mech">mechanical</span></td><td>Fingerprint walk delegates to the SDK</td></tr>
+        <tr><td>run / arun, ACP, workspace, event-service backstop, agent, parallel executor</td><td><span class="tag mech">mechanical</span></td><td>Pass <code>origin_from_exception</code> when an exception exists</td></tr>
+      </table>
+    </section>
+
+    <section id="origin">
+      <h2><span class="num">5</span>Origin derivation</h2>
+      <div class="card">
+        <h3><code>origin_from_exception</code></h3>
+        <p>Prefers the innermost <code>openhands.*</code> frame, so a library raise is attributed to the SDK caller. If the traceback never enters OpenHands, the innermost frame is kept and its module is collapsed to the top-level package. Identifiers that fail the dotted-name grammar (paths, <code>&lt;lambda&gt;</code>, <code>&lt;locals&gt;</code>, secrets) are dropped. An origin longer than 96 characters is omitted rather than shortened to a shared suffix. Nameless traceback links do not consume the 256-frame yield budget. Line numbers are not part of the origin, so the same function stays stable across unrelated edits.</p>
+        <p><a class="src" href="https://github.com/MdTanwer/software-agent-sdk/blob/8de881b78a5321c80f5d0aad6898c0010e1959d9/openhands-sdk/openhands/sdk/event/error_origin.py#L137">error_origin.py:137</a> · <a class="src" href="https://github.com/MdTanwer/software-agent-sdk/blob/8de881b78a5321c80f5d0aad6898c0010e1959d9/openhands-sdk/openhands/sdk/event/error_origin.py#L158">grouping_key_for:158</a></p>
+      </div>
+      <div class="card">
+        <h3><code>normalize_exception</code> output stays the same</h3>
+        <p><code>_walk_frames</code> now yields <code>(module, lineno)</code> from the shared walker. The fingerprint preimage is still schema version, class, category, and <code>module:lineno</code>. Function names are read and then ignored by the fingerprint.</p>
+        <p><a class="src" href="https://github.com/MdTanwer/software-agent-sdk/blob/8de881b78a5321c80f5d0aad6898c0010e1959d9/openhands-agent-server/openhands/agent_server/telemetry/sanitizer.py#L218">sanitizer.py:218</a></p>
+      </div>
+    </section>
+
+    <section id="events">
+      <h2><span class="num">6</span>Event models</h2>
+      <div class="ba">
+        <div class="card">
+          <h3>ConversationErrorEvent</h3>
+          <p>Before: <code>classify</code> filled <code>classification</code> from code and detail when it was missing. After: that step is unchanged, then a safe origin is kept and the grouping key is recomputed from origin + <code>code</code> so producers cannot store message text in the key.</p>
+          <p><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/1fbfd37f6fb21491ed733fc92d409aff1517ff4a/openhands-sdk/openhands/sdk/event/conversation_error.py#L36">before classify:36</a> → <a class="src" href="https://github.com/MdTanwer/software-agent-sdk/blob/8de881b78a5321c80f5d0aad6898c0010e1959d9/openhands-sdk/openhands/sdk/event/conversation_error.py#L56">after classify:56</a></p>
+        </div>
+        <div class="card">
+          <h3>AgentErrorEvent</h3>
+          <p>Before: missing classification became <code>unknown</code>. After: that default remains, and an explicit classification such as <code>AGENT_OUTCOME</code> or the parallel executor's <code>internal</code> is still not replaced. The key is stored as given, after a hex check, because the message in <code>error</code> must not be parsed.</p>
+          <p><a class="src" href="https://github.com/MdTanwer/software-agent-sdk/blob/8de881b78a5321c80f5d0aad6898c0010e1959d9/openhands-sdk/openhands/sdk/event/llm_convertible/observation.py#L167">observation.py:167</a></p>
+        </div>
+      </div>
+      <p>Sites with no exception — iteration limits, cancelled tools, restart recovery — leave both fields <code>null</code> instead of inventing an origin.</p>
+    </section>
+
+    <section id="sites">
+      <h2><span class="num">7</span>Producers</h2>
+      <table>
+        <tr><th>Site</th><th>Before → after</th></tr>
+        <tr><td><code>LocalConversation.run</code> / <code>arun</code> generic and auth handlers</td><td><code>code=type name</code> → also <code>origin=origin_from_exception(e)</code></td></tr>
+        <tr><td>ACP init and turn errors</td><td>same, origin from the caught exception; product <code>code</code> still drives the key</td></tr>
+        <tr><td><code>BaseWorkspace</code> callback fallback</td><td>origin from <code>cause</code></td></tr>
+        <tr><td><code>EventService._publish_error_event_sync</code></td><td>origin from the backstop exception</td></tr>
+        <tr><td><code>Agent._execute_action_event</code> and tool validation</td><td><code>diagnostics_from_exception</code>; classification stays <code>agent_action</code></td></tr>
+        <tr><td><code>ParallelToolExecutor._run_safe</code></td><td><code>ValueError</code> stays <code>agent_action</code>; other exceptions stay <code>internal</code>; both record origin</td></tr>
+      </table>
+    </section>
+
+    <section id="risk">
+      <h2><span class="num">8</span>Risk</h2>
+      <div class="callout warn">The checked-in TypeScript schema is generated from the published <code>v1.55.1</code> OpenAPI artifact, and that contract is already released. Regenerating it in this PR would fail <code>check:agent-server-api</code>. This branch's OpenAPI export does include the new nullable fields (<code>make test-server-schema</code> passed). The client types pick them up on the next version-bump regeneration.</div>
+      <p>Strict consumers that reject unknown JSON properties on events will see <code>origin</code> and <code>grouping_key</code>. Both are optional and null when no traceback is available. Telemetry <code>ErrorFingerprint</code> values are covered by the existing sanitizer tests and were not retargeted.</p>
+    </section>
+  </main>
+</div>
+</body>
+</html>

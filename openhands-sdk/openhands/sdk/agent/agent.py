@@ -51,6 +51,7 @@ from openhands.sdk.event.condenser import (
     CondensationRequest,
 )
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
+from openhands.sdk.event.error_origin import diagnostics_from_exception
 from openhands.sdk.event.security import SecurityAnalysisEvent
 from openhands.sdk.llm import (
     LLM,
@@ -1290,6 +1291,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
         responses_reasoning_item: ReasoningItemModel | None = None,
         stream: StreamContext | None = None,
+        exc: BaseException | None = None,
     ) -> None:
         try:
             json.loads(tool_call.arguments)
@@ -1324,11 +1326,14 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         on_event(tc_event)
         if stream is not None and minted:
             stream.commit()
+        diagnostics = diagnostics_from_exception(exc) if exc is not None else None
         error_event = AgentErrorEvent(
             error=error,
             tool_name=tool_name,
             tool_call_id=tool_call.id,
             classification=AGENT_OUTCOME,
+            origin=None if diagnostics is None else diagnostics.origin,
+            grouping_key=None if diagnostics is None else diagnostics.grouping_key,
         )
         record_tool_result(
             conversation,
@@ -1457,6 +1462,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 thinking_blocks=thinking_blocks,
                 responses_reasoning_item=responses_reasoning_item,
                 stream=stream,
+                exc=e,
             )
             return
 
@@ -1544,11 +1550,14 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             # Convert to AgentErrorEvent so the agent can correct itself
             err = f"Error executing tool '{tool.name}': {e}"
             logger.warning(err)
+            diagnostics = diagnostics_from_exception(e)
             error_event = AgentErrorEvent(
                 error=err,
                 tool_name=tool.name,
                 tool_call_id=action_event.tool_call.id,
                 classification=AGENT_OUTCOME,
+                origin=diagnostics.origin,
+                grouping_key=diagnostics.grouping_key,
             )
             return [error_event]
 
