@@ -258,6 +258,47 @@ def test_activate_propagates_into_agent_settings(client, store):
     assert agent.meta_profile == MetaProfile.model_validate(_meta())
 
 
+def test_activate_reports_applied_on_openhands_settings(client, store):
+    store.save("p", MetaProfile.model_validate(_meta()))
+    response = client.post("/api/meta-profiles/p/activate")
+    assert response.status_code == 200
+    assert response.json() == {
+        "name": "p",
+        "message": "Meta-profile 'p' activated",
+        "applied": True,
+    }
+
+
+def test_activate_on_acp_settings_reports_not_applied(client, store):
+    """ACP settings cannot attach the routing tool, so the pointer is dropped.
+
+    The response must say so (like LLM-profile activation's ``llm_applied``)
+    instead of claiming the meta-profile was activated.
+    """
+    store.save("p", MetaProfile.model_validate(_meta()))
+    patched = client.patch(
+        "/api/settings", json={"agent_settings_diff": {"agent_kind": "acp"}}
+    )
+    assert patched.status_code == 200
+
+    response = client.post("/api/meta-profiles/p/activate")
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "name": "p",
+        "message": (
+            "Meta-profile 'p' not activated: the current agent settings "
+            "cannot route between models"
+        ),
+        "applied": False,
+    }
+
+    assert client.get("/api/meta-profiles").json()["active_meta_profile"] is None
+    persisted = get_settings_store().load()
+    assert persisted is not None
+    assert persisted.active_meta_profile is None
+
+
 def test_activate_missing_returns_404(client):
     response = client.post("/api/meta-profiles/nope/activate")
     assert response.status_code == 404
