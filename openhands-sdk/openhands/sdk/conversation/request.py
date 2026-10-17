@@ -41,7 +41,16 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
-from openhands.sdk.settings.model import validate_agent_settings
+from openhands.sdk.settings.model import (
+    DEFAULT_WORKTREE_BRANCH_PREFIX,
+    DOCKER_MEMORY_PATTERN,
+    GIT_BRANCH_PREFIX_PATTERN,
+    GIT_REF_PATTERN,
+    MIN_CONTAINER_CPUS,
+    ConversationRuntime,
+    WorktreeBase,
+    validate_agent_settings,
+)
 from openhands.sdk.skills import Skill
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool.client_tool import ClientToolSpec
@@ -151,6 +160,62 @@ class AgentLaunchAdditions(BaseModel):
     )
 
 
+class ConversationContainerOptions(BaseModel):
+    """Resources for a conversation's container.
+
+    Only the Docker runtime applies them, when it creates the conversation's
+    container; a local conversation ignores them. An unset field keeps the
+    server's configured default.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    memory: str | None = Field(
+        default=None,
+        pattern=DOCKER_MEMORY_PATTERN,
+        description="Container memory limit in `docker run --memory` syntax.",
+    )
+    cpus: float | None = Field(
+        default=None,
+        ge=MIN_CONTAINER_CPUS,
+        description="Number of CPUs the container may use (`docker run --cpus`).",
+    )
+    browser: bool = Field(
+        default=True,
+        description=(
+            "False turns the browser off. True cannot turn it on for an image "
+            "without one."
+        ),
+    )
+
+
+class ConversationWorktreeOptions(BaseModel):
+    """How the server creates a conversation's worktree (``worktree=True``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    base: WorktreeBase = Field(
+        default="default_branch",
+        description="What the worktree branches from; `ref` uses `ref`.",
+    )
+    ref: str | None = Field(
+        default=None,
+        pattern=GIT_REF_PATTERN,
+        description="Branch, tag or commit to branch from when `base` is `ref`.",
+    )
+    branch_prefix: str = Field(
+        default=DEFAULT_WORKTREE_BRANCH_PREFIX,
+        pattern=GIT_BRANCH_PREFIX_PATTERN,
+        description="Start of the worktree's branch name; the conversation id ends it.",
+    )
+
+    @model_validator(mode="after")
+    def _ref_for_ref_base(self) -> ConversationWorktreeOptions:
+        if self.base == "ref" and self.ref is None:
+            raise ValueError("A `ref` base needs a `ref`")
+        return self
+
+
 class ConversationConfig(BaseModel):
     """Shared conversation configuration — everything except the agent.
 
@@ -174,6 +239,10 @@ class ConversationConfig(BaseModel):
             "a dedicated git worktree for this conversation under "
             "`/tmp/conversation-worktrees/<conversation_id>/<project_name>`."
         ),
+    )
+    worktree_options: ConversationWorktreeOptions | None = Field(
+        default=None,
+        description="How the worktree is created (`worktree=True`); unset: defaults.",
     )
     conversation_id: UUID | None = Field(
         default=None,
@@ -379,6 +448,18 @@ class StartConversationRequest(ConversationConfig):
         ),
     )
     agent: AgentBase = Field(default=cast(AgentBase, None))
+    conversation_runtime: ConversationRuntime | None = Field(
+        default=None,
+        description=(
+            "Runtime that executes this conversation. Unset uses the server's "
+            "configured `conversation_runtime`; another value is only accepted "
+            "when the server lists it in `available_conversation_runtimes`."
+        ),
+    )
+    container: ConversationContainerOptions | None = Field(
+        default=None,
+        description="Resources for the conversation's container (Docker runtime).",
+    )
 
     @model_validator(mode="before")
     @classmethod

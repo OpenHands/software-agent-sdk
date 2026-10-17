@@ -386,6 +386,16 @@ class Config(BaseModel):
         ),
     )
     conversation_runtime: Literal["local", "docker"] = "local"
+    conversation_runtime_selectable: bool = Field(
+        default=False,
+        description=(
+            "Serve both the local and the docker runtime and let each start "
+            "request pick one with `conversation_runtime`; requests that leave "
+            "it unset use this server's `conversation_runtime`. Requires a "
+            "Docker daemon and "
+            "`OH_SECRET_KEY`."
+        ),
+    )
     conversation_image: str = DEFAULT_CONVERSATION_IMAGE
     conversation_image_has_browser: bool | None = Field(
         default=None,

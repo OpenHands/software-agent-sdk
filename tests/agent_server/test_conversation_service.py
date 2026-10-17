@@ -24,7 +24,9 @@ from openhands.agent_server.conversation_service import (
     UnavailableAgentTool,
     _compose_conversation_info,
     _ConversationRecord,
+    _create_conversation_worktree,
     _get_worktree_start_point,
+    _plan_conversation_worktree,
 )
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
@@ -39,6 +41,7 @@ from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
 from openhands.sdk import LLM, Agent, AgentBase, Message, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.request import ConversationWorktreeOptions
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -2161,6 +2164,69 @@ class TestConversationServiceStartConversation:
         run_git_command(["git", "checkout", "--detach"], repo_dir)
 
         assert _get_worktree_start_point(repo_dir) == "master"
+
+    @pytest.mark.parametrize(
+        ("options", "expected_ref", "guidance"),
+        [
+            (ConversationWorktreeOptions(), "main", "main/master branch"),
+            (
+                ConversationWorktreeOptions(base="head"),
+                "feature/x",
+                "current HEAD",
+            ),
+            (
+                ConversationWorktreeOptions(
+                    base="ref", ref="release", branch_prefix="me/"
+                ),
+                "release",
+                "`release`",
+            ),
+        ],
+    )
+    def test_worktree_options_pick_the_branch_point_and_name(
+        self, tmp_path, options, expected_ref, guidance
+    ):
+        repo_dir = tmp_path / "repo"
+        _init_git_repo(repo_dir)
+
+        def commit(message: str) -> None:
+            run_git_command(
+                [
+                    "git",
+                    "-c",
+                    "user.name=OpenHands Test",
+                    "-c",
+                    "user.email=openhands@example.com",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    message,
+                ],
+                repo_dir,
+            )
+
+        # Three distinct tips: main, release (a ref) and the checked-out HEAD.
+        run_git_command(["git", "checkout", "-b", "release"], repo_dir)
+        commit("release")
+        run_git_command(["git", "checkout", "-b", "feature/x", "main"], repo_dir)
+        commit("feature")
+        conversation_id = uuid4()
+        plan = _plan_conversation_worktree(
+            LocalWorkspace(working_dir=repo_dir),
+            conversation_id,
+            tmp_path / "worktrees",
+            options,
+        )
+        assert plan is not None
+
+        workspace = _create_conversation_worktree(plan)
+
+        def tip(ref: str, cwd: Path) -> str:
+            return run_git_command(["git", "--no-pager", "rev-parse", ref], cwd)
+
+        assert tip("HEAD", Path(workspace.working_dir)) == tip(expected_ref, repo_dir)
+        assert plan.branch == f"{options.branch_prefix}{conversation_id}"
+        assert guidance in plan.guidance
 
     def test_get_worktree_start_point_tolerates_fetch_failure(self, tmp_path):
         """If ``git fetch origin`` fails, fall back to cached refs.

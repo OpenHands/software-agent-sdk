@@ -125,7 +125,7 @@ def test_get_conversation_settings_schema():
     assert body["model_name"] == "ConversationSettings"
 
     section_keys = [section["key"] for section in body["sections"]]
-    assert section_keys == ["general", "verification"]
+    assert section_keys == ["general", "verification", "runtime"]
 
     verification_section = next(
         section for section in body["sections"] if section["key"] == "verification"
@@ -261,6 +261,13 @@ def test_get_settings_migrates_legacy_openhands_settings_and_resaves_current(
         "max_iterations": 42,
         "confirmation_mode": True,
         "security_analyzer": "llm",
+        "default_runtime": "local",
+        "worktree_base_ref": None,
+        "worktree_branch_prefix": "openhands/",
+        "worktree_base": "default_branch",
+        "container_memory": None,
+        "container_cpus": None,
+        "container_browser": True,
     }
 
     patch_response = client_with_settings.patch(
