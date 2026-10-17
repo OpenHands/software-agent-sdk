@@ -10,6 +10,7 @@ from openhands.sdk.conversation.types import (
     ConversationTokenCallbackType,
     StuckDetectionThresholds,
     TraceMetadataValue,
+    WebSocketClientFactory,
 )
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
@@ -89,6 +90,7 @@ class Conversation:
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
         observability_parent_span_context: str | None = None,
+        websocket_client_factory: WebSocketClientFactory | None = None,
     ) -> "LocalConversation": ...
 
     @overload
@@ -119,6 +121,7 @@ class Conversation:
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
         observability_parent_span_context: str | None = None,
+        websocket_client_factory: WebSocketClientFactory | None = None,
     ) -> "RemoteConversation": ...
 
     def __new__(
@@ -149,6 +152,7 @@ class Conversation:
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
         observability_parent_span_context: str | None = None,
+        websocket_client_factory: WebSocketClientFactory | None = None,
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
         from openhands.sdk.conversation.impl.remote_conversation import (
@@ -213,6 +217,12 @@ class Conversation:
                 observability_tags=observability_tags,
                 observability_span_name=observability_span_name,
                 observability_parent_span_context=observability_parent_span_context,
+                websocket_client_factory=websocket_client_factory,
+            )
+
+        if websocket_client_factory is not None:
+            raise ValueError(
+                "websocket_client_factory is only supported with a RemoteWorkspace"
             )
 
         return LocalConversation(

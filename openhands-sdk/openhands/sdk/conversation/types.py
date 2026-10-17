@@ -1,7 +1,7 @@
 import re
 import uuid
 from collections.abc import Callable
-from typing import Annotated, Any
+from typing import Annotated, Any, Protocol
 
 from pydantic import BaseModel, BeforeValidator, Field
 
@@ -11,6 +11,41 @@ from openhands.sdk.llm.streaming import TokenCallbackType
 
 ConversationCallbackType = Callable[[Event], None]
 """Type alias for event callback functions."""
+
+
+class WebSocketClient(Protocol):
+    """Lifecycle of a remote conversation's event transport."""
+
+    def start(self) -> None:
+        """Start receiving events in the background."""
+        ...
+
+    def stop(self) -> None:
+        """Stop receiving events and release transport resources."""
+        ...
+
+    def wait_until_ready(self, timeout: float | None = None) -> bool:
+        """Wait until the server has acknowledged the event subscription."""
+        ...
+
+
+class WebSocketClientFactory(Protocol):
+    """Construct an event transport without requiring a concrete client class.
+
+    The client forwards events to ``callback`` and calls ``on_reconnect`` after
+    restoring its subscription, before delivering events on the new connection.
+    """
+
+    def __call__(
+        self,
+        *,
+        host: str,
+        conversation_id: str,
+        callback: ConversationCallbackType,
+        api_key: str | None,
+        on_reconnect: Callable[[], object] | None,
+    ) -> WebSocketClient: ...
+
 
 ConversationTokenCallbackType = TokenCallbackType
 """Callback type invoked for streaming LLM deltas."""
