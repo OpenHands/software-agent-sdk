@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import (
@@ -30,11 +31,15 @@ from openhands.agent_server.models import (
 )
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
 from openhands.sdk.git.utils import run_git_command
+from openhands.sdk.secret import StaticSecret
+from openhands.sdk.security.confirmation_policy import AlwaysConfirm
+from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -289,7 +294,9 @@ def _event_service_factory(services: dict[UUID, Any]):
             agent=agent,
             workspace=stored.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
-            confirmation_policy=stored.confirmation_policy,
+            confirmation_policy=kwargs["confirmation_policy"],
+            security_analyzer=kwargs["security_analyzer"],
+            secret_registry=SecretRegistry(secret_sources=kwargs["secrets"]),
         )
         services[stored.id] = event_service
         return event_service
@@ -308,13 +315,16 @@ class _ChildLaunch:
 
 
 async def _launch_child(
-    tmp_path: Path, workspace_dir: Path, request: StartChildConversationRequest
+    tmp_path: Path,
+    workspace_dir: Path,
+    request: StartChildConversationRequest,
+    **parent_overrides: Any,
 ) -> _ChildLaunch:
     """Start a parent in *workspace_dir*, then launch a child from it."""
     services: dict[UUID, Any] = {}
     worktree_root = tmp_path / "conversation-worktrees"
     parent_request = _start_request(workspace_dir).model_copy(
-        update={"tags": {"source": "test"}}
+        update={"tags": {"source": "test"}, **parent_overrides}
     )
     with patch(
         "openhands.agent_server.conversation_service.EventService",
@@ -388,6 +398,32 @@ async def test_start_child_conversation_inherits_parent_configuration(
     assert child_stored.tags == {"source": "test"}
     assert child_stored.title == "Docs"
     assert launch.result.title == "Docs"
+
+
+@pytest.mark.asyncio
+async def test_start_child_conversation_inherits_parent_state_config(
+    tmp_path, workspace_dir
+):
+    """Policy, analyzer and secrets live in base_state.json, not meta.json."""
+    request = StartChildConversationRequest(task="Write the docs")
+
+    launch = await _launch_child(
+        tmp_path,
+        workspace_dir,
+        request,
+        confirmation_policy=AlwaysConfirm(),
+        security_analyzer=LLMSecurityAnalyzer(),
+        secrets={"TOKEN": StaticSecret(value=SecretStr("shh"))},
+    )
+
+    assert launch.result is not None
+    parent_state = await launch.services[launch.parent_id].get_state()
+    child_state = await launch.services[launch.result.conversation_id].get_state()
+    assert isinstance(child_state.confirmation_policy, AlwaysConfirm)
+    assert isinstance(child_state.security_analyzer, LLMSecurityAnalyzer)
+    assert child_state.security_analyzer is not parent_state.security_analyzer
+    token = child_state.secret_registry.secret_sources["TOKEN"]
+    assert token.get_value() == "shh"
 
 
 @pytest.mark.asyncio

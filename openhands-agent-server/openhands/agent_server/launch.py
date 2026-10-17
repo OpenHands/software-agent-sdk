@@ -48,6 +48,7 @@ from openhands.sdk.llm.meta_profile_store import (
 )
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.secret import SecretSource
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.settings.model import (
     ACPAgentSettings,
     validate_agent_settings,
@@ -175,6 +176,21 @@ def request_secrets(
         _SECRETS_ADAPTER.dump_python(
             request.secrets, mode="json", context={"expose_secrets": True}
         ),
+        context=context,
+    )
+
+
+def request_security_analyzer(
+    request: StartConversationRequest, cipher: Cipher | None
+) -> SecurityAnalyzerBase | None:
+    """The request's security analyzer, its nested credentials decrypted when the
+    client encrypted them (e.g. a guardrail LLM ``api_key``)."""
+    analyzer = request.security_analyzer
+    context = _decryption_context(request, cipher)
+    if analyzer is None or context is None:
+        return analyzer
+    return type(analyzer).model_validate(
+        analyzer.model_dump(mode="json", context={"expose_secrets": True}),
         context=context,
     )
 
