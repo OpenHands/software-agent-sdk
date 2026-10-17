@@ -756,3 +756,43 @@ def test_switch_llm_to_subscription_profile_keeps_condenser(
     assert conv.agent.llm.model == "regular-model"
     assert conv.agent.condenser is condenser
     assert conv.state.agent.condenser is condenser
+
+
+def test_switch_llm_replaces_registered_usage_id_after_init(empty_profile_store):
+    """#5636: once the agent initialized, ``default`` is registered. Posting a
+    different config under that usage_id must install it, not keep the old LLM,
+    and the usage's accrued metrics must carry over to the new LLM.
+    """
+    # Plain LLMs: agent init registers only base-class LLMs, not TestLLM.
+    original = LLM(model="original-model", api_key=SecretStr("k"))
+    conv = LocalConversation(
+        agent=Agent(llm=original, tools=[]),
+        workspace=Path.cwd(),
+    )
+    conv.send_message("hi")  # initializes the agent and registers "default"
+    conv.llm_registry.get("default").metrics.add_cost(0.5)
+
+    # usage_id omitted: it defaults to "default", the registered slot.
+    conv.switch_llm(LLM(model="switched-model", api_key=SecretStr("k")))
+
+    assert conv.agent.llm.model == "switched-model"
+    assert conv.state.agent.llm.model == "switched-model"
+    assert conv.llm_registry.get("default") is conv.agent.llm
+    stats_metrics = conv.state.stats.usage_to_metrics["default"]
+    assert stats_metrics.accumulated_cost == 0.5
+    assert conv.agent.llm.metrics is stats_metrics
+
+
+def test_switch_llm_identical_config_reuses_registered_llm(empty_profile_store):
+    """Re-posting the registered config under the same usage_id keeps the
+    registered LLM object (and its metrics) instead of replacing it.
+    """
+    conv = _make_conversation()
+    conv.switch_llm(_make_llm("model-a", "x"))
+    registered = conv.llm_registry.get("x")
+
+    conv.switch_llm(_make_llm("model-b", "y"))
+    conv.switch_llm(_make_llm("model-a", "x"))
+
+    assert conv.agent.llm is registered
+    assert conv.llm_registry.get("x") is registered

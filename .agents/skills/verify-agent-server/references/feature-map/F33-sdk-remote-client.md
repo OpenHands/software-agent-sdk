@@ -888,19 +888,18 @@ Preconditions:
   ```
   The event callback got the deltas (control); today the token callback got
   `0` calls.
-- **Deltas kept out of `state.events` (`F33.conversation-streaming-state`), known bug.**
-  `RemoteConversation`'s default callback adds every socket frame to
-  `state.events`, so the transient deltas become part of the client's
-  history although the server never stores them. The correct behavior
-  asserted here is that `state.events` keeps matching the server.
+- **Deltas kept out of `state.events` (`F33.conversation-streaming-state`).**
+  `RemoteConversation`'s default callback skips the transient deltas the
+  server never stores, so they reach the callbacks only and `state.events`
+  keeps matching the server.
 
   Requires: `F33.conversation-streaming`
   ```sh
   test "$(jq '.local.MessageEvent // 0' "$F33/stream.json")" -eq "$(control-agent-server conversation events "$STREAM" --kinds MessageEvent | jq .matching)"
-  control-agent-server assert --json "$F33/stream.json" --check local.StreamingDeltaEvent missing  # bug: value.local.StreamingDeltaEvent gt 0
+  control-agent-server assert --json "$F33/stream.json" --check local.StreamingDeltaEvent missing
   ```
-  The stored kinds agree (control); today `state.events` also holds one
-  `StreamingDeltaEvent` per delta (the same count as the callback saw).
+  The stored kinds agree, and `state.events` holds no `StreamingDeltaEvent`
+  although the callback saw one per delta.
 - **Completion logs on the client (`F33.completion-logs`).** An agent LLM
   with `log_completions=True` and a relative `log_completions_folder`. The
   server replaces file logging with `LLMCompletionLogEvent`s; the client
@@ -2069,8 +2068,7 @@ Preconditions:
   value. `RemoteConversation.agent` (the attribute) is unaffected.
 - With a `stream=True` LLM the events socket also carries
   `StreamingDeltaEvent` frames: callbacks get them, the server stores none,
-  but `state.events` keeps them (`F33.conversation-streaming-state`, known
-  bug), so `len(state.events)` and kind counts include one entry per delta;
+  and they stay out of `state.events` (`F33.conversation-streaming-state`);
   `token_callbacks` passed to `Conversation(...)` are ignored for a remote
   workspace (`F33.conversation-token-callbacks`, known bug).
 - `log_completions=True` on a remote agent writes the log files on the

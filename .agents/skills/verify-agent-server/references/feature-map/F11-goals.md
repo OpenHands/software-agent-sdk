@@ -81,9 +81,10 @@ Routes: `POST /api/conversations/{conversation_id}/goal`,
   `POST /api/conversations/{conversation_id}/events` or a message frame on
   the events socket, stops the active loop (`F11.goal-superseded`,
   `F11.goal-superseded-socket`); `/interrupt` ends the current round and the
-  loop with it; `DELETE /api/conversations/{conversation_id}` and a graceful
-  shutdown close the loop without recording a status
-  (`F11.goal-delete-active`, `F11.goal-restart-active`).
+  loop with it; `DELETE /api/conversations/{conversation_id}` closes the loop
+  without recording a status (`F11.goal-delete-active`); a graceful shutdown
+  does too, and the next load records the stale `running` status as
+  `interrupted` (`F11.goal-restart-active`).
 - TypeScript client: `ConversationClient.startGoal(conversationId,
   {objective, max_iterations})`, `stopGoal(conversationId)`,
   `resumeGoal(conversationId)`
@@ -507,14 +508,13 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   `capped` status); the marked `jq` check fails today: the `capped` status
   has `iteration: 2, max_iterations: 1` (the four statuses are `running`
   0/1, `interrupted` 1/1, `running` 1/1, `capped` 2/1).
-- **A loop active at a restart stays "running" (`F11.goal-restart-active`), known bug.**
-  A graceful shutdown cancels the loop but skips the `interrupted` status
-  (`_closing` is set), so after the restart the last goal status still says
-  `active: true, status: running` although no loop runs (the conversation
-  comes back `paused`), and `/goal/stop` cannot clear it because there is no
-  task to cancel. A goal chip built from the status shows a running goal
-  forever. The correct behavior asserted here is that the last status after
-  the restart is `active: false`, `interrupted` (still resumable).
+- **A loop active at a restart ends "interrupted" (`F11.goal-restart-active`).**
+  A graceful shutdown cancels the loop without recording a status
+  (`_closing` is set); when the conversation is loaded again (the same holds
+  after a crash), a last goal status that is still `active: true` is
+  followed by one `active: false`, `interrupted` status with the same
+  objective and counts, so no goal chip shows a loop that no longer runs and
+  `/goal/resume` can continue it.
   ```sh
   control-agent-server api POST "/api/conversations/$R/goal" --json '{"objective": "QA_F11 restart objective", "max_iterations": 3}' --expect 200
   control-agent-server conversation wait "$R" --until running --timeout 30
@@ -522,12 +522,11 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   control-agent-server restart
   control-agent-server api GET "/api/conversations/$R" --quiet --check execution_status eq paused --save F11.goal-restart-active/after-restart
   control-agent-server conversation events "$R" --key goal --expect-min 1
-  control-agent-server conversation events "$R" --key goal --show 1 --full --save F11.goal-restart-active/goal-events | jq -e '.events[-1].value.active == false and .events[-1].value.status == "interrupted"'  # bug: events.-1.value.active eq true && events.-1.value.status eq running
+  control-agent-server conversation events "$R" --key goal --show 1 --full --save F11.goal-restart-active/goal-events | jq -e '.events[-1].value.active == false and .events[-1].value.status == "interrupted"'
   ```
   Before the restart the loop is active (`running` at iteration 0); after
-  it the conversation is `paused` and the goal rows came back, and the
-  marked `jq` check fails today: the only goal status is the `running` one
-  from before the restart.
+  it the conversation is `paused`, the goal rows came back, and the last goal
+  status is `interrupted` with `active: false`.
 
 ## Gotchas
 
@@ -568,9 +567,11 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   `/goal` and `/goal/resume` are 429 and record nothing. Creating a
   conversation also needs a free slot, so the recipes create all of theirs
   first.
-- Graceful restarts and conversation deletion cancel an active loop without
-  recording `interrupted` (`F11.goal-restart-active`); idle eviction never
-  happens while a loop is active.
+- Conversation deletion cancels an active loop without recording
+  `interrupted` (`F11.goal-delete-active`); a graceful restart does too, and
+  the reload then records the stale `running` status as `interrupted`
+  (`F11.goal-restart-active`); idle eviction never happens while a loop is
+  active.
 - The blank-objective check lives in the goal controller, not the request
   model, so it is a 400 with `Goal objective must not be empty.` rather than
   a 422.

@@ -21,13 +21,13 @@ Routes: `GET /api/workspaces`, `POST /api/workspaces`, `DELETE /api/workspaces`,
 ## Sub-features
 
 - `F17.list-empty`: on a fresh persistence directory `GET /api/workspaces` returns `{"workspaces": [], "workspaceParents": []}` and creates no `workspaces.json`.
-- `F17.noop-delete-no-file`: on a fresh persistence directory, deleting a path from either list answers 404 and creates no `workspaces.json`, like a read (known bug: the refused delete writes an empty registry file).
+- `F17.noop-delete-no-file`: on a fresh persistence directory, deleting a path from either list answers 404 and creates no `workspaces.json`, like a read.
 - `F17.add-workspaces`: `POST /api/workspaces` registers a git repository and a plain directory in request order and answers the whole document; `GET` and `workspaces.json` (mode `0600`, `schema_version` 1) show the same entries.
 - `F17.wire-format`: requests take `parentPath` or `parent_path`; responses and the file use `parentPath` and `workspaceParents`, an unset `parentPath` is omitted rather than `null`, and unknown item fields are dropped.
 - `F17.idempotent-add`: re-posting a registered path, or the same path twice in one body, answers 200 and keeps exactly one entry, the first, with its original `id` and `name`.
 - `F17.delete-workspace`: `DELETE /api/workspaces?path=` answers `{"deleted": true}` and removes only that entry, from the list and from the file, keeping the others in order.
 - `F17.delete-not-found`: deleting a path that is not a saved workspace (a deleted one, or a near miss with a trailing slash) is 404 `Workspace not found` and changes nothing; a delete without `path` is 422.
-- `F17.noop-write-untouched`: a write that changes nothing (re-posting saved workspaces, deleting an unknown workspace or parent) leaves `workspaces.json` as it was, same inode and modification time (known bug: every write route rewrites the file).
+- `F17.noop-write-untouched`: a write that changes nothing (re-posting saved workspaces, deleting an unknown workspace or parent) leaves `workspaces.json` as it was, same inode and modification time.
 - `F17.paths-opaque`: paths are stored as given, without existence checks or normalization: a missing directory and a relative path are accepted, `/x` and `/x/` are two entries that delete separately, and a path with spaces, `&`, `?`, `#` or non-ASCII letters round-trips through an encoded delete query.
 - `F17.validation`: a body without `workspaces` or `parents`, a non-list, an item with a missing or empty `id`, `name` or `path`, or a field over its limit (name 256, id, path and `parentPath` 4096) is 422 and stores nothing, not even the valid items of the same body; values at the limits are accepted.
 - `F17.add-parents`: `POST /api/workspaces/parents` registers parents, deduplicated by `path` like workspaces, answers the whole document and leaves `workspaces` untouched.
@@ -42,7 +42,7 @@ Routes: `GET /api/workspaces`, `POST /api/workspaces`, `DELETE /api/workspaces`,
 - `F17.corrupted-file`: with an unparsable or empty `workspaces.json`, all five routes answer 409 `Workspaces file is corrupted` and leave the file byte for byte; restoring the file restores the lists.
 - `F17.future-schema`: a valid document with a `schema_version` newer than 1, or one that is not an integer, or with a wrongly typed list, is 409 on reads and writes and is not overwritten; the same kind of hand-written document without `schema_version` is read, and the next write stamps `schema_version` 1.
 - `F17.io-error`: when the file cannot be read (a directory in its place), every route answers 500 with `exception` naming the failed step (`Failed to read workspaces`, `Failed to save workspaces`, `Failed to update workspaces`), writes nothing, and the registry works again once the file is back.
-- `F17.noop-write-readonly`: on a persistence directory the server cannot write, `GET` answers 200 and a real add 500 `Failed to save workspaces`, while a write that changes nothing keeps its normal answer: 404 for an unknown path, 200 for a re-post (known bug: they are 500 too).
+- `F17.noop-write-readonly`: on a persistence directory the server cannot write, `GET` answers 200 and a real add 500 `Failed to save workspaces`, while a write that changes nothing keeps its normal answer: 404 for an unknown path, 200 for a re-post.
 - `F17.persistence-location`: without `OH_PERSISTENCE_DIR` the registry lives in `<conversations_path>/../.openhands/workspaces.json`, separate from the one under `OH_PERSISTENCE_DIR`.
 
 ## How to get to it (agent POV)
@@ -167,7 +167,7 @@ Preconditions:
   control-agent-server state ls home/.openhands/workspaces.json --expect-count 0
   ```
   Both lists are empty and reading created no file.
-- **A refused delete on a fresh directory (`F17.noop-delete-no-file`), known bug.**
+- **A refused delete on a fresh directory (`F17.noop-delete-no-file`).**
   Delete an unknown path from each list while `workspaces.json` does not
   exist yet.
   ```sh
@@ -177,14 +177,12 @@ Preconditions:
   control-agent-server api DELETE /api/workspaces/parents --query path=/qa-f17/never --expect 404 \
     --check detail eq 'Workspace parent not found'
   control-agent-server api GET /api/workspaces --expect 200 --check workspaces len-eq 0 --check workspaceParents len-eq 0
-  control-agent-server state ls home/.openhands/workspaces.json --expect-count 0  # bug: count eq 1
+  control-agent-server state ls home/.openhands/workspaces.json --expect-count 0
   ```
-  Expected: both deletes are 404 and, like the read before them, leave no
-  file. Today the first 404 creates `workspaces.json` with two empty lists
-  (`FileWorkspacesStore.update` saves whatever the route's `apply` returns,
-  also when nothing matched), so the last `state ls` finds one file. The
-  lists stay empty either way, and the next bullet's first add writes the
-  file in both cases.
+  Both deletes are 404 and, like the read before them, leave no
+  `workspaces.json` (`FileWorkspacesStore.update` skips the save when the
+  route's `apply` returns the document unchanged), so the last `state ls`
+  finds no file. The next bullet's first add writes it.
 - **Register a repository and a plain directory (`F17.add-workspaces`).**
   ```sh
   control-agent-server api POST /api/workspaces --json-file "$F17/add.json" --expect 200 \
@@ -257,7 +255,7 @@ Preconditions:
   ```
   Both deletes are 404 `Workspace not found`, the bare delete is 422 naming
   the `path` query parameter, and the list reads back identical.
-- **No-op writes leave the file alone (`F17.noop-write-untouched`), known bug.**
+- **No-op writes leave the file alone (`F17.noop-write-untouched`).**
   Stamp the file (inode and nanosecond modification time), read, then
   re-post saved workspaces and delete unknown paths from both lists.
   ```sh
@@ -266,18 +264,17 @@ Preconditions:
   test "$(stat -c '%i %y' "$WS")" = "$STAMP"
   control-agent-server api POST /api/workspaces --json-file "$F17/readd.json" --expect 200 --check workspaces len-eq 5 \
     --check workspaces.0.name eq qa-f17-repo --save F17.noop-write-untouched/readd
-  control-agent-server assert --value "$(stat -c '%i %y' "$WS")" --check . eq "$STAMP"  # bug: value matches '^[0-9]+ [0-9]{4}-[0-9]{2}-[0-9]{2} '
+  control-agent-server assert --value "$(stat -c '%i %y' "$WS")" --check . eq "$STAMP"
   control-agent-server api DELETE /api/workspaces --query path=/qa-f17/never --expect 404
-  control-agent-server assert --value "$(stat -c '%i %y' "$WS")" --check . eq "$STAMP"  # bug: value matches '^[0-9]+ [0-9]{4}-[0-9]{2}-[0-9]{2} '
+  control-agent-server assert --value "$(stat -c '%i %y' "$WS")" --check . eq "$STAMP"
   control-agent-server api DELETE /api/workspaces/parents --query path=/qa-f17/never --expect 404
-  control-agent-server assert --value "$(stat -c '%i %y' "$WS")" --check . eq "$STAMP"  # bug: value matches '^[0-9]+ [0-9]{4}-[0-9]{2}-[0-9]{2} '
+  control-agent-server assert --value "$(stat -c '%i %y' "$WS")" --check . eq "$STAMP"
   ```
-  The read leaves the stamp, which shows the comparison can hold. Expected:
-  the re-post (every path in `readd.json` is already saved: 200, still five
-  entries, the repository keeps its name) and both 404 deletes leave it too.
-  Today the re-post already replaces the file (a new inode from the
-  temp-file rename and a new mtime), so the first marked stamp check fails; the
-  content stays the same, which is why only the stamp shows it. List left:
+  The read leaves the stamp, which shows the comparison can hold. The
+  re-post (every path in `readd.json` is already saved: 200, still five
+  entries, the repository keeps its name) and both 404 deletes leave it too:
+  a rewrite would show as a new inode (the temp-file rename) and a new mtime,
+  with the same content, which is why only the stamp shows it. List left:
   `REPO`, `PLAIN`, `snake`, `null`, `dup`.
 - **Paths are opaque strings (`F17.paths-opaque`).** Register a relative path,
   and a missing directory with and without a trailing slash.
@@ -630,7 +627,7 @@ Preconditions:
   again. The log has one `Cannot access workspaces file: [Errno 21] Is a
   directory` ERROR line per call and no traceback: the 500 is a deliberate
   `HTTPException`, which the server logs without a stack.
-- **No-op writes on read-only storage (`F17.noop-write-readonly`), known bug.**
+- **No-op writes on read-only storage (`F17.noop-write-readonly`).**
   Make the persistence directory immutable (`chattr +i`, standing in for a
   read-only mount: the server owns the directory and re-applies mode `0700`
   before each save, so permissions would not stop it), then write.
@@ -644,22 +641,22 @@ Preconditions:
     --json '{"workspaces": [{"id": "/qa-f17/ro", "name": "qa-f17-ro", "path": "/qa-f17/ro"}]}' --save F17.noop-write-readonly/real-add
   control-agent-server state ls 'home/.openhands/workspaces.tmp*' --expect-count 0
   control-agent-server api DELETE /api/workspaces --query path=/qa-f17/never --expect 404 \
-    --check detail eq 'Workspace not found' --save F17.noop-write-readonly/delete-unknown  # bug: status eq 500 && response.body.exception contains 'Failed to update workspaces'
-  control-agent-server api POST /api/workspaces --json-file "$F17/readd.json" --expect 200 --check workspaces len-eq 5  # bug: status eq 500 && response.body.exception contains 'Failed to save workspaces'
-  control-agent-server api DELETE /api/workspaces/parents --query path=/qa-f17/never --expect 404  # bug: status eq 500 && response.body.exception contains 'Failed to update workspaces'
+    --check detail eq 'Workspace not found' --save F17.noop-write-readonly/delete-unknown
+  control-agent-server api POST /api/workspaces --json-file "$F17/readd.json" --expect 200 --check workspaces len-eq 5
+  control-agent-server api DELETE /api/workspaces/parents --query path=/qa-f17/never --expect 404
   control-agent-server api POST /api/workspaces/parents --json-file "$F17/plain-parent.json" --expect 200 \
-    --check workspaceParents len-eq 2  # bug: status eq 500 && response.body.exception contains 'Failed to save workspaces'
+    --check workspaceParents len-eq 2
   chattr -i "$PDIR"
   trap - EXIT
   control-agent-server api GET /api/workspaces --expect 200 --check . eq "$BEFORE" --check . not-contains /qa-f17/ro
   ```
   Reads still answer the stored document and a real add is 500 `Failed to
   save workspaces` with no temporary file left, which shows the storage is
-  read-only. Expected: a delete of an unknown path is still 404 and
-  re-posting saved workspaces or the saved `PLAIN` parent still 200, since
-  none of them has anything to write. Today the first delete is 500 (in
-  `exception`: `Failed to update workspaces`), because the no-op is saved
-  like a change. The `trap` clears the flag whether the bullet passes or
+  read-only. A delete of an unknown path is still 404 and re-posting saved
+  workspaces or the saved `PLAIN` parent still 200, since none of them has
+  anything to write (a save would fail with 500, `Failed to update
+  workspaces` or `Failed to save workspaces` in `exception`). The `trap`
+  clears the flag whether the bullet passes or
   fails, and the lists are unchanged. Needs root (`CAP_LINUX_IMMUTABLE`) and
   a filesystem with the immutable attribute (ext4, xfs, btrfs); without them
   `chattr` is the failing command and the bullet reports `fail`, not
@@ -694,21 +691,19 @@ Preconditions:
   under the server's working directory. The contents are not cached: every
   request reads the file, so a hand edit or another server on the same
   directory shows up on the next call (`F17.shared-dir`).
-- Every write route rewrites the whole file, also when nothing changed
-  (`FileWorkspacesStore.update` saves whatever the route's `apply` returns),
-  a low-severity known bug with three faces: on a fresh persistence
-  directory a 404 `DELETE` creates `workspaces.json` (empty lists)
-  (`F17.noop-delete-no-file`); an idempotent re-add or a 404 `DELETE`
-  replaces the file with identical content (`F17.noop-write-untouched`); and
-  on a directory the server cannot write, a `DELETE` of an unknown path is
-  500 `Failed to update workspaces` instead of 404 and a re-post of a saved
-  path 500 instead of 200 (`F17.noop-write-readonly`, which needs root for
-  `chattr +i`). Any write, including a refused delete, also creates
-  `.workspaces.lock`, which is the lock and not part of the bug. Only `GET`
+- A write route rewrites the whole file only when something changed:
+  `FileWorkspacesStore.update` skips the save when the route's `apply`
+  returns the document it was given, so a 404 `DELETE` on a fresh directory
+  creates no `workspaces.json` (`F17.noop-delete-no-file`), an idempotent
+  re-add or a 404 `DELETE` leaves the file untouched
+  (`F17.noop-write-untouched`), and on a directory the server cannot write
+  those no-op requests keep their 404/200 answers (`F17.noop-write-readonly`,
+  which needs root for `chattr +i`). Any write route, including a refused
+  delete, still takes the lock and so creates `.workspaces.lock`. Only `GET`
   and the refusals that stop before the store (401, 422, the 409 of a
-  corrupted or too-new document and the 500 of an unreadable file) leave the
-  disk alone, which is why `F17.list-empty` and `F17.noop-delete-no-file`
-  run before any other call. A zero-byte `workspaces.json` counts as
+  corrupted or too-new document and the 500 of an unreadable file) leave
+  the disk entirely alone; `F17.list-empty` and `F17.noop-delete-no-file`
+  run before any other call so the file does not exist yet. A zero-byte `workspaces.json` counts as
   corrupted: the registry stays 409 until someone fixes or removes the file.
 - Matching is exact string comparison on `path`: no normalization, no
   existence check, relative paths allowed. `/x` and `/x/` are separate

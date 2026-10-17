@@ -379,17 +379,16 @@ export class ConversationManager {
   }
 
   /**
-   * Update conversation metadata (e.g. title)
+   * Update conversation metadata (e.g. title) and resolve with the updated
+   * conversation. The PATCH endpoint answers only `Success`, so the
+   * conversation is read back after the update.
    */
   async updateConversation(
     conversationId: ConversationID,
     update: UpdateConversationRequest
   ): Promise<ConversationInfo> {
-    const response = await this.client.patch<ConversationInfo>(
-      `/api/conversations/${conversationId}`,
-      update
-    );
-    return response.data;
+    await this.client.patch<Success>(`/api/conversations/${conversationId}`, update);
+    return this.getConversation(conversationId);
   }
 
   /**
