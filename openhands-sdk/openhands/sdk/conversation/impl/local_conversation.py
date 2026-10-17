@@ -1926,12 +1926,21 @@ class LocalConversation(BaseConversation):
         responsive. No-op unless this thread holds the lock, so direct ``astep``
         calls are unaffected. Deadlock-safe: ``arun`` is the only holder across
         an ``await``; every other holder takes it only briefly.
+
+        The deferred-save counter (``_save_depth``) is reset to zero while the
+        lock is released so that a concurrent ``pause()`` or other state mutation
+        on another thread persists immediately to ``base_state.json`` instead of
+        being deferred until the step's outer ``with`` block exits (#5626).
+        The stashed depth is restored on reacquire so the outer transaction's
+        batching semantics are preserved for mutations after the I/O returns.
         """
         lock = self._state._lock
         if not lock.owned():
             yield
             return
         held_flag = self._step_holds_state_lock
+        saved_save_depth = self._state._save_depth
+        self._state._save_depth = 0
         depth = lock.release_all()
         # Keep the flag honest while released so a concurrent switch_llm (on the
         # event-loop thread) takes the now-free lock instead of racing mutators.
@@ -1940,6 +1949,7 @@ class LocalConversation(BaseConversation):
             yield
         finally:
             lock.reacquire(depth)
+            self._state._save_depth = saved_save_depth
             self._step_holds_state_lock = held_flag
 
     @observe(name="conversation.run")
