@@ -1257,7 +1257,7 @@ class ConversationSettings(BaseModel):
         # ``self.agent_settings.create_agent()`` directly.
         has_agent_source = any(
             payload.get(name) is not None
-            for name in ("agent", "agent_settings", "agent_profile_id", "agent_profile")
+            for name in ("agent", "agent_settings", "agent_profile_id")
         )
         if not has_agent_source and self.agent_settings is not None:
             payload["agent"] = self.agent_settings.create_agent()

@@ -844,6 +844,58 @@ async def test_concurrent_event_delivery_has_one_request_in_flight(
 
 
 @pytest.mark.asyncio
+async def test_events_published_during_post_are_sent_once_buffer_is_full(
+    mock_event_service, sample_event, sample_conversation_id
+):
+    """A buffer that fills again during an in-flight POST is posted at once."""
+    spec = WebhookSpec(
+        base_url="https://example.com",
+        event_buffer_size=2,
+        flush_delay=3600,
+        num_retries=0,
+    )
+    subscriber = WebhookSubscriber(
+        conversation_id=sample_conversation_id,
+        service=mock_event_service,
+        spec=spec,
+    )
+
+    first_request_started = asyncio.Event()
+    release_first_request = asyncio.Event()
+    batches: list[list[dict]] = []
+
+    async def request(*args, **kwargs):
+        batches.append(kwargs["json"])
+        if len(batches) == 1:
+            first_request_started.set()
+            await release_first_request.wait()
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        return response
+
+    with patch("httpx.AsyncClient") as mock_client_class:
+        mock_client = AsyncMock()
+        mock_client.request = request
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        await subscriber(sample_event)
+        first_post = asyncio.create_task(subscriber(sample_event))
+        await asyncio.wait_for(first_request_started.wait(), timeout=1)
+
+        # Two more events fill the buffer while the first batch is in flight.
+        await subscriber(sample_event)
+        await subscriber(sample_event)
+        release_first_request.set()
+        await asyncio.wait_for(first_post, timeout=1)
+
+        # Without waiting for flush_delay (1 h) or close().
+        assert [len(batch) for batch in batches] == [2, 2]
+        assert subscriber.queue == []
+        # The timer started during the first POST is not left running.
+        assert subscriber._flush_timer is None
+
+
+@pytest.mark.asyncio
 @patch("httpx.AsyncClient")
 async def test_post_events_splits_batches_by_serialized_bytes(
     mock_client_class, mock_event_service, sample_conversation_id

@@ -85,7 +85,7 @@ from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
 from openhands.sdk.tool.client_tool import register_client_tools
-from openhands.sdk.tool.registry import get_tool_module_qualnames
+from openhands.sdk.tool.registry import get_tool_module_qualnames, is_tool_available
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -268,6 +268,11 @@ logger = logging.getLogger(__name__)
 class InvalidParentConversation(ValueError):
     """``parent_conversation_id`` is unknown, self-referential, or in
     a different workspace."""
+
+
+class UnavailableAgentTool(ValueError):
+    """The agent names a tool whose ``tool_module_qualnames`` module the server
+    cannot import, so the agent could never be built."""
 
 
 def _same_workspace(a: LocalWorkspace, b: LocalWorkspace) -> bool:
@@ -1525,6 +1530,7 @@ class ConversationService:
             secrets.pop(CODEX_AUTH_SECRET_NAME, None)
 
         # Dynamically register tools from client's registry
+        unimportable_tools: dict[str, str] = {}
         if request.tool_module_qualnames:
             for tool_name, module_qualname in request.tool_module_qualnames.items():
                 try:
@@ -1538,9 +1544,10 @@ class ConversationService:
                         f"Failed to import module '{module_qualname}' for tool "
                         f"'{tool_name}': {e}. Tool will not be available."
                     )
-                    # Continue even if some tools fail to register
-                    # The agent will fail gracefully if it tries to use unregistered
-                    # tools
+                    # The client registry lists every tool it knows, not only
+                    # the agent's: a module is fatal only if the agent uses its
+                    # tool (checked once the agent is launched below).
+                    unimportable_tools[tool_name] = f"{module_qualname}: {e}"
             logger.info(
                 "Dynamically registered %d tools for conversation %s",
                 len(request.tool_module_qualnames),
@@ -1577,6 +1584,19 @@ class ConversationService:
                 ),
             )
         )
+        # Building the agent would raise KeyError on the first message, so
+        # reject the create while the caller can still act on it.
+        missing_tools = [
+            f"'{tool.name}' ({unimportable_tools[tool.name]})"
+            for tool in launched.agent.tools
+            if tool.name in unimportable_tools
+            and not is_tool_available(tool.name, check_usable=False)
+        ]
+        if missing_tools:
+            raise UnavailableAgentTool(
+                "The agent uses tools whose modules the agent server cannot "
+                f"import: {', '.join(missing_tools)}"
+            )
         workspace = (
             _create_conversation_worktree(worktree)
             if worktree is not None
@@ -1623,7 +1643,6 @@ class ConversationService:
                 "agent",
                 "agent_settings",
                 "agent_profile_id",
-                "agent_profile",
                 "agent_launch_additions",
             },
         )
@@ -1803,22 +1822,24 @@ class ConversationService:
 
         loop = asyncio.get_running_loop()
         state = await event_service.get_state()
+        update: dict[str, Any] = {"updated_at": utc_now()}
         if request.title is not None:
-            event_service.stored.title = request.title.strip()
+            update["title"] = request.title.strip()
         if request.tags is not None:
-            event_service.stored.tags = request.tags
+            update["tags"] = request.tags
+        # Persist first: a refused write (e.g. lost lease ownership) must leave
+        # the in-memory metadata and state untouched.
+        await event_service.save_meta(event_service.stored.model_copy(update=update))
+        if request.tags is not None:
             # Keep the persisted ConversationState update under the state lock so
             # autosave and state-change callbacks observe a consistent mutation.
             state = await loop.run_in_executor(
                 None, _update_state_tags_sync, state, request.tags
             )
-        event_service.stored.updated_at = utc_now()
         record = self._conversation_records.get(conversation_id)
         if record is not None:
             record.stored = event_service.stored
             record.cached_info = None
-        # Save the updated metadata to disk
-        await event_service.save_meta()
 
         # Notify conversation webhooks about the updated conversation. Compose the
         # full-state snapshot under the state lock, but do the synchronous wait in a
@@ -1940,7 +1961,6 @@ class ConversationService:
             fork_conv = await asyncio.to_thread(
                 source_conversation.fork,
                 conversation_id=fork_conv_id,
-                title=title,
                 tags=tags,
                 reset_metrics=reset_metrics,
                 from_event_id=from_event_id,
@@ -1967,6 +1987,7 @@ class ConversationService:
                 "id": fork_conv_id,
                 "workspace": fork_workspace,
                 "title": title,
+                "tags": tags or {},
                 "created_at": utc_now(),
                 "updated_at": utc_now(),
                 "forked_from_conversation_id": source_id,
@@ -1974,8 +1995,6 @@ class ConversationService:
             }
             if reset_metrics:
                 fork_overrides["metrics"] = None
-            if tags is not None:
-                fork_overrides["tags"] = tags
             fork_stored = source_service.stored.model_copy(update=fork_overrides)
             try:
                 # If the service fails to start, clean up the orphaned
@@ -2527,9 +2546,11 @@ class AutoTitleSubscriber(Subscriber):
                     _on_title_error,
                 )
                 if title and self.service.stored.title is None:
-                    self.service.stored.title = title
-                    self.service.stored.updated_at = utc_now()
-                    await self.service.save_meta()
+                    await self.service.save_meta(
+                        self.service.stored.model_copy(
+                            update={"title": title, "updated_at": utc_now()}
+                        )
+                    )
             except Exception:
                 logger.warning(
                     f"Auto-title generation failed for "
@@ -2586,15 +2607,20 @@ class WebhookSubscriber(Subscriber):
         default_factory=lambda: asyncio.sleep, init=False
     )
 
+    def _buffer_full(self) -> bool:
+        return (
+            len(self.queue) >= self.spec.event_buffer_size
+            or self._queue_bytes >= self.spec.max_batch_bytes
+        )
+
     async def __call__(self, event: Event):
         """Add event to queue and post to webhook when buffer size is reached."""
         self._enqueue(event)
 
-        if (
-            len(self.queue) >= self.spec.event_buffer_size
-            or self._queue_bytes >= self.spec.max_batch_bytes
-        ):
+        if self._buffer_full():
             if self._post_lock.locked():
+                # The in-flight _post_events re-checks the buffer when it is
+                # done; the timer covers a failed post.
                 self._start_flush_timer()
                 return
             # Cancel timer since we're flushing due to buffer size
@@ -2624,6 +2650,12 @@ class WebhookSubscriber(Subscriber):
                     self._requeue(events_to_post)
                     return
                 events_remaining -= len(events_to_post)
+                if not events_remaining and self._buffer_full():
+                    # Events published during the POST filled the buffer again.
+                    events_remaining = len(self.queue)
+            # A timer started during the POST has nothing left to flush.
+            if not self.queue and self._flush_timer is not asyncio.current_task():
+                self._cancel_flush_timer()
 
     async def _post_batch(self, event_data: list[dict[str, Any]]) -> bool:
         """Post one serialized batch with retry logic."""
