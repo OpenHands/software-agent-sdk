@@ -11,14 +11,19 @@ LITELLM_PROXY_PREFIX: Final[str] = "litellm_proxy/"
 OPENHANDS_LLM_PROXY_BASE_URL: Final[str] = "https://llm-proxy.app.all-hands.dev"
 DIGITALOCEAN_PROVIDER_PREFIX: Final[str] = "digitalocean/"
 DIGITALOCEAN_INFERENCE_BASE_URL: Final[str] = "https://inference.do-ai.run/v1"
+CORALBRICKS_PROVIDER_PREFIX: Final[str] = "coralbricks/"
+CORALBRICKS_INFERENCE_BASE_URL: Final[str] = "https://inference.coralbricks.ai/v1"
 
 # SDK provider prefix -> (LiteLLM prefix, default api_base).
 # TODO: DigitalOcean goes through ``openai/`` only as a stopgap, because
 # LiteLLM's native ``gradient_ai/`` route rejects ``tools``. Switch to
 # ``gradient_ai/`` once LiteLLM supports tool calling there.
+# TODO: Coral Bricks goes through ``openai/`` until the locked LiteLLM includes
+# its native ``coralbricks/`` provider (BerriAI/litellm#44700, 1.107+).
 _ROUTED_PROVIDERS: Final[dict[str, tuple[str, str]]] = {
     OPENHANDS_PROVIDER_PREFIX: (LITELLM_PROXY_PREFIX, OPENHANDS_LLM_PROXY_BASE_URL),
     DIGITALOCEAN_PROVIDER_PREFIX: ("openai/", DIGITALOCEAN_INFERENCE_BASE_URL),
+    CORALBRICKS_PROVIDER_PREFIX: ("openai/", CORALBRICKS_INFERENCE_BASE_URL),
 }
 
 
