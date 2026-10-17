@@ -201,7 +201,7 @@ def test_acp_process_starts_in_workspace(tmp_path: Path, resume: bool) -> None:
                         "agentCapabilities": {"loadSession": True},
                     }
                 elif request["method"] == "session/new":
-                    result = {"sessionId": "cwd-session"}
+                    result = {"sessionId": "fresh-cwd-session"}
                 print(json.dumps({
                     "jsonrpc": "2.0", "id": request["id"], "result": result,
                 }), flush=True)
@@ -216,8 +216,8 @@ def test_acp_process_starts_in_workspace(tmp_path: Path, resume: bool) -> None:
     )
     if resume:
         state.agent_state = {
-            "acp_session_id": "cwd-session",
-            "acp_session_cwd": str(workspace),
+            "acp_session_id": "stored-cwd-session",
+            "acp_session_cwd": str(state.workspace.working_dir),
         }
 
     try:
@@ -226,8 +226,10 @@ def test_acp_process_starts_in_workspace(tmp_path: Path, resume: bool) -> None:
         process = agent._process
         assert process is not None
         # The child reports its own startup directory through the real ACP handshake.
-        assert state.agent_state["acp_agent_name"] == str(workspace)
-        assert state.agent_state["acp_session_id"] == "cwd-session"
+        assert state.agent_state["acp_agent_name"] == str(workspace.resolve())
+        assert state.agent_state["acp_session_id"] == (
+            "stored-cwd-session" if resume else "fresh-cwd-session"
+        )
     finally:
         process = agent._process
         agent.close()
