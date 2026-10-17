@@ -350,7 +350,9 @@ class Message(BaseModel):
         # tool call keys are added in to_chat_dict to centralize behavior
         return message_dict
 
-    def _list_serializer(self, *, vision_enabled: bool) -> dict[str, Any]:
+    def _list_serializer(
+        self, *, vision_enabled: bool, cache_enabled: bool
+    ) -> dict[str, Any]:
         content: list[dict[str, Any]] = []
         role_tool_with_prompt_caching = False
 
@@ -369,6 +371,10 @@ class Message(BaseModel):
             # All content types now return list[dict[str, Any]]
             item_dicts = item.to_llm_dict()
 
+            if not cache_enabled:
+                for d in item_dicts:
+                    d.pop("cache_control", None)
+
             if self.role == "tool" and item_dicts:
                 for d in item_dicts:
                     text_val = d.get("text")
@@ -378,7 +384,7 @@ class Message(BaseModel):
             # We have to remove cache_prompt for tool content and move it up to the
             # message level
             # See discussion here for details: https://github.com/BerriAI/litellm/issues/6422#issuecomment-2438765472
-            if self.role == "tool" and item.cache_prompt:
+            if cache_enabled and self.role == "tool" and item.cache_prompt:
                 role_tool_with_prompt_caching = True
                 for d in item_dicts:
                     d.pop("cache_control", None)
