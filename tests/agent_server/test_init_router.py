@@ -970,3 +970,103 @@ async def test_lifespan_teardown_releases_conversation_service_after_init(
     assert init_svc._entered_bash_service is None
     _reset_conversation_singleton()
     _reset_bash_singleton()
+
+
+class TestSessionKeyExport:
+    """The key the server authenticates with reaches in-process callers that
+    read it from the environment (start_child_conversation, managed LLM key
+    refresh), whether it arrived through /api/init or a config file."""
+
+    def test_init_exports_delivered_key_over_boot_key(self, tmp_path, monkeypatch):
+        """A dormant pod boots holding a shared key; /api/init replaces it."""
+        monkeypatch.setenv("OH_SESSION_API_KEYS_0", "boot-key")
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=True,
+            session_api_keys=["boot-key"],
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        with TestClient(create_app(cfg)) as client:
+            try:
+                resp = client.post(
+                    "/api/init",
+                    json={
+                        "session_api_keys": ["user-session-key"],
+                        "conversations_path": str(tmp_path / "u" / "convs"),
+                        "bash_events_dir": str(tmp_path / "u" / "bash"),
+                    },
+                    # The bootstrap credential is the dormant secret key, which
+                    # defaults to the first session key.
+                    headers={"X-Init-API-Key": "boot-key"},
+                )
+                assert resp.status_code == 200
+                assert os.environ["OH_SESSION_API_KEYS_0"] == "user-session-key"
+            finally:
+                _reset_conversation_singleton()
+
+    @pytest.mark.asyncio
+    async def test_teardown_restores_the_env_after_a_direct_init(self, tmp_path):
+        """Driving InitService without the lifespan (as other tests do) must
+        not leak the delivered key into the process environment."""
+        _reset_conversation_singleton()
+        _reset_bash_singleton()
+        base = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        app = SimpleNamespace(state=SimpleNamespace(config=base))
+        svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+        try:
+            await svc.initialize(
+                InitRequest(
+                    session_api_keys=["user-key"],
+                    conversations_path=tmp_path / "user" / "convs",
+                    bash_events_dir=tmp_path / "user" / "bash",
+                )
+            )
+            assert os.environ["OH_SESSION_API_KEYS_0"] == "user-key"
+        finally:
+            await svc.teardown()
+            _reset_conversation_singleton()
+            _reset_bash_singleton()
+        assert "OH_SESSION_API_KEYS_0" not in os.environ
+
+    def test_init_without_keys_leaves_env_untouched(self, tmp_path):
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        with TestClient(create_app(cfg)) as client:
+            try:
+                resp = client.post(
+                    "/api/init",
+                    json={
+                        "conversations_path": str(tmp_path / "u" / "convs"),
+                        "bash_events_dir": str(tmp_path / "u" / "bash"),
+                    },
+                )
+                assert resp.status_code == 200
+                assert "OH_SESSION_API_KEYS_0" not in os.environ
+            finally:
+                _reset_conversation_singleton()
+
+    def test_startup_exports_config_key_and_restores_env_on_shutdown(self, tmp_path):
+        """A key read from the config file is exported for the server's
+        lifetime only."""
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=False,
+            session_api_keys=["file-key"],
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        try:
+            with TestClient(create_app(cfg)):
+                assert os.environ["OH_SESSION_API_KEYS_0"] == "file-key"
+            assert "OH_SESSION_API_KEYS_0" not in os.environ
+        finally:
+            _reset_conversation_singleton()
