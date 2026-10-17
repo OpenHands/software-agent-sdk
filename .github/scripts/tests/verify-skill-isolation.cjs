@@ -14,7 +14,7 @@ const script = match[2].split("\n")
 const run = new (Object.getPrototypeOf(async function () {}).constructor)(
   "github", "context", "core", script,
 );
-const verify = ".agents/skills/verify-openhands/SKILL.md";
+const verify = ".agents/skills/verify-sdk/SKILL.md";
 const file = (filename, extra = {}) => ({ filename, status: "modified", ...extra });
 
 async function check(files, options = {}) {
@@ -50,6 +50,9 @@ for (const [name, files, allowed] of [
   ["skill plus AGENTS", [file(verify), file("nested/AGENTS.md")], true],
   ["mixed product and skill", [file(verify), file("src/app.py")], false],
   ["mixed other skill", [file(verify), file(".agents/skills/review/SKILL.md")], false],
+  ["skill plus .pr evidence", [file(verify), file(".pr/map-maintenance/report.md")], true],
+  ["nested .pr is not exempt", [file(verify), file("src/.pr/notes.md")], false],
+  ["product plus .pr evidence", [file("src/app.py"), file(".pr/18160/proof.json")], true],
   ["README is not exempt", [file(verify), file("README.md")], false],
   ["lowercase agents is not exempt", [file(verify), file("agents.md")], false],
   ["verify prefix without dash is ordinary product", [file(".agents/skills/verify/SKILL.md"), file("src/app.py")], true],
@@ -93,4 +96,11 @@ test("file count changes during pagination fail closed", async () => {
   assert.match((await check([file(verify)], { after: {
     head: { sha: "head" }, base: { sha: "base" }, changed_files: 2,
   } }))[0], /changed/i);
+});
+
+test("a mixed PR's failure says how to split it and lists both sides", async () => {
+  const [message] = await check([file(verify), file("src/app.py")]);
+  assert.match(message, /split this PR/);
+  assert.match(message, new RegExp(`- ${verify.replaceAll(".", "\\.")}`));
+  assert.match(message, /- src\/app\.py/);
 });
