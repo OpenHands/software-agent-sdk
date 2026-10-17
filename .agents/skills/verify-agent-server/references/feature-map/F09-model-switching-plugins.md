@@ -421,18 +421,17 @@ Preconditions:
   The switch is 200 although no ACP session exists (`acp_session_id` is
   absent); `acp_model`, `agent_state.acp_current_model_id` and
   `current_model_id` all say `opus`, so the first session would start on it.
-- **Blank ACP model (`F09.acp-model-blank`), known bug.** A second ACP
+- **Blank ACP model (`F09.acp-model-blank`).** A second ACP
   conversation that has not run.
   ```sh
   AID2=$(control-agent-server conversation start --no-autotitle --body-json '{"agent_settings": {"agent_kind": "acp", "acp_server": "claude-code", "acp_model": "sonnet"}}' --print-id)
   control-agent-server api GET "/api/conversations/$AID2" --quiet --check agent.kind eq ACPAgent --check agent.acp_model eq sonnet --check execution_status eq idle
-  control-agent-server api POST "/api/conversations/$AID2/switch_acp_model" --json '{"model": "   "}' --expect 400,422 --save F09.acp-model-blank/blank  # bug: status eq 200 && response.body.success eq true
-  control-agent-server api GET "/api/conversations/$AID2" --quiet --check agent.acp_model eq sonnet --check current_model_id eq sonnet  # bug: status eq 200 && checks.0.actual eq '   ' && checks.1.actual eq '   '
+  control-agent-server api POST "/api/conversations/$AID2/switch_acp_model" --json '{"model": "   "}' --expect 400,422 --save F09.acp-model-blank/blank
+  control-agent-server api GET "/api/conversations/$AID2" --quiet --check agent.acp_model eq sonnet --check current_model_id eq sonnet
   ```
-  Expected: refused, as `ACPAgent.set_acp_model` refuses an empty or
-  whitespace-only model on a live session (`model must be a non-empty
-  string`, 400). Today the pre-run path skips that check: 200, and
-  `agent.acp_model` and `current_model_id` become `"   "`.
+  The switch is refused with 400 (`model must be a non-empty string`), as
+  on a live session, and `agent.acp_model` and `current_model_id` stay
+  `sonnet`.
 - **LLM switches on an ACP conversation (`F09.switch-llm-acp-refused`), known bug.**
   A third ACP conversation that has not run; its agent carries a
   placeholder LLM that only names the model.
