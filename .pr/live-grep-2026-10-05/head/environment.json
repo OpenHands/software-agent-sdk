@@ -1,0 +1,43 @@
+{
+  "started_at": "2026-10-05T10:06:28.162210+00:00",
+  "revision": "486b46fb8c9a0fadb544fbc1854f3a177c1022dc",
+  "expect": "head",
+  "platform": "macOS-15.6-arm64-arm-64bit-Mach-O",
+  "python": "3.13.13",
+  "grep_binary": "/usr/bin/grep",
+  "grep_source": "/checkouts/head/openhands-tools/openhands/tools/grep/impl.py",
+  "grep_source_sha256": "469cca61297d692053e7cdef7c0fd272036e94b2952f6641a869beeb982ad959",
+  "harness_sha256": "7c7e1ae7a304a6206cda316325829674ba14d9ff2813bde17db07fe88706bdbc",
+  "uv_lock_sha256": "f4fd2e69545e1ba884aa75d3d555df2881d0ba0f715a1d267ebcf8185aac75fd",
+  "litellm_version": "1.93.0",
+  "tracked_changes": [
+    " M .pr/repro_live_grep_agent.py"
+  ],
+  "imported_sources": {
+    "grep": "/checkouts/head/openhands-tools/openhands/tools/grep/impl.py",
+    "agent": "/checkouts/head/openhands-sdk/openhands/sdk/agent/agent.py",
+    "conversation": "/checkouts/head/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py"
+  },
+  "model": "deepseek/deepseek-flash",
+  "endpoint_origin": "https://api.deepseek.com",
+  "litellm_extra_body": {
+    "thinking": {
+      "type": "disabled"
+    }
+  },
+  "prompt": "Use the grep tool to search the existing fixture files.\nSearch the extended subdirectory with the exact regex ^(foo|bar)+[0-9]{2}$.\nSearch the escaped subdirectory with the exact regex ^foo\\(bar\\)\\+$.\nFor each call, use an absolute path to that subdirectory and include *.txt.\nPreserve both patterns exactly; do not simplify, correct, or retry them.\nReport the matching filenames returned by each tool call, including empty\nresults. Do not infer results from the filenames. Then finish.\n",
+  "fixtures": {
+    "extended": {
+      "matching.txt": "FooBAR12\n",
+      "other.txt": "foo12 extra\n"
+    },
+    "escaped": {
+      "matching.txt": "foo(bar)+\n",
+      "other.txt": "foobar\n"
+    }
+  },
+  "path_isolation": "PATH contains only a symlink to system grep; no rg",
+  "prepare_only": false,
+  "isolated_rg_binary": null,
+  "isolated_grep_binary": "/tmp/openhands-grep-only-ev14nsqz/grep"
+}
