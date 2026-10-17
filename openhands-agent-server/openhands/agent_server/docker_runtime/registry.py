@@ -7,7 +7,7 @@ import hashlib
 import os
 import subprocess
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,7 +27,6 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.persistence.store import _get_persistence_dir
 from openhands.agent_server.storage import Reclaimer
-from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.command import execute_command, sanitized_env
@@ -71,6 +70,29 @@ class ConversationContainer:
         return result.returncode == 0 and result.stdout.strip() == "true"
 
 
+@dataclass(slots=True)
+class ContainerLease:
+    """An active lease holding a container runtime against suspension."""
+
+    conversation_id: UUID
+    container: ConversationContainer
+    _release_fn: Callable[[], None]
+    _released: bool = False
+
+    def release(self) -> None:
+        if not self._released:
+            self._released = True
+            self._release_fn()
+
+    async def __aenter__(self) -> ConversationContainer:
+        return self.container
+
+    async def __aexit__(
+        self, exc_type: object, exc_val: object, exc_tb: object
+    ) -> None:
+        self.release()
+
+
 class DockerConversationRegistry(ConversationRegistry):
     def __init__(self, config: Config) -> None:
         super().__init__(config)
@@ -83,6 +105,9 @@ class DockerConversationRegistry(ConversationRegistry):
         self._containers: dict[UUID, ConversationContainer] = {}
         self._starts: dict[UUID, asyncio.Task[ConversationContainer]] = {}
         self._deleting: set[UUID] = set()
+        self._stopping: dict[UUID, asyncio.Event] = {}
+        self._leases: dict[UUID, int] = {}
+        self._lease_generations: dict[UUID, int] = {}
         self._lock = asyncio.Lock()
         self._service: ConversationService | None = None
         self._last_access: dict[UUID, float] = {}
@@ -147,7 +172,8 @@ class DockerConversationRegistry(ConversationRegistry):
         await asyncio.to_thread(self.cleanup_stale_containers)
         # After the cleanup: with no container left, every runtime is reclaimable.
         await self.reclaimer.start()
-        if self.config.conversation_idle_ttl_seconds:
+        ttl = self.config.conversation_idle_ttl_seconds
+        if ttl and ttl > 0:
             self._eviction_task = asyncio.create_task(self._evict_idle_runtimes_loop())
 
     def add_execution_routes(self, router: APIRouter) -> None:
@@ -240,24 +266,88 @@ class DockerConversationRegistry(ConversationRegistry):
         return self._sessions.get(conversation_id, 0) > 0
 
     def cleanup_stale_containers(self) -> None:
-        result = execute_command(
-            ["docker", "ps", "-aq", "--filter", f"label={_OWNER_LABEL}={self.owner}"]
-        )
+        try:
+            result = execute_command(
+                [
+                    "docker",
+                    "ps",
+                    "-aq",
+                    "--filter",
+                    f"label={_OWNER_LABEL}={self.owner}",
+                ]
+            )
+        except FileNotFoundError:
+            logger.warning("Docker CLI not found, skipping stale container cleanup")
+            return
         if result.returncode != 0:
             logger.warning("Failed to list stale conversation containers")
             return
         ids = result.stdout.split()
         if ids:
-            execute_command(["docker", "rm", "-f", *ids])
+            try:
+                execute_command(["docker", "rm", "-f", *ids])
+            except FileNotFoundError:
+                pass
+
+    def has_active_leases(self, conversation_id: UUID) -> bool:
+        return self._leases.get(conversation_id, 0) > 0
+
+    def release_lease(self, conversation_id: UUID) -> None:
+        """Release a previously acquired lease on a container runtime."""
+        count = self._leases.get(conversation_id, 0) - 1
+        if count <= 0:
+            self._leases.pop(conversation_id, None)
+        else:
+            self._leases[conversation_id] = count
+
+    def acquire_lease(self, conversation_id: UUID) -> Callable[[], None]:
+        """Record an active in-flight request or WebSocket for this conversation.
+
+        Returns a release callback.
+        """
+        self._leases[conversation_id] = self._leases.get(conversation_id, 0) + 1
+        self._lease_generations[conversation_id] = (
+            self._lease_generations.get(conversation_id, 0) + 1
+        )
+        released = False
+
+        def release() -> None:
+            nonlocal released
+            if not released:
+                released = True
+                self.release_lease(conversation_id)
+
+        return release
+
+    async def lease(self, conversation_id: UUID) -> ContainerLease:
+        """Acquire a container lease for an active request or WebSocket.
+
+        While a lease is held, the conversation runtime will not be suspended.
+        """
+        container = await self.get_or_create(conversation_id)
+        release = self.acquire_lease(conversation_id)
+        return ContainerLease(
+            conversation_id=conversation_id,
+            container=container,
+            _release_fn=release,
+        )
 
     async def get_or_create(self, conversation_id: UUID) -> ConversationContainer:
-        async with self._lock:
-            if conversation_id in self._deleting:
-                raise RuntimeError("Conversation is being deleted")
-            if self.is_archived(conversation_id):
-                raise RuntimeArchivedError("Conversation runtime was archived")
-            self._last_access[conversation_id] = time.monotonic()
-            container = self._containers.get(conversation_id)
+        while True:
+            async with self._lock:
+                if conversation_id in self._deleting:
+                    raise RuntimeError("Conversation is being deleted")
+                if self.is_archived(conversation_id):
+                    raise RuntimeArchivedError("Conversation runtime was archived")
+                stop_event = self._stopping.get(conversation_id)
+                if stop_event is None:
+                    container = self._containers.get(conversation_id)
+                    self._lease_generations[conversation_id] = (
+                        self._lease_generations.get(conversation_id, 0) + 1
+                    )
+                    self._last_access[conversation_id] = time.monotonic()
+                    break
+            await stop_event.wait()
 
         if container is not None:
             if await asyncio.to_thread(container.is_running):
@@ -311,20 +401,97 @@ class DockerConversationRegistry(ConversationRegistry):
             self._deleting.discard(conversation_id)
 
     async def stop(self, conversation_id: UUID) -> None:
+        await self._stop(conversation_id)
+
+    async def stop_if_idle(
+        self,
+        conversation_id: UUID,
+        token: int,
+        *,
+        idle_before: float | None = None,
+        container: ConversationContainer | None = None,
+    ) -> bool:
+        return await self._stop(
+            conversation_id,
+            if_idle_token=token,
+            idle_before=idle_before,
+            expected_container=container,
+        )
+
+    async def _stop(
+        self,
+        conversation_id: UUID,
+        *,
+        if_idle_token: int | None = None,
+        idle_before: float | None = None,
+        expected_container: ConversationContainer | None = None,
+    ) -> bool:
+        task: asyncio.Task[ConversationContainer] | None = None
+        container: ConversationContainer | None = None
         async with self._lock:
-            task = self._starts.pop(conversation_id, None)
-            container = self._containers.pop(conversation_id, None)
-            self._last_access.pop(conversation_id, None)
-            self._sessions.pop(conversation_id, None)
-        if task is not None:
-            try:
-                started = await task
-            except Exception:
-                started = None
-            container = container or started
-        if container is not None:
-            await asyncio.to_thread(container.stop)
-        await self.reclaimer.on_stop(conversation_id)
+            if if_idle_token is not None:
+                if (
+                    conversation_id in self._deleting
+                    or conversation_id in self._stopping
+                    or self._leases.get(conversation_id, 0) > 0
+                    or self.has_attached_sessions(conversation_id)
+                    or self._lease_generations.get(conversation_id, 0) != if_idle_token
+                    or self._containers.get(conversation_id) is None
+                    or (
+                        expected_container is not None
+                        and self._containers.get(conversation_id)
+                        is not expected_container
+                    )
+                    or (
+                        idle_before is not None
+                        and self._last_access.get(conversation_id, float("inf"))
+                        > idle_before
+                    )
+                ):
+                    return False
+
+            stop_event = self._stopping.get(conversation_id)
+            if stop_event is not None:
+                wait_for_stop = True
+            else:
+                stop_event = asyncio.Event()
+                self._stopping[conversation_id] = stop_event
+                wait_for_stop = False
+                task = self._starts.pop(conversation_id, None)
+                container = self._containers.get(conversation_id)
+
+        if wait_for_stop:
+            await stop_event.wait()
+            async with self._lock:
+                return conversation_id not in self._containers
+
+        try:
+            if task is not None:
+                try:
+                    started = await task
+                except Exception:
+                    started = None
+                container = container or started
+            if container is not None:
+                await asyncio.to_thread(container.stop)
+            async with self._lock:
+                if self._containers.get(conversation_id) is container:
+                    self._containers.pop(conversation_id, None)
+                    self._last_access.pop(conversation_id, None)
+                    self._sessions.pop(conversation_id, None)
+            await self.reclaimer.on_stop(conversation_id)
+            return True
+        except Exception:
+            if container is not None:
+                async with self._lock:
+                    if conversation_id not in self._containers:
+                        self._containers[conversation_id] = container
+                    self._last_access[conversation_id] = time.monotonic()
+            raise
+        finally:
+            async with self._lock:
+                self._stopping.pop(conversation_id, None)
+                stop_event.set()
 
     async def shutdown(self) -> None:
         if self._eviction_task is not None:
@@ -336,6 +503,10 @@ class DockerConversationRegistry(ConversationRegistry):
         await asyncio.gather(*(self.stop(cid) for cid in ids), return_exceptions=True)
         # Last, so it also covers the stops above; the next start sweeps them.
         await self.reclaimer.shutdown()
+
+    # ------------------------------------------------------------------
+    # Idle container suspension and eviction
+    # ------------------------------------------------------------------
 
     async def _evict_idle_runtimes_loop(self) -> None:
         ttl = self.config.conversation_idle_ttl_seconds
@@ -350,6 +521,7 @@ class DockerConversationRegistry(ConversationRegistry):
                 logger.exception("error_evicting_idle_docker_runtimes")
 
     async def _evict_idle_runtimes(self, ttl_seconds: float) -> None:
+        """Stop containers whose persisted conversation is terminal and idle."""
         service = self._service
         if service is None:
             return
@@ -359,45 +531,51 @@ class DockerConversationRegistry(ConversationRegistry):
                 (conversation_id, container)
                 for conversation_id, container in self._containers.items()
                 if self._last_access.get(conversation_id, float("inf")) <= cutoff
+                and conversation_id not in self._deleting
+                and conversation_id not in self._stopping
                 and not self.has_attached_sessions(conversation_id)
+                and not self.has_active_leases(conversation_id)
             ]
 
         for conversation_id, container in candidates:
-            info = await service.get_conversation(conversation_id)
-            if (
-                info is None
-                or info.execution_status == ConversationExecutionStatus.RUNNING
-            ):
-                continue
             async with self._lock:
-                if self._containers.get(conversation_id) is not container:
+                if (
+                    conversation_id in self._deleting
+                    or conversation_id in self._stopping
+                    or self._containers.get(conversation_id) is not container
+                    or self.has_active_leases(conversation_id)
+                    or self.has_attached_sessions(conversation_id)
+                    or self._last_access.get(conversation_id, float("inf")) > cutoff
+                ):
                     continue
-                if self._last_access.get(conversation_id, float("inf")) > cutoff:
-                    continue
-                if self.has_attached_sessions(conversation_id):
-                    continue
-                self._containers.pop(conversation_id)
-                self._last_access.pop(conversation_id, None)
+                token = self._lease_generations.get(conversation_id, 0)
+
+            info = await service.get_conversation(conversation_id)
+            if info is None or not info.execution_status.is_terminal():
+                continue
+
             try:
-                await asyncio.to_thread(container.stop)
+                stopped = await self.stop_if_idle(
+                    conversation_id,
+                    token,
+                    idle_before=cutoff,
+                    container=container,
+                )
             except Exception:
-                async with self._lock:
-                    if conversation_id not in self._containers:
-                        self._containers[conversation_id] = container
-                        self._last_access[conversation_id] = time.monotonic()
                 logger.warning(
                     "Failed to stop idle conversation runtime %s",
                     conversation_id,
                     exc_info=True,
                 )
-            else:
-                logger.info(
-                    "Stopped idle conversation runtime %s (idle >= %.0fs)",
-                    conversation_id,
-                    ttl_seconds,
-                )
-                await service.refresh_persisted_conversation(conversation_id)
-                await self.reclaimer.on_stop(conversation_id)
+                continue
+            if not stopped:
+                continue
+            logger.info(
+                "Stopped idle conversation runtime %s (idle >= %.0fs)",
+                conversation_id,
+                ttl_seconds,
+            )
+            await service.refresh_persisted_conversation(conversation_id)
 
     def _build_container(self, conversation_id: UUID) -> ConversationContainer:
         identity = self.provisioning.load(conversation_id)

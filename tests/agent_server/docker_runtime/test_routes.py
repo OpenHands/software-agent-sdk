@@ -522,6 +522,43 @@ def test_a_rejected_start_stops_only_a_container_it_created(
 
     assert response.status_code == 500
     assert stopped == ([] if existing else [conversation_id])
+    assert not registry.has_active_leases(conversation_id)
+
+
+def test_a_successful_start_returns_the_inner_status_and_releases_its_lease(
+    tmp_path, monkeypatch
+):
+    app, registry = _docker_start_app(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+
+    async def get_or_create(_conversation_id):
+        return SimpleNamespace(host="http://inner", api_key="inner-key")
+
+    async def post(self, url, **kwargs):
+        return httpx.Response(
+            201,
+            json={"id": str(conversation_id)},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(registry, "get_or_create", get_or_create)
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "conversation_id": str(conversation_id),
+                "agent": {"kind": "Agent", "llm": {"model": "test"}},
+            },
+        )
+
+    assert response.status_code == 201
+    assert response.json()["id"] == str(conversation_id)
+    assert not registry.has_active_leases(conversation_id)
+    app.state.conversation_service.refresh_persisted_conversation.assert_awaited_once_with(
+        conversation_id
+    )
 
 
 def test_a_symlinked_conversation_dir_is_rejected(tmp_path, monkeypatch):
