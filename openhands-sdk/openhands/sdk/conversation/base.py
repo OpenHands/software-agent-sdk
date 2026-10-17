@@ -2,7 +2,7 @@ import contextlib
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
@@ -45,6 +45,7 @@ def _conversation_tag_attributes(
 
 if TYPE_CHECKING:
     from openhands.sdk.agent.base import AgentBase
+    from openhands.sdk.conversation.secret_registry import SecretRegistry
     from openhands.sdk.conversation.state import ConversationExecutionStatus
     from openhands.sdk.hooks import HookConfig
 
@@ -122,6 +123,11 @@ class ConversationStateProtocol(Protocol):
         """The hook configuration for this conversation."""
         ...
 
+    @property
+    def secret_registry(self) -> "SecretRegistry":
+        """The secret registry for this conversation."""
+        ...
+
 
 class BaseConversation(ABC):
     """Abstract base class for conversation implementations.
@@ -131,9 +137,16 @@ class BaseConversation(ABC):
     exchange, execution control, and state management.
     """
 
+    _cleanup_initiated: bool = False
+    _cleanup_complete: bool = False
+    _hook_processor: Any = None
+
     def __init__(self) -> None:
         """Initialize the base conversation with span tracking."""
         self._span_ended = False
+        self._cleanup_initiated = False
+        self._cleanup_complete = False
+        self._hook_processor = None
         # Owned root span. The ``observe`` decorator looks up this attribute
         # (by name ``_observability_root_span``) on ``self`` at every entry
         # point and re-attaches it via ``Laminar.use_span`` so that nested
@@ -141,6 +154,21 @@ class BaseConversation(ABC):
         # is called from a different asyncio task or thread than the one
         # that constructed the conversation.
         self._observability_root_span: RootSpan | None = None
+
+    @property
+    def cleanup_initiated(self) -> bool:
+        """Whether conversation cleanup has started."""
+        return self._cleanup_initiated
+
+    @property
+    def cleanup_complete(self) -> bool:
+        """Whether conversation cleanup has finished."""
+        return self._cleanup_complete
+
+    @property
+    def hook_processor(self) -> Any:
+        """The active hook processor for the conversation, if configured."""
+        return self._hook_processor
 
     def _start_observability_span(
         self,
