@@ -60,6 +60,32 @@ def test_llm_provider_keeps_requested_api_base_verbatim():
     assert provider.api_base == "https://myproxy.example.com"
 
 
+def test_llm_provider_preserves_namespaced_model_after_litellm_reparse():
+    # "openai/openai/example-model" parses to model="openai/example-model"
+    # + provider="openai". Re-prefix so LiteLLM's Responses API peel lands
+    # on the parsed model instead of sending "example-model" upstream.
+    provider = LLMProvider.from_model(
+        model="openai/openai/example-model",
+        api_base="https://myproxy.example.com/v1",
+    )
+
+    assert provider.name == "openai"
+    assert provider.model == "openai/example-model"
+
+    kwargs = provider.as_litellm_call_kwargs()
+    assert kwargs["model"] == "openai/openai/example-model"
+    assert kwargs["custom_llm_provider"] == "openai"
+
+    resolved = litellm.get_llm_provider(
+        model=kwargs["model"],
+        custom_llm_provider=kwargs["custom_llm_provider"],
+        api_base=provider.api_base,
+        api_key=None,
+    )
+    assert resolved[0] == "openai/example-model"
+    assert resolved[1] == "openai"
+
+
 @pytest.mark.parametrize(
     ("model", "api_base"),
     [
