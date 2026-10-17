@@ -427,6 +427,9 @@ class RecordingSession:
             User-facing operation: returns error strings, logs at WARNING for
             unexpected errors (see Error Handling Policy in module docstring).
         """
+        if self._is_recording:
+            return "Already recording"
+
         if not self._scripts_injected:
             await self.inject_scripts(browser_session)
 
