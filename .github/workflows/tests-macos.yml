@@ -4,8 +4,9 @@ run-name: Run tests (macOS) ${{ github.event.label.name || github.ref_name }}
 
 # Opt-in mirror of the full suite in tests.yml on a macOS runner. Unlike
 # tests.yml there is no changed-files gating: every suite always runs.
-# Trigger by adding the `test-macos` label to a PR (re-runs on each push while
-# the label is present) or via workflow_dispatch.
+# Trigger by adding the `macos-test-run` label to a PR (re-runs on each push
+# while the label is present), or manually from the Actions tab (`Run
+# workflow`), which defaults to `main`; pick another branch to run it there.
 on:
     pull_request:
         types: [labeled, synchronize, reopened]
@@ -23,7 +24,9 @@ jobs:
         name: macOS ${{ matrix.suite }} tests
         if: >
             github.event_name == 'workflow_dispatch' ||
-            contains(github.event.pull_request.labels.*.name, 'test-macos')
+            (contains(github.event.pull_request.labels.*.name, 'macos-test-run') &&
+            (github.event.action != 'labeled' ||
+            github.event.label.name == 'macos-test-run'))
         runs-on: macos-latest
         timeout-minutes: 45
         strategy:
