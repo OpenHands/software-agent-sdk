@@ -86,7 +86,9 @@ from openhands.agent_server.provider_connections_router import (
 from openhands.agent_server.server_details_router import (
     get_server_info,
     mark_initialization_complete,
+    refresh_websocket_keepalive,
     server_details_router,
+    websocket_keepalive_interval_seconds,
 )
 from openhands.agent_server.settings_router import settings_router
 from openhands.agent_server.skills_router import skills_router
@@ -268,6 +270,23 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         _ensure_server_tmux_tmpdir()
     )
     secret_resolution: local_secret_resolution | None = None
+    ws_keepalive_task: asyncio.Task | None = None
+
+    async def run_ws_keepalive_loop() -> None:
+        """Keep the runtime idle timer fresh while a WebSocket client is present.
+
+        The per-socket refresh only fires on connect and on inbound frames; a
+        client that merely watches a running conversation sends nothing, so
+        this loop is what actually holds the pod open for it. It stops
+        refreshing once no socket has shown liveness within the interval.
+        """
+        try:
+            while True:
+                await asyncio.sleep(websocket_keepalive_interval_seconds())
+                refresh_websocket_keepalive()
+        except asyncio.CancelledError:
+            raise
+
     try:
         # Clean up stale tmux sessions from previous server runs
         _cleanup_stale_tmux_sessions()
@@ -356,6 +375,8 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                 return_exceptions=True,
             )
 
+        ws_keepalive_task = asyncio.create_task(run_ws_keepalive_loop())
+
         # In deferred-init mode the conversation service is *not* entered
         # here — that happens later, when POST /api/init delivers the runtime
         # config. We still mark the /ready endpoint as ready so a warm-pool
@@ -423,6 +444,10 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     finally:
         # Outer finally so a startup failure cannot leak the drain task, and
         # after `async with service` so terminal events are still accepted.
+        if ws_keepalive_task is not None:
+            ws_keepalive_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await ws_keepalive_task
         if secret_resolution is not None:
             secret_resolution.__exit__(None, None, None)
         unseal_tool_catalog()

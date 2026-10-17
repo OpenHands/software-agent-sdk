@@ -22,6 +22,10 @@ from openhands.agent_server.conversation_service import (
     CredentialBindingActivationRequired,
 )
 from openhands.agent_server.pub_sub import MaxSubscribersError, Subscriber
+from openhands.agent_server.server_details_router import (
+    signal_websocket_activity,
+    unregister_websocket_connection,
+)
 from openhands.agent_server.session_protocol import (
     MAX_FRAME_BYTES,
     MAX_PENDING_BYTES,
@@ -333,98 +337,109 @@ async def session_socket(
         return
 
     logger.info("session_socket_connected: %s after_seq=%s", conversation_id, after_seq)
-    conv_service = _get_conversation_service(websocket)
     try:
-        event_service = await conv_service.get_event_service(conversation_id)
-    except CredentialBindingActivationRequired:
-        await _safe_close_websocket(
-            websocket, code=1013, reason="credential_binding_activation_required"
-        )
-        return
-    if event_service is None:
-        logger.warning("session_socket_conversation_not_found: %s", conversation_id)
-        await _safe_close_websocket(
-            websocket, code=4004, reason="Conversation not found"
-        )
-        return
-
-    try:
-        events = event_service.get_conversation().state.events
-    except ValueError:
-        # Closed between the lookup above and here.
-        logger.warning("session_socket_conversation_inactive: %s", conversation_id)
-        await _safe_close_websocket(
-            websocket, code=4004, reason="Conversation not found"
-        )
-        return
-
-    writer = _ConnectionWriter(websocket)
-    writer.start()
-    subscriber = _SessionSubscriber(writer=writer, events=events)
-
-    # Subscribe FIRST (buffering), then read the mark: no lock needed, since
-    # anything appended before subscribe is on disk before the mark is read,
-    # and anything after lands in the buffer and is deduped by seq.
-    try:
-        subscriber_id = await event_service.subscribe_to_events(subscriber)
-    except MaxSubscribersError:
-        logger.warning("session_socket_subscriber_limit: %s", conversation_id)
-        await writer.aclose()
-        await _safe_close_websocket(
-            websocket, code=1013, reason="Too many connections for this conversation"
-        )
-        return
-    except Exception:
-        # subscribe_to_events registers before it can fail, and this lands
-        # before the try/finally below, so clean up the writer and socket here.
-        # The registration itself can't be reclaimed (the id is only returned
-        # on success); it is inert but holds a slot. Belongs in
-        # subscribe_to_events, which has the same hole for the legacy endpoint.
-        logger.exception("session_socket_subscribe_failed: %s", conversation_id)
-        await writer.aclose()
-        await _safe_close_websocket(websocket, code=1011, reason="subscribe_failed")
-        return
-
-    progress_id: UUID | None = None
-    try:
+        conv_service = _get_conversation_service(websocket)
         try:
-            progress_id = await event_service.subscribe_to_stream_progress(
-                _ProgressSubscriber(writer)
+            event_service = await conv_service.get_event_service(conversation_id)
+        except CredentialBindingActivationRequired:
+            await _safe_close_websocket(
+                websocket, code=1013, reason="credential_binding_activation_required"
             )
-        except MaxSubscribersError:
-            # Durable delivery is what the client cannot recover on its own;
-            # losing progress only costs it the live typing effect.
-            logger.warning("session_socket_progress_limit: %s", conversation_id)
-
-        length = len(events)
-        through_seq = length - 1 if length else None
-
-        if not writer.send(SyncFrame(from_seq=after_seq, through_seq=through_seq)):
+            return
+        if event_service is None:
+            logger.warning("session_socket_conversation_not_found: %s", conversation_id)
+            await _safe_close_websocket(
+                websocket, code=4004, reason="Conversation not found"
+            )
             return
 
-        replayed = False
-        if after_seq is not None and through_seq is not None:
-            start = max(after_seq + 1, 0)
-            if not await _replay(events, start, through_seq + 1, writer):
+        try:
+            events = event_service.get_conversation().state.events
+        except ValueError:
+            # Closed between the lookup above and here.
+            logger.warning("session_socket_conversation_inactive: %s", conversation_id)
+            await _safe_close_websocket(
+                websocket, code=4004, reason="Conversation not found"
+            )
+            return
+
+        writer = _ConnectionWriter(websocket)
+        writer.start()
+        subscriber = _SessionSubscriber(writer=writer, events=events)
+
+        # Subscribe FIRST (buffering), then read the mark: no lock needed, since
+        # anything appended before subscribe is on disk before the mark is read,
+        # and anything after lands in the buffer and is deduped by seq.
+        try:
+            subscriber_id = await event_service.subscribe_to_events(subscriber)
+        except MaxSubscribersError:
+            logger.warning("session_socket_subscriber_limit: %s", conversation_id)
+            await writer.aclose()
+            await _safe_close_websocket(
+                websocket,
+                code=1013,
+                reason="Too many connections for this conversation",
+            )
+            return
+        except Exception:
+            # subscribe_to_events registers before it can fail, and this lands
+            # before the try/finally below, so clean up the writer and socket here.
+            # The registration itself can't be reclaimed (the id is only returned
+            # on success); it is inert but holds a slot. Belongs in
+            # subscribe_to_events, which has the same hole for the legacy endpoint.
+            logger.exception("session_socket_subscribe_failed: %s", conversation_id)
+            await writer.aclose()
+            await _safe_close_websocket(websocket, code=1011, reason="subscribe_failed")
+            return
+
+        progress_id: UUID | None = None
+        try:
+            try:
+                progress_id = await event_service.subscribe_to_stream_progress(
+                    _ProgressSubscriber(writer)
+                )
+            except MaxSubscribersError:
+                # Durable delivery is what the client cannot recover on its own;
+                # losing progress only costs it the live typing effect.
+                logger.warning("session_socket_progress_limit: %s", conversation_id)
+
+            length = len(events)
+            through_seq = length - 1 if length else None
+
+            if not writer.send(SyncFrame(from_seq=after_seq, through_seq=through_seq)):
                 return
-            replayed = True
 
-        # Dedupe against the mark only if replay actually sent that range: a
-        # live-only client got nothing from disk, and has no cursor to recover
-        # whatever the mark would discard.
-        subscriber.go_live(through_seq if replayed else None)
+            replayed = False
+            if after_seq is not None and through_seq is not None:
+                start = max(after_seq + 1, 0)
+                if not await _replay(events, start, through_seq + 1, writer):
+                    return
+                replayed = True
 
-        await _inbound_loop(conversation_id, websocket, event_service, writer)
+            # Dedupe against the mark only if replay actually sent that range: a
+            # live-only client got nothing from disk, and has no cursor to recover
+            # whatever the mark would discard.
+            subscriber.go_live(through_seq if replayed else None)
+
+            await _inbound_loop(conversation_id, websocket, event_service, writer)
+        finally:
+            if progress_id is not None:
+                await event_service.unsubscribe_from_stream_progress(progress_id)
+            await event_service.unsubscribe_from_events(subscriber_id)
+            await writer.aclose()
+            if writer.drop_reason in ("slow_consumer", "frame_too_large"):
+                await _safe_close_websocket(
+                    websocket, code=1013, reason=writer.drop_reason
+                )
+            logger.info(
+                "session_socket_closed: %s reason=%s",
+                conversation_id,
+                writer.drop_reason,
+            )
     finally:
-        if progress_id is not None:
-            await event_service.unsubscribe_from_stream_progress(progress_id)
-        await event_service.unsubscribe_from_events(subscriber_id)
-        await writer.aclose()
-        if writer.drop_reason in ("slow_consumer", "frame_too_large"):
-            await _safe_close_websocket(websocket, code=1013, reason=writer.drop_reason)
-        logger.info(
-            "session_socket_closed: %s reason=%s", conversation_id, writer.drop_reason
-        )
+        # Release the socket's claim on the runtime idle timer on every exit
+        # path (normal close, rejection, unexpected error).
+        unregister_websocket_connection()
 
 
 async def _inbound_loop(
@@ -476,6 +491,10 @@ async def _inbound_loop(
 
             if _is_auth_control_message(data):
                 continue
+
+            # A client that reads and answers frames is present; the server's
+            # own pings are not, so this is the liveness signal.
+            signal_websocket_activity()
 
             try:
                 message = Message.model_validate(data)
