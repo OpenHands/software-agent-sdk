@@ -95,7 +95,7 @@ Routes: `POST /api/canvas-extensions/install`, `GET /api/canvas-extensions/insta
   routes the browser to a backend through the `/app-backends` bridge (another
   family).
 - Config: everything lives under `OH_PERSISTENCE_DIR`
-  (`canvas-extensions/installed`, `canvas-extensions/backends/{approvals,artifacts,data,downloads}`,
+  (`canvas-extensions/installed`, `canvas-extensions/backends/{approvals,artifacts,data,downloads,run}`,
   `cache/extensions`), which `launch` makes private to the run
   (`home/.openhands`). Backends run only on Linux amd64/arm64.
 
@@ -1005,7 +1005,7 @@ Preconditions:
   timed out behind it and the child kept running (baseline `3dcb27b2`
   reproduced it twice, #5689 passed twice). The exit trap kills the
   bullet's own child if a regression leaves it behind.
-- **Backend outlives a crash (`F28.hard-restart-orphan`), known bug.** Start a
+- **Backend outlives a crash (`F28.hard-restart-orphan`).** Start a
   backend, SIGKILL the server and restart it on the same state.
   ```sh
   OX=$(control-agent-server fixture canvas-app --name qa-orphan --backend ok --print-path)
@@ -1018,19 +1018,19 @@ Preconditions:
   control-agent-server restart --hard
   control-agent-server api GET /api/canvas-extensions/installed/qa-orphan/backend --check state eq stopped \
     --check pid eq null --save F28.hard-restart-orphan/status-after-crash
-  control-agent-server assert --value "$(pgrep -f "$BK/artifacts/qa-orphan/" || true)" --check . eq ''  # bug: value matches '^[0-9]+'
+  control-agent-server assert --value "$(pgrep -f "$BK/artifacts/qa-orphan/" || true)" --check . eq ''
   ```
   Expected: no backend process of the dead server remains once the server is
-  back (reaped at startup, or tied to the server's lifetime). Actual: the
-  backend runs in its own session (`start_new_session=True`), so it survives
-  the SIGKILL with parent pid 1; the new server reports `stopped`, a new
-  `start` launches a second process on the same data directory, and
-  `DELETE .../backend/data` succeeds under the live orphan.
-  `control-agent-server stop` reaps it (`orphans_reaped`). The leftover check
-  (the `# bug` line, which prints the survivor's pid) matches the run-private
-  artifact path rather than the pid, so a recycled pid cannot fake a
-  survivor; the `pgrep` before the crash shows the pattern finds the live
-  backend. This is the last bullet because its orphan stays up until `stop`.
+  back. The server records each backend it starts (process group, leader
+  start time and its own pid and start time) under `backends/run/`, and at
+  startup, before serving, stops the group of every record whose server is
+  gone and whose leader still matches (same start time, command line under
+  `artifacts/<name>/`), then drops the record. So the restarted server
+  reports `stopped` with no process left, a new `start` launches the only
+  process on the data directory, and `DELETE .../backend/data` runs with no
+  live backend. The leftover check matches the run-private artifact path
+  rather than the pid, so a recycled pid cannot fake a survivor; the `pgrep`
+  before the crash shows the pattern finds the live backend.
 
 ## Gotchas
 
@@ -1088,8 +1088,8 @@ Preconditions:
   even on uninstall; `DELETE .../backend/data` removes only `backends/data/<name>`.
   A non-root `rm -rf` of the run's state needs `chmod -R u+w` on
   `canvas-extensions/backends/artifacts` first.
-- Backends run in their own session, so a SIGKILLed server leaves them
-  running (`F28.hard-restart-orphan`); a graceful stop or `restart` stops them.
+- Backends run in their own session, so they outlive a SIGKILLed server
+  until it restarts on the same state (`F28.hard-restart-orphan`).
   `control-agent-server stop` reaps leftovers whose `HOME` is inside the run.
 - Every `GET .../backend` of a `ready` backend probes its health path with a
   1 s timeout. One slow answer reads `unhealthy` until a later probe answers

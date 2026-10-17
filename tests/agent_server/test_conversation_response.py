@@ -1,5 +1,6 @@
 """Tests for the GET /conversations/{id}/agent_final_response endpoint."""
 
+import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -7,12 +8,13 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_service import EventService
-from openhands.sdk import Message
+from openhands.sdk import LLM, Agent, Conversation, LocalConversation, Message
 from openhands.sdk.event import ActionEvent, MessageEvent
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.tool.builtins.finish import FinishAction
@@ -131,7 +133,7 @@ def test_event_service_get_agent_final_response_with_finish():
 
     conversation = MagicMock()
     state = MagicMock()
-    state.events = [action_event]
+    state.active_branch.return_value = [action_event]
     conversation._state = state
     event_service._conversation = conversation
 
@@ -153,7 +155,7 @@ def test_event_service_get_agent_final_response_with_message():
 
     conversation = MagicMock()
     state = MagicMock()
-    state.events = [message_event]
+    state.active_branch.return_value = [message_event]
     conversation._state = state
     event_service._conversation = conversation
 
@@ -167,7 +169,7 @@ def test_event_service_get_agent_final_response_empty():
 
     conversation = MagicMock()
     state = MagicMock()
-    state.events = []
+    state.active_branch.return_value = []
     conversation._state = state
     event_service._conversation = conversation
 
@@ -181,3 +183,39 @@ def test_event_service_get_agent_final_response_inactive():
 
     with pytest.raises(ValueError, match="inactive_service"):
         event_service._get_agent_final_response_sync()
+
+
+def test_event_service_get_agent_final_response_ignores_abandoned_branch():
+    """After navigating back before the answer, the abandoned answer is ignored."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conversation = Conversation(
+            agent=Agent(
+                llm=LLM(model="gpt-4o-mini", api_key=SecretStr("k"), usage_id="t"),
+                tools=[],
+            ),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            visualizer=None,
+        )
+        assert isinstance(conversation, LocalConversation)
+        user = MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="hi")]),
+        )
+        answer = MessageEvent(
+            source="agent",
+            llm_message=Message(role="assistant", content=[TextContent(text="OK")]),
+        )
+        with conversation._state:
+            conversation._on_event(user)
+            conversation._on_event(answer)
+
+        event_service = EventService(stored=MagicMock(), conversations_dir=Path(tmpdir))
+        event_service._conversation = conversation
+        assert event_service._get_agent_final_response_sync() == "OK"
+
+        conversation.navigate_to(user.id)
+        assert event_service._get_agent_final_response_sync() == ""
+
+        conversation.navigate_to(answer.id)
+        assert event_service._get_agent_final_response_sync() == "OK"

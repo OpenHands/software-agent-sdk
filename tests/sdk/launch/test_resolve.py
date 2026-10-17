@@ -44,7 +44,6 @@ def test_a_stored_profile_resolves_with_its_provenance():
     assert resolved.profile.agent_profile_id == profile.id
     assert resolved.profile.revision == 4
     assert resolved.profile.secret_refs == ["GITHUB_TOKEN"]
-    assert resolved.profile.inline is False
     assert resolved.allowed_secrets == frozenset({"GITHUB_TOKEN"})
 
 
@@ -53,14 +52,13 @@ def test_an_unknown_profile_id_is_not_found():
         resolve(uuid4(), fakes.stores())
 
 
-def test_an_inline_profile_is_recorded_as_inline_and_not_stored():
+def test_a_profile_object_resolves_without_being_stored():
     draft = _profile(name="draft")
     stores = fakes.stores()
 
     resolved = resolve(draft, stores)
 
     assert resolved.profile is not None
-    assert resolved.profile.inline is True
     assert resolved.profile.agent_profile_id == draft.id
     assert stores.agent_profiles is not None
     assert stores.agent_profiles.name_for_id(draft.id) is None
@@ -131,6 +129,43 @@ def test_an_openhands_profile_gets_the_catalog_minus_its_deny_list():
     assert [s.name for s in context.skills] == ["alpha"]
     assert context.disabled_skills == ["beta", "absent"]
     assert context.load_project_skills is True
+
+
+def _skill_names(resolved) -> list[str]:
+    return [s.name for s in _openhands(resolved).agent_context.skills]
+
+
+_TIERED_SKILLS = [
+    Skill(name="alpha", content="a"),
+    Skill(name="beta", content="b"),
+    Skill(name="mine", content="m"),
+]
+_PUBLIC_NAMES = ["alpha", "beta"]
+
+
+@pytest.mark.parametrize(
+    ("public_skills", "expected"),
+    [
+        (None, ["alpha", "beta", "mine"]),
+        ([], ["mine"]),
+        (["beta", "absent"], ["beta", "mine"]),
+    ],
+)
+def test_public_skills_select_from_the_public_tier_only(public_skills, expected):
+    resolved = resolve(
+        _profile(public_skills=public_skills),
+        fakes.stores(skills=_TIERED_SKILLS, public_skill_names=_PUBLIC_NAMES),
+    )
+
+    assert _skill_names(resolved) == expected
+
+
+def test_without_tier_names_every_catalog_skill_counts_as_public():
+    resolved = resolve(
+        _profile(public_skills=["alpha"]), fakes.stores(skills=_TIERED_SKILLS)
+    )
+
+    assert _skill_names(resolved) == ["alpha"]
 
 
 def test_an_acp_profile_gets_the_whole_catalog_whatever_the_runtime():

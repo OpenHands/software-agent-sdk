@@ -76,6 +76,25 @@ class MarketplaceNotFoundError(PluginResolutionError):
         super().__init__(f"Marketplace '{marketplace_name}' is not registered")
 
 
+def _load_marketplace(path: Path, name: str) -> Marketplace:
+    """Load the manifest, or read a source without one as a plain skills folder."""
+    try:
+        return Marketplace.load(path)
+    except FileNotFoundError as missing_manifest:
+        marketplace = Marketplace.from_skills_dir(path, name)
+        if not marketplace.skills:
+            raise FileNotFoundError(
+                f"{missing_manifest}, and no skill folders (<name>/SKILL.md) "
+                "were found there"
+            ) from missing_manifest
+        logger.info(
+            "Marketplace '%s' has no manifest; using %d skills from its folder",
+            name,
+            len(marketplace.skills),
+        )
+        return marketplace
+
+
 class MarketplaceRegistry:
     """Resolve plugin references against registered marketplaces."""
 
@@ -165,7 +184,7 @@ class MarketplaceRegistry:
             repo_path=registration.repo_path,
         )
         fetched = FetchedMarketplace(
-            marketplace=Marketplace.load(path),
+            marketplace=_load_marketplace(path, registration.name),
             path=path,
             resolved_ref=resolved_ref,
         )

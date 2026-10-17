@@ -501,7 +501,7 @@ async def get_secret_value(request: Request, name: str) -> Response:
     to be used with LookupSecret for lazy secret resolution.
 
     Raises:
-        HTTPException: 400 if name format is invalid, 404 if secret not found.
+        HTTPException: 422 if name format is invalid, 404 if secret not found.
     """
     _validate_secret_name(name)
 
@@ -580,7 +580,7 @@ async def delete_secret(request: Request, name: str) -> dict[str, bool]:
     """Delete a custom secret by name.
 
     Raises:
-        HTTPException: 400 if name format is invalid, 404 if secret not found,
+        HTTPException: 422 if name format is invalid, 404 if secret not found,
         500 if file is corrupted.
     """
     _validate_secret_name(name)

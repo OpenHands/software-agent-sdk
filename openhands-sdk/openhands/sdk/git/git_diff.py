@@ -108,8 +108,14 @@ def get_git_diff(relative_file_path: str | Path, ref: str | None = None) -> GitD
 
     # Get old content (from the ref)
     try:
-        original = run_git_command(
-            ["git", "show", f"{current_rev}:{relative_path_from_repo}"], validated_repo
+        # Read the blob verbatim and normalize it like the modified side below,
+        # so an unchanged file keeps its edge whitespace on both sides.
+        original = "\n".join(
+            run_git_command(
+                ["git", "show", f"{current_rev}:{relative_path_from_repo}"],
+                validated_repo,
+                strip=False,
+            ).splitlines()
         )
     except GitCommandError:
         logger.debug(f"No old content found for {path} at ref {current_rev}")
