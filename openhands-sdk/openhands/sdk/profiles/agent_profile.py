@@ -27,6 +27,7 @@ from pydantic import (
 
 from openhands.sdk.settings.model import (
     ACPServerKind,
+    AgentKind,
     CondenserSettingsConfig,
     CriticMode,
     LLMSummarizingCondenserSettings,
@@ -83,6 +84,24 @@ def build_profile_verification(
     )
 
 
+class AgentProfileInfo(BaseModel):
+    """Summary projection of a stored profile (no secret instantiation)."""
+
+    id: str | None = None
+    name: str
+    agent_kind: str = "openhands"
+    revision: int | None = None
+    llm_profile_ref: str | None = None
+    mcp_server_refs: list[str] | None = None
+
+
+class AgentProfileListResponse(BaseModel):
+    """Response body returned by ``GET /api/agent-profiles``."""
+
+    profiles: list[AgentProfileInfo]
+    active_agent_profile_id: str | None = None
+
+
 class AgentProfileBase(BaseModel):
     """Shared identity + provenance fields for every ``AgentProfile`` variant.
 
@@ -95,6 +114,10 @@ class AgentProfileBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: int = Field(default=AGENT_PROFILE_SCHEMA_VERSION, ge=1)
+    agent_kind: AgentKind = Field(
+        default="openhands",
+        description="Discriminator for the agent profile union.",
+    )
     id: UUID = Field(
         default_factory=uuid4,
         description=(
@@ -152,7 +175,7 @@ class OpenHandsAgentProfile(AgentProfileBase):
     :attr:`~AgentProfileBase.mcp_server_refs`.
     """
 
-    agent_kind: Literal["openhands"] = Field(
+    agent_kind: Literal["openhands"] = Field(  # type: ignore[reportIncompatibleVariableOverride]
         default="openhands",
         description=(
             "Discriminator for the ``AgentProfile`` union. ``'openhands'`` "
@@ -207,6 +230,15 @@ class OpenHandsAgentProfile(AgentProfileBase):
             "the catalog drifts. Replaces the former allow-list ``skill_refs`` "
             "(#4017): skills are discovered from many incomplete sources, so "
             "exclusion is the only selection model that can't dangle."
+        ),
+    )
+    public_skills: list[str] | None = Field(
+        default=None,
+        description=(
+            "Which public-catalog skills to load. null = all; [] = none; a list "
+            "= only the named skills, ignoring names the catalog lacks. User and "
+            "project skills are not affected, and `disabled_skills` still "
+            "applies to every skill."
         ),
     )
     condenser: CondenserSettingsConfig = Field(
@@ -272,7 +304,7 @@ class ACPAgentProfile(AgentProfileBase):
     value rides the conversation secrets channel, never the profile.
     """
 
-    agent_kind: Literal["acp"] = Field(
+    agent_kind: Literal["acp"] = Field(  # type: ignore[reportIncompatibleVariableOverride]
         default="acp",
         description=(
             "Discriminator for the ``AgentProfile`` union. ``'acp'`` selects an "
@@ -355,6 +387,13 @@ class LaunchedAgentProfile(BaseModel):
             "null preserves unrestricted behavior for older conversations."
         ),
     )
+    llm_profile_ref: str | None = Field(
+        default=None,
+        description=(
+            "Per-launch LLM profile override from `agent_launch_additions`. "
+            "null means the profile's own `llm_profile_ref` was used."
+        ),
+    )
 
     def allows_secret(self, name: str) -> bool:
         return self.secret_refs is None or name in self.secret_refs
@@ -367,8 +406,8 @@ def _agent_profile_discriminator(value: Any) -> str:
     OpenHands variant, mirroring
     :func:`~openhands.sdk.settings.model._agent_settings_discriminator`.
     """
-    if isinstance(value, BaseModel):
-        return getattr(value, "agent_kind", "openhands")
+    if isinstance(value, AgentProfileBase):
+        return value.agent_kind
     if isinstance(value, Mapping):
         return value.get("agent_kind", "openhands")
     return "openhands"

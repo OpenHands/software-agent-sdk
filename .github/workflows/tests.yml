@@ -167,11 +167,11 @@ jobs:
             # `engines.node`, and the npx path runs on whatever Node is on
             # PATH. Must clear the highest `min_node_version` in
             # ACP_INSTALL_CATALOG, otherwise those providers only skip.
-            - name: Use Node.js 22.19
+            - name: Use Node.js 24
               if: steps.changed.outputs.any_changed == 'true'
               uses: actions/setup-node@v7
               with:
-                  node-version: 22.19
+                  node-version: '24'
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'

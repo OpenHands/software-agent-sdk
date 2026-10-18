@@ -16,14 +16,65 @@ from openhands.sdk.profiles import (
     AGENT_PROFILE_SCHEMA_VERSION,
     ACPAgentProfile,
     AgentProfile,
+    AgentProfileInfo,
+    AgentProfileListResponse,
     OpenHandsAgentProfile,
     validate_agent_profile,
+)
+from openhands.sdk.profiles.agent_profile import (
+    AgentProfileBase,
+    _agent_profile_discriminator,
 )
 
 
 _ADAPTER: TypeAdapter[OpenHandsAgentProfile | ACPAgentProfile] = TypeAdapter(
     AgentProfile
 )
+
+
+def test_agent_profile_info_agent_kind_schema_stays_string_compatible() -> None:
+    schema = AgentProfileInfo.model_json_schema()
+
+    agent_kind_schema = schema["properties"]["agent_kind"]
+    assert agent_kind_schema["type"] == "string"
+    assert "enum" not in agent_kind_schema
+
+
+def test_agent_profile_info_accepts_acp_summary_with_null_llm_ref() -> None:
+    summary = AgentProfileInfo.model_validate(
+        {
+            "id": str(uuid4()),
+            "name": "codex",
+            "agent_kind": "acp",
+            "revision": 7,
+            "llm_profile_ref": None,
+            "mcp_server_refs": ["github"],
+        }
+    )
+
+    assert summary.name == "codex"
+    assert summary.agent_kind == "acp"
+    assert summary.llm_profile_ref is None
+    assert summary.mcp_server_refs == ["github"]
+
+
+def test_agent_profile_list_response_validates_profile_summaries() -> None:
+    response = AgentProfileListResponse.model_validate(
+        {
+            "profiles": [
+                {
+                    "id": str(uuid4()),
+                    "name": "default",
+                    "agent_kind": "openhands",
+                    "llm_profile_ref": "default",
+                }
+            ],
+            "active_agent_profile_id": None,
+        }
+    )
+
+    assert response.profiles[0].name == "default"
+    assert response.profiles[0].llm_profile_ref == "default"
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +225,26 @@ def test_acp_profile_minimal_defaults() -> None:
 # ---------------------------------------------------------------------------
 # Discriminator + validation
 # ---------------------------------------------------------------------------
+
+
+def test_agent_profile_discriminator_declared_on_base():
+    """AgentProfileBase declares agent_kind.
+
+    The discriminator accesses it directly without getattr.
+    """
+    base = AgentProfileBase(name="test-profile")
+    assert base.agent_kind == "openhands"
+    assert _agent_profile_discriminator(base) == "openhands"
+
+    openhands_profile = OpenHandsAgentProfile(
+        name="test-openhands", llm_profile_ref="default"
+    )
+    assert openhands_profile.agent_kind == "openhands"
+    assert _agent_profile_discriminator(openhands_profile) == "openhands"
+
+    acp_profile = ACPAgentProfile(name="test-acp")
+    assert acp_profile.agent_kind == "acp"
+    assert _agent_profile_discriminator(acp_profile) == "acp"
 
 
 def test_validate_dispatches_on_agent_kind() -> None:

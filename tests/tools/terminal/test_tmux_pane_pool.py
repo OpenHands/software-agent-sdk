@@ -1,8 +1,10 @@
 """Tests for TmuxPanePool."""
 
+import os
 import tempfile
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -256,6 +258,28 @@ def test_checkin_foreign_pane_is_ignored(pool):
 
     fake = TmuxTerminal.__new__(TmuxTerminal)
     pool.checkin(fake)  # should log warning, not crash
+
+
+@pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix sockets")
+@pytest.mark.parametrize("terminal_type", [TmuxTerminal, TmuxPanePool])
+def test_overlong_tmux_tmpdir_uses_short_socket_path(
+    tmp_path, monkeypatch, terminal_type
+):
+    socket_dir = tmp_path / ("deep-" + "x" * 80)
+    socket_dir.mkdir()
+    monkeypatch.setenv("TMUX_TMPDIR", str(socket_dir))
+    terminal = terminal_type(str(tmp_path))
+    try:
+        terminal.initialize()
+        server = (
+            terminal._server if isinstance(terminal, TmuxPanePool) else terminal.server
+        )
+        assert server is not None
+        assert server.socket_path is not None
+        assert Path(server.socket_path).is_relative_to("/tmp")
+        assert os.environ["TMUX_TMPDIR"] == str(socket_dir)
+    finally:
+        terminal.close()
 
 
 @pytest.mark.parametrize("pooled", [True, False])

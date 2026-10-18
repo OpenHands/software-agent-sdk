@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from openhands.sdk.extensions.fetch import fetch_with_resolution
+from openhands.sdk.extensions.fetch import (
+    SourceType,
+    fetch_with_resolution,
+    parse_extension_source,
+)
 from openhands.sdk.extensions.installation.info import InstallationInfo
 from openhands.sdk.extensions.installation.interface import (
     ExtensionProtocol,
@@ -15,6 +20,7 @@ from openhands.sdk.extensions.installation.metadata import (
     MetadataSession,
 )
 from openhands.sdk.extensions.installation.utils import validate_extension_name
+from openhands.sdk.git.utils import extract_repo_name
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.redact import redact_url_credentials
@@ -82,6 +88,23 @@ class InstallationManager[T: ExtensionProtocol]:
             FileExistsError: If extension is already installed and force=False.
             ValueError: If the extension name is invalid.
         """
+        return self._install(source, ref=ref, repo_path=repo_path, force=force)
+
+    def _install(
+        self,
+        source: str | Path,
+        ref: str | None = None,
+        repo_path: str | None = None,
+        force: bool = False,
+        root_name: str | None = None,
+    ) -> InstallationInfo:
+        """Install as ``install`` does; ``root_name`` names a repository root.
+
+        ``root_name`` replaces the repository's name as the directory name a
+        remote source without ``repo_path`` is loaded from (see
+        ``_load_fetched``).  ``update`` passes the installed name, so an
+        extension installed under another name keeps it.
+        """
         if isinstance(source, Path):
             source = str(source)
 
@@ -94,7 +117,7 @@ class InstallationManager[T: ExtensionProtocol]:
             update=True,
         )
 
-        extension = self.installation_interface.load_from_dir(fetched_path)
+        extension = self._load_fetched(fetched_path, source, repo_path, root_name)
         validate_extension_name(extension.name)
 
         install_path = self.installation_dir / extension.name
@@ -131,6 +154,34 @@ class InstallationManager[T: ExtensionProtocol]:
             f"Successfully installed extension '{extension.name}' v{info.version}"
         )
         return info
+
+    def _load_fetched(
+        self,
+        fetched_path: Path,
+        source: str,
+        repo_path: str | None,
+        root_name: str | None = None,
+    ) -> T:
+        """Load the fetched extension, named after its repository if it is one.
+
+        A remote source without ``repo_path`` is fetched to the root of its
+        clone cache, ``<repo>-<hash>``.  A loader that infers the name from the
+        directory (a plugin without a manifest) must see ``<repo>`` instead, as
+        it would for a local directory, so load from a copy with that name.
+        """
+        source_type, url = parse_extension_source(source)
+        if repo_path or source_type == SourceType.LOCAL:
+            return self.installation_interface.load_from_dir(fetched_path)
+
+        with tempfile.TemporaryDirectory() as staging:
+            load_path = Path(staging) / (root_name or extract_repo_name(url))
+            shutil.copytree(
+                fetched_path,
+                load_path,
+                symlinks=True,
+                ignore=shutil.ignore_patterns(".git"),
+            )
+            return self.installation_interface.load_from_dir(load_path)
 
     def uninstall(self, name: str) -> bool:
         """Uninstall an extension by name.
@@ -297,7 +348,8 @@ class InstallationManager[T: ExtensionProtocol]:
         Re-fetches the extension from its original source with ``ref=None``
         (i.e. the latest available) and force-reinstalls it.  The previous
         ``enabled`` state is preserved because ``install(force=True)``
-        carries it over.
+        carries it over.  A repository root without a manifest keeps its
+        installed name.
 
         Args:
             name: Name of the extension to update.
@@ -319,9 +371,10 @@ class InstallationManager[T: ExtensionProtocol]:
 
         redacted = redact_url_credentials(current_info.source)
         logger.info(f"Updating extension {name} from {redacted}")
-        return self.install(
+        return self._install(
             source=current_info.source,
             ref=None,
             repo_path=current_info.repo_path,
             force=True,
+            root_name=name,
         )

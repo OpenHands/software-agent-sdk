@@ -36,10 +36,10 @@ jobs:
             - name: Checkout code
               uses: actions/checkout@v7.0.1
 
-            - name: Use Node.js 22.x
+            - name: Use Node.js 24
               uses: actions/setup-node@v7
               with:
-                  node-version: 22.x
+                  node-version: '24'
                   cache: npm
                   cache-dependency-path: clients/typescript/package-lock.json
 
@@ -200,10 +200,10 @@ jobs:
             - name: Checkout code
               uses: actions/checkout@v7.0.1
 
-            - name: Use Node.js 22.x
+            - name: Use Node.js 24
               uses: actions/setup-node@v7
               with:
-                  node-version: 22.x
+                  node-version: '24'
                   cache: npm
                   cache-dependency-path: clients/typescript/package-lock.json
 
