@@ -21,6 +21,7 @@ from openhands.agent_server.conversation_lease import (
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationService,
+    UnavailableAgentTool,
     _compose_conversation_info,
     _ConversationRecord,
     _get_worktree_start_point,
@@ -251,6 +252,34 @@ async def test_rejected_acp_budget_does_not_orphan_state_for_retry(tmp_path):
         assert isinstance(info.agent, Agent)
 
 
+@pytest.mark.asyncio
+async def test_agent_tool_from_unimportable_module_rejects_create(tmp_path):
+    """The create fails with a client error instead of every message failing."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    qualnames = {"qa_ghost_tool": "qa_ghost_tool_missing_module"}
+
+    def request(tools: list[Tool]) -> StartConversationRequest:
+        return StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=tools),
+            workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+            confirmation_policy=NeverConfirm(),
+            tool_module_qualnames=qualnames,
+        )
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        with pytest.raises(UnavailableAgentTool) as exc_info:
+            await service.start_conversation(request([Tool(name="qa_ghost_tool")]))
+        assert "'qa_ghost_tool'" in str(exc_info.value)
+        assert "qa_ghost_tool_missing_module" in str(exc_info.value)
+        assert not conversations_dir.exists() or not any(conversations_dir.iterdir())
+
+        # An unimportable module whose tool the agent does not use stays a warning.
+        info, is_new = await service.start_conversation(request([]))
+        assert is_new and info.id is not None
+
+
 def _create_running_terminal_action(tool_call_id: str = "call_1") -> ActionEvent:
     tool_call = MessageToolCall.from_chat_tool_call(
         ChatCompletionMessageToolCall(
@@ -272,6 +301,17 @@ def _create_running_terminal_action(tool_call_id: str = "call_1") -> ActionEvent
         security_risk=SecurityRisk.LOW,
         summary="run sleep",
     )
+
+
+def _adopt_saved_meta(mock_service: AsyncMock) -> None:
+    """Make a mocked ``EventService.save_meta(stored)`` adopt ``stored`` the way
+    the real one does once the write succeeds."""
+
+    async def _save_meta(stored: StoredConversation | None = None) -> None:
+        if stored is not None:
+            mock_service.stored = stored
+
+    mock_service.save_meta.side_effect = _save_meta
 
 
 def _expire_conversation_lease(conversations_dir: Path, conversation_id) -> None:
@@ -572,6 +612,55 @@ async def test_stale_owner_cannot_append_after_lease_takeover(tmp_path):
 
             with pytest.raises(ConversationOwnershipLostError):
                 primary_state.execution_status = ConversationExecutionStatus.ERROR
+
+
+@pytest.mark.asyncio
+async def test_stale_owner_refused_update_leaves_no_trace(tmp_path):
+    """A metadata update refused for lost ownership changes nothing visible."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+        tags={"env": "old"},
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+        conversation_id = conversation_info.id
+        await primary.update_conversation(
+            conversation_id, UpdateConversationRequest(title="Original")
+        )
+        _expire_conversation_lease(conversations_dir, conversation_id)
+        meta_file = conversations_dir / conversation_id.hex / "meta.json"
+
+        async with ConversationService(
+            conversations_dir=conversations_dir,
+        ) as secondary:
+            await secondary.update_conversation(
+                conversation_id, UpdateConversationRequest(title="New owner")
+            )
+            meta_before = meta_file.read_text()
+
+            with pytest.raises(ConversationOwnershipLostError):
+                await primary.update_conversation(
+                    conversation_id,
+                    UpdateConversationRequest(
+                        title="Stale owner", tags={"env": "stale"}
+                    ),
+                )
+
+            assert meta_file.read_text() == meta_before
+            info = await primary.get_conversation(conversation_id)
+            assert info is not None
+            assert info.title == "Original"
+            assert info.tags == {"env": "old"}
+            assert primary._event_services is not None
+            state = await primary._event_services[conversation_id].get_state()
+            assert state.tags == {"env": "old"}
 
 
 @pytest.mark.asyncio
@@ -2597,6 +2686,7 @@ class TestConversationServiceUpdateConversation:
         # Create mock event service
         mock_service = AsyncMock(spec=EventService)
         mock_service.stored = sample_stored_conversation
+        _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
             agent=_sample_agent(),
@@ -2628,6 +2718,7 @@ class TestConversationServiceUpdateConversation:
         """Test that update_conversation strips leading/trailing whitespace."""
         mock_service = AsyncMock(spec=EventService)
         mock_service.stored = sample_stored_conversation
+        _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
             agent=_sample_agent(),
@@ -2659,6 +2750,7 @@ class TestConversationServiceUpdateConversation:
         """Test that tag updates hold the ConversationState lock."""
         mock_service = AsyncMock(spec=EventService)
         mock_service.stored = sample_stored_conversation
+        _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
             agent=_sample_agent(),
@@ -2693,6 +2785,7 @@ class TestConversationServiceUpdateConversation:
         """Waiting on the state lock must not stall unrelated async work."""
         mock_service = AsyncMock(spec=EventService)
         mock_service.stored = sample_stored_conversation
+        _adopt_saved_meta(mock_service)
         state = ConversationState(
             id=sample_stored_conversation.id,
             agent=_sample_agent(),
@@ -2780,6 +2873,7 @@ class TestConversationServiceUpdateConversation:
         # Create mock event service
         mock_service = AsyncMock(spec=EventService)
         mock_service.stored = sample_stored_conversation
+        _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
             agent=_sample_agent(),
@@ -2827,6 +2921,7 @@ class TestConversationServiceUpdateConversation:
         )
         mock_service = AsyncMock(spec=EventService)
         mock_service.stored = stored_conversation
+        _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
             id=stored_conversation.id,
             agent=acp_agent,
@@ -2859,6 +2954,7 @@ class TestConversationServiceUpdateConversation:
         """Test that title changes are persisted to disk."""
         mock_service = AsyncMock(spec=EventService)
         mock_service.stored = sample_stored_conversation
+        _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
             agent=_sample_agent(),
@@ -2891,6 +2987,7 @@ class TestConversationServiceUpdateConversation:
         """Test updating the same conversation multiple times."""
         mock_service = AsyncMock(spec=EventService)
         mock_service.stored = sample_stored_conversation
+        _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
             agent=_sample_agent(),
@@ -2942,6 +3039,7 @@ class TestConversationServiceUpdateConversation:
         """
         mock_service = AsyncMock(spec=EventService)
         mock_service.stored = sample_stored_conversation
+        _adopt_saved_meta(mock_service)
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
             agent=_sample_agent(),
@@ -3390,6 +3488,7 @@ class TestAutoTitle:
         )
         service = AsyncMock(spec=EventService)
         service.stored = stored
+        _adopt_saved_meta(service)
 
         mock_conversation = MagicMock()
         mock_conversation.agent.llm = agent.llm
@@ -3433,6 +3532,22 @@ class TestAutoTitle:
 
         assert service.stored.title == "✨ Generated Title"
         service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_refused_save_leaves_title_unset(self):
+        """A title whose save is refused (lost ownership) never becomes visible."""
+        service = self._make_service()
+        service.save_meta.side_effect = ConversationOwnershipLostError(
+            conversation_dir=Path("conv"), owner_instance_id="stale", generation=1
+        )
+
+        with patch(self._GENERATE_TITLE_PATH, return_value="Refused Title"):
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.save_meta.called)
+
+        service.save_meta.assert_called_once()
+        assert service.stored.title is None
 
     @pytest.mark.asyncio
     async def test_autotitle_skips_non_user_events(self):

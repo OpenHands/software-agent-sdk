@@ -28,10 +28,12 @@ from openhands.sdk.llm.exceptions import (
     LLMRateLimitError,
     LLMServiceUnavailableError,
     LLMTimeoutError,
+    is_quota_exhaustion_error,
 )
 from openhands.sdk.llm.llm_profile_store import (
     PROFILE_NAME_PATTERN,
     ProfileLimitExceeded,
+    canonical_profile_name,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
@@ -70,7 +72,7 @@ class ProfileListResponse(BaseModel):
 
 
 class ProfileDetailResponse(BaseModel):
-    """``config.api_key`` is always nulled; use ``api_key_set`` instead."""
+    """Secrets are nulled unless explicitly requested via X-Expose-Secrets."""
 
     name: str
     config: dict[str, Any]
@@ -133,11 +135,17 @@ def _set_active_profile_if_matches(
     config = get_config(request)
     settings_store = get_settings_store(config)
     settings = settings_store.load() or PersistedSettings()
-    if settings.active_profile != old_name:
+    active = settings.active_profile
+    # ``foo.json`` addresses profile ``foo`` in the store, so compare store keys.
+    if active is None or canonical_profile_name(active) != canonical_profile_name(
+        old_name
+    ):
         return False
 
     def update_active(settings: PersistedSettings) -> PersistedSettings:
-        settings.active_profile = new_name
+        settings.active_profile = (
+            canonical_profile_name(new_name) if new_name is not None else None
+        )
         return settings
 
     settings_store.update(update_active)
@@ -172,7 +180,8 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
 
     Use the ``X-Expose-Secrets`` header to control secret exposure:
     - ``encrypted``: Returns cipher-encrypted values (safe for frontend clients)
-    - ``plaintext``: Returns raw secret values (backend clients only!)
+    - ``plaintext``: Resolves linked providers and returns raw secret values
+      for backend clients constructing a runnable LLM configuration
     - (absent): Returns nulled ``api_key`` with ``api_key_set`` indicator
     """
     expose_mode = parse_expose_secrets_header(request)
@@ -181,10 +190,11 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
     store = get_llm_profile_store()
     try:
         with store_errors():
-            # Display the profile exactly as stored: don't inject the linked
-            # provider's credentials, and don't fail a read when the reference
-            # dangles. Effective key presence is reported via ``api_key_set``.
-            llm = store.load(name, cipher=cipher, resolve_provider=False)
+            # Runtime reads need current provider credentials. Editor reads
+            # retain the stored reference, including dangling references.
+            llm = store.load(
+                name, cipher=cipher, resolve_provider=expose_mode == "plaintext"
+            )
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -276,6 +286,35 @@ class ValidateProfileResponse(BaseModel):
 # the correctness of the configuration itself.
 _TRANSIENT_ERROR_TYPES = (LLMRateLimitError, LLMTimeoutError)
 
+# Upper bound, in seconds, on the single pre-flight attempt. A profile's own
+# ``timeout`` (300 s by default) and retry policy are for real conversations;
+# validation answers within this bound instead.
+PREFLIGHT_TIMEOUT_SECONDS = 15
+
+
+def _preflight_llm(llm: LLM) -> LLM:
+    """Copy ``llm`` for one bounded attempt at the configured model.
+
+    No retries, a short timeout, and no fallback LLMs (each would bring its
+    own retry policy, and a working fallback would hide a broken primary).
+    """
+    timeout = PREFLIGHT_TIMEOUT_SECONDS
+    if llm.timeout is not None:
+        timeout = min(llm.timeout, timeout)
+    return llm.model_copy(
+        update={"num_retries": 0, "timeout": timeout, "fallback_strategy": None}
+    )
+
+
+def _invalid(name: str, exc: LLMError) -> ValidateProfileResponse:
+    error_type = type(exc).__name__
+    safe_msg = redact_text_secrets(exc.message)
+    logger.info(f"Profile '{name}' pre-flight failed: {error_type}: {safe_msg}")
+    return ValidateProfileResponse(
+        valid=False,
+        error=ValidateProfileError(type=error_type, message=safe_msg),
+    )
+
 
 @profiles_router.post(
     "/{name}/validate",
@@ -292,9 +331,14 @@ async def validate_profile(
     surface errors like invalid model names, missing provider prefixes, bad
     base URLs, and invalid API keys — *before* the profile is saved.
 
+    The ping is a single attempt bounded by ``PREFLIGHT_TIMEOUT_SECONDS``
+    (or the config's shorter ``timeout``); the config's retry policy is not
+    used, so an unreachable endpoint answers at once.
+
     Transient errors (rate limits, timeouts) are treated as non-blocking: the
     response is ``valid=True`` with no error, since those don't indicate a
-    misconfigured profile.
+    misconfigured profile. A 429 that reports an exhausted budget or quota is
+    not transient and fails the validation.
     """
     cipher = get_cipher(request)
     llm = decrypt_incoming_llm_secrets(body.llm, cipher) if cipher else body.llm
@@ -327,6 +371,7 @@ async def validate_profile(
 
             llm = await asyncio.to_thread(create_subscription_llm_from_config, llm)
 
+        llm = _preflight_llm(llm)
         # Mirror the runtime dispatch (see ``LLM.agenerate``) and stay
         # async so provider I/O doesn't pin the FastAPI event loop.
         if llm.uses_responses_api():
@@ -334,6 +379,8 @@ async def validate_profile(
         else:
             await llm.acompletion(messages=messages, max_tokens=1)
     except _TRANSIENT_ERROR_TYPES as exc:
+        if is_quota_exhaustion_error(exc):
+            return _invalid(name, exc)
         # Transient — don't block the save
         logger.info(
             f"Profile '{name}' pre-flight hit a transient error "
@@ -348,16 +395,7 @@ async def validate_profile(
         LLMServiceUnavailableError,
         LLMError,
     ) as exc:
-        error_type = type(exc).__name__
-        safe_msg = redact_text_secrets(exc.message)
-        logger.info(f"Profile '{name}' pre-flight failed: {error_type}: {safe_msg}")
-        return ValidateProfileResponse(
-            valid=False,
-            error=ValidateProfileError(
-                type=error_type,
-                message=safe_msg,
-            ),
-        )
+        return _invalid(name, exc)
     except Exception as exc:
         # Unknown errors — block the save and surface the raw message so the
         # user can debug, but classify generically.
@@ -494,7 +532,7 @@ async def activate_profile(
                 update={"llm": llm}
             )
             llm_applied = True
-        settings.active_profile = name
+        settings.active_profile = canonical_profile_name(name)
         return settings
 
     try:

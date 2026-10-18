@@ -210,6 +210,7 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-opus-4-6",
     "claude-opus-4-7",
     "claude-opus-4-8",
+    "claude-haiku-5-5",
     # https://platform.claude.com/docs/en/build-with-claude/prompt-caching
     "claude-opus-5",
     # Claude Sonnet 5 supports prompt caching but is not covered by any
@@ -258,6 +259,8 @@ SUPPORTS_STOP_WORDS_FALSE_MODELS: list[str] = [
     "grok-code-fast-1",
     # DeepSeek R1 family
     "deepseek-r1-0528",
+    # OpenAI models on Bedrock (gpt-oss, gpt-5.x, gpt-6) reject stopSequences
+    "openai.gpt-",
 ]
 
 # Models that should use the OpenAI Responses API path by default
