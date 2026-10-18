@@ -369,3 +369,44 @@ class TestRedactApiKeyLiterals:
         result = redact_api_key_literals(text)
         assert "sk-oh-Xk9mP2vL4nR7wQ1y" not in result
         assert "ERROR runtime stderr:" in result
+
+
+class TestRedactGitHubAppTokenPrefixes:
+    """GitHub App token prefixes must be redacted, not only classic PATs.
+
+    Regression: `ghu_`/`gho_`/`ghs_`/`ghr_` were absent from
+    ``_API_KEY_LITERAL_RE``, so a GitHub App user-to-server token embedded in a
+    clone URL survived into ``.git/config`` and into persisted events.
+    """
+
+    @pytest.mark.parametrize(
+        "prefix",
+        ["gho_", "ghu_", "ghs_", "ghr_"],
+    )
+    def test_redacts_each_github_app_prefix(self, prefix: str):
+        token = prefix + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        result = redact_api_key_literals(f"remote url: {token} end")
+        assert token not in result
+        assert result == "remote url: <redacted> end"
+
+    def test_redacts_app_token_embedded_in_clone_url(self):
+        """The credential in a tokenized clone URL is redacted."""
+        token = "ghu_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        text = f"https://x-access-token:{token}@github.com/owner/repo.git"
+        result = redact_api_key_literals(text)
+        assert token not in result
+
+    def test_still_redacts_classic_pat(self):
+        """The pre-existing ghp_ behaviour is unchanged."""
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        assert token not in redact_api_key_literals(token)
+
+    def test_does_not_redact_short_app_prefix(self):
+        """Fewer than 20 body characters must not match."""
+        assert redact_api_key_literals("ghu_short") == "ghu_short"
+
+    def test_does_not_redact_bare_prefix_literal(self):
+        """A regex literal describing the pattern is not itself a secret."""
+        text = r"pattern: ghu_[A-Za-z0-9]{20,}"
+        assert redact_api_key_literals(text) == text
+

@@ -340,6 +340,10 @@ _API_KEY_LITERAL_RE = re.compile(
     r"|hf_[A-Za-z0-9]{20,}"  # HuggingFace
     r"|tgp_v1_[A-Za-z0-9_-]{20,}"  # Together AI
     r"|ghp_[A-Za-z0-9]{20,}"  # GitHub PAT (classic)
+    r"|gho_[A-Za-z0-9]{20,}"  # GitHub App user-to-server (OAuth)
+    r"|ghu_[A-Za-z0-9]{20,}"  # GitHub App user-to-server
+    r"|ghs_[A-Za-z0-9]{20,}"  # GitHub App server-to-server
+    r"|ghr_[A-Za-z0-9]{20,}"  # GitHub App refresh token
     r"|github_pat_[A-Za-z0-9_]{20,}"  # GitHub PAT (fine-grained)
     r"|sk-oh-[A-Za-z0-9_-]{10,}"  # OpenHands API keys
     r"|ctx7sk-[A-Za-z0-9_-]{10,}"  # Context7 MCP keys
