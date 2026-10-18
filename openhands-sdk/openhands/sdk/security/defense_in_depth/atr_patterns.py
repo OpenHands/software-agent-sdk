@@ -36,8 +36,10 @@ matches none of its rule's true negatives or the benign corpora (code and
 docs); conditions that only match benchmark scaffolding are dropped, and a
 rule is kept only if the patterns left still match all of its true positives
 after this package's normalization. These are filters applied when the data
-is generated, not a measurement: false positives on agent thoughts and tool
-arguments have not been measured. ``scripts/generate_atr_patterns.py``
+is generated, not a measurement. A replay on public coding and data-analysis
+agent records changed no result, which is weak evidence; precision on agent
+thoughts and tool arguments has not been measured.
+``scripts/generate_atr_patterns.py``
 regenerates the data and writes a report of every rule or pattern it left
 out, and why.
 """
