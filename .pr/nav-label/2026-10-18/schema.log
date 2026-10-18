@@ -1,0 +1,88 @@
+Checking uv version...
+uv version 0.11.15 meets requirements
+[10/18/26 10:17:34] INFO     Registered file-based agent          default.py:167
+                             'bash-runner' from
+                             <HOME>/Documents/Codex/2026-
+                             10-05/task/software-agent-sdk/openha
+                             nds-tools/openhands/tools/preset/sub
+                             agents/bash_runner.md
+[10/18/26 10:17:34] INFO     Registered file-based agent          default.py:167
+                             'code-explorer' from
+                             <HOME>/Documents/Codex/2026-
+                             10-05/task/software-agent-sdk/openha
+                             nds-tools/openhands/tools/preset/sub
+                             agents/code_explorer.md
+[10/18/26 10:17:34] INFO     Registered file-based agent          default.py:167
+                             'general-purpose' from
+                             <HOME>/Documents/Codex/2026-
+                             10-05/task/software-agent-sdk/openha
+                             nds-tools/openhands/tools/preset/sub
+                             agents/default.md
+[10/18/26 10:17:34] INFO     Registered file-based agent          default.py:167
+                             'web-researcher' from
+                             <HOME>/Documents/Codex/2026-
+                             10-05/task/software-agent-sdk/openha
+                             nds-tools/openhands/tools/preset/sub
+                             agents/web_researcher.md
+[10/18/26 10:17:34] WARNING  ⚠️ OH_SECRET_KEY was not defined.     config.py:544
+                             Secrets will not be persisted between
+                             restarts.
+[10/18/26 10:17:34] WARNING  ⚠️ OH_SECRET_KEY was not defined.     config.py:544
+                             Secrets will not be persisted between
+                             restarts.
+[10/18/26 10:17:34] WARNING  Saving MCP OAuth state       mcp_oauth_store.py:468
+                             without encryption (no
+                             OH_SECRET_KEY configured).
+                             Configure OH_SECRET_KEY for
+                             production deployments.
+[10/18/26 10:17:34] WARNING  ⚠️ OH_SECRET_KEY was not defined.     config.py:544
+                             Secrets will not be persisted between
+                             restarts.
+[10/18/26 10:17:34] WARNING  ⚠️ OH_SECRET_KEY was not defined.     config.py:544
+                             Secrets will not be persisted between
+                             restarts.
+[10/18/26 10:17:38] INFO     Registered file-based agent          default.py:167
+                             'bash-runner' from
+                             <HOME>/Documents/Codex/2026-
+                             10-05/task/software-agent-sdk/openha
+                             nds-tools/openhands/tools/preset/sub
+                             agents/bash_runner.md
+[10/18/26 10:17:38] INFO     Registered file-based agent          default.py:167
+                             'code-explorer' from
+                             <HOME>/Documents/Codex/2026-
+                             10-05/task/software-agent-sdk/openha
+                             nds-tools/openhands/tools/preset/sub
+                             agents/code_explorer.md
+[10/18/26 10:17:38] INFO     Registered file-based agent          default.py:167
+                             'general-purpose' from
+                             <HOME>/Documents/Codex/2026-
+                             10-05/task/software-agent-sdk/openha
+                             nds-tools/openhands/tools/preset/sub
+                             agents/default.md
+[10/18/26 10:17:38] INFO     Registered file-based agent          default.py:167
+                             'web-researcher' from
+                             <HOME>/Documents/Codex/2026-
+                             10-05/task/software-agent-sdk/openha
+                             nds-tools/openhands/tools/preset/sub
+                             agents/web_researcher.md
+[10/18/26 10:17:38] WARNING  ⚠️ OH_SECRET_KEY was not defined.     config.py:544
+                             Secrets will not be persisted between
+                             restarts.
+[10/18/26 10:17:38] WARNING  ⚠️ OH_SECRET_KEY was not defined.     config.py:544
+                             Secrets will not be persisted between
+                             restarts.
+[10/18/26 10:17:38] WARNING  Saving MCP OAuth state       mcp_oauth_store.py:468
+                             without encryption (no
+                             OH_SECRET_KEY configured).
+                             Configure OH_SECRET_KEY for
+                             production deployments.
+[10/18/26 10:17:38] WARNING  ⚠️ OH_SECRET_KEY was not defined.     config.py:544
+                             Secrets will not be persisted between
+                             restarts.
+[10/18/26 10:17:38] WARNING  ⚠️ OH_SECRET_KEY was not defined.     config.py:544
+                             Secrets will not be persisted between
+                             restarts.
+Agent Server OpenAPI type-quality check passed (63 allowlisted weak locations).
+npm notice run npx
+npm notice run 'swagger-cli' validate <TMP>/tmp.LFEQMD4bjF/openapi.json
+<TMP>/tmp.LFEQMD4bjF/openapi.json is valid

@@ -1,0 +1,127 @@
+{
+  "ok": true,
+  "run": "<VERIFY_RUN>",
+  "url": "http://127.0.0.1:55833",
+  "checks": [
+    {
+      "name": "process-group",
+      "ok": true,
+      "required": true,
+      "detail": {
+        "pgid": 65088
+      }
+    },
+    {
+      "name": "port-owner",
+      "ok": true,
+      "required": true,
+      "detail": {
+        "port": 55833,
+        "listening_pids": []
+      }
+    },
+    {
+      "name": "/alive",
+      "ok": true,
+      "required": true,
+      "detail": {
+        "status": 200
+      }
+    },
+    {
+      "name": "/health",
+      "ok": true,
+      "required": true,
+      "detail": {
+        "status": 200
+      }
+    },
+    {
+      "name": "/ready",
+      "ok": true,
+      "required": true,
+      "detail": {
+        "status": 200
+      }
+    },
+    {
+      "name": "server-info",
+      "ok": true,
+      "required": true,
+      "detail": {
+        "version": "1.55.1",
+        "sdk_version": "1.55.1",
+        "build_git_sha": "85adc22dae1aa87ab1399c1dba11693e264ca9c2",
+        "expected_sha": "85adc22dae1aa87ab1399c1dba11693e264ca9c2",
+        "usable_tools": [
+          "ClassifyAndSwitchLLMTool",
+          "ask_oracle",
+          "file_editor",
+          "task_tool_set",
+          "task",
+          "task_tracker",
+          "terminal",
+          "workflow_tool_set",
+          "workflow",
+          "start_child_conversation",
+          "browser_tool_set",
+          "edit",
+          "list_directory",
+          "read_file",
+          "write_file",
+          "glob",
+          "grep",
+          "planning_file_editor"
+        ]
+      }
+    },
+    {
+      "name": "auth-rejects-missing-key",
+      "ok": true,
+      "required": true,
+      "detail": 401
+    },
+    {
+      "name": "auth-accepts-key",
+      "ok": true,
+      "required": true,
+      "detail": {
+        "status": 200,
+        "dormant": false
+      }
+    },
+    {
+      "name": "openapi",
+      "ok": true,
+      "required": true,
+      "detail": {
+        "operations": 176
+      }
+    },
+    {
+      "name": "ws-rejects-bad-key",
+      "ok": true,
+      "required": true,
+      "detail": {
+        "path": "/sockets/bash-events",
+        "auth": "bad",
+        "open": false,
+        "close_code": 4001
+      }
+    },
+    {
+      "name": "ws-accepts-first-frame-auth",
+      "ok": true,
+      "required": true,
+      "detail": null
+    },
+    {
+      "name": "log-tracebacks",
+      "ok": true,
+      "required": false,
+      "detail": {
+        "count": 0
+      }
+    }
+  ]
+}
