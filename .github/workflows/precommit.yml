@@ -18,6 +18,17 @@ jobs:
               with:
                   fetch-depth: 0
 
+            - name: Reject temporary artifacts in release PRs
+              if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'rel-')
+              run: |
+                  set -euo pipefail
+                  artifacts="$(git ls-tree -r --name-only HEAD -- .pr)"
+                  if [ -n "$artifacts" ]; then
+                    echo "::error::Release contains temporary .pr artifacts. Merge the cleanup PR and update the release PR before releasing."
+                    printf '%s\n' "$artifacts"
+                    exit 1
+                  fi
+
             - name: Set up Python
               uses: actions/setup-python@v7
               with:

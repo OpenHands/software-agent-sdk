@@ -95,7 +95,7 @@ Routes: `POST /api/canvas-extensions/install`, `GET /api/canvas-extensions/insta
   routes the browser to a backend through the `/app-backends` bridge (another
   family).
 - Config: everything lives under `OH_PERSISTENCE_DIR`
-  (`canvas-extensions/installed`, `canvas-extensions/backends/{approvals,artifacts,data,downloads}`,
+  (`canvas-extensions/installed`, `canvas-extensions/backends/{approvals,artifacts,data,downloads,run}`,
   `cache/extensions`), which `launch` makes private to the run
   (`home/.openhands`). Backends run only on Linux amd64/arm64.
 
@@ -900,11 +900,9 @@ Preconditions:
   record; the backend reads `missing` while the data directory, the extracted
   artifact and the approval survive, a second DELETE is 404, and the data
   route then removes `backends/data/qa-backend`.
-- **Non-gzip artifact (`F28.prepare-corrupt-archive`), known bug.** An
+- **Non-gzip artifact (`F28.prepare-corrupt-archive`).** An
   artifact whose bytes match the manifest's sha256 but are not a gzip archive
-  should be refused like every other bad artifact (409). Today
-  `tarfile.ReadError` escapes the router's `ValueError` mapping and the
-  request fails with 500 `not a gzip file`; nothing is written either way.
+  is refused like every other bad artifact (409), and nothing is written.
   ```sh
   control-agent-server api POST /api/canvas-extensions/install --json "{\"source\": \"$F28FX/qa-f28-notgz\"}" --expect 200 --quiet
   NREV=$(control-agent-server api GET /api/canvas-extensions/installed/qa-f28-notgz/backend --field revision)
@@ -912,16 +910,14 @@ Preconditions:
   test "$(sha256sum "$INST/qa-f28-notgz/backend/linux.tar.gz" | cut -d' ' -f1)" = \
     "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["backend"]["artifacts"]["linux-amd64"]["sha256"])' "$INST/qa-f28-notgz/canvas-extension.json")"
   control-agent-server api POST /api/canvas-extensions/installed/qa-f28-notgz/backend/prepare --json "{\"revision\": \"$NREV\"}" \
-    --expect 409 --save F28.prepare-corrupt-archive/prepare  # bug: status eq 500 && response.body.exception contains 'not a gzip file'
+    --expect 409 --check detail contains 'not a valid gzip tar archive' --save F28.prepare-corrupt-archive/prepare
   control-agent-server state ls 'home/.openhands/canvas-extensions/backends/approvals/qa-f28-notgz.json' --expect-count 0
   control-agent-server state ls 'home/.openhands/canvas-extensions/backends/artifacts/qa-f28-notgz/**' --expect-count 0
   ```
   The installed artifact's sha256 matches the manifest, so the checksum gate
-  passes and only the archive format is wrong. Expected 409 with a reason and
-  no approval; actual 500
-  `{"detail": "Internal Server Error", "exception": "not a gzip file"}`
-  (`tarfile.ReadError` from `_extract_archive` is not a `ValueError`, the only
-  exception the prepare route maps to 409). The `# bug` line is the prepare.
+  passes and only the archive format is wrong: the prepare answers 409
+  `backend artifact is not a valid gzip tar archive`, and no approval or
+  extracted artifact is left behind.
 - **Unknown ref on a cached source (`F28.install-ref-cached`), known bug.**
   Pin `qa-f28-git` (which caches its clone), then force a ref that does not
   exist.
@@ -1005,7 +1001,7 @@ Preconditions:
   timed out behind it and the child kept running (baseline `3dcb27b2`
   reproduced it twice, #5689 passed twice). The exit trap kills the
   bullet's own child if a regression leaves it behind.
-- **Backend outlives a crash (`F28.hard-restart-orphan`), known bug.** Start a
+- **Backend outlives a crash (`F28.hard-restart-orphan`).** Start a
   backend, SIGKILL the server and restart it on the same state.
   ```sh
   OX=$(control-agent-server fixture canvas-app --name qa-orphan --backend ok --print-path)
@@ -1018,19 +1014,19 @@ Preconditions:
   control-agent-server restart --hard
   control-agent-server api GET /api/canvas-extensions/installed/qa-orphan/backend --check state eq stopped \
     --check pid eq null --save F28.hard-restart-orphan/status-after-crash
-  control-agent-server assert --value "$(pgrep -f "$BK/artifacts/qa-orphan/" || true)" --check . eq ''  # bug: value matches '^[0-9]+'
+  control-agent-server assert --value "$(pgrep -f "$BK/artifacts/qa-orphan/" || true)" --check . eq ''
   ```
   Expected: no backend process of the dead server remains once the server is
-  back (reaped at startup, or tied to the server's lifetime). Actual: the
-  backend runs in its own session (`start_new_session=True`), so it survives
-  the SIGKILL with parent pid 1; the new server reports `stopped`, a new
-  `start` launches a second process on the same data directory, and
-  `DELETE .../backend/data` succeeds under the live orphan.
-  `control-agent-server stop` reaps it (`orphans_reaped`). The leftover check
-  (the `# bug` line, which prints the survivor's pid) matches the run-private
-  artifact path rather than the pid, so a recycled pid cannot fake a
-  survivor; the `pgrep` before the crash shows the pattern finds the live
-  backend. This is the last bullet because its orphan stays up until `stop`.
+  back. The server records each backend it starts (process group, leader
+  start time and its own pid and start time) under `backends/run/`, and at
+  startup, before serving, stops the group of every record whose server is
+  gone and whose leader still matches (same start time, command line under
+  `artifacts/<name>/`), then drops the record. So the restarted server
+  reports `stopped` with no process left, a new `start` launches the only
+  process on the data directory, and `DELETE .../backend/data` runs with no
+  live backend. The leftover check matches the run-private artifact path
+  rather than the pid, so a recycled pid cannot fake a survivor; the `pgrep`
+  before the crash shows the pattern finds the live backend.
 
 ## Gotchas
 
@@ -1088,8 +1084,8 @@ Preconditions:
   even on uninstall; `DELETE .../backend/data` removes only `backends/data/<name>`.
   A non-root `rm -rf` of the run's state needs `chmod -R u+w` on
   `canvas-extensions/backends/artifacts` first.
-- Backends run in their own session, so a SIGKILLed server leaves them
-  running (`F28.hard-restart-orphan`); a graceful stop or `restart` stops them.
+- Backends run in their own session, so they outlive a SIGKILLed server
+  until it restarts on the same state (`F28.hard-restart-orphan`).
   `control-agent-server stop` reaps leftovers whose `HOME` is inside the run.
 - Every `GET .../backend` of a `ready` backend probes its health path with a
   1 s timeout. One slow answer reads `unhealthy` until a later probe answers

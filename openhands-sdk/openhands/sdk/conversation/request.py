@@ -8,7 +8,7 @@ agent-server.
 
 from __future__ import annotations
 
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
 from pydantic import (
@@ -35,7 +35,6 @@ from openhands.sdk.conversation.types import (
 )
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.plugin import PluginSource
-from openhands.sdk.profiles.agent_profile import AgentProfile, validate_agent_profile
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
@@ -64,6 +63,53 @@ ACPEnabledAgent = Annotated[
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
+
+
+class StartChildConversationRequest(BaseModel):
+    """Payload to start a child conversation on the same backend as its parent.
+
+    Sent by the ``start_child_conversation`` tool to a child-launch endpoint:
+    the agent-server's ``POST /api/conversations/{id}/children`` by default, or
+    an equivalent launcher supplied by the backend hosting the parent.
+    """
+
+    task: str = Field(
+        min_length=1,
+        description=(
+            "Self-contained brief delivered to the child as its first user message."
+        ),
+    )
+    title: str | None = Field(
+        default=None, description="Optional title for the child conversation."
+    )
+    isolation: Literal["worktree", "shared"] = Field(
+        default="worktree",
+        description=(
+            "Workspace isolation for the child. 'worktree' runs it in a git "
+            "worktree carved from the parent's workspace when that workspace is a "
+            "git repository; 'shared' runs it in the parent's directory. Backends "
+            "that manage workspaces themselves may ignore this."
+        ),
+    )
+
+
+class StartChildConversationResponse(BaseModel):
+    """Result of a child conversation launch, returned to the parent agent."""
+
+    conversation_id: UUID
+    parent_conversation_id: UUID
+    status: str = Field(description="Initial launch status reported by the backend.")
+    title: str | None = None
+    url: str | None = Field(
+        default=None,
+        description="Link to the child conversation, when the backend knows it.",
+    )
+    workspace: str | None = Field(
+        default=None, description="Working directory of the child, when known."
+    )
+    isolation: Literal["worktree", "shared"] | None = Field(
+        default=None, description="Workspace isolation actually applied, when known."
+    )
 
 
 class AgentLaunchAdditions(BaseModel):
@@ -100,7 +146,7 @@ class AgentLaunchAdditions(BaseModel):
             "LLM profile to launch an OpenHands Agent Profile with instead of "
             "its own `llm_profile_ref`. Recorded in `launched_agent_profile`; "
             "the stored profile is not modified. Only valid with "
-            "`agent_profile_id` or `agent_profile`."
+            "`agent_profile_id`."
         ),
     )
 
@@ -306,8 +352,8 @@ class StartConversationRequest(ConversationConfig):
     """Payload to create a new conversation.
 
     Extends :class:`ConversationConfig` with the agent source: a stored Agent
-    Profile (``agent_profile_id``), an inline one (``agent_profile``), resolved
-    agent settings (``agent_settings``), or an ``agent`` built in code. The
+    Profile (``agent_profile_id``), resolved agent settings
+    (``agent_settings``), or an ``agent`` built in code. The
     server turns the source into the conversation's agent at launch; this model
     only checks that exactly one source is given.
 
@@ -332,14 +378,6 @@ class StartConversationRequest(ConversationConfig):
             "stores. Mutually exclusive with the other agent sources."
         ),
     )
-    agent_profile: AgentProfile | None = Field(
-        default=None,
-        description=(
-            "Inline Agent Profile draft to launch. Resolved exactly like a "
-            "stored profile and not saved. Mutually exclusive with the other "
-            "agent sources."
-        ),
-    )
     agent: AgentBase = Field(default=cast(AgentBase, None))
 
     @model_validator(mode="before")
@@ -352,32 +390,18 @@ class StartConversationRequest(ConversationConfig):
         payload = {
             name: value
             for name, value in data.items()
-            if value is not None
-            or name not in ("agent", "agent_settings", "agent_profile")
+            if value is not None or name not in ("agent", "agent_settings")
         }
-        profile_sources = [
-            name
-            for name in ("agent_profile_id", "agent_profile")
-            if payload.get(name) is not None
-        ]
         other_sources = [
             name
             for name in ("agent", "agent_settings")
             if payload.get(name) is not None
         ]
-        if len(profile_sources) > 1 or (profile_sources and other_sources):
-            first, *rest = [*profile_sources, *other_sources]
+        if payload.get("agent_profile_id") is not None and other_sources:
             raise ValueError(
-                f"`{first}` is mutually exclusive with "
-                + ", ".join(f"`{name}`" for name in rest)
+                "`agent_profile_id` is mutually exclusive with "
+                + ", ".join(f"`{name}`" for name in other_sources)
             )
-        if payload.get("agent_profile") is not None:
-            try:
-                payload["agent_profile"] = validate_agent_profile(
-                    payload["agent_profile"]
-                )
-            except TypeError as exc:
-                raise ValueError(str(exc)) from exc
         if payload.get("agent") is not None:
             payload["agent_settings"] = None
         if payload.get("agent") is None and payload.get("agent_settings") is not None:
@@ -394,19 +418,16 @@ class StartConversationRequest(ConversationConfig):
 
     @model_validator(mode="after")
     def _require_agent(self) -> StartConversationRequest:
-        has_profile = (
-            self.agent_profile_id is not None or self.agent_profile is not None
-        )
+        has_profile = self.agent_profile_id is not None
         if not has_profile and self.agent is None and self.agent_settings is None:
             raise ValueError(
-                "One of `agent`, `agent_settings`, `agent_profile_id`, or"
-                " `agent_profile` must be provided"
+                "One of `agent`, `agent_settings`, or `agent_profile_id` must be"
+                " provided"
             )
         additions = self.agent_launch_additions
         if additions is not None and additions.llm_profile_ref and not has_profile:
             raise ValueError(
-                "`agent_launch_additions.llm_profile_ref` requires"
-                " `agent_profile_id` or `agent_profile`"
+                "`agent_launch_additions.llm_profile_ref` requires `agent_profile_id`"
             )
         return self
 

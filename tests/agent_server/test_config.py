@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 
 import pytest
 from pydantic import SecretStr, ValidationError
@@ -66,6 +67,32 @@ def test_conversation_idle_ttl_can_be_disabled_and_overridden(monkeypatch, tmp_p
 
     monkeypatch.setenv("OH_CONVERSATION_IDLE_TTL_SECONDS", "300")
     assert load_config().conversation_idle_ttl_seconds == 300.0
+
+
+def test_env_is_none_overrides_config_file_value(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "app_backend_public_url": "http://file.invalid:9",
+                "conversation_idle_ttl_seconds": 600,
+            }
+        )
+    )
+    monkeypatch.setenv(CONFIG_PATH_ENV, str(config_path))
+
+    # Without an environment value the file value is kept.
+    assert load_config().app_backend_public_url == "http://file.invalid:9"
+
+    monkeypatch.setenv("OH_APP_BACKEND_PUBLIC_URL", "http://env.invalid:9")
+    assert load_config().app_backend_public_url == "http://env.invalid:9"
+    monkeypatch.delenv("OH_APP_BACKEND_PUBLIC_URL")
+
+    monkeypatch.setenv("OH_APP_BACKEND_PUBLIC_URL_IS_NONE", "1")
+    monkeypatch.setenv("OH_CONVERSATION_IDLE_TTL_SECONDS_IS_NONE", "1")
+    config = load_config()
+    assert config.app_backend_public_url is None
+    assert config.conversation_idle_ttl_seconds is None
 
 
 def test_conversation_idle_ttl_rejects_non_positive_values():
@@ -163,3 +190,46 @@ def test_init_secret_key_with_surrounding_whitespace_is_kept_verbatim(
 
     assert merged.secret_key is not None
     assert merged.secret_key.get_secret_value() == " mykey "
+
+
+class TestExportSessionApiKey:
+    def test_exports_first_key(self, monkeypatch):
+        from openhands.agent_server.config import (
+            V1_SESSION_API_KEY_ENV,
+            Config,
+            export_session_api_key,
+        )
+
+        monkeypatch.delenv(V1_SESSION_API_KEY_ENV, raising=False)
+
+        export_session_api_key(Config(session_api_keys=["first", "second"]))
+
+        assert os.environ[V1_SESSION_API_KEY_ENV] == "first"
+
+    def test_replaces_stale_key(self, monkeypatch):
+        from openhands.agent_server.config import (
+            V1_SESSION_API_KEY_ENV,
+            Config,
+            export_session_api_key,
+        )
+
+        monkeypatch.setenv(V1_SESSION_API_KEY_ENV, "stale")
+
+        export_session_api_key(Config(session_api_keys=["fresh"]))
+
+        assert os.environ[V1_SESSION_API_KEY_ENV] == "fresh"
+
+    def test_no_keys_leaves_env_untouched(self, monkeypatch):
+        from openhands.agent_server.config import (
+            V0_SESSION_API_KEY_ENV,
+            V1_SESSION_API_KEY_ENV,
+            Config,
+            export_session_api_key,
+        )
+
+        monkeypatch.delenv(V0_SESSION_API_KEY_ENV, raising=False)
+        monkeypatch.delenv(V1_SESSION_API_KEY_ENV, raising=False)
+
+        export_session_api_key(Config(session_api_keys=[]))
+
+        assert V1_SESSION_API_KEY_ENV not in os.environ

@@ -53,7 +53,7 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
 - `F18.secret-empty-value`: a PUT whose value is empty, blank or the redaction placeholder is refused with 422 and neither wipes an existing value nor leaves a listed but unreadable secret (fixed by #5682).
 - `F18.dangling-pointers`: PATCH must refuse an `active_agent_profile_id` or `active_meta_profile` that names nothing, as the dedicated activate routes do (404).
 - `F18.secret-scope-profile-errors`: `GET /api/settings/secrets?agent_profile_id=` naming an agent profile whose file no longer validates, or arriving while the agent-profile store's lock is held elsewhere, must answer as the agent-profile routes do (400 and 503), not with an unhandled 500.
-- `F18.secret-name-contract`: the published OpenAPI description of the secret routes must name the status an invalid secret name actually gets (it says 400; the code answers 422).
+- `F18.secret-name-contract`: the published OpenAPI description of the secret routes names the status an invalid secret name actually gets, 422 (fixed by #5846).
 - `F18.secret-key-rotation`: after a restart with a new cipher key, a write must not destroy values stored under the old key, so rotating back recovers them.
 
 ## How to get to it (agent POV)
@@ -106,6 +106,21 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
   diffs; the secrets page lists, upserts and deletes (context only).
 
 ## Driving it with control-agent-server
+
+**Critic-check precondition.**
+
+If an authorized OpenHands (`openhands/…`) or compatible OpenHands LLM-proxy
+profile is available, use it for a critic check, regardless of the profile
+used for the rest of the pass. With the critic enabled and
+`verification.critic_api_key` unset, `OpenHandsAgentSettings.build_critic()`
+reuses the selected LLM profile's key; no separate critic key is required.
+The default critic endpoint is `https://llm-proxy.app.all-hands.dev/vllm`.
+A profile for a different proxy deployment must use that deployment's
+compatible critic endpoint rather than assume its credential works on the
+default endpoint. Restore the previous profile and verification settings
+afterwards. Availability is not a scored result: report the actual service
+response, and record `blocked` only when the authorized prerequisites are
+unavailable. Do not send an unrelated provider's key to the critic service.
 
 Preconditions:
 
@@ -758,10 +773,11 @@ Preconditions:
   Today it answers 200, stores the pointer and turns on
   `enable_classify_and_switch_llm_tool` with no meta-profile behind it. The
   trap clears the pointer, which turns the switch tool off again.
-- **Agent profile that no longer loads (`F18.secret-scope-profile-errors`), known bug.**
+- **Agent profile that no longer loads (`F18.secret-scope-profile-errors`).**
   Save an agent profile that scopes `QA_F18_TOKEN` (arrange), break its file
   so it no longer validates (`secret_refs` a string instead of a list), then
   list secrets scoped by its id.
+  Requires: `F18.secret-put-list-get`
   ```sh
   AP="$AGENT_SERVER_VERIFY_RUN/home/.openhands/agent-profiles"
   trap 'rm -f "$AP/qa-f18-broken.json" || true' EXIT
@@ -772,15 +788,15 @@ Preconditions:
   cp "$F18/qa-f18-broken.json" "$AP/qa-f18-broken.json"
   control-agent-server api GET /api/agent-profiles/qa-f18-broken --expect 400 \
     --check detail contains 'Failed to load profile' --save F18.secret-scope-profile-errors/agent-profile-route
-  control-agent-server api GET /api/settings/secrets --query "agent_profile_id=$BROKEN" --expect 4xx --save F18.secret-scope-profile-errors/unloadable  # bug: status eq 500 && response.body.exception contains 'Failed to load profile'
+  control-agent-server api GET /api/settings/secrets --query "agent_profile_id=$BROKEN" --expect 400 \
+    --check detail contains 'Failed to load profile' --save F18.secret-scope-profile-errors/unloadable
   ```
   Scoping works while the profile is valid (one secret), and the
   agent-profile route reports the broken file as 400 `Failed to load profile
-  ...`. Expected: the scoped list answers a client error too. Today it is an
-  unhandled 500 (`exception` carries the validation error): `list_secrets`
-  calls `AgentProfileStore.load` outside `store_errors()`. The trap removes
-  the profile file.
-- **Agent-profile store busy (`F18.secret-scope-profile-errors`), known bug.**
+  ...`. The scoped list answers the same 400 with the load error in
+  `detail`: `list_secrets` reads the profile inside `store_errors()`, as the
+  agent-profile routes do. The trap removes the profile file.
+- **Agent-profile store busy (`F18.secret-scope-profile-errors`).**
   Another process (here `flock`, standing in for a second server on the same
   persistence directory) holds the agent-profile store's lock for 75 seconds.
   The server's own 30-second lock timeout is under test, so the bullet waits
@@ -797,27 +813,24 @@ Preconditions:
   control-agent-server api GET /api/agent-profiles/qa-f18-busy --timeout 60 --expect 503 \
     --check exception eq '503: Profile store is busy. Please retry.' --save F18.secret-scope-profile-errors/agent-profile-busy
   control-agent-server api GET /api/settings/secrets --query agent_profile_id=00000000-0000-4000-8000-0000000000f1 --timeout 60 \
-    --expect 503 --save F18.secret-scope-profile-errors/secrets-busy  # bug: status eq 500 && response.body.exception contains 'lock acquisition timed out'
+    --expect 503 --check exception eq '503: Profile store is busy. Please retry.' --save F18.secret-scope-profile-errors/secrets-busy
   ```
   After 30 seconds the agent-profile route answers 503 `Profile store is
-  busy. Please retry.`. Expected: the scoped secrets list answers 503 as
-  well. Today it waits the same 30 seconds and answers an unhandled 500
-  (`Agent profile store lock acquisition timed out after 30.0s`). The trap
-  waits until `flock` lets go.
-- **Documented status for an invalid name (`F18.secret-name-contract`), known bug.**
+  busy. Please retry.`, and the scoped secrets list answers the same 503
+  after the same wait. The trap waits until `flock` lets go.
+- **Documented status for an invalid name (`F18.secret-name-contract`).**
   Read the status the published OpenAPI description promises for an invalid
   secret name, then send one.
   ```sh
   control-agent-server api GET /openapi.json --expect 200 --quiet --raw-out "$F18/openapi.json"
   CLAIMED=$(jq -r '.paths["/api/settings/secrets/{name}"].get.description // ""' "$F18/openapi.json" | sed -n 's/.* \([0-9][0-9][0-9]\) if name format is invalid.*/\1/p')
-  control-agent-server api GET /api/settings/secrets/1bad --expect "${CLAIMED:-422}" --save F18.secret-name-contract/invalid-name  # bug: status eq 422 && response.body.detail contains 'Invalid secret name format'
+  control-agent-server api GET /api/settings/secrets/1bad --expect "${CLAIMED:-422}" --save F18.secret-name-contract/invalid-name
   ```
-  Expected: the documented and the real status agree (either the docstring
-  says 422 or the code answers 400). Today the description of `GET`,
-  `DELETE /api/settings/secrets/{name}` and `PUT /api/settings/secrets`
-  says `400 if name format is invalid` while every one answers 422
-  (`F18.secret-name-validation`); clients generated from the OpenAPI
-  document inherit the wrong promise.
+  Expected: the documented and the real status agree. The descriptions of
+  `GET` and `DELETE /api/settings/secrets/{name}` say `422 if name format is
+  invalid` (`PUT /api/settings/secrets` says `422 if the name or value is
+  invalid`), and every one answers 422 (`F18.secret-name-validation`), so
+  clients generated from the OpenAPI document get the right promise.
 - **Cipher key rotation (`F18.secret-key-rotation`), known bug.** Store a
   secret and an LLM key; rotate the cipher key and rotate back with no write
   in between (the control); then rotate again, write something unrelated
@@ -895,15 +908,15 @@ Preconditions:
   empty; PUT and DELETE answer 500.
 - 5xx bodies are rewritten to `{"detail": "Internal Server Error",
   "exception": "<code>: <reason>"}`; assert on the status and `exception`.
-- Invalid secret names are 422, although the route docstrings, and so the
-  OpenAPI descriptions, say 400 (`F18.secret-name-contract`). The 404 detail
+- Invalid secret names are 422, as the route docstrings, and so the OpenAPI
+  descriptions, say (`F18.secret-name-contract`). The 404 detail
   is always `Secret not found`, also for a stored `null` value.
-- `?agent_profile_id=` loads the agent profile outside the store's error
-  mapping: a profile file that no longer validates, or a lock held by
-  another process for 30 seconds, is an unhandled 500 there, while the
-  agent-profile routes answer 400 and 503 (`F18.secret-scope-profile-errors`).
-  Like every file-locked store route, a held lock also stalls the whole
-  server for those 30 seconds.
+- `?agent_profile_id=` loads the agent profile under the store's error
+  mapping: a profile file that no longer validates answers 400, and a lock
+  held by another process for 30 seconds answers 503, as on the
+  agent-profile routes (`F18.secret-scope-profile-errors`). Like every
+  file-locked store route, a held lock also stalls the whole server for
+  those 30 seconds.
 - `RemoteWorkspace.clone_repos` runs `git` on the client's machine, not on
   the server, and leaves the token in the clone's `remote.origin.url`
   (`https://<github_token>@github.com/...`). A local stand-in therefore
