@@ -60,7 +60,7 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
 - REST: `POST /api/conversations/{conversation_id}/condense` (no body), 200
   `{"success": true}` once the condensation step finished; 404, 500.
 - REST: `POST /api/conversations/{conversation_id}/ask_agent` (body
-  `{"question": "..."}`), 200 `{"response": "..."}`; 422, 500.
+  `{"question": "..."}`), 200 `{"response": "..."}`; 404, 422, 500.
 - Second views used here: `GET /api/conversations/{conversation_id}`,
   `.../events/search`, `.../events/count`, `.../events/{event_id}`,
   `.../agent_final_response` (other families), the conversation's
@@ -358,22 +358,21 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   a missing body (an empty body is not `{}`) and a malformed id, 401 without
   a key (the same request with the key worked in `F10.navigate-event`). HEAD
   is still empty.
-- **Final response after navigating back (`F10.navigate-final-response`), known bug.**
+- **Final response after navigating back (`F10.navigate-final-response`).**
   Use a fork of `A` so `A` keeps its history for the condense bullets.
   ```sh
   AN=$(control-agent-server api POST "/api/conversations/$A/fork" --expect 201 --field id)
   U1=$(control-agent-server api GET "/api/conversations/$AN/events/search" --query kind=$MSG --query source=user --check items len-eq 1 --field items.0.id)
   control-agent-server api GET "/api/conversations/$AN/agent_final_response" --check response matches '\S'
   control-agent-server api POST "/api/conversations/$AN/navigate" --json "{\"event_id\": \"$U1\"}" --expect 200 --quiet --check leaf_event_id eq "$U1"
-  control-agent-server api GET "/api/conversations/$AN/agent_final_response" --check response eq '' --save F10.navigate-final-response/after-navigate  # bug: status eq 200 && response.body.response matches '\S'
+  control-agent-server api GET "/api/conversations/$AN/agent_final_response" --check response eq '' --save F10.navigate-final-response/after-navigate
   ```
-  Expected: once HEAD is back on the user's message, the active branch has no
-  agent answer, so `agent_final_response` is `""` (the agent's context, title
-  generation, pending-action and stuck checks all use the active branch).
-  Today it still returns the abandoned answer (`OK`): the route scans the
-  whole event log (`EventService._get_agent_final_response_sync`). The
-  status also stays `finished`, so `POST /run` right after such a navigate
-  does nothing; send a new message to regenerate.
+  Once HEAD is back on the user's message, the active branch has no agent
+  answer, so `agent_final_response` is `""`: like the agent's context, title
+  generation, pending-action and stuck checks, it reads only the active
+  branch, not the abandoned answer (`OK`). The status stays `finished`, so
+  `POST /run` right after such a navigate does nothing; send a new message to
+  regenerate.
 - **Condense with DeepSeek (`F10.condense-llm`).** `A` uses the default
   `LLMSummarizingCondenser` on DeepSeek flash.
   ```sh
@@ -504,17 +503,16 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   the step holds nor waits for it. `R` is still `running`, its event count is
   unchanged, and after the interrupt (which frees the run slot) no event
   carries the side answer.
-- **Unknown conversation (`F10.ask-agent-unknown`), known bug.** The route
+- **Unknown conversation (`F10.ask-agent-unknown`).** The route
   documents 404, like condense and navigate.
   ```sh
   control-agent-server api GET /openapi.json --auth none --quiet \
     --check 'paths./api/conversations/{conversation_id}/ask_agent.post.responses.404' exists
-  control-agent-server api POST "/api/conversations/$NOPE/ask_agent" --json '{"question": "hi"}' --expect 404 --save F10.ask-agent-unknown/unknown  # bug: status eq 500 && response.body.exception contains '500: Internal Server Error'
+  control-agent-server api POST "/api/conversations/$NOPE/ask_agent" --json '{"question": "hi"}' --expect 404 --check detail eq 'Conversation not found' --save F10.ask-agent-unknown/unknown
   ```
-  Expected: 404. Today it is 500 `{"detail": "Internal Server Error",
-  "exception": "500: Internal Server Error"}`:
-  `ConversationService.ask_agent` returns `None` for an unknown id and the
-  router turns `None` into a bare 500.
+  Expected: 404 `{"detail": "Conversation not found"}`, the same answer
+  condense gives (`ConversationService.ask_agent` returns `None` for an
+  unknown id and the router maps it to 404).
 - **State after a restart (`F10.restart-persist`).** Restart, then read the
   forks and `S`'s empty HEAD back.
 

@@ -177,6 +177,16 @@ def _copy_event_for_fork(event: Event) -> Event:
     return Event.model_validate_json(event.model_dump_json(exclude_none=True))
 
 
+def _same_llm_config(a: LLM, b: LLM) -> bool:
+    """Return whether two LLMs serialize to the same config, secrets included."""
+    if a is b:
+        return True
+    context = {"expose_secrets": True}
+    return a.model_dump(mode="json", context=context) == b.model_dump(
+        mode="json", context=context
+    )
+
+
 class LocalConversation(BaseConversation):
     agent: AgentBase
     workspace: LocalWorkspace
@@ -1664,18 +1674,31 @@ class LocalConversation(BaseConversation):
         """Swap the agent's LLM to the given object.
 
         The caller owns ``llm.usage_id``; it is the registry key. If an
-        entry with that key already exists, the cached LLM is reused and
-        the passed ``llm`` is dropped — matching the rest of the
-        registry's "first-write-wins" contract.
+        entry with that key already exists and has the same config, the
+        cached LLM is reused. If its config differs (e.g. ``default``, which
+        agent initialization registers, posted with another model), the
+        passed ``llm`` replaces the entry and takes over the metrics already
+        recorded under that ``usage_id``.
 
         Args:
             llm: LLM to install on the agent.
         """
+        usage_id = llm.usage_id
         try:
-            new_llm = self.llm_registry.get(llm.usage_id)
+            registered = self.llm_registry.get(usage_id)
         except KeyError:
+            registered = None
+        if registered is not None and _same_llm_config(registered, llm):
+            new_llm = registered
+        else:
             new_llm = create_subscription_llm_from_config(llm)
+            if registered is not None:
+                self.llm_registry.remove(usage_id)
             self.llm_registry.add(new_llm)
+            if registered is not None:
+                # Keep one metrics object per usage_id: ConversationStats
+                # tracks the registered LLM's, so accrued usage is retained.
+                new_llm.restore_metrics(registered.metrics)
         # A switch_llm tool runs on a worker thread while run()/arun() holds the
         # state lock across the agent step on another thread, blocked awaiting
         # this very tool. Re-acquiring _state here would deadlock, so skip it:
@@ -1760,7 +1783,8 @@ class LocalConversation(BaseConversation):
 
         Raises:
             ValueError: If the conversation's agent is not an :class:`ACPAgent`,
-                or (for a live switch) the provider does not support runtime
+                if ``model`` is empty or whitespace-only (live or not), or
+                (for a live switch) the provider does not support runtime
                 model switching, or the ACP server rejects the switch.
             TimeoutError: If a live switch's ``session/set_model`` round-trip
                 exceeds ``acp_prompt_timeout`` seconds.
@@ -1769,6 +1793,10 @@ class LocalConversation(BaseConversation):
             raise ValueError(
                 "switch_acp_model is only supported for ACP conversations."
             )
+        # Check here, not only in set_acp_model: the pre-run path below skips
+        # that call and would persist a blank model unchecked.
+        if not model or not model.strip():
+            raise ValueError("model must be a non-empty string")
         with self._state:
             # With a live session, perform the protocol switch first; if it
             # fails we leave the persisted state untouched. Without one (pre

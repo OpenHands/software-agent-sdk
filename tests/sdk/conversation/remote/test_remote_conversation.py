@@ -10,6 +10,7 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.exceptions import (
     ConversationRunError,
@@ -20,7 +21,7 @@ from openhands.sdk.conversation.impl.remote_conversation import RemoteConversati
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
-from openhands.sdk.event import MessageEvent
+from openhands.sdk.event import Event, MessageEvent, StreamingDeltaEvent
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import (
     FULL_STATE_KEY,
@@ -29,6 +30,7 @@ from openhands.sdk.event.conversation_state import (
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, Metrics, TextContent
+from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
@@ -632,6 +634,69 @@ class TestRemoteConversation:
         assert (tmp_path / "completion.json").read_text(encoding="utf-8") == (
             event.log_data
         )
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_token_callbacks_receive_streamed_deltas(self, mock_ws_client):
+        self.setup_mock_client()
+        mock_ws_client.return_value = Mock()
+        chunks: list[LLMStreamChunk] = []
+        events: list[Event] = []
+
+        Conversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            visualizer=None,
+            callbacks=[events.append],
+            token_callbacks=[chunks.append],
+        )
+        socket_callback = mock_ws_client.call_args.kwargs["callback"]
+        delta = StreamingDeltaEvent(content="Hel", reasoning_content="think")
+        socket_callback(delta)
+        socket_callback(
+            MessageEvent(source="agent", llm_message=Message(role="assistant"))
+        )
+
+        assert len(chunks) == 1
+        assert chunks[0].choices[0].delta.content == "Hel"
+        assert chunks[0].choices[0].delta.reasoning_content == "think"
+        assert delta in events
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_token_callbacks_preserve_caller_callbacks(self, mock_ws_client):
+        self.setup_mock_client()
+        events: list[Event] = []
+        chunks: list[LLMStreamChunk] = []
+        callback = events.append
+        callbacks = [callback]
+
+        conversation = Conversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            visualizer=None,
+            callbacks=callbacks,
+            token_callbacks=[chunks.append],
+        )
+        try:
+            delta = StreamingDeltaEvent(content="Hel", reasoning_content="think")
+            message = MessageEvent(
+                source="agent", llm_message=Message(role="assistant")
+            )
+            socket_callback = mock_ws_client.call_args.kwargs["callback"]
+            socket_callback(delta)
+            socket_callback(message)
+
+            assert callbacks == [callback]
+            assert events == [delta, message]
+            assert len(chunks) == 1
+            assert chunks[0].choices[0].delta.content == "Hel"
+            assert chunks[0].choices[0].delta.reasoning_content == "think"
+            assert list(conversation.state.events) == [message]
+        finally:
+            conversation.close()
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"

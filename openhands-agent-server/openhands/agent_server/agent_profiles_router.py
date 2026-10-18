@@ -47,6 +47,8 @@ from openhands.sdk.profiles import (
     ACPAgentProfile,
     AgentProfile,
     AgentProfileDiagnostics,
+    AgentProfileInfo,
+    AgentProfileListResponse,
     AgentProfileStore,
     OpenHandsAgentProfile,
     ProfileLimitExceeded,
@@ -71,22 +73,6 @@ ProfileName = Annotated[
     Path(min_length=1, max_length=64, pattern=PROFILE_NAME_PATTERN),
 ]
 ProfileId = Annotated[str, Path(min_length=1, max_length=128)]
-
-
-class AgentProfileInfo(BaseModel):
-    """Summary projection of a stored profile (no secret instantiation)."""
-
-    id: str | None = None
-    name: str
-    agent_kind: str = "openhands"
-    revision: int | None = None
-    llm_profile_ref: str | None = None
-    mcp_server_refs: list[str] | None = None
-
-
-class AgentProfileListResponse(BaseModel):
-    profiles: list[AgentProfileInfo]
-    active_agent_profile_id: str | None = None
 
 
 class AgentProfileDetailResponse(BaseModel):
@@ -179,8 +165,9 @@ def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
     unusable ``default`` "ghost" profile (#4031), so we skip the save and leave
     ``llm_profile_ref="default"`` as a soft/dangling ref — the canvas
     "LLM not configured" banner and the legible launch-time error already cover
-    that state, and materialize/dry-run reports it as ``dangling_llm_profile_ref``
-    rather than raising.
+    that state, and materialize reports it rather than raising: ``valid`` false,
+    ``llm_profile_resolved`` false and an ``errors`` entry
+    ``"LLM profile 'default' not found"``.
 
     Existence is checked via ``load()``, not ``list()``: the store resolves a
     name straight to a filesystem path, so on a case-insensitive filesystem

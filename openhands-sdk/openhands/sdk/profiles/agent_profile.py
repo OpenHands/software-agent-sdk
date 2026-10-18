@@ -84,6 +84,24 @@ def build_profile_verification(
     )
 
 
+class AgentProfileInfo(BaseModel):
+    """Summary projection of a stored profile (no secret instantiation)."""
+
+    id: str | None = None
+    name: str
+    agent_kind: str = "openhands"
+    revision: int | None = None
+    llm_profile_ref: str | None = None
+    mcp_server_refs: list[str] | None = None
+
+
+class AgentProfileListResponse(BaseModel):
+    """Response body returned by ``GET /api/agent-profiles``."""
+
+    profiles: list[AgentProfileInfo]
+    active_agent_profile_id: str | None = None
+
+
 class AgentProfileBase(BaseModel):
     """Shared identity + provenance fields for every ``AgentProfile`` variant.
 

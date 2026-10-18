@@ -29,7 +29,7 @@ Routes: `POST /api/conversations/{conversation_id}/switch_profile`,
 - `F09.switch-llm-errors`: an unknown conversation is 404, a body without `llm` or without `llm.model` is 422, and a dangling `provider_connection_id` is 422; the installed LLM is unchanged.
 - `F09.switch-llm-encrypted-key`: mid-conversation, a switch whose `api_key` is the `gAAAAA` token from an `encrypted` profile read is decrypted before install; the next turn runs on DeepSeek and its usage is recorded under the new `usage_id`.
 - `F09.switch-llm-provider-connection`: a switch that references a saved provider connection instead of a key runs the next turn with the connection's key; `GET` shows the `provider_connection_id` and no key.
-- `F09.switch-llm-registered-usage-id`: after the agent initialized, a switch whose `usage_id` is already registered (the `default` a saved profile's config carries) either installs the posted LLM or is refused, never a silent 200 no-op.
+- `F09.switch-llm-registered-usage-id`: after the agent initialized, a switch whose `usage_id` is already registered (the `default` a saved profile's config carries) with a different config installs the posted LLM, never a silent 200 no-op.
 - `F09.switch-llm-before-first-run`: a switch before the conversation's first run is used by that run, and the run's token usage is recorded under the switched LLM's `usage_id`.
 - `F09.switch-llm-mid-run`: a `switch_llm` while a turn is running (the agent is inside a 20 s tool call) answers 200, the socket pushes the new `agent`, and the same run's next LLM call already uses the switched LLM (usage under both `usage_id`s) and the run finishes.
 - `F09.switch-llm-mid-run-get`: right after a mid-run switch answers 200, `GET` and `base_state.json` show the switched LLM, as the socket already does.
@@ -293,7 +293,7 @@ Preconditions:
   documents nothing and offers no way to refresh, so a REST consumer can
   only apply the edit with `switch_llm` and a fresh `usage_id`. The profile
   is deleted on exit.
-- **Switch onto a registered usage id (`F09.switch-llm-registered-usage-id`), known bug.**
+- **Switch onto a registered usage id (`F09.switch-llm-registered-usage-id`).**
   Forward the saved `deepseek-pro` profile's config, read with
   `X-Expose-Secrets: encrypted` (the per-conversation model switch the
   route's docstring describes), to two offline conversations: one fresh, one
@@ -305,22 +305,18 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$FID" --quiet --check agent.llm.model eq deepseek/deepseek-v4-pro
   KID=$(control-agent-server conversation start --placeholder-agent --tools none --no-autotitle --prompt 'Reply with the single word: ok' --no-run --print-id)
   control-agent-server api GET "/api/conversations/$KID" --quiet --check agent.llm.usage_id eq default --check execution_status eq idle
-  ST=$(control-agent-server api POST "/api/conversations/$KID/switch_llm" --json "{\"llm\": $PRO}" \
-    --expect 200,400,409,422 --save F09.switch-llm-registered-usage-id/switch | jq -r .status)
-  test "$ST" != 200 || control-agent-server api GET "/api/conversations/$KID" --quiet --check agent.llm.model eq deepseek/deepseek-v4-pro --save F09.switch-llm-registered-usage-id/get  # bug: status eq 200 && checks.0.actual eq openai/qa-placeholder
+  control-agent-server api POST "/api/conversations/$KID/switch_llm" --json "{\"llm\": $PRO}" --expect 200 --save F09.switch-llm-registered-usage-id/switch
+  control-agent-server api GET "/api/conversations/$KID" --quiet --check agent.llm.model eq deepseek/deepseek-v4-pro --check agent.llm.usage_id eq default --save F09.switch-llm-registered-usage-id/get
   ```
   The profile config carries `usage_id: default`, and the fresh conversation
-  switches to `deepseek/deepseek-v4-pro`. Expected: the initialized one
-  switches too, or the switch is refused with a 4xx. Today it is 200
-  `{"success": true}` and `GET` still shows `openai/qa-placeholder`: once the
-  agent initialized, `default` is in the conversation's LLM registry, and
-  `switch_llm` reuses the registered LLM for a known `usage_id`
-  (first-write-wins) and drops the posted one. `LocalConversation.switch_llm`
-  documents that contract, but the route answers `{"success": true}` and its
-  docstring offers it for forwarding profile configs, which carry `default`
-  (also the `LLM` default when `usage_id` is omitted). Any conversation that
-  has received a message silently ignores such a switch; a fresh `usage_id`
-  works (as in `F09.switch-llm-encrypted-key`).
+  switches to `deepseek/deepseek-v4-pro`. The initialized one switches too,
+  although `default` is already in its LLM registry (agent initialization
+  registered it): `switch_llm` reuses a registered LLM only when its config
+  equals the posted one, and otherwise replaces the entry, keeping the usage
+  already recorded under that `usage_id` in `stats.usage_to_metrics`. This is
+  what makes forwarding a profile config, which carries `default` (also the
+  `LLM` default when `usage_id` is omitted), work on a conversation that has
+  received a message.
 - **Switch before the first run (`F09.switch-llm-before-first-run`), known bug.**
   Start from an agent whose model is unreachable, switch to DeepSeek before
   anything ran, then run.
@@ -425,18 +421,17 @@ Preconditions:
   The switch is 200 although no ACP session exists (`acp_session_id` is
   absent); `acp_model`, `agent_state.acp_current_model_id` and
   `current_model_id` all say `opus`, so the first session would start on it.
-- **Blank ACP model (`F09.acp-model-blank`), known bug.** A second ACP
+- **Blank ACP model (`F09.acp-model-blank`).** A second ACP
   conversation that has not run.
   ```sh
   AID2=$(control-agent-server conversation start --no-autotitle --body-json '{"agent_settings": {"agent_kind": "acp", "acp_server": "claude-code", "acp_model": "sonnet"}}' --print-id)
   control-agent-server api GET "/api/conversations/$AID2" --quiet --check agent.kind eq ACPAgent --check agent.acp_model eq sonnet --check execution_status eq idle
-  control-agent-server api POST "/api/conversations/$AID2/switch_acp_model" --json '{"model": "   "}' --expect 400,422 --save F09.acp-model-blank/blank  # bug: status eq 200 && response.body.success eq true
-  control-agent-server api GET "/api/conversations/$AID2" --quiet --check agent.acp_model eq sonnet --check current_model_id eq sonnet  # bug: status eq 200 && checks.0.actual eq '   ' && checks.1.actual eq '   '
+  control-agent-server api POST "/api/conversations/$AID2/switch_acp_model" --json '{"model": "   "}' --expect 400,422 --save F09.acp-model-blank/blank
+  control-agent-server api GET "/api/conversations/$AID2" --quiet --check agent.acp_model eq sonnet --check current_model_id eq sonnet
   ```
-  Expected: refused, as `ACPAgent.set_acp_model` refuses an empty or
-  whitespace-only model on a live session (`model must be a non-empty
-  string`, 400). Today the pre-run path skips that check: 200, and
-  `agent.acp_model` and `current_model_id` become `"   "`.
+  The switch is refused with 400 (`model must be a non-empty string`), as
+  on a live session, and `agent.acp_model` and `current_model_id` stay
+  `sonnet`.
 - **LLM switches on an ACP conversation (`F09.switch-llm-acp-refused`), known bug.**
   A third ACP conversation that has not run; its agent carries a
   placeholder LLM that only names the model.
@@ -597,21 +592,20 @@ Preconditions:
   which changed `TID`; `switchAcpModel` on the ACP conversation that has not
   run resolves (no 409) and `acp_model` and `current_model_id` become
   `opus`, also in `base_state.json`.
-- **TypeScript docstrings for a pre-run ACP switch (`F09.ts-client-acp-docs`), known bug.**
+- **TypeScript docstrings for a pre-run ACP switch (`F09.ts-client-acp-docs`).**
   Both `switchAcpModel` methods exist; their docstrings should not promise a
   409 the server never sends.
   ```sh
   grep -n 'async switchAcpModel(' clients/typescript/src/client/conversation-client.ts
   grep -n 'async switchAcpModel(' clients/typescript/src/conversation/remote-conversation.ts
-  control-agent-server assert --value "$(cat clients/typescript/src/client/conversation-client.ts clients/typescript/src/conversation/remote-conversation.ts | grep -c 'returns 409 before the first message')" --check . eq 0  # bug: value ge 1
+  control-agent-server assert --value "$(cat clients/typescript/src/client/conversation-client.ts clients/typescript/src/conversation/remote-conversation.ts | grep -c 'returns 409 before the first message')" --check . eq 0
+  control-agent-server assert --value "$(cat clients/typescript/src/client/conversation-client.ts clients/typescript/src/conversation/remote-conversation.ts | grep -c 'the first session. Non-ACP conversations get 400.')" --check . eq 2
   ```
   Expected: the docstrings of `ConversationClient.switchAcpModel` and
   `RemoteConversation.switchAcpModel` say what `F09.acp-model-deferred` and
   `F09.ts-client` observe: before the first run the server answers 200 and
-  stores the model for the first session. Today both say "the server
-  returns 409 before the first message", so a TypeScript consumer that
-  follows them handles a 409 that never comes (and may tell its user to set
-  the model through settings instead).
+  stores the model for the first session, and a non-ACP conversation gets
+  400. Neither promises a 409.
 - **Load a plugin (`F09.load-plugin`).** Start `PID` from the saved settings
   with the `qa-f09-mkt` marketplace registered on its `agent_context` (not
   auto-loaded), then load the plugin while capturing the socket.
@@ -770,14 +764,14 @@ Preconditions:
   While a step is running, `GET` keeps the old LLM until the step ends
   (`F09.switch-llm-mid-run-get`); the socket and the run itself switch at
   once, so wait for the run (or read the socket) before asserting on `GET`.
-- The LLM registry of a conversation is first-write-wins per `usage_id`:
-  `switch_llm` with a `usage_id` that is already registered (the default
-  `default` once the agent initialized, or any id used before) silently
-  keeps the registered LLM, and `switch_profile` reuses the copy cached under
-  `profile:<name>` at its first use. Always send a fresh `usage_id` with
-  `switch_llm` (`F09.switch-llm-registered-usage-id`,
-  `F09.switch-profile-edited`). Switching back to an earlier `usage_id` or
-  profile is cheap for the same reason.
+- `switch_llm` with a `usage_id` that is already registered (the default
+  `default` once the agent initialized, or any id used before) installs the
+  posted config, replacing the registered entry when the config differs and
+  keeping that id's usage in `stats.usage_to_metrics`
+  (`F09.switch-llm-registered-usage-id`); an identical config reuses the
+  registered LLM, so switching back is cheap. `switch_profile` reuses the
+  copy cached under `profile:<name>` at its first use
+  (`F09.switch-profile-edited`).
 - Usage is accounted per `usage_id` in `stats.usage_to_metrics`, but only
   for LLMs registered after the agent initialized
   (`F09.switch-llm-before-first-run`); send one message (or create with an
@@ -815,9 +809,8 @@ Preconditions:
   `available_models` are unknown (`false`, `[]`) until a session started. A
   504 from a live switch has its `detail` rewritten to `Internal Server
   Error`; read `exception`. The TypeScript client's `switchAcpModel`
-  docstrings still say the server returns 409 before the first message; the
-  server answers 200 and defers (`F09.acp-model-deferred`, `F09.ts-client`,
-  `F09.ts-client-acp-docs`).
+  docstrings document this 200-and-defer behaviour (`F09.acp-model-deferred`,
+  `F09.ts-client`, `F09.ts-client-acp-docs`).
 - A live ACP session needs the provider's CLI and an account for it. For
   `claude-code`, DeepSeek's Anthropic-compatible API works as the account
   (secrets `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic` and

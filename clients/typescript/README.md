@@ -377,7 +377,10 @@ Manages conversation events with caching and synchronization.
 
 ### WebSocketCallbackClient
 
-Handles real-time event streaming via WebSocket.
+Handles real-time event streaming via WebSocket. It and `BashWebSocketClient`
+use the runtime's global `WebSocket` (browsers, Node 22+), looked up when a
+socket opens; on an older Node, assign a constructor such as the `ws` package to
+`globalThis.WebSocket` first.
 
 #### Methods
 
