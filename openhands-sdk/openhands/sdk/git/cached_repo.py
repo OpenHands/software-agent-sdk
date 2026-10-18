@@ -13,7 +13,13 @@ from pathlib import Path
 from filelock import FileLock, Timeout
 
 from openhands.sdk.git.exceptions import GitCommandError
-from openhands.sdk.git.utils import redact_url_credentials, run_git_command
+from openhands.sdk.git.utils import (
+    credential_env,
+    credential_helper_args,
+    redact_url_credentials,
+    run_git_command,
+    split_url_credentials,
+)
 from openhands.sdk.logger import get_logger
 
 
@@ -41,8 +47,15 @@ class GitHelper:
         depth: int | None = 1,
         branch: str | None = None,
         timeout: int = 120,
+        credentials: tuple[str, str] | None = None,
     ) -> None:
         """Clone a git repository.
+
+        Inline URL credentials are moved out of the URL and handed to an
+        environment-backed credential helper. Git records the remote URL in the
+        new repository's ``.git/config`` verbatim, so passing a tokenized URL
+        would persist the token on disk; splitting it first keeps the config
+        credential-free while still authenticating the clone.
 
         Args:
             url: Git URL to clone.
@@ -54,11 +67,22 @@ class GitHelper:
                 to checkout arbitrary commits.
             branch: Branch/tag to checkout during clone.
             timeout: Timeout in seconds.
+            credentials: Explicit ``(username, password)``. Inline URL
+                credentials are used when this is omitted.
 
         Raises:
             GitCommandError: If clone fails.
         """
-        cmd = ["git", "clone"]
+        clean_url, inline_credentials = split_url_credentials(url)
+        creds = credentials or inline_credentials
+
+        cmd = ["git"]
+        env: dict[str, str] | None = None
+        if creds:
+            cmd.extend(credential_helper_args())
+            env = credential_env(*creds)
+
+        cmd.append("clone")
 
         if depth is not None:
             cmd.extend(["--depth", str(depth)])
@@ -66,9 +90,9 @@ class GitHelper:
         if branch:
             cmd.extend(["--branch", branch])
 
-        cmd.extend([url, str(dest)])
+        cmd.extend([clean_url, str(dest)])
 
-        run_git_command(cmd, timeout=timeout)
+        run_git_command(cmd, timeout=timeout, env=env)
 
     def fetch(
         self,
@@ -76,6 +100,7 @@ class GitHelper:
         remote: str = "origin",
         ref: str | None = None,
         timeout: int = 60,
+        credentials: tuple[str, str] | None = None,
     ) -> None:
         """Fetch from remote.
 
@@ -84,15 +109,24 @@ class GitHelper:
             remote: Remote name.
             ref: Specific ref to fetch (optional).
             timeout: Timeout in seconds.
+            credentials: Optional ``(username, password)`` supplied through the
+                credential helper. Required to reach a private remote whose
+                stored URL is credential-free.
 
         Raises:
             GitCommandError: If fetch fails.
         """
-        cmd = ["git", "fetch", remote]
+        cmd = ["git"]
+        env: dict[str, str] | None = None
+        if credentials:
+            cmd.extend(credential_helper_args())
+            env = credential_env(*credentials)
+
+        cmd.extend(["fetch", remote])
         if ref:
             cmd.append(ref)
 
-        run_git_command(cmd, cwd=repo_path, timeout=timeout)
+        run_git_command(cmd, cwd=repo_path, timeout=timeout, env=env)
 
     def checkout(self, repo_path: Path, ref: str, timeout: int = 30) -> None:
         """Checkout a ref (branch, tag, or commit).
@@ -140,6 +174,31 @@ class GitHelper:
         )
         # "HEAD" means detached HEAD state
         return None if branch == "HEAD" else branch
+
+    def get_remote_url(self, repo_path: Path, remote: str = "origin") -> str | None:
+        """Return a remote's configured URL, or None when it is not set.
+
+        Raises:
+            GitCommandError: If the git command fails for another reason.
+        """
+        return run_git_command(
+            ["git", "remote", "get-url", remote],
+            cwd=repo_path,
+            timeout=10,
+            expected_failure=True,
+        )
+
+    def set_remote_url(
+        self, repo_path: Path, url: str, remote: str = "origin"
+    ) -> None:
+        """Rewrite a remote's URL in the repository config.
+
+        Raises:
+            GitCommandError: If the git command fails.
+        """
+        run_git_command(
+            ["git", "remote", "set-url", remote, url], cwd=repo_path, timeout=10
+        )
 
     def get_default_branch(self, repo_path: Path, timeout: int = 10) -> str | None:
         """Get the default branch name from the remote.
@@ -285,18 +344,25 @@ def _do_clone_or_update(
     Raises:
         GitCommandError: If git operations fail.
     """
+    # Inline credentials are only needed to reach the remote. They are pulled
+    # out of the URL so the URL written to ``.git/config`` stays credential-free,
+    # then handed to the credential helper on each network operation.
+    clean_url, credentials = split_url_credentials(url)
+
     if repo_path.exists() and (repo_path / ".git").exists():
         if update:
             logger.debug(f"Updating repository at {repo_path}")
-            _update_repository(repo_path, ref, git, strict=strict)
+            _update_repository(
+                repo_path, ref, git, strict=strict, credentials=credentials
+            )
         elif ref:
             logger.debug(f"Checking out ref {ref} at {repo_path}")
             _checkout_ref(repo_path, ref, git)
         else:
             logger.debug(f"Using cached repository at {repo_path}")
     else:
-        logger.info(f"Cloning repository from {redact_url_credentials(url)}")
-        _clone_repository(url, repo_path, ref, git)
+        logger.info(f"Cloning repository from {redact_url_credentials(clean_url)}")
+        _clone_repository(clean_url, repo_path, ref, git, credentials=credentials)
 
     return repo_path
 
@@ -306,6 +372,7 @@ def _clone_repository(
     dest: Path,
     branch: str | None,
     git: GitHelper,
+    credentials: tuple[str, str] | None = None,
 ) -> None:
     """Clone a git repository.
 
@@ -316,6 +383,7 @@ def _clone_repository(
             commit SHAs, ``--branch`` is not used; the default branch is cloned
             in full (no ``--depth``) and the SHA is checked out afterward.
         git: GitHelper instance.
+        credentials: Optional ``(username, password)`` for the credential helper.
     """
     # Remove existing directory if it exists but isn't a valid git repo
     if dest.exists():
@@ -324,11 +392,65 @@ def _clone_repository(
     if branch and _FULL_SHA_RE.fullmatch(branch):
         # git clone --branch does not accept raw commit SHAs. Clone the full
         # history without specifying a branch, then checkout the target commit.
-        git.clone(url, dest, depth=None, branch=None)
+        _git_clone(git, url, dest, depth=None, branch=None, credentials=credentials)
         git.checkout(dest, branch)
     else:
-        git.clone(url, dest, depth=1, branch=branch)
+        _git_clone(git, url, dest, depth=1, branch=branch, credentials=credentials)
     logger.debug(f"Repository cloned to {dest}")
+
+
+def _git_clone(
+    git: GitHelper,
+    url: str,
+    dest: Path,
+    *,
+    depth: int | None,
+    branch: str | None,
+    credentials: tuple[str, str] | None,
+) -> None:
+    """Call ``git.clone``, omitting ``credentials`` when there are none."""
+    if credentials:
+        git.clone(url, dest, depth=depth, branch=branch, credentials=credentials)
+    else:
+        git.clone(url, dest, depth=depth, branch=branch)
+
+
+def _git_fetch(
+    git: GitHelper,
+    repo_path: Path,
+    credentials: tuple[str, str] | None,
+) -> None:
+    """Call ``git.fetch``, omitting ``credentials`` when there are none."""
+    if credentials:
+        git.fetch(repo_path, credentials=credentials)
+    else:
+        git.fetch(repo_path)
+
+
+def _sanitize_remote_url(repo_path: Path, git: GitHelper) -> None:
+    """Strip credentials from an existing repository's ``origin`` URL.
+
+    Repositories cached before credential-free cloning may still hold a
+    tokenized URL in ``.git/config``. Rewriting it removes the on-disk secret
+    without touching the working tree or history; subsequent fetches supply
+    credentials through the credential helper instead.
+    """
+    try:
+        current = git.get_remote_url(repo_path)
+    except GitCommandError:
+        return
+    if not isinstance(current, str) or not current:
+        return
+
+    clean_url, _ = split_url_credentials(current)
+    if clean_url == current:
+        return
+
+    try:
+        git.set_remote_url(repo_path, clean_url)
+        logger.info("Removed inline credentials from cached remote URL")
+    except GitCommandError as e:
+        logger.warning(f"Could not sanitize cached remote URL: {e}")
 
 
 def _update_repository(
@@ -336,6 +458,7 @@ def _update_repository(
     ref: str | None,
     git: GitHelper,
     strict: bool = False,
+    credentials: tuple[str, str] | None = None,
 ) -> None:
     """Update an existing cached repository to the latest remote state.
 
@@ -363,6 +486,9 @@ def _update_repository(
         git: GitHelper instance.
         strict: If True, a failed fetch, or a failed checkout of ``ref`` after
             the fetch, raises ``GitCommandError`` instead of keeping the cache.
+        credentials: Optional ``(username, password)`` passed to the credential
+            helper. Needed when the cached remote URL is credential-free and the
+            remote is private.
     """
     if ref:
         # Optimistically attempt a local checkout before touching the network.
@@ -376,11 +502,15 @@ def _update_repository(
         except GitCommandError:
             pass  # ref not cached locally; fall through to fetch
 
+    # Clear any credentials a previous version stored in the cached remote URL.
+    # Safe for public remotes and a prerequisite for credential-free fetching.
+    _sanitize_remote_url(repo_path, git)
+
     # Fetch from origin - if this fails, we still have a usable (stale) cache;
     # strict callers need to know the update did not happen.
     if strict:
-        git.fetch(repo_path)
-    elif not _try_fetch(repo_path, git):
+        _git_fetch(git, repo_path, credentials)
+    elif not _try_fetch(repo_path, git, credentials):
         return
 
     # If a specific ref was requested, check it out
@@ -403,10 +533,14 @@ def _update_repository(
     _recover_from_detached_head(repo_path, git)
 
 
-def _try_fetch(repo_path: Path, git: GitHelper) -> bool:
+def _try_fetch(
+    repo_path: Path,
+    git: GitHelper,
+    credentials: tuple[str, str] | None = None,
+) -> bool:
     """Attempt to fetch from origin. Returns True on success, False on failure."""
     try:
-        git.fetch(repo_path)
+        _git_fetch(git, repo_path, credentials)
         return True
     except GitCommandError as e:
         logger.warning(f"Failed to fetch updates: {e}. Using cached version.")
