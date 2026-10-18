@@ -16,9 +16,7 @@ from litellm import get_supported_openai_params
 from litellm.utils import supports_vision
 
 from openhands.sdk.llm.utils.model_features import (
-    REASONING_EFFORT_MODEL_OVERRIDES,
     VISION_MODEL_OVERRIDES,
-    _normalized_supported_openai_params,
     get_features,
     model_matches,
 )
@@ -62,9 +60,8 @@ def test_model_matches(name, pattern, expected):
         ("gemini-1.5-pro", False),
         # DeepSeek Reasoner
         ("deepseek/deepseek-reasoner", True),
-        # Moonshot Kimi thinking models expose reasoning content but do not
-        # accept the reasoning_effort parameter.
-        ("moonshot/kimi-k2.5", False),
+        # LiteLLM >=1.105 forwards reasoning_effort to Moonshot reasoning models.
+        ("moonshot/kimi-k2.5", True),
         ("moonshot/kimi-k2-thinking", False),
         ("litellm_proxy/moonshot/kimi-k2-thinking", False),
         # Eval LiteLLM proxy wrapper should not affect capability detection.
@@ -443,14 +440,6 @@ def test_kimi_k3_supports_vision(model: str):
 )
 def test_litellm_vision_support_is_exposed_as_model_feature(model: str):
     assert get_features(model).supports_vision is True
-
-
-def test_reasoning_effort_overrides_are_not_redundant():
-    for pattern, litellm_model in REASONING_EFFORT_MODEL_OVERRIDES.items():
-        params = _normalized_supported_openai_params(litellm_model)
-        assert "reasoning_effort" not in params, (
-            f"Remove {pattern!r}: LiteLLM now supports {litellm_model!r}"
-        )
 
 
 def test_vision_overrides_are_not_redundant():
