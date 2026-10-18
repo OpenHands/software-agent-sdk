@@ -14,8 +14,8 @@ from openhands.sdk.security import (
     SecurityAnalyzerBase,
     SecurityRisk,
 )
+from openhands.sdk.tool import Observation
 from openhands.sdk.utils.cipher import Cipher
-from openhands.tools.terminal.definition import TerminalObservation
 
 
 def action(command: str = "ls") -> ActionEvent:
@@ -220,7 +220,7 @@ def test_git_remote_output_is_outside_preexecution_analysis(
         tool_name="terminal",
         tool_call_id=proposed.tool_call_id,
         action_id=proposed.id,
-        observation=TerminalObservation.from_text(output, command="git remote -v"),
+        observation=Observation.from_text(output),
     )
     assert analyzer.analyze_event(observation) is None
     assert len(requests) == 1
