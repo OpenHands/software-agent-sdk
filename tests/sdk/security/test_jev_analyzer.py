@@ -18,6 +18,10 @@ from openhands.sdk.tool import Observation
 from openhands.sdk.utils.cipher import Cipher
 
 
+class GitRemoteTestObservation(Observation):
+    pass
+
+
 def action(command: str = "ls") -> ActionEvent:
     return ActionEvent(
         thought=[TextContent(text="Inspect the project")],
@@ -220,7 +224,7 @@ def test_git_remote_output_is_outside_preexecution_analysis(
         tool_name="terminal",
         tool_call_id=proposed.tool_call_id,
         action_id=proposed.id,
-        observation=Observation.from_text(output),
+        observation=GitRemoteTestObservation.from_text(output),
     )
     assert analyzer.analyze_event(observation) is None
     assert len(requests) == 1
