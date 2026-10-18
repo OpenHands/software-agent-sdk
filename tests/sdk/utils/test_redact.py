@@ -409,4 +409,3 @@ class TestRedactGitHubAppTokenPrefixes:
         """A regex literal describing the pattern is not itself a secret."""
         text = r"pattern: ghu_[A-Za-z0-9]{20,}"
         assert redact_api_key_literals(text) == text
-

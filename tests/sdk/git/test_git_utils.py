@@ -108,4 +108,3 @@ def test_credential_env_carries_secret_out_of_argv():
     env = credential_env("x-access-token", "ghu_SECRET")
     assert env[GIT_CREDENTIAL_USERNAME_ENV] == "x-access-token"
     assert env[GIT_CREDENTIAL_PASSWORD_ENV] == "ghu_SECRET"
-

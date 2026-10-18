@@ -188,9 +188,7 @@ class GitHelper:
             expected_failure=True,
         )
 
-    def set_remote_url(
-        self, repo_path: Path, url: str, remote: str = "origin"
-    ) -> None:
+    def set_remote_url(self, repo_path: Path, url: str, remote: str = "origin") -> None:
         """Rewrite a remote's URL in the repository config.
 
         Raises:

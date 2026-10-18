@@ -643,4 +643,3 @@ def test_update_skips_rewrite_for_clean_remote(tmp_path: Path):
     _update_repository(tmp_path, None, mock_git)
 
     mock_git.set_remote_url.assert_not_called()
-
