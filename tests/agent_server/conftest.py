@@ -1,6 +1,35 @@
+import os
+
 import pytest
 
+from openhands.agent_server.config import (
+    V0_SESSION_API_KEY_ENV,
+    V1_SESSION_API_KEY_ENV,
+)
 from openhands.agent_server.persistence import reset_stores
+
+
+@pytest.fixture(autouse=True)
+def isolate_session_api_key_env():
+    """Put the session-key variables back the way each test found them.
+
+    The server exports its effective key to ``OH_SESSION_API_KEYS_0`` when it
+    starts or is initialized (``export_session_api_key``). Tests that drive
+    those paths directly, or call the helper, would otherwise leave the key in
+    the process environment, and every later app built from the default
+    config would demand it. ``monkeypatch.delenv`` records nothing for a
+    variable that was absent, so this is an explicit snapshot instead.
+    """
+    names = (V0_SESSION_API_KEY_ENV, V1_SESSION_API_KEY_ENV)
+    saved = {name: os.environ.get(name) for name in names}
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 @pytest.fixture(autouse=True)

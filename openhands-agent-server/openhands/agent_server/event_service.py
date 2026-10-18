@@ -1,5 +1,6 @@
 import asyncio
 import time
+import traceback
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
@@ -285,17 +286,24 @@ class EventService:
             },
         )
 
-    async def save_meta(self):
+    async def save_meta(self, stored: StoredConversation | None = None) -> None:
+        """Persist ``stored`` (default: the current metadata) to ``meta.json``.
+
+        A new ``stored`` becomes ``self.stored`` only after the write succeeds,
+        so a refused write (e.g. lost lease ownership) leaves no visible change.
+        """
+        new_stored = self.stored if stored is None else stored
         with self._write_guard():
             meta_file = self.conversation_dir / "meta.json"
             atomic_write_text(
                 meta_file,
-                self.stored.model_dump_json(
+                new_stored.model_dump_json(
                     context={
                         "cipher": self.cipher,
                     }
                 ),
             )
+        self.stored = new_stored
 
     def _without_stored_secret(self, secret_name: str) -> StoredConversation:
         # meta.json (StoredConversation) no longer carries the agent, so there is
@@ -461,10 +469,11 @@ class EventService:
                     agent.restart_for_updated_credentials(secrets)
 
         await asyncio.to_thread(_update)
-        self.stored = self.stored.model_copy(
-            update={"secrets": {**self.stored.secrets, **secrets}}
+        await self.save_meta(
+            self.stored.model_copy(
+                update={"secrets": {**self.stored.secrets, **secrets}}
+            )
         )
-        await self.save_meta()
 
     def _write_guard(self):
         if self._lease is None or self._lease_generation is None:
@@ -551,11 +560,12 @@ class EventService:
         timestamp_lt_str: str | None,
     ) -> bool:
         """Return True if ``event`` matches all of the provided filters."""
-        if (
-            kind is not None
-            and f"{event.__class__.__module__}.{event.__class__.__name__}" != kind
-        ):
-            return False
+        if kind is not None:
+            # Accept the bare class name (the wire ``kind`` value, as the route
+            # docs and the TypeScript client use) or the fully-qualified path.
+            cls = type(event)
+            if kind != cls.__name__ and kind != f"{cls.__module__}.{cls.__name__}":
+                return False
         if source is not None and event.source != source:
             return False
         if timestamp_gte_str is not None and event.timestamp < timestamp_gte_str:
@@ -839,8 +849,29 @@ class EventService:
         )
         return results
 
+    async def reserve_run_slot(self) -> RunSlot | None:
+        """Claim run capacity before saving input that must not outlive a 429.
+
+        Returns ``None`` when this conversation already holds a run permit or
+        still has a run task wrapping up: ``run()`` then reuses that permit or
+        re-arms, so no fresh capacity is needed. Pass the returned slot to
+        ``send_message(..., run_slot=...)`` and release it afterwards.
+
+        Raises:
+            ConversationRunLimitExceeded: If all server run slots are occupied.
+        """
+        task = self._run_task
+        if self._run_session_slot is not None or (task is not None and not task.done()):
+            return None
+        return await RunSlot.acquire(self._run_semaphore)
+
     async def send_message(
-        self, message: Message, run: bool = False, _from_goal_loop: bool = False
+        self,
+        message: Message,
+        run: bool = False,
+        _from_goal_loop: bool = False,
+        *,
+        run_slot: RunSlot | None = None,
     ):
         if not self._conversation:
             raise ValueError("inactive_service")
@@ -875,7 +906,8 @@ class EventService:
                     ):
                         return
                     await self.run(
-                        acp_internal_rerun_generation=explicit_interrupt_generation
+                        acp_internal_rerun_generation=explicit_interrupt_generation,
+                        run_slot=run_slot,
                     )
                     self._acp_internal_rerun_requested = False
                 except ValueError as e:
@@ -898,7 +930,8 @@ class EventService:
             else:
                 try:
                     await self.run(
-                        acp_internal_rerun_generation=explicit_interrupt_generation
+                        acp_internal_rerun_generation=explicit_interrupt_generation,
+                        run_slot=run_slot,
                     )
                     self._acp_internal_rerun_requested = False
                 except ConversationRunLimitExceeded as exc:
@@ -1370,6 +1403,14 @@ class EventService:
                     )
                     self._conversation._on_event(error_event)
 
+        # Likewise, no goal loop survives a reload: a last goal status that is
+        # still active was left by a shutdown or crash mid-loop (close() skips
+        # the status on purpose). Record it as interrupted so it reads as
+        # stopped and stays resumable.
+        await asyncio.get_running_loop().run_in_executor(
+            None, self._reconcile_stale_goal_status
+        )
+
         # Publish initial state update
         await self._publish_state_update()
 
@@ -1445,22 +1486,30 @@ class EventService:
 
         # Use lock to make check-and-set atomic, preventing race conditions
         async with self._run_lock:
+            # A stale internal ACP rerun is dropped before any refusal: an
+            # explicit stop that landed while we waited on _run_lock must win,
+            # and a refusal would make the caller re-arm the rerun.
             if (
+                acp_internal_rerun_generation is not None
+                and self._explicit_interrupt_generation != acp_internal_rerun_generation
+            ):
+                return
+            # _run_task first: a live run holds the state lock across its step
+            # (a tool call can last minutes), so reading execution status would
+            # block this request behind it instead of answering at once.
+            if (self._run_task is not None and not self._run_task.done()) or (
                 await self._get_execution_status()
                 == ConversationExecutionStatus.RUNNING
             ):
                 raise ValueError("conversation_already_running")
             if self._closing:
                 raise ValueError("inactive_service")
+            # Re-check: the status read above can yield to a late stop too.
             if (
                 acp_internal_rerun_generation is not None
                 and self._explicit_interrupt_generation != acp_internal_rerun_generation
             ):
                 return
-
-            # Check if there's already a running task
-            if self._run_task is not None and not self._run_task.done():
-                raise ValueError("conversation_already_running")
 
             # Capture conversation reference for the closure
             conversation = self._conversation
@@ -1543,7 +1592,14 @@ class EventService:
                         worker.add_done_callback(settle)
                         await asyncio.shield(worker)
                 except Exception as exc:
-                    logger.exception("Error during conversation run")
+                    # Log the traceback as plain text, not via exc_info: the
+                    # default Rich console handler takes seconds to render a
+                    # chained LLM error on this loop, stalling every request,
+                    # socket and run meanwhile (#5633).
+                    logger.error(
+                        "Error during conversation run\n%s",
+                        "".join(traceback.format_exception(exc)).rstrip(),
+                    )
                     # Backstop: a run that raised before reaching its own error
                     # handling (e.g. an ACP cold-start failure in init_state,
                     # which runs outside run()/arun()'s try-block) can leave the
@@ -1876,13 +1932,39 @@ class EventService:
         if conversation is None:
             return None
         with conversation._state:
-            for event in reversed(list(conversation._state.events)):
+            events = conversation._state.events
+            # Walk back lazily: the latest goal status is usually near the end,
+            # so this avoids reading the whole log from disk.
+            for i in range(len(events) - 1, -1, -1):
+                event = events[i]
                 if (
                     isinstance(event, ConversationStateUpdateEvent)
                     and event.key == "goal"
                 ):
                     return event.value if isinstance(event.value, dict) else None
         return None
+
+    def _reconcile_stale_goal_status(self) -> None:
+        """Mark a goal status persisted as active, but with no loop, interrupted."""
+        conversation = self._conversation
+        try:
+            last = self._last_goal_loop_status()
+            if conversation is None or last is None or not last.get("active"):
+                return
+            stale = GoalStatus.model_validate(last)
+        except Exception:
+            # Best effort: an unreadable log must not keep the conversation
+            # from loading.
+            logger.warning("Could not check the last goal status", exc_info=True)
+            return
+        event = ConversationStateUpdateEvent(
+            key="goal",
+            value=stale.model_copy(
+                update={"active": False, "status": "interrupted", "verdict": None}
+            ).model_dump(),
+        )
+        with conversation._state:
+            conversation._on_event(event)
 
     async def resume_goal_loop(
         self, *, judge_llm: LLM | None = None, max_iterations: int | None = None
@@ -2192,15 +2274,17 @@ class EventService:
         )
 
     def _get_agent_final_response_sync(self) -> str:
-        """Extract the agent's final response from the conversation events.
+        """Extract the agent's final response from the active branch.
 
+        Only the active branch counts: after ``navigate`` moves HEAD back, an
+        answer on the abandoned branch is not the conversation's response.
         Reads directly from the EventLog without acquiring the state lock.
         EventLog reads are safe without the FIFOLock because events are
         append-only and immutable once written.
         """
         if not self._conversation:
             raise ValueError("inactive_service")
-        return get_agent_final_response(self._conversation._state.events)
+        return get_agent_final_response(self._conversation._state.active_branch())
 
     async def get_agent_final_response(self) -> str:
         """Extract the agent's final response from the conversation events.

@@ -37,6 +37,7 @@ from openhands.sdk.settings import (
     export_agent_settings_schema,
 )
 from openhands.sdk.settings.api_models import MCPServerPatch
+from openhands.sdk.utils.pydantic_secrets import is_redacted_secret
 
 
 logger = get_logger(__name__)
@@ -463,10 +464,13 @@ async def list_secrets(
     allowed_names: set[str] | None = None
     if agent_profile_id is not None:
         profile_store = get_agent_profile_store()
-        profile_name = profile_store.name_for_id(agent_profile_id)
-        if profile_name is None:
-            raise HTTPException(status_code=404, detail="Agent profile not found")
-        profile = profile_store.load(profile_name)
+        # store_errors() answers an unloadable profile (400) and a busy store
+        # (503) the way the agent-profile routes do.
+        with store_errors():
+            profile_name = profile_store.name_for_id(agent_profile_id)
+            if profile_name is None:
+                raise HTTPException(status_code=404, detail="Agent profile not found")
+            profile = profile_store.load(profile_name)
         if profile.secret_refs is not None:
             allowed_names = set(profile.secret_refs)
 
@@ -497,7 +501,7 @@ async def get_secret_value(request: Request, name: str) -> Response:
     to be used with LookupSecret for lazy secret resolution.
 
     Raises:
-        HTTPException: 400 if name format is invalid, 404 if secret not found.
+        HTTPException: 422 if name format is invalid, 404 if secret not found.
     """
     _validate_secret_name(name)
 
@@ -529,9 +533,16 @@ async def create_secret(
     """Create or update a custom secret (upsert).
 
     Raises:
-        HTTPException: 400 if secret name format is invalid, 500 if file is corrupted.
+        HTTPException: 422 if the name or value is invalid, 500 if file is corrupted.
     """
     _validate_secret_name(secret.name)
+
+    value = secret.value.get_secret_value()
+    if not value.strip() or is_redacted_secret(value):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Secret value must not be empty or redacted",
+        )
 
     config = get_config(request)
     store = get_secrets_store(config)
@@ -539,7 +550,7 @@ async def create_secret(
     try:
         store.set_secret(
             name=secret.name,
-            value=secret.value.get_secret_value(),
+            value=value,
             description=secret.description,
         )
     except RuntimeError as e:
@@ -569,7 +580,7 @@ async def delete_secret(request: Request, name: str) -> dict[str, bool]:
     """Delete a custom secret by name.
 
     Raises:
-        HTTPException: 400 if name format is invalid, 404 if secret not found,
+        HTTPException: 422 if name format is invalid, 404 if secret not found,
         500 if file is corrupted.
     """
     _validate_secret_name(name)

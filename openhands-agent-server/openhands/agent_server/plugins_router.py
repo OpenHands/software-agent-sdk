@@ -19,6 +19,7 @@ from openhands.agent_server.plugins_service import (
     PluginSkillSummary,
     service_disable_plugin,
     service_enable_plugin,
+    service_fetch_plugin,
     service_get_installed_plugin,
     service_get_plugins_marketplace_catalog,
     service_install_plugin,
@@ -31,6 +32,13 @@ from openhands.agent_server.plugins_service import (
 )
 from openhands.sdk.extensions.fetch import ExtensionFetchError
 from openhands.sdk.plugin import InstalledPluginInfo, Plugin, PluginFetchError
+from openhands.sdk.plugin.strict_fetch import PluginSourceError
+from openhands.sdk.secret import SecretSource
+
+
+type JSONValue = (
+    str | int | float | bool | None | list[JSONValue] | dict[str, JSONValue]
+)
 
 
 plugins_router = APIRouter(prefix="/plugins", tags=["Plugins"])
@@ -98,7 +106,9 @@ class InstallPluginRequest(BaseModel):
     source: str = Field(
         min_length=1,
         description=(
-            "Plugin source - git URL, GitHub shorthand, or local path. Examples: "
+            "Plugin source - git URL, GitHub shorthand (github:owner/repo, "
+            "optionally followed by the plugin's path in the repository), or "
+            "local path. Examples: "
             "'github:OpenHands/extensions/plugins/city-weather', '/path/to/plugin'"
         ),
     )
@@ -112,6 +122,34 @@ class InstallPluginRequest(BaseModel):
     force: bool = Field(
         default=False, description="If true, overwrite existing installation"
     )
+
+
+class FetchPluginRequest(BaseModel):
+    """Request body for strictly fetching a plugin without installing it."""
+
+    source: str = Field(min_length=1, description="Plugin git source")
+    ref: str | None = Field(default=None, description="Branch, tag, or commit")
+    repo_path: str | None = Field(
+        default=None,
+        description="Subdirectory path within the repository (for monorepos)",
+    )
+    secrets: dict[str, SecretSource] = Field(
+        default_factory=dict,
+        description="Secrets used to expand ${VAR} placeholders in source and ref",
+    )
+    timeout: int = Field(default=60, ge=1, le=600, description="Git timeout seconds")
+
+
+class FetchPluginResponse(BaseModel):
+    """Response from strictly fetching a plugin source."""
+
+    path: str
+    resolved_ref: str | None
+    source: str
+    repo_path: str | None
+    manifest: dict[str, JSONValue]
+    skills: list[str]
+    commands: list[str]
 
 
 class InstalledPluginResponse(BaseModel):
@@ -235,6 +273,42 @@ def get_plugins(request: PluginsRequest) -> PluginsResponse:
         project_dir=request.project_dir,
     )
     return PluginsResponse(plugins=[_plugin_info(p) for p in plugins])
+
+
+@plugins_router.post(
+    "/fetch",
+    response_model=FetchPluginResponse,
+    responses={
+        422: {"description": "Invalid plugin source, ref, path, or plugin"},
+        502: {"description": "Plugin source unavailable"},
+        504: {"description": "Plugin fetch timed out"},
+    },
+)
+def fetch_plugin_endpoint(request: FetchPluginRequest) -> FetchPluginResponse:
+    """Fetch and pin a plugin source without installing or enabling it."""
+    try:
+        checked = service_fetch_plugin(
+            source=request.source,
+            ref=request.ref,
+            repo_path=request.repo_path,
+            secrets=request.secrets,
+            timeout=request.timeout,
+        )
+    except PluginSourceError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+
+    return FetchPluginResponse(
+        path=str(checked.path),
+        resolved_ref=checked.resolved_ref,
+        source=checked.source,
+        repo_path=checked.repo_path,
+        manifest=checked.manifest,
+        skills=checked.skills,
+        commands=checked.commands,
+    )
 
 
 @plugins_router.post(
