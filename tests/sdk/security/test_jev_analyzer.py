@@ -1,10 +1,12 @@
 import json
+import os
+import subprocess
 
 import httpx
 import pytest
 from pydantic import SecretStr
 
-from openhands.sdk.event import ActionEvent
+from openhands.sdk.event import ActionEvent, ObservationEvent
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.security import (
     EnsembleSecurityAnalyzer,
@@ -13,6 +15,7 @@ from openhands.sdk.security import (
     SecurityRisk,
 )
 from openhands.sdk.utils.cipher import Cipher
+from openhands.tools.terminal.definition import TerminalObservation
 
 
 def action(command: str = "ls") -> ActionEvent:
@@ -180,3 +183,66 @@ def test_encrypted_polymorphic_roundtrip(jev_transport):
 def test_invalid_thresholds_rejected():
     with pytest.raises(ValueError, match="low_threshold"):
         JevSecurityAnalyzer(low_threshold=0.8, high_threshold=0.5)
+
+
+@pytest.fixture
+def credential_remote_repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+    remote = (
+        "https://x-access-token:FAKE_TOKEN_NOT_A_CREDENTIAL"
+        "@example.invalid/org/project.git"
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "remote", "add", "origin", remote], check=True
+    )
+    return repo
+
+
+def test_git_remote_output_is_outside_preexecution_analysis(
+    credential_remote_repo, jev_transport
+):
+    requests, responses = jev_transport
+    responses.append((200, {"answers": answers(0.02, 0.03)}))
+    analyzer = JevSecurityAnalyzer(api_key=SecretStr("test-key"))
+    proposed = action("git remote -v")
+    assert analyzer.analyze_action(proposed).risk == SecurityRisk.LOW
+
+    output = subprocess.run(
+        ["git", "-C", str(credential_remote_repo), "remote", "-v"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "FAKE_TOKEN_NOT_A_CREDENTIAL" in output
+    observation = ObservationEvent(
+        tool_name="terminal",
+        tool_call_id=proposed.tool_call_id,
+        action_id=proposed.id,
+        observation=TerminalObservation.from_text(output, command="git remote -v"),
+    )
+    assert analyzer.analyze_event(observation) is None
+    assert len(requests) == 1
+    assert "FAKE_TOKEN_NOT_A_CREDENTIAL" not in requests[0].content.decode()
+
+
+@pytest.mark.skipif(
+    os.getenv("JEV_LIVE_REMOTE_REGRESSION") != "1",
+    reason="Opt-in live Jev call; requires TYPESAFE_API_KEY",
+)
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="Pre-action Jev has no repository config or tool-output context",
+)
+def test_live_git_remote_credential_disclosure_requires_confirmation(
+    credential_remote_repo,
+):
+    if not os.getenv("TYPESAFE_API_KEY"):
+        pytest.fail("TYPESAFE_API_KEY is required for the opted-in live test")
+    analyzer = JevSecurityAnalyzer()
+    result = analyzer.analyze_action(action("git remote -v"))
+    if result.details is None or "error" in result.details:
+        pytest.fail("Live classification failed; this is not a detection result")
+    assert result.risk == SecurityRisk.HIGH
