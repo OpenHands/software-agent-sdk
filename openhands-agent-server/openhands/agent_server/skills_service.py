@@ -24,6 +24,11 @@ from time import monotonic
 
 from pydantic import BaseModel, ValidationError
 
+from openhands.agent_server.git_credentials import (
+    credential_env,
+    credential_helper_args,
+    split_url_credentials,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace import Marketplace
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
@@ -89,6 +94,51 @@ class SkillLoadResult:
     sources: dict[str, int]
 
 
+def _clone_org_repo(org_repo_url: str, temp_dir: Path, org_name: str) -> bool:
+    """Clone an organization repository without exposing its credentials.
+
+    ``org_repo_url`` arrives pre-authenticated, so its userinfo may carry a
+    token. That token is split out of the URL and passed to an
+    environment-backed git credential helper: git is only ever handed the
+    credential-free URL, so the secret never reaches argv (readable via ``ps``)
+    and never lands in the clone's ``.git/config``.
+
+    Returns True on success. A missing repository or denied access is expected
+    and returns False; the caller then continues with an empty skill list.
+    """
+    logger.info(f"Cloning organization skills repository for {org_name}")
+    clean_url, creds = split_url_credentials(org_repo_url)
+
+    env = sanitized_env()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    cmd = ["git"]
+    if creds:
+        cmd.extend(credential_helper_args())
+        env.update(credential_env(*creds))
+    cmd.extend(["clone", "--depth", "1", clean_url, str(temp_dir)])
+
+    try:
+        subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            timeout=120,
+            env=env,
+        )
+    except subprocess.CalledProcessError:
+        # Repository doesn't exist or access denied - this is expected. stderr
+        # is deliberately not logged: on some git versions it echoes the remote
+        # URL, which may still carry credentials on other error paths.
+        logger.debug(
+            f"Organization repository not found or access denied for {org_name}"
+        )
+        return False
+    except subprocess.TimeoutExpired:
+        logger.warning(f"Git clone timed out for organization repository {org_name}")
+        return False
+    return True
+
+
 def load_org_skills_from_url(
     org_repo_url: str,
     org_name: str,
@@ -101,7 +151,10 @@ def load_org_skills_from_url(
     then cleans up the temporary directory.
 
     The org_repo_url should be a pre-authenticated Git URL (e.g., containing
-    credentials or tokens) as provided by the app-server.
+    credentials or tokens) as provided by the app-server. Any inline
+    credentials are moved out of the URL and into an environment-backed git
+    credential helper, so they are never exposed in the process argument list
+    or persisted in the clone's ``.git/config``.
 
     Note:
         This is a blocking I/O operation that may take up to 120 seconds due to
@@ -137,36 +190,8 @@ def load_org_skills_from_url(
         temp_dir = Path(tempfile.mkdtemp(prefix=f"openhands_org_skills_{org_name}_"))
 
     try:
-        # Clone the organization repository (shallow clone for efficiency)
-        logger.info(f"Cloning organization skills repository for {org_name}")
-        try:
-            env = sanitized_env()
-            env["GIT_TERMINAL_PROMPT"] = "0"
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--depth",
-                    "1",
-                    org_repo_url,
-                    str(temp_dir),
-                ],
-                check=True,
-                capture_output=True,
-                timeout=120,
-                env=env,
-            )
-        except subprocess.CalledProcessError:
-            # Repository doesn't exist or access denied - this is expected.
-            # Note: We intentionally don't log stderr as it may contain credentials.
-            logger.debug(
-                f"Organization repository not found or access denied for {org_name}"
-            )
-            return all_skills
-        except subprocess.TimeoutExpired:
-            logger.warning(
-                f"Git clone timed out for organization repository {org_name}"
-            )
+        # Clone the organization repository (shallow clone for efficiency).
+        if not _clone_org_repo(org_repo_url, temp_dir, org_name):
             return all_skills
 
         logger.debug(f"Successfully cloned org repository to {temp_dir}")
