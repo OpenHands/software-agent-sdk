@@ -5,6 +5,7 @@ from functools import cache
 from typing import Any, Literal
 
 from litellm import get_supported_openai_params
+from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
 from litellm.utils import supports_vision as litellm_supports_vision
 
 from openhands.sdk.llm.utils.openhands_provider import OPENHANDS_PROVIDER_PREFIX
@@ -125,6 +126,43 @@ def _real_litellm_provider(
     if not provider or provider in _PASSTHROUGH_PROVIDERS:
         return None
     return provider
+
+
+def has_unbounded_search_cost(
+    model: str | None,
+    *,
+    canonical_model: str | None = None,
+    model_info: Mapping[str, Any] | None = None,
+) -> bool:
+    """Identify search fees that a token-only budget cannot safely reserve.
+
+    A search price schedule alone is not proof that an ordinary call searches.
+    Resolved ordinary OpenAI GPT/o routes can use search optionally; their plain
+    function calls remain token-priced. Known search-only routes are refused
+    even when a dated catalog entry omits its search fee. Other fee-bearing
+    routes stay closed when optional-vs-intrinsic behavior is not established.
+    """
+    info = model_info or {}
+    catalog_key = info.get("key")
+    names = (
+        model,
+        canonical_model,
+        catalog_key if isinstance(catalog_key, str) else None,
+    )
+    for name in names:
+        normalized = _normalize_model_for_litellm(name) or ""
+        if model_matches(
+            normalized, ("gpt-4o-search-preview", "gpt-4o-mini-search-preview")
+        ) or OpenAIGPT5Config.is_model_gpt_5_search_model(normalized):
+            return True
+    if info.get("search_context_cost_per_query") is None:
+        return False
+    if _real_litellm_provider(info) != "openai" or not isinstance(catalog_key, str):
+        return True
+    resolved_name = (_normalize_model_for_litellm(catalog_key) or "").split("/")[-1]
+    return "search" in resolved_name or not resolved_name.startswith(
+        ("gpt-", "o1", "o3", "o4")
+    )
 
 
 @cache

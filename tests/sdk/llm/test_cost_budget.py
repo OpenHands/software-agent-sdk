@@ -3,6 +3,7 @@ import inspect
 import json
 import threading
 from importlib.resources import files
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -15,6 +16,7 @@ from openhands.sdk import LLM, Message, TextContent
 from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.cost_budget import BudgetReservation, CostBudget
 from openhands.sdk.llm.exceptions import LLMBudgetExceededError
+from openhands.sdk.tool.builtins.finish import FinishTool
 from tests.conftest import create_mock_litellm_response
 
 
@@ -406,6 +408,101 @@ def test_budget_refuses_non_token_request_costs(
             messages,
             call_context=LLMCallContext(cost_budget=CostBudget(limit)),
             **kwargs,
+        )
+
+    providers[0].assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "invoke,provider_index",
+    [
+        (LLM.completion, 0),
+        (LLM.acompletion, 1),
+        (LLM.responses, 2),
+        (LLM.aresponses, 3),
+    ],
+)
+async def test_budget_allows_plain_function_calls_with_optional_search_prices(
+    budget_call, invoke, provider_index
+):
+    info, make_llm, messages, providers = budget_call
+    fixture = Path(__file__).with_name("fixtures") / "optional-search-model-info.json"
+    info.update(json.loads(fixture.read_text())["model_info"])
+    llm = make_llm(
+        model="openai/gpt-4o-mini",
+        native_tool_calling=True,
+        input_cost_per_token=0.0000005,
+        output_cost_per_token=0.001,
+    )
+
+    result = invoke(
+        llm,
+        messages,
+        tools=list(FinishTool.create()),
+        add_security_risk_prediction=True,
+        call_context=LLMCallContext(cost_budget=CostBudget(0.2)),
+    )
+    if inspect.isawaitable(result):
+        result = await result
+
+    assert result.message.content == [TextContent(text="ok")]
+    providers[provider_index].assert_called_once()
+    assert providers[provider_index].call_args.kwargs["tools"][0]["type"] == "function"
+
+
+@pytest.mark.parametrize(
+    "invoke,tool_type",
+    [(LLM.responses, "web_search_preview"), (LLM.aresponses, "web_search")],
+)
+async def test_budget_refuses_prepared_native_search_tools(
+    budget_call, monkeypatch, invoke, tool_type
+):
+    _, make_llm, messages, providers = budget_call
+    monkeypatch.setattr(
+        FinishTool, "to_responses_tool", lambda *args, **kwargs: {"type": tool_type}
+    )
+    llm = make_llm()
+
+    with pytest.raises(LLMBudgetExceededError):
+        result = invoke(
+            llm,
+            messages,
+            tools=list(FinishTool.create()),
+            call_context=LLMCallContext(cost_budget=CostBudget(0.2)),
+        )
+        if inspect.isawaitable(result):
+            await result
+
+    for provider in providers:
+        provider.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "model,canonical,key,provider",
+    [
+        ("openai/gpt-4o-mini-search-preview-2025-03-11", None, None, "openai"),
+        ("litellm_proxy/gpt-5-search-api", None, None, "openai"),
+        ("openai/generated-alias", "gpt-4o-search-preview", "gpt-4o-mini", "openai"),
+        ("openai/gpt-4o-search-preview", "gpt-4o-mini", "gpt-4o-mini", "openai"),
+        ("openai/generated-alias", None, "gpt-4o-search-preview", "openai"),
+        ("perplexity/sonar", None, "perplexity/sonar", "perplexity"),
+    ],
+)
+def test_budget_keeps_intrinsic_or_unresolved_search_fees_closed(
+    budget_call, model, canonical, key, provider
+):
+    info, make_llm, messages, providers = budget_call
+    if key is not None:
+        info.update(
+            key=key,
+            litellm_provider=provider,
+            search_context_cost_per_query={"search_context_size_medium": 0.025},
+        )
+    llm = make_llm(model=model, model_canonical_name=canonical)
+
+    with pytest.raises(LLMBudgetExceededError):
+        llm.completion(
+            messages, call_context=LLMCallContext(cost_budget=CostBudget(0.2))
         )
 
     providers[0].assert_not_called()

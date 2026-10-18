@@ -158,7 +158,11 @@ from openhands.sdk.llm.utils.image_inline import (
 from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provider
 from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 from openhands.sdk.llm.utils.metrics import Metrics
-from openhands.sdk.llm.utils.model_features import ModelFeatures, get_features
+from openhands.sdk.llm.utils.model_features import (
+    ModelFeatures,
+    get_features,
+    has_unbounded_search_cost,
+)
 from openhands.sdk.llm.utils.openhands_provider import (
     LiteLLMCallKwargs,
     canonicalize_openhands_llm_payload,
@@ -1860,11 +1864,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             request_kwargs.get("audio") is not None
             or request_kwargs.get("modalities") not in (None, ["text"])
             or "web_search_options" in request_kwargs
-            or (self._model_info or {}).get("search_context_cost_per_query") is not None
+            or has_unbounded_search_cost(
+                self.model,
+                canonical_model=self.model_canonical_name,
+                model_info=self._model_info,
+            )
         ):
             raise self._budget_bound_error(
                 "non-token audio/search request costs are unsupported"
             )
+        if any(
+            not isinstance(tool, Mapping) or tool.get("type") != "function"
+            for tool in request_kwargs.get("tools") or ()
+        ):
+            raise self._budget_bound_error("native server tools are unsupported")
         if litellm.num_retries or litellm.model_fallbacks or litellm.drop_params:
             raise self._budget_bound_error(
                 "global LiteLLM retries/fallbacks/parameter dropping are unsupported"
@@ -2340,7 +2353,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
 
         @self._make_retry_decorator()
-        @self._budget_guarded_attempt(call_context, call_kwargs)
+        @self._budget_guarded_attempt(
+            call_context, {"tools": resp_tools, **call_kwargs}
+        )
         def _one_attempt(**retry_kwargs: Any) -> ResponsesAPIResponse:
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
@@ -2509,7 +2524,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         @self._make_retry_decorator()
         @self._async_hard_timeout_decorator()
-        @self._budget_guarded_attempt(call_context, call_kwargs)
+        @self._budget_guarded_attempt(
+            call_context, {"tools": resp_tools, **call_kwargs}
+        )
         async def _one_attempt(
             **retry_kwargs: Any,
         ) -> ResponsesAPIResponse:
