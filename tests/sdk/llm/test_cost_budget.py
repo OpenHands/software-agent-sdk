@@ -463,6 +463,8 @@ async def test_budget_allows_plain_function_calls_with_optional_search_prices(
         ("vertex_ai/claude-opus-4-6", "vertex_ai/claude-opus-4-6"),
         ("vertex_ai/gemini-3-pro-preview", "vertex_ai/gemini-3-pro-preview"),
         ("azure_ai/claude-opus-4-6", "azure_ai/claude-opus-4-6"),
+        ("openai/gpt-5.3-codex", "gpt-5.3-codex"),
+        ("openhands/gpt-5.3-codex", "gpt-5.3-codex"),
     ],
 )
 @pytest.mark.parametrize(
@@ -652,21 +654,26 @@ def test_vertex_budget_requires_known_endpoint_premium_or_custom_rates(
 async def test_budget_refuses_prepared_native_search_tools(
     budget_call, monkeypatch, invoke, tool_type
 ):
-    _, make_llm, messages, providers = budget_call
+    info, make_llm, messages, providers = budget_call
+    fixture = (
+        Path(__file__).with_name("fixtures") / "optional-search-provider-info.json"
+    )
+    info.clear()
+    info.update(json.loads(fixture.read_text())["model_info"]["gpt-5.3-codex"])
     method = (
         "to_openai_tool"
         if invoke in (LLM.completion, LLM.acompletion)
         else "to_responses_tool"
     )
     monkeypatch.setattr(FinishTool, method, lambda *args, **kwargs: {"type": tool_type})
-    llm = make_llm(native_tool_calling=True)
+    llm = make_llm(model="openai/gpt-5.3-codex", native_tool_calling=True)
 
-    with pytest.raises(LLMBudgetExceededError):
+    with pytest.raises(LLMBudgetExceededError, match="native/legacy server tools"):
         result = invoke(
             llm,
             messages,
             tools=list(FinishTool.create()),
-            call_context=LLMCallContext(cost_budget=CostBudget(0.2)),
+            call_context=LLMCallContext(cost_budget=CostBudget(50)),
         )
         if inspect.isawaitable(result):
             await result

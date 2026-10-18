@@ -120,6 +120,76 @@ async def test_optional_search_prices_allow_ordinary_conversation_over_http(
         conv.close()
 
 
+@pytest.mark.parametrize("model", ["openai/gpt-5.3-codex", "openhands/gpt-5.3-codex"])
+@pytest.mark.parametrize("use_async", [False, True], ids=["run", "arun"])
+async def test_optional_search_prices_allow_responses_conversation_over_http(
+    provider, tmp_path, monkeypatch, model, use_async
+):
+    base_url, replies, requests = provider
+    fixture = (
+        Path(__file__).with_name("fixtures") / "optional-search-provider-info.json"
+    )
+    info = json.loads(fixture.read_text())["model_info"]["gpt-5.3-codex"]
+    monkeypatch.setattr(llm_module, "get_litellm_model_info", lambda **_: info)
+    replies.append(
+        (
+            200,
+            {
+                "id": "resp-budget-codex",
+                "object": "response",
+                "created_at": 1,
+                "model": "gpt-5.3-codex",
+                "status": "completed",
+                "parallel_tool_calls": False,
+                "tool_choice": "auto",
+                "tools": [],
+                "output": [
+                    {
+                        "type": "message",
+                        "id": "msg-budget-codex",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [
+                            {"type": "output_text", "text": "done", "annotations": []}
+                        ],
+                    }
+                ],
+                "usage": {"input_tokens": 100, "output_tokens": 5, "total_tokens": 105},
+            },
+        )
+    )
+    conv = Conversation(
+        agent=Agent(
+            llm=LLM(
+                model=model,
+                base_url=base_url,
+                api_key=SecretStr("fixture-key"),
+                num_retries=0,
+                max_output_tokens=100,
+            ),
+            tools=[],
+        ),
+        workspace=str(tmp_path),
+        persistence_dir=str(tmp_path / "persist"),
+        max_budget_per_run=50,
+        visualizer=None,
+    )
+    try:
+        conv.send_message("Reply briefly.")
+        if use_async:
+            await conv.arun()
+        else:
+            conv.run()
+
+        assert conv.state.execution_status == ConversationExecutionStatus.FINISHED
+        assert len(requests) == 1
+        assert requests[0]["input"]
+        assert requests[0]["max_output_tokens"] == 100
+        assert conv.conversation_stats.get_combined_metrics().accumulated_cost > 0
+    finally:
+        conv.close()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("api_mode", ["chat", "responses"])
 @pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])

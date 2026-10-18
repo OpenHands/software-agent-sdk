@@ -152,11 +152,11 @@ def has_unbounded_search_cost(
     """Identify search fees that a token-only budget cannot safely reserve.
 
     A search price schedule alone is not proof that an ordinary call searches.
-    Ordinary GPT/o, Claude and Gemini chat routes search only when a request
-    enables a hosted tool. The caller must separately reject those tools and
-    opaque request overrides before using this distinction. Search-only routes
-    stay closed even when a dated catalog entry omits their search fee; unknown
-    fee-bearing routes stay closed too.
+    Ordinary GPT/o, Claude and Gemini chat/Responses routes search only when a
+    request enables a hosted tool. The caller must separately reject those tools
+    and opaque request overrides before using this distinction. Search-only
+    routes stay closed even when a dated catalog entry omits their search fee;
+    unknown fee-bearing routes stay closed too.
     """
     info = model_info or {}
     catalog_key = info.get("key")
@@ -176,7 +176,10 @@ def has_unbounded_search_cost(
             return True
     if info.get("search_context_cost_per_query") is None:
         return False
-    if not isinstance(catalog_key, str) or info.get("mode") != "chat":
+    if not isinstance(catalog_key, str) or info.get("mode") not in {
+        "chat",
+        "responses",
+    }:
         return True
     resolved_name = (_normalize_model_for_litellm(catalog_key) or "").split("/")[-1]
     if "search" in resolved_name:
