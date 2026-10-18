@@ -20,9 +20,7 @@ Pre-call reservation only covers the LLM call wrappers that install a
 reservation (``LLM.completion``/``acompletion``/...). Agents that delegate to an
 external process -- notably :class:`~openhands.sdk.agent.acp_agent.ACPAgent`,
 whose prompts never pass through those wrappers -- do not reserve, so a budget on
-such a conversation is a *post-hoc* ceiling: the run loop checks recorded cost
-after each step, which still stops the run rather than admitting an unbounded
-call.
+such a conversation is rejected rather than accepted without pre-call enforcement.
 """
 
 from __future__ import annotations
@@ -85,7 +83,7 @@ class CostBudget:
     @property
     def limit(self) -> float:
         """Tightest ceiling this view enforces, including ancestor limits."""
-        return min(self._ancestor_limits) if self._ancestor_limits else self._limit
+        return min((self._limit, *self._ancestor_limits))
 
     def _breaches(self, total: float) -> bool:
         """True if ``total`` would exceed this view's ceiling or an ancestor's."""

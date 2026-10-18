@@ -759,7 +759,6 @@ class RemoteConversation(BaseConversation):
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
-        max_budget_per_run: float | None = None,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
@@ -778,6 +777,7 @@ class RemoteConversation(BaseConversation):
         observability_span_name: str = "conversation",
         observability_parent_span_context: str | None = None,
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
+        max_budget_per_run: float | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.

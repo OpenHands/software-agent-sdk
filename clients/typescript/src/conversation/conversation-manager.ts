@@ -342,9 +342,9 @@ export class ConversationManager {
       workingDir?: string;
       userId?: string;
       /**
-       * Per-conversation cost ceiling in USD. Must be > 0 when set. Note that
-       * ACP prompts are enforced post-hoc, since pre-call reservation cannot
-       * cover the external provider path.
+       * Per-run cost ceiling in USD. The server rejects a budget on ACP
+       * conversations with HTTP 422 because their prompts bypass the SDK's
+       * pre-call cost enforcement.
        */
       maxBudgetPerRun?: number;
     } = {}

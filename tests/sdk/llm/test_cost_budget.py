@@ -90,6 +90,13 @@ def test_child_cannot_exceed_a_tighter_ancestor_ceiling():
     assert child.try_reserve(0.1) is not None
 
 
+def test_child_denial_reports_its_own_tighter_ceiling():
+    child = CostBudget(10.0).child(1.0)
+
+    assert child.try_reserve(2.0) is None
+    assert "maximum budget limit ($1.0000)" in child.denial_detail(2.0)
+
+
 def test_concurrent_reservations_cannot_overshoot():
     """A shared budget admits at most the calls that fit, even in parallel."""
     budget = CostBudget(1.0)

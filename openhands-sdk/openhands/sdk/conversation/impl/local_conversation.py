@@ -825,8 +825,6 @@ class LocalConversation(BaseConversation):
         bounds step count. Uses live cost (recorded + in-flight reservations) so
         a run in progress cannot slip past the ceiling between checks.
 
-        ACP prompts bypass the pre-call reservation path, so for those the
-        recorded-cost check below is the backstop that still stops the run.
         """
         if self._cost_budget is None:
             return None
