@@ -5,8 +5,9 @@ concurrent callers (parallel delegates, subagents under one budget) all read
 the same total and pass, and a single call can still overshoot by its own
 worst case. ``CostBudget`` therefore *reserves* each call's worst-case cost
 before it is sent and settles it once the call completes, releasing the
-remainder. Settled + reserved is a live upper bound on what the current run can
-owe.
+remainder when actual cost is known. Failed or unknown-cost attempts retain
+their bound; these conservative charges are budget usage, not billed cost.
+Settled + reserved is a live upper bound on what the current run can owe.
 
 Settled cost is carried on a ledger shared by a parent and its subagents, so the
 whole tree contends on one running total even though a subagent's metrics join
@@ -99,7 +100,7 @@ class CostBudget:
 
     @property
     def spent(self) -> float:
-        """Cost settled so far (excludes in-flight work), floored at 0."""
+        """Settled budget usage, including bounds retained for unknown work."""
         with self._ledger.lock:
             return max(0.0, self._ledger.settled)
 
@@ -144,7 +145,11 @@ class CostBudget:
             return BudgetReservation(self, amount)
 
     def settle(self, reservation: BudgetReservation, actual: float) -> None:
-        """Release a reservation and add the call's actual recorded cost."""
+        """Release a reservation and add its settled budget usage.
+
+        The caller supplies recorded cost or retains a conservative bound for
+        failed/unknown work. This ledger does not replace billing metrics.
+        """
         with self._ledger.lock:
             self._ledger.reserved = max(0.0, self._ledger.reserved - reservation.amount)
             self._ledger.settled += max(0.0, actual)
@@ -171,7 +176,7 @@ class CostBudget:
     ) -> str:
         detail = (
             f"Agent reached maximum budget limit (${self.limit:.4f}); "
-            f"accumulated cost ${accumulated:.4f}."
+            f"budget usage ${accumulated:.4f} (settled and reserved)."
         )
         if attempted is not None:
             detail += f" Next call would need ${attempted:.4f}."

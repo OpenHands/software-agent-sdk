@@ -1,8 +1,21 @@
+import asyncio
+import inspect
+import json
 import threading
+from importlib.resources import files
+from unittest.mock import AsyncMock, Mock
 
 import pytest
+from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
+from openai.types.responses import ResponseOutputMessage, ResponseOutputText
 
+import openhands.sdk.llm.llm as llm_module
+import openhands.sdk.llm.utils.telemetry as telemetry_module
+from openhands.sdk import LLM, Message, TextContent
+from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.cost_budget import BudgetReservation, CostBudget
+from openhands.sdk.llm.exceptions import LLMBudgetExceededError
+from tests.conftest import create_mock_litellm_response
 
 
 def _settle(budget: CostBudget, amount: float) -> None:
@@ -137,3 +150,364 @@ def test_non_positive_limit_is_rejected():
         CostBudget(0.0)
     with pytest.raises(ValueError):
         CostBudget(1.0).child(0.0)
+
+
+@pytest.fixture
+def budget_call(monkeypatch):
+    info = {
+        "max_input_tokens": 20000,
+        "max_output_tokens": 100,
+        "input_cost_per_token": 0.0000005,
+        "output_cost_per_token": 0.001,
+    }
+    monkeypatch.setattr(llm_module, "get_litellm_model_info", lambda **_: info)
+    monkeypatch.setattr(llm_module, "token_counter", lambda **_: 10)
+    chat_response = create_mock_litellm_response("ok")
+    response = ResponsesAPIResponse(
+        id="budget-response",
+        created_at=0,
+        output=[
+            ResponseOutputMessage(
+                id="budget-message",
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[
+                    ResponseOutputText(type="output_text", text="ok", annotations=[])
+                ],
+            )
+        ],
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        top_p=None,
+        tools=[],
+        usage=ResponseAPIUsage(input_tokens=10, output_tokens=5, total_tokens=15),
+        status="completed",
+    )
+    providers = (
+        Mock(return_value=chat_response),
+        AsyncMock(return_value=chat_response),
+        Mock(return_value=response),
+        AsyncMock(return_value=response),
+    )
+    for name, provider in zip(
+        (
+            "litellm_completion",
+            "litellm_acompletion",
+            "litellm_responses",
+            "litellm_aresponses",
+        ),
+        providers,
+        strict=True,
+    ):
+        monkeypatch.setattr(llm_module, name, provider)
+
+    def make_llm(**kwargs):
+        options = {
+            "model": "openai/budget-fixture",
+            "api_key": "test",
+            "max_input_tokens": 20000,
+            "max_output_tokens": 100,
+            "num_retries": 0,
+        }
+        return LLM(**(options | kwargs))
+
+    messages = [
+        Message(role="system", content=[TextContent(text="Reply briefly.")]),
+        Message(role="user", content=[TextContent(text="hi")]),
+    ]
+    return info, make_llm, messages, providers
+
+
+@pytest.mark.parametrize("custom_prices", [{}, {"input_cost_per_token": 0.0}])
+def test_budget_refuses_unknown_directional_prices(budget_call, custom_prices):
+    info, make_llm, messages, providers = budget_call
+    info.pop("input_cost_per_token")
+    info.pop("output_cost_per_token")
+    llm = make_llm(**custom_prices)
+
+    with pytest.raises(LLMBudgetExceededError, match="price"):
+        llm.completion(
+            messages, call_context=LLMCallContext(cost_budget=CostBudget(100))
+        )
+
+    providers[0].assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("input_cost_per_token", float("inf")), ("output_cost_per_token", float("nan"))],
+)
+def test_budget_refuses_nonfinite_prices(budget_call, field, value):
+    info, make_llm, messages, providers = budget_call
+    info[field] = value
+    llm = make_llm()
+
+    with pytest.raises(LLMBudgetExceededError, match="price"):
+        llm.completion(
+            messages, call_context=LLMCallContext(cost_budget=CostBudget(100))
+        )
+
+    providers[0].assert_not_called()
+
+
+@pytest.mark.parametrize("axis", ["input", "output"])
+def test_budget_refuses_unknown_token_bound(budget_call, axis):
+    info, make_llm, messages, providers = budget_call
+    info.pop(f"max_{axis}_tokens")
+    llm = make_llm(**{f"max_{axis}_tokens": None})
+
+    with pytest.raises(LLMBudgetExceededError, match=axis):
+        llm.completion(
+            messages, call_context=LLMCallContext(cost_budget=CostBudget(100))
+        )
+
+    providers[0].assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "invoke,cap",
+    [
+        (LLM.completion, "max_completion_tokens"),
+        (LLM.acompletion, "max_completion_tokens"),
+        (LLM.responses, "max_output_tokens"),
+        (LLM.aresponses, "max_output_tokens"),
+    ],
+)
+async def test_budget_prices_actual_request_output_cap(budget_call, invoke, cap):
+    _, make_llm, messages, providers = budget_call
+    llm = make_llm()
+
+    with pytest.raises(LLMBudgetExceededError):
+        result = invoke(
+            llm,
+            messages,
+            call_context=LLMCallContext(cost_budget=CostBudget(0.2)),
+            **{cap: 1000},
+        )
+        if inspect.isawaitable(result):
+            await result
+
+    for provider in providers:
+        provider.assert_not_called()
+
+
+@pytest.mark.parametrize("limit,admitted", [(0.2, False), (1.1, True)])
+def test_budget_accounts_for_published_context_tiers(
+    budget_call, monkeypatch, limit, admitted
+):
+    info, make_llm, messages, providers = budget_call
+    packaged = files("litellm").joinpath("model_prices_and_context_window_backup.json")
+    info.update(json.loads(packaged.read_text())["xai/grok-4-fast-reasoning"])
+    monkeypatch.setattr(llm_module, "token_counter", lambda **_: 128001)
+    llm = make_llm(
+        model="xai/grok-4-fast-reasoning",
+        max_input_tokens=2000000,
+        max_output_tokens=200000,
+    )
+    providers[0].return_value = create_mock_litellm_response(
+        "ok",
+        model="xai/grok-4-fast-reasoning",
+        prompt_tokens=128001,
+        completion_tokens=200000,
+    )
+    budget = CostBudget(limit)
+
+    if admitted:
+        result = llm.completion(
+            messages, call_context=LLMCallContext(cost_budget=budget)
+        )
+        assert result.message.content == [TextContent(text="ok")]
+        providers[0].assert_called_once()
+    else:
+        with pytest.raises(LLMBudgetExceededError):
+            llm.completion(messages, call_context=LLMCallContext(cost_budget=budget))
+        providers[0].assert_not_called()
+
+
+def test_budget_accounts_for_published_cache_write_tiers(budget_call):
+    info, make_llm, messages, providers = budget_call
+    info["cache_creation_input_token_cost_above_1hr"] = 0.05
+    llm = make_llm()
+
+    with pytest.raises(LLMBudgetExceededError):
+        llm.completion(
+            messages, call_context=LLMCallContext(cost_budget=CostBudget(0.2))
+        )
+
+    providers[0].assert_not_called()
+
+
+@pytest.mark.parametrize("invoke", [LLM.completion, LLM.responses])
+def test_budget_does_not_treat_input_hint_as_provider_limit(budget_call, invoke):
+    _, make_llm, messages, providers = budget_call
+    llm = make_llm(max_input_tokens=16384)
+
+    with pytest.raises(LLMBudgetExceededError):
+        invoke(
+            llm, messages, call_context=LLMCallContext(cost_budget=CostBudget(0.109))
+        )
+
+    for provider in providers:
+        provider.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"n": 2},
+        {"extra_body": {"max_tokens": 1000}},
+        {"model": "another-model"},
+        {"client": Mock()},
+        {"web_search_options": {}},
+        {"retry_policy": {"TimeoutErrorRetries": 2}},
+        {"additional_drop_params": ["max_completion_tokens"]},
+    ],
+)
+def test_budget_refuses_unbounded_request_overrides(budget_call, kwargs):
+    _, make_llm, messages, providers = budget_call
+    llm = make_llm()
+
+    with pytest.raises(LLMBudgetExceededError):
+        llm.completion(
+            messages,
+            call_context=LLMCallContext(cost_budget=CostBudget(0.2)),
+            **kwargs,
+        )
+
+    providers[0].assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "model,kwargs,output_cap,limit",
+    [
+        (
+            "gpt-4o-mini-audio-preview",
+            {
+                "modalities": ["text", "audio"],
+                "audio": {"voice": "alloy", "format": "wav"},
+            },
+            16384,
+            0.05,
+        ),
+        ("gpt-4o-search-preview", {}, 100, 1),
+    ],
+)
+def test_budget_refuses_non_token_request_costs(
+    budget_call, model, kwargs, output_cap, limit
+):
+    info, make_llm, messages, providers = budget_call
+    packaged = files("litellm").joinpath("model_prices_and_context_window_backup.json")
+    info.update(json.loads(packaged.read_text())[model])
+    llm = make_llm(model=f"openai/{model}", max_output_tokens=output_cap)
+
+    with pytest.raises(LLMBudgetExceededError):
+        llm.completion(
+            messages,
+            call_context=LLMCallContext(cost_budget=CostBudget(limit)),
+            **kwargs,
+        )
+
+    providers[0].assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [("num_retries", 2), ("model_fallbacks", ["another-model"]), ("drop_params", True)],
+)
+def test_budget_refuses_unsafe_global_transport_options(
+    budget_call, monkeypatch, name, value
+):
+    _, make_llm, messages, providers = budget_call
+    monkeypatch.setattr(llm_module.litellm, name, value)
+    llm = make_llm()
+
+    with pytest.raises(LLMBudgetExceededError, match="global LiteLLM"):
+        llm.completion(
+            messages, call_context=LLMCallContext(cost_budget=CostBudget(0.2))
+        )
+
+    providers[0].assert_not_called()
+
+
+def test_budget_allows_known_free_custom_prices(budget_call):
+    info, make_llm, messages, providers = budget_call
+    info.pop("input_cost_per_token")
+    info.pop("output_cost_per_token")
+    llm = make_llm(input_cost_per_token=0.0, output_cost_per_token=0.0)
+
+    result = llm.completion(
+        messages, call_context=LLMCallContext(cost_budget=CostBudget(0.01))
+    )
+
+    assert result.message.content == [TextContent(text="ok")]
+    providers[0].assert_called_once()
+
+
+def test_unbudgeted_call_does_not_require_price_or_caps(budget_call):
+    info, make_llm, messages, providers = budget_call
+    info.clear()
+    llm = make_llm(max_input_tokens=None, max_output_tokens=None)
+
+    result = llm.completion(messages)
+
+    assert result.message.content == [TextContent(text="ok")]
+    providers[0].assert_called_once()
+
+
+def test_budget_retains_recorded_cost_before_validation_retry(budget_call):
+    _, make_llm, messages, providers = budget_call
+    response = create_mock_litellm_response("", prompt_tokens=10, completion_tokens=100)
+    response.choices = []
+    providers[0].return_value = response
+    llm = make_llm(
+        input_cost_per_token=0.0000005,
+        output_cost_per_token=0.001,
+        num_retries=2,
+        retry_min_wait=0,
+        retry_max_wait=0,
+    )
+    budget = CostBudget(0.15)
+
+    with pytest.raises(LLMBudgetExceededError):
+        llm.completion(messages, call_context=LLMCallContext(cost_budget=budget))
+
+    providers[0].assert_called_once()
+    assert llm.metrics.accumulated_cost == pytest.approx(0.100005)
+    assert budget.spent == pytest.approx(0.11)
+    assert budget.reserved == 0
+
+
+async def test_budget_retains_unknown_work_on_cancellation(budget_call):
+    _, make_llm, messages, providers = budget_call
+    providers[1].side_effect = asyncio.CancelledError()
+    llm = make_llm()
+    budget = CostBudget(0.15)
+
+    with pytest.raises(asyncio.CancelledError):
+        await llm.acompletion(messages, call_context=LLMCallContext(cost_budget=budget))
+
+    providers[1].assert_called_once()
+    assert budget.spent == pytest.approx(0.11)
+    assert budget.reserved == 0
+
+
+def test_budget_retains_successful_work_when_cost_is_unknown(budget_call, monkeypatch):
+    _, make_llm, messages, providers = budget_call
+    monkeypatch.setattr(
+        telemetry_module,
+        "litellm_completion_cost",
+        Mock(side_effect=ValueError("Fixture: response price unavailable")),
+    )
+    llm = make_llm()
+    budget = CostBudget(0.15)
+    context = LLMCallContext(cost_budget=budget)
+
+    result = llm.completion(messages, call_context=context)
+    with pytest.raises(LLMBudgetExceededError):
+        llm.completion(messages, call_context=context)
+
+    assert result.message.content == [TextContent(text="ok")]
+    providers[0].assert_called_once()
+    assert llm.metrics.accumulated_cost == 0
+    assert budget.spent == pytest.approx(0.11)

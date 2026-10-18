@@ -7,7 +7,10 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM, Message, TextContent
-from openhands.sdk.llm.exceptions import LLMRateLimitError
+from openhands.sdk.llm.call_context import LLMCallContext
+from openhands.sdk.llm.cost_budget import CostBudget
+from openhands.sdk.llm.exceptions import LLMBudgetExceededError, LLMRateLimitError
+from tests.conftest import create_mock_litellm_response
 
 
 @pytest.fixture
@@ -145,3 +148,116 @@ async def test_http_rate_limit_retry_and_budget_recovery(
     response = await call()
     assert response.message.content == [TextContent(text="resumed")]
     assert len(requests) == 2
+
+
+@pytest.mark.parametrize("api_mode", ["chat", "responses"])
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+async def test_budgeted_request_keeps_output_cap_at_http_boundary(
+    provider, api_mode, use_async
+):
+    base_url, replies, requests = provider
+    response = {
+        "id": "bounded-response",
+        "model": "gpt-4o",
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+    if api_mode == "chat":
+        response.update(
+            object="chat.completion",
+            created=1,
+            choices=[
+                {
+                    "index": 0,
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "ok"},
+                }
+            ],
+        )
+    else:
+        response.update(
+            object="response",
+            created_at=1,
+            status="completed",
+            parallel_tool_calls=False,
+            tool_choice="auto",
+            tools=[],
+            output=[
+                {
+                    "type": "message",
+                    "id": "bounded-message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [
+                        {"type": "output_text", "text": "ok", "annotations": []}
+                    ],
+                }
+            ],
+            usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        )
+    replies.append((200, response))
+    llm = LLM(
+        model="openai/gpt-4o",
+        base_url=base_url,
+        api_key=SecretStr("fixture-key"),
+        api_mode=api_mode,
+        max_output_tokens=100,
+        input_cost_per_token=0.000001,
+        output_cost_per_token=0.000001,
+        num_retries=0,
+    )
+    budget = CostBudget(1)
+    context = LLMCallContext(cost_budget=budget)
+    messages = [
+        Message(role="system", content=[TextContent(text="Reply briefly.")]),
+        Message(role="user", content=[TextContent(text="hi")]),
+    ]
+
+    result = (
+        await llm.agenerate(messages, call_context=context, num_retries=9)
+        if use_async
+        else llm.generate(messages, call_context=context, num_retries=9)
+    )
+
+    assert result.message.content == [TextContent(text="ok")]
+    assert len(requests) == 1
+    cap = "max_completion_tokens" if api_mode == "chat" else "max_output_tokens"
+    assert requests[0][cap] == 100
+    assert budget.spent == pytest.approx(0.000002)
+
+
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+async def test_budget_owns_retries_at_http_boundary(provider, use_async):
+    base_url, replies, requests = provider
+    replies.extend(
+        [
+            (503, {"error": {"type": "server_error", "message": "Fixture failure"}}),
+            (200, create_mock_litellm_response("unguarded retry").model_dump()),
+        ]
+    )
+    llm = LLM(
+        model="openai/gpt-4o",
+        base_url=base_url,
+        api_key=SecretStr("fixture-key"),
+        max_output_tokens=100,
+        input_cost_per_token=0.0000005,
+        output_cost_per_token=0.001,
+        num_retries=2,
+        retry_min_wait=0,
+        retry_max_wait=0,
+    )
+    budget = CostBudget(0.2)
+    context = LLMCallContext(cost_budget=budget)
+    messages = [
+        Message(role="system", content=[TextContent(text="Reply briefly.")]),
+        Message(role="user", content=[TextContent(text="hi")]),
+    ]
+
+    with pytest.raises(LLMBudgetExceededError):
+        if use_async:
+            await llm.acompletion(messages, call_context=context, num_retries=2)
+        else:
+            llm.completion(messages, call_context=context, num_retries=2)
+
+    assert len(requests) == 1
+    assert budget.reserved == 0
+    assert 0 < budget.spent <= budget.limit

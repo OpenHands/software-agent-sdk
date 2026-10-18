@@ -62,14 +62,14 @@ def test_run_aborts_with_max_budget_reached_when_reservation_would_exceed():
             e.code for e in conv.state.events if isinstance(e, ConversationErrorEvent)
         ]
         assert "MaxBudgetReached" in codes
-        # The cheapest call (0.002 USD) never fits a 0.001 ceiling.
+        # The provider input/output upper bound never fits a 0.001 ceiling.
         assert conv.conversation_stats.get_combined_metrics().accumulated_cost == 0.0
 
 
 def test_run_completes_and_exposes_accumulated_cost_within_budget():
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
-        conv = _conversation(tmp, max_budget_per_run=1.0)
+        conv = _conversation(tmp, max_budget_per_run=2.0)
         conv.send_message(Message(role="user", content=[TextContent(text="go")]))
 
         def fake_completion(**kwargs):
@@ -89,11 +89,10 @@ def test_budget_is_per_run_not_lifetime():
     """A second run gets a fresh allowance; earlier spend does not drain it."""
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
-        # Each run records 0.02; one call reserves ~0.06 worst case (agent system
-        # prompt + 2000 output tokens). 0.07 admits a run only if the prior
-        # run's 0.02 does not count against it: a lifetime budget would see 0.02
-        # already spent plus the next ~0.06 reservation and refuse.
-        conv = _conversation(tmp, max_budget_per_run=0.07)
+        # Each run records 0.02; the provider's 128k input ceiling plus 2000
+        # output tokens reserves 1.30. A 1.31 allowance admits the later run
+        # only when its prior 0.02 does not count against the new reservation.
+        conv = _conversation(tmp, max_budget_per_run=1.31)
 
         def fake_completion(**kwargs):
             return _response_with_cost(kwargs.get("model", "gpt-4o-mini"))
