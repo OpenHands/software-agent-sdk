@@ -162,6 +162,7 @@ from openhands.sdk.llm.utils.model_features import (
     ModelFeatures,
     get_features,
     has_unbounded_search_cost,
+    has_unresolved_regional_endpoint_pricing,
 )
 from openhands.sdk.llm.utils.openhands_provider import (
     LiteLLMCallKwargs,
@@ -1823,6 +1824,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 self._budget_price(self.output_cost_per_token),
             )
         info = self._model_info or {}
+        if has_unresolved_regional_endpoint_pricing(info):
+            raise self._budget_bound_error("unknown regional endpoint premium")
         input_costs = [self._budget_price(info.get("input_cost_per_token"))]
         output_costs = [self._budget_price(info.get("output_cost_per_token"))]
         uplifts = [1.0]
@@ -1841,7 +1844,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 ("output_cost_per_token", "output_cost_per_reasoning_token")
             ):
                 output_costs.append(self._budget_price(value))
-            elif key.startswith("regional_processing_uplift_multiplier"):
+            elif key.startswith(
+                (
+                    "regional_processing_uplift_multiplier",
+                    "regional_endpoint_uplift_multiplier",
+                )
+            ):
                 uplifts.append(self._budget_price(value))
         uplift = max(uplifts)
         return max(input_costs) * uplift, max(output_costs) * uplift
@@ -1876,8 +1884,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if any(
             not isinstance(tool, Mapping) or tool.get("type") != "function"
             for tool in request_kwargs.get("tools") or ()
-        ):
-            raise self._budget_bound_error("native server tools are unsupported")
+        ) or request_kwargs.get("functions"):
+            # LiteLLM's legacy functions parameter also accepts native tools.
+            raise self._budget_bound_error("native/legacy server tools are unsupported")
+        if request_kwargs.get("cached_content") is not None:
+            # Provider-stored caches may contain hosted tools that are not
+            # visible in this prepared request, in addition to hidden tokens.
+            raise self._budget_bound_error("opaque provider caches are unsupported")
         if litellm.num_retries or litellm.model_fallbacks or litellm.drop_params:
             raise self._budget_bound_error(
                 "global LiteLLM retries/fallbacks/parameter dropping are unsupported"
@@ -1943,9 +1956,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         Failed/cancelled attempts retain their bound because the provider may
         have processed work without returning complete usage. Successful calls
-        settle to recorded positive cost; absent cost telemetry retains the
-        bound too. This ledger is budget usage, not a provider billing record.
-        Unbudgeted calls keep their existing transport options and behavior.
+        settle to recorded positive cost when its pricing is complete; absent
+        or endpoint-premium-unaware telemetry retains the bound too. This ledger
+        is budget usage, not a provider billing record. Unbudgeted calls keep
+        their existing transport options and behavior.
         """
 
         def decorate(attempt: Callable[..., Any]) -> Callable[..., Any]:
@@ -1977,7 +1991,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         raise
                     cost = self._cost_delta(cost_before)
                     reservation.budget.settle(
-                        reservation, cost if cost > 0 else reservation.amount
+                        reservation, self._budget_success_cost(reservation, cost)
                     )
                     return result
 
@@ -2007,7 +2021,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     raise
                 cost = self._cost_delta(cost_before)
                 reservation.budget.settle(
-                    reservation, cost if cost > 0 else reservation.amount
+                    reservation, self._budget_success_cost(reservation, cost)
                 )
                 return result
 
@@ -2018,6 +2032,28 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def _cost_delta(self, cost_before: float) -> float:
         """Cost added to this LLM's own metrics by the call just completed."""
         return max(0.0, self.metrics.accumulated_cost - cost_before)
+
+    def _budget_success_cost(
+        self, reservation: BudgetReservation, cost: float
+    ) -> float:
+        """Keep the bound when recorded cost cannot establish complete pricing."""
+        uses_custom_prices = (
+            self.input_cost_per_token is not None
+            and self.output_cost_per_token is not None
+        )
+        # LiteLLM's calculated token cost does not establish that a known
+        # regional endpoint premium was included. Keep the inclusive bound
+        # without changing the lifetime metrics displayed to callers. Paired
+        # custom prices override the published rates in both paths.
+        unverified_endpoint_premium = not uses_custom_prices and any(
+            key.startswith("regional_endpoint_uplift_multiplier")
+            and value is not None
+            and self._budget_price(value) > 1
+            for key, value in (self._model_info or {}).items()
+        )
+        if cost <= 0 or unverified_endpoint_premium:
+            return max(reservation.amount, cost)
+        return cost
 
     def completion(
         self,

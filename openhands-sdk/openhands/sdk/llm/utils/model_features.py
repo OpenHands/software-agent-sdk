@@ -128,6 +128,21 @@ def _real_litellm_provider(
     return provider
 
 
+def has_unresolved_regional_endpoint_pricing(
+    model_info: Mapping[str, Any] | None,
+) -> bool:
+    """Vertex Claude needs a known premium to bound regional endpoint cost.
+
+    Older LiteLLM catalogs carry token prices but omit this provider's known
+    endpoint premium. Their rates alone cannot establish a safe ceiling.
+    """
+    info = model_info or {}
+    return _real_litellm_provider(info) == "vertex_ai-anthropic_models" and not any(
+        key.startswith("regional_endpoint_uplift_multiplier") and value is not None
+        for key, value in info.items()
+    )
+
+
 def has_unbounded_search_cost(
     model: str | None,
     *,
@@ -137,10 +152,11 @@ def has_unbounded_search_cost(
     """Identify search fees that a token-only budget cannot safely reserve.
 
     A search price schedule alone is not proof that an ordinary call searches.
-    Resolved ordinary OpenAI GPT/o routes can use search optionally; their plain
-    function calls remain token-priced. Known search-only routes are refused
-    even when a dated catalog entry omits its search fee. Other fee-bearing
-    routes stay closed when optional-vs-intrinsic behavior is not established.
+    Ordinary GPT/o, Claude and Gemini chat routes search only when a request
+    enables a hosted tool. The caller must separately reject those tools and
+    opaque request overrides before using this distinction. Search-only routes
+    stay closed even when a dated catalog entry omits their search fee; unknown
+    fee-bearing routes stay closed too.
     """
     info = model_info or {}
     catalog_key = info.get("key")
@@ -149,20 +165,36 @@ def has_unbounded_search_cost(
         canonical_model,
         catalog_key if isinstance(catalog_key, str) else None,
     )
+    provider = _real_litellm_provider(info)
     for name in names:
         normalized = _normalize_model_for_litellm(name) or ""
         if model_matches(
             normalized, ("gpt-4o-search-preview", "gpt-4o-mini-search-preview")
         ) or OpenAIGPT5Config.is_model_gpt_5_search_model(normalized):
             return True
+        if normalized.split("/")[-1].startswith("sonar"):
+            return True
     if info.get("search_context_cost_per_query") is None:
         return False
-    if _real_litellm_provider(info) != "openai" or not isinstance(catalog_key, str):
+    if not isinstance(catalog_key, str) or info.get("mode") != "chat":
         return True
     resolved_name = (_normalize_model_for_litellm(catalog_key) or "").split("/")[-1]
-    return "search" in resolved_name or not resolved_name.startswith(
-        ("gpt-", "o1", "o3", "o4")
-    )
+    if "search" in resolved_name:
+        return True
+    if provider in {"openai", "azure"}:
+        return not resolved_name.startswith(("gpt-", "o1", "o3", "o4"))
+    if provider in {
+        "anthropic",
+        "azure_ai",
+        "bedrock",
+        "bedrock_converse",
+        "vertex_ai-anthropic_models",
+    }:
+        # Bedrock catalog keys include a region and anthropic namespace.
+        return not resolved_name.split(".")[-1].startswith("claude-")
+    if provider in {"gemini", "vertex_ai", "vertex_ai-language-models"}:
+        return not resolved_name.startswith("gemini-")
+    return True
 
 
 @cache

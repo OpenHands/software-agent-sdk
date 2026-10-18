@@ -451,17 +451,215 @@ async def test_budget_allows_plain_function_calls_with_optional_search_prices(
 
 
 @pytest.mark.parametrize(
+    "model,catalog_key",
+    [
+        ("anthropic/claude-sonnet-4-5", "claude-sonnet-4-5"),
+        ("gemini/gemini-2.5-pro", "gemini/gemini-2.5-pro"),
+        (
+            "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "anthropic.claude-sonnet-4-5-20250929-v1:0",
+        ),
+        ("vertex_ai/gemini-2.5-pro", "gemini-2.5-pro"),
+        ("vertex_ai/claude-opus-4-6", "vertex_ai/claude-opus-4-6"),
+        ("vertex_ai/gemini-3-pro-preview", "vertex_ai/gemini-3-pro-preview"),
+        ("azure_ai/claude-opus-4-6", "azure_ai/claude-opus-4-6"),
+    ],
+)
+@pytest.mark.parametrize(
+    "invoke,provider_index",
+    [
+        (LLM.completion, 0),
+        (LLM.acompletion, 1),
+        (LLM.responses, 2),
+        (LLM.aresponses, 3),
+    ],
+)
+async def test_budget_allows_ordinary_provider_calls_with_optional_search_prices(
+    budget_call, monkeypatch, model, catalog_key, invoke, provider_index
+):
+    info, make_llm, messages, providers = budget_call
+    fixture = (
+        Path(__file__).with_name("fixtures") / "optional-search-provider-info.json"
+    )
+    info.clear()
+    info.update(json.loads(fixture.read_text())["model_info"][catalog_key])
+    # The underlying provider functions are test doubles; optional Vertex
+    # package availability is checked separately by test_vertex_preflight.
+    monkeypatch.setattr(llm_module, "assert_vertex_sdk_available", lambda _: None)
+    llm = make_llm(model=model, native_tool_calling=True)
+
+    result = invoke(
+        llm,
+        messages,
+        tools=list(FinishTool.create()),
+        call_context=LLMCallContext(cost_budget=CostBudget(50)),
+    )
+    if inspect.isawaitable(result):
+        result = await result
+
+    assert result.message.content == [TextContent(text="ok")]
+    providers[provider_index].assert_called_once()
+    assert providers[provider_index].call_args.kwargs["tools"][0]["type"] == "function"
+
+
+@pytest.mark.parametrize(
+    "invoke", [LLM.completion, LLM.acompletion, LLM.responses, LLM.aresponses]
+)
+async def test_budget_reserves_vertex_regional_endpoint_premium(
+    budget_call, monkeypatch, invoke
+):
+    info, make_llm, messages, providers = budget_call
+    fixture = (
+        Path(__file__).with_name("fixtures") / "optional-search-provider-info.json"
+    )
+    info.clear()
+    info.update(
+        json.loads(fixture.read_text())["model_info"]["vertex_ai/claude-opus-4-6"]
+    )
+    monkeypatch.setattr(llm_module, "assert_vertex_sdk_available", lambda _: None)
+    llm = make_llm(model="vertex_ai/claude-opus-4-6")
+
+    # Published context/cache tiers require $10.0025 before the endpoint's
+    # 10% regional premium. $10.50 must not admit the $11.00275 bound.
+    with pytest.raises(LLMBudgetExceededError):
+        result = invoke(
+            llm, messages, call_context=LLMCallContext(cost_budget=CostBudget(10.5))
+        )
+        if inspect.isawaitable(result):
+            await result
+
+    for provider in providers:
+        provider.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "invoke,provider_index",
+    [
+        (LLM.completion, 0),
+        (LLM.acompletion, 1),
+        (LLM.responses, 2),
+        (LLM.aresponses, 3),
+    ],
+)
+@pytest.mark.parametrize("custom_prices", [False, True])
+async def test_budget_does_not_refund_unverified_endpoint_premium(
+    budget_call, monkeypatch, invoke, provider_index, custom_prices
+):
+    info, make_llm, messages, providers = budget_call
+    fixture = (
+        Path(__file__).with_name("fixtures") / "optional-search-provider-info.json"
+    )
+    info.clear()
+    info.update(
+        json.loads(fixture.read_text())["model_info"]["vertex_ai/claude-opus-4-6"]
+    )
+    monkeypatch.setattr(llm_module, "assert_vertex_sdk_available", lambda _: None)
+    pricing = (
+        {"input_cost_per_token": 0.000001, "output_cost_per_token": 0.000001}
+        if custom_prices
+        else {}
+    )
+    llm = make_llm(model="vertex_ai/claude-opus-4-6", **pricing)
+    budget = CostBudget(12)
+
+    async def call():
+        result = invoke(llm, messages, call_context=LLMCallContext(cost_budget=budget))
+        return await result if inspect.isawaitable(result) else result
+
+    result = await call()
+    assert result.message.content == [TextContent(text="ok")]
+    recorded_cost = llm.metrics.accumulated_cost
+    assert recorded_cost > 0
+    if custom_prices:
+        await call()
+        assert budget.spent == pytest.approx(llm.metrics.accumulated_cost)
+        assert providers[provider_index].call_count == 2
+    else:
+        # Positive token telemetry does not establish that the endpoint's
+        # premium was included. Keep the inclusive bound for this run.
+        with pytest.raises(LLMBudgetExceededError):
+            await call()
+        assert llm.metrics.accumulated_cost == recorded_cost
+        assert budget.spent > recorded_cost
+        providers[provider_index].assert_called_once()
+
+
+def test_budget_counts_reported_cost_above_endpoint_reservation(
+    budget_call, monkeypatch
+):
+    info, make_llm, messages, providers = budget_call
+    fixture = (
+        Path(__file__).with_name("fixtures") / "optional-search-provider-info.json"
+    )
+    info.clear()
+    info.update(
+        json.loads(fixture.read_text())["model_info"]["vertex_ai/claude-opus-4-6"]
+    )
+    monkeypatch.setattr(llm_module, "assert_vertex_sdk_available", lambda _: None)
+    monkeypatch.setattr(telemetry_module, "litellm_completion_cost", lambda **_: 20)
+    llm = make_llm(model="vertex_ai/claude-opus-4-6")
+    context = LLMCallContext(cost_budget=CostBudget(31))
+
+    llm.completion(messages, call_context=context)
+    with pytest.raises(LLMBudgetExceededError):
+        llm.completion(messages, call_context=context)
+
+    assert llm.metrics.accumulated_cost == 20
+    providers[0].assert_called_once()
+
+
+@pytest.mark.parametrize("custom_prices", [False, True])
+def test_vertex_budget_requires_known_endpoint_premium_or_custom_rates(
+    budget_call, monkeypatch, custom_prices
+):
+    info, make_llm, messages, providers = budget_call
+    # The pinned LiteLLM fallback contains token prices and the context cap
+    # but lacks the regional endpoint premium in the current public catalog.
+    packaged = files("litellm").joinpath("model_prices_and_context_window_backup.json")
+    info.clear()
+    info.update(
+        key="vertex_ai/claude-opus-4-6",
+        **json.loads(packaged.read_text())["vertex_ai/claude-opus-4-6"],
+    )
+    monkeypatch.setattr(llm_module, "assert_vertex_sdk_available", lambda _: None)
+    pricing = (
+        {"input_cost_per_token": 0.000001, "output_cost_per_token": 0.000001}
+        if custom_prices
+        else {}
+    )
+    llm = make_llm(model="vertex_ai/claude-opus-4-6", **pricing)
+    context = LLMCallContext(cost_budget=CostBudget(10.5))
+
+    if custom_prices:
+        result = llm.completion(messages, call_context=context)
+        assert result.message.content == [TextContent(text="ok")]
+        providers[0].assert_called_once()
+    else:
+        with pytest.raises(LLMBudgetExceededError, match="endpoint premium"):
+            llm.completion(messages, call_context=context)
+        providers[0].assert_not_called()
+
+
+@pytest.mark.parametrize(
     "invoke,tool_type",
-    [(LLM.responses, "web_search_preview"), (LLM.aresponses, "web_search")],
+    [
+        (LLM.completion, "web_search"),
+        (LLM.acompletion, "web_search"),
+        (LLM.responses, "web_search_preview"),
+        (LLM.aresponses, "web_search"),
+    ],
 )
 async def test_budget_refuses_prepared_native_search_tools(
     budget_call, monkeypatch, invoke, tool_type
 ):
     _, make_llm, messages, providers = budget_call
-    monkeypatch.setattr(
-        FinishTool, "to_responses_tool", lambda *args, **kwargs: {"type": tool_type}
+    method = (
+        "to_openai_tool"
+        if invoke in (LLM.completion, LLM.acompletion)
+        else "to_responses_tool"
     )
-    llm = make_llm()
+    monkeypatch.setattr(FinishTool, method, lambda *args, **kwargs: {"type": tool_type})
+    llm = make_llm(native_tool_calling=True)
 
     with pytest.raises(LLMBudgetExceededError):
         result = invoke(
@@ -469,6 +667,42 @@ async def test_budget_refuses_prepared_native_search_tools(
             messages,
             tools=list(FinishTool.create()),
             call_context=LLMCallContext(cost_budget=CostBudget(0.2)),
+        )
+        if inspect.isawaitable(result):
+            await result
+
+    for provider in providers:
+        provider.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "invoke", [LLM.completion, LLM.acompletion, LLM.responses, LLM.aresponses]
+)
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"web_search_options": {}},
+        {"functions": [{"google_search": {}}]},
+        {"cached_content": "cachedContents/opaque-hosted-tools"},
+    ],
+)
+async def test_budget_refuses_explicit_or_legacy_provider_search(
+    budget_call, invoke, kwargs
+):
+    info, make_llm, messages, providers = budget_call
+    fixture = (
+        Path(__file__).with_name("fixtures") / "optional-search-provider-info.json"
+    )
+    info.clear()
+    info.update(json.loads(fixture.read_text())["model_info"]["gemini/gemini-2.5-pro"])
+    llm = make_llm(model="gemini/gemini-2.5-pro")
+
+    with pytest.raises(LLMBudgetExceededError):
+        result = invoke(
+            llm,
+            messages,
+            call_context=LLMCallContext(cost_budget=CostBudget(50)),
+            **kwargs,
         )
         if inspect.isawaitable(result):
             await result
@@ -486,6 +720,17 @@ async def test_budget_refuses_prepared_native_search_tools(
         ("openai/gpt-4o-search-preview", "gpt-4o-mini", "gpt-4o-mini", "openai"),
         ("openai/generated-alias", None, "gpt-4o-search-preview", "openai"),
         ("perplexity/sonar", None, "perplexity/sonar", "perplexity"),
+        ("perplexity/sonar", None, None, "perplexity"),
+        ("litellm_proxy/sonar", None, None, None),
+        ("openrouter/perplexity/sonar-pro", None, None, None),
+        (
+            "gemini/deep-research-pro-preview",
+            None,
+            "gemini/deep-research-pro-preview",
+            "gemini",
+        ),
+        ("unknown/gemini-2.5-pro", None, "gemini-2.5-pro", "unknown"),
+        ("gemini/gemini-live-preview", None, "gemini-live-preview", "gemini"),
     ],
 )
 def test_budget_keeps_intrinsic_or_unresolved_search_fees_closed(
@@ -496,9 +741,15 @@ def test_budget_keeps_intrinsic_or_unresolved_search_fees_closed(
         info.update(
             key=key,
             litellm_provider=provider,
+            mode="realtime" if "live" in key else "chat",
             search_context_cost_per_query={"search_context_size_medium": 0.025},
         )
-    llm = make_llm(model=model, model_canonical_name=canonical)
+    llm = make_llm(
+        model=model,
+        model_canonical_name=canonical,
+        input_cost_per_token=0.0000005,
+        output_cost_per_token=0.001,
+    )
 
     with pytest.raises(LLMBudgetExceededError):
         llm.completion(
@@ -541,12 +792,20 @@ def test_budget_allows_known_free_custom_prices(budget_call):
     providers[0].assert_called_once()
 
 
-def test_unbudgeted_call_does_not_require_price_or_caps(budget_call):
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {},
+        {"functions": [{"google_search": {}}]},
+        {"cached_content": "cachedContents/opaque-hosted-tools"},
+    ],
+)
+def test_unbudgeted_call_does_not_require_price_or_caps(budget_call, kwargs):
     info, make_llm, messages, providers = budget_call
     info.clear()
     llm = make_llm(max_input_tokens=None, max_output_tokens=None)
 
-    result = llm.completion(messages)
+    result = llm.completion(messages, **kwargs)
 
     assert result.message.content == [TextContent(text="ok")]
     providers[0].assert_called_once()

@@ -1,11 +1,15 @@
 import json
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from threading import Thread
 
 import pytest
 from pydantic import SecretStr
 
+import openhands.sdk.llm.llm as llm_module
+from openhands.sdk import Agent, Conversation
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.cost_budget import CostBudget
@@ -43,6 +47,77 @@ def provider():
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+@pytest.mark.parametrize(
+    "model", ["anthropic/claude-sonnet-4-5", "gemini/gemini-2.5-pro"]
+)
+@pytest.mark.parametrize("use_async", [False, True], ids=["run", "arun"])
+async def test_optional_search_prices_allow_ordinary_conversation_over_http(
+    provider, tmp_path, monkeypatch, model, use_async
+):
+    base_url, replies, requests = provider
+    fixture = (
+        Path(__file__).with_name("fixtures") / "optional-search-provider-info.json"
+    )
+    key = "claude-sonnet-4-5" if model.startswith("anthropic/") else model
+    info = json.loads(fixture.read_text())["model_info"][key]
+    monkeypatch.setattr(llm_module, "get_litellm_model_info", lambda **_: info)
+    if model.startswith("anthropic/"):
+        response = {
+            "id": "message-budget",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4-5",
+            "content": [{"type": "text", "text": "done"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 100, "output_tokens": 5},
+        }
+    else:
+        response = {
+            "candidates": [
+                {
+                    "content": {"role": "model", "parts": [{"text": "done"}]},
+                    "finishReason": "STOP",
+                    "index": 0,
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 100,
+                "candidatesTokenCount": 5,
+                "totalTokenCount": 105,
+            },
+            "modelVersion": "gemini-2.5-pro",
+        }
+    replies.append((200, response))
+    conv = Conversation(
+        agent=Agent(
+            llm=LLM(
+                model=model,
+                base_url=base_url,
+                api_key=SecretStr("fixture-key"),
+                num_retries=0,
+                max_output_tokens=100,
+            ),
+            tools=[],
+        ),
+        workspace=str(tmp_path),
+        persistence_dir=str(tmp_path / "persist"),
+        max_budget_per_run=50,
+        visualizer=None,
+    )
+    try:
+        conv.send_message("Reply briefly.")
+        if use_async:
+            await conv.arun()
+        else:
+            conv.run()
+
+        assert conv.state.execution_status == ConversationExecutionStatus.FINISHED
+        assert len(requests) == 1
+        assert conv.conversation_stats.get_combined_metrics().accumulated_cost > 0
+    finally:
+        conv.close()
 
 
 @pytest.mark.asyncio
