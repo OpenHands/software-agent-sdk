@@ -30,6 +30,7 @@ import os
 import queue
 import sys
 import threading
+from _thread import LockType
 from collections.abc import Callable
 from pathlib import Path
 
@@ -94,12 +95,26 @@ class DurabilityWriter:
     no cross-conversation serialization, and ordering within a
     conversation is preserved (event file fsync precedes the fsync of the
     length marker that acknowledges it).
+
+    ``submit_fsync`` requires a shared ``write_lock`` held by producers across
+    replacement and submission. Only the worker retains a file descriptor;
+    pending tasks and generation tokens use O(outstanding work) memory.
     """
 
-    def __init__(self, name: str = "openhands-durability") -> None:
+    def __init__(
+        self,
+        name: str = "openhands-durability",
+        *,
+        write_lock: LockType | None = None,
+    ) -> None:
         self._name = name
         self._queue: queue.Queue[Callable[[], None] | None] = queue.Queue()
         self._lock = threading.Lock()
+        # Producers hold this across replacement + submission; the worker only
+        # holds it while checking the generation and opening its file, not fsync.
+        self._write_lock = write_lock if write_lock is not None else threading.Lock()
+        self._has_write_lock = write_lock is not None
+        self._pending_fsync: dict[Path, object] = {}
         self._thread: threading.Thread | None = None
         self._error: BaseException | None = None
         self._closed = False
@@ -159,8 +174,46 @@ class DurabilityWriter:
             self._queue.put(fn)
 
     def submit_fsync(self, path: Path) -> None:
-        """Queue an fsync for ``path`` (already written + renamed)."""
-        self.submit(lambda: fsync_file(path))
+        """Queue the current generation without retaining an open descriptor.
+
+        Producers replacing a path must hold the shared ``write_lock`` across
+        replacement and this call. Superseded tasks are skipped, so an older
+        queue slot can never fsync a newer generation ahead of its dependencies.
+        """
+        if not self._has_write_lock:
+            raise ValueError("submit_fsync requires a shared write_lock")
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("DurabilityWriter is closed")
+            generation = object()
+            try:
+                self._ensure_thread_locked()
+                self._pending_fsync[path] = generation
+                self._queue.put(lambda: self._fsync_generation(path, generation))
+            except BaseException as error:
+                # The replacement is already visible. Never revive an older
+                # token that could now fsync it in an earlier FIFO slot.
+                self._pending_fsync.pop(path, None)
+                if self._error is None:
+                    self._error = error
+                raise
+
+    def _fsync_generation(self, path: Path, generation: object) -> None:
+        with self._write_lock:
+            with self._lock:
+                if self._pending_fsync.get(path) is not generation:
+                    return
+                del self._pending_fsync[path]
+                try:
+                    # Pin on the worker while replacement is excluded, then
+                    # release both locks before the potentially slow syscall.
+                    fd = _open_fsync_file(path)
+                except FileNotFoundError:
+                    return
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
     def flush(self) -> None:
         """Block until all queued work completes; re-raise the first failure."""

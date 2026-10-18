@@ -53,7 +53,7 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
 from openhands.sdk.llm.message import ImageContent, TextContent
-from openhands.sdk.profiles import OpenHandsAgentProfile, build_seed_profile
+from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -265,13 +265,13 @@ def _create_conversation_request(
 ) -> StartConversationRequest:
     llm_profile = _profile_name_from_model(model)
     _require_llm_profile(llm_profile, config)
-    stored = active_agent_profile(config, config.cipher)
+    profile = active_agent_profile(config, config.cipher)
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No active Agent Profile; activate one to use the gateway",
+        )
     settings = get_settings_store(config).load() or PersistedSettings()
-    # With no active profile (e.g. it was deleted), launch the global settings
-    # as an unsaved profile, as the gateway did before it launched profiles.
-    profile = stored or build_seed_profile(
-        settings.agent_settings, settings.active_profile
-    )
     try:
         additions = AgentLaunchAdditions(
             # An ACP server runs its own model.
@@ -287,8 +287,7 @@ def _create_conversation_request(
         ) from None
     return settings.conversation_settings.create_request(
         StartConversationRequest,
-        agent_profile_id=stored.id if stored else None,
-        agent_profile=None if stored else profile,
+        agent_profile_id=profile.id,
         agent_launch_additions=additions,
         workspace=LocalWorkspace(working_dir=config.workspace_path),
         conversation_id=conversation_id,
@@ -337,8 +336,18 @@ def _response_id() -> str:
     return f"{_RESPONSE_ID_PREFIX}{uuid4().hex}"
 
 
+# A run also stops, without being terminal, when it waits for the user; the
+# fresh-conversation path sees this because its run task ends there.
+_STOPPED_RUN_STATUSES = frozenset(
+    {
+        ConversationExecutionStatus.PAUSED,
+        ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
+    }
+)
+
+
 # Reused Chat Completions conversations do not expose a request-specific run
-# task, so wait for both new events and a terminal state. Fresh conversations
+# task, so wait for both new events and a stopped state. Fresh conversations
 # use EventService.wait_for_run_completion() below.
 async def _wait_for_reused_conversation_completion(
     event_service: EventService,
@@ -356,7 +365,9 @@ async def _wait_for_reused_conversation_completion(
         enough_new_events = len(state.events) > min_event_count
         if last_status == ConversationExecutionStatus.RUNNING:
             observed_run = True
-        elif last_status.is_terminal() and (observed_run or enough_new_events):
+        elif (last_status.is_terminal() or last_status in _STOPPED_RUN_STATUSES) and (
+            observed_run or enough_new_events
+        ):
             return last_status
 
         if time.monotonic() >= deadline:
@@ -549,10 +560,18 @@ async def _run_agent(
         if event_service is not None:
             state_before = await event_service.get_state()
             min_event_count = len(state_before.events) + 1
-            await event_service.send_message(
-                Message(role="user", content=user_content),
-                run=True,
-            )
+            # Claim capacity before saving the message: a 429 must leave
+            # nothing behind so an OpenAI client can retry the same request.
+            run_slot = await event_service.reserve_run_slot()
+            try:
+                await event_service.send_message(
+                    Message(role="user", content=user_content),
+                    run=True,
+                    run_slot=run_slot,
+                )
+            finally:
+                if run_slot is not None:
+                    run_slot.release()
     started_new_conversation = event_service is None
 
     if event_service is None:

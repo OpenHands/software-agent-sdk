@@ -52,6 +52,10 @@ _HOP_BY_HOP_HEADERS = frozenset(
     }
 )
 
+# The serving uvicorn adds its own ``date`` and ``server`` to every response
+# without de-duplicating, so copying the upstream's would send two of each.
+_RESPONSE_DROP_HEADERS = frozenset({"date", "server"})
+
 # Stream chunk size for request/response bodies. Set it explicitly so proxy
 # behavior does not depend on an httpx implementation default.
 _CHUNK_SIZE = 64 * 1024
@@ -181,7 +185,11 @@ async def proxy_http(
     return StreamingResponse(
         _response_body(),
         status_code=upstream.status_code,
-        headers=_filter_headers(upstream.headers),
+        headers={
+            k: v
+            for k, v in _filter_headers(upstream.headers).items()
+            if k.lower() not in _RESPONSE_DROP_HEADERS
+        },
         media_type=upstream.headers.get("content-type"),
     )
 

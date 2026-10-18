@@ -204,8 +204,11 @@ class TelemetrySpec(BaseModel):
         default=None,
         description=(
             "Key used to pseudonymize conversation identifiers. Falls back to "
-            "a per-process random salt, which keeps pseudonyms stable within a "
-            "run but unlinkable across runs."
+            "the server's secret key (OH_SECRET_KEY, which defaults to the "
+            "first session API key), so pseudonyms stay stable and linkable "
+            "across restarts until that key changes. Only when there is no "
+            "secret key either is a random key generated per process, which "
+            "makes pseudonyms unlinkable across runs."
         ),
     )
     max_queue_size: int = Field(
@@ -561,6 +564,22 @@ def _read_config_file(path: Path) -> dict[str, Any]:
     return data
 
 
+def export_session_api_key(config: Config) -> None:
+    """Publish the server's first session key to the process environment.
+
+    In-process callers of this server read the key from the environment:
+    the ``start_child_conversation`` tool and the managed LLM key refresh look
+    at ``OH_SESSION_API_KEYS_0`` / ``SESSION_API_KEY``, which is the contract
+    the Docker and remote runtimes meet by setting one of them before the
+    server boots. A key delivered through a config file or ``POST /api/init``
+    exists only in :class:`Config` until it is exported here. The effective
+    key always wins, so a dormant process that booted with one key and was
+    initialized with another ends up with the one it authenticates with.
+    """
+    if config.session_api_keys:
+        os.environ[V1_SESSION_API_KEY_ENV] = config.session_api_keys[0]
+
+
 def load_config(config_path: Path | None = None) -> Config:
     """Load agent-server config from JSON file and environment variables.
 
@@ -578,7 +597,8 @@ def load_config(config_path: Path | None = None) -> Config:
     if env_data is MISSING:
         data = file_data
     else:
-        data = merge(file_data, env_data)
+        # An explicit environment null (OH_<FIELD>_IS_NONE=1) clears a file value.
+        data = merge(file_data, env_data, none_overrides=True)
 
     if not data:
         return Config()

@@ -89,7 +89,8 @@ class LocalFileStore(FileStore):
             if isinstance(contents, str) and self._deferred_durability:
                 if self._durability is None:
                     self._durability = DurabilityWriter(
-                        name=f"fs-durability-{id(self):x}"
+                        name=f"fs-durability-{id(self):x}",
+                        write_lock=self._durability_lock,
                     )
                 writer = self._durability
                 writer.raise_if_failed()
