@@ -2189,7 +2189,11 @@ class EventService:
             self._cancel_ask_user_timeout()
             await self._publish_state_update()
             try:
-                await self.run()
+                # The answer is already recorded, so a capacity refusal here
+                # would strand it: the retry gets a 409 (no pending request) and
+                # no run ever consumes the answer. Wait for a token instead of
+                # turning into a spurious 429, as the re-arm path does.
+                await self.run(wait_for_capacity=True)
             except ValueError as e:
                 # "already running" is normally a no-op success: the live run
                 # loop picks up the response on its next pending-action

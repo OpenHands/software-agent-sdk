@@ -1,6 +1,8 @@
 """Unit tests for ask_user response dispatch helpers."""
 
 import uuid
+from collections.abc import Sequence
+from typing import Self
 
 import pytest
 from pydantic import SecretStr
@@ -26,7 +28,9 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.io import InMemoryFileStore
 from openhands.sdk.llm import MessageToolCall
+from openhands.sdk.tool import Action, Observation, ToolExecutor, register_tool
 from openhands.sdk.tool.builtins.ask_user import AskUserAction
+from openhands.sdk.tool.tool import ToolDefinition
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -420,3 +424,183 @@ def test_second_request_while_one_is_pending_is_rejected():
     observations = [e for e in emitted if isinstance(e, ObservationEvent)]
     assert len(observations) == 1
     assert observations[0].action_id == new_action.id
+
+
+class _DangerAction(Action):
+    pass
+
+
+class _DangerObservation(Observation):
+    executed: bool = False
+
+
+class _DangerExecutor(ToolExecutor[_DangerAction, _DangerObservation]):
+    calls: int = 0
+
+    def __call__(self, action: _DangerAction, conversation=None) -> _DangerObservation:
+        _DangerExecutor.calls += 1
+        return _DangerObservation(executed=True)
+
+
+class _DangerTool(ToolDefinition[_DangerAction, _DangerObservation]):
+    name = "AskUserRegressionDangerTool"
+
+    @classmethod
+    def create(cls, conv_state=None) -> Sequence[Self]:
+        return [
+            cls(
+                description="A tool that must be confirmed",
+                action_type=_DangerAction,
+                observation_type=_DangerObservation,
+                executor=_DangerExecutor(),
+            )
+        ]
+
+
+register_tool(_DangerTool.name, _DangerTool)
+
+
+def _run_mixed_batch_batch_with_confirmation(*, policy):
+    """Drive a real run: one assistant message emits [ask_user, danger_tool]."""
+    import json
+
+    from openhands.sdk.agent import Agent as AgentClass
+    from openhands.sdk.conversation import Conversation
+    from openhands.sdk.llm import Message, MessageToolCall, TextContent
+    from openhands.sdk.testing import TestLLM
+    from openhands.sdk.tool import Tool
+
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="asking")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call-ask",
+                        name="ask_user",
+                        arguments=json.dumps(
+                            {"questions": [{"id": "q", "question": "?"}]}
+                        ),
+                        origin="completion",
+                    ),
+                    MessageToolCall(
+                        id="call-danger",
+                        name=_DangerTool.name,
+                        arguments="{}",
+                        origin="completion",
+                    ),
+                ],
+            ),
+            Message(role="assistant", content=[TextContent(text="done")]),
+        ]
+    )
+    conversation = Conversation(
+        agent=AgentClass(
+            llm=llm, tools=[Tool(name="ask_user"), Tool(name=_DangerTool.name)]
+        ),
+        workspace="/tmp/ask_user_regression",
+        visualizer=None,
+    )
+    conversation.set_confirmation_policy(policy)
+    conversation.send_message("go")
+    conversation.run()
+
+    request = pending_ask_user_request(conversation.state)
+    assert request is not None
+    conversation.respond_to_ask_user(request.request_id, "accept")
+    conversation.run()
+
+    return conversation
+
+
+def test_actions_batched_with_ask_user_still_require_confirmation():
+    """A tool sharing the assistant message with ask_user must not bypass the
+    confirmation policy.
+
+    `_handle_tool_calls` returns at the ask_user pause before the confirmation
+    check runs, so the sibling action would otherwise be executed unapproved on
+    resume.
+    """
+    from openhands.sdk.conversation.state import ConversationExecutionStatus
+    from openhands.sdk.security.confirmation_policy import AlwaysConfirm
+
+    _DangerExecutor.calls = 0
+    conversation = _run_mixed_batch_batch_with_confirmation(policy=AlwaysConfirm())
+
+    # The dangerous sibling is gated: it has not run, and the conversation is
+    # parked WAITING_FOR_CONFIRMATION for it rather than executing it.
+    assert _DangerExecutor.calls == 0
+    assert (
+        conversation.state.execution_status
+        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+
+    # An explicit confirmation then lets it run.
+    conversation.run()
+    assert _DangerExecutor.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_actions_batched_with_ask_user_still_require_confirmation_async():
+    """The async twin of the confirmation-bypass regression."""
+    import json
+
+    from openhands.sdk.agent import Agent as AgentClass
+    from openhands.sdk.conversation import Conversation
+    from openhands.sdk.conversation.state import ConversationExecutionStatus
+    from openhands.sdk.llm import Message, MessageToolCall, TextContent
+    from openhands.sdk.security.confirmation_policy import AlwaysConfirm
+    from openhands.sdk.testing import TestLLM
+    from openhands.sdk.tool import Tool
+
+    _DangerExecutor.calls = 0
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="asking")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call-ask",
+                        name="ask_user",
+                        arguments=json.dumps(
+                            {"questions": [{"id": "q", "question": "?"}]}
+                        ),
+                        origin="completion",
+                    ),
+                    MessageToolCall(
+                        id="call-danger",
+                        name=_DangerTool.name,
+                        arguments="{}",
+                        origin="completion",
+                    ),
+                ],
+            ),
+            Message(role="assistant", content=[TextContent(text="done")]),
+        ]
+    )
+    conversation = Conversation(
+        agent=AgentClass(
+            llm=llm, tools=[Tool(name="ask_user"), Tool(name=_DangerTool.name)]
+        ),
+        workspace="/tmp/ask_user_regression_async",
+        visualizer=None,
+    )
+    conversation.set_confirmation_policy(AlwaysConfirm())
+    conversation.send_message("go")
+    await conversation.arun()
+
+    request = pending_ask_user_request(conversation.state)
+    assert request is not None
+    conversation.respond_to_ask_user(request.request_id, "accept")
+    await conversation.arun()
+
+    assert _DangerExecutor.calls == 0
+    assert (
+        conversation.state.execution_status
+        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+
+    await conversation.arun()
+    assert _DangerExecutor.calls == 1

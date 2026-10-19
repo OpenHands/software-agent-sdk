@@ -1838,7 +1838,39 @@ class TestEventServiceRespondToAskUser:
         assert isinstance(response, AskUserResponseEvent)
         assert response.request_id == "req-1"
         assert response.action == "accept"
-        event_service.run.assert_awaited_once_with()
+        # The answer is already recorded, so the resume waits for capacity
+        # rather than returning a 429 that would strand it.
+        event_service.run.assert_awaited_once_with(wait_for_capacity=True)
+
+    @pytest.mark.asyncio
+    async def test_respond_to_ask_user_waits_for_capacity_instead_of_429(
+        self, event_service
+    ):
+        """An accepted answer must not be stranded by a capacity refusal.
+
+        The answer is recorded before the resume, so a 429 here would leave the
+        conversation WAITING_FOR_CONFIRMATION with an unconsumed answer, and a
+        retry would get a 409 (no pending request). The resume must wait for a
+        slot, matching the re-arm path.
+        """
+        _, conversation = self._service_with_pending()
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        async def _run(*, wait_for_capacity: bool = False):
+            if not wait_for_capacity:
+                raise ConversationRunLimitExceeded("run limit reached")
+
+        event_service.run = AsyncMock(side_effect=_run)
+
+        # No exception escapes: the resume waits instead of turning into a 429.
+        await event_service.respond_to_ask_user(
+            AskUserResponseRequest(request_id="req-1", action="accept")
+        )
+
+        conversation._on_event.assert_called_once()
+        event_service.run.assert_awaited_once_with(wait_for_capacity=True)
+        assert event_service._ask_user_resume_requested is False
 
     @pytest.mark.asyncio
     async def test_respond_to_ask_user_rejects_stale_request_id(self, event_service):
@@ -2033,7 +2065,7 @@ class TestEventServiceRespondToAskUser:
         assert isinstance(responses[0], AskUserResponseEvent)
         assert responses[0].action == "cancel"
         assert responses[0].source == "environment"
-        event_service.run.assert_awaited_once_with()
+        event_service.run.assert_awaited_once_with(wait_for_capacity=True)
 
     @pytest.mark.asyncio
     async def test_no_timeout_armed_when_disabled(self, event_service):

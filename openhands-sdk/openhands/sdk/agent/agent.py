@@ -730,6 +730,12 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     and state.execution_status
                     != ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
                 ):
+                    # These actions shared the assistant message with ask_user,
+                    # so _handle_tool_calls returned at the pause before running
+                    # the confirmation check on them. Route them through it here
+                    # or the policy/analyzer would be bypassed.
+                    if self._requires_user_confirmation(state, remaining, on_event):
+                        return
                     self._execute_actions(conversation, remaining, on_event)
                 return
             logger.info(
@@ -956,6 +962,12 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     and state.execution_status
                     != ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
                 ):
+                    # See the sync twin: the sibling actions skipped the
+                    # confirmation check when the batch paused for ask_user.
+                    if await self._arequires_user_confirmation(
+                        conversation, state, remaining, on_event
+                    ):
+                        return
                     await self._aexecute_actions(conversation, remaining, on_event)
                 return
             logger.info(
