@@ -309,12 +309,12 @@ export class ConversationClient {
     return response.data;
   }
 
-  async respondToAskUser<TResponse = unknown>(
+  async respondToAskUser(
     conversationId: string,
     request: AskUserResponseRequest
-  ): Promise<TResponse> {
+  ): Promise<Success> {
     await assertAgentServerSupports(this.client, AgentServerFeatureRequirements.askUser);
-    const response = await this.client.post<TResponse>(
+    const response = await this.client.post<Success>(
       `/api/conversations/${conversationId}/events/respond_to_ask_user`,
       request
     );
