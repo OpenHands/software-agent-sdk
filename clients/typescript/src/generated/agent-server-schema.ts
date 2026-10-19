@@ -477,12 +477,6 @@ export type AcpAgentSettings = {
    */
   agent_kind?: 'acp';
   /**
-   * Deprecated since v1.51.0 and scheduled for removal in v1.56.0. Ignored and not serialized: the ACP subprocess makes its own model calls and ``acp_model`` is the model identity. Route provider credentials through the conversation secrets channel, keyed by the provider's env var name.
-   *
-   * @deprecated
-   */
-  llm?: LlmInput;
-  /**
    * Mcp Config
    *
    * MCP servers to make available to the ACP subprocess. Unlike the OpenHands agent — where these become in-process MCP tools — the servers are forwarded to the ACP server at session creation and it owns the connection. Remote (http/sse) servers are only forwarded when the ACP server advertises support for that transport; stdio servers (which run inside the runtime) are always forwarded.
@@ -15798,12 +15792,6 @@ export type AcpAgentSettingsWritable = {
    * Discriminator for the ``AgentSettings`` union. ``'acp'`` selects an ACP-delegating agent.
    */
   agent_kind?: 'acp';
-  /**
-   * Deprecated since v1.51.0 and scheduled for removal in v1.56.0. Ignored and not serialized: the ACP subprocess makes its own model calls and ``acp_model`` is the model identity. Route provider credentials through the conversation secrets channel, keyed by the provider's env var name.
-   *
-   * @deprecated
-   */
-  llm?: LlmInputWritable;
   /**
    * Mcp Config
    *

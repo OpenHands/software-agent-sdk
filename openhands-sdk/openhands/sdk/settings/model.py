@@ -2144,7 +2144,7 @@ def apply_agent_settings_diff(
     This is the single owner of agent-settings diff application; settings stores
     should delegate here instead of hand-rolling the dump/merge/validate dance.
     """
-    base_settings = validate_agent_settings(base, context=context)
+    base_settings = validate_agent_settings(base, context=context, persisted=True)
     if not diff:
         return base_settings
     new_kind = diff.get("agent_kind")
