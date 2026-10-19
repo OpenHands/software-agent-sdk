@@ -387,6 +387,7 @@ def test_get_settings_without_header_redacts_secrets(
     cipher = Cipher(secret_key)
     store = FileSettingsStore(persistence_dir=temp_persistence_dir, cipher=cipher)
     settings = PersistedSettings()
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     settings.agent_settings.llm.api_key = SecretStr("sk-test-secret-key")
     store.save(settings)
 
@@ -408,6 +409,7 @@ def test_get_settings_with_plaintext_header_exposes_secrets(
     cipher = Cipher(secret_key)
     store = FileSettingsStore(persistence_dir=temp_persistence_dir, cipher=cipher)
     settings = PersistedSettings()
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     settings.agent_settings.llm.api_key = SecretStr("sk-test-secret-key")
     store.save(settings)
 
@@ -430,6 +432,7 @@ def test_get_settings_with_encrypted_header_encrypts_secrets(
     cipher = Cipher(secret_key)
     store = FileSettingsStore(persistence_dir=temp_persistence_dir, cipher=cipher)
     settings = PersistedSettings()
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     settings.agent_settings.llm.api_key = SecretStr("sk-test-secret-key")
     store.save(settings)
 
@@ -579,6 +582,7 @@ def test_get_settings_with_true_header_treats_as_encrypted(
     cipher = Cipher(secret_key)
     store = FileSettingsStore(persistence_dir=temp_persistence_dir, cipher=cipher)
     settings = PersistedSettings()
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     settings.agent_settings.llm.api_key = SecretStr("sk-test-secret-key")
     store.save(settings)
 
@@ -1403,6 +1407,7 @@ def test_update_agent_settings_same_kind_merge() -> None:
     """Same-kind update deep-merges within the variant."""
     settings = PersistedSettings()
     settings.update({"agent_settings_diff": {"llm": {"model": "gpt-4o"}}})
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     assert settings.agent_settings.llm.model == "gpt-4o"
 
 
@@ -1467,6 +1472,7 @@ def test_update_agent_settings_secret_survives_same_kind_merge() -> None:
 
     settings.update({"agent_settings_diff": {"llm": {"temperature": 0.5}}})
 
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     assert isinstance(settings.agent_settings.llm.api_key, SecretStr)
     assert settings.agent_settings.llm.api_key.get_secret_value() == "sk-SECRET"
 
@@ -2058,6 +2064,7 @@ def test_get_settings_encrypted_mode_without_cipher_returns_503(temp_persistence
     # Note: Without cipher, we need to manually create a settings file
     store = FileSettingsStore(persistence_dir=temp_persistence_dir, cipher=None)
     settings = PersistedSettings()
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     settings.agent_settings.llm.api_key = SecretStr("sk-test-secret-key")
     store.save(settings)
 
