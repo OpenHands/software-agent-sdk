@@ -230,14 +230,19 @@ async def test_parallel_subagents_all_complete(
     )
 
     # 4. CPU budget. CPU-seconds per wall-second during the parallel run must
-    #    stay below the ceiling. This catches a busy-wait or spin loop that
-    #    would inflate CPU while leaving wall time and RSS within budget.
+    #    stay below the ceiling. The sub-agents are I/O-bound on the scripted
+    #    LLM's sleep, so the process should not consume more than about half a
+    #    core's worth of CPU per second of wall time; the measured steady state
+    #    is ~0.25-0.29. A regression that burns CPU off the critical path — an
+    #    extra worker thread, or a spin in GIL-releasing code — raises the ratio
+    #    without moving wall time, so the wall-clock budget above cannot see it.
     parallel_cpu_s = probe.cpu_time_s() - parallel_cpu0
     cpu_per_wall = parallel_cpu_s / max(parallel_wall, 1e-6)
     assert cpu_per_wall < CPU.parallel_subagents_max_cpu_per_wall_second, (
         f"CPU/wall ratio ({cpu_per_wall:.2f}, {parallel_cpu_s:.2f}s CPU over "
         f"{parallel_wall:.2f}s wall) exceeded "
-        f"{CPU.parallel_subagents_max_cpu_per_wall_second}. CPU is growing "
-        f"faster than the work — likely a busy-wait or an extra worker spinning "
-        f"on the sub-agent path."
+        f"{CPU.parallel_subagents_max_cpu_per_wall_second}. The sub-agent load "
+        f"is I/O-bound, so burning CPU faster than wall time means work is "
+        f"spinning off the critical path — likely an extra worker thread or a "
+        f"GIL-releasing spin on the sub-agent path."
     )

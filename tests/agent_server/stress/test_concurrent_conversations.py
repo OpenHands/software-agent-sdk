@@ -187,17 +187,20 @@ async def test_concurrent_conversations_isolated_and_fast(
         f"teardown may not be releasing memory."
     )
 
-    # 8. CPU budget. Compared per unit of work: the concurrent phase runs n
-    #    conversations against a reference of one, so per-conversation CPU must
-    #    not blow up. A busy-wait or a spin loop in the run path raises CPU
-    #    without necessarily moving wall time, so the wall-clock budget above
-    #    would not catch it.
+    # 8. CPU budget. CPU-seconds per wall-second during the concurrent run must
+    #    stay below the ceiling. The concurrent load is I/O-bound (the scripted
+    #    LLM sleeps), so the process should not consume more than about a core's
+    #    worth of CPU per second of wall time; the measured steady state is
+    #    ~0.5-0.6. A regression that burns CPU off the critical path — an extra
+    #    worker thread, or a spin in GIL-releasing code — raises the ratio
+    #    without moving wall time, so the wall-clock budget above cannot see it.
     concurrent_cpu_s = probe.cpu_time_s() - pre_concurrent_cpu_s
     cpu_per_wall = concurrent_cpu_s / max(concurrent_wall, 1e-6)
     assert cpu_per_wall < CPU.concurrent_conversations_max_cpu_per_wall_second, (
         f"CPU/wall ratio ({cpu_per_wall:.2f}, {concurrent_cpu_s:.2f}s CPU over "
         f"{concurrent_wall:.2f}s wall) exceeded "
-        f"{CPU.concurrent_conversations_max_cpu_per_wall_second}. CPU is "
-        f"growing faster than the work — likely a busy-wait or an extra worker "
-        f"spinning on the run path."
+        f"{CPU.concurrent_conversations_max_cpu_per_wall_second}. The "
+        f"concurrent load is I/O-bound, so burning CPU faster than wall time "
+        f"means work is spinning off the critical path — likely an extra "
+        f"worker thread or a GIL-releasing spin on the run path."
     )
