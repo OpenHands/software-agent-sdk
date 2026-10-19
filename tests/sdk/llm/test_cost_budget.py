@@ -767,6 +767,58 @@ def test_budget_keeps_intrinsic_or_unresolved_search_fees_closed(
 
 
 @pytest.mark.parametrize(
+    "model",
+    [
+        "openai/o3-deep-research",
+        "openai/o4-mini-deep-research",
+        "o3-deep-research-2025-06-26",
+        "perplexity/preset/deep-research",
+        "perplexity/preset/advanced-deep-research",
+        "vertex_ai/deep-research-pro-preview-12-2025",
+        "aihubmix/gemini-3-flash-preview-search",
+    ],
+)
+@pytest.mark.parametrize(
+    "invoke", [LLM.completion, LLM.acompletion, LLM.responses, LLM.aresponses]
+)
+async def test_budget_refuses_intrinsic_search_when_catalog_omits_the_fee(
+    budget_call, model, invoke
+):
+    """A dated entry omitting the search fee must not open a search-only route.
+
+    ``has_unbounded_search_cost`` early-returns on an absent
+    ``search_context_cost_per_query``. If that shortcut runs before the
+    search-name check, a token-only reservation admits these routes while the
+    intrinsic search charge goes unbounded.
+    """
+    info, make_llm, messages, providers = budget_call
+    fixture = Path(__file__).with_name("fixtures") / "omitted-search-fee-info.json"
+    catalog = json.loads(fixture.read_text())["model_info"]
+    info.clear()
+    info.update(catalog[model])
+    assert info.get("search_context_cost_per_query") is None
+    llm = make_llm(
+        model=model,
+        input_cost_per_token=0.00001,
+        output_cost_per_token=0.001,
+    )
+
+    with pytest.raises(
+        LLMBudgetExceededError, match="non-token audio/search request costs"
+    ):
+        result = invoke(
+            llm,
+            messages,
+            call_context=LLMCallContext(cost_budget=CostBudget(50)),
+        )
+        if inspect.isawaitable(result):
+            await result
+
+    for provider in providers:
+        provider.assert_not_called()
+
+
+@pytest.mark.parametrize(
     "name,value",
     [("num_retries", 2), ("model_fallbacks", ["another-model"]), ("drop_params", True)],
 )

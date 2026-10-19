@@ -172,7 +172,11 @@ def has_unbounded_search_cost(
             normalized, ("gpt-4o-search-preview", "gpt-4o-mini-search-preview")
         ) or OpenAIGPT5Config.is_model_gpt_5_search_model(normalized):
             return True
-        if normalized.split("/")[-1].startswith("sonar"):
+        resolved = normalized.split("/")[-1]
+        # Search-named routes search even without a hosted tool. This check
+        # must run before the fee-presence shortcut below: a dated catalog
+        # entry that omits the search fee cannot admit them.
+        if resolved.startswith("sonar") or "search" in resolved:
             return True
     if info.get("search_context_cost_per_query") is None:
         return False
@@ -182,8 +186,6 @@ def has_unbounded_search_cost(
     }:
         return True
     resolved_name = (_normalize_model_for_litellm(catalog_key) or "").split("/")[-1]
-    if "search" in resolved_name:
-        return True
     if provider in {"openai", "azure"}:
         return not resolved_name.startswith(("gpt-", "o1", "o3", "o4"))
     if provider in {
