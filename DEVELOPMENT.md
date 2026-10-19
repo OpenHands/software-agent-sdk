@@ -12,6 +12,8 @@ make build
 
 This repository owns the Python SDK and Agent Server. Put agent/tool behavior, conversations, workspaces, events, and new REST/WebSocket endpoints here. The API contract flows through `clients/typescript/` to Agent Canvas in [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands); automation scheduling, webhooks, run history, and dispatch belong in [`OpenHands/automation`](https://github.com/OpenHands/automation). If a PR is opened in the wrong repository, recommend closing and moving it to the owning repository. Follow [`.agents/skills/custom-codereview-guide.md`](.agents/skills/custom-codereview-guide.md) for every PR.
 
+Agent Server OpenAPI is the source of truth for transport schemas and generated clients. The Python SDK is the behavioral reference for public high-level conversation and workspace capabilities shared with the handwritten TypeScript client. Shared behavior is recorded in `clients/typescript/client-behavior-parity.json` and checked by TypeScript client CI. A language-specific exception must include a rationale, an owner, and a tracking issue in that contract; generated-only and explicitly low-level transport clients are outside its scope.
+
 ## Code Quality
 
 ```bash

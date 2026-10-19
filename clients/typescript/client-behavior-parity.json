@@ -1,0 +1,19 @@
+{
+  "capabilities": [
+    { "id": "conversation.send-message", "typescript": { "file": "src/conversation/remote-conversation.ts", "symbol": "sendMessage" }, "python": { "file": "../../openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py", "symbol": "send_message" } },
+    { "id": "conversation.run", "typescript": { "file": "src/conversation/remote-conversation.ts", "symbol": "run" }, "python": { "file": "../../openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py", "symbol": "run" } },
+    { "id": "conversation.pause", "typescript": { "file": "src/conversation/remote-conversation.ts", "symbol": "pause" }, "python": { "file": "../../openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py", "symbol": "pause" } },
+    { "id": "conversation.set-title", "typescript": { "file": "src/conversation/remote-conversation.ts", "symbol": "setTitle" }, "python": { "file": "../../openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py", "symbol": "set_title" } },
+    { "id": "conversation.ask-agent", "typescript": { "file": "src/conversation/remote-conversation.ts", "symbol": "askAgent" }, "python": { "file": "../../openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py", "symbol": "ask_agent" } },
+    { "id": "conversation.fork", "typescript": { "file": "src/conversation/remote-conversation.ts", "symbol": "fork" }, "python": { "file": "../../openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py", "symbol": "fork" } },
+    { "id": "conversation.navigate", "typescript": { "file": "src/conversation/remote-conversation.ts", "symbol": "navigateTo" }, "python": { "file": "../../openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py", "symbol": "navigate_to" } },
+    { "id": "conversation.condense", "typescript": { "file": "src/conversation/remote-conversation.ts", "symbol": "condense" }, "python": { "file": "../../openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py", "symbol": "condense" } },
+    { "id": "workspace.conversation-scoped-routing", "typescript": { "file": "src/workspace/remote-workspace.ts", "symbol": "conversationId" }, "python": { "file": "../../openhands-sdk/openhands/sdk/workspace/remote/base.py", "symbol": "conversation_id" } },
+    { "id": "workspace.execute-command", "typescript": { "file": "src/workspace/remote-workspace.ts", "symbol": "executeCommand" }, "python": { "file": "../../openhands-sdk/openhands/sdk/workspace/remote/base.py", "symbol": "execute_command" } },
+    { "id": "workspace.file-upload", "typescript": { "file": "src/workspace/remote-workspace.ts", "symbol": "fileUpload" }, "python": { "file": "../../openhands-sdk/openhands/sdk/workspace/remote/base.py", "symbol": "file_upload" } },
+    { "id": "workspace.file-download", "typescript": { "file": "src/workspace/remote-workspace.ts", "symbol": "fileDownload" }, "python": { "file": "../../openhands-sdk/openhands/sdk/workspace/remote/base.py", "symbol": "file_download" } },
+    { "id": "workspace.git-changes", "typescript": { "file": "src/workspace/remote-workspace.ts", "symbol": "gitChanges" }, "python": { "file": "../../openhands-sdk/openhands/sdk/workspace/remote/base.py", "symbol": "git_changes" } },
+    { "id": "workspace.git-diff", "typescript": { "file": "src/workspace/remote-workspace.ts", "symbol": "gitDiff" }, "python": { "file": "../../openhands-sdk/openhands/sdk/workspace/remote/base.py", "symbol": "git_diff" } }
+  ],
+  "exceptions": []
+}
