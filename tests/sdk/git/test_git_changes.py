@@ -189,6 +189,30 @@ def test_get_changes_in_repo_nested_directories():
             assert change.status == GitChangeStatus.ADDED
 
 
+def test_get_changes_in_repo_subdirectory_paths_are_relative_to_it(tmp_path):
+    """A subdirectory of a repository lists only its own changes, on its base."""
+    setup_git_repo(str(tmp_path))
+    (tmp_path / "src").mkdir()
+    (tmp_path / "README.md").write_text("hello\n")
+    (tmp_path / "src" / "app.py").write_text("x = 1\n")
+    (tmp_path / "src" / "old.py").write_text("old\n")
+    run_bash_command("git add . && git commit -m init", str(tmp_path))
+
+    (tmp_path / "README.md").write_text("edited\n")
+    (tmp_path / "notes.txt").write_text("note\n")
+    (tmp_path / "src" / "app.py").write_text("x = 2\n")
+    (tmp_path / "src" / "old.py").unlink()
+    (tmp_path / "src" / "new.py").write_text("new\n")
+
+    changes = get_changes_in_repo(tmp_path / "src", ref="HEAD")
+
+    assert sorted((str(c.path), c.status) for c in changes) == [
+        ("app.py", GitChangeStatus.UPDATED),
+        ("new.py", GitChangeStatus.ADDED),
+        ("old.py", GitChangeStatus.DELETED),
+    ]
+
+
 def test_get_changes_in_repo_staged_and_unstaged():
     """Test get_changes_in_repo with both staged and unstaged changes."""
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -718,3 +742,91 @@ def test_get_changes_in_repo_no_remote_worktree_shows_committed_changes():
         assert changes == [
             GitChange(status=GitChangeStatus.UPDATED, path=Path("app.txt"))
         ]
+
+
+def test_get_git_changes_keeps_paths_that_merely_share_a_nested_repo_prefix():
+    """A nested repository named "foo" must not swallow "foobar/" or "foo-config".
+
+    The nested-repository filter compares path ancestry; matching on the string
+    prefix instead drops root-repository changes whose names start with the
+    nested repository's name, and they disappear from the result silently.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "README.md").write_text("base\n")
+        run_bash_command("git add -A && git commit -m init", temp_dir)
+
+        nested = Path(temp_dir) / "foo"
+        nested.mkdir()
+        setup_git_repo(str(nested))
+        (nested / "nested.txt").write_text("nested\n")
+        run_bash_command("git add -A && git commit -m init", str(nested))
+
+        # Root-repository changes that share "foo" as a prefix but are not in it
+        (Path(temp_dir) / "foobar").mkdir()
+        (Path(temp_dir) / "foobar" / "file.py").write_text("changed\n")
+        (Path(temp_dir) / "foo-config.yaml").write_text("changed\n")
+        (Path(temp_dir) / "README.md").write_text("changed\n")
+
+        paths = {str(change.path) for change in get_git_changes(temp_dir)}
+
+        assert "foobar/file.py" in paths
+        assert "foo-config.yaml" in paths
+        assert "README.md" in paths
+
+
+def test_get_git_changes_still_excludes_paths_inside_a_nested_repo():
+    """The filter must keep doing its job: real nested changes stay out."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "README.md").write_text("base\n")
+        run_bash_command("git add -A && git commit -m init", temp_dir)
+
+        nested = Path(temp_dir) / "foo"
+        nested.mkdir()
+        setup_git_repo(str(nested))
+        (nested / "nested.txt").write_text("nested\n")
+        run_bash_command("git add -A && git commit -m init", str(nested))
+        (nested / "nested.txt").write_text("changed in nested\n")
+
+        changes = get_git_changes(temp_dir)
+        nested_entries = [c for c in changes if str(c.path) == "foo/nested.txt"]
+
+        # Reported once, by the nested repository, not by the parent.
+        assert len(nested_entries) == 1
+
+
+def test_get_git_changes_lists_repo_below_non_repo_directory():
+    """A plain directory holding a repository lists that repository's changes.
+
+    This is the ``{base}/{repo}`` layout of a repository-backed conversation:
+    the base is not a repository itself, so its changes must come from the
+    repository below it, prefixed with its directory name.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        repo = Path(temp_dir) / "proj"
+        repo.mkdir()
+        setup_git_repo(str(repo))
+        (repo / "README.md").write_text("hello\n")
+        run_bash_command("git add -A && git commit -m init", str(repo))
+        (repo / "README.md").write_text("hello\nedit\n")
+        (repo / "notes.txt").write_text("note\n")
+
+        changes = get_git_changes(temp_dir, ref="HEAD")
+
+        assert [(c.status, c.path.as_posix()) for c in changes] == [
+            (GitChangeStatus.UPDATED, "proj/README.md"),
+            (GitChangeStatus.ADDED, "proj/notes.txt"),
+        ]
+
+
+def test_get_git_changes_non_repo_without_repo_below_still_raises():
+    """A plain directory with nothing but a broken ``.git`` below it is no repo."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / "plain.txt").write_text("plain\n")
+        broken = Path(temp_dir) / "broken"
+        broken.mkdir()
+        (broken / ".git").write_text("gitdir: /path/that/does/not/exist\n")
+
+        with pytest.raises(GitRepositoryError):
+            get_git_changes(temp_dir)

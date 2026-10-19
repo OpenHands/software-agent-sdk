@@ -5,6 +5,7 @@ default install dir is redirected), so nothing touches the real ~/.openhands.
 """
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -182,3 +183,103 @@ def test_list_available_returns_plugin_summaries(
             }
         ]
     }
+
+
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _make_git_plugin_repo(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "git-plugin"
+    plugin = repo / "plugins" / "demo"
+    (plugin / ".plugin").mkdir(parents=True)
+    (plugin / "commands").mkdir()
+    (plugin / ".plugin" / "plugin.json").write_text(
+        json.dumps(
+            {
+                "name": "demo-plugin",
+                "version": "1.0.0",
+                "automation": {"runner": "conversation"},
+            }
+        )
+    )
+    (plugin / "commands" / "run.md").write_text("---\ndescription: Run\n---\nRun it")
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "initial")
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
+def test_fetch_endpoint_pins_without_installing(
+    client: TestClient, tmp_path: Path, monkeypatch
+):
+    repo, sha = _make_git_plugin_repo(tmp_path)
+    monkeypatch.setattr(
+        "openhands.sdk.plugin.strict_fetch.DEFAULT_CACHE_DIR", tmp_path / "cache"
+    )
+
+    before = client.get("/plugins/installed").json()
+    resp = client.post(
+        "/plugins/fetch",
+        json={
+            "source": f"file://{repo}",
+            "ref": "HEAD",
+            "repo_path": "plugins/demo",
+        },
+    )
+    after = client.get("/plugins/installed").json()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["resolved_ref"] == sha
+    assert sha in body["path"]
+    assert body["source"] == f"file://{repo}"
+    assert body["repo_path"] == "plugins/demo"
+    assert body["manifest"]["automation"] == {"runner": "conversation"}
+    assert body["commands"] == ["run"]
+    assert before == after
+
+
+def test_fetch_endpoint_returns_structured_error(client: TestClient):
+    resp = client.post(
+        "/plugins/fetch",
+        json={"source": "https://x-access-token:${TOKEN}@example.invalid/repo.git"},
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == {
+        "code": "missing_secret",
+        "message": "Missing secret: TOKEN",
+    }
+
+
+def test_fetch_endpoint_invalid_expanded_source_is_structured_and_redacted(
+    client: TestClient,
+):
+    secret_value = "supersecretvalue"
+
+    resp = client.post(
+        "/plugins/fetch",
+        json={
+            "source": "${TOKEN}",
+            "secrets": {
+                "TOKEN": {"kind": "StaticSecret", "value": secret_value},
+            },
+        },
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == {
+        "code": "invalid_source",
+        "message": "Invalid plugin source.",
+    }
+    assert secret_value not in resp.text

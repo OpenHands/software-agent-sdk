@@ -4,8 +4,6 @@ name: Agent Server
 on:
     push:
         branches: [main]
-        tags:
-            - '*'  # Trigger on any tag (e.g., 1.0.0, 1.0.0a5, build-docker)
     pull_request:
         branches: [main]
     workflow_dispatch:
@@ -13,7 +11,7 @@ on:
             base_image:
                 description: Base runtime image
                 type: string
-                default: nikolaik/python-nodejs:python3.13-nodejs22-slim
+                default: python-node-runtime
             image:
                 description: GHCR image name
                 type: string
@@ -22,6 +20,14 @@ on:
                 description: Target platforms
                 type: string
                 default: linux/amd64,linux/arm64
+            install_acp_providers:
+                description: Comma-separated ACP provider keys to bake into the image
+                type: string
+                default: claude-code,codex,gemini-cli
+            install_capabilities:
+                description: Comma-separated capability keys to bake into the image
+                type: string
+                default: vscode,browser,docker
 
 permissions:
     contents: read
@@ -35,7 +41,7 @@ jobs:
             matrix:
                 os: [ubuntu-latest, macos-latest, windows-latest]
         steps:
-            - uses: actions/checkout@v7
+            - uses: actions/checkout@v7.0.1
 
             - name: Install uv
               uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
@@ -113,22 +119,59 @@ jobs:
                       BIN=./dist/openhands-agent-server
                   fi
 
+                  # A PyInstaller onefile binary unpacks itself to a temp dir on
+                  # first run, and a cold/loaded Windows runner can be 17x slower
+                  # than a warm one at that. The old fixed 45s cap failed
+                  # healthy servers whose log line landed a fraction of a
+                  # second after the deadline, so default high and allow an
+                  # override for tight local runs.
+                  STARTUP_TIMEOUT_SECONDS="${BINARY_STARTUP_TIMEOUT_SECONDS:-300}"
+
                   wait_for_log() {
                       local log_file=$1
                       local pattern=$2
-                      local timeout_seconds=${3:-45}
+                      local pid=$3
+                      local timeout_seconds=${4:-$STARTUP_TIMEOUT_SECONDS}
 
                       for _ in $(seq 1 "$timeout_seconds"); do
-                          if grep -q "$pattern" "$log_file"; then
+                          if grep -q "$pattern" "$log_file" 2>/dev/null; then
                               return 0
+                          fi
+                          if ! kill -0 "$pid" 2>/dev/null; then
+                              # The process is gone, so waiting longer cannot
+                              # help. Re-check once to absorb a pending flush.
+                              sleep 1
+                              grep -q "$pattern" "$log_file" 2>/dev/null && return 0
+                              echo "ERROR: process $pid exited before '$pattern' appeared"
+                              return 1
                           fi
                           sleep 1
                       done
+                      echo "ERROR: timed out after ${timeout_seconds}s waiting for '$pattern'"
                       return 1
+                  }
+
+                  # `cat` on an empty log prints nothing, which made a
+                  # startup-too-slow failure look like a missing-log bug.
+                  dump_log() {
+                      local log_file=$1
+                      if [[ -s "$log_file" ]]; then
+                          tail -100 "$log_file"
+                      else
+                          echo "(no output captured from the binary)"
+                      fi
                   }
 
                   stop_process() {
                       local pid=$1
+                      if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+                          # The onefile bootloader runs the server in a child
+                          # process. Killing only the bootloader can leave that
+                          # child holding the port (and make the step exit
+                          # non-zero), so terminate the whole tree.
+                          MSYS_NO_PATHCONV=1 taskkill /F /T /PID "$pid" \
+                              >/dev/null 2>&1 || true
+                      fi
                       kill "$pid" 2>/dev/null || true
                       wait "$pid" 2>/dev/null || true
                   }
@@ -155,11 +198,11 @@ jobs:
                       > neg_test.log 2>&1 &
                   NEG_PID=$!
 
-                  if wait_for_log neg_test.log "No module named 'ci_test_tool'"; then
+                  if wait_for_log neg_test.log "No module named 'ci_test_tool'" "$NEG_PID"; then
                       echo "✓ Negative test passed: import correctly failed without --extra-python-path"
                   else
                       echo "ERROR: Expected ModuleNotFoundError but got:"
-                      cat neg_test.log
+                      dump_log neg_test.log
                       stop_process "$NEG_PID"
                       rm -rf "$TOOL_DIR" neg_test.log
                       exit 1
@@ -173,11 +216,11 @@ jobs:
                       > pos_test.log 2>&1 &
                   POS_PID=$!
 
-                  if wait_for_log pos_test.log "Imported module: ci_test_tool"; then
+                  if wait_for_log pos_test.log "Imported module: ci_test_tool" "$POS_PID"; then
                       echo "✓ Positive test passed: external module imported via OH_EXTRA_PYTHON_PATH"
                   else
                       echo "ERROR: Module was not imported. Server log:"
-                      cat pos_test.log
+                      dump_log pos_test.log
                       stop_process "$POS_PID"
                       rm -rf "$TOOL_DIR" pos_test.log
                       exit 1
@@ -187,7 +230,7 @@ jobs:
                       echo "✓ sys.path was extended with the tool directory"
                   else
                       echo "ERROR: sys.path was not extended. Server log:"
-                      cat pos_test.log
+                      dump_log pos_test.log
                       stop_process "$POS_PID"
                       rm -rf "$TOOL_DIR" pos_test.log
                       exit 1
@@ -201,11 +244,11 @@ jobs:
                       > cli_test.log 2>&1 &
                   CLI_PID=$!
 
-                  if wait_for_log cli_test.log "Imported module: ci_test_tool"; then
+                  if wait_for_log cli_test.log "Imported module: ci_test_tool" "$CLI_PID"; then
                       echo "✓ CLI flag test passed: external module imported via --extra-python-path"
                   else
                       echo "ERROR: Module was not imported via CLI flag. Server log:"
-                      cat cli_test.log
+                      dump_log cli_test.log
                       stop_process "$CLI_PID"
                       rm -rf "$TOOL_DIR" cli_test.log pos_test.log
                       exit 1
@@ -232,7 +275,7 @@ jobs:
 
         steps:
             - name: Checkout PR branch
-              uses: actions/checkout@v7
+              uses: actions/checkout@v7.0.1
               with:
                   fetch-depth: 0
 
@@ -243,9 +286,9 @@ jobs:
                   python-version: '3.13'
 
             - name: Install Node.js (for npx)
-              uses: actions/setup-node@v6
+              uses: actions/setup-node@v7
               with:
-                  node-version: 22
+                  node-version: '24'
 
 
             - name: Install dependencies
@@ -270,30 +313,90 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                # Explicit matrix: 3 variants × 2 architectures = 6 jobs
+                # Explicit matrix: 5 variants × 2 architectures = 10 jobs
                 # Each job specifies exactly what it builds and where it runs
                 include:
                     # Python variant
                     - variant: python
+                      custom_tags: python
+                      image_flavor: default
+                      acp_provider_flavor: default
+                      target: binary
                       arch: amd64
-                      base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
+                      base_image: python-node-runtime
                       runner: ubuntu-24.04
                       platform: linux/amd64
 
                     - variant: python
+                      custom_tags: python
+                      image_flavor: default
+                      acp_provider_flavor: default
+                      target: binary
                       arch: arm64
-                      base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
+                      base_image: python-node-runtime
+                      runner: ubuntu-24.04-arm
+                      platform: linux/arm64
+
+                    # Python variant without preinstalled ACP providers
+                    - variant: python-slim
+                      custom_tags: python
+                      image_flavor: slim
+                      acp_provider_flavor: none
+                      install_capabilities: browser,docker
+                      enable_vscode: 'false'
+                      target: binary
+                      arch: amd64
+                      base_image: python-node-runtime
+                      runner: ubuntu-24.04
+                      platform: linux/amd64
+
+                    - variant: python-slim
+                      custom_tags: python
+                      image_flavor: slim
+                      acp_provider_flavor: none
+                      install_capabilities: browser,docker
+                      enable_vscode: 'false'
+                      target: binary
+                      arch: arm64
+                      base_image: python-node-runtime
+                      runner: ubuntu-24.04-arm
+                      platform: linux/arm64
+
+                    # Minimal Python variant without ACP providers or capabilities
+                    - variant: python-minimal
+                      custom_tags: python
+                      image_flavor: minimal
+                      acp_provider_flavor: none
+                      target: binary-minimal
+                      arch: amd64
+                      base_image: python-node-runtime
+                      runner: ubuntu-24.04
+                      platform: linux/amd64
+
+                    - variant: python-minimal
+                      custom_tags: python
+                      image_flavor: minimal
+                      acp_provider_flavor: none
+                      target: binary-minimal
+                      arch: arm64
+                      base_image: python-node-runtime
                       runner: ubuntu-24.04-arm
                       platform: linux/arm64
 
                     # Java variant
                     - variant: java
+                      custom_tags: java
+                      image_flavor: default
+                      acp_provider_flavor: default
                       arch: amd64
                       base_image: eclipse-temurin:17-jdk
                       runner: ubuntu-24.04
                       platform: linux/amd64
 
                     - variant: java
+                      custom_tags: java
+                      image_flavor: default
+                      acp_provider_flavor: default
                       arch: arm64
                       base_image: eclipse-temurin:17-jdk
                       runner: ubuntu-24.04-arm
@@ -301,12 +404,18 @@ jobs:
 
                     # Golang variant
                     - variant: golang
+                      custom_tags: golang
+                      image_flavor: default
+                      acp_provider_flavor: default
                       arch: amd64
                       base_image: golang:1.21-bookworm
                       runner: ubuntu-24.04
                       platform: linux/amd64
 
                     - variant: golang
+                      custom_tags: golang
+                      image_flavor: default
+                      acp_provider_flavor: default
                       arch: arm64
                       base_image: golang:1.21-bookworm
                       runner: ubuntu-24.04-arm
@@ -317,11 +426,22 @@ jobs:
         env:
             IMAGE: ${{ inputs.image != '' && inputs.image || 'ghcr.io/openhands/agent-server' }}
             BASE_IMAGE: ${{ inputs.base_image != '' && inputs.base_image || matrix.base_image }}
-            CUSTOM_TAGS: ${{ matrix.variant }}
+            # The maybe-empty value (inputs.install_acp_providers) must be the
+            # LAST operand: GitHub Actions' `A && B || C` collapses to C
+            # whenever B is falsy, so an explicit "" dispatch input ("install
+            # none") would silently fall through to the default if it sat in
+            # B's position instead.
+            INSTALL_ACP_PROVIDERS: ${{ github.event_name != 'workflow_dispatch' && 'claude-code,codex,gemini-cli' || inputs.install_acp_providers }}
+            # Same last-operand reasoning as INSTALL_ACP_PROVIDERS above: an
+            # explicit "" dispatch input ("install none") must survive.
+            INSTALL_CAPABILITIES: ${{ github.event_name != 'workflow_dispatch' && 'vscode,browser,docker' || inputs.install_capabilities }}
+            CUSTOM_TAGS: ${{ matrix.custom_tags }}
+            IMAGE_FLAVOR: ${{ matrix.image_flavor }}
             VARIANT: ${{ matrix.variant }}
             ARCH: ${{ matrix.arch }}
-            TARGET: binary
+            TARGET: ${{ matrix.target || 'binary' }}
             PLATFORM: ${{ matrix.platform }}
+            ENABLE_VSCODE: ${{ matrix.enable_vscode || 'true' }}
             # Use SDK_SHA/SDK_REF so build.py tags PR images with the head commit and branch.
             # GITHUB_SHA/GITHUB_REF point at the synthetic merge ref on pull_request events.
             SDK_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -331,7 +451,7 @@ jobs:
 
         steps:
             - name: Checkout
-              uses: actions/checkout@v7
+              uses: actions/checkout@v7.0.1
 
             - name: Install uv
               uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
@@ -340,10 +460,10 @@ jobs:
                   python-version: '3.13'
 
             - name: Set up Docker Buildx
-              uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+              uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
             - name: Log in to GHCR
-              uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+              uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
               with:
                   registry: ghcr.io
                   username: ${{ github.actor }}
@@ -378,6 +498,20 @@ jobs:
                   VERSIONED_TAGS_CSV=$(grep '^versioned_tags_csv=' $GITHUB_OUTPUT | cut -d= -f2- || echo "")
                   echo "versioned_tags_csv=$VERSIONED_TAGS_CSV" >> $GITHUB_OUTPUT
 
+                  if [ "${{ matrix.acp_provider_flavor }}" = "none" ]; then
+                      echo "install_acp_providers=" >> $GITHUB_OUTPUT
+                  else
+                      echo "install_acp_providers=$INSTALL_ACP_PROVIDERS" >> $GITHUB_OUTPUT
+                  fi
+
+                  if [ "${{ matrix.target }}" = "binary-minimal" ]; then
+                      echo "install_capabilities=" >> $GITHUB_OUTPUT
+                  elif [ -n "${{ matrix.install_capabilities }}" ]; then
+                      echo "install_capabilities=${{ matrix.install_capabilities }}" >> $GITHUB_OUTPUT
+                  else
+                      echo "install_capabilities=$INSTALL_CAPABILITIES" >> $GITHUB_OUTPUT
+                  fi
+
                   # Verify outputs
                   echo "=== Build outputs ==="
                   echo "Build context: $(grep '^build_context=' $GITHUB_OUTPUT | cut -d= -f2-)"
@@ -388,7 +522,7 @@ jobs:
 
             - name: Build & Push (${{ matrix.variant }}-${{ matrix.arch }})
               id: build
-              uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
+              uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
               with:
                   context: ${{ steps.prep.outputs.build_context }}
                   file: ${{ steps.prep.outputs.dockerfile }}
@@ -396,12 +530,15 @@ jobs:
                   platforms: ${{ env.PLATFORM }}
                   push: true
                   tags: ${{ steps.prep.outputs.tags }}
-                  cache-from: type=gha
-                  cache-to: type=gha,mode=max
+                  cache-from: type=gha,scope=agent-server-${{ matrix.variant }}-${{ matrix.arch }}
+                  cache-to: type=gha,scope=agent-server-${{ matrix.variant }}-${{ matrix.arch }},mode=max
                   build-args: |
                       BASE_IMAGE=${{ env.BASE_IMAGE }}
                       OPENHANDS_BUILD_GIT_SHA=${{ env.SDK_SHA }}
                       OPENHANDS_BUILD_GIT_REF=${{ env.SDK_REF }}
+                      INSTALL_ACP_PROVIDERS=${{ steps.prep.outputs.install_acp_providers }}
+                      INSTALL_CAPABILITIES=${{ steps.prep.outputs.install_capabilities }}
+                      ENABLE_VSCODE=${{ env.ENABLE_VSCODE }}
 
             - name: Cleanup build context
               if: always()
@@ -472,7 +609,7 @@ jobs:
         runs-on: ubuntu-24.04
         strategy:
             matrix:
-                variant: [python, java, golang]
+                variant: [python, python-slim, python-minimal, java, golang]
         env:
             IMAGE: ${{ inputs.image != '' && inputs.image || 'ghcr.io/openhands/agent-server' }}
 
@@ -493,10 +630,10 @@ jobs:
                   echo "Using SHORT_SHA: $SHORT_SHA"
 
             - name: Set up Docker Buildx
-              uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+              uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
             - name: Log in to GHCR
-              uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+              uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
               with:
                   registry: ghcr.io
                   username: ${{ github.actor }}
@@ -849,7 +986,7 @@ jobs:
                   } >> $GITHUB_OUTPUT
 
             - name: Update PR description with docker image details
-              uses: nefrob/pr-description@4dcc9f3ad5ec06b2a197c5f8f93db5e69d2fdca7 # v1.2.0
+              uses: nefrob/pr-description@30859d560129561327a48ec569ec3b6aa62dd2c9 # v1.3.0
               with:
                   content: ${{ steps.generate_description.outputs.pr_content }}
                   regex: <!-- AGENT_SERVER_IMAGES_START -->.*?<!-- AGENT_SERVER_IMAGES_END -->

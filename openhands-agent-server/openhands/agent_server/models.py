@@ -13,7 +13,10 @@ from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.request import (  # re-export for backward compat
     ACPEnabledAgent as ACPEnabledAgent,
+    ConversationConfig as ConversationConfig,
     SendMessageRequest as SendMessageRequest,
+    StartChildConversationRequest as StartChildConversationRequest,
+    StartChildConversationResponse as StartChildConversationResponse,
     StartConversationRequest as StartConversationRequest,
 )
 from openhands.sdk.conversation.secret_registry import SecretRegistry
@@ -42,6 +45,31 @@ from openhands.sdk.utils.models import (
     OpenHandsModel,
 )
 from openhands.sdk.workspace.base import BaseWorkspace
+
+
+class ConversationRuntimeStatus(StrEnum):
+    """Availability of the runtime that executes a conversation."""
+
+    AVAILABLE = "available"
+    STARTING = "starting"
+    MISSING = "missing"
+    OWNERSHIP_LOST = "ownership_lost"
+    ERROR = "error"
+
+
+class ConversationRuntimeError(BaseModel):
+    """Structured details for the latest runtime lifecycle failure."""
+
+    code: str
+    message: str
+
+
+class ConversationRuntimeInfo(BaseModel):
+    """Runtime availability and recovery information for a conversation."""
+
+    runtime_status: ConversationRuntimeStatus
+    can_resume: bool
+    runtime_error: ConversationRuntimeError | None = None
 
 
 class ServerErrorEvent(Event):
@@ -73,15 +101,17 @@ class EventSortOrder(StrEnum):
     TIMESTAMP_DESC = "TIMESTAMP_DESC"
 
 
-class StoredConversation(StartConversationRequest):
+class StoredConversation(ConversationConfig):
     """Stored details about a conversation.
 
-    Extends StartConversationRequest with server-assigned fields.
+    Extends :class:`ConversationConfig` (the agent-less shared config) with
+    server-assigned fields. It deliberately does NOT carry the ``agent``: the
+    single source of truth for the agent / runtime state is
+    ``ConversationState`` persisted to ``base_state.json``. Because
+    ``StoredConversation`` is not a ``StartConversationRequest``, the agent
+    cannot silently re-appear in ``meta.json``.
     """
 
-    # agent_profile_id is resolved into launched_agent_profile at creation; exclude from
-    # the persistence payload so it does not re-appear in meta.json.
-    agent_profile_id: UUID | None = Field(default=None, exclude=True)
     required_runtime_credential_bindings: set[str] = Field(default_factory=set)
 
     id: OpenHandsUUID
@@ -332,6 +362,21 @@ class ConversationInfo(_ConversationInfoBase):
             "persisted events, avoiding 'Unknown kind' deserialization errors."
         ),
     )
+    tool_module_qualnames: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Tool names mapped to importable module qualnames. SDK clients use "
+            "this metadata to restore the registrations needed to deserialize "
+            "the conversation's tool events when attaching."
+        ),
+    )
+    runtime_info: ConversationRuntimeInfo | None = Field(
+        default=None,
+        description=(
+            "Availability of the execution runtime. Catalog responses populate "
+            "this when the hosting server manages runtime lifecycle."
+        ),
+    )
 
 
 class ConversationPage(BaseModel):
@@ -399,6 +444,10 @@ class ConfirmationResponseRequest(BaseModel):
 
 class Success(BaseModel):
     success: bool = True
+
+
+class FileUploadResult(Success):
+    file_size: int = Field(description="Number of bytes written to the destination")
 
 
 class EventPage(OpenHandsModel):
@@ -482,6 +531,15 @@ class UpdateConversationRequest(BaseModel):
             "Replaces all existing tags when provided."
         ),
     )
+
+    @field_validator("title")
+    @classmethod
+    def _reject_blank_title(cls, v: str | None) -> str | None:
+        # The service stores title.strip(); a whitespace-only title would
+        # erase the stored title to "" instead of failing like "" does.
+        if v is not None and not v.strip():
+            raise ValueError("title must not be blank")
+        return v
 
 
 class ForkConversationRequest(BaseModel):

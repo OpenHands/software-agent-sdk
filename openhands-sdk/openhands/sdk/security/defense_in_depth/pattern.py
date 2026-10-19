@@ -23,9 +23,13 @@ from pydantic import Field, PrivateAttr
 from openhands.sdk.event import ActionEvent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
+from openhands.sdk.security.defense_in_depth.shell_semantics import (
+    scan_shell_command,
+)
 from openhands.sdk.security.defense_in_depth.utils import (
     _extract_content,
     _extract_exec_content,
+    _extract_exec_segments,
     _normalize,
 )
 from openhands.sdk.security.risk import SecurityRisk
@@ -141,8 +145,10 @@ class PatternSecurityAnalyzer(SecurityAnalyzerBase):
     """Catch dangerous agent actions through deterministic signature scanning.
 
     Use this when you want fast, local, no-network threat detection at the
-    action boundary. It returns ``SecurityRisk.HIGH``, ``MEDIUM``, or ``LOW``
-    -- pair it with ``ConfirmRisky`` to decide what gets confirmed.
+    action boundary. It returns ``SecurityRisk.HIGH``, ``MEDIUM``, or ``LOW``.
+    It returns ``UNKNOWN`` when the shell scan cannot resolve relevant
+    destructive structure. Pair it with ``ConfirmRisky`` to decide what gets
+    confirmed.
 
     The key design choice: shell-destructive patterns only scan what the
     agent will *execute* (tool arguments), never what it *thought about*
@@ -229,6 +235,20 @@ class PatternSecurityAnalyzer(SecurityAnalyzerBase):
                 logger.debug("Pattern matched: %s -> HIGH", det_id)
                 return SecurityRisk.HIGH
 
+        # HIGH: AST resolution on executable fields, catching quoted,
+        # path-qualified and nested command names that word-boundary
+        # anchors cannot see.
+        shell_scans = (
+            scan_shell_command(segment, DET_EXEC_DESTRUCT_RM_RF)
+            for segment in _extract_exec_segments(action)
+        )
+        shell_scan_uncertain = False
+        for shell_scan in shell_scans:
+            if shell_scan.matched:
+                logger.debug("Shell AST matched: %s -> HIGH", shell_scan.detector_id)
+                return SecurityRisk.HIGH
+            shell_scan_uncertain = shell_scan_uncertain or shell_scan.uncertain
+
         # MEDIUM: patterns on executable fields only
         for pattern, _desc, det_id in self._compiled_medium:
             if pattern.search(exec_content):
@@ -240,5 +260,12 @@ class PatternSecurityAnalyzer(SecurityAnalyzerBase):
             if pattern.search(all_content):
                 logger.debug("Pattern matched: %s -> MEDIUM", det_id)
                 return SecurityRisk.MEDIUM
+
+        # The destructive flag shape on a verb the scan could not resolve:
+        # UNKNOWN rather than a false LOW. ConfirmRisky prompts for UNKNOWN by
+        # default. Text that merely fails to parse stays LOW.
+        if shell_scan_uncertain:
+            logger.debug("Shell AST uncertain (unresolvable verb) -> UNKNOWN")
+            return SecurityRisk.UNKNOWN
 
         return SecurityRisk.LOW

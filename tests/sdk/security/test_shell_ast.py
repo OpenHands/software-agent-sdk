@@ -62,6 +62,15 @@ def _has_missing_node(program: ShellProgram) -> bool:
         ("FOO=bar echo $FOO", "echo", ("$FOO",), ("FOO=bar",)),
         ("echo hi > /tmp/out", "echo", ("hi",), ()),
         ("dd if=/tmp/in of=/dev/sda", "dd", ("if=/tmp/in", "of=/dev/sda"), ()),
+        ("dd 2>/dev/null of=/dev/sda", "dd", ("of=/dev/sda",), ()),
+        ("rm 2>/dev/null -rf /", "rm", ("-rf", "/"), ()),
+        (
+            'bash 3<<"EOF" -c "echo ok"\ninput\nEOF',
+            "bash",
+            ("-c", '"echo ok"'),
+            (),
+        ),
+        ('bash 3<<< "input" 0<&3', "bash", (), ()),
     ],
 )
 def test_command_views(
@@ -217,31 +226,38 @@ def test_missing_descendant_marks_command_has_error() -> None:
     assert tuple(command.has_error for command in commands) == (True, True)
 
 
+# Both flag helpers take the literal a caller has already resolved through
+# quote removal, not raw word source. That is what lets ``-rf``, ``"-rf"`` and
+# ``-r"f"`` -- the same argv -- split identically; the caller owns resolution
+# and skips words it cannot resolve.
 @pytest.mark.parametrize(
-    ("source", "flags"),
+    ("literal", "flags"),
     [
-        ("rm -rf /", frozenset({"r", "f"})),
-        ("rm -r /", frozenset({"r"})),
-        ("rm -f /", frozenset({"f"})),
-        ("rm --force /", frozenset()),
-        ('rm "-rf" /', frozenset()),
+        ("-rf", frozenset({"r", "f"})),
+        ("-r", frozenset({"r"})),
+        ("-f", frozenset({"f"})),
+        ("--force", frozenset()),
+        ("-", frozenset()),
+        ("", frozenset()),
+        ("/", frozenset()),
     ],
 )
-def test_split_short_flags(source: str, flags: frozenset[str]) -> None:
-    assert split_short_flags(_first_word(source)) == flags
+def test_split_short_flags(literal: str, flags: frozenset[str]) -> None:
+    assert split_short_flags(literal) == flags
 
 
 @pytest.mark.parametrize(
-    ("source", "name", "matches"),
+    ("literal", "name", "matches"),
     [
-        ("rm --force /", "force", True),
-        ("rm --recursive /", "recursive", True),
-        ("rm --force /", "recursive", False),
-        ('rm "$FLAG" /', "force", False),
+        ("--force", "force", True),
+        ("--recursive", "recursive", True),
+        ("--force", "recursive", False),
+        ("-f", "force", False),
+        ("", "force", False),
     ],
 )
-def test_is_long_flag(source: str, name: str, matches: bool) -> None:
-    assert is_long_flag(_first_word(source), name) is matches
+def test_is_long_flag(literal: str, name: str, matches: bool) -> None:
+    assert is_long_flag(literal, name) is matches
 
 
 @pytest.mark.parametrize(

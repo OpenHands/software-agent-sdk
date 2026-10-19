@@ -1,8 +1,12 @@
 import asyncio
 import contextlib
+import io
+import json
+import logging
 import shutil
 import threading
 import time
+import zipfile
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,10 +16,12 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from pydantic import SecretStr
 
 from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import EventService, RunSlot
+from openhands.agent_server.file_router import _create_zip_from_directory
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
     EventPage,
@@ -26,6 +32,7 @@ from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import LLM, Agent, AgentBase, Conversation, Message
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.impl.local_conversation import (
     ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID,
@@ -38,6 +45,7 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.credential import CredentialSyncError
 from openhands.sdk.event import AgentErrorEvent, Event
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import (
     ActionEvent,
@@ -48,9 +56,11 @@ from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.mcp.config import coerce_mcp_config
+from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.subagent.schema import AgentDefinition
-from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
+from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal import TerminalAction, TerminalObservation
 from tests.agent_server.stress.scripts import (
@@ -60,12 +70,23 @@ from tests.agent_server.stress.scripts import (
 )
 
 
+# Agent for a new conversation. meta.json (StoredConversation) no longer carries
+# the agent — base_state.json is its single source of truth — so tests pass it to
+# EventService separately.
+def _sample_agent() -> Agent:
+    return Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[])
+
+
+@pytest.fixture
+def sample_agent():
+    return _sample_agent()
+
+
 @pytest.fixture
 def sample_stored_conversation():
     """Create a sample StoredConversation for testing."""
     return StoredConversation(
         id=uuid4(),
-        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
         workspace=LocalWorkspace(working_dir="workspace/project"),
         confirmation_policy=NeverConfirm(),
         initial_message=None,
@@ -76,10 +97,11 @@ def sample_stored_conversation():
 
 
 @pytest.fixture
-def event_service(sample_stored_conversation):
+def event_service(sample_stored_conversation, sample_agent):
     """Create an EventService instance for testing."""
     service = EventService(
         stored=sample_stored_conversation,
+        agent=sample_agent,
         conversations_dir=Path("test_conversation_dir"),
     )
     return service
@@ -250,6 +272,31 @@ class TestEventServiceSearchEvents:
 
         # Test filtering by non-existent kind
         result = await event_service.search_events(kind="NonExistentEvent")
+        assert len(result.items) == 0
+
+    @pytest.mark.asyncio
+    async def test_search_events_short_kind_matches_qualified_kind(
+        self, event_service, mock_conversation_with_events
+    ):
+        """The bare class name (the wire ``kind``) filters like the full path."""
+        event_service._conversation = mock_conversation_with_events
+
+        qualified = await event_service.search_events(
+            kind="openhands.sdk.event.llm_convertible.message.MessageEvent"
+        )
+        short = await event_service.search_events(kind="MessageEvent")
+        assert len(short.items) == 5
+        assert [e.id for e in short.items] == [e.id for e in qualified.items]
+        assert short.next_page_id == qualified.next_page_id
+
+        # Combined with another filter, both apply.
+        result = await event_service.search_events(kind="MessageEvent", source="user")
+        assert len(result.items) == 5
+        result = await event_service.search_events(kind="MessageEvent", source="agent")
+        assert len(result.items) == 0
+
+        # A partial module path is neither the short nor the full name.
+        result = await event_service.search_events(kind="message.MessageEvent")
         assert len(result.items) == 0
 
     @pytest.mark.asyncio
@@ -696,6 +743,12 @@ class TestEventServiceCountEvents:
         )
         assert result == 5
 
+        # The bare class name (the wire ``kind``) counts the same events
+        result = await event_service.count_events(kind="MessageEvent")
+        assert result == 5
+        result = await event_service.count_events(kind="MessageEvent", source="agent")
+        assert result == 0
+
         # Count non-existent event type (should be 0)
         result = await event_service.count_events(kind="NonExistentEvent")
         assert result == 0
@@ -1057,6 +1110,124 @@ class TestEventServiceSendMessage:
         assert event_service._rerun_requested is False
 
     @pytest.mark.asyncio
+    async def test_acp_supersede_holds_capacity_across_interrupt(
+        self, event_service, tmp_path
+    ):
+        """The ACP supersede restart must keep the permit its predecessor held.
+
+        ``send_message(run=True)`` interrupts the in-flight ACP prompt, which
+        makes that run yield its permit on the way out, and only then starts the
+        replacement run. If the replacement had to acquire a fresh permit it
+        could be refused (429) after the conversation's working run was already
+        killed -- dropping the user's request with no retryable signal. Holding
+        the session permit across the whole supersede window makes the restart
+        capacity-safe even when the server is at its limit.
+        """
+        agent = ACPAgent(acp_command=["echo", "test"])
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            max_iteration_per_run=4,
+            stuck_detection=False,
+        )
+        conversation.send_message("initial request")
+        conversation.state.execution_status = ConversationExecutionStatus.RUNNING
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+        event_service._mark_running_acp_prompt_superseded = AsyncMock(
+            return_value=(True, False)
+        )
+        # The server is at capacity: one slot, held by the run being superseded.
+        event_service._run_semaphore = asyncio.Semaphore(1)
+        owner = await RunSlot.acquire(event_service._run_semaphore)
+        event_service._run_session_slot = owner
+        event_service._run_task = asyncio.create_task(asyncio.Event().wait())
+
+        async def interrupt_and_yield(*, internal_acp_rerun=False):
+            # Model the outgoing run yielding its own handle as the interrupt
+            # drains it; the session permit survives via the pin.
+            run_task = event_service._run_task
+            if run_task is not None:
+                run_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await run_task
+            event_service._run_task = None
+            conversation.state.execution_status = ConversationExecutionStatus.IDLE
+            # With the predecessor's handle gone, a fresh acquire would have
+            # succeeded pre-fix -- and a competing caller could have taken it,
+            # making the restart below fail with 429.
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(
+                    event_service._run_semaphore.acquire(), timeout=0.25
+                )
+            capacity_held_at_interrupt.set()
+
+        event_service.interrupt = interrupt_and_yield
+        replacement_started = asyncio.Event()
+        capacity_held_at_interrupt = asyncio.Event()
+
+        async def finishing_astep(
+            self,  # noqa: ARG001
+            conv: LocalConversation,
+            on_event,  # noqa: ARG001
+            on_token=None,  # noqa: ARG001
+            prompt_message=None,  # noqa: ARG001
+        ) -> None:
+            replacement_started.set()
+            conv.state.execution_status = ConversationExecutionStatus.FINISHED
+
+        with (
+            patch.object(ACPAgent, "init_state", autospec=True),
+            patch.object(ACPAgent, "astep", new=finishing_astep),
+        ):
+            # Must not raise ConversationRunLimitExceeded: the restart reuses the
+            # session permit its predecessor held instead of acquiring a new one.
+            await event_service.send_message(
+                Message(role="user", content=[TextContent(text="intervening")]),
+                run=True,
+            )
+
+            assert event_service._run_task is not None
+            await asyncio.wait_for(event_service._run_task, timeout=5)
+
+        assert replacement_started.is_set()
+        # Capacity stayed held across the whole supersede window, and the session
+        # permit is returned to the shared pool once the chain settles.
+        assert capacity_held_at_interrupt.is_set()
+        assert event_service._run_session_pins == 0
+        assert event_service._run_session_slot is None
+        await asyncio.wait_for(event_service._run_semaphore.acquire(), timeout=5)
+        event_service._run_semaphore.release()
+
+    @pytest.mark.asyncio
+    async def test_acp_supersede_pin_released_when_interrupt_raises(
+        self, event_service, tmp_path
+    ):
+        """The supersede pin must be released even when the interrupt raises."""
+        agent = ACPAgent(acp_command=["echo", "test"])
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            max_iteration_per_run=4,
+            stuck_detection=False,
+        )
+        conversation.send_message("initial request")
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+        event_service._mark_running_acp_prompt_superseded = AsyncMock(
+            return_value=(True, False)
+        )
+        event_service._run_semaphore = asyncio.Semaphore(1)
+        event_service.interrupt = AsyncMock(side_effect=RuntimeError("teardown"))
+
+        with pytest.raises(RuntimeError, match="teardown"):
+            await event_service.send_message(
+                Message(role="user", content=[TextContent(text="intervening")]),
+                run=True,
+            )
+        assert event_service._run_session_pins == 0
+
+    @pytest.mark.asyncio
     async def test_acp_supersede_mark_rechecks_current_prompt(
         self, event_service, tmp_path
     ):
@@ -1219,6 +1390,54 @@ class TestEventServiceSendMessage:
         assert event_service._acp_internal_rerun_requested is False
 
     @pytest.mark.asyncio
+    async def test_late_stop_during_run_lock_wait_drops_internal_acp_rerun(
+        self, event_service, tmp_path
+    ):
+        """A stop that lands while run() waits on _run_lock must win, even when
+        the old run task is still alive (its interrupt drain timed out)."""
+        agent = ACPAgent(acp_command=["echo", "test"])
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            max_iteration_per_run=3,
+            stuck_detection=False,
+        )
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+        event_service._mark_running_acp_prompt_superseded = AsyncMock(
+            return_value=(True, False)
+        )
+        event_service.interrupt = AsyncMock()
+        event_service._get_execution_status = AsyncMock(
+            return_value=ConversationExecutionStatus.PAUSED
+        )
+        run_task = asyncio.create_task(asyncio.Event().wait())
+        event_service._run_task = run_task
+        await event_service._run_lock.acquire()
+        try:
+            send = asyncio.create_task(
+                event_service.send_message(Message(role="user", content=[]), run=True)
+            )
+            for _ in range(200):
+                if event_service.interrupt.await_count:
+                    break
+                await asyncio.sleep(0.01)
+            event_service.interrupt.assert_awaited_once_with(internal_acp_rerun=True)
+            for _ in range(5):
+                await asyncio.sleep(0)
+
+            event_service._explicit_interrupt_generation += 1
+            event_service._rerun_requested = False
+            event_service._acp_internal_rerun_requested = False
+            event_service._run_lock.release()
+            await asyncio.wait_for(send, timeout=2)
+        finally:
+            run_task.cancel()
+
+        assert event_service._rerun_requested is False
+        assert event_service._acp_internal_rerun_requested is False
+
+    @pytest.mark.asyncio
     async def test_send_message_with_run_true_logs_exception(self, event_service):
         """Test that exceptions from conversation.run() are caught and logged."""
         # Mock conversation and its methods
@@ -1245,17 +1464,73 @@ class TestEventServiceSendMessage:
             assert event_service._run_task is not None
             await event_service._run_task
 
-            # Verify the exception was logged via logger.exception()
-            # (logged by run()'s _run_and_publish handler)
-            mock_logger.exception.assert_called_once_with(
-                "Error during conversation run"
-            )
+            # Verify the failure was logged with its traceback (logged by
+            # run()'s _run_and_publish handler).
+            mock_logger.error.assert_called_once()
+            fmt, detail = mock_logger.error.call_args.args
+            assert fmt == "Error during conversation run\n%s"
+            assert detail.startswith("Traceback (most recent call last):")
+            assert detail.endswith("RuntimeError: Test error")
 
         # Verify send_message was still called
         conversation.send_message.assert_called_once_with(message)
 
         # Verify run was called (and raised the exception)
         conversation.run.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_error_log_has_no_exc_info(self, event_service):
+        """A failed run's traceback is logged as plain text, never as exc_info:
+        the default Rich console handler renders exc_info synchronously on the
+        event loop, which stalled the server for seconds per failed run
+        (issue #5633)."""
+        conversation = MagicMock()
+        state = MagicMock()
+        state.execution_status = ConversationExecutionStatus.ERROR
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation.state = state
+        conversation._state = state
+        conversation.send_message = MagicMock()
+        try:
+            try:
+                raise ConnectionRefusedError("connection refused")
+            except ConnectionRefusedError as cause:
+                raise RuntimeError("LLM call failed") from cause
+        except RuntimeError as chained:
+            conversation.run = MagicMock(side_effect=chained)
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        records: list[logging.LogRecord] = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        capture = _Capture(level=logging.DEBUG)
+        service_logger = logging.getLogger("openhands.agent_server.event_service")
+        service_logger.addHandler(capture)
+        try:
+            await event_service.send_message(Message(role="user", content=[]), run=True)
+            assert event_service._run_task is not None
+            await event_service._run_task
+        finally:
+            service_logger.removeHandler(capture)
+
+        failures = [
+            r
+            for r in records
+            if r.getMessage().startswith("Error during conversation run")
+        ]
+        assert len(failures) == 1
+        record = failures[0]
+        assert record.levelno == logging.ERROR
+        assert record.exc_info is None
+        message = record.getMessage()
+        assert "ConnectionRefusedError: connection refused" in message
+        assert message.endswith("RuntimeError: LLM call failed")
 
     @pytest.mark.asyncio
     async def test_run_exception_forces_error_status(self, event_service):
@@ -1309,6 +1584,75 @@ class TestEventServiceSendMessage:
         await event_service._run_task
 
         assert state.execution_status == ConversationExecutionStatus.ERROR
+
+    @pytest.mark.asyncio
+    async def test_run_exception_emits_conversation_error_event(self, event_service):
+        """A failure that escapes run()/arun()'s own emission must be surfaced
+        by the backstop as a ConversationErrorEvent (issue #16686)."""
+        conversation = MagicMock()
+        state = MagicMock()
+        state.execution_status = ConversationExecutionStatus.IDLE
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation.state = state
+        conversation._state = state
+        conversation.send_message = MagicMock()
+        conversation._on_event = MagicMock()
+        conversation.run = MagicMock(side_effect=RuntimeError("model does not exist"))
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        await event_service.send_message(Message(role="user", content=[]), run=True)
+        assert event_service._run_task is not None
+        await event_service._run_task
+
+        # A single ConversationErrorEvent was emitted through _on_event, carrying
+        # the exception type and message so the UI can render the detail.
+        error_events = [
+            call.args[0]
+            for call in conversation._on_event.call_args_list
+            if isinstance(call.args[0], ConversationErrorEvent)
+        ]
+        assert len(error_events) == 1
+        assert error_events[0].code == "RuntimeError"
+        assert error_events[0].detail == "model does not exist"
+        assert error_events[0].source == "environment"
+        assert state.execution_status == ConversationExecutionStatus.ERROR
+
+    @pytest.mark.asyncio
+    async def test_run_conversation_run_error_does_not_double_emit(self, event_service):
+        """A ConversationRunError is already surfaced by run()/arun(), so the
+        backstop must not emit a duplicate ConversationErrorEvent."""
+        conversation = MagicMock()
+        state = MagicMock()
+        state.execution_status = ConversationExecutionStatus.ERROR
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation.state = state
+        conversation._state = state
+        conversation.send_message = MagicMock()
+        conversation._on_event = MagicMock()
+        conversation.run = MagicMock(
+            side_effect=ConversationRunError(
+                conversation_id=uuid4(),
+                original_exception=RuntimeError("already surfaced"),
+            )
+        )
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        await event_service.send_message(Message(role="user", content=[]), run=True)
+        assert event_service._run_task is not None
+        await event_service._run_task
+
+        error_events = [
+            call.args[0]
+            for call in conversation._on_event.call_args_list
+            if isinstance(call.args[0], ConversationErrorEvent)
+        ]
+        assert error_events == []
 
     @pytest.mark.asyncio
     async def test_send_message_with_different_message_types(self, event_service):
@@ -1636,6 +1980,38 @@ class TestEventServiceRun:
     """Test cases for EventService.run method."""
 
     @pytest.mark.asyncio
+    async def test_wait_for_run_completion_waits_for_task_finalization(
+        self, event_service
+    ):
+        release_run = asyncio.Event()
+        event_service._get_execution_status = AsyncMock(
+            return_value=ConversationExecutionStatus.FINISHED
+        )
+        event_service._run_task = asyncio.create_task(release_run.wait())
+
+        waiter = asyncio.create_task(event_service.wait_for_run_completion(timeout=1))
+        await asyncio.sleep(0)
+
+        assert not waiter.done()
+        release_run.set()
+        assert await waiter == ConversationExecutionStatus.FINISHED
+
+    @pytest.mark.asyncio
+    async def test_wait_for_run_completion_timeout_does_not_cancel_run(
+        self, event_service
+    ):
+        release_run = asyncio.Event()
+        run_task = asyncio.create_task(release_run.wait())
+        event_service._run_task = run_task
+
+        with pytest.raises(TimeoutError, match="Conversation run timed out"):
+            await event_service.wait_for_run_completion(timeout=0.01)
+
+        assert not run_task.done()
+        release_run.set()
+        await run_task
+
+    @pytest.mark.asyncio
     async def test_run_inactive_service(self, event_service):
         """Test that run raises ValueError when conversation is not active."""
         event_service._conversation = None
@@ -1677,6 +2053,33 @@ class TestEventServiceRun:
 
         with pytest.raises(ValueError, match="conversation_already_running"):
             await event_service.run()
+
+    @pytest.mark.asyncio
+    async def test_run_already_running_does_not_wait_for_state_lock(
+        self, event_service
+    ):
+        """A live run holds the state lock for its whole step (e.g. a long tool
+        call); run() must refuse at once instead of blocking behind it."""
+        lock_released = threading.Event()
+        state = MagicMock(spec=ConversationState)
+        state.execution_status = ConversationExecutionStatus.RUNNING
+        state.__enter__ = MagicMock(
+            side_effect=lambda: (lock_released.wait(10), state)[1]
+        )
+        state.__exit__ = MagicMock(return_value=None)
+        conversation = MagicMock(spec=Conversation)
+        conversation._state = state
+        event_service._conversation = conversation
+
+        run_task = asyncio.create_task(asyncio.Event().wait())
+        event_service._run_task = run_task
+        try:
+            with pytest.raises(ValueError, match="conversation_already_running"):
+                await asyncio.wait_for(event_service.run(), timeout=2)
+            state.__enter__.assert_not_called()
+        finally:
+            lock_released.set()
+            run_task.cancel()
 
     @pytest.mark.asyncio
     async def test_run_starts_background_task(self, event_service):
@@ -1753,6 +2156,46 @@ class TestEventServiceRun:
         event_service._publish_state_update.assert_called()
 
 
+class _PausingWriter:
+    """Text file handle that runs ``pause`` halfway through each write.
+
+    The first half is flushed to disk before ``pause`` runs, so ``pause`` sees
+    the file as a concurrent reader would in the middle of the write.
+    """
+
+    def __init__(self, handle, pause):
+        self._handle = handle
+        self._pause = pause
+
+    def __enter__(self):
+        self._handle.__enter__()
+        return self
+
+    def __exit__(self, *exc_info):
+        return self._handle.__exit__(*exc_info)
+
+    def write(self, data):
+        half = len(data) // 2
+        written = self._handle.write(data[:half])
+        self._handle.flush()
+        self._pause()
+        return written + self._handle.write(data[half:])
+
+    def __getattr__(self, name):
+        return getattr(self._handle, name)
+
+
+def _pause_text_writes_halfway(monkeypatch, pause) -> None:
+    """Run ``pause`` halfway through every text-mode write (``mode="w"``)."""
+    original_open = io.open
+
+    def open_(file, mode="r", *args, **kwargs):
+        handle = original_open(file, mode, *args, **kwargs)
+        return _PausingWriter(handle, pause) if mode == "w" else handle
+
+    monkeypatch.setattr(io, "open", open_)
+
+
 class TestEventServiceSaveMeta:
     """Test cases for EventService.save_meta method."""
 
@@ -1820,19 +2263,80 @@ class TestEventServiceSaveMeta:
         assert env["TAVILY_API_KEY"].get_secret_value() == "${TAVILY_API_KEY}"
 
     @pytest.mark.asyncio
-    async def test_switch_acp_model_persists_to_meta(self, tmp_path):
-        """switch_acp_model mirrors the new model into meta.json.
+    async def test_save_meta_never_exposes_a_partial_meta_json(
+        self, event_service, tmp_path, monkeypatch
+    ):
+        """A reader of meta.json during a save sees the previous complete file."""
+        event_service.conversations_dir = tmp_path
+        event_service.conversation_dir.mkdir()
+        meta_file = event_service.conversation_dir / "meta.json"
+        await event_service.save_meta()
+        previous = meta_file.read_bytes()
+        seen_mid_save: list[bytes] = []
+        _pause_text_writes_halfway(
+            monkeypatch, lambda: seen_mid_save.append(meta_file.read_bytes())
+        )
 
-        start() rebuilds the runtime agent from meta.json (self.stored.agent),
-        and ConversationState.create() copies that agent over the persisted
-        base_state.json on resume. So the switched model must also be written
-        to meta.json, otherwise a restart silently reverts to the old model.
+        event_service.stored.title = "renamed"
+        await event_service.save_meta()
+
+        assert seen_mid_save == [previous]
+        saved = StoredConversation.model_validate_json(meta_file.read_text())
+        assert saved.title == "renamed"
+
+    @pytest.mark.asyncio
+    async def test_trajectory_zip_built_during_save_meta_has_no_partial_meta_json(
+        self, sample_stored_conversation, tmp_path, monkeypatch
+    ):
+        """A trajectory zip built mid-save holds a complete, redacted meta.json.
+
+        Partial JSON does not parse, so the zip cannot redact it, and the
+        encrypted secrets in it would be archived as they are.
         """
-        from openhands.sdk.agent import ACPAgent
+        sample_stored_conversation.secrets = {
+            "GITHUB_TOKEN": StaticSecret(value=SecretStr("ghp_zip_during_save"))
+        }
+        service = EventService(
+            stored=sample_stored_conversation,
+            conversations_dir=tmp_path,
+            cipher=Cipher("trajectory-zip-during-save-meta"),
+        )
+        service.conversation_dir.mkdir()
+        await service.save_meta()
+        meta_file = service.conversation_dir / "meta.json"
+        assert FERNET_TOKEN_PREFIX in meta_file.read_text()
+        archive_path = tmp_path / "trajectory.zip"
+        _pause_text_writes_halfway(
+            monkeypatch,
+            lambda: _create_zip_from_directory(service.conversation_dir, archive_path),
+        )
 
+        service.stored.title = "renamed"
+        await service.save_meta()
+
+        with zipfile.ZipFile(archive_path) as archive:
+            members = {name: archive.read(name) for name in archive.namelist()}
+        assert not [
+            name
+            for name, data in members.items()
+            if FERNET_TOKEN_PREFIX.encode() in data
+        ]
+        meta = json.loads(members[f"{service.stored.id.hex}/meta.json"])
+        assert meta["secrets"]["GITHUB_TOKEN"]["value"] == REDACTED_SECRET_VALUE
+
+    @pytest.mark.asyncio
+    async def test_switch_acp_model_persists_via_conversation(self, tmp_path):
+        """switch_acp_model delegates to the SDK conversation, which persists the
+        new model to base_state.json (the single source of truth).
+
+        meta.json no longer carries the agent, so the event service must NOT
+        mirror the switch there. The SDK ``LocalConversation.switch_acp_model``
+        sets ``state.agent`` to an agent carrying the new ``acp_model``, which the
+        autosave path writes to base_state.json; on resume the agent is rebuilt
+        from base_state.
+        """
         stored = StoredConversation(
             id=uuid4(),
-            agent=ACPAgent(acp_command=["echo", "test"], acp_model="old-model"),
             workspace=LocalWorkspace(working_dir=str(tmp_path)),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1842,24 +2346,29 @@ class TestEventServiceSaveMeta:
         conv_dir = tmp_path / stored.id.hex
         conv_dir.mkdir(parents=True, exist_ok=True)
 
-        # Stand in for a live conversation; the protocol-level switch is
-        # covered elsewhere — here we only assert the meta.json mirroring.
+        # Write a meta.json up front so the assertion below proves the switch
+        # does not overwrite an *existing* meta.json with an agent mirror, rather
+        # than trivially passing because meta.json was never created.
+        await service.save_meta()
+        meta_file = conv_dir / "meta.json"
+        assert meta_file.exists()
+        assert "agent" not in json.loads(meta_file.read_text())
+
+        # Stand in for a live conversation; the protocol-level switch and the
+        # base_state persistence are covered by the SDK's own tests — here we
+        # only assert delegation and that meta.json is not written with an agent.
         service._conversation = MagicMock()
 
         await service.switch_acp_model("new-model")
 
-        # Live switch was delegated to the conversation...
+        # Live switch is delegated to the SDK conversation (which persists to
+        # base_state.json).
         service._conversation.switch_acp_model.assert_called_once_with("new-model")
-        # ...the in-memory stored agent was updated...
-        assert isinstance(service.stored.agent, ACPAgent)
-        assert service.stored.agent.acp_model == "new-model"
-        # ...and the new model was persisted to meta.json so it survives a
-        # restart.
-        loaded = StoredConversation.model_validate_json(
-            (conv_dir / "meta.json").read_text()
-        )
-        assert isinstance(loaded.agent, ACPAgent)
-        assert loaded.agent.acp_model == "new-model"
+        # StoredConversation no longer carries the agent at all.
+        assert not hasattr(service.stored, "agent")
+        # meta.json still exists and was never given an agent mirror.
+        assert meta_file.exists()
+        assert "agent" not in json.loads(meta_file.read_text())
 
     @pytest.mark.asyncio
     async def test_switch_acp_model_inactive_service_raises_value_error(self, tmp_path):
@@ -1870,11 +2379,9 @@ class TestEventServiceSaveMeta:
         the first run(), so the only failure mode here is a closed/never-started
         service.
         """
-        from openhands.sdk.agent import ACPAgent
 
         stored = StoredConversation(
             id=uuid4(),
-            agent=ACPAgent(acp_command=["echo", "test"], acp_model="old-model"),
             workspace=LocalWorkspace(working_dir=str(tmp_path)),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -3027,10 +3534,6 @@ class TestStatsCallbackNoDeadlock:
     def _make_service_with_callback(self):
         stored = StoredConversation(
             id=uuid4(),
-            agent=Agent(
-                llm=LLM(model="gpt-4o", usage_id="test-stats"),
-                tools=[],
-            ),
             workspace=LocalWorkspace(working_dir="workspace/project"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -3040,6 +3543,7 @@ class TestStatsCallbackNoDeadlock:
         )
         service = EventService(
             stored=stored,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-stats"), tools=[]),
             conversations_dir=Path("test_conversation_dir"),
         )
         # A real FIFOLock on a Mock-ish state so the callback contends on
@@ -3367,7 +3871,6 @@ def test_llm_log_callback_swallows_emit_failures(
 def _make_stored(tmp_path: Path) -> StoredConversation:
     return StoredConversation(
         id=uuid4(),
-        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test"), tools=[]),
         workspace=LocalWorkspace(working_dir=str(tmp_path)),
         confirmation_policy=NeverConfirm(),
         initial_message=None,
@@ -3393,6 +3896,7 @@ async def test_event_service_skips_lease_when_ttl_is_zero(tmp_path: Path) -> Non
     stored = _make_stored(tmp_path)
     service = EventService(
         stored=stored,
+        agent=_sample_agent(),
         conversations_dir=tmp_path,
         lease_ttl_seconds=0,
     )
@@ -3411,6 +3915,7 @@ async def test_event_service_creates_lease_with_custom_ttl(tmp_path: Path) -> No
     stored = _make_stored(tmp_path)
     service = EventService(
         stored=stored,
+        agent=_sample_agent(),
         conversations_dir=tmp_path,
         lease_ttl_seconds=10.0,
     )

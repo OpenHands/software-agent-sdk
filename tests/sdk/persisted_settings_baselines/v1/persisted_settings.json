@@ -7,6 +7,10 @@
       {
         "name": "TerminalTool",
         "params": {}
+      },
+      {
+        "name": "switch_llm",
+        "params": {}
       }
     ],
     "conversation_settings.max_iterations": 200,

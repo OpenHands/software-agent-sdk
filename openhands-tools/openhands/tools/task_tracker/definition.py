@@ -1,10 +1,10 @@
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal, get_args
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 
 if TYPE_CHECKING:
@@ -29,6 +29,14 @@ logger = get_logger(__name__)
 # Type alias for task tracker status
 TaskTrackerStatusType = Literal["todo", "in_progress", "done"]
 
+# Models trained on other agents' todo tools send these names for our statuses.
+_STATUS_ALIASES: dict[str, TaskTrackerStatusType] = {
+    "pending": "todo",
+    "to_do": "todo",
+    "completed": "done",
+    "complete": "done",
+}
+
 
 class TaskItem(BaseModel):
     id: str = Field(
@@ -46,6 +54,16 @@ class TaskItem(BaseModel):
         description="The current status of the task. "
         "One of 'todo', 'in_progress', or 'done'.",
     )
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _normalize_status(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+        if normalized in get_args(TaskTrackerStatusType):
+            return normalized
+        return _STATUS_ALIASES.get(normalized, value)
 
 
 class TaskTrackerAction(Action):
@@ -420,6 +438,11 @@ systematic approach and ensures comprehensive requirement fulfillment."""  # noq
 
 class TaskTrackerTool(ToolDefinition[TaskTrackerAction, TaskTrackerObservation]):
     """A ToolDefinition subclass that automatically initializes a TaskTrackerExecutor."""  # noqa: E501
+
+    catalog_description: ClassVar[str] = (
+        "Keep a running task list to organise multi-step work."
+    )
+    conversation_local: ClassVar[bool] = True
 
     @classmethod
     def create(cls, conv_state: "ConversationState") -> Sequence["TaskTrackerTool"]:

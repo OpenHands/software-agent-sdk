@@ -9,6 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import yaml
+
 from openhands.sdk.extensions.installation import (
     InstallationInfo,
     InstallationInterface,
@@ -18,7 +20,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.skills.exceptions import SkillValidationError
 from openhands.sdk.skills.skill import Skill
 from openhands.sdk.skills.utils import find_skill_md
-from openhands.sdk.utils.path import to_posix_path
+from openhands.sdk.utils.path import get_user_persistence_dir, to_posix_path
 
 
 if TYPE_CHECKING:
@@ -30,7 +32,7 @@ logger = get_logger(__name__)
 # Public type alias — keeps existing import sites working.
 InstalledSkillInfo = InstallationInfo
 
-DEFAULT_INSTALLED_SKILLS_DIR = Path.home() / ".openhands" / "skills" / "installed"
+DEFAULT_INSTALLED_SKILLS_DIR = get_user_persistence_dir() / "skills" / "installed"
 
 
 def get_installed_skills_dir() -> Path:
@@ -48,7 +50,10 @@ def _load_skill_from_dir(skill_root: Path, strict: bool = True) -> Skill:
     skill_md = find_skill_md(skill_root)
     if not skill_md:
         raise SkillValidationError(f"Skill directory is missing SKILL.md: {skill_root}")
-    return Skill.load(skill_md, strict=strict)
+    try:
+        return Skill.load(skill_md, strict=strict)
+    except yaml.YAMLError as e:
+        raise SkillValidationError(f"Invalid frontmatter in {skill_md}: {e}") from e
 
 
 def load_marketplace_standalone_skills(

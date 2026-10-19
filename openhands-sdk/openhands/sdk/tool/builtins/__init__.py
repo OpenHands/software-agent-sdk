@@ -1,10 +1,17 @@
-"""Implementing essential tools that doesn't interact with the environment.
+"""SDK-resident tools that do not interact with the environment.
 
-These are built in and are *required* for the agent to work.
+`BUILT_IN_TOOLS` contains tools attached to every agent. `BUILT_IN_TOOL_CLASSES`
+also includes optional SDK tools that are resolved by name from agent setup.
 
-For tools that require interacting with the environment, add them to `openhands-tools`.
+Tools that require interacting with the environment belong in `openhands-tools`.
 """
 
+from openhands.sdk.tool.builtins.classify_and_switch_llm import (
+    ClassifyAndSwitchLLMAction,
+    ClassifyAndSwitchLLMExecutor,
+    ClassifyAndSwitchLLMObservation,
+    ClassifyAndSwitchLLMTool,
+)
 from openhands.sdk.tool.builtins.finish import (
     FinishAction,
     FinishExecutor,
@@ -35,6 +42,7 @@ from openhands.sdk.tool.builtins.vision_inspect import (
     VisionInspectObservation,
     VisionInspectTool,
 )
+from openhands.sdk.tool.tool import ToolDefinition
 
 
 # Tools attached to every agent by default. `InvokeSkillTool` is deliberately
@@ -50,11 +58,30 @@ BUILT_IN_TOOL_CLASSES = {
     InvokeSkillTool.__name__: InvokeSkillTool,
     SwitchLLMTool.__name__: SwitchLLMTool,
     VisionInspectTool.__name__: VisionInspectTool,
+    ClassifyAndSwitchLLMTool.__name__: ClassifyAndSwitchLLMTool,
 }
+
+BUILT_IN_TOOLS_WITH_PARAMS = frozenset({ClassifyAndSwitchLLMTool.__name__})
+
+
+def builtin_tool_class(name: str) -> type[ToolDefinition] | None:
+    """Return the built-in tool class named by its class name or its tool name."""
+    if name in BUILT_IN_TOOL_CLASSES:
+        return BUILT_IN_TOOL_CLASSES[name]
+    return next(
+        (tool for tool in BUILT_IN_TOOL_CLASSES.values() if tool.name == name), None
+    )
+
 
 __all__ = [
     "BUILT_IN_TOOLS",
     "BUILT_IN_TOOL_CLASSES",
+    "BUILT_IN_TOOLS_WITH_PARAMS",
+    "builtin_tool_class",
+    "ClassifyAndSwitchLLMTool",
+    "ClassifyAndSwitchLLMAction",
+    "ClassifyAndSwitchLLMObservation",
+    "ClassifyAndSwitchLLMExecutor",
     "FinishTool",
     "FinishAction",
     "FinishObservation",

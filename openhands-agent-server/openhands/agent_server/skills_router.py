@@ -117,14 +117,6 @@ class SkillsRequest(BaseModel):
         default=None,
         description="Organization/user skill repositories to load concurrently",
     )
-    org_config: OrgConfig | None = Field(
-        default=None,
-        deprecated=True,
-        description=(
-            "Deprecated since v1.28.0 and scheduled for removal in v1.33.0. "
-            "Single organization skills configuration; prefer org_configs."
-        ),
-    )
     sandbox_config: SandboxConfig | None = Field(
         default=None, description="Sandbox skills configuration"
     )
@@ -158,11 +150,12 @@ class InstallSkillRequest(BaseModel):
     source: str = Field(
         min_length=1,
         description=(
-            "Skill source - git URL, GitHub shorthand, or local path. "
-            "Examples: "
-            "'https://github.com/OpenHands/extensions/tree/main/skills/github', "
+            "Skill source - git URL, GitHub shorthand (github:owner/repo, "
+            "optionally followed by the skill's path in the repository), or "
+            "local path. Examples: "
             "'github:OpenHands/extensions/skills/github', "
-            "'/path/to/skill'"
+            "'https://github.com/OpenHands/extensions.git' with repo_path "
+            "'skills/github', '/path/to/skill'"
         ),
     )
     ref: str | None = Field(
@@ -288,13 +281,9 @@ def get_skills(request: SkillsRequest, http_request: Request) -> SkillsResponse:
             for url in request.sandbox_config.exposed_urls
         ]
 
-    # Prefer the list form; fall back to the deprecated single org_config so
-    # older app-servers keep working.
     org_repos: list[tuple[str, str]] = []
     if request.org_configs:
         org_repos = [(c.org_repo_url, c.org_name) for c in request.org_configs]
-    elif "org_config" in request.model_fields_set and request.org_config:
-        org_repos = [(request.org_config.org_repo_url, request.org_config.org_name)]
 
     config = getattr(http_request.app.state, "config", None)
     server_registrations = config.registered_marketplaces if config is not None else []

@@ -6,12 +6,9 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from openhands.agent_server.conversation_service import (
-    ConversationService,
-    _append_system_message_suffix,
-)
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.models import LaunchedAgentProfile, StoredConversation
+from openhands.agent_server.models import StoredConversation
 from openhands.sdk import LLM, Agent, AgentContext
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.request import (
@@ -22,8 +19,12 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.launch import LaunchRuntime, finalize
+from openhands.sdk.profiles import OpenHandsAgentProfile
+from openhands.sdk.skills import Skill
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.workspace import LocalWorkspace
+from tests.sdk.launch import fakes
 
 
 _RUNTIME_SERVICES = """<RUNTIME_SERVICES>
@@ -83,7 +84,11 @@ def test_launch_addition_uses_existing_acp_prompt_path():
         acp_command=["echo", "test"],
         agent_context=AgentContext(system_message_suffix="PROFILE_BASELINE"),
     )
-    updated = _append_system_message_suffix(agent, _RUNTIME_SERVICES)
+    updated = finalize(
+        agent,
+        LaunchRuntime(),
+        additions=AgentLaunchAdditions(system_message_suffix_append=_RUNTIME_SERVICES),
+    ).agent
 
     assert updated.agent_context is not None
     suffix = updated.agent_context.to_acp_prompt_context()
@@ -95,22 +100,26 @@ def test_launch_addition_uses_existing_acp_prompt_path():
 @pytest.mark.parametrize("profile_launch", [False, True])
 @pytest.mark.asyncio
 async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp_path):
-    profile_id = uuid4()
-    resolved_agent = _agent("PROFILE_BASELINE")
-    launched = LaunchedAgentProfile(agent_profile_id=profile_id, revision=5)
+    profile = OpenHandsAgentProfile(
+        name="p",
+        llm_profile_ref="default",
+        tools=[],
+        system_message_suffix="PROFILE_BASELINE",
+    )
+    raw_agent = _agent("PROFILE_BASELINE")
     additions = AgentLaunchAdditions(
         system_message_suffix_append=f"  {_RUNTIME_SERVICES}  ",
     )
     request = (
         StartConversationRequest(
-            agent_profile_id=profile_id,
+            agent_profile_id=profile.id,
             workspace=LocalWorkspace(working_dir=str(tmp_path)),
             agent_launch_additions=additions,
             client_tools=[_CANVAS_UI],
         )
         if profile_launch
         else StartConversationRequest(
-            agent=resolved_agent,
+            agent=raw_agent,
             workspace=LocalWorkspace(working_dir=str(tmp_path)),
             agent_launch_additions=additions,
             client_tools=[_CANVAS_UI],
@@ -118,7 +127,7 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
     )
     state = ConversationState(
         id=uuid4(),
-        agent=resolved_agent,
+        agent=raw_agent,
         workspace=request.workspace,
         execution_status=ConversationExecutionStatus.IDLE,
     )
@@ -126,15 +135,16 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
     service = ConversationService(conversations_dir=tmp_path)
     service._event_services = {}
 
-    async def capture_start(stored, **_kwargs):
+    async def capture_start(stored, **kwargs):
         captured["stored"] = stored
+        captured["agent"] = kwargs["launched"].agent
         return _mock_event_service(state)
 
     with (
         patch(
-            "openhands.agent_server.conversation_service._resolve_agent_from_profile",
-            return_value=(resolved_agent, launched),
-        ) as resolve_profile,
+            "openhands.agent_server.conversation_service.server_launch_stores",
+            return_value=fakes.stores(profile),
+        ),
         patch.object(
             service,
             "_start_event_service",
@@ -145,22 +155,108 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
         await service.start_conversation(request)
 
     stored = captured["stored"]
-    assert stored.agent.agent_context is not None
-    suffix = stored.agent.agent_context.system_message_suffix
+    agent = captured["agent"]
+    assert agent.agent_context is not None
+    suffix = agent.agent_context.system_message_suffix
     assert suffix == f"PROFILE_BASELINE\n\n{_RUNTIME_SERVICES}"
-    assert [tool.name for tool in stored.agent.tools] == ["canvas_ui_client"]
+    assert [tool.name for tool in agent.tools] == ["canvas_ui_client"]
     assert stored.agent_launch_additions is None
     assert stored.client_tools == [_CANVAS_UI]
     assert stored.tool_module_qualnames == {}
-    if profile_launch:
-        resolve_profile.assert_called_once()
-    else:
-        resolve_profile.assert_not_called()
+    assert (stored.launched_agent_profile is not None) is profile_launch
 
-    restored = StoredConversation.model_validate(stored.model_dump(mode="json"))
-    assert restored.agent.agent_context is not None
-    restored_suffix = restored.agent.agent_context.system_message_suffix
+    restored_agent = type(agent).model_validate(agent.model_dump(mode="json"))
+    assert restored_agent.agent_context is not None
+    restored_suffix = restored_agent.agent_context.system_message_suffix
     assert restored_suffix is not None
     assert restored_suffix.count("<RUNTIME_SERVICES>") == 1
-    assert [tool.name for tool in restored.agent.tools] == ["canvas_ui_client"]
+    assert [tool.name for tool in restored_agent.tools] == ["canvas_ui_client"]
+    restored = StoredConversation.model_validate(stored.model_dump(mode="json"))
     assert restored.client_tools == [_CANVAS_UI]
+
+
+def _skill(name: str, content: str | None = None) -> Skill:
+    return Skill(name=name, content=content or f"# {name}")
+
+
+def _agent_with(skills: list[Skill], disabled: list[str] | None = None) -> Agent:
+    return Agent(
+        llm=LLM(model="gpt-4o", usage_id="llm"),
+        tools=[],
+        agent_context=AgentContext(skills=skills, disabled_skills=disabled or []),
+    )
+
+
+def _launched_skills(agent: Agent, skills: list[Skill]) -> dict[str, str]:
+    launched = finalize(
+        agent, LaunchRuntime(), additions=AgentLaunchAdditions(skills=skills)
+    ).agent
+    assert launched.agent_context is not None
+    return {skill.name: skill.content for skill in launched.agent_context.skills}
+
+
+class TestLaunchSkills:
+    def test_adds_skills_the_resolved_agent_lacks(self):
+        skills = _launched_skills(_agent_with([_skill("github")]), [_skill("docker")])
+        assert sorted(skills) == ["docker", "github"]
+
+    def test_the_resolved_agent_wins_a_name_collision(self):
+        skills = _launched_skills(
+            _agent_with([_skill("github")]), [_skill("github", "# addition")]
+        )
+        assert skills == {"github": "# github"}
+
+    def test_the_profile_deny_list_still_wins(self):
+        skills = _launched_skills(
+            _agent_with([], disabled=["docker"]),
+            [_skill("docker"), _skill("code-review")],
+        )
+        assert sorted(skills) == ["code-review"]
+
+    def test_repeated_additions_keep_the_first_skill(self):
+        launched = finalize(
+            _agent_with([]),
+            LaunchRuntime(),
+            additions=AgentLaunchAdditions(
+                skills=[_skill("docker"), _skill("docker", "duplicate")]
+            ),
+        ).agent
+
+        restored = Agent.model_validate(launched.model_dump(mode="json"))
+        assert restored.agent_context is not None
+        assert [(s.name, s.content) for s in restored.agent_context.skills] == [
+            ("docker", "# docker")
+        ]
+
+    @pytest.mark.parametrize("managed", [False, True])
+    def test_acp_launch_skills_follow_runtime_sourcing(self, managed):
+        agent = ACPAgent(acp_command=["echo"])
+        sourcing = "openhands_managed" if managed else "native"
+        launched = finalize(
+            agent,
+            LaunchRuntime(acp_skill_sourcing=sourcing),
+            additions=AgentLaunchAdditions(skills=[_skill("docker")]),
+        ).agent
+
+        assert launched.agent_context is not None
+        assert [s.name for s in launched.agent_context.skills] == (
+            ["docker"] if managed else []
+        )
+
+    def test_no_additions_leaves_the_skills_untouched(self):
+        assert sorted(_launched_skills(_agent_with([_skill("github")]), [])) == [
+            "github"
+        ]
+
+    def test_an_agent_without_a_context_still_receives_them(self):
+        agent = Agent(llm=LLM(model="gpt-4o", usage_id="llm"), tools=[])
+        assert sorted(_launched_skills(agent, [_skill("docker")])) == ["docker"]
+
+    def test_the_field_defaults_to_none(self):
+        assert AgentLaunchAdditions().skills is None
+
+    def test_unused_skills_are_omitted_from_existing_launch_payloads(self):
+        additions = AgentLaunchAdditions(system_message_suffix_append=_RUNTIME_SERVICES)
+
+        assert "skills" not in additions.model_dump(mode="json")
+        assert "skills" not in additions.model_dump()
