@@ -65,6 +65,47 @@ class MyChangingFailingDynamicSecretSource(SecretSource):
 # -----------------------
 
 
+# SecretSource subclasses live at module level: the discriminated-union lookup
+# rejects classes defined inside functions, and a registered local class
+# breaks SecretSource validation for every later test in the process.
+
+
+class MySecretSource(SecretSource):
+    def get_value(self):
+        return "dynamic-token-123"
+
+
+class MyFailingSecretSource(SecretSource):
+    def get_value(self):
+        raise ValueError("Secret retrieval failed")
+
+
+class MyDynamicSecretSource(SecretSource):
+    def get_value(self):
+        return "dynamic-secret"
+
+
+class MyChangingDynamicSecretSource(SecretSource):
+    counter: int = 0
+
+    def get_value(self):
+        self.counter += 1
+        return f"changing-secret-{self.counter}"
+
+
+class MyChangingFailingDynamicSecretSource(SecretSource):
+    counter: int = 0
+    raised_on_second: bool = False
+
+    def get_value(self):
+        self.counter += 1
+        if self.counter == 1:
+            return f"changing-secret-{self.counter}"
+        else:
+            self.raised_on_second = True
+            raise Exception("Blip occured, failed to refresh token")
+
+
 @pytest.fixture
 def llm() -> LLM:
     return LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
