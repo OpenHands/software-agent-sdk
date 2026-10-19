@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,9 +21,14 @@ from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationTokenCallbackType,
 )
-from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.event.llm_convertible import (
+    ActionEvent,
+    MessageEvent,
+    SystemPromptEvent,
+)
+from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
 from openhands.sdk.skills import KeywordTrigger, Skill
+from openhands.tools.terminal import TerminalAction
 
 
 class SendMessageDummyAgent(AgentBase):
@@ -209,6 +215,61 @@ def test_acp_send_message_defers_initialization_until_run(tmp_path):
             conversation.state.execution_status == ConversationExecutionStatus.FINISHED
         )
         assert conversation.state.events[-1] == user_event
+
+
+def test_acp_send_message_tolerates_unmatched_action_before_init(tmp_path):
+    """send_message() must not read tools_map before an ACP agent is initialized.
+
+    Reopening a persisted ACP conversation that contains an unmatched action
+    (the crash-recovery state the agent server produces) must not raise: the
+    pending-input resolver reads tools_map, which only exists after
+    ``_initialize()``, and ACP initialization is deferred to ``run()``.
+    """
+    persist = tmp_path / "persist"
+    ws = tmp_path / "ws"
+    conversation_id = uuid.uuid4()
+
+    created = LocalConversation(
+        agent=ACPAgent(acp_command=["echo", "test"]),
+        workspace=str(ws),
+        persistence_dir=str(persist),
+        conversation_id=conversation_id,
+        delete_on_close=False,
+    )
+    created._on_event(
+        ActionEvent(
+            thought=[TextContent(text="run ls")],
+            action=TerminalAction(command="ls"),
+            tool_name="terminal",
+            tool_call_id="call_1",
+            tool_call=MessageToolCall(
+                id="call_1",
+                name="terminal",
+                arguments='{"command": "ls"}',
+                origin="completion",
+            ),
+            llm_response_id="response_1",
+            source="agent",
+        )
+    )
+    created.close()
+
+    reopened = LocalConversation(
+        agent=ACPAgent(acp_command=["echo", "test"]),
+        workspace=str(ws),
+        persistence_dir=str(persist),
+        conversation_id=conversation_id,
+        delete_on_close=False,
+    )
+    try:
+        assert reopened.agent._initialized is False
+        assert ConversationState.get_unmatched_actions(reopened.state.events)
+
+        reopened.send_message("carry on")
+
+        assert isinstance(reopened.state.events[-1], MessageEvent)
+    finally:
+        reopened.close()
 
 
 @pytest.mark.asyncio

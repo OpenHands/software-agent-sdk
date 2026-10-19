@@ -1933,6 +1933,11 @@ class LocalConversation(BaseConversation):
         return None
 
     def _tool_pauses_for_user_input(self, tool_name: str) -> bool:
+        # ACPAgent initialization is deliberately deferred to run(), so this
+        # resolver can run from send_message() before tools_map exists. An
+        # uninitialized agent has no resolved tools, hence nothing pauses.
+        if not self.agent._initialized:
+            return False
         tool = self.agent.tools_map.get(tool_name)
         return tool is not None and tool.pauses_run_for_user_input
 
