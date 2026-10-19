@@ -12,6 +12,8 @@ from pydantic import BaseModel, Field
 from openhands.agent_server.skills_service import (
     ExposedUrlData,
     MarketplaceSkillInfo,
+    discover_profile_skills,
+    discover_public_skill_names,
     load_all_skills,
     service_disable_skill,
     service_enable_skill,
@@ -130,6 +132,23 @@ class SkillsResponse(BaseModel):
         default_factory=dict,
         description="Count of skills loaded from each source",
     )
+
+
+class SkillCatalogEntry(SkillInfo):
+    """A skill an Agent Profile launch can load."""
+
+    origin: Literal["public", "user"] = Field(
+        description=(
+            "`public`: the public extensions catalog. `user`: the user's own "
+            "skills, including marketplace installs."
+        )
+    )
+
+
+class SkillCatalogResponse(BaseModel):
+    """Response for ``GET /api/skills/catalog``."""
+
+    skills: list[SkillCatalogEntry]
 
 
 class SyncResponse(BaseModel):
@@ -308,6 +327,26 @@ def get_skills(request: SkillsRequest, http_request: Request) -> SkillsResponse:
     skills_info = [skill.to_skill_info() for skill in result.skills]
 
     return SkillsResponse(skills=skills_info, sources=result.sources)
+
+
+@skills_router.get("/catalog", response_model=SkillCatalogResponse)
+def get_skill_catalog() -> SkillCatalogResponse:
+    """List the skills an Agent Profile launch can load.
+
+    A profile's ``public_skills`` and ``disabled_skills`` select from exactly
+    this list. Project skills load only when a conversation opens its
+    workspace, so they are not listed.
+    """
+    public_names = discover_public_skill_names()
+    return SkillCatalogResponse(
+        skills=[
+            SkillCatalogEntry(
+                **skill.to_skill_info().model_dump(),
+                origin="public" if skill.name in public_names else "user",
+            )
+            for skill in discover_profile_skills()
+        ]
+    )
 
 
 @skills_router.post("/sync", response_model=SyncResponse)
