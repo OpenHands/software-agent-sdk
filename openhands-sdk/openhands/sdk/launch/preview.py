@@ -10,14 +10,20 @@ from openhands.sdk.launch.finalize import (
     _settings_for_runtime,
     finalize,
 )
-from openhands.sdk.launch.resolve import LaunchStores, _load_llm, _load_skills, resolve
+from openhands.sdk.launch.resolve import (
+    LaunchStores,
+    _load_llm,
+    _load_public_skill_names,
+    _load_skills,
+    resolve,
+)
 from openhands.sdk.profiles.agent_profile import ACPAgentProfile, OpenHandsAgentProfile
 from openhands.sdk.profiles.resolver import (
     AgentProfileDiagnostics,
     _acp_credential_channels,
     _api_key_set,
-    _apply_disabled_skills,
     _compute_mcp_filter,
+    _profile_skills,
     _unusable_tools,
 )
 from openhands.sdk.settings.model import OpenHandsAgentSettings
@@ -50,6 +56,7 @@ def preview_launch(
     if isinstance(profile, OpenHandsAgentProfile):
         diagnostics.llm_profile_ref = profile.llm_profile_ref
         diagnostics.disabled_skills = profile.disabled_skills
+        diagnostics.public_skills = profile.public_skills
         diagnostics.meta_profile_ref = profile.meta_profile_ref
         diagnostics.unusable_tools = _unusable_tools(
             profile.tools,
@@ -107,9 +114,10 @@ def _report_llm_key_and_skills(
     try:
         llm = _load_llm(stores, profile.llm_profile_ref)
         catalog = _load_skills(stores)
+        public_names = _load_public_skill_names(profile, stores)
     except (AgentLaunchError, LaunchStoreError):
         return
     diagnostics.llm_api_key_set = llm is not None and _api_key_set(llm)
     diagnostics.resolved_skills = [
-        skill.name for skill in _apply_disabled_skills(catalog, profile.disabled_skills)
+        skill.name for skill in _profile_skills(profile, catalog, public_names)
     ]

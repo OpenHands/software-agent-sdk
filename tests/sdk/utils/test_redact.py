@@ -1,5 +1,7 @@
 """Tests for redact utility functions."""
 
+import pytest
+
 from openhands.sdk.utils.redact import (
     SENSITIVE_URL_PARAMS,
     redact_api_key_literals,
@@ -284,6 +286,50 @@ class TestRedactTextSecretsDictKeys:
 
     def test_non_sensitive_entries_unchanged(self):
         text = "{'name': 'alice', 'path': '/tmp/x'}"
+        assert redact_text_secrets(text) == text
+
+
+@pytest.mark.parametrize(
+    ("key", "key_quote", "value_quote"),
+    [
+        ("private_key", "'", "'"),
+        ("token", '"', '"'),
+        ("authorization", "'", '"'),
+        ("password", '\\"', '\\"'),
+    ],
+    ids=["pem", "double-quotes", "mixed-quotes", "escaped-quotes"],
+)
+def test_redact_text_secrets_redacts_multiline_values(key, key_quote, value_quote):
+    head = f"{{{key_quote}{key}{key_quote}: {value_quote}"
+    secret = "-----BEGIN PRIVATE KEY-----\nsecret-content\n-----END PRIVATE KEY-----"
+    tail = f"{value_quote}, 'note': 'first public line\nsecond public line'}}"
+
+    assert redact_text_secrets(f"{head}{secret}{tail}") == f"{head}<redacted>{tail}"
+
+
+class TestRedactTextSecretsHeaders:
+    """Header entries as provider errors echo them: any case, either quote
+    style, hyphenated names, and JSON embedded with escaped quotes."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "{'authorization': 'Bearer hdr-secret-1'}",
+            '{"Authorization": "Bearer hdr-secret-1"}',
+            '{"authorization": "Bearer hdr-secret-1"}',
+            '{"api-key": "hdr-secret-1"}',
+            "{'x-api-key': \"hdr-secret-1\"}",
+            "{'X-Session-API-Key': 'hdr-secret-1'}",
+            'Error: {\\"Authorization\\": \\"Bearer hdr-secret-1\\"}',
+        ],
+    )
+    def test_redacts_credential_headers(self, text):
+        redacted = redact_text_secrets(text)
+        assert "hdr-secret-1" not in redacted
+        assert "<redacted>" in redacted
+
+    def test_keeps_other_headers(self):
+        text = "{'content-type': 'application/json', 'x-title': 'OpenHands'}"
         assert redact_text_secrets(text) == text
 
 

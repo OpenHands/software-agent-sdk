@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin.types import (
     HooksConfigDict,
     LspServersDict,
@@ -16,6 +17,8 @@ from openhands.sdk.plugin.types import (
     PluginManifest,
 )
 
+
+logger = get_logger(__name__)
 
 # Directories to check for marketplace manifest
 MARKETPLACE_MANIFEST_DIRS = [".plugin", ".claude-plugin"]
@@ -259,6 +262,58 @@ class Marketplace(BaseModel):
             raise ValueError(f"Invalid JSON in {manifest_path}: {e}") from e
 
         return cls.model_validate({**data, "path": str(marketplace_dir)})
+
+    @classmethod
+    def from_skills_dir(cls, marketplace_path: str | Path, name: str) -> Marketplace:
+        """Build a marketplace from a plain folder of skills, without a manifest.
+
+        Each ``<name>/SKILL.md`` folder becomes a standalone skill: those in
+        ``skills/`` and ``.skills/``, or, when neither exists, those directly in
+        ``marketplace_path``, so a ``repo_path`` can point at the skills folder
+        itself. Loose markdown files are not read, so a repository's README and
+        docs never become skills. The result has no skills when none are found.
+
+        Args:
+            marketplace_path: Path to the repository or skills folder.
+            name: Marketplace name, since there is no manifest to supply one.
+
+        Returns:
+            Marketplace listing the discovered skills, with no plugins.
+        """
+        from openhands.sdk.skills import Skill
+        from openhands.sdk.skills.utils import find_skill_md_directories
+
+        marketplace_dir = Path(marketplace_path).resolve()
+        skills_dirs = [
+            path
+            for path in (marketplace_dir / "skills", marketplace_dir / ".skills")
+            if path.is_dir()
+        ] or [marketplace_dir]
+
+        entries: dict[str, MarketplaceEntry] = {}
+        for skills_dir in skills_dirs:
+            for skill_md in find_skill_md_directories(skills_dir, marketplace_dir):
+                try:
+                    skill = Skill.load(skill_md, strict=False)
+                except Exception as e:
+                    logger.warning(f"Failed to load skill from {skill_md}: {e}")
+                    continue
+                source = skill_md.parent.relative_to(marketplace_dir).as_posix()
+                entries.setdefault(
+                    skill.name,
+                    MarketplaceEntry(
+                        name=skill.name,
+                        source=f"./{source}",
+                        description=skill.description,
+                    ),
+                )
+
+        return cls(
+            name=name,
+            owner=MarketplaceOwner(name=name),
+            skills=list(entries.values()),
+            path=str(marketplace_dir),
+        )
 
     def get_plugin(self, name: str) -> MarketplacePluginEntry | None:
         """Get a plugin entry by name.

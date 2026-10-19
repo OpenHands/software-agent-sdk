@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
 from acp.client.connection import ClientSideConnection
 from acp.exceptions import RequestError as ACPRequestError
 from acp.helpers import image_block, text_block
+from acp.meta import AGENT_METHODS
 from acp.schema import (
     AcpMcpServer,
     AgentMessageChunk,
@@ -56,6 +57,8 @@ from acp.schema import (
     ImageContentBlock,
     KillTerminalResponse,
     McpServerStdio,
+    NewSessionRequest,
+    NewSessionResponse,
     PermissionOption,
     PromptResponse,
     ReadTextFileResponse,
@@ -72,16 +75,19 @@ from acp.schema import (
     WriteTextFileResponse,
 )
 from acp.transports import default_environment
+from acp.utils import request_model
 from pydantic import (
     Field,
     PrivateAttr,
     SecretStr,
+    ValidationError,
     ValidationInfo,
     field_serializer,
     field_validator,
 )
 
 from openhands.sdk.agent.acp_contracts import (
+    ACPLegacySessionModels,
     extract_session_models,
     is_model_dumpable,
     normalize_acp_error,
@@ -615,12 +621,9 @@ async def _apply_acp_model(
     codex-acp exposes reasoning effort as a separate config option, so split it
     only on the config-options mechanism.
 
-    agent-client-protocol 0.12.1 dropped the UNSTABLE ``models`` extension from
-    the ACP schema and removed ``ClientSideConnection.set_session_model``. A live
-    0.12 connection therefore has no legacy RPC to call, so the ``else`` branch
-    only invokes it when the connection actually exposes the method (test
-    doubles do; real 0.12 connections do not) and otherwise no-ops rather than
-    raising ``AttributeError``.
+    agent-client-protocol 0.12.1 removed ``ClientSideConnection.set_session_model``;
+    :class:`_ACPClientConnection` restores it, and a connection without it
+    no-ops rather than raising ``AttributeError``.
     """
     if via_config_option:
         for config_id, value in _model_config_options(agent_name, model):
@@ -998,6 +1001,47 @@ def _serialize_tool_content(content: list[Any] | None) -> list[dict[str, Any]] |
             }
         result.append(block_dict)
     return result
+
+
+class _NewSessionResponse(NewSessionResponse):
+    models: ACPLegacySessionModels | None = None
+
+    @field_validator("models", mode="before")
+    @classmethod
+    def _drop_malformed_models(cls, value: Any) -> Any:
+        try:
+            return ACPLegacySessionModels.model_validate(value)
+        except ValidationError:
+            return None
+
+
+# ``@final`` is typing-only; nothing but these two calls is overridden.
+class _ACPClientConnection(ClientSideConnection):  # pyright: ignore[reportGeneralTypeIssues]
+    """Restore the UNSTABLE model calls ACP 0.12 dropped; gemini-cli needs them."""
+
+    async def new_session(  # type: ignore[override]
+        self,
+        cwd: str,
+        additional_directories: list[str] | None = None,
+        mcp_servers: list[Any] | None = None,
+        **kwargs: Any,
+    ) -> NewSessionResponse:
+        return await request_model(
+            self._conn,
+            AGENT_METHODS["session_new"],
+            NewSessionRequest(
+                cwd=cwd,
+                additional_directories=additional_directories,
+                mcp_servers=mcp_servers or [],
+                field_meta=kwargs or None,
+            ),
+            _NewSessionResponse,
+        )
+
+    async def set_session_model(self, *, model_id: str, session_id: str) -> None:
+        await self._conn.send_request(
+            "session/set_model", {"sessionId": session_id, "modelId": model_id}
+        )
 
 
 async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
@@ -3027,7 +3071,7 @@ class ACPAgent(AgentBase):
                 _log_acp_subprocess_stderr(process.stderr)
             )
 
-            conn = ClientSideConnection(
+            conn = _ACPClientConnection(
                 client,
                 process.stdin,  # write to subprocess
                 filtered_reader,  # read filtered output
