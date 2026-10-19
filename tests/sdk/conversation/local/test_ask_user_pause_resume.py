@@ -5,9 +5,11 @@ Covers the run pausing at ``WAITING_FOR_CONFIRMATION`` when the agent calls
 run resuming to completion.
 """
 
+import asyncio
 import json
 import uuid
-from unittest.mock import MagicMock, patch
+from typing import ClassVar
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from litellm import ChatCompletionMessageToolCall
 from litellm.types.utils import (
@@ -30,10 +32,19 @@ from openhands.sdk.event import (
     LLMConvertibleEvent,
     MessageEvent,
     ObservationEvent,
+    UserRejectObservation,
 )
 from openhands.sdk.event.llm_convertible.message import TextContent
 from openhands.sdk.llm import LLM
-from openhands.sdk.tool import Tool
+from openhands.sdk.security.confirmation_policy import AlwaysConfirm, NeverConfirm
+from openhands.sdk.tool import (
+    Action,
+    Observation,
+    Tool,
+    ToolDefinition,
+    ToolExecutor,
+    register_tool,
+)
 from openhands.sdk.tool.builtins import AskUserTool
 from openhands.sdk.tool.builtins.ask_user import AskUserAnswerAction, AskUserObservation
 
@@ -497,3 +508,260 @@ def test_warm_parallel_sibling_batch_resolves_in_view():
     events = conversation.state.view.events
     assert sum(isinstance(e, ActionEvent) for e in events) == 2
     assert sum(isinstance(e, ObservationEvent) for e in events) == 2
+
+
+# ---------------------------------------------------------------------------
+# Confirmation-mode interaction: a paused batch must not smuggle a sibling
+# through the confirmation gate.
+# ---------------------------------------------------------------------------
+
+
+class _SiblingAction(Action):
+    command: str
+
+
+class _SiblingObservation(Observation):
+    result: str
+
+
+class _SiblingExecutor(ToolExecutor[_SiblingAction, _SiblingObservation]):
+    def __call__(
+        self,
+        action: _SiblingAction,
+        conversation: LocalConversation | None = None,  # noqa: ARG002
+    ) -> _SiblingObservation:
+        return _SiblingObservation(result=f"Executed: {action.command}")
+
+
+class _SiblingTool(ToolDefinition[_SiblingAction, _SiblingObservation]):
+    name: ClassVar[str] = "sibling_tool"
+
+    @classmethod
+    def create(cls, conv_state=None, **params):  # noqa: ARG003
+        return [
+            cls(
+                description="A tool that may require confirmation",
+                action_type=_SiblingAction,
+                observation_type=_SiblingObservation,
+                executor=_SiblingExecutor(),
+            )
+        ]
+
+
+register_tool("sibling_tool", _SiblingTool)
+
+SIBLING_ARGS = json.dumps({"command": "write-something"})
+
+
+def _confirmation_conversation(policy=None) -> LocalConversation:
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="t")
+    conversation: LocalConversation = Conversation(
+        agent=Agent(
+            llm=llm, tools=[Tool(name=AskUserTool.name), Tool(name="sibling_tool")]
+        )
+    )
+    conversation.set_confirmation_policy(policy or AlwaysConfirm())
+    return conversation
+
+
+def _ask_plus_sibling_response() -> ModelResponse:
+    return _response(
+        "resp_batch",
+        "thinking",
+        [
+            _tool_call("ask_1", "ask_user", ASK_ARGS),
+            _tool_call("sibling_1", "sibling_tool", SIBLING_ARGS),
+        ],
+    )
+
+
+def _run_to_pause_with_sibling(conversation: LocalConversation) -> str:
+    with patch(
+        "openhands.sdk.llm.llm.litellm_completion",
+        return_value=_ask_plus_sibling_response(),
+    ):
+        conversation.send_message("add auth")
+        conversation.run()
+    assert (
+        conversation.state.execution_status
+        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+    pending = ConversationState.get_unmatched_actions(conversation.state.events)
+    ask = [p for p in pending if p.tool_name == AskUserTool.name]
+    assert len(ask) == 1
+    return ask[0].id
+
+
+def _sibling_observations(conversation: LocalConversation) -> list[ObservationEvent]:
+    return [
+        e
+        for e in conversation.state.events
+        if isinstance(e, ObservationEvent) and e.tool_name == "sibling_tool"
+    ]
+
+
+def test_confirmation_gated_sibling_is_not_executed_by_the_answer():
+    """A sibling that needs confirmation must not run when the question is answered.
+
+    Regression: ``_pause_for_user_input`` returned before the confirmation gate,
+    so a response pairing ``ask_user`` with a confirmation-required tool skipped
+    ``should_confirm`` for the batch; answering then executed the sibling with no
+    approval. The sibling must be rejected instead, and no execution may occur.
+    """
+    conversation = _confirmation_conversation()
+    request_id = _run_to_pause_with_sibling(conversation)
+
+    # The gated sibling was rejected up front, before any answer arrived.
+    rejections = [
+        e for e in conversation.state.events if isinstance(e, UserRejectObservation)
+    ]
+    assert [r.tool_name for r in rejections] == ["sibling_tool"]
+    assert _sibling_observations(conversation) == []
+
+    # Answering resolves the question but must not execute the sibling.
+    conversation.send_message(
+        json.dumps(
+            {
+                "request_id": request_id,
+                "action": "accept",
+                "answers": {"auth": [{"option_id": "jwt"}]},
+            }
+        )
+    )
+    with patch(
+        "openhands.sdk.llm.llm.litellm_completion",
+        return_value=_response("resp_done", "done"),
+    ):
+        conversation.run()
+
+    assert _sibling_observations(conversation) == []
+    assert (
+        len(
+            [
+                e
+                for e in conversation.state.events
+                if isinstance(e, UserRejectObservation)
+            ]
+        )
+        == 1
+    )
+
+
+def test_declining_the_question_also_blocks_the_gated_sibling():
+    """Declining is not approval for the batch; the gated sibling stays rejected."""
+    conversation = _confirmation_conversation()
+    request_id = _run_to_pause_with_sibling(conversation)
+
+    conversation.send_message(
+        json.dumps({"request_id": request_id, "action": "decline"})
+    )
+    with patch(
+        "openhands.sdk.llm.llm.litellm_completion",
+        return_value=_response("resp_done", "done"),
+    ):
+        conversation.run()
+
+    assert _sibling_observations(conversation) == []
+
+
+def test_declining_rejects_a_sibling_the_policy_would_allow():
+    """Declining blocks even a sibling the confirmation policy would let through.
+
+    With ``NeverConfirm`` the sibling is not gated up front, so it stays pending
+    with the question. The user's decline must still not be read as consent: the
+    sibling is rejected instead of executed by the resumed run.
+    """
+    conversation = _confirmation_conversation(policy=NeverConfirm())
+    request_id = _run_to_pause_with_sibling(conversation)
+    assert _sibling_observations(conversation) == []
+
+    conversation.send_message(
+        json.dumps({"request_id": request_id, "action": "decline"})
+    )
+    with patch(
+        "openhands.sdk.llm.llm.litellm_completion",
+        return_value=_response("resp_done", "done"),
+    ):
+        conversation.run()
+
+    assert _sibling_observations(conversation) == []
+    rejections = [
+        e for e in conversation.state.events if isinstance(e, UserRejectObservation)
+    ]
+    assert [r.tool_name for r in rejections] == ["sibling_tool"]
+
+
+def test_accepting_lets_an_ungated_sibling_resume():
+    """An accepting answer still resumes a sibling the policy does not gate."""
+    conversation = _confirmation_conversation(policy=NeverConfirm())
+    request_id = _run_to_pause_with_sibling(conversation)
+
+    conversation.send_message(
+        json.dumps(
+            {
+                "request_id": request_id,
+                "action": "accept",
+                "answers": {"auth": [{"option_id": "jwt"}]},
+            }
+        )
+    )
+    with patch(
+        "openhands.sdk.llm.llm.litellm_completion",
+        return_value=_response("resp_done", "done"),
+    ):
+        conversation.run()
+
+    assert len(_sibling_observations(conversation)) == 1
+
+
+def test_async_gated_sibling_is_not_executed_by_the_answer():
+    """The async dispatch path applies the same confirmation gate."""
+    conversation = _confirmation_conversation()
+
+    with patch(
+        "openhands.sdk.llm.llm.litellm_acompletion",
+        new_callable=AsyncMock,
+        return_value=_ask_plus_sibling_response(),
+    ):
+        conversation.send_message("add auth")
+        asyncio.run(conversation.arun())
+
+    assert (
+        conversation.state.execution_status
+        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+    rejections = [
+        e for e in conversation.state.events if isinstance(e, UserRejectObservation)
+    ]
+    assert [r.tool_name for r in rejections] == ["sibling_tool"]
+    assert _sibling_observations(conversation) == []
+
+
+def test_policy_not_consulted_when_no_sibling_shares_the_step():
+    """A lone ``ask_user`` call leaves the confirmation policy untouched.
+
+    The gate only applies to siblings; a paused call by itself never triggers a
+    confirmation verdict, so ``should_confirm`` is not consulted.
+    """
+    conversation = _confirmation_conversation()
+    real_should_confirm = AlwaysConfirm.should_confirm
+
+    with patch.object(
+        AlwaysConfirm,
+        "should_confirm",
+        side_effect=lambda risk, self=None: real_should_confirm(risk),
+    ) as should_confirm:
+        with patch(
+            "openhands.sdk.llm.llm.litellm_completion",
+            return_value=_response(
+                "resp_ask", "thinking", [_tool_call("ask_1", "ask_user", ASK_ARGS)]
+            ),
+        ):
+            conversation.send_message("add auth")
+            conversation.run()
+
+    assert (
+        conversation.state.execution_status
+        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+    should_confirm.assert_not_called()

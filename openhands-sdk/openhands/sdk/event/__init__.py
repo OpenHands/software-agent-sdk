@@ -23,6 +23,7 @@ from openhands.sdk.event.resume_transcript import (
     RESUME_CONTEXT_MARKER,
     render_resume_transcript,
 )
+from openhands.sdk.event.security import SecurityAnalysisEvent
 from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
 from openhands.sdk.event.token import TokenEvent
 from openhands.sdk.event.types import EventID, ToolCallID
@@ -48,6 +49,7 @@ __all__ = [
     "StreamingDeltaEvent",
     "Condensation",
     "CondensationRequest",
+    "SecurityAnalysisEvent",
     "CondensationSummaryEvent",
     "ConversationStateUpdateEvent",
     "HookExecutionEvent",

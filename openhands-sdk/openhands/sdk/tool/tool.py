@@ -391,6 +391,9 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     catalog_description: ClassVar[str] = ""
     """User-facing catalog blurb; ``description`` is what the LLM reads."""
 
+    conversation_local: ClassVar[bool] = False
+    """Whether the tool only reads and writes its own conversation's state."""
+
     def __init_subclass__(cls, **kwargs):
         """Automatically set name from class name when subclass is created."""
         super().__init_subclass__(**kwargs)
@@ -466,6 +469,16 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
             f"{type(self).__name__} sets pauses_run_for_user_input but does not "
             "implement resolve_user_input"
         )
+
+    def resolution_rejects_pending(self, observation: Observation) -> bool:  # noqa: ARG002
+        """Whether ``observation`` resolves the request as a refusal.
+
+        When a paused call shares its step with other tool calls, a refusal
+        (for example ``ask_user``'s decline/cancel) is not approval for those
+        siblings, so the caller rejects them rather than executing them on
+        resume. Defaults to False: an ordinary resolution leaves siblings alone.
+        """
+        return False
 
     @classmethod
     @abstractmethod

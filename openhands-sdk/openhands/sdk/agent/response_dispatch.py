@@ -128,6 +128,15 @@ class ResponseDispatchMixin:
             self,
             state: ConversationState,
             action_events: list[ActionEvent],
+            on_event: ConversationCallbackType | None = None,
+        ) -> bool: ...
+
+        async def _arequires_user_confirmation(
+            self,
+            conversation: LocalConversation,
+            state: ConversationState,
+            action_events: list[ActionEvent],
+            on_event: ConversationCallbackType,
         ) -> bool: ...
 
         def _pause_for_user_input(
@@ -136,6 +145,22 @@ class ResponseDispatchMixin:
             action_events: list[ActionEvent],
             on_event: ConversationCallbackType,
         ) -> bool: ...
+
+        def _gate_paused_siblings(
+            self,
+            conversation: LocalConversation,
+            state: ConversationState,
+            action_events: list[ActionEvent],
+            on_event: ConversationCallbackType,
+        ) -> None: ...
+
+        async def _agate_paused_siblings(
+            self,
+            conversation: LocalConversation,
+            state: ConversationState,
+            action_events: list[ActionEvent],
+            on_event: ConversationCallbackType,
+        ) -> None: ...
 
         def _maybe_emit_vllm_tokens(
             self,
@@ -191,9 +216,10 @@ class ResponseDispatchMixin:
             action_events.append(action_event)
 
         if self._pause_for_user_input(state, action_events, on_event):
+            self._gate_paused_siblings(conversation, state, action_events, on_event)
             return
 
-        if self._requires_user_confirmation(state, action_events):
+        if self._requires_user_confirmation(state, action_events, on_event):
             return
 
         if action_events:
@@ -248,9 +274,14 @@ class ResponseDispatchMixin:
             action_events.append(action_event)
 
         if self._pause_for_user_input(state, action_events, on_event):
+            await self._agate_paused_siblings(
+                conversation, state, action_events, on_event
+            )
             return
 
-        if self._requires_user_confirmation(state, action_events):
+        if await self._arequires_user_confirmation(
+            conversation, state, action_events, on_event
+        ):
             return
 
         if action_events:

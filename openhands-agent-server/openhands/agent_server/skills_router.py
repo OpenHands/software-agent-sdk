@@ -150,11 +150,12 @@ class InstallSkillRequest(BaseModel):
     source: str = Field(
         min_length=1,
         description=(
-            "Skill source - git URL, GitHub shorthand, or local path. "
-            "Examples: "
-            "'https://github.com/OpenHands/extensions/tree/main/skills/github', "
+            "Skill source - git URL, GitHub shorthand (github:owner/repo, "
+            "optionally followed by the skill's path in the repository), or "
+            "local path. Examples: "
             "'github:OpenHands/extensions/skills/github', "
-            "'/path/to/skill'"
+            "'https://github.com/OpenHands/extensions.git' with repo_path "
+            "'skills/github', '/path/to/skill'"
         ),
     )
     ref: str | None = Field(

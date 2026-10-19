@@ -51,6 +51,7 @@ from openhands.sdk.event.condenser import (
     CondensationRequest,
 )
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
+from openhands.sdk.event.security import SecurityAnalysisEvent
 from openhands.sdk.llm import (
     LLM,
     ImageContent,
@@ -1150,40 +1151,134 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 )
 
     def _requires_user_confirmation(
-        self, state: ConversationState, action_events: list[ActionEvent]
+        self,
+        state: ConversationState,
+        action_events: list[ActionEvent],
+        on_event: ConversationCallbackType | None = None,
     ) -> bool:
-        """
-        Decide whether user confirmation is needed to proceed.
+        """Analyze actions and record the verdict before applying the policy."""
+        risks, event = self._analyze_for_confirmation(state, action_events)
+        if event is not None and on_event is not None:
+            on_event(state.secret_registry.mask_secrets_in_model(event))
+        return self._set_confirmation_status(state, risks)
 
-        Rules:
-            1. Confirmation mode is enabled
-            2. Every action requires confirmation
-            3. A single `FinishAction` never requires confirmation
-            4. A single `ThinkAction` never requires confirmation
+    async def _arequires_user_confirmation(
+        self,
+        conversation: LocalConversation,
+        state: ConversationState,
+        action_events: list[ActionEvent],
+        on_event: ConversationCallbackType,
+    ) -> bool:
+        """Resolve audit secrets without blocking the loop or holding state."""
+        risks, event = self._analyze_for_confirmation(state, action_events)
+        if event is not None:
+            on_event(await self._amask_security_event(conversation, state, event))
+        return self._set_confirmation_status(state, risks)
+
+    @staticmethod
+    async def _amask_security_event(
+        conversation: LocalConversation,
+        state: ConversationState,
+        event: SecurityAnalysisEvent,
+    ) -> SecurityAnalysisEvent:
+        """Mask secrets in a security-audit event without holding the state lock."""
+        while True:
+            sources = dict(state.secret_registry.secret_sources)
+            async with conversation._released_state_lock_during_io():
+                event = await asyncio.to_thread(
+                    state.secret_registry.mask_secrets_in_model, event
+                )
+            if sources == state.secret_registry.secret_sources:
+                break
+        return event
+
+    def _gated_for_confirmation(
+        self, state: ConversationState, action_events: list[ActionEvent]
+    ) -> tuple[list[ActionEvent], SecurityAnalysisEvent | None]:
+        """The subset of ``action_events`` the confirmation policy would gate."""
+        if not action_events:
+            return [], None
+        risks, event = self._analyze_for_confirmation(state, action_events)
+        gated = [
+            ae
+            for ae, risk_level in zip(action_events, risks)
+            if state.confirmation_policy.should_confirm(risk_level)
+        ]
+        return gated, event
+
+    def _gate_paused_siblings(
+        self,
+        conversation: LocalConversation,
+        state: ConversationState,
+        action_events: list[ActionEvent],
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Apply the confirmation policy to a paused batch's non-pause calls.
+
+        :meth:`_pause_for_user_input` returns before the confirmation gate, so
+        without this a response that pairs a pause call with another tool would
+        never have the policy consulted: the sibling would stay pending and be
+        executed by the run that delivers the user's *answer*, which is not an
+        approval. Reject any sibling the policy would gate so it cannot run
+        without confirmation; the agent can re-issue it on its own, where the
+        normal confirmation flow applies.
         """
+        gated, event = self._gated_for_confirmation(
+            state, self._sibling_actions(action_events)
+        )
+        if event is not None:
+            on_event(state.secret_registry.mask_secrets_in_model(event))
+        if gated:
+            self._reject_paused_siblings(conversation, gated, on_event)
+
+    async def _agate_paused_siblings(
+        self,
+        conversation: LocalConversation,
+        state: ConversationState,
+        action_events: list[ActionEvent],
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Async variant of :meth:`_gate_paused_siblings`."""
+        gated, event = self._gated_for_confirmation(
+            state, self._sibling_actions(action_events)
+        )
+        if event is not None:
+            on_event(await self._amask_security_event(conversation, state, event))
+        if gated:
+            self._reject_paused_siblings(conversation, gated, on_event)
+
+    def _analyze_for_confirmation(
+        self, state: ConversationState, action_events: list[ActionEvent]
+    ) -> tuple[list[risk.SecurityRisk], SecurityAnalysisEvent | None]:
         # A single `FinishAction` or `ThinkAction` never requires confirmation
         if len(action_events) == 1 and isinstance(
             action_events[0].action, (FinishAction, ThinkAction)
         ):
-            return False
+            return [], None
 
-        # If there are no actions there is nothing to confirm
-        if len(action_events) == 0:
-            return False
+        if not action_events:
+            return [], None
 
-        # If a security analyzer is registered, use it to grab the risks of the actions
-        # involved. If not, we'll set the risks to UNKNOWN.
-        if state.security_analyzer is not None:
-            risks = [
-                risk
-                for _, risk in state.security_analyzer.analyze_pending_actions(
-                    action_events
-                )
-            ]
-        else:
-            risks = [risk.SecurityRisk.UNKNOWN] * len(action_events)
+        if state.security_analyzer is None:
+            return [risk.SecurityRisk.UNKNOWN] * len(action_events), None
 
-        # Grab the confirmation policy from the state and pass in the risks.
+        analyses = state.security_analyzer.analyze_actions(action_events)
+        event = SecurityAnalysisEvent(
+            analyzer=state.security_analyzer.__class__.__name__,
+            policy=state.confirmation_policy.__class__.__name__,
+            risks={action.id: analysis.risk for action, analysis in analyses},
+            details={
+                action.id: analysis.details
+                for action, analysis in analyses
+                if analysis.details is not None
+            },
+        )
+        return [analysis.risk for _, analysis in analyses], event
+
+    @staticmethod
+    def _set_confirmation_status(
+        state: ConversationState, risks: list[risk.SecurityRisk]
+    ) -> bool:
         if any(state.confirmation_policy.should_confirm(risk) for risk in risks):
             state.execution_status = (
                 ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
@@ -1207,7 +1302,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         corrective error observation (and dropped from ``action_events`` so it
         does not also execute) and the run continues so the agent can fix it.
 
-        Returns True when the run should stop here.
+        Returns True when the run should stop here. On True, ``action_events``
+        holds only the pending request plus any sibling calls from the same
+        response; the caller must then apply the confirmation policy to those
+        siblings via :meth:`_sibling_actions`.
         """
         pause_events = [
             ae for ae in action_events if self._pauses_for_user_input(ae.tool_name)
@@ -1252,6 +1350,50 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         state.execution_status = ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
         return True
+
+    def _sibling_actions(self, action_events: list[ActionEvent]) -> list[ActionEvent]:
+        """The non-pause calls that shared the paused request's response."""
+        return [
+            ae for ae in action_events if not self._pauses_for_user_input(ae.tool_name)
+        ]
+
+    def _reject_paused_siblings(
+        self,
+        conversation: LocalConversation,
+        siblings: list[ActionEvent],
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Reject sibling calls that require confirmation before they can run.
+
+        The run is paused for the user's *answer*, not for action approval, so a
+        sibling the confirmation policy would gate must not ride along and
+        execute once the answer arrives. Rejecting it keeps the batch coherent
+        (its tool call still gets a result) and leaves approval to a fresh,
+        explicit step, where the normal confirmation flow applies.
+        """
+        for ae in siblings:
+            logger.info(
+                "Rejecting unconfirmed sibling action '%s' from a paused batch",
+                ae.tool_name,
+            )
+            rejection = UserRejectObservation(
+                action_id=ae.id,
+                tool_name=ae.tool_name,
+                tool_call_id=ae.tool_call_id,
+                rejection_reason=(
+                    "Not executed: this action shared an LLM response with a "
+                    "request for user input and requires confirmation. Re-issue "
+                    "it on its own to be asked for approval."
+                ),
+            )
+            record_tool_result(
+                conversation,
+                name=extract_action_name(ae),
+                tool_call_id=ae.tool_call_id,
+                tool_input=ae.action,
+                tool_output=rejection.to_llm_message(),
+            )
+            on_event(rejection)
 
     def _pauses_for_user_input(self, tool_name: str) -> bool:
         tool = self.tools_map.get(tool_name)

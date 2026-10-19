@@ -147,3 +147,121 @@ print("corrective errors:", errors)
 assert any("between 2 and 4 options" in e for e in errors)
 assert conversation2.state.execution_status == ConversationExecutionStatus.FINISHED
 print("\nSCENARIO 2 PASSED")
+
+
+# ---------------------------------------------------------------------------
+# Scenario 3: with confirmation mode on, a risky tool that shares the response
+# with ask_user must not run when the question is answered.
+# ---------------------------------------------------------------------------
+from typing import ClassVar  # noqa: E402
+
+from openhands.sdk.event import UserRejectObservation  # noqa: E402
+from openhands.sdk.event.llm_convertible.observation import (  # noqa: E402
+    ObservationEvent as _ObservationEvent,
+)
+from openhands.sdk.security.confirmation_policy import AlwaysConfirm  # noqa: E402
+from openhands.sdk.tool import (  # noqa: E402
+    Action,
+    Observation,
+    ToolDefinition,
+    ToolExecutor,
+    register_tool,
+)
+
+
+class _RiskyAction(Action):
+    command: str
+
+
+class _RiskyObservation(Observation):
+    result: str
+
+
+class _RiskyExecutor(ToolExecutor[_RiskyAction, _RiskyObservation]):
+    def __call__(self, action, conversation=None):  # noqa: ARG002
+        return _RiskyObservation(result=f"Executed: {action.command}")
+
+
+class _RiskyTool(ToolDefinition[_RiskyAction, _RiskyObservation]):
+    name: ClassVar[str] = "risky_write"
+
+    @classmethod
+    def create(cls, conv_state=None, **params):  # noqa: ARG003
+        return [
+            cls(
+                description="A write that must be confirmed",
+                action_type=_RiskyAction,
+                observation_type=_RiskyObservation,
+                executor=_RiskyExecutor(),
+            )
+        ]
+
+
+register_tool("risky_write", _RiskyTool)
+
+llm3 = TestLLM.from_messages(
+    [
+        Message(
+            role="assistant",
+            content=[TextContent(text="")],
+            tool_calls=[
+                MessageToolCall(
+                    id="ask_3", name="ask_user", arguments=ASK_ARGS, origin="completion"
+                ),
+                MessageToolCall(
+                    id="risky_3",
+                    name="risky_write",
+                    arguments=json.dumps({"command": "rm -rf build"}),
+                    origin="completion",
+                ),
+            ],
+        ),
+        call("finish", "finish_3", '{"message": "done"}'),
+    ]
+)
+conversation3: LocalConversation = Conversation(
+    agent=Agent(llm=llm3, tools=[Tool(name=AskUserTool.name), Tool(name="risky_write")])
+)
+conversation3.set_confirmation_policy(AlwaysConfirm())
+print("\n== scenario 3: ask_user + risky sibling under AlwaysConfirm ==")
+conversation3.send_message("ship it")
+conversation3.run()
+print("status after run:", conversation3.state.execution_status)
+assert conversation3.state.execution_status == (
+    ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+)
+rejections = [
+    e for e in conversation3.state.events if isinstance(e, UserRejectObservation)
+]
+print("rejected siblings:", [r.tool_name for r in rejections])
+assert [r.tool_name for r in rejections] == ["risky_write"]
+risky_obs = [
+    e
+    for e in conversation3.state.events
+    if isinstance(e, _ObservationEvent) and e.tool_name == "risky_write"
+]
+assert risky_obs == [], "the risky sibling must not run without approval"
+
+request_id3 = [
+    p.id
+    for p in ConversationState.get_unmatched_actions(conversation3.state.events)
+    if p.tool_name == "ask_user"
+][0]
+conversation3.send_message(
+    json.dumps(
+        {
+            "request_id": request_id3,
+            "action": "accept",
+            "answers": {"auth": [{"option_id": "jwt"}]},
+        }
+    )
+)
+conversation3.run()
+print("final status:", conversation3.state.execution_status)
+risky_obs = [
+    e
+    for e in conversation3.state.events
+    if isinstance(e, _ObservationEvent) and e.tool_name == "risky_write"
+]
+assert risky_obs == [], "answering the question is not approval for the sibling"
+print("\nSCENARIO 3 PASSED")

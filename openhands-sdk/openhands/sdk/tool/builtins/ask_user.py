@@ -484,6 +484,12 @@ class AskUserTool(ToolDefinition[AskUserAction, AskUserObservation]):
         assert observation is not None
         return observation
 
+    def resolution_rejects_pending(self, observation: Observation) -> bool:
+        return (
+            isinstance(observation, AskUserObservation)
+            and observation.action != AskUserAnswerAction.ACCEPT
+        )
+
     @classmethod
     def create(
         cls,
