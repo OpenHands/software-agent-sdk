@@ -195,14 +195,11 @@ def test_openhands_explicit_browser_is_launched_only_where_it_can_run(
     assert [tool.name for tool in settings.tools or []] == expected
 
 
-@pytest.mark.parametrize(
-    ("mcp_server_refs", "scoped_mcp"), [(None, False), ([], True), (["fetch"], True)]
-)
-def test_openhands_profile_delegation_is_scoped_to_the_profile(
+@pytest.mark.parametrize("mcp_server_refs", [None, [], ["fetch"]])
+def test_openhands_profile_delegation_is_scoped_to_the_profile_tools(
     llm_store: LLMProfileStore,
     mcp_config: dict[str, MCPServer],
     mcp_server_refs: list[str] | None,
-    scoped_mcp: bool,
 ) -> None:
     profile = OpenHandsAgentProfile(
         name="delegating",
@@ -216,10 +213,9 @@ def test_openhands_profile_delegation_is_scoped_to_the_profile(
     )
 
     assert isinstance(settings, OpenHandsAgentSettings)
-    scope = {"tools": True, "mcp_servers": scoped_mcp}
     assert settings.tools == [
         Tool(name="terminal"),
-        Tool(name="task_tool_set", params={"sub_agent_scope": scope}),
+        Tool(name="task_tool_set", params={"sub_agent_scope": {"tools": True}}),
     ]
     assert settings.create_agent().tools == settings.tools
     assert profile.tools == [Tool(name="terminal"), Tool(name="task_tool_set")]
@@ -586,25 +582,22 @@ def test_no_available_skills_yields_no_skills(
 def test_seed_then_resolve_with_narrower_catalog_does_not_dangle(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:
-    # #4017 regression: a global whose AgentContext carries an inline skill whose
-    # name is NOT in the launch discovery catalog. The old freeze-by-name seed
-    # would name that skill and then hard-fail at launch (DanglingSkillRef). The
-    # deny-list seed disables nothing, so seed->resolve against the narrower
-    # catalog succeeds and yields exactly the catalog skills.
     from openhands.sdk.profiles import build_seed_profile
     from openhands.sdk.settings.model import validate_agent_settings
 
     settings = validate_agent_settings(
         {
             "agent_kind": "openhands",
-            "agent_context": {"skills": [{"name": "inline-only", "content": "x"}]},
+            "agent_context": {
+                "skills": [{"name": "inline-only", "content": "x"}],
+                "disabled_skills": ["beta", "missing"],
+            },
         }
     )
     profile = build_seed_profile(settings, active_llm_profile="default")
     assert isinstance(profile, OpenHandsAgentProfile)
-    assert profile.disabled_skills == []
+    assert profile.disabled_skills == ["beta", "missing"]
 
-    # Launch catalog does NOT contain "inline-only" — must still resolve.
     resolved = resolve_agent_profile(
         profile,
         llm_store=llm_store,
@@ -615,7 +608,6 @@ def test_seed_then_resolve_with_narrower_catalog_does_not_dangle(
     assert isinstance(resolved, OpenHandsAgentSettings)
     assert {s.name for s in resolved.agent_context.skills} == {
         "alpha",
-        "beta",
         "gamma",
     }
 
@@ -858,6 +850,57 @@ def test_dry_run_reports_disabled_and_resolved_skills(
     assert diag.valid is True
     assert not any("Skill" in e for e in diag.errors)
     assert diag.resolved_settings is not None
+
+
+def test_resolve_and_dry_run_apply_public_skills_to_the_public_tier(
+    llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="oh",
+        llm_profile_ref="default",
+        public_skills=["alpha"],
+        disabled_skills=["gamma"],
+    )
+    catalog = [*_discovered_skills(), Skill(name="mine", content="m")]
+    public = {"alpha", "beta", "gamma"}
+
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=catalog,
+        public_skill_names=public,
+    )
+    diag = resolve_agent_profile_dry_run(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=catalog,
+        public_skill_names=public,
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert [s.name for s in settings.agent_context.skills] == ["alpha", "mine"]
+    assert diag.public_skills == ["alpha"]
+    assert diag.resolved_skills == ["alpha", "mine"]
+
+
+def test_resolve_uses_the_server_critic_key(
+    llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
+) -> None:
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
+
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=[],
+        critic_api_key=SecretStr("sk-critic"),
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    key = settings.verification.critic_api_key
+    assert isinstance(key, SecretStr) and key.get_secret_value() == "sk-critic"
 
 
 def test_dry_run_default_disabled_resolves_all_discovered(

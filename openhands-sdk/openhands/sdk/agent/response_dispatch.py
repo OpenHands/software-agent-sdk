@@ -193,6 +193,15 @@ class ResponseDispatchMixin:
             self,
             state: ConversationState,
             action_events: list[ActionEvent],
+            on_event: ConversationCallbackType | None = None,
+        ) -> bool: ...
+
+        async def _arequires_user_confirmation(
+            self,
+            conversation: LocalConversation,
+            state: ConversationState,
+            action_events: list[ActionEvent],
+            on_event: ConversationCallbackType,
         ) -> bool: ...
 
         def _maybe_emit_vllm_tokens(
@@ -254,7 +263,7 @@ class ResponseDispatchMixin:
         if paused:
             return
 
-        if self._requires_user_confirmation(state, action_events):
+        if self._requires_user_confirmation(state, action_events, on_event):
             return
 
         if action_events:
@@ -314,7 +323,9 @@ class ResponseDispatchMixin:
         if paused:
             return
 
-        if self._requires_user_confirmation(state, action_events):
+        if await self._arequires_user_confirmation(
+            conversation, state, action_events, on_event
+        ):
             return
 
         if action_events:

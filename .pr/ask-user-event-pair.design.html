@@ -122,7 +122,7 @@ _run loop resolves the pending action into an AskUserObservation (the tool resul
   <h2>Compatibility</h2>
   <ul>
     <li>Additive: a new event pair and a new endpoint; no existing REST contract changes.</li>
-    <li>TypeScript client gates the feature on agent-server <code>1.54.0</code> via <code>AgentServerFeatureRequirements.askUser</code>.</li>
+    <li>TypeScript client gates the feature on agent-server <code>1.56.0</code> via <code>AgentServerFeatureRequirements.askUser</code>; <code>1.55.1</code> is the newest release that still lacks the endpoint.</li>
     <li><code>ask_user_timeout_seconds</code> defaults to <code>None</code> (wait indefinitely), so existing deployments are unaffected.</li>
   </ul>
 

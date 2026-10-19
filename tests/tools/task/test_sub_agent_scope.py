@@ -21,12 +21,14 @@ from openhands.tools.preset import register_builtins_agents
 from openhands.tools.task import TaskToolSet
 from openhands.tools.task.definition import TaskObservation
 from openhands.tools.task.manager import TaskManager
+from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.workflow import WorkflowToolSet
 from openhands.tools.workflow.definition import WorkflowObservation, WorkflowTool
 
 
-TOOLS_ONLY = {"tools": True, "mcp_servers": False}
-TOOLS_AND_MCP = {"tools": True, "mcp_servers": True}
+TOOLS_ONLY = {"tools": True}
+# The shape profiles stored before MCP servers were always inherited.
+LEGACY_TOOLS_AND_MCP = {"tools": True, "mcp_servers": True}
 
 
 @pytest.fixture(autouse=True)
@@ -115,13 +117,12 @@ def test_a_scoped_task_tool_offers_only_sub_agents_within_the_parent() -> None:
     parent = _parent(Tool(name="terminal"))
 
     tools_only = _offered(parent, TOOLS_ONLY)
-    tools_and_mcp = _offered(parent, TOOLS_AND_MCP)
+    legacy = _offered(parent, LEGACY_TOOLS_AND_MCP)
     unscoped = _offered(parent, None)
 
-    assert "**shell**" in tools_only and "**fetcher**" in tools_only
-    assert "**surfer**" not in tools_only
-    assert "**shell**" in tools_and_mcp
-    assert "**fetcher**" not in tools_and_mcp
+    for offered in (tools_only, legacy):
+        assert "**shell**" in offered and "**fetcher**" in offered
+        assert "**surfer**" not in offered
     assert all(f"**{n}**" in unscoped for n in ("shell", "surfer", "fetcher"))
 
 
@@ -134,7 +135,9 @@ def test_a_scoped_task_tool_refuses_a_sub_agent_beyond_the_parent(
     )
     agent = Agent(
         llm=parent_llm,
-        tools=[Tool(name="task_tool_set", params={"sub_agent_scope": TOOLS_AND_MCP})],
+        tools=[
+            Tool(name="task_tool_set", params={"sub_agent_scope": LEGACY_TOOLS_AND_MCP})
+        ],
     )
     conversation = Conversation(agent=agent, workspace=str(tmp_path), visualizer=None)
 
@@ -144,8 +147,8 @@ def test_a_scoped_task_tool_refuses_a_sub_agent_beyond_the_parent(
     (observation,) = _observations(conversation, TaskObservation)
     assert observation.is_error
     assert (
-        "Agent 'surfer' uses browser_tool_set, MCP server 'fetch', "
-        "which this agent does not have." in observation.text
+        "Agent 'surfer' uses browser_tool_set, which this agent does not have."
+        in observation.text
     )
 
 
@@ -167,11 +170,16 @@ def test_a_scope_refuses_a_sub_agent_whose_tools_it_cannot_see(
 ) -> None:
     register_agent(
         name="cli",
-        factory_func=lambda llm: ACPAgent(acp_command=["true"]),  # type: ignore[arg-type,return-value]
+        factory_func=lambda llm: ACPAgent(  # type: ignore[arg-type,return-value]
+            acp_command=["true"], mcp_config={"own": MCPServer(command="own")}
+        ),
         description="ACP CLI agent",
     )
+    parent_agent = _parent(Tool(name="grep")).model_copy(
+        update={"mcp_config": {"fetch": MCPServer(command="uvx")}}
+    )
     parent = LocalConversation(
-        agent=_parent(Tool(name="grep")), workspace=str(tmp_path), visualizer=None
+        agent=parent_agent, workspace=str(tmp_path), visualizer=None
     )
     scoped = TaskManager(sub_agent_scope=SubAgentScope(tools=True))
     scoped.attach_parent(parent)
@@ -180,7 +188,60 @@ def test_a_scope_refuses_a_sub_agent_whose_tools_it_cannot_see(
 
     with pytest.raises(ValueError, match="'cli' runs as ACPAgent, whose tools cannot"):
         scoped._get_sub_agent("cli")
-    assert isinstance(unscoped._get_sub_agent("cli"), ACPAgent)
+    acp_sub_agent = unscoped._get_sub_agent("cli")
+    assert isinstance(acp_sub_agent, ACPAgent)
+    # These are the servers an ACP sub-agent forwards to its subprocess.
+    assert acp_sub_agent.mcp_config == {"fetch": MCPServer(command="uvx")}
+
+
+def test_a_scope_lets_a_sub_agent_keep_its_conversation_local_tools(
+    tmp_path: Path,
+) -> None:
+    _register("planner", ["terminal", TaskTrackerTool.name])
+    parent = LocalConversation(
+        agent=_parent(Tool(name="terminal")), workspace=str(tmp_path), visualizer=None
+    )
+    manager = TaskManager(sub_agent_scope=SubAgentScope(tools=True))
+    manager.attach_parent(parent)
+
+    sub_agent = manager._get_sub_agent("planner")
+
+    assert "**planner**" in _offered(parent.agent, TOOLS_ONLY)
+    assert [tool.name for tool in sub_agent.tools] == ["terminal", "task_tracker"]
+
+
+def test_a_profile_without_task_tracker_delegates_to_general_purpose(
+    tmp_path: Path,
+) -> None:
+    register_builtins_agents(enable_browser=False)
+    store = LLMProfileStore(base_dir=tmp_path / "llm")
+    store.save(
+        "default",
+        LLM(model="gpt-4o", api_key=SecretStr("k"), usage_id="x"),
+        include_secrets=True,
+    )
+    profile = OpenHandsAgentProfile(
+        name="coder",
+        llm_profile_ref="default",
+        tools=[
+            Tool(name="terminal"),
+            Tool(name="file_editor"),
+            Tool(name=TaskToolSet.name),
+        ],
+    )
+    settings = resolve_agent_profile(
+        profile, llm_store=store, mcp_config={}, available_skills=None
+    )
+    parent = LocalConversation(
+        agent=settings.create_agent(), workspace=str(tmp_path), visualizer=None
+    )
+    manager = TaskManager(sub_agent_scope=SubAgentScope(tools=True))
+    manager.attach_parent(parent)
+
+    sub_agent = manager._get_sub_agent("general-purpose")
+
+    assert "**general-purpose**" in _offered(parent.agent, TOOLS_ONLY)
+    assert {tool.name for tool in sub_agent.tools} >= {"terminal", "task_tracker"}
 
 
 def test_a_sub_agent_delegates_within_the_same_scope(tmp_path: Path) -> None:
@@ -240,7 +301,7 @@ def test_a_scoped_workflow_refuses_a_sub_agent_beyond_the_parent(
 @pytest.mark.parametrize(
     ("subagent", "missing"),
     [
-        ("general-purpose", "file_editor, task_tracker, terminal"),
+        ("general-purpose", "file_editor, terminal"),
         ("bash-runner", "terminal"),
         ("code-explorer", "terminal"),
         ("web-researcher", "browser_tool_set"),

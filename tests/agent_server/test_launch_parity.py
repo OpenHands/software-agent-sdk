@@ -31,8 +31,10 @@ from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.launch import finalize, preview_launch, resolve
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import OpenHandsAgentProfile
+from openhands.sdk.profiles.agent_profile import ProfileVerificationSettings
 from openhands.sdk.settings.model import (
     OpenHandsAgentSettings,
+    VerificationSettings,
     validate_agent_settings,
 )
 from openhands.sdk.skills import Skill
@@ -172,7 +174,99 @@ def test_default_and_a_copy_of_it_launch_the_same_agent(server, tmp_path):
     assert _agent_view(from_default["agent"]) == _agent_view(from_copy["agent"])
 
 
-def test_stored_and_agent_settings_sources_launch_the_same_agent(server, tmp_path):
+def test_public_skills_select_the_public_tier_and_a_launch_can_add_one(
+    server, tmp_path
+):
+    catalog = [*CATALOG, Skill(name="mine", content="m", description="user skill")]
+    profile = _save(
+        OpenHandsAgentProfile(
+            name="named", llm_profile_ref="default", public_skills=["alpha"]
+        )
+    )
+    workspace = str(tmp_path / "workspace")
+    invoked = CATALOG[1].model_dump(mode="json")
+
+    with (
+        patch("openhands.agent_server.launch.discover_profile_skills", lambda: catalog),
+        patch(
+            "openhands.agent_server.launch.discover_public_skill_names",
+            lambda: {"alpha", "beta"},
+        ),
+        patch("openhands.agent_server.launch.is_tool_usable", return_value=True),
+    ):
+        preview = server.post(f"/api/agent-profiles/{profile.name}/materialize").json()
+        plain = _launch(server, workspace, agent_profile_id=str(profile.id))
+        invoking = _launch(
+            server,
+            workspace,
+            agent_profile_id=str(profile.id),
+            agent_launch_additions={"skills": [invoked]},
+        )
+
+    assert preview["resolved_skills"] == ["alpha", "mine"]
+    assert _agent_view(plain["agent"])["skills"] == ["alpha", "mine"]
+    assert sorted(_agent_view(invoking["agent"])["skills"]) == ["alpha", "beta", "mine"]
+
+
+def test_the_global_critic_key_reaches_profile_launches_but_no_response(
+    server, tmp_path
+):
+    config = server.app.state.config
+    store = get_settings_store(config)
+    stored = store.load()
+    assert stored is not None
+    store.save(
+        stored.model_copy(
+            update={
+                "agent_settings": stored.agent_settings.model_copy(
+                    update={
+                        "verification": VerificationSettings(
+                            critic_enabled=True, critic_api_key="sk-critic"
+                        )
+                    }
+                )
+            }
+        )
+    )
+    profile = _save(
+        OpenHandsAgentProfile(
+            name="named",
+            llm_profile_ref="default",
+            verification=ProfileVerificationSettings(critic_enabled=True),
+        )
+    )
+    settings = store.load()
+    assert settings is not None
+    stores = server_launch_stores(settings, config.cipher)
+    request = StartConversationRequest(
+        agent_profile_id=profile.id, workspace=LocalWorkspace(working_dir="/workspace")
+    )
+    container_cipher = Cipher("container-key")
+
+    resolved = launch_source(request, lambda: stores, config.cipher)
+    payload = forward_to_runtime(
+        request, resolved, {}, container_cipher, load_memory=False
+    )
+    in_container = launch_source(
+        StartConversationRequest.model_validate(payload),
+        lambda: stores,
+        container_cipher,
+    )
+    preview = server.post(f"/api/agent-profiles/{profile.name}/materialize").json()
+
+    def critic_key(source) -> str | None:
+        key = source.settings.verification.critic_api_key
+        return key.get_secret_value() if key else None
+
+    assert critic_key(resolved) == "sk-critic"
+    assert critic_key(in_container) == "sk-critic"
+    assert "sk-critic" not in str(payload)
+    assert "sk-critic" not in str(preview)
+
+
+def test_inline_stored_and_agent_settings_sources_launch_the_same_agent(
+    server, tmp_path
+):
     stored = _save(_profile("named"))
     workspace = str(tmp_path / "workspace")
     config = server.app.state.config

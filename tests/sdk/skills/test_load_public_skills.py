@@ -971,3 +971,33 @@ def test_load_public_skills_does_not_cache_empty_results(mock_repo_dir, tmp_path
     assert first == []
     assert {s.name for s in second} == {"git", "docker", "testing"}
     assert update_mock.call_count == 2
+
+
+def test_load_public_skills_reads_extensions_path_without_cloning(
+    mock_repo_dir, monkeypatch
+):
+    monkeypatch.setenv("EXTENSIONS_PATH", str(mock_repo_dir))
+
+    with patch("openhands.sdk.skills.skill.update_skills_repository") as update:
+        skills = load_public_skills()
+
+    update.assert_not_called()
+    assert {s.name for s in skills} == {"git", "docker", "testing"}
+
+
+def test_extensions_path_does_not_replace_a_custom_repository(
+    mock_repo_dir, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("EXTENSIONS_PATH", str(tmp_path / "unused"))
+
+    with (
+        patch(
+            "openhands.sdk.skills.skill.update_skills_repository",
+            return_value=mock_repo_dir,
+        ) as update,
+        patch("openhands.sdk.skills.skill.get_skills_cache_dir", return_value=tmp_path),
+    ):
+        skills = load_public_skills(repo_url="https://example.com/skills.git")
+
+    update.assert_called_once()
+    assert {s.name for s in skills} == {"git", "docker", "testing"}
