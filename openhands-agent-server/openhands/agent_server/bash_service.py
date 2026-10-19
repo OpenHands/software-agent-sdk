@@ -293,6 +293,28 @@ class BashEventService:
 
     async def _execute_bash_command(self, command: BashCommand) -> None:
         """Execute the bash event and create an observation event."""
+        output_order = 0
+
+        async def emit_output(
+            *,
+            exit_code: int | None = None,
+            stdout: str | None = None,
+            stderr: str | None = None,
+        ) -> None:
+            nonlocal output_order
+
+            output_event = BashOutput(
+                command_id=command.id,
+                order=output_order,
+                exit_code=exit_code,
+                stdout=stdout,
+                stderr=stderr,
+            )
+            self._save_event_to_file(output_event)
+            # Commit the sequence after persistence and before publication can yield.
+            output_order += 1
+            await self._pub_sub(output_event)
+
         try:
             # Create subprocess in a new session so we can signal the whole
             # process group on teardown (the shell's children, e.g. sleep, must
@@ -313,13 +335,12 @@ class BashEventService:
                 self._stop_requests.discard(command.id)
                 await self.stop_bash_command(command.id)
 
-            # Track output order and buffers
-            output_order = 0
+            # Track output buffers
             stdout_buffer = ""
             stderr_buffer = ""
 
             async def read_stream(stream, is_stderr=False):
-                nonlocal output_order, stdout_buffer, stderr_buffer
+                nonlocal stdout_buffer, stderr_buffer
 
                 buffer = stderr_buffer if is_stderr else stdout_buffer
 
@@ -345,17 +366,10 @@ class BashEventService:
                             chunk = buffer[:MAX_CONTENT_CHAR_LENGTH]
                             buffer = buffer[MAX_CONTENT_CHAR_LENGTH:]
 
-                            # Create and publish BashOutput event
-                            output_event = BashOutput(
-                                command_id=command.id,
-                                order=output_order,
+                            await emit_output(
                                 stdout=chunk if not is_stderr else None,
                                 stderr=chunk if is_stderr else None,
                             )
-
-                            self._save_event_to_file(output_event)
-                            await self._pub_sub(output_event)
-                            output_order += 1
 
                             # Update the appropriate buffer
                             if is_stderr:
@@ -412,16 +426,11 @@ class BashEventService:
             # Only create final event if there's remaining content or we need to report
             # exit code
             if final_stdout or final_stderr or exit_code is not None:
-                final_output = BashOutput(
-                    command_id=command.id,
-                    order=output_order,
+                await emit_output(
                     exit_code=exit_code,
                     stdout=final_stdout,
                     stderr=final_stderr,
                 )
-
-                self._save_event_to_file(final_output)
-                await self._pub_sub(final_output)
 
         except Exception as e:
             logger.error(
@@ -429,16 +438,11 @@ class BashEventService:
                 command.id,
                 type(e).__name__,
             )
-            # Create error output event
-            error_output = BashOutput(
-                command_id=command.id,
-                order=0,
+            await emit_output(
                 exit_code=-1,
                 stderr=f"Error executing command: {str(e)}",
             )
 
-            self._save_event_to_file(error_output)
-            await self._pub_sub(error_output)
         finally:
             self._processes.pop(command.id, None)
             self._stop_requests.discard(command.id)
