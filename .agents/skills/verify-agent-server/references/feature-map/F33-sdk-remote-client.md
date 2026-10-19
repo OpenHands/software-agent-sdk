@@ -48,6 +48,7 @@ Routes: none
 - `F33.conversation-attach-large`: attaching to a conversation with more than 100 stored events pages through the whole history: `state.events` holds the server's events in the server's order (plus the one unpersisted socket snapshot), and the first reads of `state.confirmation_policy`, `state.security_analyzer`, `state.hook_config` and `state.agent` equal the server's.
 - `F33.conversation-state-reread`: reading `state.confirmation_policy`, `state.security_analyzer`, `state.agent` and `is_confirmation_mode_active` a second time gives the same answer as the first.
 - `F33.conversation-ask-title`: `ask_agent()` answers without adding events, `generate_title()` returns a title within `max_length` without adding events, and `set_title()` changes the server's title.
+- `F33.conversation-execute-tool`: `RemoteConversation.execute_tool(tool_name, action)` posts to `POST /api/conversations/{id}/execute_tool` and returns the tool's own observation (for `terminal`, a `TerminalObservation` with the command, exit code and content) instead of raising; a `source`d `export` is visible to a later `execute_tool` in the same conversation, an unknown tool name raises an HTTP error naming it, and the conversation gains no event.
 - `F33.conversation-fork`: `fork(title=..., tags=...)` returns a `RemoteConversation` for a new server conversation with the same history, the title and the tags; `fork(agent=...)` is refused client-side.
 - `F33.conversation-fork-branch`: `fork(from_event_id=..., reset_metrics=False)` returns a fork whose history ends at that event (its HEAD) with the source's stats, and `navigate_to(None)` and `navigate_to(event_id)` move the fork's HEAD without changing its events.
 - `F33.conversation-plugins-tag`: `Conversation(plugins=[PluginSource(...)])` with inline URL credentials stores the `plugins` tag with the credentials masked, and the token reaches no server state.
@@ -87,7 +88,8 @@ Routes: none
   `run(blocking=..., timeout=...)`, `pause`, `interrupt`,
   `set_confirmation_policy`, `set_security_analyzer`,
   `reject_pending_actions`, `update_secrets`, `ask_agent`, `generate_title`,
-  `set_title`, `fork(title, tags, from_event_id, reset_metrics)`,
+  `set_title`, `execute_tool(tool_name, action)`,
+  `fork(title, tags, from_event_id, reset_metrics)`,
   `navigate_to`, `close`, and the read side `state` (`execution_status`,
   `events`, `confirmation_policy`, `security_analyzer`, `hook_config`,
   `agent`, `refresh_from_server()`) and `conversation_stats`. Agent-side
@@ -1122,6 +1124,42 @@ Preconditions:
   ```
   The answer and the generated title are non-empty; the event count is
   unchanged and the server's title is the one set.
+- **Execute a tool from the client (`F33.conversation-execute-tool`).**
+
+  Requires: `F33.conversation-run`
+  ```sh
+  E0=$(control-agent-server api GET "/api/conversations/$CID/events/count" --field .)
+  control-agent-server exec --env PYTHONPATH="$F33" --env CID="$CID" --save F33.conversation-execute-tool/probe -- .venv/bin/python - <<'PY'
+  import os
+  import uuid
+  import f33
+  import httpx
+  from openhands.sdk import Conversation
+  from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
+
+  conv = Conversation(agent=f33.agent(), workspace=f33.workspace("run"), conversation_id=uuid.UUID(os.environ["CID"]),
+                      visualizer=None, delete_on_close=False)
+  source = conv.execute_tool("terminal", TerminalAction(command="export QA_F33_EXEC_MARKER=qa-f33-marker"))
+  assert isinstance(source, TerminalObservation), type(source)
+  assert source.exit_code == 0, source
+  check = conv.execute_tool("terminal", TerminalAction(command='printf %s "$QA_F33_EXEC_MARKER"'))
+  assert isinstance(check, TerminalObservation), type(check)
+  assert "qa-f33-marker" in check.text, check.text
+  try:
+      conv.execute_tool("not_a_tool", TerminalAction(command="echo hi"))
+      raise AssertionError("execute_tool accepted an unknown tool")
+  except httpx.HTTPStatusError as exc:
+      assert 400 <= exc.response.status_code < 500, exc.response.status_code
+      assert "not_a_tool" in exc.response.text, exc.response.text
+  f33.emit("exec", exit_code=check.exit_code, text=check.text[:80])
+  conv.close()
+  PY
+  control-agent-server api GET "/api/conversations/$CID/events/count" --check . eq "$E0"
+  ```
+  `execute_tool` returns real `TerminalObservation`s (the first with
+  `exit_code` 0), the second call sees the `export` the first made through the
+  conversation's own terminal, an unknown tool name is a 4xx naming it, and
+  the conversation gains no event.
 - **Fork (`F33.conversation-fork`).**
 
   Requires: `F33.conversation-run`

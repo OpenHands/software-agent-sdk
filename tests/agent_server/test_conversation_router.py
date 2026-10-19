@@ -40,7 +40,20 @@ from openhands.sdk.marketplace.registry import (
 from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
+from openhands.sdk.tool import Action, Observation
 from openhands.sdk.workspace import LocalWorkspace
+
+
+class RouterExecuteToolTestAction(Action):
+    """Action for the execute_tool endpoint tests."""
+
+    value: str = "test"
+
+
+class RouterExecuteToolTestObservation(Observation):
+    """Observation for the execute_tool endpoint tests."""
+
+    result: str = ""
 
 
 @pytest.fixture
@@ -3040,6 +3053,91 @@ def test_ask_agent_unknown_conversation_returns_404(
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Conversation not found"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_execute_tool_returns_observation(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """execute_tool returns the tool's observation and forwards name and action."""
+    mock_conversation_service.execute_tool.return_value = (
+        RouterExecuteToolTestObservation.from_text(
+            "executed: world", result="executed_world"
+        )
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/execute_tool",
+            json={
+                "tool_name": "remote_execute_tool_test",
+                "action": {"kind": "RouterExecuteToolTestAction", "value": "world"},
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["observation"]["result"] == "executed_world"
+        args = mock_conversation_service.execute_tool.call_args
+        assert args.args[0] == sample_conversation_id
+        assert args.args[1] == "remote_execute_tool_test"
+        assert args.args[2].value == "world"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_execute_tool_unknown_conversation_returns_404(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """execute_tool returns 404, not 500, when the conversation does not exist."""
+    mock_conversation_service.execute_tool.return_value = None
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/execute_tool",
+            json={
+                "tool_name": "terminal",
+                "action": {"kind": "TerminalAction", "command": "echo hi"},
+            },
+        )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Conversation not found"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_execute_tool_unknown_tool_returns_422(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """An unknown tool name is a 422 naming the tool, not a 500."""
+    mock_conversation_service.execute_tool.side_effect = KeyError(
+        "Tool 'missing' not found. Available tools: ['terminal']"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/execute_tool",
+            json={
+                "tool_name": "missing",
+                "action": {"kind": "TerminalAction", "command": "echo hi"},
+            },
+        )
+
+        assert response.status_code == 422
+        assert "missing" in response.json()["detail"]
     finally:
         client.app.dependency_overrides.clear()
 

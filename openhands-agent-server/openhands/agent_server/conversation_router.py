@@ -40,6 +40,8 @@ from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
     ConversationSortOrder,
+    ExecuteToolRequest,
+    ExecuteToolResponse,
     ForkConversationRequest,
     NavigateConversationRequest,
     SetConfirmationPolicyRequest,
@@ -763,6 +765,37 @@ async def ask_agent(
     if response is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return AskAgentResponse(response=response)
+
+
+@conversation_router.post(
+    "/{conversation_id}/execute_tool",
+    responses={
+        404: {"description": "Conversation not found"},
+        422: {"description": "Unknown tool name"},
+    },
+)
+async def execute_tool(
+    conversation_id: UUID,
+    request: ExecuteToolRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ExecuteToolResponse:
+    """Execute one tool directly, bypassing the agent loop.
+
+    Intended for pre-run setup: the tool runs through the conversation's own
+    executor, so state such as the terminal session is shared with the agent's
+    later calls. Bypasses confirmation policy and the security analyzer.
+    """
+    try:
+        observation = await conversation_service.execute_tool(
+            conversation_id, request.tool_name, request.action
+        )
+    except KeyError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        ) from e
+    if observation is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    return ExecuteToolResponse(observation=observation)
 
 
 @conversation_router.post(

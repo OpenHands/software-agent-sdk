@@ -32,7 +32,20 @@ from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, Metrics, TextContent
 from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
+from openhands.sdk.tool import Action, Observation
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
+
+
+class RemoteClientExecuteToolTestAction(Action):
+    """Action for the RemoteConversation.execute_tool round-trip test."""
+
+    value: str = "test"
+
+
+class RemoteClientExecuteToolTestObservation(Observation):
+    """Observation for the RemoteConversation.execute_tool round-trip test."""
+
+    result: str = ""
 
 
 class TestRemoteConversation:
@@ -2302,34 +2315,51 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
-    def test_remote_conversation_execute_tool_not_implemented(self, mock_ws_client):
-        """Test that execute_tool raises NotImplementedError for RemoteConversation."""
-        # Setup mocks
+    def test_remote_conversation_execute_tool_round_trip(self, mock_ws_client):
+        """execute_tool posts the action and returns the tool's observation."""
         mock_client_instance = self.setup_mock_client()
-
-        conversation_id = str(uuid.uuid4())
-        mock_conv_response = self.create_mock_conversation_response(conversation_id)
-        mock_events_response = self.create_mock_events_response()
-
-        mock_client_instance.post.return_value = mock_conv_response
-        mock_client_instance.get.return_value = mock_events_response
 
         mock_ws_instance = Mock()
         mock_ws_client.return_value = mock_ws_instance
 
-        # Create conversation
         conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
 
-        # Create a dummy action (using a simple mock)
-        from unittest.mock import MagicMock
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status.return_value = None
+        mock_response.json.return_value = {
+            "observation": {
+                "kind": "RemoteClientExecuteToolTestObservation",
+                "result": "executed_world",
+                "is_error": False,
+                "content": [{"text": "executed: world", "type": "text"}],
+            }
+        }
 
-        mock_action = MagicMock()
+        original_side_effect = mock_client_instance.request.side_effect
 
-        # Verify execute_tool raises NotImplementedError
-        with pytest.raises(NotImplementedError) as exc_info:
-            conversation.execute_tool("any_tool", mock_action)
+        def request_side_effect(method, url, **kwargs):
+            if method == "POST" and url.endswith("/execute_tool"):
+                return mock_response
+            return original_side_effect(method, url, **kwargs)
 
-        assert "not yet supported for RemoteConversation" in str(exc_info.value)
+        mock_client_instance.request.side_effect = request_side_effect
+
+        action = RemoteClientExecuteToolTestAction(value="world")
+        result = conversation.execute_tool("remote_execute_tool_test", action)
+
+        assert isinstance(result, RemoteClientExecuteToolTestObservation)
+        assert result.text == "executed: world"
+        assert result.result == "executed_world"
+        assert result.is_error is False
+
+        sent = mock_client_instance.request.call_args
+        assert sent.args[0] == "POST"
+        assert sent.args[1].endswith("/execute_tool")
+        assert sent.kwargs["json"] == {
+            "tool_name": "remote_execute_tool_test",
+            "action": action.model_dump(mode="json"),
+        }
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"

@@ -39,6 +39,7 @@ from openhands.sdk.security.confirmation_policy import (
     NeverConfirm,
 )
 from openhands.sdk.tool.client_tool import ClientToolSpec
+from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils import OpenHandsUUID, utc_now
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
@@ -601,6 +602,34 @@ class AskAgentResponse(BaseModel):
     """Response containing the agent's answer."""
 
     response: str = Field(description="The agent's response to the question")
+
+
+class ExecuteToolRequest(BaseModel):
+    """Payload to execute one tool directly on a conversation.
+
+    The action is the tool's own action model, so a malformed payload fails
+    validation here rather than reaching the tool executor.
+    """
+
+    tool_name: str = Field(
+        description="Name of the tool to execute, as it appears in the agent's tool map"
+    )
+    action: Action = Field(
+        description="The action to pass to the tool executor, discriminated by its kind"
+    )
+
+
+class ExecuteToolResponse(BaseModel):
+    """Observation produced by a direct tool execution.
+
+    The observation is returned as its own model so tool-specific fields (for
+    example a terminal observation's ``exit_code``) survive the round trip
+    instead of being flattened into text.
+    """
+
+    observation: Observation = Field(
+        description="The observation returned by the tool execution"
+    )
 
 
 class StartGoalRequest(BaseModel):

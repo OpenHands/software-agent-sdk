@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -31,7 +31,15 @@ from websockets.sync.client import connect
 
 from openhands.agent_server.__main__ import preload_modules
 from openhands.agent_server.config import load_config
-from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
+from openhands.sdk import (
+    LLM,
+    Agent,
+    AgentContext,
+    Conversation,
+    Message,
+    TextContent,
+    Tool,
+)
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.event import (
     ActionEvent,
@@ -58,6 +66,7 @@ from openhands.sdk.subagent.registry import (
 )
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace import RemoteWorkspace
+from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
 from openhands.workspace.docker.workspace import find_available_tcp_port
 
 
@@ -1332,6 +1341,127 @@ def test_stop_bash_command_endpoint_with_live_server(server_env):
         time.sleep(0.2)
     else:
         pytest.fail(f"command {command_id} did not finish after stop")
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="The terminal tool depends on the Unix tmux backend.",
+)
+def test_execute_tool_live_server_persists_environment(
+    server_env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Run a workspace setup script through the conversation's own terminal.
+
+    This is the round trip the issue asks for: the script is executed on the
+    server through the conversation's persistent terminal tool, so the
+    variables it exports are visible to a later terminal action in the same
+    conversation.
+    """
+    workspace_dir = server_env["workspace_path"]
+    script = workspace_dir / ".openhands" / "setup.sh"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("export EXECUTE_TOOL_LIVE_MARKER=visible\n")
+
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[Tool(name="terminal")])
+    workspace = RemoteWorkspace(host=server_env["host"], working_dir=str(workspace_dir))
+    conversation: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    try:
+        source = conversation.execute_tool(
+            "terminal",
+            TerminalAction(command=f"source {script}", timeout=30.0),
+        )
+        assert isinstance(source, TerminalObservation)
+        assert source.exit_code == 0
+        assert source.is_error is False
+
+        check = conversation.execute_tool(
+            "terminal",
+            TerminalAction(
+                command='printf "%s" "$EXECUTE_TOOL_LIVE_MARKER"', timeout=30.0
+            ),
+        )
+        assert isinstance(check, TerminalObservation)
+        assert check.exit_code == 0
+        assert "visible" in check.text
+    finally:
+        conversation.close()
+
+
+def test_execute_tool_live_server_errors(server_env, tmp_path: Path):
+    """Errors are client-visible and specific, and execute nothing."""
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[Tool(name="terminal")])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    conversation: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    try:
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            conversation.execute_tool(
+                "not_a_tool", TerminalAction(command="echo hi", timeout=30.0)
+            )
+        assert exc_info.value.response.status_code == 422
+        assert "not_a_tool" in exc_info.value.response.text
+    finally:
+        conversation.close()
+
+    # An unknown conversation id is a 404, not a 500.
+    with httpx.Client() as client:
+        response = client.post(
+            f"{server_env['host']}/api/conversations/{uuid4()}/execute_tool",
+            json={
+                "tool_name": "terminal",
+                "action": {"kind": "TerminalAction", "command": "echo hi"},
+            },
+            timeout=10.0,
+        )
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Conversation not found"
+
+
+def test_execute_tool_live_server_requires_auth_and_masks_secrets(
+    authenticated_server_env, tmp_path: Path
+):
+    """The route needs the session key, and observations mask registered secrets."""
+    # An unauthenticated caller is rejected before anything runs.
+    with httpx.Client() as client:
+        response = client.post(
+            f"{authenticated_server_env['host']}"
+            f"/api/conversations/{uuid4()}/execute_tool",
+            json={
+                "tool_name": "terminal",
+                "action": {"kind": "TerminalAction", "command": "echo hi"},
+            },
+            timeout=10.0,
+        )
+        assert response.status_code == 401
+
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[Tool(name="terminal")])
+    workspace = RemoteWorkspace(
+        host=authenticated_server_env["host"],
+        working_dir=str(authenticated_server_env["workspace_path"]),
+        api_key=authenticated_server_env["api_key"],
+    )
+    conversation: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    try:
+        conversation.update_secrets({"EXECUTE_TOOL_LIVE_SECRET": "s3cret-value"})
+        observation = conversation.execute_tool(
+            "terminal",
+            TerminalAction(
+                command='printf "%s" "$EXECUTE_TOOL_LIVE_SECRET"', timeout=30.0
+            ),
+        )
+        assert isinstance(observation, TerminalObservation)
+        assert observation.exit_code == 0
+        assert "s3cret-value" not in observation.text
+        assert "<secret-hidden>" in observation.text
+    finally:
+        conversation.close()
 
 
 def test_file_upload_endpoint_with_live_server(server_env, tmp_path: Path):

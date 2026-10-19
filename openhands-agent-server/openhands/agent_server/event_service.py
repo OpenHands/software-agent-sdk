@@ -83,6 +83,7 @@ from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
+from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.files import atomic_write_text
@@ -2245,6 +2246,41 @@ class EventService:
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._conversation.ask_agent, question)
+
+    def _execute_tool_sync(self, tool_name: str, action: Action) -> Observation:
+        """Run one tool on the conversation, synchronously.
+
+        ``LocalConversation.execute_tool`` initializes the agent on first use,
+        so this works on a conversation whose agent has not run yet — the
+        pre-run setup case this endpoint exists for.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        return self._conversation.execute_tool(tool_name, action)
+
+    async def execute_tool(self, tool_name: str, action: Action) -> Observation:
+        """Execute one tool directly on the conversation, bypassing the agent loop.
+
+        The tool runs through the conversation's own executor, so state that
+        lives in the executor (for example a terminal session) is shared with
+        the agent's later calls. Intended for pre-run setup such as sourcing a
+        repository bootstrap script.
+
+        This bypasses confirmation policy and the security analyzer, as
+        ``LocalConversation.execute_tool`` does by design, and appends no
+        event to the conversation.
+
+        Delegates to LocalConversation in an executor to avoid blocking the
+        event loop.
+
+        Raises:
+            ValueError: If the service is inactive.
+            KeyError: If the agent has no tool by that name.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, self._execute_tool_sync, tool_name, action
+        )
 
     async def condense(self) -> None:
         """Force condensation of the conversation history.

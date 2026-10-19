@@ -1,4 +1,4 @@
-# Fork, navigate, condense and ask_agent
+# Fork, navigate, condense, ask_agent and execute_tool
 
 How a consumer branches and inspects a conversation's history without
 starting over. `fork` deep-copies a conversation (its whole event log, or only
@@ -9,14 +9,19 @@ the next appended event starts a sibling branch. `condense` forces one
 condensation step now: the agent's summarizing condenser asks its model for a
 summary and records a `Condensation` event. `ask_agent` asks the agent's model
 a side question about the conversation and returns the answer without
-recording it or changing the status.
+recording it or changing the status. `execute_tool` runs one tool through the
+conversation's own executor, so state that lives there (the terminal session)
+is shared with the agent's later calls: a setup script's `export`/`source`
+survives into the agent's terminal. It bypasses the agent loop's confirmation
+policy and security analyzer, and appends no event.
 
-Source: `openhands-agent-server/openhands/agent_server/conversation_router.py`, `openhands-agent-server/openhands/agent_server/conversation_service.py`, `openhands-agent-server/openhands/agent_server/event_service.py`, `openhands-agent-server/openhands/agent_server/models.py`, `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py`, `openhands-sdk/openhands/sdk/conversation/state.py`, `openhands-sdk/openhands/sdk/context/condenser/`
+Source: `openhands-agent-server/openhands/agent_server/conversation_router.py`, `openhands-agent-server/openhands/agent_server/conversation_service.py`, `openhands-agent-server/openhands/agent_server/event_service.py`, `openhands-agent-server/openhands/agent_server/models.py`, `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py`, `openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py`, `openhands-sdk/openhands/sdk/conversation/state.py`, `openhands-sdk/openhands/sdk/context/condenser/`
 
-Needs: `llm`
+Needs: `llm`, `tmux`
 
 Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
 `POST /api/conversations/{conversation_id}/condense`,
+`POST /api/conversations/{conversation_id}/execute_tool`,
 `POST /api/conversations/{conversation_id}/fork`,
 `POST /api/conversations/{conversation_id}/navigate`
 
@@ -45,6 +50,12 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
 - `F10.ask-agent-errors`: a missing `question` is 422, a missing key 401, and an unreachable model 500 with an `error_id`.
 - `F10.ask-agent-running`: while a run waits on its model, `ask_agent` answers at once (it does not wait for the step), records nothing and leaves the status `running`.
 - `F10.ask-agent-unknown`: an unknown conversation id is 404, as the route documents.
+- `F10.execute-tool-terminal`: `POST /execute_tool` with `{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": ...}}` runs the command through the conversation's own terminal session and answers 200 with the tool's `TerminalObservation` (`command`, `exit_code`, `content`), recording no event; a second call in the same conversation sees an `export` from the first (`F10.execute-tool-persistent`).
+- `F10.execute-tool-persistent`: sourcing a `.openhands/setup.sh` that exports a variable through `execute_tool`, then running a second `terminal` action in the same conversation, prints the exported value: the environment change survives into the agent's terminal (the V0→V1 parity this endpoint exists for).
+- `F10.execute-tool-observation-shape`: the response's `observation` carries the tool's own fields (for `terminal`, `command`, `exit_code`, `is_error`, `content`), not a flattened text summary, and `RemoteConversation.execute_tool()` returns the matching `TerminalObservation` rather than raising.
+- `F10.execute-tool-errors`: an unknown tool name is 4xx naming the missing tool (not 500), an action that fails the tool's schema is 422 at request validation, an unknown conversation id is 404, a malformed id is 422 and a missing key is 401; none of them executes a tool or appends an event.
+- `F10.execute-tool-auth-masking`: the route requires the same session-key auth as the rest of `/api/conversations/...` (unauthenticated → 401, nothing runs), and a registered secret echoed by the executed command comes back masked as `<secret-hidden>`.
+- `F10.execute-tool-nonblocking`: a long-running `terminal` action does not stall the server's event loop: `GET /alive` still answers while it runs.
 - `F10.restart-persist`: after a restart, forks keep their lineage, title, tags, HEAD and events, a fork id that names a persisted but not yet loaded conversation is still 409, and a navigated empty HEAD stays empty (the next message is still a new root).
 - `F10.restart-cold-calls`: after a restart, condense and ask_agent work on a conversation whose agent has not been initialized yet, and ask_agent still sees the history (the codename).
 
@@ -61,6 +72,14 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
   `{"success": true}` once the condensation step finished; 404, 500.
 - REST: `POST /api/conversations/{conversation_id}/ask_agent` (body
   `{"question": "..."}`), 200 `{"response": "..."}`; 404, 422, 500.
+- REST: `POST /api/conversations/{conversation_id}/execute_tool` (body
+  `ExecuteToolRequest` `{"tool_name": "...", "action": {"kind": "<ActionKind>", ...}}`),
+  200 `ExecuteToolResponse` `{"observation": {...}}`; 404 (unknown
+  conversation), 422 (unknown tool name, or an action that fails the tool's
+  schema). It needs a `terminal` tool on the agent and a `tmux`-capable host.
+  The route bypasses the agent loop's confirmation policy and security
+  analyzer and appends no event, so a caller that owns a repo convention
+  (app-server, Agent Canvas) runs the bootstrap script through it.
 - Second views used here: `GET /api/conversations/{conversation_id}`,
   `.../events/search`, `.../events/count`, `.../events/{event_id}`,
   `.../agent_final_response` (other families), the conversation's
@@ -73,7 +92,9 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
   fork (passing `agent=` raises `NotImplementedError`);
   `RemoteConversation.navigate_to(event_id | None)` posts and then refreshes
   the cached state (HEAD is not broadcast); `RemoteConversation.condense()`;
-  `RemoteConversation.ask_agent(question)`
+  `RemoteConversation.ask_agent(question)`;
+  `RemoteConversation.execute_tool(tool_name, action)` posts the action and
+  returns the deserialized `Observation`
   (`openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py`).
   Example: `examples/02_remote_agent_server/11_conversation_fork.py`.
 - TypeScript client: `ConversationClient.forkConversation`,
@@ -549,9 +570,106 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   A second `Condensation` is recorded and ask_agent still names the codename
   from the reloaded history (the condenser keeps the first two events, the
   system prompt and the user's message); `A` stays `finished`.
+- **Execute one tool (`F10.execute-tool-terminal`, `F10.execute-tool-observation-shape`).** `ET` is a conversation with the `terminal` tool that never runs (a placeholder model, so no `llm` call).
+  Requires: tmux
+  ```sh
+  F="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f10"
+  ET=$(control-agent-server conversation start --placeholder-agent --tools terminal --no-autotitle --no-run --prompt QA_F10_EXEC --print-id)
+  N_ET=$(control-agent-server api GET "/api/conversations/$ET/events/count" --field .)
+  control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "echo qa-f10-exec-tool"}}' \
+    --expect 200 --check observation.exit_code eq 0 --check observation.command eq 'echo qa-f10-exec-tool' \
+    --check observation.content.0.text contains qa-f10-exec-tool --save F10.execute-tool-terminal/run
+  control-agent-server api GET "/api/conversations/$ET/events/count" --check . eq "$N_ET"
+  ```
+  The observation carries the tool's own fields (`command`, `exit_code`,
+  `content`), not a text summary, and the conversation gains no event.
+- **A setup script's environment survives (`F10.execute-tool-persistent`).**
+  Write a `.openhands/setup.sh` that exports a marker, source it through
+  `execute_tool`, then read the marker back with a second `terminal` action in
+  the same conversation.
+  Requires: tmux, `F10.execute-tool-terminal`
+  ```sh
+  mkdir -p "$F/ws/.openhands"
+  printf 'export QA_F10_EXEC_MARKER=qa-f10-marker\n' > "$F/ws/.openhands/setup.sh"
+  PERSIST=$(control-agent-server conversation start --placeholder-agent --tools terminal --no-autotitle --no-run --workspace "$F/ws" --prompt QA_F10_PERSIST --print-id)
+  control-agent-server api POST "/api/conversations/$PERSIST/execute_tool" \
+    --json "{\"tool_name\": \"terminal\", \"action\": {\"kind\": \"TerminalAction\", \"command\": \"source $F/ws/.openhands/setup.sh\"}}" \
+    --expect 200 --check observation.exit_code eq 0 --save F10.execute-tool-persistent/source
+  control-agent-server api POST "/api/conversations/$PERSIST/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "printf %s \"$QA_F10_EXEC_MARKER\""}}' \
+    --expect 200 --check observation.content.0.text contains qa-f10-marker --save F10.execute-tool-persistent/check
+  ```
+  The second call prints the exported value: the environment change reached
+  the conversation's persistent terminal, which is the whole point of the
+  endpoint (a plain `execute_command` shell would have lost it).
+- **Bad input, unknown ids and no key (`F10.execute-tool-errors`).** None of
+  these executes a tool or appends an event.
+  Requires: tmux, `F10.execute-tool-terminal`
+  ```sh
+  control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "not_a_tool", "action": {"kind": "TerminalAction", "command": "echo hi"}}' \
+    --expect 4xx --check detail contains not_a_tool --save F10.execute-tool-errors/unknown-tool
+  control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction"}}' --expect 422 --save F10.execute-tool-errors/bad-action
+  control-agent-server api POST "/api/conversations/$NOPE/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "echo hi"}}' \
+    --expect 404 --check detail eq 'Conversation not found' --save F10.execute-tool-errors/unknown
+  control-agent-server api POST /api/conversations/not-a-uuid/execute_tool \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "echo hi"}}' \
+    --expect 422 --check detail.0.loc.1 eq conversation_id
+  control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "echo hi"}}' --auth none --expect 401
+  control-agent-server api GET "/api/conversations/$ET/events/count" --check . eq "$N_ET"
+  ```
+  An unknown tool name is a 4xx naming the tool (`Tool 'not_a_tool' not found.
+  Available tools: [...]`), a `TerminalAction` without `command` is 422 at
+  request validation, an unknown id is 404 `Conversation not found`, a
+  malformed id is 422 and no key is 401; the event count is unchanged.
+- **Auth and secret masking (`F10.execute-tool-auth-masking`).** A registered
+  secret echoed by the executed command comes back masked.
+  Requires: tmux
+  ```sh
+  SECRET_ET=$(control-agent-server conversation start --placeholder-agent --tools terminal --no-autotitle --no-run --prompt QA_F10_EXEC_SECRET --print-id)
+  control-agent-server api POST "/api/conversations/$SECRET_ET/secrets" \
+    --json '{"secrets": {"QA_F10_EXEC_TOKEN": "qa-f10-exec-token-value"}}' --expect 200 --quiet
+  control-agent-server api POST "/api/conversations/$SECRET_ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "printf %s \"$QA_F10_EXEC_TOKEN\""}}' \
+    --expect 200 --check observation.content.0.text contains '<secret-hidden>' --save F10.execute-tool-auth-masking/masked
+  control-agent-server api POST "/api/conversations/$SECRET_ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "echo hi"}}' --auth none --expect 401
+  ```
+  The command received the value as an environment variable (like
+  `F08.secrets-terminal`), but the observation the endpoint returns reads
+  `<secret-hidden>`; an unauthenticated call is 401 and runs nothing.
+- **A long tool call does not stall the server (`F10.execute-tool-nonblocking`).**
+  Start a slow `terminal` action in the background, then prove `/alive` still
+  answers while it runs.
+  Requires: tmux, `F10.execute-tool-terminal`
+  ```sh
+  control-agent-server helper start --name qa-f10-exec-slow --log "$F/exec-slow.log" -- \
+    control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "sleep 15", "timeout": 60}}' --expect 200
+  sleep 2
+  control-agent-server api GET /alive --expect 200 --expect-max-ms 5000 --save F10.execute-tool-nonblocking/alive
+  control-agent-server helper stop qa-f10-exec-slow
+  ```
+  `/alive` answers in well under the sleep's duration: `EventService.execute_tool`
+  runs `LocalConversation.execute_tool` in an executor, so the tool does not
+  hold the event loop.
 
 ## Gotchas
 
+- `execute_tool` runs a tool on the conversation's own executor, so it shares
+  the terminal session the agent uses later: an `export`/`source` there is
+  visible to the agent's next `terminal` call (`F10.execute-tool-persistent`),
+  which a `POST /api/bash/execute_bash_command` shell (fresh subprocess) and a
+  `session_start` hook (`subprocess.run`) cannot do. It bypasses confirmation
+  policy and the security analyzer and appends no event, so it is a pre-run
+  setup mechanism, not a way to drive the agent; calling it while `run()` is in
+  flight is unsupported (the terminal executor is not built for concurrent
+  access). The action must be a real tool action (`TerminalAction`, etc.),
+  discriminated by `kind`; a bare `{"command": ...}` without `kind` is 422.
 - `fork` copies events with their original ids, so the same event id exists
   in the source and every fork; always scope event lookups by conversation.
 - A fork shares the source's working directory (`workspace.working_dir`):
