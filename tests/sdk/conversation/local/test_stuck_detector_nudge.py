@@ -103,7 +103,12 @@ def test_run_nudges_before_going_stuck_on_repeating_action_error():
     nudges = [
         e
         for e in conversation.state.events
-        if isinstance(e, MessageEvent) and e.source == "environment"
+        if isinstance(e, MessageEvent)
+        and e.source == "environment"
+        and not any(
+            isinstance(part, TextContent) and part.text.startswith("[Run budget:")
+            for part in e.llm_message.content
+        )
     ]
     assert len(nudges) == 1
     nudge_text = nudges[0].llm_message.content[0]
@@ -148,7 +153,12 @@ def test_run_recovers_after_nudge_when_model_self_corrects():
     nudges = [
         e
         for e in conversation.state.events
-        if isinstance(e, MessageEvent) and e.source == "environment"
+        if isinstance(e, MessageEvent)
+        and e.source == "environment"
+        and not any(
+            isinstance(part, TextContent) and part.text.startswith("[Run budget:")
+            for part in e.llm_message.content
+        )
     ]
     assert len(nudges) == 1
 
@@ -186,7 +196,12 @@ def test_run_does_not_renudge_action_error_while_streak_is_frozen():
     nudges = [
         e
         for e in conversation.state.events
-        if isinstance(e, MessageEvent) and e.source == "environment"
+        if isinstance(e, MessageEvent)
+        and e.source == "environment"
+        and not any(
+            isinstance(part, TextContent) and part.text.startswith("[Run budget:")
+            for part in e.llm_message.content
+        )
     ]
     # One action-error nudge plus the unrelated EMPTY corrective nudge —
     # not a second action-error nudge for the already-nudged, frozen streak.

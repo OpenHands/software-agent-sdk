@@ -282,7 +282,8 @@ class LocalConversation(BaseConversation):
                 stream-progress frames minted by ``StreamContext``.
             hook_config: Optional hook configuration to auto-wire session hooks.
                 If plugins are loaded, their hooks are combined with this config.
-            max_iteration_per_run: Maximum number of iterations per run
+            max_iteration_per_run: Maximum number of iterations per run. Native
+                agents receive budget and handoff reminders before this hard cap.
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
@@ -756,6 +757,67 @@ class LocalConversation(BaseConversation):
         self._state.execution_status = ConversationExecutionStatus.ERROR
         self._on_event(
             ConversationErrorEvent(source="environment", code=code, detail=detail)
+        )
+
+    def _warn_iteration_limit(self, iteration: int) -> None:
+        """Give native agents time to hand off before the existing hard cap.
+
+        Called under the state lock immediately before a step. ACP iterations
+        count whole external prompts rather than native tool-loop steps, so the
+        external agent must manage its own turn budget.
+        """
+        if isinstance(self.agent, ACPAgent):
+            return
+        remaining = self.max_iteration_per_run - iteration
+        wrap_up = min(50, max(1, self.max_iteration_per_run // 10))
+        delivery = min(10, max(1, wrap_up // 5))
+        if remaining == 1:
+            instruction = (
+                "This is your final iteration. Send your final response now, "
+                "using the finish tool if available. Do not start another tool "
+                "operation. Give the user the artifacts or paths already created, "
+                "verification results, and any unfinished work or limitations. "
+                "Do not claim unverified success."
+            )
+        elif remaining == delivery:
+            instruction = (
+                "Package and deliver the work now. Create the requested handoff "
+                "artifact if it can be completed within the remaining budget; "
+                "otherwise share the existing files and explain what is missing. "
+                "Stop feature work and broad testing. Reserve the final iteration "
+                "for a final response with artifact paths and honest limitations."
+            )
+        elif remaining == wrap_up:
+            instruction = (
+                "Begin wrapping up. Stop expanding scope or repeating optional "
+                "polish. Prioritize the requested deliverable, a focused check, "
+                "and a final response with usable artifact paths. If the task "
+                "cannot be completed, deliver the working portion and clearly "
+                "state what remains."
+            )
+        elif iteration == 0:
+            instruction = (
+                "This is a fresh run budget; earlier run-budget reminders no "
+                "longer apply. Plan time for verification, packaging any requested "
+                "deliverables, and a final response before the limit."
+            )
+        else:
+            return
+        self._on_event(
+            MessageEvent(
+                source="environment",
+                llm_message=Message(
+                    role="user",
+                    content=[
+                        TextContent(
+                            text=(
+                                f"[Run budget: {remaining} iterations remaining out of "
+                                f"{self.max_iteration_per_run}] {instruction}"
+                            )
+                        )
+                    ],
+                ),
+            )
         )
 
     def _check_stuck_or_nudge(self) -> bool:
@@ -2034,6 +2096,7 @@ class LocalConversation(BaseConversation):
                     # Mark the step as holding the state lock so state-mutating
                     # tools (e.g. switch_llm) running on worker threads skip
                     # re-acquiring it instead of deadlocking (#3485).
+                    self._warn_iteration_limit(iteration)
                     self._step_holds_state_lock = True
                     try:
                         self.agent.step(
@@ -2310,6 +2373,7 @@ class LocalConversation(BaseConversation):
                         # state-mutating tools (e.g. switch_llm) running on
                         # worker threads skip re-acquiring it instead of
                         # deadlocking while this await holds it (#3485).
+                        self._warn_iteration_limit(iteration)
                         self._step_holds_state_lock = True
                         last_user_message_id = self._state.last_user_message_id
                         try:

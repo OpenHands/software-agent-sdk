@@ -17,9 +17,12 @@ State transition matrix tested:
 - FINISHED -> remain unchanged (run() exits immediately without new message)
 """
 
+import asyncio
 import threading
 from collections.abc import Sequence
 from typing import ClassVar
+
+import pytest
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
@@ -625,3 +628,92 @@ def test_finished_preserved_even_when_over_budget(tmp_path):
     assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
     error_events = [e for e in events_received if isinstance(e, ConversationErrorEvent)]
     assert not any(e.code == "MaxBudgetReached" for e in error_events)
+
+
+@pytest.mark.parametrize("limit", [20, 500])
+def test_iteration_wrap_up_reaches_model_before_final_step(
+    monkeypatch, tmp_path, limit
+):
+    """Runtime guidance reaches the LLM without impersonating a user message."""
+    original_completion = TestLLM.completion
+    prompts = []
+
+    def record_completion(self, messages, **kwargs):
+        prompts.append(
+            "\n".join(
+                part.text
+                for message in messages
+                for part in message.content
+                if isinstance(part, TextContent)
+            )
+        )
+        return original_completion(self, messages=messages, **kwargs)
+
+    monkeypatch.setattr(TestLLM, "completion", record_completion)
+    test_tool = StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))[0]
+    register_tool("test_tool", test_tool)
+    for asynchronous in (False, True):
+        prompts.clear()
+        responses: list[Message | Exception] = [
+            Message(
+                role="assistant",
+                content=[],
+                tool_calls=[
+                    MessageToolCall(
+                        id=f"call_{i}",
+                        name="test_tool",
+                        arguments='{"command": "work"}',
+                        origin="completion",
+                    )
+                ],
+            )
+            for i in range(limit - 1)
+        ]
+        responses.extend(
+            [Message(role="assistant", content=[TextContent(text="Built app: ./app")])]
+            * 2
+        )
+        llm = TestLLM.from_messages(responses)
+        conversation = Conversation(
+            agent=Agent(llm=llm, tools=[Tool(name="test_tool")]),
+            max_iteration_per_run=limit,
+            stuck_detection=False,
+            workspace=str(tmp_path),
+        )
+        conversation.send_message("Build an app")
+        user_id = conversation.state.last_user_message_id
+        if asynchronous:
+            asyncio.run(conversation.arun())
+        else:
+            conversation.run()
+        wrap_up = min(50, max(1, limit // 10))
+        delivery = min(10, max(1, wrap_up // 5))
+        assert "Begin wrapping up" not in prompts[limit - wrap_up - 1]
+        assert "Begin wrapping up" in prompts[limit - wrap_up]
+        if delivery > 1:
+            assert "Package and deliver" in prompts[limit - delivery]
+        assert "final iteration" in prompts[limit - 1]
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+        assert conversation.state.last_user_message_id == user_id
+        assert (
+            len(
+                [
+                    e
+                    for e in conversation.state.events
+                    if isinstance(e, MessageEvent) and e.source == "user"
+                ]
+            )
+            == 1
+        )
+        conversation.send_message("Explain how to run the app")
+        if asynchronous:
+            asyncio.run(conversation.arun())
+        else:
+            conversation.run()
+        assert f"{limit} iterations remaining" in prompts[-1]
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+        conversation.close()
