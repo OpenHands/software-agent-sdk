@@ -131,6 +131,28 @@ def test_guarded_minimum_actions_are_high_risk(
     assert risk == SecurityRisk.HIGH
 
 
+@pytest.mark.parametrize("minimum_action", [None, "", "monitor", "unexpected"])
+def test_explicitly_benign_never_overrides_unknown_policy_action(
+    monkeypatch: pytest.MonkeyPatch,
+    minimum_action: Any,
+) -> None:
+    """Only an explicit allow action can authorize low-risk classification."""
+    monkeypatch.setattr(
+        example.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _completed(
+            {
+                "minimum_action": minimum_action,
+                "classification": {"explicitly_benign": True},
+            }
+        ),
+    )
+    risk = example.HolGuardSecurityAnalyzer().security_risk(
+        _event(TerminalAction(command="pwd"))
+    )
+    assert risk == SecurityRisk.HIGH
+
+
 @pytest.mark.parametrize(
     ("result", "action"),
     [
