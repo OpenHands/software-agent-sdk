@@ -136,6 +136,7 @@ from openhands.sdk.llm.exceptions import (
 from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.llm.message import (
     Message,
+    TextContent,
 )
 from openhands.sdk.llm.mixins.non_native_fc import NonNativeToolCallingMixin
 from openhands.sdk.llm.options.chat_options import select_chat_options
@@ -1679,6 +1680,30 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             raise LLMNoResponseError(
                 "Response choices is less than 1. Response: " + str(resp)
             )
+
+        raw_msg = resp.choices[0].message
+        if raw_msg is None:
+            raise LLMNoResponseError(
+                "Response choices[0] message is None. Response: " + str(resp)
+            )
+
+        parsed_msg = Message.from_llm_chat_message(raw_msg)
+        has_tool_calls = bool(parsed_msg.tool_calls)
+        has_content = any(
+            isinstance(c, TextContent) and bool(c.text.strip())
+            for c in parsed_msg.content
+        )
+        has_reasoning = bool(
+            parsed_msg.responses_reasoning_item is not None
+            or parsed_msg.reasoning_content is not None
+            or parsed_msg.thinking_blocks
+        )
+        if not (has_tool_calls or has_content or has_reasoning):
+            raise LLMNoResponseError(
+                "LLM response choices[0] message has no content, "
+                "tool calls, or reasoning. Response: " + str(resp)
+            )
+
         return resp
 
     def generate(

@@ -5,13 +5,26 @@ from litellm.responses.streaming_iterator import (
     ResponsesAPIStreamingIterator,
     SyncResponsesAPIStreamingIterator,
 )
-from litellm.types.llms.openai import ResponsesAPIResponse
-from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse, Usage
+from litellm.types.llms.openai import (
+    ChatCompletionRedactedThinkingBlock,
+    ChatCompletionThinkingBlock,
+    ResponsesAPIResponse,
+)
+from litellm.types.utils import (
+    Choices,
+    Delta,
+    Message as LiteLLMMessage,
+    ModelResponse,
+    ModelResponseStream,
+    StreamingChoices,
+    Usage,
+)
 from openai.types.responses import ResponseOutputMessage, ResponseOutputText
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent
 from openhands.sdk.llm.exceptions import LLMNoResponseError
+from openhands.sdk.llm.message import ThinkingBlock
 
 
 def create_mock_response(
@@ -458,3 +471,221 @@ async def test_async_aresponses_stream_path_retry_bumps_temperature(
     assert mock_aresponses.call_count == 2
     _, second_kwargs = mock_aresponses.call_args_list[1]
     assert second_kwargs.get("temperature") == 1.0
+
+
+# ------------------------------------------------------------------
+# Chat completion empty-response retry tests (#6085)
+# ------------------------------------------------------------------
+
+
+def _create_mock_chat_completion_response(
+    content: str = "",
+    reasoning_content: str | None = None,
+    tool_calls: list | None = None,
+    thinking_blocks: (
+        list[ChatCompletionThinkingBlock | ChatCompletionRedactedThinkingBlock] | None
+    ) = None,
+) -> ModelResponse:
+    msg = LiteLLMMessage(role="assistant", content=content)
+    if reasoning_content is not None:
+        msg.reasoning_content = reasoning_content
+    if tool_calls is not None:
+        msg.tool_calls = tool_calls
+    if thinking_blocks is not None:
+        msg.thinking_blocks = thinking_blocks
+    return ModelResponse(
+        id="chatcmpl-test",
+        choices=[Choices(message=msg, finish_reason="stop", index=0)],
+        created=1234567890,
+        model="gpt-4o",
+        object="chat.completion",
+    )
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_completion_empty_response_retried_and_succeeds(
+    mock_completion, base_llm: LLM
+) -> None:
+    """An empty completion is retried inside the retry boundary (#6085)."""
+    mock_completion.side_effect = [
+        _create_mock_chat_completion_response(content=""),
+        _create_mock_chat_completion_response(content="Hello world"),
+    ]
+
+    resp = base_llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])]
+    )
+
+    assert isinstance(resp, LLMResponse)
+    assert mock_completion.call_count == 2
+    first_c = resp.message.content[0]
+    assert isinstance(first_c, TextContent)
+    assert first_c.text == "Hello world"
+
+
+@pytest.mark.asyncio
+@patch(
+    "openhands.sdk.llm.llm.litellm_acompletion",
+    new_callable=AsyncMock,
+)
+async def test_async_acompletion_empty_response_retried_and_succeeds(
+    mock_acompletion: AsyncMock, base_llm: LLM
+) -> None:
+    """Async acompletion empty response is retried (#6085)."""
+    mock_acompletion.side_effect = [
+        _create_mock_chat_completion_response(content=""),
+        _create_mock_chat_completion_response(content="Async success"),
+    ]
+
+    resp = await base_llm.acompletion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])]
+    )
+
+    assert isinstance(resp, LLMResponse)
+    assert mock_acompletion.call_count == 2
+    first_c = resp.message.content[0]
+    assert isinstance(first_c, TextContent)
+    assert first_c.text == "Async success"
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_completion_reasoning_only_not_retried_as_empty(
+    mock_completion, base_llm: LLM
+) -> None:
+    """A reasoning-only completion is returned without a retry (#6085)."""
+    mock_completion.return_value = _create_mock_chat_completion_response(
+        content="", reasoning_content="Thinking through the plan..."
+    )
+
+    resp = base_llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])]
+    )
+
+    assert isinstance(resp, LLMResponse)
+    assert mock_completion.call_count == 1
+    assert resp.message.reasoning_content == "Thinking through the plan..."
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_completion_thinking_blocks_not_retried_as_empty(
+    mock_completion, base_llm: LLM
+) -> None:
+    """Thinking blocks with no visible text are not an empty completion."""
+    mock_completion.return_value = _create_mock_chat_completion_response(
+        content="",
+        thinking_blocks=[
+            ChatCompletionThinkingBlock(
+                type="thinking", thinking="plan the edit", signature="sig"
+            )
+        ],
+    )
+
+    resp = base_llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])]
+    )
+
+    assert mock_completion.call_count == 1
+    block = resp.message.thinking_blocks[0]
+    assert isinstance(block, ThinkingBlock)
+    assert block.thinking == "plan the edit"
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_completion_empty_response_exhausts_retries(
+    mock_completion, base_llm: LLM
+) -> None:
+    """Content-free completions keep raising until num_retries is exhausted."""
+    mock_completion.side_effect = [
+        _create_mock_chat_completion_response(content=""),
+        _create_mock_chat_completion_response(content=""),
+    ]
+
+    with pytest.raises(LLMNoResponseError):
+        base_llm.completion(
+            messages=[Message(role="user", content=[TextContent(text="hi")])]
+        )
+
+    assert mock_completion.call_count == base_llm.num_retries
+
+
+def _completion_stream(content: str) -> list[ModelResponseStream]:
+    chunks = [
+        ModelResponseStream(
+            id="chatcmpl-test",
+            choices=[
+                StreamingChoices(
+                    finish_reason=None,
+                    index=0,
+                    delta=Delta(content=content, role="assistant"),
+                )
+            ],
+            created=1,
+            model="gpt-4o",
+            object="chat.completion.chunk",
+        )
+    ]
+    if content:
+        chunks.append(
+            ModelResponseStream(
+                id="chatcmpl-test",
+                choices=[
+                    StreamingChoices(
+                        finish_reason="stop",
+                        index=0,
+                        delta=Delta(content=None, role=None),
+                    )
+                ],
+                created=1,
+                model="gpt-4o",
+                object="chat.completion.chunk",
+            )
+        )
+    return chunks
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_streaming_completion_empty_response_retried_and_succeeds(
+    mock_completion, base_llm: LLM
+) -> None:
+    """An empty reassembled stream is retried like a non-streaming completion."""
+    mock_completion.side_effect = [
+        _completion_stream(""),
+        _completion_stream("Hello world"),
+    ]
+
+    resp = base_llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])],
+        stream=True,
+        on_token=lambda _chunk: None,
+    )
+
+    assert mock_completion.call_count == 2
+    first_c = resp.message.content[0]
+    assert isinstance(first_c, TextContent)
+    assert first_c.text == "Hello world"
+
+
+@pytest.mark.asyncio
+@patch(
+    "openhands.sdk.llm.llm.litellm_acompletion",
+    new_callable=AsyncMock,
+)
+async def test_async_streaming_acompletion_empty_response_retried(
+    mock_acompletion: AsyncMock, base_llm: LLM
+) -> None:
+    """An empty reassembled async stream is retried inside acompletion."""
+    mock_acompletion.side_effect = [
+        _completion_stream(""),
+        _completion_stream("Async stream"),
+    ]
+
+    resp = await base_llm.acompletion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])],
+        stream=True,
+        on_token=lambda _chunk: None,
+    )
+
+    assert mock_acompletion.call_count == 2
+    first_c = resp.message.content[0]
+    assert isinstance(first_c, TextContent)
+    assert first_c.text == "Async stream"
