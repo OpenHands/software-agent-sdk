@@ -161,6 +161,9 @@ class DurabilityWriter:
     replacement and submission. Queued work pins descriptors only on workers;
     failed pool admission falls back to inline fsync before acknowledgment.
     Pending tasks and generation tokens use O(outstanding work) memory.
+
+    Writers belong to their creating process. After fork, create a new writer
+    rather than reusing inherited callbacks, locks or completion counters.
     """
 
     def __init__(
@@ -169,6 +172,7 @@ class DurabilityWriter:
         *,
         write_lock: LockType | None = None,
     ) -> None:
+        self._pid = os.getpid()
         self._name = name
         self._queue: queue.Queue[Callable[[], None]] = queue.Queue()
         self._lock = threading.Lock()
@@ -183,6 +187,13 @@ class DurabilityWriter:
         self._idle.set()
         self._error: BaseException | None = None
         self._closed = False
+
+    def _check_process(self) -> None:
+        if os.getpid() != self._pid:
+            raise RuntimeError(
+                "DurabilityWriter was inherited across fork; "
+                "create a new writer in the child process"
+            )
 
     def _ensure_worker_locked(self) -> None:
         if not self._scheduled:
@@ -234,6 +245,7 @@ class DurabilityWriter:
         durability failure never surfaces after the mutation became
         visible. Also rejects use after :meth:`close`.
         """
+        self._check_process()
         with self._lock:
             if self._closed:
                 raise RuntimeError("DurabilityWriter is closed")
@@ -248,6 +260,7 @@ class DurabilityWriter:
         so later files still get fsync'ed); use :meth:`raise_if_failed` at
         acknowledgment points instead.
         """
+        self._check_process()
         with self._lock:
             if self._closed:
                 raise RuntimeError("DurabilityWriter is closed")
@@ -262,6 +275,7 @@ class DurabilityWriter:
         replacement and this call. Superseded tasks are skipped, so an older
         queue slot can never fsync a newer generation ahead of its dependencies.
         """
+        self._check_process()
         if not self._has_write_lock:
             raise ValueError("submit_fsync requires a shared write_lock")
         with self._lock:
@@ -305,6 +319,7 @@ class DurabilityWriter:
 
     def flush(self) -> None:
         """Block until all queued work completes; re-raise the first failure."""
+        self._check_process()
         self._queue.join()
         with self._lock:
             error = self._error
@@ -318,6 +333,7 @@ class DurabilityWriter:
         report a recorded failure. Calling from a submitted task is unsupported
         because the worker cannot wait for its own completion.
         """
+        self._check_process()
         with self._lock:
             if self._thread is threading.current_thread():
                 raise RuntimeError("DurabilityWriter cannot close from its worker")
@@ -327,5 +343,6 @@ class DurabilityWriter:
 
     @property
     def failed(self) -> bool:
+        self._check_process()
         with self._lock:
             return self._error is not None

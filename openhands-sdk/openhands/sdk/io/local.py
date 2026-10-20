@@ -38,8 +38,8 @@ class LocalFileStore(FileStore):
             cache_limit_size: Maximum number of cached entries (default: 500).
             cache_memory_size: Maximum cache memory in bytes (default: 20MB).
             deferred_durability: When True (default), the fsync of each write
-                runs on a per-store background DurabilityWriter instead of the
-                calling thread (group commit). The write + atomic rename still
+                runs through a bounded shared pool with a FIFO per store, not on
+                the calling thread (group commit). The write + atomic rename still
                 happen synchronously, so content is immediately visible to
                 readers and survives process exit. Queued fsync preserves the
                 existing file-fsync guarantees, not directory durability.
@@ -51,10 +51,14 @@ class LocalFileStore(FileStore):
         Note:
             The cache assumes exclusive access to files. External modifications
             to files will not be detected and may result in stale cache reads.
+            Mutations, flush and close belong to the creating process. After fork,
+            construct a new store in the child; flush in the parent before fork
+            if the child requires prior writes to have completed durability.
         """
         if root.startswith("~"):
             root = os.path.expanduser(root)
         root = os.path.abspath(os.path.normpath(root))
+        self._pid = os.getpid()
         self.root = root
         os.makedirs(self.root, exist_ok=True)
         self.cache = MemoryLRUCache(cache_memory_size, cache_limit_size)
@@ -62,6 +66,13 @@ class LocalFileStore(FileStore):
         self._durability: DurabilityWriter | None = None
         self._durability_lock = threading.Lock()
         self._closed = False
+
+    def _check_process(self) -> None:
+        if os.getpid() != self._pid:
+            raise RuntimeError(
+                "LocalFileStore was inherited across fork; "
+                "create a new store in the child process"
+            )
 
     def get_full_path(self, path: str) -> str:
         # strip leading slash to keep relative under root
@@ -79,6 +90,7 @@ class LocalFileStore(FileStore):
         return full
 
     def write(self, path: str, contents: str | bytes) -> None:
+        self._check_process()
         # Keep admission, mutation and durability submission in one lifecycle
         # critical section. Close cannot seal a write between rename and enqueue.
         with self._durability_lock:
@@ -111,6 +123,7 @@ class LocalFileStore(FileStore):
 
     def flush(self) -> None:
         """Drain queued fsync work; re-raise the first durability failure."""
+        self._check_process()
         with self._durability_lock:
             writer = self._durability
         if writer is not None:
@@ -118,6 +131,7 @@ class LocalFileStore(FileStore):
 
     def close(self) -> None:
         """Reject new writes and drain admitted writes; reads remain available."""
+        self._check_process()
         with self._durability_lock:
             self._closed = True
             writer = self._durability
@@ -156,6 +170,7 @@ class LocalFileStore(FileStore):
         return files
 
     def delete(self, path: str) -> None:
+        self._check_process()
         try:
             full_path = self.get_full_path(path)
             if not os.path.exists(full_path):

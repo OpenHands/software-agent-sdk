@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import uuid
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -213,6 +214,7 @@ def test_deferred_fsync_uses_writable_handle(
             open=open_file,
             fsync=windows_fsync,
             close=os.close,
+            getpid=os.getpid,
             O_RDONLY=os.O_RDONLY,
             O_RDWR=os.O_RDWR,
         ),
@@ -678,6 +680,164 @@ def test_windows_fsync_handle_shares_delete_and_transfers_ownership(
         assert durability._open_fsync_file(path) == 456
         assert closed == []
     assert calls == [(str(path), 0xC0000000, 0x7, 0, 3, 0, 0)]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-exit test uses POSIX fork")
+@pytest.mark.parametrize(
+    ("target", "phase"),
+    [
+        ("store", "active"),
+        ("store", "locked"),
+        ("store", "idle"),
+        ("store", "inline"),
+        ("writer", "active"),
+        ("writer", "locked"),
+        ("writer", "idle"),
+    ],
+)
+def test_inherited_durability_rejects_before_locks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str, phase: str
+):
+    parent_pid = os.getpid()
+    entered = threading.Event()
+    release = threading.Event()
+    original_fsync = os.fsync
+    callback_file = tmp_path / "callback.txt"
+
+    def blocked_fsync(fd: int) -> None:
+        if os.getpid() == parent_pid:
+            entered.set()
+            assert release.wait(15)
+        original_fsync(fd)
+
+    if phase in ("active", "locked"):
+        monkeypatch.setattr(os, "fsync", blocked_fsync)
+    store = LocalFileStore(
+        str(tmp_path / "parent"), deferred_durability=phase != "inline"
+    )
+    store.write("parent.txt", "parent")
+    writer = store._durability
+    if phase in ("active", "locked"):
+        assert entered.wait(10)
+        store.write("queued.txt", "queued")
+    else:
+        store.flush()
+
+    def callback() -> None:
+        with callback_file.open("a") as stream:
+            stream.write(f"{os.getpid()}\n")
+
+    if writer is not None:
+        writer.submit(callback)
+        if phase == "idle":
+            writer.flush()
+
+    def child_work() -> None:
+        if target == "store":
+            operations = (
+                store.flush,
+                store.close,
+                lambda: store.write("child.txt", "must not appear"),
+                lambda: store.delete("parent.txt"),
+            )
+        else:
+            assert writer is not None
+            child_writer = writer
+            operations = (
+                child_writer.flush,
+                child_writer.close,
+                child_writer.raise_if_failed,
+                lambda: child_writer.submit(callback),
+                lambda: child_writer.submit_fsync(tmp_path / "parent" / "parent.txt"),
+                lambda: child_writer.failed,
+            )
+        for operation in operations:
+            with pytest.raises(RuntimeError, match="inherited across fork"):
+                operation()
+        fresh = LocalFileStore(str(tmp_path / "child"))
+        fresh.write("fresh.txt", "fresh")
+        fresh.flush()
+        fresh.close()
+
+    child = multiprocessing.get_context("fork").Process(target=child_work)
+    try:
+        with ExitStack() as locks:
+            if phase in ("locked", "inline"):
+                locks.enter_context(store._durability_lock)
+                if writer is not None:
+                    locks.enter_context(writer._lock)
+                    locks.enter_context(writer._queue.mutex)
+            print("INHERITED_DURABILITY_FORK_PROBE", flush=True)
+            child.start()
+        child.join(5)
+        assert child.exitcode == 0, "child did not reject inherited durability promptly"
+        assert not (tmp_path / "parent" / "child.txt").exists()
+        assert (tmp_path / "parent" / "parent.txt").read_text() == "parent"
+        assert (tmp_path / "child" / "fresh.txt").read_text() == "fresh"
+    finally:
+        if child.is_alive():
+            child.kill()
+            child.join(10)
+        release.set()
+        store.flush()
+        store.close()
+    if writer is not None:
+        assert callback_file.read_text() == f"{parent_pid}\n"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="normal interpreter fork exit is POSIX")
+def test_inherited_conversation_atexit_does_not_hang(tmp_path: Path):
+    script = """
+import os, signal, sys, threading
+from pydantic import SecretStr
+from openhands.sdk import Agent, Conversation, LLM
+parent_pid = os.getpid()
+entered = threading.Event()
+release = threading.Event()
+original_fsync = os.fsync
+def pending_fsync(fd):
+    if os.getpid() == parent_pid:
+        entered.set()
+        assert release.wait(15)
+    original_fsync(fd)
+conversation = Conversation(
+    agent=Agent(
+        llm=LLM(model='gpt-4o-mini', api_key=SecretStr('test-key'),
+                usage_id='fork-test'), tools=[],
+    ),
+    workspace=sys.argv[1], persistence_dir=sys.argv[2], visualizer=None,
+)
+conversation._state.flush()
+os.fsync = pending_fsync
+conversation._state._fs.write('fork-backlog.txt', 'pending')
+assert entered.wait(10)
+pid = os.fork()
+if pid == 0:
+    signal.alarm(5)
+    print('NORMAL_FORKED_CONVERSATION_EXIT', flush=True)
+    sys.exit(0)
+try:
+    _, status = os.waitpid(pid, 0)
+    assert status == 0, f'forked conversation exit failed: {status}'
+finally:
+    release.set()
+    conversation.close()
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(tmp_path / "workspace"),
+            str(tmp_path / "persist"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    assert "NORMAL_FORKED_CONVERSATION_EXIT" in result.stdout
+    assert "inherited across fork" in result.stderr
 
 
 @pytest.mark.skipif(os.name != "posix", reason="process-exit test uses POSIX fork")
