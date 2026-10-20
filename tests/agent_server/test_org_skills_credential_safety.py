@@ -22,6 +22,7 @@ import os
 import socket
 import subprocess
 import threading
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -818,3 +819,162 @@ class TestPasswordFidelity:
         env = credential_env("u", password, "https", "github.com")
         out = _run_helper("get", "protocol=https\nhost=github.com\n\n", env)
         assert out == f"username=u\npassword={password}\n"
+
+
+# --------------------------------------------------------------------------
+# Timeout cleanup: no credential-bearing descendant may outlive the clone
+# --------------------------------------------------------------------------
+
+
+def _pids_with_env_containing(secret: str) -> set[int]:
+    """Return PIDs whose environment still contains *secret*.
+
+    Reads ``/proc/<pid>/environ`` directly, so a process that inherited the
+    credential from the clone's environment is found even when its command line
+    says nothing about it. A zombie exposes no environ; zombies are handled by
+    the direct child being reaped in the implementation.
+    """
+    hits: set[int] = set()
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return hits
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            data = Path(f"/proc/{entry}/environ").read_bytes()
+        except (OSError, PermissionError):
+            continue
+        if secret.encode() in data:
+            hits.add(int(entry))
+    return hits
+
+
+class TestTimeoutCleanup:
+    """A timed-out clone must not leave credential-bearing descendants behind.
+
+    ``git clone`` over HTTP forks ``git-remote-http``, which inherits
+    ``OPENHANDS_GIT_PASSWORD``. The old ``subprocess.run(timeout=...)`` killed
+    only the direct child, leaving those helpers alive with the secret readable
+    in ``/proc/<pid>/environ``.
+    """
+
+    @pytest.fixture
+    def stalled_http_server(self):
+        """An HTTP endpoint that accepts requests and never responds."""
+        received = threading.Event()
+        release = threading.Event()
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+            def _stall(self) -> None:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+                if length:
+                    self.rfile.read(length)
+                received.set()
+                # Hold the connection open until the test releases it.
+                release.wait(60)
+
+            def do_GET(self):  # noqa: N802 - http.server API
+                self._stall()
+
+            def do_POST(self):  # noqa: N802 - http.server API
+                self._stall()
+
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            yield port, received
+        finally:
+            release.set()
+            server.shutdown()
+            server.server_close()
+
+    def test_timeout_reaps_process_group_without_leaking_secret(
+        self, stalled_http_server, tmp_path: Path, monkeypatch
+    ):
+        """The whole process tree dies before the function returns."""
+        port, received = stalled_http_server
+        token = "P1REGRESSIONtokenVALUEonlyforTESTS0123456789"
+
+        # Shorten the production timeout so the real code path (including the
+        # process-group teardown) is exercised without waiting 120 seconds.
+        monkeypatch.setattr(
+            "openhands.agent_server.skills_service._CLONE_TIMEOUT_SECONDS", 1.0
+        )
+
+        spawn_kwargs: list[dict[str, object]] = []
+        real_popen = subprocess.Popen
+
+        def spy_popen(*args, **kwargs):
+            spawn_kwargs.append(dict(kwargs))
+            return real_popen(*args, **kwargs)
+
+        monkeypatch.setattr(
+            "openhands.agent_server.skills_service.subprocess.Popen", spy_popen
+        )
+
+        result: dict[str, object] = {}
+        observed: set[int] = set()
+
+        def worker() -> None:
+            result["ok"] = _clone_org_repo(
+                f"http://{FAKE_USER}:{token}@127.0.0.1:{port}/org/repo.git",
+                tmp_path / "clone",
+                "acme",
+            )
+
+        worker_thread = threading.Thread(target=worker)
+        try:
+            worker_thread.start()
+
+            # Wait until git is actually talking to the endpoint, so the
+            # descendants exist. This is an event, not an arbitrary sleep.
+            assert received.wait(timeout=30), "git never contacted the endpoint"
+
+            # Record every credential-bearing descendant while they are alive.
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                found = _pids_with_env_containing(token)
+                if found:
+                    observed |= found
+                    break
+                time.sleep(0.05)
+
+            worker_thread.join(timeout=60)
+            assert not worker_thread.is_alive(), "clone did not return on timeout"
+
+            # 1. The clone must report failure on timeout.
+            assert result.get("ok") is False
+
+            # 2. Git must have been started as its own session/group leader.
+            assert spawn_kwargs, "expected the clone to spawn a process"
+            assert spawn_kwargs[0].get("start_new_session") is True, (
+                "git must own a process group so the whole tree can be signalled"
+            )
+
+            # 3. No descendant may still carry the credential once the function
+            #    has returned. The implementation waits for teardown, so this
+            #    needs no sleep of its own.
+            assert observed, "test did not observe a credential-bearing descendant"
+            survivors = _pids_with_env_containing(token)
+            assert survivors == set(), (
+                f"credential-bearing descendants survived the timeout: {survivors}"
+            )
+        finally:
+            # Never leave an orphan or a stalled handler behind, even on failure.
+            worker_thread.join(timeout=5)
+            for pid in _pids_with_env_containing(token):
+                try:
+                    os.kill(pid, 9)
+                except OSError:
+                    pass
