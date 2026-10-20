@@ -32,6 +32,7 @@ from openhands.sdk.agent.acp_agent import (
     _auth_selection_failure_reason,
     _classify_acp_init_error,
     _classify_acp_turn_error,
+    _claude_model_config_options,
     _codex_model_config_options,
     _estimate_cost_from_tokens,
     _extract_session_models,
@@ -5403,6 +5404,20 @@ class TestCodexModelConfigOptions:
         )
 
 
+class TestClaudeModelConfigOptions:
+    def test_splits_combined_model_and_effort(self):
+        assert _claude_model_config_options("opus[1m]/high") == (
+            ("model", "opus[1m]"),
+            ("effort", "high"),
+        )
+
+    def test_leaves_base_or_custom_model_id_unchanged(self):
+        assert _claude_model_config_options("sonnet") == (("model", "sonnet"),)
+        assert _claude_model_config_options("custom/model") == (
+            ("model", "custom/model"),
+        )
+
+
 # ---------------------------------------------------------------------------
 # ACP model overrides
 # ---------------------------------------------------------------------------
@@ -5817,6 +5832,18 @@ class TestSetACPModel:
             config_id="model", value="sonnet", session_id="sess-1"
         )
         assert agent._current_model_id == "sonnet"
+
+    def test_switches_claude_via_config_option_splits_effort(self):
+        agent = self._wire(_make_agent(), "claude-agent-acp", via_config_option=True)
+        agent.set_acp_model("opus[1m]/high")
+        _agent_conn(agent).set_config_option.assert_has_awaits(
+            [
+                call(config_id="model", value="opus[1m]", session_id="sess-1"),
+                call(config_id="effort", value="high", session_id="sess-1"),
+            ]
+        )
+        assert _agent_conn(agent).set_config_option.await_count == 2
+        assert agent._current_model_id == "opus[1m]/high"
 
     def test_switch_method_not_found_raises_no_fallback(self):
         # No cross-mechanism fallback: a -32601 surfaces as a ValueError naming
