@@ -18,6 +18,7 @@ from openhands.tools.file_editor import (
     FileEditorObservation,
     FileEditorTool,
 )
+from openhands.tools.file_editor.impl import FileEditorExecutor
 
 
 def _create_test_conv_state(temp_dir: str) -> ConversationState:
@@ -136,6 +137,56 @@ def test_file_editor_tool_str_replace():
         with open(test_file) as f:
             content = f.read()
         assert "Hello, Universe!" in content
+
+
+@pytest.mark.parametrize("old_str", ["y = 2", "  y = 2  "])
+def test_str_replace_noop_preserves_file_and_history(tmp_path, old_str):
+    """Rejected replacements neither write the file nor consume an undo entry."""
+    test_file = tmp_path / "test.py"
+    original = b"x = 1\ny = 2\n"
+    test_file.write_bytes(original)
+    executor = FileEditorExecutor(workspace_root=str(tmp_path))
+    undo = FileEditorAction(command="undo_edit", path=str(test_file))
+
+    original_mtime = test_file.stat().st_mtime_ns
+    result = executor(
+        FileEditorAction(
+            command="str_replace",
+            path=str(test_file),
+            old_str=old_str,
+            new_str="y = 2",
+        )
+    )
+    assert result.is_error
+    assert "No replacement was performed" in result.text
+    assert "has been edited" not in result.text
+    assert test_file.read_bytes() == original
+    assert test_file.stat().st_mtime_ns == original_mtime
+
+    result = executor(undo)
+    assert result.is_error
+    assert "No edit history found" in result.text
+    assert test_file.read_bytes() == original
+
+    result = executor(
+        FileEditorAction(
+            command="str_replace",
+            path=str(test_file),
+            old_str=old_str,
+            new_str="y = 3",
+        )
+    )
+    assert not result.is_error
+    assert test_file.read_text() == "x = 1\ny = 3\n"
+
+    result = executor(undo)
+    assert not result.is_error
+    assert test_file.read_text() == original.decode()
+
+    result = executor(undo)
+    assert result.is_error
+    assert "No edit history found" in result.text
+    assert test_file.read_text() == original.decode()
 
 
 def test_file_editor_tool_to_openai_tool():
