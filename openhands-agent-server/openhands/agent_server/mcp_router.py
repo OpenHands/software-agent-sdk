@@ -535,7 +535,12 @@ def _probe_mcp_server(
     threadpool first.
     """
 
-    mcp_config = request.to_mcp_config(cipher=cipher)
+    # Mark candidate server strict so connection failure raises MCPConnectionError
+    # rather than degrading gracefully with empty tools.
+    mcp_config = {
+        name: server.model_copy(update={"strict": True})
+        for name, server in request.to_mcp_config(cipher=cipher).items()
+    }
 
     try:
         server = request.resolved_server
