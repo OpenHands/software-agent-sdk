@@ -165,7 +165,7 @@ class ConversationContainerOptions(BaseModel):
 
     Only the Docker runtime applies them, when it creates the conversation's
     container; a local conversation ignores them. An unset field keeps the
-    server's configured default.
+    server's configured limit; a set one replaces it and is not capped by it.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -173,12 +173,18 @@ class ConversationContainerOptions(BaseModel):
     memory: str | None = Field(
         default=None,
         pattern=DOCKER_MEMORY_PATTERN,
-        description="Container memory limit in `docker run --memory` syntax.",
+        description=(
+            "Container memory limit in `docker run --memory` syntax; replaces "
+            "the server's limit and is not capped by it."
+        ),
     )
     cpus: float | None = Field(
         default=None,
         ge=MIN_CONTAINER_CPUS,
-        description="Number of CPUs the container may use (`docker run --cpus`).",
+        description=(
+            "Number of CPUs the container may use (`docker run --cpus`); "
+            "replaces the server's limit and is not capped by it."
+        ),
     )
     browser: bool = Field(
         default=True,
