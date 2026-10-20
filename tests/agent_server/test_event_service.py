@@ -3234,19 +3234,23 @@ class TestEventServiceDirectToolExecution:
     async def test_cancelled_direct_call_does_not_run_the_tool(
         self, event_service, tmp_path
     ):
-        """Cancellation abandons the worker instead of letting it run later."""
+        """A worker whose request was cancelled exits without running the tool.
+
+        The worker is held before it reads the generation, so the abandon bump
+        lands first and the released worker must find its generation stale.
+        """
         conversation = self._service_with_terminal_conversation(event_service, tmp_path)
         ran: list[str] = []
         blocked = threading.Event()
         release = threading.Event()
+        original_run = event_service._run_direct_tool_sync
 
-        def blocked_resolve(tool_name):
+        def blocked_run(*args, **kwargs):
             blocked.set()
             release.wait(timeout=30)
-            return self._resolve_direct_tool_original(tool_name)
+            return original_run(*args, **kwargs)
 
-        event_service._resolve_direct_tool_original = event_service._resolve_direct_tool
-        event_service._resolve_direct_tool = blocked_resolve  # type: ignore[method-assign]
+        event_service._run_direct_tool_sync = blocked_run  # type: ignore[method-assign]
 
         def record(tool_name, action):
             ran.append(tool_name)
@@ -3263,10 +3267,13 @@ class TestEventServiceDirectToolExecution:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            # The worker was released after the cancellation; even so, it must
-            # not touch the executor because its generation is stale.
+            # The worker is released after the cancellation; even so, it must
+            # not run the tool because its generation is stale.
             release.set()
-            await asyncio.sleep(0.5)
+            for _ in range(100):
+                if event_service._direct_tool_in_flight is False:
+                    break
+                await asyncio.sleep(0.05)
             assert ran == []
             assert event_service._direct_tool_in_flight is False
         finally:
@@ -3367,19 +3374,23 @@ class TestEventServiceDirectToolExecution:
 
     @pytest.mark.asyncio
     async def test_close_abandons_in_flight_direct_call(self, event_service, tmp_path):
-        """close() bumps the generation so a waiting worker does not run."""
+        """close() releases the conversation without letting the tool run.
+
+        A worker still queued when close() begins must not reach the executor
+        once released, and must not leave the conversation busy.
+        """
         conversation = self._service_with_terminal_conversation(event_service, tmp_path)
         ran: list[str] = []
         started = threading.Event()
         release = threading.Event()
+        original_run = event_service._run_direct_tool_sync
 
-        def slow_resolve(tool_name):
+        def blocked_run(*args, **kwargs):
             started.set()
             release.wait(timeout=30)
-            return self._resolve_direct_tool_original(tool_name)
+            return original_run(*args, **kwargs)
 
-        event_service._resolve_direct_tool_original = event_service._resolve_direct_tool
-        event_service._resolve_direct_tool = slow_resolve  # type: ignore[method-assign]
+        event_service._run_direct_tool_sync = blocked_run  # type: ignore[method-assign]
 
         def record(tool_name, action):
             ran.append(tool_name)
@@ -3392,12 +3403,14 @@ class TestEventServiceDirectToolExecution:
             )
         )
         await asyncio.to_thread(started.wait, 10)
+        # close() abandons the queued worker, then releases it by waiting for
+        # it to exit.
         close_task = asyncio.create_task(event_service.close())
         await asyncio.sleep(0.2)
-        assert event_service._direct_tool_in_flight is False
         release.set()
         await asyncio.gather(task, close_task, return_exceptions=True)
         assert ran == []
+        assert event_service._direct_tool_in_flight is False
 
     @pytest.mark.asyncio
     async def test_successful_direct_call_releases_the_conversation(
