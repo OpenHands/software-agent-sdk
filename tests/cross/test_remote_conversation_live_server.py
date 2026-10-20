@@ -1475,6 +1475,59 @@ def test_execute_tool_live_server_errors(server_env, tmp_path: Path):
         assert response.json()["detail"] == "Conversation not found"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="The terminal tool depends on the Unix tmux backend.",
+)
+def test_execute_tool_live_server_cancellation_does_not_stall_the_server(
+    server_env, tmp_path: Path
+):
+    """A dropped request interrupts its command without stalling the server.
+
+    The reviewer's Windows concern: cancellation runs ``executor.interrupt()``,
+    which on the PowerShell backend performs blocking child-process scans. This
+    is the real-server smoke test that the cancel path leaves the event loop
+    free: a slow direct call is abandoned, its interrupt runs, and an unrelated
+    ``/alive`` request still answers. The blocking scans are Windows-only, so
+    the discriminating case is the unit test that injects a blocking interrupt
+    (``test_cancel_offloads_interrupt_off_the_event_loop``); this one confirms
+    the wiring on a live server.
+    """
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[Tool(name="terminal")])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    conversation: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+    conversation_id = conversation.id
+
+    try:
+        with httpx.Client(base_url=server_env["host"]) as client:
+            # Start a slow direct call, then drop the request. The server keeps
+            # owning the worker and offloads the interrupt.
+            with pytest.raises((httpx.ReadTimeout, httpx.ReadError)):
+                client.post(
+                    f"/api/conversations/{conversation_id}/execute_tool",
+                    json={
+                        "tool_name": "terminal",
+                        "action": {
+                            "kind": "TerminalAction",
+                            "command": "sleep 30",
+                            "timeout": 120,
+                        },
+                    },
+                    timeout=1.0,
+                )
+            # The abandoned command's interrupt runs off the loop: /alive
+            # answers while it is still in flight.
+            alive = client.get("/alive", timeout=5.0)
+            assert alive.status_code == 200
+            assert alive.json() == {"status": "ok"}
+    finally:
+        # close() drains the worker and the offloaded interrupt before teardown.
+        conversation.close()
+
+
 def test_execute_tool_live_server_requires_auth_and_masks_secrets(
     authenticated_server_env, tmp_path: Path
 ):

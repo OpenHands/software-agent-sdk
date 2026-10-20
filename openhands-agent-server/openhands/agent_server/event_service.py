@@ -295,6 +295,16 @@ class EventService:
     # Executor of the in-flight direct tool, used to interrupt a blocked command
     # when the request is cancelled (close() interrupts through the tool map).
     _direct_tool_executor: Any = field(default=None, init=False)
+    # Offloaded ``executor.interrupt()`` calls for cancelled direct calls. The
+    # PowerShell backend's interrupt performs blocking child-process scans, so
+    # it must not run on the event loop; close() drains these alongside
+    # ``_direct_tool_worker`` so teardown cannot close the executor while an
+    # interrupt still uses it. A list, not a single future: a cancellation's
+    # interrupt can still be running when close() offloads its own, and both
+    # must be joined before teardown.
+    _direct_tool_interrupt_tasks: list[asyncio.Future[Any]] = field(
+        default_factory=list, init=False
+    )
     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
     _lease: ConversationLease | None = field(default=None, init=False)
     _lease_generation: int | None = field(default=None, init=False)
@@ -2223,14 +2233,18 @@ class EventService:
         # by the bump, so interrupt the command (Ctrl+C for the terminal) and
         # wait for the thread to return before the teardown below closes that
         # executor. Without this the command loses its terminal mid-run or keeps
-        # writing after the conversation is deleted.
+        # writing after the conversation is deleted. The interrupt is offloaded
+        # (the PowerShell backend's scans block) and drained alongside the
+        # worker, so teardown never closes an executor an interrupt still uses.
         direct_worker = self._direct_tool_worker
         if direct_worker is not None and not direct_worker.done():
             if self._conversation is not None:
                 with suppress(Exception):
                     for tool in self._conversation.agent.tools_map.values():
                         with suppress(Exception):
-                            tool.as_executable().executor.interrupt()
+                            executor = getattr(tool.as_executable(), "executor", None)
+                            if executor is not None:
+                                self._offload_direct_tool_interrupt(executor)
             try:
                 await asyncio.wait_for(asyncio.shield(direct_worker), timeout=10.0)
             except TimeoutError:
@@ -2242,6 +2256,7 @@ class EventService:
                 pass  # Expected: the request that started it was cancelled.
             except Exception as exc:
                 logger.debug("Direct tool worker failed during close: %s", exc)
+        await self._drain_direct_tool_interrupt()
         self._direct_tool_worker = None
         self._direct_tool_executor = None
         # Drop any pin held by a supersede window that is being torn down, then
@@ -2440,6 +2455,66 @@ class EventService:
         with suppress(BaseException):
             worker.exception()
 
+    @staticmethod
+    def _interrupt_executor_sync(executor: Any) -> None:
+        """Run ``executor.interrupt()`` on a worker thread.
+
+        The PowerShell backend's interrupt performs two blocking child-process
+        scans, each able to wait up to five seconds for a subprocess, so calling
+        it on the event loop would stall unrelated requests (``/alive`` among
+        them) for the duration.
+        """
+        with suppress(BaseException):
+            executor.interrupt()
+
+    def _offload_direct_tool_interrupt(self, executor: Any) -> None:
+        """Interrupt a direct call's executor off the event loop.
+
+        Retains the future in ``_direct_tool_interrupt_tasks`` so close() can
+        drain it before teardown. Already-finished entries are pruned here (and
+        their result retrieved) so repeated cancellations do not accumulate
+        them.
+        """
+        retained: list[asyncio.Future[Any]] = []
+        for task in self._direct_tool_interrupt_tasks:
+            if task.done():
+                with suppress(BaseException):
+                    task.exception()
+            else:
+                retained.append(task)
+        retained.append(
+            asyncio.get_running_loop().run_in_executor(
+                None, self._interrupt_executor_sync, executor
+            )
+        )
+        self._direct_tool_interrupt_tasks = retained
+
+    async def _drain_direct_tool_interrupt(self) -> None:
+        """Wait for offloaded interrupts to finish before executor teardown.
+
+        ``close()`` cannot close the executor while an offloaded
+        ``executor.interrupt()`` still uses it, so this joins every interrupt
+        the same way ``close()`` joins the worker.
+        """
+        interrupt_tasks = self._direct_tool_interrupt_tasks
+        self._direct_tool_interrupt_tasks = []
+        for interrupt_task in interrupt_tasks:
+            if interrupt_task.done():
+                with suppress(BaseException):
+                    interrupt_task.exception()
+                continue
+            try:
+                await asyncio.wait_for(asyncio.shield(interrupt_task), timeout=10.0)
+            except TimeoutError:
+                logger.warning(
+                    "Direct tool interrupt did not finish within 10s of close(); "
+                    "continuing teardown"
+                )
+            except asyncio.CancelledError:
+                pass  # Expected: the request that started it was cancelled.
+            except Exception as exc:
+                logger.debug("Direct tool interrupt failed during close: %s", exc)
+
     async def execute_tool(self, tool_name: str, action: dict[str, Any]) -> Observation:
         """Execute one tool directly on the conversation, bypassing the agent loop.
 
@@ -2543,11 +2618,15 @@ class EventService:
             # close()/delete interrupts and awaits it before closing the
             # executor. Blocking here would hold the request open for as long as
             # the command ignores the interrupt.
+            #
+            # The interrupt itself is offloaded: on the PowerShell backend it
+            # performs blocking child-process scans (up to 5s each), and running
+            # it inline would stall every request on this event loop. close()
+            # drains the offloaded task alongside the worker.
             self._direct_tool_abandon += 1
             executor = self._direct_tool_executor
             if executor is not None:
-                with suppress(BaseException):
-                    executor.interrupt()
+                self._offload_direct_tool_interrupt(executor)
             raise
         finally:
             # Success, a resolve/validation failure, or a cancellation that

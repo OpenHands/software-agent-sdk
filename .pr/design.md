@@ -75,14 +75,21 @@ a version compare would reject a working endpoint.
   validation failure, and, for a cancelled request whose synchronous worker
   already started, only when that worker actually exits, since cancellation
   cannot stop it.
-- **Cancellation returns promptly; teardown owns the worker.** Cancelling the
-  request cannot stop the synchronous worker, and blocking the cancel on it
-  would hold the request open for as long as the command ignores the interrupt.
-  Instead the cancel interrupts the executor and returns; the service keeps the
-  worker as `_direct_tool_worker`, and `close()` (delete, idle eviction,
+- **Cancellation returns promptly; teardown owns the worker and the
+  interrupt.** Cancelling the request cannot stop the synchronous worker, and
+  blocking the cancel on it would hold the request open for as long as the
+  command ignores the interrupt. Instead the cancel offloads
+  `executor.interrupt()` to a worker thread and returns; the service keeps the
+  worker as `_direct_tool_worker` and the interrupt future in
+  `_direct_tool_interrupt_tasks`, and `close()` (delete, idle eviction,
   shutdown) interrupts the running command and waits for its worker (bounded)
   before the conversation and its executors are torn down, so teardown cannot
-  pull a terminal out from under a command mid-run.
+  pull a terminal out from under a command mid-run. The interrupt is offloaded
+  rather than called inline because the PowerShell backend's `interrupt()`
+  performs two blocking child-process scans (each able to wait five seconds for
+  a subprocess); calling it on the event loop would stall every request on that
+  loop, `/alive` included. `close()` drains the interrupt futures too, so
+  teardown cannot close an executor an offloaded interrupt is still using.
 - **A direct call pins the terminal pane pool.** Shell state set by a bootstrap
   script (exports, functions, the working directory) is local to the one tmux
   pane that ran it, so the executor pins the pool to that pane; a later parallel

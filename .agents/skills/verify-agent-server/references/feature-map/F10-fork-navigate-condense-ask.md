@@ -55,11 +55,11 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
 - `F10.execute-tool-observation-shape`: the response's `observation` carries the tool's own fields (for `terminal`, `command`, `exit_code`, `is_error`, `content`), not a flattened text summary, and `RemoteConversation.execute_tool()` returns the matching `TerminalObservation` rather than raising.
 - `F10.execute-tool-errors`: an unknown tool name is 4xx naming the missing tool (not 500), an action that fails the tool's schema is 422 at request validation, an unknown conversation id is 404, a malformed id is 422 and a missing key is 401; none of them executes a tool or appends an event.
 - `F10.execute-tool-auth-masking`: the route requires the same session-key auth as the rest of `/api/conversations/...` (unauthenticated → 401, nothing runs), and a registered secret echoed by the executed command comes back masked as `<secret-hidden>`.
-- `F10.execute-tool-nonblocking`: a long-running `terminal` action does not stall the server's event loop: `GET /alive` still answers while it runs.
+- `F10.execute-tool-nonblocking`: a long-running `terminal` action does not stall the server's event loop: `GET /alive` still answers while it runs, and cancelling the request does not stall it either — the interrupt that stops the abandoned command runs on a worker thread (the PowerShell backend's interrupt performs blocking child-process scans), so `/alive` answers while the interrupt is still in flight.
 - `F10.execute-tool-tool-scoped`: only the `terminal` tool may run directly, and the action is validated against that tool's own action type: a `GrepAction` with `tool_name="terminal"` is 422, not a 500 from `TerminalExecutor`, and the generic-route hazards (a `ClientTool` reporting a dispatch with no `ActionEvent` to deliver it, skipped tool hooks and audit events) cannot be reached.
 - `F10.execute-tool-direct-serialized`: direct calls are serialized per conversation under the per-conversation lifecycle, and cannot overlap a run in either direction: a run admitted while a direct call is in flight is 409 at every entry point that can start one (`/run`, `/goal`, and `/events` with `run=true`, via the registered `ConversationBusyError` handler rather than a 500), a second direct call while one is in flight is 409, and a call that finishes (or whose action is rejected) releases the conversation, so the next call is admitted rather than refused.
 - `F10.execute-tool-pane-pinned`: the shell state a setup script establishes (exports, functions, the working directory) is local to the one tmux pane it ran on, so the direct call pins the pane pool to that pane: a later parallel `terminal` command waits for it instead of landing on a fresh pane and missing the state.
-- `F10.execute-tool-teardown-owner`: a direct call whose request is cancelled does not leave an orphaned command: the worker is interrupted, the service keeps ownership of it, and closing or deleting the conversation interrupts and joins it (bounded) before the terminal executor is torn down, so the command and teardown cannot overlap; cancellation itself returns promptly rather than blocking on the worker.
+- `F10.execute-tool-teardown-owner`: a direct call whose request is cancelled does not leave an orphaned command: the worker is interrupted (the interrupt runs on a worker thread, so the cancel path never blocks the event loop on the PowerShell child-process scans), the service keeps ownership of both the worker and the offloaded interrupt, and closing or deleting the conversation joins both (bounded) before the terminal executor is torn down, so the command, the interrupt and teardown cannot overlap; cancellation itself returns promptly rather than blocking on the worker.
 - `F10.execute-tool-capability`: `/server_info` advertises `direct_tool_execution_v1`, so a client gates `execute_tool` on that capability rather than a package-version floor (the route ships in the same version as servers that predate it, so a version compare would reject a working server).
 - `F10.restart-persist`: after a restart, forks keep their lineage, title, tags, HEAD and events, a fork id that names a persisted but not yet loaded conversation is still 409, and a navigated empty HEAD stays empty (the next message is still a new root).
 - `F10.restart-cold-calls`: after a restart, condense and ask_agent work on a conversation whose agent has not been initialized yet, and ask_agent still sees the history (the codename).
@@ -667,7 +667,12 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   ```
   `/alive` answers in well under the sleep's duration: `EventService.execute_tool`
   runs `LocalConversation.execute_tool` in an executor, so the tool does not
-  hold the event loop.
+  hold the event loop. The same holds on the cancel path: a client that drops
+  the request while the command runs does not stall `/alive` either, because the
+  interrupt that stops the abandoned command is itself offloaded to a worker
+  thread (the PowerShell backend's `interrupt()` performs blocking child-process
+  scans, up to five seconds each), and `close()`/`DELETE` drains that interrupt
+  before tearing the executor down.
 - **An action for another tool is refused (`F10.execute-tool-tool-scoped`).**
   A `GrepAction` payload with `tool_name="terminal"` must be a client error, not
   a 500 from the terminal executor.
@@ -731,7 +736,9 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   The delete interrupts and joins the synchronous worker (bounded) before the
   terminal executor is torn down, so the command and teardown do not overlap;
   the request that is still awaiting the slow call is abandoned, not left
-  holding the executor.
+  holding the executor. The interrupt itself is offloaded to a worker thread and
+  joined too, so teardown cannot close an executor an interrupt is still using
+  and the delete never blocks the event loop on the PowerShell scans.
 - **A client gates on the capability, not the version (`F10.execute-tool-capability`).**
   The server advertises the route as a capability so a client does not reject a
   working server on a package-version floor.

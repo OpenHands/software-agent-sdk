@@ -14,8 +14,10 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import httpx
 import pytest
 import pytest_asyncio
+from fastapi import FastAPI
 from pydantic import SecretStr
 
 from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
@@ -35,6 +37,7 @@ from openhands.agent_server.models import (
     StoredConversation,
 )
 from openhands.agent_server.pub_sub import Subscriber
+from openhands.agent_server.server_details_router import server_details_router
 from openhands.sdk import LLM, Agent, AgentBase, Conversation, Message
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.conversation.event_store import EventLog
@@ -3615,6 +3618,150 @@ class TestEventServiceDirectToolExecution:
             release.set()
             await task
         finally:
+            release.set()
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_cancel_offloads_interrupt_off_the_event_loop(
+        self, event_service, tmp_path
+    ):
+        """A cancelled direct call must not run the executor interrupt inline.
+
+        The PowerShell backend's interrupt performs blocking child-process
+        scans (up to 5s each). Running it on the event loop stalls every request
+        on that loop -- ``/alive`` included -- so the cancel path offloads it and
+        an unrelated coroutine must keep running while the interrupt blocks.
+        """
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        conversation._ensure_agent_ready()
+        executor = conversation.agent.tools_map["terminal"].as_executable().executor
+
+        loop_thread_id = threading.get_ident()
+        interrupt_thread_ids: list[int] = []
+        interrupt_entered = threading.Event()
+        interrupt_release = threading.Event()
+
+        def blocking_interrupt():
+            interrupt_thread_ids.append(threading.get_ident())
+            interrupt_entered.set()
+            interrupt_release.wait(timeout=30)
+
+        executor.interrupt = blocking_interrupt  # type: ignore[method-assign]
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_execute_tool(tool_name, action):
+            started.set()
+            release.wait(timeout=30)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        conversation.execute_tool = slow_execute_tool  # type: ignore[method-assign]
+        try:
+            task = asyncio.create_task(
+                event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo a"}
+                )
+            )
+            await asyncio.to_thread(started.wait, 10)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # The cancel returned while the interrupt is still blocked: it did
+            # not wait for the scans. Prove the interrupt really is in flight.
+            await asyncio.to_thread(interrupt_entered.wait, 10)
+            assert interrupt_release.is_set() is False
+
+            # The event loop is not stalled: a real /alive probe on this loop
+            # still answers promptly while the interrupt blocks.
+            alive_app = FastAPI()
+            alive_app.include_router(server_details_router)
+            transport = httpx.ASGITransport(app=alive_app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as http:
+                response = await asyncio.wait_for(http.get("/alive"), timeout=1)
+            assert response.status_code == 200
+            assert response.json() == {"status": "ok"}
+            # And the blocking work ran on a worker thread, not the loop.
+            assert interrupt_thread_ids
+            assert all(ident != loop_thread_id for ident in interrupt_thread_ids)
+        finally:
+            interrupt_release.set()
+            release.set()
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_close_drains_offloaded_interrupt_before_teardown(
+        self, event_service, tmp_path
+    ):
+        """close() must join an offloaded interrupt before tearing down.
+
+        A cancellation offloads the interrupt to a worker thread, so teardown
+        could otherwise close the conversation while that thread still uses the
+        executor. close() owns the drain: it must not finish until the interrupt
+        returns.
+        """
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        conversation._ensure_agent_ready()
+        executor = conversation.agent.tools_map["terminal"].as_executable().executor
+
+        order: list[str] = []
+        interrupt_entered = threading.Event()
+        interrupt_release = threading.Event()
+
+        def blocking_interrupt():
+            interrupt_entered.set()
+            interrupt_release.wait(timeout=30)
+            order.append("interrupt")
+
+        executor.interrupt = blocking_interrupt  # type: ignore[method-assign]
+
+        original_conversation_close = conversation.close
+
+        def recording_conversation_close():
+            order.append("conversation.close")
+            original_conversation_close()
+
+        conversation.close = recording_conversation_close  # type: ignore[method-assign]
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_execute_tool(tool_name, action):
+            started.set()
+            release.wait(timeout=30)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        conversation.execute_tool = slow_execute_tool  # type: ignore[method-assign]
+        try:
+            task = asyncio.create_task(
+                event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo a"}
+                )
+            )
+            await asyncio.to_thread(started.wait, 10)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await asyncio.to_thread(interrupt_entered.wait, 10)
+
+            close_task = asyncio.create_task(event_service.close())
+            await asyncio.sleep(0.2)
+            # The interrupt is still blocked, so close() must not have reached
+            # conversation teardown yet.
+            assert close_task.done() is False
+            assert order == []
+
+            interrupt_release.set()
+            release.set()
+            await asyncio.wait_for(close_task, timeout=10)
+            # The interrupt drained before teardown closed the conversation.
+            assert order.count("interrupt") >= 1
+            assert order[-1] == "conversation.close"
+            assert event_service._direct_tool_interrupt_tasks == []
+        finally:
+            interrupt_release.set()
             release.set()
             await event_service.close()
 
