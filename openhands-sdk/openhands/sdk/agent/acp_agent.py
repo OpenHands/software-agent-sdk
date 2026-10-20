@@ -1804,7 +1804,9 @@ class ACPAgent(AgentBase):
             "Model for the ACP server to use (e.g. 'sonnet' or 'gpt-5.5'). "
             "Applied via the protocol — set_config_option(model) for "
             "configOptions-based servers (codex, claude), else "
-            "set_session_model. If None, the server picks its default."
+            "set_session_model. Codex and Claude also accept "
+            "'<model>/<effort>' (e.g. 'gpt-5.5/high' or 'opus[1m]/high') "
+            "to set reasoning effort. If None, the server picks its default."
         ),
     )
     acp_resume_session_id: str | None = Field(
