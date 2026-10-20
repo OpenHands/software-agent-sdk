@@ -913,3 +913,57 @@ async def test_late_final_for_delegated_utterance_does_not_suppress_its_answer(
     finally:
         release.set()
         await relay.close()
+
+
+async def test_new_input_while_speech_waits_for_write_lock_prevents_stale_wire_send(
+    protocol, relay_events, tmp_path
+):
+    events, state = relay_events
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def wait(timeout):
+        if timeout:
+            entered.set()
+            await release.wait()
+        return ConversationExecutionStatus.FINISHED
+
+    events.wait_for_run_completion.side_effect = wait
+    relay = CodexRelay(state.id, events, tmp_path / "home")
+    locked = False
+    try:
+        await relay.start("v=0", "")
+        await relay.rpc("fixture/notify", _handoff())
+        await asyncio.wait_for(entered.wait(), 3)
+        await relay.write_lock.acquire()
+        locked = True
+        release.set()
+        async with asyncio.timeout(3):
+            while not relay.pending:
+                await asyncio.sleep(0)
+        # The reader can receive unsolicited input while a writer is queued.
+        relay._notification(
+            {
+                "method": "thread/realtime/transcript/delta",
+                "params": {
+                    "threadId": "bound-thread",
+                    "role": "user",
+                    "delta": "Actually",
+                },
+            }
+        )
+        relay.write_lock.release()
+        locked = False
+        assert relay.handoff_task is not None
+        await asyncio.wait_for(asyncio.shield(relay.handoff_task), 3)
+        result = await relay.rpc("fixture/results", {})
+        assert not [
+            x
+            for x in result["requests"]
+            if x["method"] == "thread/realtime/appendSpeech"
+        ]
+        assert list(state.events)[-1].action.message == "Saved coral."
+    finally:
+        if locked:
+            relay.write_lock.release()
+        release.set()
+        await relay.close()

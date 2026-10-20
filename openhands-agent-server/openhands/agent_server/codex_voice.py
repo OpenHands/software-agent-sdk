@@ -279,7 +279,12 @@ class CodexRelay:
         return answer
 
     async def rpc(
-        self, method: str, params: dict[str, Any], timeout: float = 15
+        self,
+        method: str,
+        params: dict[str, Any],
+        timeout: float = 15,
+        *,
+        speech_generation: int | None = None,
     ) -> dict[str, Any]:
         if self.closed:
             raise RelayError("Codex voice call is closed")
@@ -290,17 +295,34 @@ class CodexRelay:
         )
         self.pending[request_id] = future
         try:
-            await self._write({"id": request_id, "method": method, "params": params})
+            written = await self._write(
+                {"id": request_id, "method": method, "params": params},
+                speech_generation=speech_generation,
+            )
+            if not written:
+                return {}
             return await asyncio.wait_for(future, timeout)
         finally:
             self.pending.pop(request_id, None)
 
-    async def _write(self, message: dict[str, Any]) -> None:
+    async def _write(
+        self, message: dict[str, Any], *, speech_generation: int | None = None
+    ) -> bool:
         if self.process is None or self.process.stdin is None:
             raise RelayError("Codex voice connection unavailable")
         async with self.write_lock:
+            # Input may arrive while this writer waits. Fence speech at the
+            # final local write boundary, not just before an awaited RPC.
+            if speech_generation is not None and (
+                speech_generation != self.input_generation
+                or self.closed
+                or self.closing
+                or self.status.status in ("closed", "error")
+            ):
+                return False
             self.process.stdin.write((json.dumps(message) + "\n").encode())
             await self.process.stdin.drain()
+            return True
 
     async def _read(self) -> None:
         assert self.process is not None and self.process.stdout is not None
@@ -485,7 +507,9 @@ class CodexRelay:
         else:
             self._fail(text, "request_not_sent")
 
-    async def _speak(self, text: str) -> None:
+    async def _speak(self, text: str, generation: int | None = None) -> None:
+        if generation is None:
+            generation = self.input_generation
         try:
             if (
                 not self.closed
@@ -498,6 +522,7 @@ class CodexRelay:
                         "threadId": self.thread_id,
                         "text": spoken_excerpt(text),
                     },
+                    speech_generation=generation,
                 )
         except (OSError, RelayError, TimeoutError):
             self._fail("Codex voice connection failed", "connection_failed")
@@ -514,7 +539,7 @@ class CodexRelay:
             error_code = "relay_failed"
         self.handoff_results[handoff.handoff_id] = (handoff.input_transcript, text)
         if generation == self.input_generation and text:
-            await self._speak(text)
+            await self._speak(text, generation)
         if error_code:
             self._fail(text, error_code)
         elif (
