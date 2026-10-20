@@ -2,10 +2,16 @@
 
 The organization-skills path used to hand a pre-authenticated URL straight to
 ``git clone``, which put the token in the process argument vector and wrote it
-into the clone's ``.git/config``. These tests exercise the real clone path
-against a local git HTTP server that requires HTTP basic auth, and assert on
-actual bytes: the argv the subprocess received, the on-disk ``.git/config``,
-and the captured stderr.
+into the clone's ``.git/config``. The first fix moved the credentials into an
+environment-backed git credential helper, but that helper answered for *any*
+host git asked about -- including the target of an HTTP redirect -- and emitted
+the password through an unquoted ``echo``, which collapsed runs of spaces and
+interpreted backslash escapes.
+
+These tests exercise the real clone path against local git HTTP servers and
+assert on actual bytes: the argv the subprocess received, the on-disk
+``.git/config``, the captured stderr, and the ``Authorization`` header a
+redirect target actually received.
 """
 
 from __future__ import annotations
@@ -17,12 +23,14 @@ import socket
 import subprocess
 import threading
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
 from openhands.agent_server.git_credentials import (
     credential_env,
     credential_helper_args,
+    credential_scope,
     split_url_credentials,
 )
 from openhands.agent_server.skills_service import (
@@ -37,6 +45,10 @@ FAKE_TOKEN = "ghp_FAKEtokenVALUEforTESTSonly0123456789"
 FAKE_USER = "x-access-token"
 
 
+def _basic(username: str, password: str) -> str:
+    return "Basic " + base64.b64encode(f"{username}:{password}".encode()).decode()
+
+
 def _git(*args: str, cwd: Path | None = None) -> str:
     result = subprocess.run(
         ["git", *args],
@@ -49,45 +61,55 @@ def _git(*args: str, cwd: Path | None = None) -> str:
     return result.stdout
 
 
-@pytest.fixture(scope="module")
-def git_server(tmp_path_factory: pytest.TempPathFactory):
-    """A local git HTTP server requiring basic auth, plus a public repo.
+def _make_bare_repo(git_root: Path, name: str) -> Path:
+    """Create a bare repo named ``<name>.git`` under ``git_root``.
 
-    Serves two repositories over one listener:
-      * ``/private.git`` — requires basic auth (username ``x-access-token``,
-        password = ``FAKE_TOKEN``).
-      * ``/public.git``  — served without auth.
+    The scratch work tree lives beside ``git_root`` so it is not itself served
+    by ``git http-backend``.
     """
-    root = tmp_path_factory.mktemp("gitserver")
-    repos = root / "repos"
-    repos.mkdir()
-
-    def make_bare(name: str) -> Path:
-        work = root / f"work-{name}"
-        work.mkdir()
-        _git("init", "-q", "-b", "main", cwd=work)
-        _git("config", "user.email", "t@example.com", cwd=work)
-        _git("config", "user.name", "t", cwd=work)
-        (work / "skills").mkdir()
-        (work / "skills" / f"{name}-skill.md").write_text(
-            f"---\nname: {name}-skill\ndescription: {name} skill\n---\nbody\n"
-        )
-        _git("add", "-A", cwd=work)
-        _git("commit", "-q", "-m", "init", cwd=work)
-        bare = repos / f"{name}.git"
-        subprocess.run(
-            ["git", "clone", "-q", "--bare", str(work), str(bare)],
-            check=True,
-            capture_output=True,
-        )
-        return bare
-
-    make_bare("private")
-    make_bare("public")
-
-    expected_auth = (
-        "Basic " + base64.b64encode(f"{FAKE_USER}:{FAKE_TOKEN}".encode()).decode()
+    work = git_root.parent / f"work-{name}"
+    work.mkdir()
+    _git("init", "-q", "-b", "main", cwd=work)
+    _git("config", "user.email", "t@example.com", cwd=work)
+    _git("config", "user.name", "t", cwd=work)
+    (work / "skills").mkdir()
+    (work / "skills" / f"{name}-skill.md").write_text(
+        f"---\nname: {name}-skill\ndescription: {name} skill\n---\nbody\n"
     )
+    _git("add", "-A", cwd=work)
+    _git("commit", "-q", "-m", "init", cwd=work)
+    bare = git_root / f"{name}.git"
+    subprocess.run(
+        ["git", "clone", "-q", "--bare", str(work), str(bare)],
+        check=True,
+        capture_output=True,
+    )
+    return bare
+
+
+def _serve(handler_cls: type) -> tuple[int, http.server.ThreadingHTTPServer]:
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), handler_cls)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return port, server
+
+
+def _git_backend_handler(
+    repos: Path,
+    *,
+    expected_auth: str,
+    auth_prefixes: tuple[str, ...] = (),
+    seen: list[tuple[str, str]] | None = None,
+) -> type:
+    """Build a handler serving ``repos`` through ``git http-backend``.
+
+    Paths under ``auth_prefixes`` require basic auth equal to ``expected_auth``;
+    every request is appended to ``seen`` as ``(path, authorization)`` so a test
+    can prove what a server actually received.
+    """
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -96,13 +118,14 @@ def git_server(tmp_path_factory: pytest.TempPathFactory):
         def log_message(self, format: str, *args: object) -> None:
             pass
 
+        def _needs_auth(self, path: str) -> bool:
+            return any(path.startswith(prefix) for prefix in auth_prefixes)
+
         def _authorized(self) -> bool:
             return self.headers.get("Authorization", "") == expected_auth
 
         def _run_backend(self, path: str, body: bytes) -> tuple[int, str, bytes]:
-            # Reject an unauthenticated request to the private repo the same way
-            # a real host would: 401 with a WWW-Authenticate challenge.
-            if path.startswith("/private.git") and not self._authorized():
+            if self._needs_auth(path) and not self._authorized():
                 return 401, "text/plain", b"auth required"
 
             env = {
@@ -137,6 +160,8 @@ def git_server(tmp_path_factory: pytest.TempPathFactory):
             return status, content_type, payload
 
         def _respond(self, path: str, body: bytes) -> None:
+            if seen is not None:
+                seen.append((path, self.headers.get("Authorization", "")))
             status, content_type, payload = self._run_backend(path, body)
             self.send_response(status)
             if status == 401:
@@ -154,19 +179,93 @@ def git_server(tmp_path_factory: pytest.TempPathFactory):
             body = self.rfile.read(length) if length else b""
             self._respond(self.path.split("?", 1)[0], body)
 
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
+    return Handler
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+
+@pytest.fixture(scope="module")
+def git_server(tmp_path_factory: pytest.TempPathFactory):
+    """A local git HTTP server requiring basic auth, plus a public repo.
+
+    Serves two repositories over one listener:
+      * ``/private.git`` — requires basic auth (username ``x-access-token``,
+        password = ``FAKE_TOKEN``).
+      * ``/public.git``  — served without auth.
+    """
+    root = tmp_path_factory.mktemp("gitserver")
+    repos = root / "repos"
+    repos.mkdir()
+
+    _make_bare_repo(repos, "private")
+    _make_bare_repo(repos, "public")
+
+    handler = _git_backend_handler(
+        repos,
+        expected_auth=_basic(FAKE_USER, FAKE_TOKEN),
+        auth_prefixes=("/private.git",),
+    )
+    port, server = _serve(handler)
     try:
         yield f"http://127.0.0.1:{port}"
     finally:
         server.shutdown()
         server.server_close()
+
+
+@pytest.fixture
+def redirect_chain(tmp_path: Path):
+    """Server A 301-redirects every request to server B.
+
+    B is the real git backend and requires basic auth. Both servers record what
+    they received, so a test can prove A was reached and whether the token was
+    ever presented to B. A and B differ by port, i.e. they are different hosts
+    for credential scope.
+    """
+    repos = tmp_path / "repos"
+    repos.mkdir()
+    _make_bare_repo(repos, "private")
+
+    seen_b: list[tuple[str, str]] = []
+    b_handler = _git_backend_handler(
+        repos,
+        expected_auth=_basic(FAKE_USER, FAKE_TOKEN),
+        auth_prefixes=("/",),
+        seen=seen_b,
+    )
+    b_port, b_server = _serve(b_handler)
+    b_base = f"127.0.0.1:{b_port}"
+
+    seen_a: list[tuple[str, str]] = []
+
+    class RedirectHandler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+        def _redirect(self) -> None:
+            seen_a.append((self.path, self.headers.get("Authorization", "")))
+            self.send_response(301)
+            self.send_header("Location", f"http://{b_base}{self.path}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self):  # noqa: N802 - http.server API
+            self._redirect()
+
+        def do_POST(self):  # noqa: N802 - http.server API
+            length = int(self.headers.get("Content-Length", "0"))
+            if length:
+                self.rfile.read(length)
+            self._redirect()
+
+    a_port, a_server = _serve(RedirectHandler)
+    try:
+        yield f"127.0.0.1:{a_port}", b_base, seen_a, seen_b
+    finally:
+        a_server.shutdown()
+        a_server.server_close()
+        b_server.shutdown()
+        b_server.server_close()
 
 
 # --------------------------------------------------------------------------
@@ -209,16 +308,184 @@ class TestSplitUrlCredentials:
         raw = "git@github.com:org/repo.git"
         assert split_url_credentials(raw) == (raw, None)
 
-    def test_credential_helper_reads_from_env_only(self):
-        args = credential_helper_args()
-        joined = " ".join(args)
+
+class TestCredentialScope:
+    def test_default_https_port_is_stripped(self):
+        assert credential_scope("https://github.com/o/r.git") == (
+            "https",
+            "github.com",
+        )
+        assert credential_scope("https://github.com:443/o/r.git") == (
+            "https",
+            "github.com",
+        )
+
+    def test_default_http_port_is_stripped(self):
+        assert credential_scope("http://example.com/o/r.git") == (
+            "http",
+            "example.com",
+        )
+        assert credential_scope("http://example.com:80/o/r.git") == (
+            "http",
+            "example.com",
+        )
+
+    def test_non_default_port_is_kept(self):
+        assert credential_scope("https://example.com:8443/o/r.git") == (
+            "https",
+            "example.com:8443",
+        )
+        assert credential_scope("http://127.0.0.1:8000/o/r.git") == (
+            "http",
+            "127.0.0.1:8000",
+        )
+
+    def test_host_case_is_normalized(self):
+        assert credential_scope("https://GitHub.COM/o/r.git") == (
+            "https",
+            "github.com",
+        )
+
+    def test_query_and_fragment_are_not_part_of_the_scope(self):
+        assert credential_scope("https://github.com/o/r.git?x=1#frag") == (
+            "https",
+            "github.com",
+        )
+
+    def test_different_ports_are_different_scopes(self):
+        assert credential_scope("http://127.0.0.1:8001/o/r.git") != credential_scope(
+            "http://127.0.0.1:8002/o/r.git"
+        )
+
+    def test_unparseable_url_yields_empty_scope(self):
+        # An empty host never matches, so the helper refuses; the point is that
+        # this does not raise and does not widen the scope.
+        assert credential_scope("not a url") == ("", "")
+
+
+def _helper_script() -> str:
+    """Extract the shell body git will run for the configured helper."""
+    prefix = "credential.helper=!"
+    for arg in credential_helper_args():
+        if arg.startswith(prefix):
+            return arg[len(prefix) :]
+    raise AssertionError("no shell credential helper configured")
+
+
+def _run_helper(operation: str, request: str, env_extra: dict[str, str]) -> str:
+    """Run the helper exactly as git does: ``sh -c '<body> <operation>'``."""
+    script = _helper_script()
+    proc = subprocess.run(
+        ["sh", "-c", f"{script} {operation}"],
+        input=request,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **env_extra},
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout
+
+
+class TestCredentialHelper:
+    """The helper must answer only for the protocol/host it was bound to."""
+
+    def _env(self, protocol: str = "https", host: str = "github.com") -> dict[str, str]:
+        return credential_env("x-access-token", "TOKEN", protocol, host)
+
+    def test_get_returns_secret_for_allowed_host(self):
+        out = _run_helper(
+            "get",
+            "protocol=https\nhost=github.com\n\n",
+            self._env(),
+        )
+        assert out == "username=x-access-token\npassword=TOKEN\n"
+
+    def test_get_refuses_other_host(self):
+        out = _run_helper(
+            "get",
+            "protocol=https\nhost=evil.example\n\n",
+            self._env(),
+        )
+        assert out == ""
+
+    def test_get_refuses_on_protocol_mismatch(self):
+        out = _run_helper(
+            "get",
+            "protocol=http\nhost=github.com\n\n",
+            self._env(protocol="https"),
+        )
+        assert out == ""
+
+    def test_get_matches_host_case_insensitively(self):
+        out = _run_helper(
+            "get",
+            "protocol=https\nhost=GitHub.COM\n\n",
+            self._env(host="github.com"),
+        )
+        assert out == "username=x-access-token\npassword=TOKEN\n"
+
+    def test_get_normalizes_default_https_port(self):
+        out = _run_helper(
+            "get",
+            "protocol=https\nhost=github.com:443\n\n",
+            self._env(host="github.com"),
+        )
+        assert out == "username=x-access-token\npassword=TOKEN\n"
+
+    def test_get_normalizes_default_http_port(self):
+        out = _run_helper(
+            "get",
+            "protocol=http\nhost=example.com:80\n\n",
+            self._env(protocol="http", host="example.com"),
+        )
+        assert out == "username=x-access-token\npassword=TOKEN\n"
+
+    def test_get_refuses_different_non_default_port(self):
+        out = _run_helper(
+            "get",
+            "protocol=http\nhost=127.0.0.1:8001\n\n",
+            self._env(protocol="http", host="127.0.0.1:8000"),
+        )
+        assert out == ""
+
+    def test_get_matches_non_default_port(self):
+        out = _run_helper(
+            "get",
+            "protocol=http\nhost=127.0.0.1:8000\n\n",
+            self._env(protocol="http", host="127.0.0.1:8000"),
+        )
+        assert out == "username=x-access-token\npassword=TOKEN\n"
+
+    def test_store_and_erase_have_no_side_effects(self):
+        for operation in ("store", "erase"):
+            out = _run_helper(
+                operation,
+                "protocol=https\nhost=github.com\n\n",
+                self._env(),
+            )
+            assert out == ""
+
+    def test_empty_host_env_never_matches(self):
+        env = {
+            "OPENHANDS_GIT_USERNAME": "x-access-token",
+            "OPENHANDS_GIT_PASSWORD": "TOKEN",
+            "OPENHANDS_GIT_ALLOWED_PROTOCOL": "https",
+            "OPENHANDS_GIT_ALLOWED_HOST": "",
+        }
+        out = _run_helper("get", "protocol=https\nhost=github.com\n\n", env)
+        assert out == ""
+
+    def test_helper_references_env_not_literals(self):
+        joined = " ".join(credential_helper_args())
         assert "credential.helper=" in joined
         # The helper must reference environment variables, never a literal
         # secret, so nothing sensitive can appear in argv.
         assert "OPENHANDS_GIT_PASSWORD" in joined
-        assert credential_env("u", "p") == {
+        assert credential_env("u", "p", "https", "github.com") == {
             "OPENHANDS_GIT_USERNAME": "u",
             "OPENHANDS_GIT_PASSWORD": "p",
+            "OPENHANDS_GIT_ALLOWED_PROTOCOL": "https",
+            "OPENHANDS_GIT_ALLOWED_HOST": "github.com",
         }
 
 
@@ -423,7 +690,13 @@ class TestOrgCloneCredentialSafety:
         env = {
             **os.environ,
             "GIT_TERMINAL_PROMPT": "0",
-            **credential_env(FAKE_USER, FAKE_TOKEN),
+            **credential_env(
+                FAKE_USER,
+                FAKE_TOKEN,
+                *credential_scope(
+                    f"http://{git_server.removeprefix('http://')}/private.git"
+                ),
+            ),
         }
         subprocess.run(
             ["git", *credential_helper_args(), "fetch", "--depth", "1", "origin"],
@@ -435,7 +708,7 @@ class TestOrgCloneCredentialSafety:
         config = (dest / ".git" / "config").read_text()
         assert FAKE_TOKEN not in config
 
-    def test_special_characters_in_credentials(self, git_server, tmp_path):
+    def test_special_characters_in_credentials(self):
         """URL-encoded special characters are decoded and handled safely."""
         url, creds = split_url_credentials(
             "https://user:pa%2Fss%3Aword@github.com/o/r.git"
@@ -444,3 +717,104 @@ class TestOrgCloneCredentialSafety:
         assert creds == ("user", "pa/ss:word")
         # And the clean URL never carries the raw secret.
         assert "pa/ss:word" not in url
+
+
+# --------------------------------------------------------------------------
+# Redirect safety: the token must not follow a redirect to another host
+# --------------------------------------------------------------------------
+
+
+class TestRedirectSafety:
+    def test_redirect_to_other_host_does_not_leak_token(self, redirect_chain, tmp_path):
+        """A 301 from host A to host B must not hand the token to B.
+
+        This exercises the real clone path: git follows the redirect, then asks
+        the credential helper about *B*. The helper is bound to A, so it must
+        answer nothing and B must never receive the token.
+        """
+        a_base, b_base, seen_a, seen_b = redirect_chain
+        dest = tmp_path / "clone"
+        ok = _clone_org_repo(
+            f"http://{FAKE_USER}:{FAKE_TOKEN}@{a_base}/private.git",
+            dest,
+            "acme",
+        )
+
+        # A must have been reached, otherwise the redirect was never exercised
+        # and the test would pass vacuously.
+        assert seen_a, "expected the redirecting host to be contacted"
+        # B must have been contacted too: git followed the redirect.
+        assert seen_b, "expected the redirect target to be contacted"
+
+        # The token must never have been presented to B, on any request.
+        for path, authorization in seen_b:
+            assert FAKE_TOKEN not in authorization, (
+                f"token leaked to the redirect target on {path!r}"
+            )
+            assert _basic(FAKE_USER, FAKE_TOKEN) not in authorization
+            assert "Basic" not in authorization
+
+        # B refused the unauthenticated request, so the clone must fail rather
+        # than succeed with a leaked credential.
+        assert ok is False
+
+
+# --------------------------------------------------------------------------
+# Password fidelity: special characters must arrive byte-for-byte
+# --------------------------------------------------------------------------
+
+
+class TestPasswordFidelity:
+    @pytest.fixture
+    def special_password_server(self, tmp_path: Path):
+        """A server whose private repo accepts only the exact special password."""
+        repos = tmp_path / "repos"
+        repos.mkdir()
+        _make_bare_repo(repos, "special")
+
+        # Two consecutive spaces and a literal backslash: the characters the
+        # old ``echo password=$VAR`` path mangled.
+        password = "a  b\\c"
+        handler = _git_backend_handler(
+            repos,
+            expected_auth=_basic(FAKE_USER, password),
+            auth_prefixes=("/special.git",),
+        )
+        port, server = _serve(handler)
+        try:
+            yield f"http://127.0.0.1:{port}", password
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_password_with_spaces_and_backslashes_is_delivered_verbatim(
+        self, special_password_server, tmp_path
+    ):
+        """A password of ``a  b\\c`` must authenticate, not become ``a b``.
+
+        The URL carries the value percent-encoded; after decoding it must reach
+        the server unchanged. The clone only succeeds if the exact bytes match,
+        so a mangling regression fails here.
+        """
+        base, password = special_password_server
+        encoded = quote(password, safe="")
+        assert encoded == "a%20%20b%5Cc"
+
+        dest = tmp_path / "clone"
+        ok = _clone_org_repo(
+            f"http://{FAKE_USER}:{encoded}@{base.removeprefix('http://')}/special.git",
+            dest,
+            "acme",
+        )
+        assert ok is True, (
+            "the password with consecutive spaces and a backslash was not "
+            "delivered verbatim"
+        )
+        assert (dest / "skills" / "special-skill.md").is_file()
+
+    def test_helper_emits_special_password_verbatim(self):
+        """The helper's own output preserves runs of spaces and backslashes."""
+        password = "  lead  and\\trail  "
+        env = credential_env("u", password, "https", "github.com")
+        out = _run_helper("get", "protocol=https\nhost=github.com\n\n", env)
+        assert out == f"username=u\npassword={password}\n"

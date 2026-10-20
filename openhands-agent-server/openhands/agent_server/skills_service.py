@@ -27,6 +27,7 @@ from pydantic import BaseModel, ValidationError
 from openhands.agent_server.git_credentials import (
     credential_env,
     credential_helper_args,
+    credential_scope,
     split_url_credentials,
 )
 from openhands.sdk.logger import get_logger
@@ -103,6 +104,11 @@ def _clone_org_repo(org_repo_url: str, temp_dir: Path, org_name: str) -> bool:
     credential-free URL, so the secret never reaches argv (readable via ``ps``)
     and never lands in the clone's ``.git/config``.
 
+    The helper is bound to the protocol and host of the credential-free URL.
+    Git asks the helper about whatever host it is about to contact, which after
+    an HTTP redirect is the redirect target; a helper bound to the original
+    host therefore stays silent and the token does not follow the redirect.
+
     Returns True on success. A missing repository or denied access is expected
     and returns False; the caller then continues with an empty skill list.
     """
@@ -113,8 +119,9 @@ def _clone_org_repo(org_repo_url: str, temp_dir: Path, org_name: str) -> bool:
     env["GIT_TERMINAL_PROMPT"] = "0"
     cmd = ["git"]
     if creds:
+        protocol, host = credential_scope(clean_url)
         cmd.extend(credential_helper_args())
-        env.update(credential_env(*creds))
+        env.update(credential_env(*creds, protocol, host))
     cmd.extend(["clone", "--depth", "1", clean_url, str(temp_dir)])
 
     try:
