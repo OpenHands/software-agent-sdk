@@ -1327,6 +1327,74 @@ def test_start_goal_in_conversation_rejects_busy_loop(
         client.app.dependency_overrides.clear()
 
 
+def test_run_conversation_rejects_in_flight_direct_call(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """/run returns 409, not 500, while a direct tool call is in flight.
+
+    ``ConversationBusyError`` inherits from ``RuntimeError``, so it must be
+    caught explicitly; the route's ``ValueError`` handler does not cover it.
+    """
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.run.side_effect = ConversationBusyError(
+        "A direct tool execution is in flight; retry when it finishes"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/run",
+        )
+        assert response.status_code == 409
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_goal_rejects_in_flight_direct_call(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """/goal returns 409, not 500, while a direct tool call is in flight."""
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.start_goal_loop.side_effect = ConversationBusyError(
+        "A direct tool execution is in flight; retry when it finishes"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/goal",
+            json={"objective": "build x"},
+        )
+        assert response.status_code == 409
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_resume_goal_rejects_in_flight_direct_call(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """/goal/resume returns 409, not 500, while a direct tool call is in flight."""
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.resume_goal_loop.side_effect = ConversationBusyError(
+        "A direct tool execution is in flight; retry when it finishes"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/goal/resume",
+        )
+        assert response.status_code == 409
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_stop_goal_in_conversation_success(
     client, mock_conversation_service, mock_event_service, sample_conversation_id
 ):

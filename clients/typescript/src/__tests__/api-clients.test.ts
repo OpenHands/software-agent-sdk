@@ -1258,7 +1258,12 @@ describe('Auxiliary API clients', () => {
     const observation = { kind: 'TerminalObservation', exit_code: 0, text: 'ready' };
     global.fetch = vi.fn().mockImplementation((url: string) => {
       const body = url.endsWith('/server_info')
-        ? { version: '1.57.0', uptime: 1, idle_time: 0 }
+        ? {
+            version: '1.55.1',
+            uptime: 1,
+            idle_time: 0,
+            capabilities: ['direct_tool_execution_v1'],
+          }
         : { observation };
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -1288,13 +1293,47 @@ describe('Auxiliary API clients', () => {
     );
   });
 
-  it('ConversationClient.executeTool rejects servers that predate the endpoint', async () => {
-    global.fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ version: '1.56.0', uptime: 1, idle_time: 0 }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      })
-    ) as typeof fetch;
+  it('ConversationClient.executeTool accepts a capable server below the version floor', async () => {
+    // The route ships in the same package version as servers that predate it,
+    // so the capability, not the version, decides. This is the reviewer's repro:
+    // a working 1.55.1 server must not be rejected.
+    const observation = { kind: 'TerminalObservation', exit_code: 0, text: 'ready' };
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      const body = url.endsWith('/server_info')
+        ? {
+            version: '1.55.1',
+            uptime: 1,
+            idle_time: 0,
+            capabilities: ['direct_tool_execution_v1'],
+          }
+        : { observation };
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    }) as typeof fetch;
+
+    const result = await new ConversationClient({
+      host: 'http://example.com',
+    }).executeTool('c1', {
+      tool_name: 'terminal',
+      action: { kind: 'TerminalAction', command: 'echo hi' },
+    });
+
+    expect(result).toEqual({ observation });
+  });
+
+  it('ConversationClient.executeTool rejects servers without the capability', async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ version: '1.57.0', uptime: 1, idle_time: 0, capabilities: [] }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      ) as typeof fetch;
 
     await expect(
       new ConversationClient({ host: 'http://example.com' }).executeTool('c1', {
@@ -1305,7 +1344,8 @@ describe('Auxiliary API clients', () => {
       code: 'AGENT_SERVER_VERSION_TOO_OLD',
       feature: 'execute-tool',
       requiredVersion: '1.57.0',
-      actualVersion: '1.56.0',
+      actualVersion: '1.57.0',
+      capability: 'direct_tool_execution_v1',
     });
 
     // Rejected before reaching the endpoint.
@@ -1314,20 +1354,23 @@ describe('Auxiliary API clients', () => {
 
   it('RemoteConversation.executeTool POSTs and unwraps the observation', async () => {
     const observation = { kind: 'TerminalObservation', exit_code: 0, text: 'ready' };
-    global.fetch = vi
-      .fn()
-      .mockImplementation((url: string) =>
-        Promise.resolve(
-          new Response(
-            JSON.stringify(
-              url.endsWith('/server_info')
-                ? { version: '1.57.0', uptime: 1, idle_time: 0 }
-                : { observation }
-            ),
-            { status: 200, headers: { 'content-type': 'application/json' } }
-          )
+    global.fetch = vi.fn().mockImplementation((url: string) =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify(
+            url.endsWith('/server_info')
+              ? {
+                  version: '1.55.1',
+                  uptime: 1,
+                  idle_time: 0,
+                  capabilities: ['direct_tool_execution_v1'],
+                }
+              : { observation }
+          ),
+          { status: 200, headers: { 'content-type': 'application/json' } }
         )
-      ) as typeof fetch;
+      )
+    ) as typeof fetch;
 
     const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
     const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });

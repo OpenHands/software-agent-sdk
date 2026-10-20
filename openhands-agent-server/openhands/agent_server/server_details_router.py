@@ -79,6 +79,11 @@ class ServerInfo(BaseModel):
             "agent_launch_pipeline_v1",
             "profile_public_skills_v1",
             "skill_catalog_v1",
+            # POST /api/conversations/{id}/execute_tool is available. Advertised
+            # as a capability, not a version floor: the route ships in the same
+            # package version as servers that predate it, so a version compare
+            # cannot tell them apart.
+            "direct_tool_execution_v1",
         ]
     )
     app_backend_ingress_url: str | None = Field(

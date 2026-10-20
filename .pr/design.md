@@ -42,7 +42,11 @@ Router -> ConversationService -> EventService -> LocalConversation.
 Both typed clients expose it: the Python `RemoteConversation.execute_tool()` and
 the TypeScript `RemoteConversation.executeTool()` /
 `ConversationClient.executeTool()`, which unwraps `ExecuteToolResponse.observation`
-back into the tool's own observation model.
+back into the tool's own observation model. The TypeScript client gates the call
+on the `direct_tool_execution_v1` capability that `/server_info` advertises,
+rather than a package-version floor: the route ships in the same package version
+as servers that predate it (this checkout's `ServerInfo.version` is `1.55.1`), so
+a version compare would reject a working endpoint.
 
 ## Key decisions
 
@@ -60,13 +64,23 @@ back into the tool's own observation model.
   pre-run setup case it exists for.
 - **The direct call owns the conversation for its whole duration.** It runs
   under the per-conversation lifecycle and a direct in-flight flag, so a delete,
-  an idle eviction, a run or another direct call cannot overlap it. `run()` while
-  a direct call is in flight is 409, and a second direct call is 409. The flag is
-  released on success, on a validation failure, and, for a cancelled
-  request whose synchronous worker already started, only when that worker
-  actually exits, since cancellation cannot stop it. `close()` interrupts the
-  running command and waits for its worker before closing the executors, so
-  teardown cannot pull a terminal out from under a command mid-run.
+  an idle eviction, a run or another direct call cannot overlap it. Admission
+  shares `_run_lock` with `run()`/`start_goal_loop()`, so a run cannot be
+  admitted while the direct status read is pending and then start underneath the
+  call. `run()`/`start_goal_loop()` while a direct call is in flight is 409 (the
+  routes map `ConversationBusyError` to 409 rather than letting it surface as a
+  500), and a second direct call is 409. The flag is released on success, on a
+  validation failure, and, for a cancelled request whose synchronous worker
+  already started, only when that worker actually exits, since cancellation
+  cannot stop it.
+- **Cancellation returns promptly; teardown owns the worker.** Cancelling the
+  request cannot stop the synchronous worker, and blocking the cancel on it
+  would hold the request open for as long as the command ignores the interrupt.
+  Instead the cancel interrupts the executor and returns; the service keeps the
+  worker as `_direct_tool_worker`, and `close()` (delete, idle eviction,
+  shutdown) interrupts the running command and waits for its worker (bounded)
+  before the conversation and its executors are torn down, so teardown cannot
+  pull a terminal out from under a command mid-run.
 - **A direct call pins the terminal pane pool.** Shell state set by a bootstrap
   script (exports, functions, the working directory) is local to the one tmux
   pane that ran it, so the executor pins the pool to that pane; a later parallel

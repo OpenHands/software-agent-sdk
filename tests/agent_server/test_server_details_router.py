@@ -190,3 +190,13 @@ def test_server_info_advertises_tool_catalog_and_draft_materialize(client):
     capabilities = client.get("/server_info").json()["capabilities"]
     assert "tool_catalog_v1" in capabilities
     assert "agent_profile_draft_materialize_v1" in capabilities
+
+
+def test_server_info_advertises_direct_tool_execution(client):
+    """The execute_tool route is advertised as a capability.
+
+    The route ships in the same package version as servers that predate it, so
+    clients gate on this capability rather than a version floor.
+    """
+    capabilities = client.get("/server_info").json()["capabilities"]
+    assert "direct_tool_execution_v1" in capabilities

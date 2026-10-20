@@ -292,6 +292,9 @@ class EventService:
     # executor. close() interrupts and awaits it so teardown cannot close the
     # executor out from under a command that is still running.
     _direct_tool_worker: asyncio.Future[Any] | None = field(default=None, init=False)
+    # Executor of the in-flight direct tool, used to interrupt a blocked command
+    # when the request is cancelled (close() interrupts through the tool map).
+    _direct_tool_executor: Any = field(default=None, init=False)
     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
     _lease: ConversationLease | None = field(default=None, init=False)
     _lease_generation: int | None = field(default=None, init=False)
@@ -2065,6 +2068,10 @@ class EventService:
                 == ConversationExecutionStatus.RUNNING
             ):
                 raise ValueError("conversation_already_running")
+            if self._direct_tool_in_flight:
+                raise ConversationBusyError(
+                    "A direct tool execution is in flight; retry when it finishes"
+                )
             if self._closing:  # see start_goal_loop: close() may have begun teardown
                 raise ValueError("inactive_service")
             self._goal_loop_outcome = None
@@ -2236,6 +2243,7 @@ class EventService:
             except Exception as exc:
                 logger.debug("Direct tool worker failed during close: %s", exc)
         self._direct_tool_worker = None
+        self._direct_tool_executor = None
         # Drop any pin held by a supersede window that is being torn down, then
         # return this conversation's session permit; close() cancels the runs
         # that would otherwise have done so, and a leaked permit would shrink
@@ -2368,6 +2376,33 @@ class EventService:
             )
         return tool, tool.action_type, tool.action_type.model_json_schema()
 
+    def _validate_direct_action(
+        self, tool_name: str, action_type: type[Any], payload: dict[str, Any]
+    ) -> Any:
+        """Bind the payload to the selected tool's action type.
+
+        The transport type carries no discriminator, so validation here is what
+        keeps a payload for another tool from reaching an executor that cannot
+        handle it. The ``kind`` is checked explicitly rather than relying on the
+        discriminator's assertion, which is stripped under ``python -O``.
+        """
+        declared_kind = payload.get("kind")
+        if declared_kind is not None and declared_kind != action_type.__name__:
+            raise InvalidToolActionError(
+                f"Action kind '{declared_kind}' does not belong to tool "
+                f"'{tool_name}' (expected '{action_type.__name__}')"
+            )
+        try:
+            action = action_type.model_validate(payload)
+        except ValidationError as exc:
+            raise InvalidToolActionError(str(exc)) from exc
+        if not isinstance(action, action_type):
+            raise InvalidToolActionError(
+                f"Action is not valid for tool '{tool_name}': expected "
+                f"{action_type.__name__}"
+            )
+        return action
+
     def _run_direct_tool_sync(
         self,
         generation: int,
@@ -2375,21 +2410,12 @@ class EventService:
         action_type: type[Any],
         payload: dict[str, Any],
     ) -> Observation:
-        """Validate and run one direct tool call, synchronously.
-
-        Validating against the resolved tool's ``action_type`` is what keeps the
-        JSON payload honest: the transport type carries no discriminator, so
-        without this a payload for another tool would reach an executor that
-        cannot handle it.
-        """
+        """Validate and run one direct tool call, synchronously."""
         if generation != self._direct_tool_abandon:
             raise asyncio.CancelledError("direct tool execution abandoned")
         if self._closing or not self._conversation:
             raise ValueError("inactive_service")
-        try:
-            action = action_type.model_validate(payload)
-        except ValidationError as exc:
-            raise InvalidToolActionError(str(exc)) from exc
+        action = self._validate_direct_action(tool_name, action_type, payload)
         return self._conversation.execute_tool(tool_name, action)
 
     def _end_direct_tool_sync(self, generation: int) -> None:
@@ -2407,9 +2433,10 @@ class EventService:
         worker's ``CancelledError`` from surfacing as an unretrieved-future
         warning.
         """
-        self._direct_tool_in_flight = False
         if self._direct_tool_worker is worker:
             self._direct_tool_worker = None
+            self._direct_tool_executor = None
+        self._direct_tool_in_flight = False
         with suppress(BaseException):
             worker.exception()
 
@@ -2436,37 +2463,49 @@ class EventService:
             KeyError: If the agent has no tool by that name.
             ConversationBusyError: If a run or another direct call is already
                 using this conversation.
-            ValidationError: If the payload is not valid for the tool.
+            InvalidToolActionError: If the payload is not valid for the tool.
         """
         conversation = self._conversation
         if not conversation or self._closing:
             raise ValueError("inactive_service")
 
-        # Admission. Single-threaded on the event loop, so this check-and-set
-        # is atomic with respect to other direct calls. ``_run_task`` is read
-        # before the status so a live run, which holds the state lock across a
-        # step, cannot block this admission check.
-        if self._direct_tool_in_flight:
-            raise ConversationBusyError(
-                "Another direct tool execution is already in flight"
-            )
-        if (self._run_task is not None and not self._run_task.done()) or (
-            await self._get_execution_status() == ConversationExecutionStatus.RUNNING
-        ):
-            raise ConversationBusyError(
-                "Conversation is running; stop it before executing a tool directly"
-            )
-        if self._closing or self._conversation is not conversation:
-            raise ValueError("inactive_service")
-        self._direct_tool_in_flight = True
-        generation = self._direct_tool_abandon
+        # Admission shares ``_run_lock`` with run()/start_goal_loop() so the
+        # check-and-set cannot interleave with a run being admitted: without the
+        # lock, this call could read the status as idle, a run could start while
+        # the read is pending, and both would then use the executor at once.
+        async with self._run_lock:
+            if self._closing or not self._conversation:
+                raise ValueError("inactive_service")
+            if self._direct_tool_in_flight:
+                raise ConversationBusyError(
+                    "Another direct tool execution is already in flight"
+                )
+            # ``_run_task`` first: a live run holds the state lock across its
+            # step, so reading execution status would block behind it.
+            if (self._run_task is not None and not self._run_task.done()) or (
+                await self._get_execution_status()
+                == ConversationExecutionStatus.RUNNING
+            ):
+                raise ConversationBusyError(
+                    "Conversation is running; stop it before executing a tool directly"
+                )
+            if self._closing or self._conversation is not conversation:
+                raise ValueError("inactive_service")
+            self._direct_tool_in_flight = True
+            generation = self._direct_tool_abandon
 
         loop = asyncio.get_running_loop()
         worker: asyncio.Future[Observation] | None = None
         try:
-            tool, action_type, schema = await loop.run_in_executor(
+            # Track the resolve stage too: it runs ``_ensure_agent_ready`` in a
+            # thread, and close() must wait for that to finish before it closes
+            # the conversation.
+            resolve_future = loop.run_in_executor(
                 None, self._resolve_direct_tool, tool_name
             )
+            self._direct_tool_worker = resolve_future
+            tool, action_type, schema = await asyncio.shield(resolve_future)
+            self._direct_tool_executor = getattr(tool, "executor", None)
             worker = loop.run_in_executor(
                 None,
                 self._run_direct_tool_sync,
@@ -2496,7 +2535,19 @@ class EventService:
             # ``worker.cancel()`` is deliberately not called: it marks the
             # future done at once (the thread keeps running), which would fire
             # the release callback too early.
+            #
+            # The worker is interrupted so a disconnected client does not leave
+            # a long command running, but this handler does not await it: the
+            # worker keeps its lifecycle owner in the service
+            # (``_direct_tool_worker``, with the done callback above), and
+            # close()/delete interrupts and awaits it before closing the
+            # executor. Blocking here would hold the request open for as long as
+            # the command ignores the interrupt.
             self._direct_tool_abandon += 1
+            executor = self._direct_tool_executor
+            if executor is not None:
+                with suppress(BaseException):
+                    executor.interrupt()
             raise
         finally:
             # Success, a resolve/validation failure, or a cancellation that

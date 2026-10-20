@@ -59,6 +59,8 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
 - `F10.execute-tool-tool-scoped`: only the `terminal` tool may run directly, and the action is validated against that tool's own action type: a `GrepAction` with `tool_name="terminal"` is 422, not a 500 from `TerminalExecutor`, and the generic-route hazards (a `ClientTool` reporting a dispatch with no `ActionEvent` to deliver it, skipped tool hooks and audit events) cannot be reached.
 - `F10.execute-tool-direct-serialized`: direct calls are serialized per conversation under the per-conversation lifecycle, and cannot overlap a run in either direction: `run()` while a direct call is in flight is 409, a second direct call while one is in flight is 409, and a call that finishes (or whose action is rejected) releases the conversation, so the next call is admitted rather than refused.
 - `F10.execute-tool-pane-pinned`: the shell state a setup script establishes (exports, functions, the working directory) is local to the one tmux pane it ran on, so the direct call pins the pane pool to that pane: a later parallel `terminal` command waits for it instead of landing on a fresh pane and missing the state.
+- `F10.execute-tool-teardown-owner`: a direct call whose request is cancelled does not leave an orphaned command: the worker is interrupted, the service keeps ownership of it, and closing or deleting the conversation interrupts and joins it (bounded) before the terminal executor is torn down, so the command and teardown cannot overlap; cancellation itself returns promptly rather than blocking on the worker.
+- `F10.execute-tool-capability`: `/server_info` advertises `direct_tool_execution_v1`, so a client gates `execute_tool` on that capability rather than a package-version floor (the route ships in the same version as servers that predate it, so a version compare would reject a working server).
 - `F10.restart-persist`: after a restart, forks keep their lineage, title, tags, HEAD and events, a fork id that names a persisted but not yet loaded conversation is still 409, and a navigated empty HEAD stays empty (the next message is still a new root).
 - `F10.restart-cold-calls`: after a restart, condense and ask_agent work on a conversation whose agent has not been initialized yet, and ask_agent still sees the history (the codename).
 
@@ -713,6 +715,33 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   ```
   The direct call pins the conversation's pane pool to the pane that ran it, so
   the later call reads the export back instead of getting a fresh pane.
+- **A cancelled call leaves no orphaned command (`F10.execute-tool-teardown-owner`).**
+  Start a slow command, let the request time out, then prove the conversation
+  closes cleanly and the command is gone.
+  Requires: tmux, `F10.execute-tool-terminal`
+  ```sh
+  TEAR=$(control-agent-server conversation start --placeholder-agent --tools terminal --no-autotitle --no-run --prompt QA_F10_TEAR --print-id)
+  control-agent-server helper start --name qa-f10-exec-tear --log "$F/exec-tear.log" -- \
+    control-agent-server api POST "/api/conversations/$TEAR/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "sleep 30", "timeout": 120}}' --expect 200
+  sleep 2
+  control-agent-server api DELETE "/api/conversations/$TEAR" --expect 200 --save F10.execute-tool-teardown-owner/delete
+  control-agent-server helper stop qa-f10-exec-tear
+  ```
+  The delete interrupts and joins the synchronous worker (bounded) before the
+  terminal executor is torn down, so the command and teardown do not overlap;
+  the request that is still awaiting the slow call is abandoned, not left
+  holding the executor.
+- **A client gates on the capability, not the version (`F10.execute-tool-capability`).**
+  The server advertises the route as a capability so a client does not reject a
+  working server on a package-version floor.
+  ```sh
+  control-agent-server api GET /server_info \
+    --check capabilities contains direct_tool_execution_v1 --save F10.execute-tool-capability/advertised
+  ```
+  `direct_tool_execution_v1` is in `/server_info`'s `capabilities`; the route
+  ships in the same package version as servers that predate it, so a version
+  compare cannot tell them apart and the capability is authoritative.
 
 ## Gotchas
 
