@@ -1394,19 +1394,19 @@ Preconditions:
   `running`; the second `run()` posts `/run`, gets 409 (already running),
   keeps waiting and returns at `finished`; the file the 15 s command wrote
   exists and the conversation has its one user message.
-- **Join a run during a long tool call (`F33.conversation-run-join-long-tool`), known bug.**
-  The same join as above, but the agent's command runs 45 s. The server's
-  `/run` reads the status under the conversation's state lock, which the run
-  loop holds for the whole tool call (`event_service.py`
-  `_get_execution_status_sync`, see `F05.pause-tool-step`), and the SDK gives
-  the run trigger a 30 s HTTP timeout (`remote_conversation.py`, `run()`), so
-  today the second `run()` raises `ConversationRunError` wrapping
-  `ReadTimeout` after 30 s while the server run goes on and finishes. The
-  agent's model is `LONG_STUB`, which asks for exactly that `terminal` call
-  with a 90 s tool timeout: a real model chooses its own `timeout`, and
-  without one the terminal tool returns after 30 s of silence, which races
-  the SDK's own 30 s. The probe records how the second `run()` ended; the
-  correct behavior asserted here is that it waits and returns at `finished`.
+- **Join a run during a long tool call (`F33.conversation-run-join-long-tool`).**
+  The same join as above, but the agent's command runs 45 s. The run loop
+  holds the conversation's state lock for the whole tool call (see
+  `F05.pause-tool-step`), and the SDK gives the run trigger a 30 s HTTP
+  timeout (`remote_conversation.py`, `run()`). The server's `/run` checks its
+  live run task before reading the status under that lock, so it answers 409
+  at once and the second `run()` joins the run instead of raising
+  `ConversationRunError` wrapping `ReadTimeout`. The agent's model is
+  `LONG_STUB`, which asks for exactly that `terminal` call with a 90 s tool
+  timeout: a real model chooses its own `timeout`, and without one the
+  terminal tool returns after 30 s of silence, which races the SDK's own
+  30 s. The probe records how the second `run()` ended and asserts that it
+  waited and returned at `finished`.
   ```sh
   control-agent-server exec --env PYTHONPATH="$F33" --save F33.conversation-run-join-long-tool/probe -- .venv/bin/python - <<'PY'
   import os
@@ -1441,13 +1441,11 @@ Preconditions:
   test "$(cat "$F33/longtool/qa-f33-long.txt")" = late
   control-agent-server conversation events "$LONG" --kinds ActionEvent --contains '"timeout": 90.0' --expect-count 1
   control-agent-server api GET "/api/conversations/$LONG" --check execution_status eq finished --save F33.conversation-run-join-long-tool/get
-  control-agent-server assert --json "$F33/longtool.json" --check joined eq true  # bug: value.error contains ReadTimeout && value.status eq running
+  control-agent-server assert --json "$F33/longtool.json" --check joined eq true
   ```
   `run(blocking=False)` returns at once; once the 45 s command is running,
-  the blocking `run()` should wait for it and return at `finished`. Today
-  the probe records `ReadTimeout('timed out')` after 30.0 s with the
-  conversation still `running`; the server run goes on, the file appears and
-  the conversation finishes.
+  the blocking `run()` waits for it (about 45 s, no error) and returns at
+  `finished`; the file appears and the conversation has finished.
 - **A stuck agent (`F33.conversation-stuck`).** The agent's model is
   `LOOP_STUB`, which repeats the same `think` call, so the server's stuck
   detector stops the run.
@@ -1669,11 +1667,11 @@ Preconditions:
   The same `RemoteConversation` object, created before the restart, runs the
   new message to `finished`; its socket delivered state updates again, and
   after `run()` its `state.events` matches the server kind by kind.
-- **Callbacks after a reconnect (`F33.conversation-reconnect-callbacks`), known bug.**
+- **Callbacks after a reconnect (`F33.conversation-reconnect-callbacks`).**
   The SDK's events socket retries on a backoff (1 s doubling to 30 s) and
-  resubscribes without `resend_mode`; on reconnect it only merges missed
-  events into `state.events` (`on_reconnect=reconcile`), so callbacks never
-  see what the server recorded in between. The probe talks to the server
+  resubscribes without `resend_mode`; on reconnect it reconciles
+  `state.events` over REST and passes the events the callbacks have not seen
+  to them, in order, once each. The probe talks to the server
   through `f33.Proxy()`, so the outage is exact instead of racing a
   restart's timing: a first message sent while connected reaches the
   callback (control); then the proxy drops the socket and refuses
@@ -1730,14 +1728,13 @@ Preconditions:
   GAP=$(jq -r .cid "$F33/gap.json")
   control-agent-server api GET "/api/conversations/$GAP/events/search" --query source=user --check items len-eq 2 \
     --check items.1.id eq "$(jq -r .message "$F33/gap.json")" --save F33.conversation-reconnect-callbacks/server-message
-  control-agent-server assert --json "$F33/gap.json" --check callback_got_message eq true  # bug: value.callback_got_message eq false
+  control-agent-server assert --json "$F33/gap.json" --check callback_got_message eq true
   ```
   The server stored both messages and, after the reconnect, `state.events`
-  has both; the callback got the first one live, but today
-  `callback_got_message` is `false` for the second (reproduced on every
-  replay). A server restart opens the same gap: after one,
-  `F33.conversation-reconnect`'s client also reconnects through `reconcile`
-  only.
+  has both; the callback got the first one live and the second once the
+  socket was back (`callback_got_message` is `true`). A server restart opens
+  the same gap, and `F33.conversation-reconnect`'s client fills it the same
+  way.
 - **Reattach after a restart and continue (`F33.conversation-restart`).**
 
   Requires: `F33.conversation-run`
@@ -1997,21 +1994,20 @@ Preconditions:
 - A live `RemoteConversation` reconnects its events socket with exponential
   backoff (1 s doubling to 30 s) after a server restart or a dropped
   connection; events emitted before it reconnects reach `state.events`
-  through REST reconciliation on reconnect and after `run()`, but registered
-  callbacks never see them (`F33.conversation-reconnect-callbacks`, known
-  bug; the server's `resend_mode=since` replay exists but the client does
-  not use it). Consumers that stream through callbacks should re-read
-  `state.events` after a reconnect. How much a run loses depends on the
-  backoff timing, so the reconnect bullet asserts only `state.events`, and
-  the known-bug bullet makes the outage exact with `f33.Proxy` instead of a
-  restart (a restart's window between "server ready" and the next retry
-  varies from under a second to many seconds).
+  through REST reconciliation on reconnect and after `run()`, and on
+  reconnect the client passes the ones its callbacks have not seen to them,
+  once each and in order (`F33.conversation-reconnect-callbacks`; the
+  client does not use the server's `resend_mode=since` replay). How many
+  events fall in the gap depends on the backoff timing, so the reconnect
+  bullet asserts only `state.events`, and the callbacks bullet makes the
+  outage exact with `f33.Proxy` instead of a restart (a restart's window
+  between "server ready" and the next retry varies from under a second to
+  many seconds).
 - `run()` posts `/run` with a 30 s timeout. While the agent's tool call is
-  executing, the server's `/run` (and `/pause`) wait for the conversation's
-  state lock, so `run()` on a conversation that is already running a command
-  longer than 30 s raises `ConversationRunError` (`ReadTimeout`) although
-  the run is healthy (`F33.conversation-run-join-long-tool`, known bug); a
-  shorter command is joined normally (`F33.conversation-run-timeout`).
+  executing, the run loop holds the conversation's state lock (`/pause`
+  waits for it); `/run` answers 409 from the live run task without taking
+  that lock, so `run()` joins a run whatever its current command's length
+  (`F33.conversation-run-join-long-tool`, `F33.conversation-run-timeout`).
 - `RemoteConversation.create(...)` with an `initial_message` starts a run on
   the server whatever `initial_message.run` says (see F04); repeating the
   request with the same `conversation_id` returns the existing conversation

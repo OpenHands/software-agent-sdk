@@ -402,6 +402,7 @@ def _update_state_tags_sync(
 ) -> ConversationState:
     with state:
         state.tags = tags
+    state.flush()
     return state
 
 
@@ -1887,8 +1888,10 @@ class ConversationService:
         if request.tags is not None:
             # Keep the persisted ConversationState update under the state lock so
             # autosave and state-change callbacks observe a consistent mutation.
-            state = await loop.run_in_executor(
-                None, _update_state_tags_sync, state, request.tags
+            state = await _settle_owned_task(
+                asyncio.create_task(
+                    asyncio.to_thread(_update_state_tags_sync, state, request.tags)
+                )
             )
         record = self._conversation_records.get(conversation_id)
         if record is not None:
@@ -2771,7 +2774,7 @@ class WebhookSubscriber(Subscriber):
         if self._buffer_full():
             if self._post_lock.locked():
                 # The in-flight _post_events re-checks the buffer when it is
-                # done; the timer covers a failed post.
+                # done and re-arms the timer if a post fails.
                 self._start_flush_timer()
                 return
             # Cancel timer since we're flushing due to buffer size
@@ -2799,6 +2802,9 @@ class WebhookSubscriber(Subscriber):
                 events_to_post, event_data = self._take_batch(events_remaining)
                 if not await self._post_batch(event_data):
                     self._requeue(events_to_post)
+                    # A timer that fired during the POST saw an empty queue
+                    # and exited, so arm one for the requeued events.
+                    self._start_flush_timer()
                     return
                 events_remaining -= len(events_to_post)
                 if not events_remaining and self._buffer_full():

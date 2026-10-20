@@ -468,7 +468,7 @@ class EventService:
                 if isinstance(agent, ACPAgent):
                     agent.restart_for_updated_credentials(secrets)
 
-        await asyncio.to_thread(_update)
+        await self._persist_mutation(lambda _: _update())
         await self.save_meta(
             self.stored.model_copy(
                 update={"secrets": {**self.stored.secrets, **secrets}}
@@ -1523,22 +1523,30 @@ class EventService:
 
         # Use lock to make check-and-set atomic, preventing race conditions
         async with self._run_lock:
+            # A stale internal ACP rerun is dropped before any refusal: an
+            # explicit stop that landed while we waited on _run_lock must win,
+            # and a refusal would make the caller re-arm the rerun.
             if (
+                acp_internal_rerun_generation is not None
+                and self._explicit_interrupt_generation != acp_internal_rerun_generation
+            ):
+                return
+            # _run_task first: a live run holds the state lock across its step
+            # (a tool call can last minutes), so reading execution status would
+            # block this request behind it instead of answering at once.
+            if (self._run_task is not None and not self._run_task.done()) or (
                 await self._get_execution_status()
                 == ConversationExecutionStatus.RUNNING
             ):
                 raise ValueError("conversation_already_running")
             if self._closing:
                 raise ValueError("inactive_service")
+            # Re-check: the status read above can yield to a late stop too.
             if (
                 acp_internal_rerun_generation is not None
                 and self._explicit_interrupt_generation != acp_internal_rerun_generation
             ):
                 return
-
-            # Check if there's already a running task
-            if self._run_task is not None and not self._run_task.done():
-                raise ValueError("conversation_already_running")
 
             # Capture conversation reference for the closure
             conversation = self._conversation
@@ -1629,6 +1637,7 @@ class EventService:
                         "Error during conversation run\n%s",
                         "".join(traceback.format_exception(exc)).rstrip(),
                     )
+
                     # Backstop: a run that raised before reaching its own error
                     # handling (e.g. an ACP cold-start failure in init_state,
                     # which runs outside run()/arun()'s try-block) can leave the
@@ -1639,11 +1648,14 @@ class EventService:
                     # Also surface the detail to the UI (issue #16686). A
                     # ConversationRunError means run()/arun() already emitted its
                     # own event, so skip it there to avoid duplicating the error.
-                    if not isinstance(exc, ConversationRunError):
-                        await loop.run_in_executor(
-                            None, self._publish_error_event_sync, exc
-                        )
-                    await loop.run_in_executor(None, self._mark_error_status_sync)
+                    def persist_run_error(
+                        _: LocalConversation, error: Exception = exc
+                    ) -> None:
+                        if not isinstance(error, ConversationRunError):
+                            self._publish_error_event_sync(error)
+                        self._mark_error_status_sync()
+
+                    await self._persist_mutation(persist_run_error)
                 finally:
                     settle()
                     # Wait for all pending events to be published via
@@ -1864,7 +1876,7 @@ class EventService:
                 with conversation._state:
                     conversation._on_event(event)
 
-            await loop.run_in_executor(None, _persist)
+            await self._persist_mutation(lambda _: _persist())
 
         try:
             await _emit_status(active=True, status="running")

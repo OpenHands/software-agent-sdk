@@ -92,8 +92,9 @@ def test_failed_resume_closes_owned_store_and_preserves_error(tmp_path, monkeypa
             )
         assert len(stores) == 1
         writer = stores[0]._durability
-        assert writer is not None and writer._thread is not None
-        assert not writer._thread.is_alive()
+        assert writer is not None and writer._closed
+        assert writer._thread is None
+        assert writer._queue.unfinished_tasks == 0
         with pytest.raises(RuntimeError, match="closed"):
             original_write(stores[0], "late.txt", "v")
     finally:

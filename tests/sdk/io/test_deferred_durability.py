@@ -1,8 +1,8 @@
 """Deterministic tests for deferred (group-commit) durability — issue #5402.
 
 Covers:
-    - fsync executes on the per-store durability thread, never on the caller
-      (event-loop) thread.
+    - fsync normally executes on bounded shared workers, not the caller
+      (event-loop) thread; failed worker admission retains inline durability.
     - Writes are visible and recoverable after process exit without an
       explicit flush (write + rename stay synchronous).
     - Fault-injected fsync/os.replace failures propagate to callers
@@ -10,13 +10,15 @@ Covers:
     - Event ordering, per-conversation isolation, and duplicate/parent
       validation are preserved with deferred durability enabled.
     - Explicit flush/shutdown semantics: run-end flush drains the queue,
-      close() stops the worker thread.
+      close() drains the store without shutting down shared workers.
 """
 
 import asyncio
 import errno
 import multiprocessing
 import os
+import subprocess
+import sys
 import threading
 import uuid
 from pathlib import Path
@@ -100,6 +102,89 @@ def test_inline_mode_keeps_synchronous_fsync(
     fs.write("a.txt", "v")
     assert len(spy.calls) == 1
     assert spy.calls[0] == threading.current_thread().name
+
+
+def test_many_open_stores_do_not_retain_one_thread_each(tmp_path: Path):
+    stores: list[LocalFileStore] = []
+    before = {thread.ident for thread in threading.enumerate()}
+    try:
+        for index in range(200):
+            store = LocalFileStore(str(tmp_path / str(index)))
+            stores.append(store)
+            store.write("state.json", str(index))
+            store.flush()
+        after = {thread.ident for thread in threading.enumerate()}
+        print("DURABILITY_THREAD_BOUND_PROBE", flush=True)
+        assert len(after - before) <= 4, "idle stores retain dedicated threads"
+        assert [store.read("state.json") for store in stores] == [
+            str(index) for index in range(200)
+        ]
+    finally:
+        for store in stores:
+            store.close()
+
+
+def test_worker_start_failure_falls_back_without_poisoning_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    start = threading.Thread.start
+    failed = False
+    calls: list[str] = []
+    fsync = os.fsync
+
+    def fail_once(thread: threading.Thread):
+        nonlocal failed
+        if thread.name == "openhands-durability-worker" and not failed:
+            failed = True
+            raise RuntimeError("can't start new thread")
+        return start(thread)
+
+    def record_fsync(fd: int):
+        calls.append(threading.current_thread().name)
+        fsync(fd)
+
+    monkeypatch.setattr(durability, "_executor", durability._DurabilityPool())
+    monkeypatch.setattr(threading.Thread, "start", fail_once)
+    monkeypatch.setattr(os, "fsync", record_fsync)
+    store = LocalFileStore(str(tmp_path))
+    try:
+        store.write("first.json", "first")
+        store.write("second.json", "second")
+        store.flush()
+        assert failed
+        assert calls[0] == threading.current_thread().name
+        assert len(calls) == 2
+        assert calls[1] != threading.current_thread().name
+        assert store.read("first.json") == "first"
+        assert store.read("second.json") == "second"
+    finally:
+        store.close()
+
+
+def test_unclosed_store_does_not_block_interpreter_exit(tmp_path: Path):
+    script = """
+import os, sys, threading
+from openhands.sdk.io import LocalFileStore
+entered = threading.Event()
+release = threading.Event()
+def pending_fsync(fd):
+    entered.set()
+    release.wait()
+os.fsync = pending_fsync
+store = LocalFileStore(sys.argv[1])
+store.write('state.json', 'visible')
+assert entered.wait(10)
+print('NORMAL_INTERPRETER_EXIT_WITH_PENDING_FSYNC', flush=True)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    assert "NORMAL_INTERPRETER_EXIT_WITH_PENDING_FSYNC" in result.stdout
+    assert (tmp_path / "state.json").read_text() == "visible"
 
 
 @pytest.mark.parametrize("boundary", ["flush", "close"])
@@ -798,16 +883,21 @@ def test_marker_consistency_while_fsync_is_in_flight(
         fs.close()
 
 
-def test_close_stops_worker_and_is_idempotent(tmp_path: Path):
+def test_close_drains_store_without_closing_shared_pool(tmp_path: Path):
     fs = LocalFileStore(str(tmp_path))
     fs.write("a.txt", "v")
-    writer = fs._durability
-    assert writer is not None and writer._thread is not None
     fs.close()
-    assert writer._thread is not None and not writer._thread.is_alive()
+    assert fs.read("a.txt") == "v"
     fs.close()  # idempotent
     with pytest.raises(RuntimeError, match="closed"):
-        writer.submit_fsync(Path(tmp_path) / "a.txt")
+        fs.write("a.txt", "rejected")
+    other = LocalFileStore(str(tmp_path / "other"))
+    try:
+        other.write("b.txt", "v2")
+        other.flush()
+        assert other.read("b.txt") == "v2"
+    finally:
+        other.close()
 
 
 def test_inmemory_store_flush_close_are_noops():

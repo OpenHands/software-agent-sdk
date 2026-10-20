@@ -9,7 +9,8 @@ blocks *all* conversations at once (issue #5402).
 The scheme here keeps the write(2) + rename(2) on the calling thread —
 cheap page-cache operations that make the data immediately visible to
 readers and survive process exit — and moves only the fsync to a
-single-threaded, FIFO worker. Because the worker is strictly ordered, a
+process-wide bounded pool with a FIFO queue per store. Because each store's
+work is strictly ordered, a
 length-marker fsync never completes before the fsync of the event file it
 acknowledges. This preserves file-fsync ordering, not power-loss recovery:
 directory entries still follow the existing atomic-write implementation's
@@ -43,6 +44,66 @@ if sys.platform == "win32":
 
 
 logger = get_logger(__name__)
+
+
+class _DurabilityPool:
+    """Bounded daemon workers; leaked stores must not hold up interpreter exit."""
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue[Callable[[], None]] = queue.Queue()
+        self._threads: list[threading.Thread] = []
+        self._lock = threading.Lock()
+
+    def submit(self, fn: Callable[[], None]) -> None:
+        with self._lock:
+            if len(self._threads) < 4:
+                thread = threading.Thread(
+                    target=self._worker,
+                    name="openhands-durability-worker",
+                    daemon=True,
+                )
+                try:
+                    thread.start()
+                except RuntimeError:
+                    if not self._threads:
+                        raise
+                    # Existing workers can drain accepted stores even when
+                    # the process cannot currently start another thread.
+                else:
+                    self._threads.append(thread)
+            self._queue.put_nowait(fn)
+
+    def _worker(self) -> None:
+        while True:
+            fn = self._queue.get()
+            try:
+                fn()
+            except BaseException:
+                logger.exception("Durability store drainer failed")
+            finally:
+                self._queue.task_done()
+
+
+_executor: _DurabilityPool | None = None
+_executor_lock = threading.Lock()
+
+
+def _reset_executor_after_fork() -> None:
+    global _executor, _executor_lock
+    _executor = None
+    _executor_lock = threading.Lock()
+
+
+if sys.platform != "win32":
+    os.register_at_fork(after_in_child=_reset_executor_after_fork)
+
+
+def _get_executor() -> _DurabilityPool:
+    global _executor
+    with _executor_lock:
+        if _executor is None:
+            _executor = _DurabilityPool()
+        return _executor
 
 
 def _open_fsync_file(path: Path) -> int:
@@ -89,16 +150,17 @@ class DurabilityError(Exception):
 
 
 class DurabilityWriter:
-    """Single-threaded FIFO executor for deferred fsync work.
+    """Per-store FIFO execution on a bounded shared durability pool.
 
-    One writer per store keeps per-conversation durability independent:
-    no cross-conversation serialization, and ordering within a
+    One queue per store keeps per-conversation durability independent,
+    with at most four stores executing concurrently and ordering within a
     conversation is preserved (event file fsync precedes the fsync of the
     length marker that acknowledges it).
 
     ``submit_fsync`` requires a shared ``write_lock`` held by producers across
-    replacement and submission. Only the worker retains a file descriptor;
-    pending tasks and generation tokens use O(outstanding work) memory.
+    replacement and submission. Queued work pins descriptors only on workers;
+    failed pool admission falls back to inline fsync before acknowledgment.
+    Pending tasks and generation tokens use O(outstanding work) memory.
     """
 
     def __init__(
@@ -108,7 +170,7 @@ class DurabilityWriter:
         write_lock: LockType | None = None,
     ) -> None:
         self._name = name
-        self._queue: queue.Queue[Callable[[], None] | None] = queue.Queue()
+        self._queue: queue.Queue[Callable[[], None]] = queue.Queue()
         self._lock = threading.Lock()
         # Producers hold this across replacement + submission; the worker only
         # holds it while checking the generation and opening its file, not fsync.
@@ -116,33 +178,54 @@ class DurabilityWriter:
         self._has_write_lock = write_lock is not None
         self._pending_fsync: dict[Path, object] = {}
         self._thread: threading.Thread | None = None
+        self._scheduled = False
+        self._idle = threading.Event()
+        self._idle.set()
         self._error: BaseException | None = None
         self._closed = False
 
-    def _ensure_thread_locked(self) -> None:
-        if self._thread is None:
-            # Daemon so a leaked writer never blocks interpreter exit. Clean
-            # exits still get durability: page-cache writes survive process
-            # exit, and flush()/close() drain the queue before then.
-            thread = threading.Thread(target=self._worker, name=self._name, daemon=True)
-            thread.start()
-            self._thread = thread
+    def _ensure_worker_locked(self) -> None:
+        if not self._scheduled:
+            self._scheduled = True
+            self._idle.clear()
+            try:
+                _get_executor().submit(self._worker)
+            except BaseException:
+                self._scheduled = False
+                self._idle.set()
+                raise
 
     def _worker(self) -> None:
-        while True:
-            item = self._queue.get()
-            try:
-                if item is None:  # shutdown sentinel
-                    return
+        thread = threading.current_thread()
+        with self._lock:
+            # A store can only be drained by one worker at a time.
+            if self._thread is not None:
+                return
+            self._thread = thread
+        previous_name = thread.name
+        thread.name = self._name
+        try:
+            while True:
+                with self._lock:
+                    try:
+                        item = self._queue.get_nowait()
+                    except queue.Empty:
+                        self._thread = None
+                        self._scheduled = False
+                        self._idle.set()
+                        return
                 try:
-                    item()
-                except BaseException as e:
-                    with self._lock:
-                        if self._error is None:
-                            self._error = e
-                    logger.error("Deferred durability task failed: %s", e)
-            finally:
-                self._queue.task_done()
+                    try:
+                        item()
+                    except BaseException as e:
+                        with self._lock:
+                            if self._error is None:
+                                self._error = e
+                        logger.error("Deferred durability task failed: %s", e)
+                finally:
+                    self._queue.task_done()
+        finally:
+            thread.name = previous_name
 
     def raise_if_failed(self) -> None:
         """Fail-fast check for callers about to acknowledge a new write.
@@ -168,9 +251,8 @@ class DurabilityWriter:
         with self._lock:
             if self._closed:
                 raise RuntimeError("DurabilityWriter is closed")
-            self._ensure_thread_locked()
-            # Admission and enqueue must be indivisible with respect to close:
-            # an accepted task can never land behind the shutdown sentinel.
+            self._ensure_worker_locked()
+            # Admission and enqueue remain indivisible with respect to close.
             self._queue.put(fn)
 
     def submit_fsync(self, path: Path) -> None:
@@ -187,7 +269,13 @@ class DurabilityWriter:
                 raise RuntimeError("DurabilityWriter is closed")
             generation = object()
             try:
-                self._ensure_thread_locked()
+                try:
+                    self._ensure_worker_locked()
+                except RuntimeError:
+                    # No work was admitted. Preserve inline durability rather
+                    # than poisoning the store after transient pool admission.
+                    fsync_file(path)
+                    return
                 self._pending_fsync[path] = generation
                 self._queue.put(lambda: self._fsync_generation(path, generation))
             except BaseException as error:
@@ -224,22 +312,17 @@ class DurabilityWriter:
             raise DurabilityError("Deferred durability failed") from error
 
     def close(self) -> None:
-        """Seal admission, drain accepted work, then stop the worker.
+        """Seal admission and drain this store's accepted work.
 
-        Concurrent callers wait for the same worker, and repeated calls still
+        Concurrent callers wait for the same drain, and repeated calls still
         report a recorded failure. Calling from a submitted task is unsupported
         because the worker cannot wait for its own completion.
         """
         with self._lock:
-            thread = self._thread
-            if thread is threading.current_thread():
+            if self._thread is threading.current_thread():
                 raise RuntimeError("DurabilityWriter cannot close from its worker")
-            if not self._closed:
-                self._closed = True
-                if thread is not None:
-                    self._queue.put(None)
-        if thread is not None:
-            thread.join()
+            self._closed = True
+        self._idle.wait()
         self.flush()
 
     @property

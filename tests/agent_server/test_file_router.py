@@ -993,7 +993,10 @@ def test_search_subdirs_paginates_with_limit_and_page_id(client, tmp_path):
 
 def test_search_subdirs_pages_past_case_only_twins(client, tmp_path):
     """Following next_page_id reaches each of two names that differ by case."""
-    for name in ["foo", "Foo", "bar"]:
+    (tmp_path / "foo").mkdir()
+    if (tmp_path / "Foo").exists():
+        pytest.skip("filesystem does not distinguish case-only directory names")
+    for name in ["Foo", "bar"]:
         (tmp_path / name).mkdir()
 
     seen: list[str] = []
