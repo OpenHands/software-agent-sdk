@@ -5464,6 +5464,30 @@ class TestMaybeSetSessionModel:
         assert applied is True
 
     @pytest.mark.asyncio
+    async def test_rejected_effort_keeps_applied_model(self):
+        # claude-agent-acp has no effort option for Haiku: the model switch
+        # still succeeds and only the effort is dropped.
+        conn = AsyncMock()
+
+        async def _set_config_option(*, config_id, value, session_id):
+            if config_id == "effort":
+                raise ACPRequestError(code=-32603, message="Internal error")
+
+        conn.set_config_option.side_effect = _set_config_option
+        applied = await _maybe_set_session_model(
+            conn,
+            "claude-agent-acp",
+            "session-1",
+            "haiku/high",
+            via_config_option=True,
+        )
+        assert conn.set_config_option.await_args_list == [
+            call(config_id="model", value="haiku", session_id="session-1"),
+            call(config_id="effort", value="high", session_id="session-1"),
+        ]
+        assert applied is True
+
+    @pytest.mark.asyncio
     async def test_codex_config_option_splits_reasoning_effort(self):
         # Canvas may persist Codex ids as ``model/effort``; codex-acp exposes
         # effort as its own config option.
