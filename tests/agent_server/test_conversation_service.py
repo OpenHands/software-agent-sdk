@@ -253,6 +253,49 @@ async def test_rejected_acp_budget_does_not_orphan_state_for_retry(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_rejected_acp_budget_does_not_orphan_worktree_or_branch(tmp_path):
+    """A rejected ACP budget must leave no host-local state behind.
+
+    The server plans a git worktree before constructing the conversation, so a
+    rejection raised only inside ``LocalConversation.__init__`` would leave the
+    worktree directory and its ``openhands/<id>`` branch behind. The
+    conversation is never registered, so ``delete_conversation`` cannot clean
+    them up either.
+    """
+    repo_dir = tmp_path / "repo"
+    _init_git_repo(repo_dir)
+    conversation_id = uuid4()
+    worktree_root = tmp_path / "conversation-worktrees"
+    request = StartConversationRequest(
+        conversation_id=conversation_id,
+        agent=ACPAgent(acp_command=["echo", "test"]),
+        workspace=LocalWorkspace(working_dir=repo_dir),
+        confirmation_policy=NeverConfirm(),
+        max_budget_per_run=1.0,
+        worktree=True,
+    )
+
+    service = ConversationService(
+        conversations_dir=tmp_path / "conversations",
+        conversation_worktree_root=worktree_root,
+    )
+    service._event_services = {}
+    with pytest.raises(CostBudgetUnsupportedError):
+        await service.start_conversation(request)
+
+    worktree = worktree_root / str(conversation_id) / repo_dir.name
+    assert not worktree.exists()
+    assert (
+        run_git_command(
+            ["git", "--no-pager", "branch", "--list", f"openhands/{conversation_id}"],
+            repo_dir,
+        )
+        == ""
+    )
+    assert not (tmp_path / "conversations" / conversation_id.hex).exists()
+
+
+@pytest.mark.asyncio
 async def test_agent_tool_from_unimportable_module_rejects_create(tmp_path):
     """The create fails with a client error instead of every message failing."""
     conversations_dir = tmp_path / "conversations"

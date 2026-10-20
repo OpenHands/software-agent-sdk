@@ -465,6 +465,11 @@ async def test_budget_allows_plain_function_calls_with_optional_search_prices(
         ("azure_ai/claude-opus-4-6", "azure_ai/claude-opus-4-6"),
         ("openai/gpt-5.3-codex", "gpt-5.3-codex"),
         ("openhands/gpt-5.3-codex", "gpt-5.3-codex"),
+        ("bedrock_mantle/openai.gpt-5.5", "bedrock_mantle/openai.gpt-5.5"),
+        (
+            "bedrock_mantle/anthropic.claude-sonnet-5-5",
+            "bedrock_mantle/anthropic.claude-sonnet-5-5",
+        ),
     ],
 )
 @pytest.mark.parametrize(

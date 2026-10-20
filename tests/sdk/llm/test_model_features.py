@@ -20,6 +20,7 @@ from openhands.sdk.llm.utils.model_features import (
     VISION_MODEL_OVERRIDES,
     _normalized_supported_openai_params,
     get_features,
+    has_unbounded_search_cost,
     model_matches,
 )
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
@@ -39,6 +40,49 @@ from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 )
 def test_model_matches(name, pattern, expected):
     assert model_matches(name, [pattern]) is expected
+
+
+_SEARCH_FEE = {"search_context_size_medium": 0.01}
+
+
+@pytest.mark.parametrize(
+    "key,provider,ordinary",
+    [
+        # Ordinary families on providers whose search price is optional.
+        ("bedrock_mantle/openai.gpt-5.5", "bedrock_mantle", True),
+        ("bedrock_mantle/openai.gpt-5.4", "bedrock_mantle", True),
+        ("bedrock_mantle/anthropic.claude-sonnet-5-5", "bedrock_mantle", True),
+        ("bedrock_mantle/openai.gpt-5.6-sol", "bedrock_mantle", True),
+        ("bedrock_mantle/us.openai.gpt-5.5", "bedrock_mantle", True),
+        ("us.anthropic.claude-opus-4-8-v1:0", "bedrock_converse", True),
+        ("anthropic.claude-sonnet-5", "bedrock", True),
+        ("gpt-4.1", "openai", True),
+        ("azure/gpt-5.2-pro", "azure", True),
+        ("claude-sonnet-4-5", "anthropic", True),
+        ("vertex_ai/claude-opus-4-6", "vertex_ai-anthropic_models", True),
+        # Non-ordinary families keep their fee-bearing routes closed.
+        ("bedrock_mantle/qwen.qwen3-max", "bedrock_mantle", False),
+        ("bedrock_mantle/google.gemma-3-27b", "bedrock_mantle", False),
+        ("bedrock_mantle/xai.grok-4.1", "bedrock_mantle", False),
+        ("meta/muse-spark-1.1", "meta", False),
+        ("groq/openai/gpt-oss-120b", "groq", False),
+        ("perplexity/sonar", "perplexity", False),
+    ],
+)
+def test_unbounded_search_cost_tracks_ordinary_families(key, provider, ordinary):
+    """A published search fee is bounded only for an ordinary request-time family.
+
+    ``bedrock_mantle`` hosts several vendor namespaces in one catalog and was
+    absent from the provider allowlist, so every one of its GPT/o Responses
+    routes was refused for budgeted calls.
+    """
+    info = {
+        "key": key,
+        "litellm_provider": provider,
+        "mode": "responses" if "gpt-" in key.split(".")[-1] else "chat",
+        "search_context_cost_per_query": dict(_SEARCH_FEE),
+    }
+    assert has_unbounded_search_cost(key, model_info=info) is not ordinary
 
 
 @pytest.mark.parametrize(

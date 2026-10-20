@@ -182,7 +182,7 @@ def _copy_event_for_fork(event: Event) -> Event:
     return Event.model_validate_json(event.model_dump_json(exclude_none=True))
 
 
-def _reject_acp_budget(
+def reject_acp_budget(
     agent: AgentBase | None, max_budget_per_run: float | None
 ) -> None:
     """Reject a per-run budget on an ACP agent, which cannot enforce one.
@@ -191,6 +191,10 @@ def _reject_acp_budget(
     turn, so the SDK cannot reserve a call's worst-case cost before sending and
     a single prompt can exceed the ceiling. Accepting the budget would silently
     promise enforcement the SDK cannot deliver.
+
+    Callers that create host-local state for a conversation (the agent server's
+    worktree/branch, for instance) must call this once the agent is known and
+    before that state exists, so a rejection leaves nothing behind.
     """
     if max_budget_per_run is None or not isinstance(agent, ACPAgent):
         return
@@ -443,7 +447,7 @@ class LocalConversation(BaseConversation):
         # The resumed agent is not known until after ``create``, so only a
         # caller-supplied agent can be checked here; the resume path re-checks
         # once the persisted agent is loaded.
-        _reject_acp_budget(agent, max_budget_per_run)
+        reject_acp_budget(agent, max_budget_per_run)
         self._state = ConversationState.create(
             id=desired_id,
             agent=agent,
@@ -465,7 +469,7 @@ class LocalConversation(BaseConversation):
             # Resume path: the persisted agent is known only now. No state file
             # is created here (base_state.json already exists), so re-checking
             # the budget cannot orphan anything.
-            _reject_acp_budget(agent, max_budget_per_run)
+            reject_acp_budget(agent, max_budget_per_run)
             # The persisted agent carries client-tool ``Tool`` specs, but in a
             # fresh process the ``ClientTool`` *classes* are absent from the
             # global registry. Re-register them from the persisted specs so

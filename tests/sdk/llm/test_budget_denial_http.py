@@ -120,16 +120,23 @@ async def test_optional_search_prices_allow_ordinary_conversation_over_http(
         conv.close()
 
 
-@pytest.mark.parametrize("model", ["openai/gpt-5.3-codex", "openhands/gpt-5.3-codex"])
+@pytest.mark.parametrize(
+    "model,fixture_key",
+    [
+        ("openai/gpt-5.3-codex", "gpt-5.3-codex"),
+        ("openhands/gpt-5.3-codex", "gpt-5.3-codex"),
+        ("bedrock_mantle/openai.gpt-5.5", "bedrock_mantle/openai.gpt-5.5"),
+    ],
+)
 @pytest.mark.parametrize("use_async", [False, True], ids=["run", "arun"])
 async def test_optional_search_prices_allow_responses_conversation_over_http(
-    provider, tmp_path, monkeypatch, model, use_async
+    provider, tmp_path, monkeypatch, model, fixture_key, use_async
 ):
     base_url, replies, requests = provider
     fixture = (
         Path(__file__).with_name("fixtures") / "optional-search-provider-info.json"
     )
-    info = json.loads(fixture.read_text())["model_info"]["gpt-5.3-codex"]
+    info = json.loads(fixture.read_text())["model_info"][fixture_key]
     monkeypatch.setattr(llm_module, "get_litellm_model_info", lambda **_: info)
     replies.append(
         (

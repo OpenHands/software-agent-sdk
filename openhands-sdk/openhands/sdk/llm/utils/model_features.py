@@ -103,6 +103,35 @@ def _normalize_model_for_litellm(model: str | None) -> str | None:
 # resolution -- doing so re-introduces the 400 UnsupportedParamsError from #5325.
 _PASSTHROUGH_PROVIDERS: frozenset[str] = frozenset({"litellm_proxy", "openhands"})
 
+# Providers whose search price is optional for their ordinary model families:
+# a plain call searches only when the request enables a hosted tool, so the
+# token-only reservation stays a valid ceiling once such tools are refused.
+# ``bedrock_mantle`` hosts several vendor namespaces in one catalog.
+_ORDINARY_SEARCH_FAMILIES: dict[str, tuple[str, ...]] = {
+    "openai": ("gpt-", "o1", "o3", "o4"),
+    "azure": ("gpt-", "o1", "o3", "o4"),
+    "anthropic": ("claude-",),
+    "azure_ai": ("claude-",),
+    "bedrock": ("claude-",),
+    "bedrock_converse": ("claude-",),
+    "bedrock_mantle": ("claude-", "gpt-", "o1", "o3", "o4"),
+    "vertex_ai-anthropic_models": ("claude-",),
+}
+
+
+def _is_ordinary_search_family(resolved_name: str, families: tuple[str, ...]) -> bool:
+    """Whether a resolved catalog key leaf names an ordinary searchable family.
+
+    Bedrock keys prefix the id with a region and a vendor namespace
+    (``us.anthropic.claude-sonnet-5-5``, ``openai.gpt-5.5``). Every dot-suffix is
+    tried so the family is matched past those labels, while a suffix keeps the
+    id's own dots intact.
+    """
+    parts = resolved_name.split(".")
+    return any(
+        ".".join(parts[index:]).startswith(families) for index in range(len(parts))
+    )
+
 
 def _real_litellm_provider(
     model_info: Mapping[str, Any] | None,
@@ -186,17 +215,9 @@ def has_unbounded_search_cost(
     }:
         return True
     resolved_name = (_normalize_model_for_litellm(catalog_key) or "").split("/")[-1]
-    if provider in {"openai", "azure"}:
-        return not resolved_name.startswith(("gpt-", "o1", "o3", "o4"))
-    if provider in {
-        "anthropic",
-        "azure_ai",
-        "bedrock",
-        "bedrock_converse",
-        "vertex_ai-anthropic_models",
-    }:
-        # Bedrock catalog keys include a region and anthropic namespace.
-        return not resolved_name.split(".")[-1].startswith("claude-")
+    families = _ORDINARY_SEARCH_FAMILIES.get(provider or "")
+    if families is not None:
+        return not _is_ordinary_search_family(resolved_name, families)
     if provider in {"gemini", "vertex_ai", "vertex_ai-language-models"}:
         return not resolved_name.startswith("gemini-")
     return True
