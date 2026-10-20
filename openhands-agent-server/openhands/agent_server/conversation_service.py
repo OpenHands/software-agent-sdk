@@ -2116,7 +2116,10 @@ class ConversationService:
             # shares it.
             worktree = (
                 _plan_conversation_worktree(
-                    parent_stored.workspace, child_id, self.conversation_worktree_root
+                    parent_stored.workspace,
+                    child_id,
+                    self.conversation_worktree_root,
+                    None,
                 )
                 if request.isolation == "worktree"
                 else None
