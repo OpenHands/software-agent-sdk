@@ -870,7 +870,7 @@ class TestTimeoutCleanup:
         class Handler(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
 
-            def log_message(self, *args: object) -> None:
+            def log_message(self, format: str, *args: object) -> None:
                 pass
 
             def _stall(self) -> None:
