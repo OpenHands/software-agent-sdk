@@ -6,83 +6,8 @@ on:
     pull_request_target:
         types: [opened, synchronize, reopened, closed]
         branches: [main]
-    pull_request_review:
-        types: [submitted]
 
 jobs:
-  # Auto-remove .pr/ directory from same-repository PRs when approved.
-    cleanup-on-approval:
-        concurrency:
-            group: cleanup-pr-artifacts-${{ github.event.pull_request.number }}
-            cancel-in-progress: false
-        if: >-
-            github.event_name == 'pull_request_review' &&
-            github.event.review.state == 'approved' &&
-            github.event.pull_request.head.repo.full_name == github.repository
-        runs-on: ubuntu-latest
-        permissions:
-            contents: write
-            pull-requests: write
-        steps:
-            # Use PAT so the push triggers CI workflows that will complete and
-            # satisfy branch protection. We can't use [skip ci] because the Vercel
-            # GitHub App creates stuck checks that block merging.
-            - uses: actions/checkout@v7.0.1
-              with:
-                  ref: ${{ github.event.pull_request.head.ref }}
-                  token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
-
-            - name: Remove .pr/ directory
-              id: remove
-              run: |
-                  if [ -d ".pr" ]; then
-                    git config user.name "allhands-bot"
-                    git config user.email "allhands-bot@users.noreply.github.com"
-                    git rm -rf .pr/
-                    git commit -m "chore: Remove PR-only artifacts [automated]"
-                    git push || {
-                      echo "::error::Failed to push cleanup commit. Check branch protection rules."
-                      exit 1
-                    }
-                    echo "removed=true" >> "$GITHUB_OUTPUT"
-                    echo "::notice::Removed .pr/ directory"
-                  else
-                    echo "removed=false" >> "$GITHUB_OUTPUT"
-                    echo "::notice::No .pr/ directory to remove"
-                  fi
-
-            - name: Update PR comment after cleanup
-              if: steps.remove.outputs.removed == 'true'
-              uses: actions/github-script@v9
-              with:
-                  script: |
-                      const marker = '<!-- pr-artifacts-notice -->';
-                      const body = `${marker}
-                      ✅ **PR Artifacts Cleaned Up**
-
-                      The \`.pr/\` directory has been automatically removed.
-                      `;
-
-                      const comments = await github.paginate(
-                        github.rest.issues.listComments,
-                        {
-                          owner: context.repo.owner,
-                          repo: context.repo.repo,
-                          issue_number: context.issue.number,
-                          per_page: 100,
-                        },
-                      );
-
-                      const existing = comments.find(c => c.body.includes(marker));
-                      if (existing) {
-                        await github.rest.issues.updateComment({
-                          owner: context.repo.owner,
-                          repo: context.repo.repo,
-                          comment_id: existing.id,
-                          body: body,
-                        });
-                      }
-
   # Inspect the fork through the API; never check out untrusted code with a write token.
     check-pr-artifacts:
         if: >-
@@ -144,14 +69,10 @@ jobs:
                         return;
                       }
 
-                      const isFork = headRepository.full_name !== context.payload.repository.full_name;
-                      const cleanup = isFork
-                        ? 'Because this is a fork PR, the workflow will **open or update a cleanup PR against `main` after merge**.'
-                        : 'The directory will be **automatically removed when the PR is approved**.';
                       const body = `${marker}
                       📁 **PR Artifacts Notice**
 
-                      This PR contains a \`.pr/\` directory with temporary PR-specific documents. ${cleanup}
+                      This PR contains a \`.pr/\` directory with temporary PR-specific documents. The directory will be **automatically removed after this PR merges to main** through a cleanup PR.
                       `;
 
                       core.warning('.pr/ directory contains temporary PR-only artifacts');
@@ -171,8 +92,7 @@ jobs:
                         });
                       }
 
-  # Fork branches cannot be modified reliably. If artifacts reach the trusted base,
-  # remove them through a pull request so branch protections remain enforced.
+  # Remove merged artifacts through a pull request so branch protections remain enforced.
     cleanup-after-merge:
         concurrency:
             group: cleanup-pr-artifacts-${{ github.event.pull_request.base.ref }}

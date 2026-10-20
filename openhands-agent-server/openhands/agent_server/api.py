@@ -33,10 +33,15 @@ from openhands.agent_server.canvas_extensions_bridge_router import (
 )
 from openhands.agent_server.canvas_extensions_router import canvas_extensions_router
 from openhands.agent_server.config import (
+    V1_SESSION_API_KEY_ENV,
     Config,
+    export_session_api_key,
     get_default_config,
 )
-from openhands.agent_server.conversation_lease import _is_pid_alive
+from openhands.agent_server.conversation_lease import (
+    ConversationOwnershipLostError,
+    _is_pid_alive,
+)
 from openhands.agent_server.conversation_registry import (
     create_conversation_registry,
 )
@@ -45,8 +50,8 @@ from openhands.agent_server.conversation_router import (
     conversation_router,
 )
 from openhands.agent_server.conversation_service import (
+    ConversationService,
     CredentialBindingActivationRequired,
-    get_default_conversation_service,
 )
 from openhands.agent_server.credential_binding import (
     router as credential_binding_router,
@@ -258,6 +263,7 @@ def _cleanup_stale_tmux_sessions() -> None:
 @asynccontextmanager
 async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     original_tmux_tmpdir = os.environ.get("TMUX_TMPDIR")
+    original_session_api_key = os.environ.get(V1_SESSION_API_KEY_ENV)
     tmux_tmpdir, tmux_tmpdir_was_defaulted, tmux_tmpdir_was_created = (
         _ensure_server_tmux_tmpdir()
     )
@@ -369,7 +375,13 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
 
         # Non-deferred (legacy) path: build and enter the conversation
         # service as part of the lifespan, exactly as before.
-        service = get_default_conversation_service()
+        #
+        # A key that came from the config file is visible only in ``config``;
+        # in-process callers of this server read it from the environment.
+        export_session_api_key(config)
+        # Not get_default_conversation_service(): it rebuilds config from OH_*
+        # env, ignoring the config passed to create_app().
+        service = ConversationService.get_instance(config)
         mark_initialization_complete()
         logger.info("Server initialization complete - ready to serve requests")
 
@@ -428,6 +440,11 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                     os.environ.pop("TMUX_TMPDIR", None)
                 else:
                     os.environ["TMUX_TMPDIR"] = original_tmux_tmpdir
+        if os.environ.get(V1_SESSION_API_KEY_ENV) != original_session_api_key:
+            if original_session_api_key is None:
+                os.environ.pop(V1_SESSION_API_KEY_ENV, None)
+            else:
+                os.environ[V1_SESSION_API_KEY_ENV] = original_session_api_key
         if tmux_tmpdir_was_created:
             # Only the per-server directory this process created; a
             # user-provided TMUX_TMPDIR is never removed.
@@ -693,6 +710,22 @@ def _add_exception_handlers(api: FastAPI) -> None:
         _request: Request, exc: ConversationRunLimitExceeded
     ) -> JSONResponse:
         return JSONResponse(status_code=429, content={"detail": str(exc)})
+
+    @api.exception_handler(ConversationOwnershipLostError)
+    async def _ownership_lost_handler(
+        _request: Request, _exc: ConversationOwnershipLostError
+    ) -> JSONResponse:
+        # Another server instance took over this conversation's lease, so the
+        # guarded write was refused: a conflict, not a server fault.
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": (
+                    "Conversation is owned by another agent server instance; "
+                    "the write was refused"
+                )
+            },
+        )
 
     @api.exception_handler(CredentialBindingActivationRequired)
     async def _credential_binding_activation_required_handler(

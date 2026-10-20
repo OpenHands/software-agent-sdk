@@ -33,7 +33,6 @@ from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.mcp.tool import MCPToolDefinition, MCPToolExecutor
 from openhands.sdk.tool import (
-    BROWSER_TOOL_NAME,
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
     Tool,
@@ -45,7 +44,6 @@ from openhands.sdk.tool.builtins.vision_inspect import (
     VisionInspectTool,
     has_vision_profile_available,
 )
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.utils.path import get_user_persistence_dir
 
@@ -268,21 +266,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
     @field_validator("system_prompt_kwargs")
     @classmethod
-    def _warn_deprecated_enable_browser(
+    def _drop_retired_enable_browser(
         cls, value: dict[str, object]
     ) -> dict[str, object]:
-        if "enable_browser" in value:
-            warn_deprecated(
-                "system_prompt_kwargs['enable_browser']",
-                deprecated_in="1.51.0",
-                removed_in="1.56.0",
-                details=(
-                    "Browser guidance now comes from the loaded browser tools; "
-                    "only custom Jinja templates still read this kwarg."
-                ),
-                stacklevel=5,
-            )
-        return value
+        """Old saved conversations may still carry this retired prompt flag."""
+        return {key: item for key, item in value.items() if key != "enable_browser"}
 
     condenser: CondenserBase | None = Field(
         default=None,
@@ -378,15 +366,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         # own Jinja template; everything else (incl. custom policies) uses the registry.
         preset = self._prompt_preset
         if preset is None:
-            # Deprecated kwarg, kept until 1.56.0 for templates that branch on it.
-            template_kwargs = {
-                "enable_browser": any(t.name == BROWSER_TOOL_NAME for t in self.tools),
-                **self._resolved_template_kwargs(),
-            }
             return render_template(
                 prompt_dir=self.prompt_dir,
                 template_name=self.system_prompt_filename,
-                **template_kwargs,
+                **self._resolved_template_kwargs(),
             )
 
         return create_registry(preset).build(self._build_prompt_context()).static

@@ -742,6 +742,6 @@ KID=$(control-agent-server api POST /api/conversations \
 - Unknown conversations answer 404 `{"detail": "Not Found"}` on the
   conversation routes and 404 `Conversation not found: <id>` on
   `respond_to_confirmation` (an events route).
-- The event `kind` filter of `events/search` and `events/count` needs the
-  fully qualified class path (`$REJECT_KIND`, `$OBSERVATION_KIND`); see
-  `F06.search-kind-short`.
+- The event `kind` filter of `events/search` and `events/count` takes the
+  bare class name or the fully qualified class path (the recipes use the
+  latter, `$REJECT_KIND`, `$OBSERVATION_KIND`); see `F06.search-kind-short`.

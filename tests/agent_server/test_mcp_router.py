@@ -866,6 +866,40 @@ def test_mcp_oauth_callback_rejects_unknown_job(client: TestClient):
     assert response.status_code == 404
 
 
+@pytest.mark.parametrize(
+    ("callback_url", "detail"),
+    [
+        ("http://localhost:99999/callback?code=x", "Unexpected OAuth callback URL"),
+        ("http://localhost:abc/callback?code=x", "Unexpected OAuth callback URL"),
+        ("http://[::1/callback?code=x", "Invalid OAuth callback URL"),
+    ],
+)
+def test_mcp_oauth_callback_rejects_malformed_url_with_400(
+    client: TestClient, callback_url: str, detail: str
+):
+    job = _MCPOAuthProbeJob(
+        request=MCPTestRequest.model_validate(
+            {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}
+        ),
+        cipher=None,
+    )
+    job.set_authorization_url("https://auth.example.com/authorize")
+    job.set_callback_ready("http://localhost:64801/callback")
+    try:
+        _register_oauth_job(job)
+        response = client.post(
+            f"/api/mcp/oauth/callback/{job.id}",
+            json={"callback_url": callback_url},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == detail
+        assert job.status == "authorizing"
+    finally:
+        with _oauth_probe_jobs_lock:
+            _oauth_probe_jobs.clear()
+
+
 def test_register_oauth_job_sweeps_expired_jobs():
     old_job = _MCPOAuthProbeJob(
         request=MCPTestRequest.model_validate(

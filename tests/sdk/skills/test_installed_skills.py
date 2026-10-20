@@ -27,6 +27,7 @@ from openhands.sdk.skills import (
     uninstall_skill,
     update_skill,
 )
+from openhands.sdk.skills.exceptions import SkillValidationError
 
 
 def _create_skill_dir(
@@ -81,6 +82,20 @@ def test_install_already_exists_raises_error(
     install_skill(source=str(sample_skill_dir), installed_dir=installed_dir)
     with pytest.raises(FileExistsError, match="already installed"):
         install_skill(source=str(sample_skill_dir), installed_dir=installed_dir)
+
+
+def test_install_malformed_frontmatter_raises_validation_error(
+    tmp_path: Path, installed_dir: Path
+) -> None:
+    skill_dir = tmp_path / "bad-yaml"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: bad-yaml\ndescription: [unclosed\n---\nBody\n"
+    )
+
+    with pytest.raises(SkillValidationError, match="frontmatter"):
+        install_skill(source=str(skill_dir), installed_dir=installed_dir)
+    assert not (installed_dir / "bad-yaml").exists()
 
 
 def test_install_with_force_overwrites(

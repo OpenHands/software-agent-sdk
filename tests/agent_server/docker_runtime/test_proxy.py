@@ -136,6 +136,41 @@ async def test_http_client_lives_until_the_stream_is_consumed(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_http_response_drops_upstream_date_and_server(monkeypatch):
+    """The serving uvicorn adds its own Date and Server; copying the upstream's
+    would send two of each."""
+    import httpx
+
+    from openhands.agent_server.docker_runtime import proxy
+
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"ok"
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={
+                    "Date": "Wed, 14 Oct 2026 10:00:00 GMT",
+                    "Server": "Python/3.13 aiohttp/3.14.3",
+                    "Content-Type": "text/plain",
+                    "X-Upstream": "kept",
+                },
+                stream=Body(),
+            )
+        )
+    )
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kwargs: client)
+    response = await proxy.proxy_http(*request_and_target(), upstream_path="/api/test")
+    assert [chunk async for chunk in response.body_iterator] == [b"ok"]
+    assert "date" not in response.headers
+    assert "server" not in response.headers
+    assert response.headers["x-upstream"] == "kept"
+    assert response.headers["content-type"] == "text/plain"
+
+
+@pytest.mark.asyncio
 async def test_long_lived_proxied_stream_holds_a_session_until_consumed(
     tmp_path, monkeypatch
 ):

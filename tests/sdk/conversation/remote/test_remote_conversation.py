@@ -10,6 +10,7 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.exceptions import (
     ConversationRunError,
@@ -20,7 +21,7 @@ from openhands.sdk.conversation.impl.remote_conversation import RemoteConversati
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
-from openhands.sdk.event import MessageEvent
+from openhands.sdk.event import Event, MessageEvent, StreamingDeltaEvent
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import (
     FULL_STATE_KEY,
@@ -29,6 +30,7 @@ from openhands.sdk.event.conversation_state import (
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, Metrics, TextContent
+from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
@@ -632,6 +634,34 @@ class TestRemoteConversation:
         assert (tmp_path / "completion.json").read_text(encoding="utf-8") == (
             event.log_data
         )
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_token_callbacks_receive_streamed_deltas(self, mock_ws_client):
+        self.setup_mock_client()
+        mock_ws_client.return_value = Mock()
+        chunks: list[LLMStreamChunk] = []
+        events: list[Event] = []
+
+        Conversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            visualizer=None,
+            callbacks=[events.append],
+            token_callbacks=[chunks.append],
+        )
+        socket_callback = mock_ws_client.call_args.kwargs["callback"]
+        delta = StreamingDeltaEvent(content="Hel", reasoning_content="think")
+        socket_callback(delta)
+        socket_callback(
+            MessageEvent(source="agent", llm_message=Message(role="assistant"))
+        )
+
+        assert len(chunks) == 1
+        assert chunks[0].choices[0].delta.content == "Hel"
+        assert chunks[0].choices[0].delta.reasoning_content == "think"
+        assert delta in events
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
@@ -2322,3 +2352,66 @@ class TestRemoteConversation:
 
             # Verify register_conversation was called with the conversation ID
             mock_register.assert_called_once_with(conversation_id)
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_reconnect_replays_missed_events_to_callbacks_once(self, mock_ws_client):
+        """Events stored while the socket was down reach callbacks on reconnect."""
+
+        def user_message(text: str) -> MessageEvent:
+            return MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text=text)]),
+            )
+
+        history = user_message("history")
+        live = user_message("live")
+        missed_1 = user_message("missed 1")
+        missed_2 = user_message("missed 2")
+        after = user_message("after")
+        server_events = [history]
+
+        mock_client_instance = self.setup_mock_client()
+        default_side_effect = mock_client_instance.request.side_effect
+
+        def request_side_effect(method, url, **kwargs):
+            if method == "GET" and url.endswith("/events/search"):
+                return self.create_mock_events_response(
+                    [event.model_dump(mode="json") for event in server_events]
+                )
+            return default_side_effect(method, url, **kwargs)
+
+        mock_client_instance.request.side_effect = request_side_effect
+        mock_ws_client.return_value = Mock()
+        seen: list[str] = []
+
+        conversation = RemoteConversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            callbacks=[
+                lambda e: seen.append(e.id) if isinstance(e, MessageEvent) else None
+            ],
+        )
+        ws_callback = mock_ws_client.call_args.kwargs["callback"]
+        on_reconnect = mock_ws_client.call_args.kwargs["on_reconnect"]
+
+        server_events.append(live)
+        ws_callback(live)
+        # The socket drops; the server records two events nobody streams.
+        server_events.extend([missed_1, missed_2])
+
+        on_reconnect()
+        # The new subscription may still deliver an event the replay covered.
+        ws_callback(missed_2)
+        server_events.append(after)
+        ws_callback(after)
+
+        assert seen == [live.id, missed_1.id, missed_2.id, after.id]
+        assert [e.id for e in conversation.state.events] == [
+            history.id,
+            live.id,
+            missed_1.id,
+            missed_2.id,
+            after.id,
+        ]
