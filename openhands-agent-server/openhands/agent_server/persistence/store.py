@@ -720,7 +720,11 @@ class WorkspacesStore(ABC):
         self,
         update_fn: Callable[[PersistedWorkspaces], PersistedWorkspaces],
     ) -> PersistedWorkspaces:
-        """Atomically update workspaces with file locking."""
+        """Atomically update workspaces with file locking.
+
+        ``update_fn`` returns its argument unchanged to signal a no-op, in
+        which case nothing is written.
+        """
 
 
 class FileWorkspacesStore(WorkspacesStore):
@@ -784,7 +788,11 @@ class FileWorkspacesStore(WorkspacesStore):
                     )
                 workspaces = PersistedWorkspaces()
             updated = update_fn(workspaces)
-            self.save(updated)
+            # ``update_fn`` returns its input unchanged when there is nothing
+            # to change (a re-add, a delete that matched nothing); skip the
+            # write so a no-op neither creates nor rewrites the file.
+            if updated is not workspaces:
+                self.save(updated)
             return updated
 
 
