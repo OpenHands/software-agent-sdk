@@ -41,17 +41,38 @@ Router -> ConversationService -> EventService -> LocalConversation.
 
 ## Key decisions
 
-- **The action is the tool's own model, not a dict.** `ExecuteToolRequest.action`
-  is typed `Action` (the SDK discriminated union), so a malformed payload fails
-  request validation as 422 instead of reaching the executor. The issue sketched
-  `dict[str, Any]`; typing it is stricter and matches `RemoteConversation`'s
-  signature.
+- **The action is a plain JSON object, validated against the selected tool.**
+  `ExecuteToolRequest.action` is `dict[str, Any]`; the server resolves
+  `tool_name`, requires it to be one of `DIRECT_EXECUTION_TOOLS` (currently
+  `terminal`), and validates the payload against **that tool's** `action_type`,
+  so a payload for another tool is a 422 rather than a 500 out of the executor.
+  See the OpenAPI note below for why the SDK `Action` union is not used.
+- **Only the listed tools may run directly.** `LocalConversation.execute_tool()`
+  is a generic primitive, but over HTTP a generic route would dispatch any tool,
+  including `ClientTool` (which only reports that it was dispatched, because
+  there is no `ActionEvent` to deliver it) and would skip the tool hooks and
+  audit events the agent loop records. The allowlist keeps the endpoint to the
+  pre-run setup case it exists for.
+- **The direct call owns the conversation for its whole duration.** It runs
+  under the per-conversation lifecycle and a direct in-flight flag, so a delete,
+  an idle eviction, a run or another direct call cannot overlap it. `run()` while
+  a direct call is in flight is 409, and a second direct call is 409. The flag is
+  released on success, on a validation failure, and, for a cancelled
+  request whose synchronous worker already started, only when that worker
+  actually exits, since cancellation cannot stop it.
+- **A direct call pins the terminal pane pool.** Shell state set by a bootstrap
+  script (exports, functions, the working directory) is local to the one tmux
+  pane that ran it, so the executor pins the pool to that pane; a later parallel
+  command waits for it instead of silently landing on a fresh pane and losing the
+  state.
 - **The response carries the observation model, not text.** Tool-specific fields
   (`exit_code`, `command`, `content`) survive the round trip, so a caller can
   branch on the exit code of its bootstrap script. `is_error` is derivable from
   the observation, so no separate flag.
-- **Unknown tool -> 422, unknown conversation -> 404.** `KeyError` from the tool
-  lookup maps to 422 with the tool named; `None` from the service maps to 404.
+- **Unknown tool -> 422, unsupported tool -> 422, unknown conversation -> 404.**
+  `KeyError` from the tool lookup maps to 422 with the tool named; a tool
+  outside `DIRECT_EXECUTION_TOOLS`, or an action that is not valid for the named
+  tool, is 422; `None` from the service maps to 404.
 - **Non-blocking.** `EventService` runs the call in an executor, matching
   `ask_agent`; a slow bootstrap script does not stall `/alive`.
 - **No event appended, confirmation/analyzer bypassed.** Inherited from
@@ -64,22 +85,39 @@ Router -> ConversationService -> EventService -> LocalConversation.
 
 ## OpenAPI note for reviewers
 
-Adding `action: Action` to a request body makes FastAPI split **every** action
-schema into `<Name>-Input` / `<Name>-Output` twins (38 renames; 446 -> 486
-schemas) — the same pattern `ConfirmationPolicyBase` already shows. Two
-allowlisted weak-schema pointers therefore went stale; the allowlist entries were
-renamed to their `-Input`/`-Output` twins (63 -> 65 entries). The REST breakage
-gate flags `StartChildConversation*` oneOf additions **on the unmodified baseline
-too**, i.e. pre-existing drift, not from this change.
+`action` is typed as a plain JSON object (`dict[str, Any]`), **not** the SDK
+`Action` union. Two reasons:
+
+- Correctness: the union accepts any registered action, so a `GrepAction` with
+  `tool_name="terminal"` would validate and then reach `TerminalExecutor`, which
+  cannot handle it. The server resolves `tool_name`, requires it to be in
+  `DIRECT_EXECUTION_TOOLS` (currently `terminal`), and validates the payload
+  against **that tool's** `action_type`: a mismatch is a 422, not a 500.
+- Contract stability: typing the field as the union makes FastAPI split every
+  action schema into `<Name>-Input` / `<Name>-Output` twins (38 renames,
+  446 -> 486 schemas), renaming existing public components. With
+  `dict[str, Any]` the public contract gains only `ExecuteToolRequest` /
+  `ExecuteToolResponse` and the new path; no existing component is renamed (see
+  the regenerated `clients/typescript/src/generated/agent-server-schema.ts`,
+  which is generated from the pinned published spec and is unchanged).
+
+One allowlist entry is added for the new
+`ExecuteToolRequest/properties/action/additionalProperties` weak location
+(63 -> 64 entries); no existing pointer changes. The REST breakage gate flags
+`StartChildConversation*` oneOf additions **on the unmodified baseline too**,
+i.e. pre-existing drift, not from this change.
 
 ## Evidence
 
-- `control-agent-server map check` -> ok, 34 files, 942 ids.
-- Live server (`control-agent-server exec`): `export` from one `execute_tool` is
-  visible to the next in the same conversation (real `TerminalObservation`);
-  unknown tool -> 422 naming it; no event added.
-- `uv run pytest tests/agent_server tests/sdk/conversation` -> 3603 passed,
-  12 failed (all `canvas_extensions/test_canvas_extension_backend.py`, a known
-  container baseline failure).
-- `tests/cross/test_remote_conversation_live_server.py -k execute_tool` -> 3 passed.
-- `npm run check:agent-server-api` -> clean; ruff -> clean.
+- `control-agent-server map check` -> ok, 34 files, 945 ids.
+- Live server (`control-agent-server exec` / `pytest tests/cross/...live_server.py
+  -k execute_tool`) -> 5 passed: an `export` from one `execute_tool` is visible to
+  the next in the same conversation (real `TerminalObservation`), a completed call
+  is admitted again, a `GrepAction` with `tool_name="terminal"` is 422, an unknown
+  tool is 422 naming it, an unknown id is 404, an unauthenticated call is 401, and
+  a registered secret is masked.
+- `uv run pytest tests/agent_server tests/sdk/conversation tests/tools/terminal`
+  -> passes (see CI).
+- `npm run check:agent-server-api` -> clean; `ruff check` / `ruff format --check`
+  -> clean; OpenAPI export is byte-identical across two runs and passes the
+  type-quality gate (64 allowlisted weak locations).

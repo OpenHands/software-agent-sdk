@@ -56,6 +56,9 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
 - `F10.execute-tool-errors`: an unknown tool name is 4xx naming the missing tool (not 500), an action that fails the tool's schema is 422 at request validation, an unknown conversation id is 404, a malformed id is 422 and a missing key is 401; none of them executes a tool or appends an event.
 - `F10.execute-tool-auth-masking`: the route requires the same session-key auth as the rest of `/api/conversations/...` (unauthenticated → 401, nothing runs), and a registered secret echoed by the executed command comes back masked as `<secret-hidden>`.
 - `F10.execute-tool-nonblocking`: a long-running `terminal` action does not stall the server's event loop: `GET /alive` still answers while it runs.
+- `F10.execute-tool-tool-scoped`: only the `terminal` tool may run directly, and the action is validated against that tool's own action type: a `GrepAction` with `tool_name="terminal"` is 422, not a 500 from `TerminalExecutor`, and the generic-route hazards (a `ClientTool` reporting a dispatch with no `ActionEvent` to deliver it, skipped tool hooks and audit events) cannot be reached.
+- `F10.execute-tool-direct-serialized`: direct calls are serialized per conversation under the per-conversation lifecycle, and cannot overlap a run in either direction: `run()` while a direct call is in flight is 409, a second direct call while one is in flight is 409, and a call that finishes (or whose action is rejected) releases the conversation, so the next call is admitted rather than refused.
+- `F10.execute-tool-pane-pinned`: the shell state a setup script establishes (exports, functions, the working directory) is local to the one tmux pane it ran on, so the direct call pins the pane pool to that pane: a later parallel `terminal` command waits for it instead of landing on a fresh pane and missing the state.
 - `F10.restart-persist`: after a restart, forks keep their lineage, title, tags, HEAD and events, a fork id that names a persisted but not yet loaded conversation is still 409, and a navigated empty HEAD stays empty (the next message is still a new root).
 - `F10.restart-cold-calls`: after a restart, condense and ask_agent work on a conversation whose agent has not been initialized yet, and ask_agent still sees the history (the codename).
 
@@ -73,13 +76,19 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
 - REST: `POST /api/conversations/{conversation_id}/ask_agent` (body
   `{"question": "..."}`), 200 `{"response": "..."}`; 404, 422, 500.
 - REST: `POST /api/conversations/{conversation_id}/execute_tool` (body
-  `ExecuteToolRequest` `{"tool_name": "...", "action": {"kind": "<ActionKind>", ...}}`),
-  200 `ExecuteToolResponse` `{"observation": {...}}`; 404 (unknown
-  conversation), 422 (unknown tool name, or an action that fails the tool's
-  schema). It needs a `terminal` tool on the agent and a `tmux`-capable host.
-  The route bypasses the agent loop's confirmation policy and security
-  analyzer and appends no event, so a caller that owns a repo convention
-  (app-server, Agent Canvas) runs the bootstrap script through it.
+  `ExecuteToolRequest` `{"tool_name": "terminal", "action": {"kind": "<ActionKind>", ...}}`),
+  200 `ExecuteToolResponse` `{"observation": {...}}`; 400 (inactive service),
+  404 (unknown conversation), 409 (a run or another direct call is in flight),
+  422 (unknown tool, a tool that cannot run directly, or an action that is not
+  valid for the named tool). Only `terminal` is accepted, and the action is
+  validated against that tool's own action type. It needs a `terminal` tool on
+  the agent and a `tmux`-capable host. The route bypasses the agent loop's
+  confirmation policy and security analyzer and appends no event, so a caller
+  that owns a repo convention (app-server, Agent Canvas) runs the bootstrap
+  script through it. Direct calls are serialized per conversation: a call while
+  a run is in flight is 409, and so is a second direct call while one is in
+  flight. The action must carry a discriminator: a bare `{"command": ...}`
+  without `kind` is 422.
 - Second views used here: `GET /api/conversations/{conversation_id}`,
   `.../events/search`, `.../events/count`, `.../events/{event_id}`,
   `.../agent_final_response` (other families), the conversation's
@@ -657,6 +666,53 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   `/alive` answers in well under the sleep's duration: `EventService.execute_tool`
   runs `LocalConversation.execute_tool` in an executor, so the tool does not
   hold the event loop.
+- **An action for another tool is refused (`F10.execute-tool-tool-scoped`).**
+  A `GrepAction` payload with `tool_name="terminal"` must be a client error, not
+  a 500 from the terminal executor.
+  Requires: tmux, `F10.execute-tool-terminal`
+  ```sh
+  control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "GrepAction", "pattern": "x", "path": "."}}' \
+    --expect 422 --save F10.execute-tool-tool-scoped/foreign-action
+  ```
+  The action is validated against `terminal`'s own `action_type`
+  (`TerminalAction`), so the mismatch is 422 and never reaches the executor; an
+  unlisted tool such as `file_editor` is likewise 422.
+- **Direct calls are serialized (`F10.execute-tool-direct-serialized`).** Prove
+  overlap is refused in both directions and that a completed call releases the
+  conversation.
+  Requires: tmux, `F10.execute-tool-terminal`
+  ```sh
+  control-agent-server helper start --name qa-f10-exec-busy --log "$F/exec-busy.log" -- \
+    control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "sleep 10", "timeout": 60}}' --expect 200
+  sleep 2
+  control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "echo second"}}' \
+    --expect 409 --save F10.execute-tool-direct-serialized/overlap
+  control-agent-server helper stop qa-f10-exec-busy
+  control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "echo released"}}' \
+    --expect 200 --check observation.exit_code eq 0 --save F10.execute-tool-direct-serialized/released
+  ```
+  The concurrent call is 409 while the first is in flight, and the call after
+  it finishes is admitted (200): a completed or rejected direct call frees the
+  conversation instead of leaving it stuck busy.
+- **Setup state stays on one pane (`F10.execute-tool-pane-pinned`).** The shell
+  state a bootstrap script establishes is local to its pane, so a later
+  parallel `terminal` command still sees it.
+  Requires: tmux, `F10.execute-tool-terminal`, `F10.execute-tool-persistent`
+  ```sh
+  PIN=$(control-agent-server conversation start --placeholder-agent --tools terminal --no-autotitle --no-run --prompt QA_F10_PIN --print-id)
+  control-agent-server api POST "/api/conversations/$PIN/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "export QA_F10_PIN_MARKER=qa-pin"}}' \
+    --expect 200 --save F10.execute-tool-pane-pinned/export
+  control-agent-server api POST "/api/conversations/$PIN/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "printf %s \"$QA_F10_PIN_MARKER\""}}' \
+    --expect 200 --check observation.content.0.text contains qa-pin --save F10.execute-tool-pane-pinned/read
+  ```
+  The direct call pins the conversation's pane pool to the pane that ran it, so
+  the later call reads the export back instead of getting a fresh pane.
 
 ## Gotchas
 
@@ -666,10 +722,25 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   which a `POST /api/bash/execute_bash_command` shell (fresh subprocess) and a
   `session_start` hook (`subprocess.run`) cannot do. It bypasses confirmation
   policy and the security analyzer and appends no event, so it is a pre-run
-  setup mechanism, not a way to drive the agent; calling it while `run()` is in
-  flight is unsupported (the terminal executor is not built for concurrent
-  access). The action must be a real tool action (`TerminalAction`, etc.),
-  discriminated by `kind`; a bare `{"command": ...}` without `kind` is 422.
+  setup mechanism, not a way to drive the agent.
+- Only `terminal` may run directly (`F10.execute-tool-tool-scoped`): a generic
+  route would let a caller dispatch `ClientTool`, which only reports that it was
+  dispatched because there is no `ActionEvent` to deliver, and would skip the
+  tool hooks and audit events the agent loop records. The action is validated
+  against the named tool's action type, so a `GrepAction` with
+  `tool_name="terminal"` is 422 rather than a 500 out of `TerminalExecutor`.
+  The action must be a real tool action (`TerminalAction`, etc.), discriminated
+  by `kind`; a bare `{"command": ...}` without `kind` is 422.
+- Direct calls are serialized per conversation and cannot overlap a run in
+  either direction (`F10.execute-tool-direct-serialized`): a run started while a
+  direct call is in flight is 409, and so is a direct call while a run is in
+  flight. A completed call releases the conversation; a cancelled one keeps it
+  busy until the synchronous worker has actually exited.
+- The shell state a setup script establishes is local to the one tmux pane it
+  ran on, so a direct call pins the pane pool to that pane
+  (`F10.execute-tool-pane-pinned`): a later parallel `terminal` command waits
+  for the pinned pane instead of landing on a fresh one and silently missing
+  the exports. Concurrency on that conversation drops to one pane.
 - `fork` copies events with their original ids, so the same event id exists
   in the source and every fork; always scope event lookups by conversation.
 - A fork shares the source's working directory (`workspace.working_dir`):

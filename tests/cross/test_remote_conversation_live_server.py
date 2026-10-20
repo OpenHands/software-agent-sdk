@@ -66,6 +66,7 @@ from openhands.sdk.subagent.registry import (
 )
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace import RemoteWorkspace
+from openhands.tools.grep.definition import GrepAction
 from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
 from openhands.workspace.docker.workspace import find_available_tcp_port
 
@@ -1385,6 +1386,58 @@ def test_execute_tool_live_server_persists_environment(
         assert isinstance(check, TerminalObservation)
         assert check.exit_code == 0
         assert "visible" in check.text
+    finally:
+        conversation.close()
+
+
+def test_execute_tool_live_server_rejects_action_of_another_tool(
+    server_env, tmp_path: Path
+):
+    """A payload for another tool is a 422, never a 500 from the executor.
+
+    The reviewer's repro: a valid ``GrepAction`` with ``tool_name="terminal"``
+    validated against the global action hierarchy and reached
+    ``TerminalExecutor``.
+    """
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[Tool(name="terminal")])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    conversation: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    try:
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            conversation.execute_tool(
+                "terminal",
+                GrepAction(pattern="x", path="."),  # type: ignore[arg-type]
+            )
+        assert exc_info.value.response.status_code == 422
+        assert "TerminalAction" in exc_info.value.response.text
+    finally:
+        conversation.close()
+
+
+def test_execute_tool_live_server_second_call_is_admitted(server_env, tmp_path: Path):
+    """A completed direct call releases the conversation for the next one.
+
+    Regression: the first success used to leave the in-flight flag set, so
+    every later call was refused with 409.
+    """
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[Tool(name="terminal")])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    conversation: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    try:
+        for _ in range(3):
+            observation = conversation.execute_tool(
+                "terminal", TerminalAction(command="echo ok", timeout=30.0)
+            )
+            assert isinstance(observation, TerminalObservation)
+            assert observation.exit_code == 0
     finally:
         conversation.close()
 

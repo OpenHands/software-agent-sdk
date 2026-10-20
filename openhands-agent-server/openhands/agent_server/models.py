@@ -39,7 +39,7 @@ from openhands.sdk.security.confirmation_policy import (
     NeverConfirm,
 )
 from openhands.sdk.tool.client_tool import ClientToolSpec
-from openhands.sdk.tool.schema import Action, Observation
+from openhands.sdk.tool.schema import Observation
 from openhands.sdk.utils import OpenHandsUUID, utc_now
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
@@ -607,15 +607,24 @@ class AskAgentResponse(BaseModel):
 class ExecuteToolRequest(BaseModel):
     """Payload to execute one tool directly on a conversation.
 
-    The action is the tool's own action model, so a malformed payload fails
-    validation here rather than reaching the tool executor.
+    ``action`` is the tool's action as a plain JSON object, *not* the SDK's
+    ``Action`` union. The server resolves ``tool_name`` and validates the
+    payload against **that tool's** ``action_type``, so an action belonging to
+    another tool is rejected with 422 instead of reaching an executor that
+    cannot handle it. Typing the field as the union would accept any registered
+    action for any tool, and would also make FastAPI split every action schema
+    into ``-Input``/``-Output`` twins in the public contract.
     """
 
     tool_name: str = Field(
-        description="Name of the tool to execute, as it appears in the agent's tool map"
+        description=(
+            "Name of the tool to execute. Only 'terminal' is accepted: this "
+            "route runs a pre-run setup command through the conversation's "
+            "persistent terminal session."
+        )
     )
-    action: Action = Field(
-        description="The action to pass to the tool executor, discriminated by its kind"
+    action: dict[str, Any] = Field(
+        description="The tool's action as JSON, discriminated by its 'kind'"
     )
 
 

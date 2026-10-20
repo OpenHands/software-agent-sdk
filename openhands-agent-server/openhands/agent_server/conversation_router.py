@@ -29,6 +29,11 @@ from openhands.agent_server.conversation_service import (
     UnavailableAgentTool,
 )
 from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.event_service import (
+    ConversationBusyError,
+    DirectToolNotAllowedError,
+    InvalidToolActionError,
+)
 from openhands.agent_server.launch import launch_http_exception
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
@@ -770,8 +775,10 @@ async def ask_agent(
 @conversation_router.post(
     "/{conversation_id}/execute_tool",
     responses={
+        400: {"description": "Service is inactive"},
         404: {"description": "Conversation not found"},
-        422: {"description": "Unknown tool name"},
+        409: {"description": "A run or another direct call is already in flight"},
+        422: {"description": "Unknown or unsupported tool, or invalid action"},
     },
 )
 async def execute_tool(
@@ -783,7 +790,14 @@ async def execute_tool(
 
     Intended for pre-run setup: the tool runs through the conversation's own
     executor, so state such as the terminal session is shared with the agent's
-    later calls. Bypasses confirmation policy and the security analyzer.
+    later calls. Bypasses confirmation policy and the security analyzer, and
+    appends no event.
+
+    Only the tools in ``DIRECT_EXECUTION_TOOLS`` (currently ``terminal``) are
+    accepted, and the action is validated against that tool's own action type,
+    so an action belonging to a different tool is rejected with 422 instead of
+    reaching an executor that cannot handle it. Direct calls are serialized per
+    conversation and cannot overlap a run.
     """
     try:
         observation = await conversation_service.execute_tool(
@@ -792,6 +806,20 @@ async def execute_tool(
     except KeyError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        ) from e
+    except InvalidToolActionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        ) from e
+    except DirectToolNotAllowedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        ) from e
+    except ConversationBusyError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
         ) from e
     if observation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")

@@ -7,7 +7,7 @@ from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, Final, cast
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -83,7 +83,7 @@ from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
-from openhands.sdk.tool.schema import Action, Observation
+from openhands.sdk.tool.schema import Observation
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.files import atomic_write_text
@@ -101,6 +101,39 @@ logger = get_logger(__name__)
 
 class ConversationRunLimitExceeded(RuntimeError):
     """The server has no capacity to start another conversation run."""
+
+
+class ConversationBusyError(RuntimeError):
+    """The conversation is already busy with a run or another direct tool call."""
+
+
+class DirectToolNotAllowedError(ValueError):
+    """The named tool may not be executed through the direct tool endpoint.
+
+    The endpoint runs a tool outside the agent loop, without the confirmation
+    policy or the security analyzer, and appends no event. Only tools whose
+    direct execution is meaningful (see ``DIRECT_EXECUTION_TOOLS``) are
+    accepted; the rest are refused so a generic "run any tool" channel is not
+    exposed.
+    """
+
+
+class InvalidToolActionError(ValueError):
+    """The action payload is not valid for the tool named by ``tool_name``.
+
+    The route maps this to 422, so an action belonging to a different tool is
+    reported as a client error instead of reaching an executor that cannot
+    handle it.
+    """
+
+
+# Tools that may be executed through POST /conversations/{id}/execute_tool.
+# Direct execution exists for pre-run setup, so this is deliberately a small
+# allowlist rather than every registered tool: a generic channel would let a
+# caller dispatch tools such as ClientTool, which only report that they were
+# dispatched (there is no ActionEvent to actually deliver them), and would skip
+# the tool hooks and conversation audit events the agent loop records.
+DIRECT_EXECUTION_TOOLS: Final[frozenset[str]] = frozenset({"terminal"})
 
 
 class _RunPermit:
@@ -246,6 +279,14 @@ class EventService:
     _explicit_interrupt_generation: int = field(default=0, init=False)
     _closing: bool = field(default=False, init=False)
     _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    # Whether a direct tool execution is in flight (see execute_tool). Direct
+    # calls are serialized per conversation and used by run()/start_goal_loop()
+    # to refuse starting a run underneath one.
+    _direct_tool_in_flight: bool = field(default=False, init=False)
+    # Bumped when a direct execution is abandoned (request cancelled or close
+    # began) so the operation's worker thread can stop waiting and let the
+    # thread exit.
+    _direct_tool_abandon: int = field(default=0, init=False)
     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
     _lease: ConversationLease | None = field(default=None, init=False)
     _lease_generation: int | None = field(default=None, init=False)
@@ -1503,6 +1544,13 @@ class EventService:
                 == ConversationExecutionStatus.RUNNING
             ):
                 raise ValueError("conversation_already_running")
+            if self._direct_tool_in_flight:
+                # A direct call runs a tool outside the agent loop; letting a
+                # run start underneath it would put two things in the same
+                # conversation and executor at once.
+                raise ConversationBusyError(
+                    "A direct tool execution is in flight; retry when it finishes"
+                )
             if self._closing:
                 raise ValueError("inactive_service")
             # Re-check: the status read above can yield to a late stop too.
@@ -1756,6 +1804,10 @@ class EventService:
                 == ConversationExecutionStatus.RUNNING
             ):
                 raise ValueError("conversation_already_running")
+            if self._direct_tool_in_flight:
+                raise ConversationBusyError(
+                    "A direct tool execution is in flight; retry when it finishes"
+                )
             # Re-check after the await above: close() runs without _run_lock, so
             # it may have begun teardown meanwhile (mirrors run()'s post-status
             # _closing re-check) -- avoid spawning a task close() won't cancel.
@@ -2148,6 +2200,13 @@ class EventService:
         self._explicit_interrupt_generation += 1
         self._rerun_requested = False
         self._acp_internal_rerun_requested = False
+        # Abandon any in-flight direct tool call: it does not hold the
+        # conversation state lock, so it would otherwise keep running (and keep
+        # holding the executor) through the teardown below. The bump makes its
+        # worker exit without touching the executor, and lets a blocked
+        # admission through.
+        self._direct_tool_abandon += 1
+        self._direct_tool_in_flight = False
         # Drop any pin held by a supersede window that is being torn down, then
         # return this conversation's session permit; close() cancels the runs
         # that would otherwise have done so, and a leaked permit would shrink
@@ -2247,18 +2306,83 @@ class EventService:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._conversation.ask_agent, question)
 
-    def _execute_tool_sync(self, tool_name: str, action: Action) -> Observation:
-        """Run one tool on the conversation, synchronously.
+    def _resolve_direct_tool(self, tool_name: str) -> tuple[Any, Any, dict[str, Any]]:
+        """Resolve the direct tool call: the tool, its action type, and its schema.
 
-        ``LocalConversation.execute_tool`` initializes the agent on first use,
-        so this works on a conversation whose agent has not run yet — the
-        pre-run setup case this endpoint exists for.
+        Returns:
+            (tool, action_type, json_schema)
+
+        Raises:
+            ValueError: If the service is inactive.
+            DirectToolNotAllowedError: If the tool is not allowed to be run
+                directly.
+            KeyError: If the agent has no tool by that name.
         """
-        if not self._conversation:
+        conversation = self._conversation
+        if not conversation:
             raise ValueError("inactive_service")
+        if tool_name not in DIRECT_EXECUTION_TOOLS:
+            allowed = ", ".join(sorted(DIRECT_EXECUTION_TOOLS))
+            raise DirectToolNotAllowedError(
+                f"Tool '{tool_name}' cannot be executed directly; "
+                f"supported tools: {allowed}"
+            )
+        # ``LocalConversation.execute_tool`` initializes the agent on first use,
+        # so resolve through it to work on a conversation whose agent has not
+        # run yet (the pre-run setup case this endpoint exists for).
+        conversation._ensure_agent_ready()
+        tool = conversation.agent.tools_map.get(tool_name)
+        if tool is None:
+            available = list(conversation.agent.tools_map)
+            raise KeyError(
+                f"Tool '{tool_name}' not found. Available tools: {available}"
+            )
+        return tool, tool.action_type, tool.action_type.model_json_schema()
+
+    def _run_direct_tool_sync(
+        self,
+        generation: int,
+        tool_name: str,
+        action_type: type[Any],
+        payload: dict[str, Any],
+    ) -> Observation:
+        """Validate and run one direct tool call, synchronously.
+
+        Validating against the resolved tool's ``action_type`` is what keeps the
+        JSON payload honest: the transport type carries no discriminator, so
+        without this a payload for another tool would reach an executor that
+        cannot handle it.
+        """
+        if generation != self._direct_tool_abandon:
+            raise asyncio.CancelledError("direct tool execution abandoned")
+        if self._closing or not self._conversation:
+            raise ValueError("inactive_service")
+        try:
+            action = action_type.model_validate(payload)
+        except ValidationError as exc:
+            raise InvalidToolActionError(str(exc)) from exc
         return self._conversation.execute_tool(tool_name, action)
 
-    async def execute_tool(self, tool_name: str, action: Action) -> Observation:
+    def _end_direct_tool_sync(self, generation: int) -> None:
+        """Clear the in-flight flag if this call still owns it."""
+        if generation == self._direct_tool_abandon:
+            self._direct_tool_in_flight = False
+
+    def _direct_tool_worker_done(self, worker: Any) -> None:
+        """Release the conversation once a direct tool worker has really exited.
+
+        The flag is also cleared here, not only by the request, because
+        cancelling the request cannot stop the synchronous worker: the worker
+        holds the executor until it returns, so a later direct call must not be
+        admitted before then. Retrieving the exception keeps an abandoned
+        worker's ``CancelledError`` from surfacing as an unretrieved-future
+        warning.
+        """
+        self._direct_tool_in_flight = False
+        with suppress(BaseException):
+            worker.exception()
+
+    async def execute_tool(self, tool_name: str, action: dict[str, Any]) -> Observation:
         """Execute one tool directly on the conversation, bypassing the agent loop.
 
         The tool runs through the conversation's own executor, so state that
@@ -2267,20 +2391,79 @@ class EventService:
         repository bootstrap script.
 
         This bypasses confirmation policy and the security analyzer, as
-        ``LocalConversation.execute_tool`` does by design, and appends no
-        event to the conversation.
-
-        Delegates to LocalConversation in an executor to avoid blocking the
-        event loop.
+        ``LocalConversation.execute_tool`` does by design, and appends no event
+        to the conversation. Because it is a setup mechanism rather than a way
+        to drive the agent, direct calls are serialized per conversation and
+        cannot overlap a run in either direction.
 
         Raises:
             ValueError: If the service is inactive.
+            DirectToolNotAllowedError: If the tool is not allowed to run
+                directly.
             KeyError: If the agent has no tool by that name.
+            ConversationBusyError: If a run or another direct call is already
+                using this conversation.
+            ValidationError: If the payload is not valid for the tool.
         """
+        conversation = self._conversation
+        if not conversation or self._closing:
+            raise ValueError("inactive_service")
+
+        # Admission. Single-threaded on the event loop, so this check-and-set
+        # is atomic with respect to other direct calls. ``_run_task`` is read
+        # before the status so a live run, which holds the state lock across a
+        # step, cannot block this admission check.
+        if self._direct_tool_in_flight:
+            raise ConversationBusyError(
+                "Another direct tool execution is already in flight"
+            )
+        if (self._run_task is not None and not self._run_task.done()) or (
+            await self._get_execution_status() == ConversationExecutionStatus.RUNNING
+        ):
+            raise ConversationBusyError(
+                "Conversation is running; stop it before executing a tool directly"
+            )
+        if self._closing or self._conversation is not conversation:
+            raise ValueError("inactive_service")
+        self._direct_tool_in_flight = True
+        generation = self._direct_tool_abandon
+
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None, self._execute_tool_sync, tool_name, action
-        )
+        worker: asyncio.Future[Observation] | None = None
+        try:
+            tool, action_type, schema = await loop.run_in_executor(
+                None, self._resolve_direct_tool, tool_name
+            )
+            worker = loop.run_in_executor(
+                None,
+                self._run_direct_tool_sync,
+                generation,
+                tool_name,
+                action_type,
+                action,
+            )
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            if worker is None:
+                # Cancelled while resolving the tool: no tool reached the
+                # executor, so the finally below releases the flag.
+                raise
+            # Cancelling the request cannot stop the synchronous worker, so
+            # abandon it: the generation bump makes a queued worker exit without
+            # touching the executor, and the flag is released when the worker
+            # actually finishes rather than now, so a later direct call is not
+            # admitted while the abandoned worker still holds the executor.
+            # ``worker.cancel()`` is deliberately not called: it marks the
+            # future done at once (the thread keeps running), which would fire
+            # the release callback too early.
+            self._direct_tool_abandon += 1
+            worker.add_done_callback(self._direct_tool_worker_done)
+            raise
+        finally:
+            # Success, a resolve/validation failure, or a cancellation that
+            # predates the worker: release the flag. It is a no-op after the
+            # abandon above, which transferred the release to the worker.
+            self._end_direct_tool_sync(generation)
 
     async def condense(self) -> None:
         """Force condensation of the conversation history.
@@ -2414,6 +2597,7 @@ class EventService:
             self._closing
             or run_active
             or goal_active
+            or self._direct_tool_in_flight
             or self._rerun_requested
             or self._acp_internal_rerun_requested
             or self.has_external_subscribers()

@@ -1900,9 +1900,11 @@ class RemoteConversation(BaseConversation):
         This bypasses the agent loop's confirmation policy and security
         analyzer, and appends no event, matching ``LocalConversation``.
 
-        Note: Intended for **pre-run** setup. Calling it while ``run()`` is in
-        flight is unsupported, because the underlying tool executor (e.g. a
-        terminal session) is not designed for concurrent access.
+        Note: The agent server accepts only tools it allows to run directly
+        (currently ``terminal``), and validates the action against that tool's
+        own action type. Direct calls are serialized per conversation and
+        cannot overlap a run, so this is for **pre-run** setup: a call while
+        ``run()`` is in flight is refused with 409.
 
         Args:
             tool_name: The name of the tool to execute
@@ -1915,7 +1917,9 @@ class RemoteConversation(BaseConversation):
 
         Raises:
             httpx.HTTPStatusError: If the server rejects the request, e.g. 404
-                for an unknown conversation or 422 for an unknown tool name.
+                for an unknown conversation, 409 while a run or another direct
+                call is in flight, or 422 for an unknown/unsupported tool or an
+                action that is not valid for that tool.
         """
         response = _send_request(
             self._client,

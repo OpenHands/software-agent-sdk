@@ -106,6 +106,9 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         self._sessions: dict[int, TerminalSession] = {}
         self._sessions_lock = threading.Lock()
         self._pool_recovery_lock = threading.Lock()
+        # Pane used by the most recent pooled call, so a direct (out-of-band)
+        # call can pin the pool to it. See on_direct_execution().
+        self._last_pane: PooledTmuxTerminal | None = None
 
         use_pool = terminal_type in (None, "tmux") and _is_tmux_available()
 
@@ -165,6 +168,9 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 failed_pool.close()
             with self._sessions_lock:
                 self._sessions.clear()
+            # The old pane belongs to the pool being discarded; pinning the new
+            # pool to it would be a no-op warning.
+            self._last_pane = None
             self._initialize_pool()
 
     @staticmethod
@@ -502,6 +508,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                             exit_code=0,
                         )
 
+                self._last_pane = handle.terminal
                 session = self._wrap_session(handle.terminal)
                 self._prepare_pooled_session(session)
 
@@ -593,6 +600,20 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         elif self._session is not None:
             with suppress(Exception):
                 self._session.interrupt()
+
+    def on_direct_execution(self) -> None:
+        """Pin the pane pool to the pane that just ran a direct call.
+
+        Direct execution is how a workspace bootstrap script is run. The shell
+        state such a script establishes (exports, functions, aliases, the
+        working directory) is local to the pane it ran on, so without pinning a
+        later parallel command could land on a fresh pane and miss it. Pinning
+        keeps setup state reachable from every later command.
+        """
+        pool = self._pool
+        pane = self._last_pane
+        if pool is not None and pane is not None:
+            pool.pin(pane)
 
     def close(self) -> None:
         """Close the terminal session and clean up resources."""

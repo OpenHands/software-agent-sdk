@@ -3208,7 +3208,11 @@ class LocalConversation(BaseConversation):
         # Execute the tool
         if not tool.executor:
             raise NotImplementedError(f"Tool '{tool_name}' has no executor")
-        return tool(action, self)
+        observation = tool(action, self)
+        # Let the tool make any state this out-of-band call established visible
+        # to the agent's later calls (see ToolExecutor.on_direct_execution).
+        tool.executor.on_direct_execution()
+        return observation
 
     def __del__(self) -> None:
         """Ensure cleanup happens when conversation is destroyed."""

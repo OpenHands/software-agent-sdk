@@ -20,7 +20,13 @@ from pydantic import SecretStr
 
 from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.event_service import EventService, RunSlot
+from openhands.agent_server.event_service import (
+    ConversationBusyError,
+    DirectToolNotAllowedError,
+    EventService,
+    InvalidToolActionError,
+    RunSlot,
+)
 from openhands.agent_server.file_router import _create_zip_from_directory
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
@@ -59,6 +65,7 @@ from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.tool import Tool
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace import LocalWorkspace
@@ -3096,6 +3103,338 @@ class _SyncOnlyAgent(AgentBase):
 
     def step(self, conversation, on_event, on_token=None):
         pass
+
+
+class TestEventServiceDirectToolExecution:
+    """Lifecycle and validation boundaries of EventService.execute_tool.
+
+    The route tests cover the HTTP mapping with a mocked service; these cover
+    the service's own admission and validation, which is where the reviewer's
+    four findings live.
+    """
+
+    @staticmethod
+    def _service_with_terminal_conversation(event_service, tmp_path):
+        """Attach a real conversation whose only tool is the terminal."""
+        conversation = LocalConversation(
+            agent=Agent(
+                llm=LLM(model="gpt-4o", api_key=SecretStr("test"), usage_id="t"),
+                tools=[Tool(name="terminal")],
+            ),
+            workspace=str(tmp_path),
+            stuck_detection=False,
+        )
+        event_service._conversation = conversation
+        return conversation
+
+    @pytest.mark.asyncio
+    async def test_execute_tool_validates_action_against_named_tool(
+        self, event_service, tmp_path
+    ):
+        """An action for another tool is rejected, not handed to the executor.
+
+        This is the reviewer's repro: a ``GrepAction`` payload with
+        ``tool_name="terminal"`` used to reach ``TerminalExecutor`` and 500.
+        """
+        self._service_with_terminal_conversation(event_service, tmp_path)
+        try:
+            with pytest.raises(InvalidToolActionError):
+                await event_service.execute_tool(
+                    "terminal", {"kind": "GrepAction", "pattern": "x"}
+                )
+        finally:
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_execute_tool_rejects_tools_outside_the_allowlist(
+        self, event_service, tmp_path
+    ):
+        """A tool that cannot run directly is refused before the executor."""
+        self._service_with_terminal_conversation(event_service, tmp_path)
+        try:
+            with pytest.raises(DirectToolNotAllowedError):
+                await event_service.execute_tool(
+                    "not_directly_executable", {"kind": "TerminalAction"}
+                )
+        finally:
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_execute_tool_rejects_concurrent_direct_call(
+        self, event_service, tmp_path
+    ):
+        """A second direct call is refused while one is in flight."""
+        self._service_with_terminal_conversation(event_service, tmp_path)
+        started = threading.Event()
+        release = threading.Event()
+        calls: list[tuple[str, object]] = []
+
+        def slow_execute_tool(tool_name, action):
+            calls.append((tool_name, action))
+            started.set()
+            release.wait(timeout=30)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        event_service._conversation.execute_tool = slow_execute_tool  # type: ignore[method-assign]
+        try:
+            first = asyncio.create_task(
+                event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo a"}
+                )
+            )
+            await asyncio.to_thread(started.wait, 10)
+            with pytest.raises(ConversationBusyError):
+                await event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo b"}
+                )
+            release.set()
+            await first
+            assert [c[0] for c in calls] == ["terminal"]
+        finally:
+            release.set()
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_run_refused_while_direct_call_in_flight(
+        self, event_service, tmp_path
+    ):
+        """A run cannot start underneath a direct call (the reverse overlap)."""
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_execute_tool(tool_name, action):
+            started.set()
+            release.wait(timeout=30)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        conversation.execute_tool = slow_execute_tool  # type: ignore[method-assign]
+        with patch.object(
+            type(event_service),
+            "_get_execution_status",
+            new_callable=AsyncMock,
+            return_value=ConversationExecutionStatus.IDLE,
+        ):
+            try:
+                first = asyncio.create_task(
+                    event_service.execute_tool(
+                        "terminal", {"kind": "TerminalAction", "command": "echo a"}
+                    )
+                )
+                await asyncio.to_thread(started.wait, 10)
+                with pytest.raises(ConversationBusyError):
+                    await event_service.run()
+                release.set()
+                await first
+            finally:
+                release.set()
+                await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_direct_call_does_not_run_the_tool(
+        self, event_service, tmp_path
+    ):
+        """Cancellation abandons the worker instead of letting it run later."""
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        ran: list[str] = []
+        blocked = threading.Event()
+        release = threading.Event()
+
+        def blocked_resolve(tool_name):
+            blocked.set()
+            release.wait(timeout=30)
+            return self._resolve_direct_tool_original(tool_name)
+
+        event_service._resolve_direct_tool_original = event_service._resolve_direct_tool
+        event_service._resolve_direct_tool = blocked_resolve  # type: ignore[method-assign]
+
+        def record(tool_name, action):
+            ran.append(tool_name)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        conversation.execute_tool = record  # type: ignore[method-assign]
+        try:
+            task = asyncio.create_task(
+                event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo a"}
+                )
+            )
+            await asyncio.to_thread(blocked.wait, 10)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # The worker was released after the cancellation; even so, it must
+            # not touch the executor because its generation is stale.
+            release.set()
+            await asyncio.sleep(0.5)
+            assert ran == []
+            assert event_service._direct_tool_in_flight is False
+        finally:
+            release.set()
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_cancel_after_worker_started_keeps_conversation_busy_until_done(
+        self, event_service, tmp_path
+    ):
+        """A cancelled call whose worker already started stays busy until it exits.
+
+        Cancelling the request cannot stop the synchronous worker, so the
+        conversation must not be handed to a later direct call while that worker
+        still holds the executor.
+        """
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_execute_tool(tool_name, action):
+            started.set()
+            release.wait(timeout=30)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        conversation.execute_tool = slow_execute_tool  # type: ignore[method-assign]
+        try:
+            task = asyncio.create_task(
+                event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo a"}
+                )
+            )
+            await asyncio.to_thread(started.wait, 10)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # The worker is still blocked in the executor: a new direct call must
+            # not be admitted alongside it.
+            assert event_service._direct_tool_in_flight is True
+            with pytest.raises(ConversationBusyError):
+                await event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo b"}
+                )
+            release.set()
+            # Once the worker returns, the conversation is free again.
+            for _ in range(100):
+                if event_service._direct_tool_in_flight is False:
+                    break
+                await asyncio.sleep(0.05)
+            assert event_service._direct_tool_in_flight is False
+        finally:
+            release.set()
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_close_abandons_in_flight_direct_call(self, event_service, tmp_path):
+        """close() bumps the generation so a waiting worker does not run."""
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        ran: list[str] = []
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_resolve(tool_name):
+            started.set()
+            release.wait(timeout=30)
+            return self._resolve_direct_tool_original(tool_name)
+
+        event_service._resolve_direct_tool_original = event_service._resolve_direct_tool
+        event_service._resolve_direct_tool = slow_resolve  # type: ignore[method-assign]
+
+        def record(tool_name, action):
+            ran.append(tool_name)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        conversation.execute_tool = record  # type: ignore[method-assign]
+        task = asyncio.create_task(
+            event_service.execute_tool(
+                "terminal", {"kind": "TerminalAction", "command": "echo a"}
+            )
+        )
+        await asyncio.to_thread(started.wait, 10)
+        close_task = asyncio.create_task(event_service.close())
+        await asyncio.sleep(0.2)
+        assert event_service._direct_tool_in_flight is False
+        release.set()
+        await asyncio.gather(task, close_task, return_exceptions=True)
+        assert ran == []
+
+    @pytest.mark.asyncio
+    async def test_successful_direct_call_releases_the_conversation(
+        self, event_service, tmp_path
+    ):
+        """A completed direct call does not leave the conversation busy.
+
+        Regression: the in-flight flag was only cleared on the error paths, so
+        the first successful call locked out every later call with 409 and kept
+        ``is_idle_evictable()`` false for the life of the conversation.
+        """
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        calls: list[str] = []
+
+        def record(tool_name, action):
+            calls.append(action.command)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        conversation.execute_tool = record  # type: ignore[method-assign]
+        try:
+            first = await event_service.execute_tool(
+                "terminal", {"kind": "TerminalAction", "command": "echo a"}
+            )
+            assert first.command == "echo a"
+            assert event_service._direct_tool_in_flight is False
+            assert event_service.is_idle_evictable() is True
+
+            # A second call must be admitted, not refused as busy.
+            second = await event_service.execute_tool(
+                "terminal", {"kind": "TerminalAction", "command": "echo b"}
+            )
+            assert second.command == "echo b"
+            assert calls == ["echo a", "echo b"]
+        finally:
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_invalid_action_releases_the_conversation(
+        self, event_service, tmp_path
+    ):
+        """A rejected action must not leave the conversation stuck busy."""
+        self._service_with_terminal_conversation(event_service, tmp_path)
+        try:
+            with pytest.raises(InvalidToolActionError):
+                await event_service.execute_tool(
+                    "terminal", {"kind": "GrepAction", "pattern": "x"}
+                )
+            assert event_service._direct_tool_in_flight is False
+            assert event_service.is_idle_evictable() is True
+        finally:
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_in_flight_direct_call_is_not_idle_evictable(
+        self, event_service, tmp_path
+    ):
+        """Idle eviction must not tear down a conversation mid-direct-call."""
+        self._service_with_terminal_conversation(event_service, tmp_path)
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_execute_tool(tool_name, action):
+            started.set()
+            release.wait(timeout=30)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        event_service._conversation.execute_tool = slow_execute_tool  # type: ignore[method-assign]
+        try:
+            assert event_service.is_idle_evictable() is True
+            task = asyncio.create_task(
+                event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo a"}
+                )
+            )
+            await asyncio.to_thread(started.wait, 10)
+            assert event_service.is_idle_evictable() is False
+            release.set()
+            await task
+        finally:
+            release.set()
+            await event_service.close()
 
 
 class TestEventServiceClose:

@@ -88,7 +88,7 @@ from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.tool.registry import get_tool_module_qualnames, is_tool_available
-from openhands.sdk.tool.schema import Action, Observation
+from openhands.sdk.tool.schema import Observation
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -1932,14 +1932,23 @@ class ConversationService:
         return response
 
     async def execute_tool(
-        self, conversation_id: UUID, tool_name: str, action: Action
+        self, conversation_id: UUID, tool_name: str, action: dict[str, Any]
     ) -> Observation | None:
-        """Execute one tool directly on a conversation, bypassing the agent loop."""
-        event_service = await self._get_or_load_event_service(conversation_id)
-        if event_service is None:
-            return None
+        """Execute one tool directly on a conversation, bypassing the agent loop.
 
-        return await event_service.execute_tool(tool_name, action)
+        The per-conversation lifecycle is held for the whole call, so a delete,
+        an idle eviction or another direct call cannot overlap the operation and
+        tear the conversation down underneath it.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        async with self._conversation_lifecycle(conversation_id):
+            event_service = await self._get_or_load_event_service_locked(
+                conversation_id
+            )
+            if event_service is None:
+                return None
+            return await event_service.execute_tool(tool_name, action)
 
     async def condense(self, conversation_id: UUID) -> bool:
         """Force condensation of the conversation history."""

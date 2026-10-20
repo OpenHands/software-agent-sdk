@@ -78,13 +78,7 @@
     "owner": "OpenHands OSS"
   },
   {
-    "pointer": "/components/schemas/BrowserSetStorageAction-Input/properties/storage_state/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/BrowserSetStorageAction-Output/properties/storage_state/additionalProperties",
+    "pointer": "/components/schemas/BrowserSetStorageAction/properties/storage_state/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
     "owner": "OpenHands OSS"
@@ -123,6 +117,12 @@
     "pointer": "/components/schemas/CriticResult/properties/metadata/anyOf/0/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/ExecuteToolRequest/properties/action/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "The execute_tool action is a JSON transport envelope: the server validates it against the selected tool's action_type, which cannot be expressed in the static OpenAPI schema.",
     "owner": "OpenHands OSS"
   },
   {
@@ -204,13 +204,7 @@
     "owner": "OpenHands OSS"
   },
   {
-    "pointer": "/components/schemas/MCPToolAction-Input/properties/data/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/MCPToolAction-Output/properties/data/additionalProperties",
+    "pointer": "/components/schemas/MCPToolAction/properties/data/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
     "owner": "OpenHands OSS"
@@ -225,12 +219,6 @@
     "pointer": "/components/schemas/ProfileDetailResponse/properties/config/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/SecurityAnalysisEvent/properties/details/additionalProperties/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Per-action analyzer detail (probabilities, confidence, rationale) is analyzer-specific by design; the shape belongs to each SecurityAnalyzer implementation.",
     "owner": "OpenHands OSS"
   },
   {
@@ -387,6 +375,12 @@
     "pointer": "/paths/~1api~1settings~1secrets~1{name}/get/responses/200/content/application~1json/schema",
     "kind": "empty-object-schema",
     "reason": "This existing endpoint has an opaque or non-JSON response contract and is tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/SecurityAnalysisEvent/properties/details/additionalProperties/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Per-action analyzer detail (probabilities, confidence, rationale) is analyzer-specific by design; the shape belongs to each SecurityAnalyzer implementation.",
     "owner": "OpenHands OSS"
   }
 ]

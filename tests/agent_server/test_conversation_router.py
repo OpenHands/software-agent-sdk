@@ -14,7 +14,12 @@ from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import (
+    ConversationBusyError,
+    DirectToolNotAllowedError,
+    EventService,
+    InvalidToolActionError,
+)
 from openhands.agent_server.launch import launch_source
 from openhands.agent_server.models import (
     ConversationInfo,
@@ -3075,8 +3080,8 @@ def test_execute_tool_returns_observation(
         response = client.post(
             f"/api/conversations/{sample_conversation_id}/execute_tool",
             json={
-                "tool_name": "remote_execute_tool_test",
-                "action": {"kind": "RouterExecuteToolTestAction", "value": "world"},
+                "tool_name": "terminal",
+                "action": {"kind": "TerminalAction", "command": "echo world"},
             },
         )
 
@@ -3084,8 +3089,84 @@ def test_execute_tool_returns_observation(
         assert response.json()["observation"]["result"] == "executed_world"
         args = mock_conversation_service.execute_tool.call_args
         assert args.args[0] == sample_conversation_id
-        assert args.args[1] == "remote_execute_tool_test"
-        assert args.args[2].value == "world"
+        assert args.args[1] == "terminal"
+        # The action reaches the service as a plain JSON payload; validation
+        # against the selected tool's action type happens server-side.
+        assert args.args[2] == {"kind": "TerminalAction", "command": "echo world"}
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_execute_tool_rejects_action_of_another_tool(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """A payload that is not valid for the named tool is a 422, not a 500."""
+    mock_conversation_service.execute_tool.side_effect = InvalidToolActionError(
+        "1 validation error for TerminalAction\ncommand\n  Field required"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/execute_tool",
+            json={"tool_name": "terminal", "action": {"kind": "GrepAction"}},
+        )
+
+        assert response.status_code == 422
+        assert "TerminalAction" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_execute_tool_rejects_unsupported_tool(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """Tools that cannot run directly are refused with 422."""
+    mock_conversation_service.execute_tool.side_effect = DirectToolNotAllowedError(
+        "Tool 'file_editor' cannot be executed directly; supported tools: terminal"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/execute_tool",
+            json={"tool_name": "file_editor", "action": {"kind": "FileEditorAction"}},
+        )
+
+        assert response.status_code == 422
+        assert "file_editor" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_execute_tool_busy_returns_409(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """A run or another direct call in flight is a 409, not a 500."""
+    mock_conversation_service.execute_tool.side_effect = ConversationBusyError(
+        "Conversation is running; stop it before executing a tool directly"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/execute_tool",
+            json={
+                "tool_name": "terminal",
+                "action": {"kind": "TerminalAction", "command": "echo hi"},
+            },
+        )
+
+        assert response.status_code == 409
     finally:
         client.app.dependency_overrides.clear()
 
