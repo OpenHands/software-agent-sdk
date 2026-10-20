@@ -309,7 +309,9 @@ class Message(BaseModel):
         if not force_string_serializer and (
             cache_enabled or vision_enabled or function_calling_enabled
         ):
-            message_dict = self._list_serializer(vision_enabled=vision_enabled, cache_enabled=cache_enabled)
+            message_dict = self._list_serializer(
+                vision_enabled=vision_enabled, cache_enabled=cache_enabled
+            )
         elif preserve_images:
             message_dict = self._list_serializer(
                 vision_enabled=vision_enabled, cache_enabled=cache_enabled
@@ -360,8 +362,7 @@ class Message(BaseModel):
 
         # Add thinking blocks first (for Anthropic extended thinking)
         # Only add thinking blocks for assistant messages
-        
-        
+
         thinking_blocks_dicts = []
         if self.role == "assistant":
             thinking_blocks = list(
