@@ -78,6 +78,7 @@ class ServerInfo(BaseModel):
             "agent_profile_draft_materialize_v1",
             "agent_launch_pipeline_v1",
             "profile_public_skills_v1",
+            "skill_catalog_v1",
         ]
     )
     app_backend_ingress_url: str | None = Field(
