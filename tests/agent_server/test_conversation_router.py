@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from openhands.agent_server.api import _add_exception_handlers
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_router import conversation_router
@@ -65,6 +66,9 @@ class RouterExecuteToolTestObservation(Observation):
 def client():
     """Create a test client for the FastAPI app without authentication."""
     app = FastAPI()
+    # Install the production exception handlers so status mapping (e.g.
+    # ConversationBusyError -> 409) is exercised as it ships.
+    _add_exception_handlers(app)
     app.include_router(conversation_router, prefix="/api")
     # switch_llm reads request.app.state.config to get the optional cipher;
     # populate it with a no-cipher config so unrelated tests don't 503.

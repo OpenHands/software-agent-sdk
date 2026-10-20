@@ -10,12 +10,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from openhands.agent_server.api import _add_exception_handlers
 from openhands.agent_server.dependencies import get_event_service
 from openhands.agent_server.event_router import (
     event_router,
     normalize_datetime_to_server_timezone,
 )
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import ConversationBusyError, EventService
 from openhands.agent_server.models import SendMessageRequest
 from openhands.sdk import Message
 from openhands.sdk.event.llm_convertible.message import MessageEvent
@@ -65,6 +66,10 @@ def test_normalize_datetime_fixed_offset_timezone():
 def client():
     """Create a test client for the FastAPI app without authentication."""
     app = FastAPI()
+    # Install the production exception handlers so the busy -> 409 mapping is
+    # exercised as it ships (ConversationBusyError is a RuntimeError, so the
+    # generic handler would otherwise answer 500).
+    _add_exception_handlers(app)
     app.include_router(event_router, prefix="/api")
     return TestClient(app)
 
@@ -155,6 +160,35 @@ class TestSendMessageEndpoint:
             assert run_flag is False
         finally:
             # Clean up the dependency override
+            client.app.dependency_overrides.clear()
+
+    @pytest.mark.asyncio
+    async def test_send_message_with_run_true_returns_409_when_busy(
+        self, client, sample_conversation_id, mock_event_service
+    ):
+        """A busy conversation answers 409, not 500, when run=True.
+
+        ``send_message(run=True)`` reaches ``run()``, which raises
+        ``ConversationBusyError`` while a direct tool call is in flight. That
+        error is a ``RuntimeError``, so the generic handler would answer 500;
+        the registered handler must map it to 409 for this entry point too.
+        """
+        mock_event_service.send_message.side_effect = ConversationBusyError(
+            "A direct tool execution is in flight; retry when it finishes"
+        )
+        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+
+        try:
+            response = client.post(
+                f"/api/conversations/{sample_conversation_id}/events",
+                json={
+                    "role": "user",
+                    "content": [{"type": "text", "text": "hi"}],
+                    "run": True,
+                },
+            )
+            assert response.status_code == 409
+        finally:
             client.app.dependency_overrides.clear()
 
     @pytest.mark.asyncio

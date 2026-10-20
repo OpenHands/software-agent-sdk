@@ -30,7 +30,6 @@ from openhands.agent_server.conversation_service import (
 )
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_service import (
-    ConversationBusyError,
     DirectToolNotAllowedError,
     InvalidToolActionError,
 )
@@ -431,10 +430,6 @@ async def run_conversation(
 
     try:
         await event_service.run()
-    except ConversationBusyError as e:
-        # A direct tool execution (setup) holds the conversation; that is a
-        # transient conflict, not a server error.
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
     except ValueError as e:
         if str(e) == "conversation_already_running":
             raise HTTPException(
@@ -475,9 +470,6 @@ async def start_goal_in_conversation(
         await event_service.start_goal_loop(
             request.objective, max_iterations=request.max_iterations
         )
-    except ConversationBusyError as e:
-        # A direct tool execution (setup) holds the conversation.
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
     except ValueError as e:
         message = str(e)
         if message in ("conversation_already_running", "goal_already_running"):
@@ -529,9 +521,6 @@ async def resume_goal_in_conversation(
 
     try:
         await event_service.resume_goal_loop()
-    except ConversationBusyError as e:
-        # A direct tool execution (setup) holds the conversation.
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
     except ValueError as e:
         message = str(e)
         if message in ("conversation_already_running", "goal_already_running"):
@@ -826,8 +815,6 @@ async def execute_tool(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
         ) from e
-    except ConversationBusyError as e:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)

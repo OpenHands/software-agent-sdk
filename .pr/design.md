@@ -67,8 +67,10 @@ a version compare would reject a working endpoint.
   an idle eviction, a run or another direct call cannot overlap it. Admission
   shares `_run_lock` with `run()`/`start_goal_loop()`, so a run cannot be
   admitted while the direct status read is pending and then start underneath the
-  call. `run()`/`start_goal_loop()` while a direct call is in flight is 409 (the
-  routes map `ConversationBusyError` to 409 rather than letting it surface as a
+  call. `run()`/`start_goal_loop()` while a direct call is in flight is 409
+  (`api.py` registers a `ConversationBusyError` handler that maps it to 409, so
+  every entry point that can admit a run — `/run`, `/goal`, and `/events` with
+  `run=true` — answers 409 rather than letting a `RuntimeError` surface as a
   500), and a second direct call is 409. The flag is released on success, on a
   validation failure, and, for a cancelled request whose synchronous worker
   already started, only when that worker actually exits, since cancellation
