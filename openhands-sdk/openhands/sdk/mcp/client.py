@@ -63,31 +63,33 @@ class MCPClient(AsyncMCPClient):
         self,
     ) -> tuple[str | None, str | None, dict[str, Any] | None]:
         """Extract server name, URL/command target, and config dict if available."""
-        transport = getattr(self, "transport", None)
-        config_dict = None
+        transport = self.transport if hasattr(self, "transport") else None
+        config_dict: dict[str, Any] | None = None
         if transport is not None:
-            config = getattr(transport, "config", None)
-            if config is not None:
-                if hasattr(config, "model_dump"):
-                    try:
-                        config_dict = config.model_dump()
-                    except Exception:
-                        pass
-                mcp_servers = getattr(config, "mcpServers", None)
+            config = transport.config if hasattr(transport, "config") else None
+            if config is not None and hasattr(config, "model_dump"):
+                try:
+                    dumped = config.model_dump()
+                    if isinstance(dumped, dict):
+                        config_dict = dumped
+                except Exception:
+                    pass
+            if isinstance(config_dict, dict):
+                mcp_servers = config_dict.get("mcpServers")
                 if isinstance(mcp_servers, dict) and mcp_servers:
                     name, srv = next(iter(mcp_servers.items()))
-                    url = getattr(srv, "url", None)
-                    if url:
-                        return name, str(url), config_dict
-                    cmd = getattr(srv, "command", None)
-                    if cmd:
-                        args = getattr(srv, "args", None)
-                        args_str = f" {' '.join(args)}" if args else ""
-                        return name, f"{cmd}{args_str}", config_dict
+                    if isinstance(srv, dict):
+                        url = srv.get("url")
+                        if url:
+                            return name, str(url), config_dict
+                        cmd = srv.get("command")
+                        if cmd:
+                            args = srv.get("args")
+                            args_str = f" {' '.join(args)}" if args else ""
+                            return name, f"{cmd}{args_str}", config_dict
                     return name, None, config_dict
-            url = getattr(transport, "url", None)
-            if url:
-                return None, str(url), config_dict
+            if hasattr(transport, "url") and transport.url:  # type: ignore[union-attr]
+                return None, str(transport.url), config_dict  # type: ignore[union-attr]
         return None, None, config_dict
 
     @staticmethod
@@ -111,7 +113,7 @@ class MCPClient(AsyncMCPClient):
             raise
         except Exception as exc:
             server_name, target, config_dict = self._extract_connection_target()
-            cause = getattr(exc, "__cause__", None) or exc
+            cause = exc.__cause__ or exc
             guidance = self._troubleshooting_guidance()
             msg = (
                 "Failed to connect to MCP server"

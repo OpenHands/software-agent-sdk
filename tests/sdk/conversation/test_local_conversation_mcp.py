@@ -39,6 +39,7 @@ class RecordingMCPToolProvider:
         mcp_config: dict[str, MCPServer],
         timeout: float = 30.0,
         *,
+        strict: bool = False,
         on_tools_changed: Any = None,
         on_tools_reconciled: Any = None,
     ) -> MCPClient:
@@ -188,6 +189,7 @@ class FailingMCPToolProvider:
         mcp_config: dict[str, MCPServer],
         timeout: float = 30.0,
         *,
+        strict: bool = False,
         on_tools_changed: Any = None,
         on_tools_reconciled: Any = None,
     ) -> MCPClient:

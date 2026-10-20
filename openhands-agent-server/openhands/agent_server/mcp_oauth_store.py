@@ -442,12 +442,14 @@ class SettingsBackedMCPToolProvider:
         mcp_config: dict[str, MCPServer],
         timeout: float = 30.0,
         *,
+        strict: bool = False,
         on_tools_changed: ToolsChangedCallback | None = None,
         on_tools_reconciled: ToolsReconciledCallback | None = None,
     ) -> MCPClient:
         return create_mcp_tools(
             mcp_config,
             timeout,
+            strict=strict,
             mcp_oauth_token_storage=MCPSettingsOAuthTokenStore(
                 seed_mcp_config=mcp_config,
                 cipher=self.cipher,

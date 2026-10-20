@@ -386,14 +386,20 @@ def _format_server_target(spec: MCPServer | None, server_config: Any = None) -> 
             args = f" {' '.join(spec.args)}" if spec.args else ""
             return f"{spec.command}{args}"
     if server_config is not None:
-        url = getattr(server_config, "url", None)
-        if url:
-            return str(url)
-        cmd = getattr(server_config, "command", None)
-        if cmd:
-            args = getattr(server_config, "args", None)
-            args_str = f" {' '.join(args)}" if args else ""
-            return f"{cmd}{args_str}"
+        cfg_dict = (
+            server_config.model_dump()
+            if hasattr(server_config, "model_dump")
+            else (server_config if isinstance(server_config, dict) else {})
+        )
+        if isinstance(cfg_dict, dict):
+            url = cfg_dict.get("url")
+            if url:
+                return str(url)
+            cmd = cfg_dict.get("command")
+            if cmd:
+                args = cfg_dict.get("args")
+                args_str = f" {' '.join(args)}" if args else ""
+                return f"{cmd}{args_str}"
     return "unknown target"
 
 
@@ -444,9 +450,6 @@ class DegradableMCPConfigTransport(MCPConfigTransport):
     @property
     def mcpServers(self) -> dict[str, Any]:
         return self.config.mcpServers
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.config, name)
 
     @contextlib.asynccontextmanager
     async def connect_session(
@@ -547,7 +550,7 @@ class DegradableMCPConfigTransport(MCPConfigTransport):
 
             if not self._transports:
                 if self.strict or any(
-                    getattr(self.server_specs.get(n), "strict", False)
+                    (s := self.server_specs.get(n)) is not None and s.strict
                     for n, _, _ in failed_servers
                 ):
                     multi_msg = _format_multi_connection_failure_message(failed_servers)
@@ -635,9 +638,7 @@ def create_mcp_tools(
             error_msg, timeout=timeout, config=config.model_dump()
         ) from e
     except MCPConnectionError as exc:
-        is_strict = strict or any(
-            getattr(spec, "strict", False) for spec in mcp_config.values()
-        )
+        is_strict = strict or any(spec.strict for spec in mcp_config.values())
         if is_strict:
             client.sync_close()
             raise
