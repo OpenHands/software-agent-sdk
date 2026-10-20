@@ -22,7 +22,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from time import monotonic
+from time import monotonic, sleep
 
 from pydantic import BaseModel, ValidationError
 
@@ -125,12 +125,39 @@ def _clone_spawn_kwargs() -> dict[str, object]:
     return {"start_new_session": True}
 
 
+def _signal_process_group(pgid: int, sig: int) -> None:
+    """Send *sig* to *pgid*, ignoring a group that is already gone."""
+    try:
+        os.killpg(pgid, sig)
+    except (OSError, ProcessLookupError):
+        pass
+
+
+def _group_is_alive(pgid: int) -> bool:
+    """Return True while any process remains in *pgid*."""
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     """Terminate *process* and every descendant, waiting for full teardown.
 
     Escalates from ``SIGTERM`` to ``SIGKILL`` and always reaps the direct child
     before returning, so no credential-bearing descendant is left running once
     the caller gets control back.
+
+    The escalation is keyed to the *group*, not to the direct child. ``git
+    clone`` forks credential-bearing helpers (``git-remote-http``); a helper that
+    ignores ``SIGTERM`` while the direct child exits promptly would otherwise
+    skip the group ``SIGKILL`` and survive with the token still in its
+    environment.
     """
     if os.name == "nt":
         subprocess.run(
@@ -139,23 +166,47 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
             stderr=subprocess.DEVNULL,
             check=False,
         )
-    else:
-        try:
-            pgid = os.getpgid(process.pid)
-        except (OSError, ProcessLookupError):
-            pgid = None
-        if pgid is not None:
-            try:
-                os.killpg(pgid, signal.SIGTERM)
-            except (OSError, ProcessLookupError):
-                pass
-            try:
-                process.wait(timeout=_TERMINATE_GRACE_SECONDS)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(pgid, signal.SIGKILL)
-                except (OSError, ProcessLookupError):
-                    pass
+        _reap(process)
+        return
+
+    try:
+        pgid = os.getpgid(process.pid)
+    except (OSError, ProcessLookupError):
+        pgid = None
+
+    if pgid is None:
+        _reap(process)
+        return
+
+    _signal_process_group(pgid, signal.SIGTERM)
+    # Give the whole group the grace period, then SIGKILL whatever is left.
+    # Waiting on the group rather than the direct child is what guarantees a
+    # SIGTERM-ignoring descendant cannot outlive the call.
+    if _wait_for_group_exit(pgid, _TERMINATE_GRACE_SECONDS):
+        _reap(process)
+        return
+    _signal_process_group(pgid, signal.SIGKILL)
+    _wait_for_group_exit(pgid, _TERMINATE_GRACE_SECONDS)
+    _reap(process)
+
+
+def _wait_for_group_exit(pgid: int, timeout: float) -> bool:
+    """Wait up to *timeout* for every process in *pgid* to exit.
+
+    Returns True if the group emptied within the window. A short poll is used
+    because there is no portable way to wait on a whole process group.
+    """
+    deadline = monotonic() + timeout
+    while True:
+        if not _group_is_alive(pgid):
+            return True
+        if monotonic() >= deadline:
+            return False
+        sleep(0.02)
+
+
+def _reap(process: subprocess.Popen[bytes]) -> None:
+    """Reap the direct child so it cannot be left behind as a zombie."""
     try:
         process.wait(timeout=_TERMINATE_GRACE_SECONDS)
     except subprocess.TimeoutExpired:

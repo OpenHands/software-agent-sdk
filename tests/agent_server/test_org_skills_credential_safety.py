@@ -36,6 +36,7 @@ from openhands.agent_server.git_credentials import (
 )
 from openhands.agent_server.skills_service import (
     _clone_org_repo,
+    _kill_process_group,
     load_org_skills_from_url,
 )
 
@@ -973,6 +974,59 @@ class TestTimeoutCleanup:
         finally:
             # Never leave an orphan or a stalled handler behind, even on failure.
             worker_thread.join(timeout=5)
+            for pid in _pids_with_env_containing(token):
+                try:
+                    os.kill(pid, 9)
+                except OSError:
+                    pass
+
+    def test_descendant_that_ignores_sigterm_is_killed(self):
+        """A descendant that traps SIGTERM must still be SIGKILLed.
+
+        The escalation must key off the *group*, not the direct child. Here the
+        direct child exits promptly on SIGTERM while a descendant ignores it; an
+        implementation that only SIGKILLs when ``process.wait`` times out returns
+        with the descendant alive, still holding the credential.
+        """
+        token = "SIGTERMignoreREGRESSIONtoken0123456789"
+        # The outer shell exits on SIGTERM; the backgrounded inner shell ignores
+        # it and keeps sleeping in the same process group.
+        script = (
+            f"export OPENHANDS_GIT_PASSWORD={token}; "
+            "sh -c 'trap \"\" TERM; sleep 300' & "
+            "child=$!; "
+            "trap 'exit 0' TERM; "
+            "echo started; "
+            "wait $child"
+        )
+        process = subprocess.Popen(
+            ["sh", "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=dict(os.environ),
+            start_new_session=True,
+        )
+        try:
+            assert process.stdout is not None
+            assert process.stdout.readline().strip() == b"started"
+
+            # The descendant must be alive with the credential before we signal.
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not _pids_with_env_containing(token):
+                time.sleep(0.05)
+            assert _pids_with_env_containing(token), "descendant never started"
+
+            _kill_process_group(process)
+
+            survivors = _pids_with_env_containing(token)
+            assert survivors == set(), (
+                f"a SIGTERM-ignoring descendant survived the kill: {survivors}"
+            )
+        finally:
+            try:
+                process.kill()
+            except OSError:
+                pass
             for pid in _pids_with_env_containing(token):
                 try:
                     os.kill(pid, 9)
