@@ -1,0 +1,449 @@
+{
+  "purpose": "Retained live recordings bound by source equivalence; not newly executed Canvas trials",
+  "published_parent": "a8ea83a200113577fd55339593b55e2e60097f39",
+  "upstream_merge_parent": "6f8c38d00e0468ac138447be905f07a8a0cd7af8",
+  "reviewed_implementation_patch_sha256": "4e7147038dbc30d84b085407129f118ecceb1e54d82c8285605357e8778b8a27",
+  "integration_equivalence": {
+    "compared_tracked_files": 1835,
+    "all_identical_to_reviewed": true,
+    "only_excluded": ".pr/",
+    "docker_copied_input_files": 522,
+    "docker_build_definition_additional": [
+      "MANIFEST.in",
+      "setup.py"
+    ],
+    "diff_sha256": "4e7147038dbc30d84b085407129f118ecceb1e54d82c8285605357e8778b8a27"
+  },
+  "fresh_image_check": {
+    "image_id": "sha256:d91892f2fbc4430a965504bb58e8bfe97bfed8388df3172c64dc8c667a11b8ac",
+    "copied_build_inputs_matched": 522,
+    "installed_python_files_matched": 502,
+    "actual_imports": {
+      "openhands.agent_server.docker_runtime.provisioning": {
+        "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/docker_runtime/provisioning.py",
+        "sha256": "510991fd4131b6f2cecde644542e0187200e0e071bdfefa7f948b99775f12720"
+      },
+      "openhands.agent_server.docker_runtime.routers": {
+        "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/docker_runtime/routers.py",
+        "sha256": "0d2cdd2744fda4e158f31174de786034232075b90ff3f2a618989aa04936cab8"
+      },
+      "openhands.agent_server.launch": {
+        "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/launch.py",
+        "sha256": "608977a8a3a3e7b013a7be92426ee9978cbc34a9ba77cc85c0919f31435f8d46"
+      },
+      "openhands.sdk.launch.resolve": {
+        "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/sdk/launch/resolve.py",
+        "sha256": "890a0a4461a40aeb600ecd212d7692a52644294aabea5e7821d23443941b81c1"
+      },
+      "openhands.sdk.launch.finalize": {
+        "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/sdk/launch/finalize.py",
+        "sha256": "565c1b0f2df0120a44763da1fd1419c1d6bb99edd3591c2c8e131892ec1e5873"
+      },
+      "openhands.agent_server.conversation_service": {
+        "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/conversation_service.py",
+        "sha256": "0f2288dc3e66d778c64b55613ae5b801f87ac821cbb2d5f4df972e8355e86991"
+      },
+      "openhands.sdk.llm.llm_profile_store": {
+        "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/sdk/llm/llm_profile_store.py",
+        "sha256": "8096e489860ba4eef2f55e1f642d1976fafaeccdb074df75b344a9b30d8085dc"
+      }
+    },
+    "recorded_image_build_sha": "6f8c38d00e0468ac138447be905f07a8a0cd7af8",
+    "recorded_image_build_ref": "unknown",
+    "expected_manifest_sha256": "18a1fc6884b426e8027b40ed2f46fd28dc642280de7a0713660d12e88994bdf5"
+  },
+  "trials": [
+    {
+      "sdk_revision": "6f8c38d00e0468ac138447be905f07a8a0cd7af8",
+      "sdk_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "canvas_revision": "0ab2137ad529f2f5935edf152d25a3f8f5f59293",
+      "image": "local/agent-server-5310-20261005:6f8c38d-base-minimal-arm64-source-minimal",
+      "image_id": "sha256:34dff891689d1577e51e86320b92e96729373ed2d592aaa9046bf94bef42c9df",
+      "conversation_id": "18e576ed256949cca6fc5a8b058202de",
+      "title": "Agent fallback title 5310",
+      "selected_title_profile": "title-aux",
+      "container_id": "fb5476f955e7bd1a97657b2cc8140b4b08d0447d283cae60162d1396feeb9f4b",
+      "container_image_id": "sha256:34dff891689d1577e51e86320b92e96729373ed2d592aaa9046bf94bef42c9df",
+      "source_hashes": {
+        "openhands-agent-server/openhands/agent_server/docker_runtime/provisioning.py": "ace1d23164a846da5b0f59f16a7bd4cd5cb270404d418874ad12322c3ecdaae0",
+        "openhands-agent-server/openhands/agent_server/docker_runtime/routers.py": "3afdbc4ebe8e59d38fa5e39d4df30035ad5cc0ceaddba47fb24be5438ba9b278",
+        "openhands-agent-server/openhands/agent_server/launch.py": "608977a8a3a3e7b013a7be92426ee9978cbc34a9ba77cc85c0919f31435f8d46",
+        "openhands-sdk/openhands/sdk/launch/resolve.py": "890a0a4461a40aeb600ecd212d7692a52644294aabea5e7821d23443941b81c1",
+        "openhands-sdk/openhands/sdk/launch/finalize.py": "565c1b0f2df0120a44763da1fd1419c1d6bb99edd3591c2c8e131892ec1e5873",
+        "openhands-agent-server/openhands/agent_server/conversation_service.py": "0f2288dc3e66d778c64b55613ae5b801f87ac821cbb2d5f4df972e8355e86991",
+        "openhands-sdk/openhands/sdk/llm/llm_profile_store.py": "8096e489860ba4eef2f55e1f642d1976fafaeccdb074df75b344a9b30d8085dc"
+      },
+      "runtime_profiles": [],
+      "profile_checks": {},
+      "provider_connections_copied": false,
+      "plaintext_secret_hits": [],
+      "host_persistence_mounted": false,
+      "provider_observations": [
+        {
+          "time": 1791261195.973398,
+          "path": "/v1/chat/completions",
+          "model": "synthetic-main",
+          "credential": "main",
+          "stream": false
+        },
+        {
+          "time": 1791261195.9799051,
+          "path": "/v1/chat/completions",
+          "model": "synthetic-main",
+          "credential": "main",
+          "stream": true
+        }
+      ],
+      "inner_title_log_lines": [
+        "{\"asctime\": \"2026-10-06 04:33:15,799\", \"levelname\": \"WARNING\", \"name\": \"openhands.agent_server.conversation_service\", \"filename\": \"conversation_service.py\", \"lineno\": 2545, \"message\": \"Failed to load title LLM profile 'title-aux': Profile `title-aux` not found. Available profiles: none. Falling back to the agent's LLM.\"}"
+      ],
+      "name": "baseline-openhands",
+      "recording_period": "2026-10-05 PDT / 2026-10-06 UTC",
+      "summary_sha256": "7c2343a0ee03de1ef874fc98b4b39e2b919790f6ebdc5042f248349d971eb1b1",
+      "import_verification": {
+        "openhands.agent_server.docker_runtime.provisioning": {
+          "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/docker_runtime/provisioning.py",
+          "sha256": "ace1d23164a846da5b0f59f16a7bd4cd5cb270404d418874ad12322c3ecdaae0",
+          "matches_image_source": true
+        },
+        "openhands.agent_server.docker_runtime.routers": {
+          "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/docker_runtime/routers.py",
+          "sha256": "3afdbc4ebe8e59d38fa5e39d4df30035ad5cc0ceaddba47fb24be5438ba9b278",
+          "matches_image_source": true
+        },
+        "openhands.agent_server.launch": {
+          "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/launch.py",
+          "sha256": "608977a8a3a3e7b013a7be92426ee9978cbc34a9ba77cc85c0919f31435f8d46",
+          "matches_image_source": true
+        },
+        "openhands.sdk.launch.resolve": {
+          "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/sdk/launch/resolve.py",
+          "sha256": "890a0a4461a40aeb600ecd212d7692a52644294aabea5e7821d23443941b81c1",
+          "matches_image_source": true
+        },
+        "openhands.sdk.launch.finalize": {
+          "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/sdk/launch/finalize.py",
+          "sha256": "565c1b0f2df0120a44763da1fd1419c1d6bb99edd3591c2c8e131892ec1e5873",
+          "matches_image_source": true
+        },
+        "openhands.agent_server.conversation_service": {
+          "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/conversation_service.py",
+          "sha256": "0f2288dc3e66d778c64b55613ae5b801f87ac821cbb2d5f4df972e8355e86991",
+          "matches_image_source": true
+        },
+        "openhands.sdk.llm.llm_profile_store": {
+          "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/sdk/llm/llm_profile_store.py",
+          "sha256": "8096e489860ba4eef2f55e1f642d1976fafaeccdb074df75b344a9b30d8085dc",
+          "matches_image_source": true
+        }
+      },
+      "screenshot": "baseline-openhands.png",
+      "mount_destinations": [
+        "/var/openhands/conversations/18e576ed256949cca6fc5a8b058202de",
+        "/var/openhands/.openhands",
+        "/workspace"
+      ]
+    },
+    {
+      "sdk_revision": "6f8c38d00e0468ac138447be905f07a8a0cd7af8",
+      "sdk_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "canvas_revision": "0ab2137ad529f2f5935edf152d25a3f8f5f59293",
+      "image": "local/agent-server-5310-20261005:6f8c38d-base-minimal-arm64-source-minimal",
+      "image_id": "sha256:34dff891689d1577e51e86320b92e96729373ed2d592aaa9046bf94bef42c9df",
+      "conversation_id": "4fbcb264ec7447429a4e74aa1b3221c3",
+      "title": "Please investigate the flaky login test in CI a...",
+      "selected_title_profile": "title-aux",
+      "container_id": "c2e1278a3d98175d810c1d87cf9dfca195a55d12a1fd49eb041673c461c08385",
+      "container_image_id": "sha256:34dff891689d1577e51e86320b92e96729373ed2d592aaa9046bf94bef42c9df",
+      "source_hashes": {
+        "openhands-agent-server/openhands/agent_server/docker_runtime/provisioning.py": "ace1d23164a846da5b0f59f16a7bd4cd5cb270404d418874ad12322c3ecdaae0",
+        "openhands-agent-server/openhands/agent_server/docker_runtime/routers.py": "3afdbc4ebe8e59d38fa5e39d4df30035ad5cc0ceaddba47fb24be5438ba9b278",
+        "openhands-agent-server/openhands/agent_server/launch.py": "608977a8a3a3e7b013a7be92426ee9978cbc34a9ba77cc85c0919f31435f8d46",
+        "openhands-sdk/openhands/sdk/launch/resolve.py": "890a0a4461a40aeb600ecd212d7692a52644294aabea5e7821d23443941b81c1",
+        "openhands-sdk/openhands/sdk/launch/finalize.py": "565c1b0f2df0120a44763da1fd1419c1d6bb99edd3591c2c8e131892ec1e5873",
+        "openhands-agent-server/openhands/agent_server/conversation_service.py": "0f2288dc3e66d778c64b55613ae5b801f87ac821cbb2d5f4df972e8355e86991",
+        "openhands-sdk/openhands/sdk/llm/llm_profile_store.py": "8096e489860ba4eef2f55e1f642d1976fafaeccdb074df75b344a9b30d8085dc"
+      },
+      "runtime_profiles": [],
+      "profile_checks": {},
+      "provider_connections_copied": false,
+      "plaintext_secret_hits": [],
+      "host_persistence_mounted": false,
+      "provider_observations": [],
+      "inner_title_log_lines": [
+        "{\"asctime\": \"2026-10-06 04:46:42,267\", \"levelname\": \"WARNING\", \"name\": \"openhands.agent_server.conversation_service\", \"filename\": \"conversation_service.py\", \"lineno\": 2545, \"message\": \"Failed to load title LLM profile 'title-aux': Profile `title-aux` not found. Available profiles: none. Falling back to the agent's LLM.\"}"
+      ],
+      "name": "baseline-acp",
+      "recording_period": "2026-10-05 PDT / 2026-10-06 UTC",
+      "summary_sha256": "3532171bb97d4a645eeee90b1d012d91bf1fb28b48ca8c18391c7c1ee7cd681d",
+      "import_verification": {
+        "container_id": "c2e1278a3d98175d810c1d87cf9dfca195a55d12a1fd49eb041673c461c08385",
+        "image_id": "sha256:34dff891689d1577e51e86320b92e96729373ed2d592aaa9046bf94bef42c9df",
+        "modules": {
+          "openhands.agent_server.docker_runtime.provisioning": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/docker_runtime/provisioning.py",
+            "sha256": "ace1d23164a846da5b0f59f16a7bd4cd5cb270404d418874ad12322c3ecdaae0",
+            "matches_verified_source": true
+          },
+          "openhands.agent_server.docker_runtime.routers": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/docker_runtime/routers.py",
+            "sha256": "3afdbc4ebe8e59d38fa5e39d4df30035ad5cc0ceaddba47fb24be5438ba9b278",
+            "matches_verified_source": true
+          },
+          "openhands.agent_server.launch": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/launch.py",
+            "sha256": "608977a8a3a3e7b013a7be92426ee9978cbc34a9ba77cc85c0919f31435f8d46",
+            "matches_verified_source": true
+          },
+          "openhands.sdk.launch.resolve": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/sdk/launch/resolve.py",
+            "sha256": "890a0a4461a40aeb600ecd212d7692a52644294aabea5e7821d23443941b81c1",
+            "matches_verified_source": true
+          },
+          "openhands.sdk.launch.finalize": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/sdk/launch/finalize.py",
+            "sha256": "565c1b0f2df0120a44763da1fd1419c1d6bb99edd3591c2c8e131892ec1e5873",
+            "matches_verified_source": true
+          },
+          "openhands.agent_server.conversation_service": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/conversation_service.py",
+            "sha256": "0f2288dc3e66d778c64b55613ae5b801f87ac821cbb2d5f4df972e8355e86991",
+            "matches_verified_source": true
+          },
+          "openhands.sdk.llm.llm_profile_store": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/sdk/llm/llm_profile_store.py",
+            "sha256": "8096e489860ba4eef2f55e1f642d1976fafaeccdb074df75b344a9b30d8085dc",
+            "matches_verified_source": true
+          }
+        },
+        "all_imported_modules_match": true
+      },
+      "screenshot": "baseline-acp.png",
+      "mount_destinations": [
+        "/var/openhands/conversations/4fbcb264ec7447429a4e74aa1b3221c3",
+        "/var/openhands/.openhands",
+        "/workspace"
+      ]
+    },
+    {
+      "sdk_revision": "6f8c38d00e0468ac138447be905f07a8a0cd7af8",
+      "sdk_diff_sha256": "4e7147038dbc30d84b085407129f118ecceb1e54d82c8285605357e8778b8a27",
+      "canvas_revision": "0ab2137ad529f2f5935edf152d25a3f8f5f59293",
+      "image": "local/agent-server-5310-20261005:6f8c38d-cancel-fix-20261006-minimal-arm64-source-minimal",
+      "image_id": "sha256:d91892f2fbc4430a965504bb58e8bfe97bfed8388df3172c64dc8c667a11b8ac",
+      "conversation_id": "f97ca3e8379b43b3b281fd06585d7e20",
+      "title": "Aux profile title 5310",
+      "selected_title_profile": "title-aux",
+      "container_id": "46cd2abcaed9ecc9b04e1ea2111e976418ba919147b55e67f8cb7716bfa64c96",
+      "container_image_id": "sha256:d91892f2fbc4430a965504bb58e8bfe97bfed8388df3172c64dc8c667a11b8ac",
+      "source_hashes": {
+        "openhands-agent-server/openhands/agent_server/docker_runtime/provisioning.py": "510991fd4131b6f2cecde644542e0187200e0e071bdfefa7f948b99775f12720",
+        "openhands-agent-server/openhands/agent_server/docker_runtime/routers.py": "0d2cdd2744fda4e158f31174de786034232075b90ff3f2a618989aa04936cab8",
+        "openhands-agent-server/openhands/agent_server/launch.py": "608977a8a3a3e7b013a7be92426ee9978cbc34a9ba77cc85c0919f31435f8d46",
+        "openhands-sdk/openhands/sdk/launch/resolve.py": "890a0a4461a40aeb600ecd212d7692a52644294aabea5e7821d23443941b81c1",
+        "openhands-sdk/openhands/sdk/launch/finalize.py": "565c1b0f2df0120a44763da1fd1419c1d6bb99edd3591c2c8e131892ec1e5873",
+        "openhands-agent-server/openhands/agent_server/conversation_service.py": "0f2288dc3e66d778c64b55613ae5b801f87ac821cbb2d5f4df972e8355e86991",
+        "openhands-sdk/openhands/sdk/llm/llm_profile_store.py": "8096e489860ba4eef2f55e1f642d1976fafaeccdb074df75b344a9b30d8085dc"
+      },
+      "runtime_profiles": [
+        "title-aux.json"
+      ],
+      "profile_checks": {
+        "title-aux.json": {
+          "model": "openai/synthetic-aux",
+          "provider_connection_id": null,
+          "aux_credential_matches": true,
+          "host_cipher_cannot_decrypt": true,
+          "encrypted_prefix": true
+        }
+      },
+      "provider_connections_copied": false,
+      "plaintext_secret_hits": [],
+      "host_persistence_mounted": false,
+      "provider_observations": [
+        {
+          "time": 1791272646.187331,
+          "path": "/v1/chat/completions",
+          "model": "synthetic-aux",
+          "credential": "aux-linked",
+          "stream": false
+        },
+        {
+          "time": 1791272646.1896472,
+          "path": "/v1/chat/completions",
+          "model": "synthetic-main",
+          "credential": "main",
+          "stream": true
+        }
+      ],
+      "inner_title_log_lines": [
+        "{\"asctime\": \"2026-10-06 07:44:05,960\", \"levelname\": \"INFO\", \"name\": \"openhands.sdk.llm.llm_profile_store\", \"filename\": \"llm_profile_store.py\", \"lineno\": 303, \"message\": \"[Profile Store] Loaded profile `title-aux` from /var/openhands/.openhands/profiles/title-aux.json\"}",
+        "{\"asctime\": \"2026-10-06 07:44:05,973\", \"levelname\": \"INFO\", \"name\": \"openhands.sdk.llm.llm_profile_store\", \"filename\": \"llm_profile_store.py\", \"lineno\": 303, \"message\": \"[Profile Store] Loaded profile `title-aux` from /var/openhands/.openhands/profiles/title-aux.json\"}"
+      ],
+      "name": "corrected-openhands",
+      "recording_period": "2026-10-06 PDT / UTC",
+      "summary_sha256": "70f05e394fd119b8055b9dc98be69985b78048a06f76237c65312bb6a8210665",
+      "import_verification": {
+        "container_id": "46cd2abcaed9ecc9b04e1ea2111e976418ba919147b55e67f8cb7716bfa64c96",
+        "image_id": "sha256:d91892f2fbc4430a965504bb58e8bfe97bfed8388df3172c64dc8c667a11b8ac",
+        "modules": {
+          "openhands.agent_server.docker_runtime.provisioning": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/docker_runtime/provisioning.py",
+            "sha256": "510991fd4131b6f2cecde644542e0187200e0e071bdfefa7f948b99775f12720",
+            "matches_verified_source": true
+          },
+          "openhands.agent_server.docker_runtime.routers": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/docker_runtime/routers.py",
+            "sha256": "0d2cdd2744fda4e158f31174de786034232075b90ff3f2a618989aa04936cab8",
+            "matches_verified_source": true
+          },
+          "openhands.agent_server.launch": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/launch.py",
+            "sha256": "608977a8a3a3e7b013a7be92426ee9978cbc34a9ba77cc85c0919f31435f8d46",
+            "matches_verified_source": true
+          },
+          "openhands.sdk.launch.resolve": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/sdk/launch/resolve.py",
+            "sha256": "890a0a4461a40aeb600ecd212d7692a52644294aabea5e7821d23443941b81c1",
+            "matches_verified_source": true
+          },
+          "openhands.sdk.launch.finalize": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/sdk/launch/finalize.py",
+            "sha256": "565c1b0f2df0120a44763da1fd1419c1d6bb99edd3591c2c8e131892ec1e5873",
+            "matches_verified_source": true
+          },
+          "openhands.agent_server.conversation_service": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/conversation_service.py",
+            "sha256": "0f2288dc3e66d778c64b55613ae5b801f87ac821cbb2d5f4df972e8355e86991",
+            "matches_verified_source": true
+          },
+          "openhands.sdk.llm.llm_profile_store": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/sdk/llm/llm_profile_store.py",
+            "sha256": "8096e489860ba4eef2f55e1f642d1976fafaeccdb074df75b344a9b30d8085dc",
+            "matches_verified_source": true
+          }
+        },
+        "all_imported_modules_match": true
+      },
+      "screenshot": "corrected-openhands.png",
+      "mount_destinations": [
+        "/var/openhands/conversations/f97ca3e8379b43b3b281fd06585d7e20",
+        "/var/openhands/.openhands",
+        "/workspace"
+      ]
+    },
+    {
+      "sdk_revision": "6f8c38d00e0468ac138447be905f07a8a0cd7af8",
+      "sdk_diff_sha256": "4e7147038dbc30d84b085407129f118ecceb1e54d82c8285605357e8778b8a27",
+      "canvas_revision": "0ab2137ad529f2f5935edf152d25a3f8f5f59293",
+      "image": "local/agent-server-5310-20261005:6f8c38d-cancel-fix-20261006-minimal-arm64-source-minimal",
+      "image_id": "sha256:d91892f2fbc4430a965504bb58e8bfe97bfed8388df3172c64dc8c667a11b8ac",
+      "conversation_id": "816181557e184f6ebe15a3d529c626fb",
+      "title": "Aux profile title 5310",
+      "selected_title_profile": "title-aux",
+      "container_id": "75573c2ae091678ec3a14b5781547294bd1da9cb2aaef09782f3509a79285614",
+      "container_image_id": "sha256:d91892f2fbc4430a965504bb58e8bfe97bfed8388df3172c64dc8c667a11b8ac",
+      "source_hashes": {
+        "openhands-agent-server/openhands/agent_server/docker_runtime/provisioning.py": "510991fd4131b6f2cecde644542e0187200e0e071bdfefa7f948b99775f12720",
+        "openhands-agent-server/openhands/agent_server/docker_runtime/routers.py": "0d2cdd2744fda4e158f31174de786034232075b90ff3f2a618989aa04936cab8",
+        "openhands-agent-server/openhands/agent_server/launch.py": "608977a8a3a3e7b013a7be92426ee9978cbc34a9ba77cc85c0919f31435f8d46",
+        "openhands-sdk/openhands/sdk/launch/resolve.py": "890a0a4461a40aeb600ecd212d7692a52644294aabea5e7821d23443941b81c1",
+        "openhands-sdk/openhands/sdk/launch/finalize.py": "565c1b0f2df0120a44763da1fd1419c1d6bb99edd3591c2c8e131892ec1e5873",
+        "openhands-agent-server/openhands/agent_server/conversation_service.py": "0f2288dc3e66d778c64b55613ae5b801f87ac821cbb2d5f4df972e8355e86991",
+        "openhands-sdk/openhands/sdk/llm/llm_profile_store.py": "8096e489860ba4eef2f55e1f642d1976fafaeccdb074df75b344a9b30d8085dc"
+      },
+      "runtime_profiles": [
+        "title-aux.json"
+      ],
+      "profile_checks": {
+        "title-aux.json": {
+          "model": "openai/synthetic-aux",
+          "provider_connection_id": null,
+          "aux_credential_matches": true,
+          "host_cipher_cannot_decrypt": true,
+          "encrypted_prefix": true
+        }
+      },
+      "provider_connections_copied": false,
+      "plaintext_secret_hits": [],
+      "host_persistence_mounted": false,
+      "provider_observations": [
+        {
+          "time": 1791272581.908281,
+          "path": "/v1/chat/completions",
+          "model": "synthetic-aux",
+          "credential": "aux-linked",
+          "stream": false
+        }
+      ],
+      "inner_title_log_lines": [
+        "{\"asctime\": \"2026-10-06 07:43:01,532\", \"levelname\": \"INFO\", \"name\": \"openhands.sdk.llm.llm_profile_store\", \"filename\": \"llm_profile_store.py\", \"lineno\": 303, \"message\": \"[Profile Store] Loaded profile `title-aux` from /var/openhands/.openhands/profiles/title-aux.json\"}"
+      ],
+      "name": "corrected-acp",
+      "recording_period": "2026-10-06 PDT / UTC",
+      "summary_sha256": "49e1ec919e496100d2b581177a6abd399fd2b70ca83437bee27f86ae345bc370",
+      "import_verification": {
+        "container_id": "75573c2ae091678ec3a14b5781547294bd1da9cb2aaef09782f3509a79285614",
+        "image_id": "sha256:d91892f2fbc4430a965504bb58e8bfe97bfed8388df3172c64dc8c667a11b8ac",
+        "modules": {
+          "openhands.agent_server.docker_runtime.provisioning": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/docker_runtime/provisioning.py",
+            "sha256": "510991fd4131b6f2cecde644542e0187200e0e071bdfefa7f948b99775f12720",
+            "matches_verified_source": true
+          },
+          "openhands.agent_server.docker_runtime.routers": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/docker_runtime/routers.py",
+            "sha256": "0d2cdd2744fda4e158f31174de786034232075b90ff3f2a618989aa04936cab8",
+            "matches_verified_source": true
+          },
+          "openhands.agent_server.launch": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/launch.py",
+            "sha256": "608977a8a3a3e7b013a7be92426ee9978cbc34a9ba77cc85c0919f31435f8d46",
+            "matches_verified_source": true
+          },
+          "openhands.sdk.launch.resolve": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/sdk/launch/resolve.py",
+            "sha256": "890a0a4461a40aeb600ecd212d7692a52644294aabea5e7821d23443941b81c1",
+            "matches_verified_source": true
+          },
+          "openhands.sdk.launch.finalize": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/sdk/launch/finalize.py",
+            "sha256": "565c1b0f2df0120a44763da1fd1419c1d6bb99edd3591c2c8e131892ec1e5873",
+            "matches_verified_source": true
+          },
+          "openhands.agent_server.conversation_service": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/agent_server/conversation_service.py",
+            "sha256": "0f2288dc3e66d778c64b55613ae5b801f87ac821cbb2d5f4df972e8355e86991",
+            "matches_verified_source": true
+          },
+          "openhands.sdk.llm.llm_profile_store": {
+            "path": "/agent-server/.venv/lib/python3.13/site-packages/openhands/sdk/llm/llm_profile_store.py",
+            "sha256": "8096e489860ba4eef2f55e1f642d1976fafaeccdb074df75b344a9b30d8085dc",
+            "matches_verified_source": true
+          }
+        },
+        "all_imported_modules_match": true
+      },
+      "screenshot": "corrected-acp.png",
+      "mount_destinations": [
+        "/var/openhands/.openhands",
+        "/workspace",
+        "/var/openhands/conversations/816181557e184f6ebe15a3d529c626fb"
+      ]
+    }
+  ],
+  "screenshots_sha256": {
+    "baseline-openhands.png": "5f68388e41b7188818382c66242b4826e9b45bb1c2533b6e61385a5e9778050f",
+    "baseline-acp.png": "59a7c03bae618c4927a1d681666c9616c3c7598afdf5ab5f0a227b8cbd714152",
+    "corrected-openhands.png": "bc038db6bb19e596e2556fd18f7587bfa2527692286ea29f70231b1bf17a2ded",
+    "corrected-acp.png": "f7e50bd996427a125b3bc3699571526856be0d1f7c7ff5ff3946110a1189ed29",
+    "title-settings.png": "82568b3905979d7fb59447eb09383fedc7e37e20975807dcbec1cd58ccd8e614"
+  },
+  "limitations": [
+    "Synthetic HTTP endpoint and fake credentials; no real-provider or model-quality validation.",
+    "ACPAgent ran the existing Canvas mock ACP stdio script; not authenticated Codex/Claude or full ACP coverage.",
+    "No Canvas rerun or image rebuild in the integration pass: relevant source and build inputs are identical.",
+    "Image build metadata still names the reviewed base; no integration commit exists yet.",
+    "Remote CI and maintainer acceptance remain pending."
+  ]
+}
