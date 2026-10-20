@@ -112,8 +112,12 @@ class RuntimeDispatchMiddleware:
             to_docker = match is not None and registry.is_docker(UUID(match[1]))
         elif path == "/api/conversations" and method == "POST":
             receive, body = await _buffer_body(receive)
-            to_docker = (
-                _requested_runtime(body) or registry.config.conversation_runtime
+            request = _json_object(body)
+            # A start for an existing Docker conversation resumes it in Docker.
+            existing = _conversation_id(request.get("conversation_id"))
+            to_docker = (existing is not None and registry.is_docker(existing)) or (
+                request.get("conversation_runtime")
+                or registry.config.conversation_runtime
             ) == "docker"
         elif match := _CONVERSATION_PATH.match(path):
             # GET of the conversation itself is the shared catalog record.
@@ -146,9 +150,16 @@ async def _buffer_body(receive: Receive) -> tuple[Receive, bytes]:
     return replay, body
 
 
-def _requested_runtime(body: bytes) -> Any:
+def _json_object(body: bytes) -> dict[str, Any]:
     try:
         data = json.loads(body)
     except (json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _conversation_id(value: Any) -> UUID | None:
+    try:
+        return UUID(value) if isinstance(value, str) else None
+    except ValueError:
         return None
-    return data.get("conversation_runtime") if isinstance(data, dict) else None

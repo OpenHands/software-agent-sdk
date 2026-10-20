@@ -112,6 +112,31 @@ async def test_dispatch_start_uses_requested_runtime(
 
 
 @pytest.mark.asyncio
+async def test_dispatch_start_resumes_existing_docker_conversation(config):
+    registry = HybridConversationRegistry(
+        config.model_copy(update={"conversation_runtime": "local"})
+    )
+    docker_id = uuid4()
+    registry.provisioning.create(docker_id)
+    body = json.dumps({"conversation_id": str(docker_id)}).encode()
+    seen = await _dispatch(
+        registry, {"type": "http", "method": "POST", "path": "/api/conversations"}, body
+    )
+    assert seen == {"path": "/api/_docker/conversations", "body": body}
+
+
+def test_start_existing_docker_conversation_as_local_is_rejected(config):
+    app = create_app(config.model_copy(update={"conversation_runtime": "local"}))
+    docker_id = uuid4()
+    app.state.conversation_registry.provisioning.create(docker_id)
+    response = TestClient(app).post(
+        "/api/conversations",
+        json={"conversation_id": str(docker_id), "conversation_runtime": "local"},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_dispatch_routes_docker_sockets(config):
     registry = HybridConversationRegistry(config)
     docker_id = uuid4()
