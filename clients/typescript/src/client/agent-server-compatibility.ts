@@ -30,6 +30,13 @@ export const AgentServerFeatureRequirements = {
     displayName: 'MCP OAuth API',
     minVersion: '1.31.0',
   },
+  executeTool: {
+    feature: 'execute-tool',
+    displayName: 'Direct tool execution API',
+    // The endpoint is new and unreleased; the floor is the next unreleased
+    // minor so a server without it is rejected before the call can 404.
+    minVersion: '1.57.0',
+  },
 } as const satisfies Record<string, AgentServerFeatureRequirement>;
 
 export class AgentServerVersionError extends Error {

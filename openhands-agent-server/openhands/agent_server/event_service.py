@@ -111,10 +111,11 @@ class DirectToolNotAllowedError(ValueError):
     """The named tool may not be executed through the direct tool endpoint.
 
     The endpoint runs a tool outside the agent loop, without the confirmation
-    policy or the security analyzer, and appends no event. Only tools whose
-    direct execution is meaningful (see ``DIRECT_EXECUTION_TOOLS``) are
-    accepted; the rest are refused so a generic "run any tool" channel is not
-    exposed.
+    policy or the security analyzer, and appends no event of its own (a
+    conversation that has never run still emits the initialization
+    ``SystemPromptEvent``). Only tools whose direct execution is meaningful (see
+    ``DIRECT_EXECUTION_TOOLS``) are accepted; the rest are refused so a generic
+    "run any tool" channel is not exposed.
     """
 
 
@@ -2392,9 +2393,11 @@ class EventService:
 
         This bypasses confirmation policy and the security analyzer, as
         ``LocalConversation.execute_tool`` does by design, and appends no event
-        to the conversation. Because it is a setup mechanism rather than a way
-        to drive the agent, direct calls are serialized per conversation and
-        cannot overlap a run in either direction.
+        to the conversation. On a conversation that has never run, the call
+        first initializes the agent, which emits a ``SystemPromptEvent``. Because
+        it is a setup mechanism rather than a way to drive the agent, direct
+        calls are serialized per conversation and cannot overlap a run in either
+        direction.
 
         Raises:
             ValueError: If the service is inactive.

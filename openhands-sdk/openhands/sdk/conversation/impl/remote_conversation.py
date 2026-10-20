@@ -1898,7 +1898,9 @@ class RemoteConversation(BaseConversation):
         setup script's ``export``/``source`` survive into the agent's terminal.
 
         This bypasses the agent loop's confirmation policy and security
-        analyzer, and appends no event, matching ``LocalConversation``.
+        analyzer, and appends no event, matching ``LocalConversation``. On a
+        conversation that has never run, the server initializes the agent first,
+        which emits a ``SystemPromptEvent``.
 
         Note: The agent server accepts only tools it allows to run directly
         (currently ``terminal``), and validates the action against that tool's

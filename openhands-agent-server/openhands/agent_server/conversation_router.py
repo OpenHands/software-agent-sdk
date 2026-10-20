@@ -791,7 +791,8 @@ async def execute_tool(
     Intended for pre-run setup: the tool runs through the conversation's own
     executor, so state such as the terminal session is shared with the agent's
     later calls. Bypasses confirmation policy and the security analyzer, and
-    appends no event.
+    appends no event. On a conversation that has never run, the call first
+    initializes the agent, which emits a ``SystemPromptEvent``.
 
     Only the tools in ``DIRECT_EXECUTION_TOOLS`` (currently ``terminal``) are
     accepted, and the action is validated against that tool's own action type,

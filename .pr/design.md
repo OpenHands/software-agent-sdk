@@ -39,6 +39,11 @@ LocalConversation.execute_tool(tool_name, action)   # the conversation's own
 Mirrors the existing `ask_agent` / `condense` / `navigate` verbs exactly:
 Router -> ConversationService -> EventService -> LocalConversation.
 
+Both typed clients expose it: the Python `RemoteConversation.execute_tool()` and
+the TypeScript `RemoteConversation.executeTool()` /
+`ConversationClient.executeTool()`, which unwraps `ExecuteToolResponse.observation`
+back into the tool's own observation model.
+
 ## Key decisions
 
 - **The action is a plain JSON object, validated against the selected tool.**
@@ -75,9 +80,12 @@ Router -> ConversationService -> EventService -> LocalConversation.
   tool, is 422; `None` from the service maps to 404.
 - **Non-blocking.** `EventService` runs the call in an executor, matching
   `ask_agent`; a slow bootstrap script does not stall `/alive`.
-- **No event appended, confirmation/analyzer bypassed.** Inherited from
+- **No tool event appended, confirmation/analyzer bypassed.** Inherited from
   `LocalConversation.execute_tool()` by design; it is a pre-run setup mechanism,
-  documented in the route docstring and the OpenAPI description.
+  documented in the route docstring and the OpenAPI description. The one
+  exception is a conversation that has never run: the call initializes the agent
+  first, which emits the initialization `SystemPromptEvent`, so the "no event"
+  claim only holds once a message has already initialized the agent.
 - **Non-goal: auto-discovery.** The agent-server loads no project convention on
   its own (`.openhands/hooks.json` is read only via `POST /api/hooks`), so
   auto-running `<workspace>/.openhands/setup.sh` belongs to the client that owns

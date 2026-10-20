@@ -1254,6 +1254,105 @@ describe('Auxiliary API clients', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('ConversationClient.executeTool POSTs the request and returns the observation', async () => {
+    const observation = { kind: 'TerminalObservation', exit_code: 0, text: 'ready' };
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      const body = url.endsWith('/server_info')
+        ? { version: '1.57.0', uptime: 1, idle_time: 0 }
+        : { observation };
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    }) as typeof fetch;
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    const result = await client.executeTool('c1', {
+      tool_name: 'terminal',
+      action: { kind: 'TerminalAction', command: 'source .openhands/setup.sh' },
+    });
+
+    // Tool-specific observation fields survive the round trip.
+    expect(result).toEqual({ observation });
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/c1/execute_tool',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          tool_name: 'terminal',
+          action: { kind: 'TerminalAction', command: 'source .openhands/setup.sh' },
+        }),
+      })
+    );
+  });
+
+  it('ConversationClient.executeTool rejects servers that predate the endpoint', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ version: '1.56.0', uptime: 1, idle_time: 0 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    await expect(
+      new ConversationClient({ host: 'http://example.com' }).executeTool('c1', {
+        tool_name: 'terminal',
+        action: { kind: 'TerminalAction', command: 'echo hi' },
+      })
+    ).rejects.toMatchObject({
+      code: 'AGENT_SERVER_VERSION_TOO_OLD',
+      feature: 'execute-tool',
+      requiredVersion: '1.57.0',
+      actualVersion: '1.56.0',
+    });
+
+    // Rejected before reaching the endpoint.
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('RemoteConversation.executeTool POSTs and unwraps the observation', async () => {
+    const observation = { kind: 'TerminalObservation', exit_code: 0, text: 'ready' };
+    global.fetch = vi
+      .fn()
+      .mockImplementation((url: string) =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify(
+              url.endsWith('/server_info')
+                ? { version: '1.57.0', uptime: 1, idle_time: 0 }
+                : { observation }
+            ),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          )
+        )
+      ) as typeof fetch;
+
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace, {
+      conversationId: 'conv-123',
+    });
+
+    const result = await conversation.executeTool('terminal', {
+      kind: 'TerminalAction',
+      command: 'source .openhands/setup.sh',
+    });
+
+    expect(result).toEqual(observation);
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conv-123/execute_tool',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          tool_name: 'terminal',
+          action: { kind: 'TerminalAction', command: 'source .openhands/setup.sh' },
+        }),
+      })
+    );
+  });
+
   it('compares agent-server semantic versions', () => {
     expect(compareAgentServerVersions('1.23.0', '1.23.0')).toBe(0);
     expect(compareAgentServerVersions('v1.24.0+build.1', '1.23.0')).toBe(1);

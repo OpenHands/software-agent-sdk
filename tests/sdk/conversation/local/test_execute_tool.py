@@ -174,6 +174,24 @@ def test_execute_tool_before_send_message():
     assert len(conversation.state.events) >= 2  # System prompt + user message
 
 
+def test_execute_tool_cold_start_emits_system_prompt_event():
+    """The first execute_tool on a fresh conversation appends SystemPromptEvent.
+
+    The call itself appends no tool event, but initializing the agent on an
+    untouched conversation does emit the system prompt, so the "no event" claim
+    only holds for conversations already initialized by a message.
+    """
+    agent = ExecuteToolDummyAgent(tools=[Tool(name="execute_tool_test", params={})])
+    conversation = Conversation(agent=agent)
+    assert not conversation._agent_ready
+    assert list(conversation.state.events) == []
+
+    conversation.execute_tool("execute_tool_test", ExecuteToolTestAction(value="cold"))
+
+    assert conversation._agent_ready
+    assert [type(e) for e in conversation.state.events] == [SystemPromptEvent]
+
+
 def test_execute_tool_after_send_message():
     """Test that execute_tool works after send_message is called."""
     agent = ExecuteToolDummyAgent(tools=[Tool(name="execute_tool_test", params={})])
