@@ -4,14 +4,15 @@ import os
 import platform
 import shutil
 from collections.abc import Mapping
+from typing import Final
 
 
-TERMINAL_PROCESS_PRIORITY_ENV = "OH_TERMINAL_PROCESS_PRIORITY"
+TERMINAL_PROCESS_PRIORITY_ENV: Final[str] = "OH_TERMINAL_PROCESS_PRIORITY"
 
 # macOS largely ignores nice; the utility QoS clamp is what keeps the server
 # responsive. Avoid the background clamp: it also throttles I/O heavily.
-_TASKPOLICY_PATH = "/usr/sbin/taskpolicy"
-_LINUX_NICE_INCREMENT = 10
+_TASKPOLICY_PATH: Final[str] = "/usr/sbin/taskpolicy"
+_LINUX_NICE_INCREMENT: Final[str] = "10"
 
 
 def should_lower_process_priority(env: Mapping[str, str]) -> bool:
@@ -34,5 +35,5 @@ def process_priority_prefix(env: Mapping[str, str]) -> list[str]:
     if system == "Darwin" and os.path.exists(_TASKPOLICY_PATH):
         return [_TASKPOLICY_PATH, "-c", "utility"]
     if system == "Linux" and (nice_path := shutil.which("nice")) is not None:
-        return [nice_path, "-n", str(_LINUX_NICE_INCREMENT)]
+        return [nice_path, "-n", _LINUX_NICE_INCREMENT]
     return []
