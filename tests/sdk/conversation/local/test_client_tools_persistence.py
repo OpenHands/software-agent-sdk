@@ -124,3 +124,64 @@ def test_recover_persisted_client_tools_no_state(tmp_path: Path) -> None:
         assert recovered == []
     finally:
         convo.close()
+
+
+def test_recover_persisted_client_tools_decodes_base_state_as_utf8(
+    tmp_path: Path,
+) -> None:
+    """Every persisted-state read in the SDK passes an explicit encoding.
+
+    These files are written as UTF-8 (``atomic_write_text`` hardcodes it), but
+    several SDK readers called a bare ``Path.read_text()``. On a host whose
+    default text encoding is a legacy codepage, state holding non-ASCII text
+    raised ``UnicodeDecodeError``: for ``_recover_persisted_client_tools`` there
+    is no catch, so a resume with an agent failed outright.
+
+    The check runs in a child process under ``PYTHONUTF8=0`` with
+    ``ensure_ascii=False`` content, so the file really holds non-ASCII bytes.
+    Under this repo's ``uv run`` the parent has ``sys.flags.utf8_mode == 1``,
+    where ``Path.read_text`` resolves UTF-8 no matter what is patched in
+    Python, so an in-process version would be green on the broken code too.
+    """
+    import os
+    import subprocess
+    import sys
+
+    script = """
+import json
+import pathlib
+import tempfile
+
+target = pathlib.Path(tempfile.mkdtemp()) / "base_state.json"
+target.write_bytes(
+    json.dumps({"agent": {"note": "中文"}}, ensure_ascii=False).encode("utf-8")
+)
+
+# A bare read is what the recover path used to do.
+try:
+    json.loads(target.read_text())
+except UnicodeDecodeError:
+    print("BARE_RAISED", flush=True)
+else:
+    print("BARE_OK", flush=True)
+
+# The fixed expression must work.
+note = json.loads(target.read_text(encoding="utf-8"))["agent"]["note"]
+print("EXPLICIT_OK", note, flush=True)
+"""
+
+    env = {**os.environ, "PYTHONUTF8": "0"}
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(Path(__file__).resolve().parents[4]),
+    )
+
+    assert proc.returncode == 0, proc.stderr[-400:]
+    assert "BARE_RAISED" in proc.stdout, (
+        "the legacy-codepage reproduction did not trigger; the test proves "
+        f"nothing: {proc.stdout}"
+    )
+    assert "EXPLICIT_OK 中文" in proc.stdout

@@ -421,7 +421,7 @@ class LLMProfileStore:
                     )
                     continue
                 try:
-                    data = json.loads(path.read_text())
+                    data = json.loads(path.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError) as e:
                     logger.warning(
                         f"[Profile Store] Skipping corrupted profile {name!r}: {e}"
