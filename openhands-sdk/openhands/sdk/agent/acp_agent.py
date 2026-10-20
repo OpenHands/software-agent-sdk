@@ -616,17 +616,35 @@ async def _apply_acp_model(
     The model id is normally the bare preset id listed by the server. Callers
     may still pass a combined id such as ``gpt-5.5/high`` or ``opus[1m]/high``;
     providers that declare an ``effort_config_id`` expose effort as a separate
-    config option, so split it only on the config-options mechanism.
+    config option, so split it only on the config-options mechanism. Effort is
+    applied after the model and best-effort: a server may reject it for a model
+    without effort support (claude-agent-acp drops the option for Haiku), and
+    that must not undo or misreport the model switch that already succeeded.
 
     agent-client-protocol 0.12.1 removed ``ClientSideConnection.set_session_model``;
     :class:`_ACPClientConnection` restores it, and a connection without it
     no-ops rather than raising ``AttributeError``.
     """
     if via_config_option:
-        for config_id, value in _model_config_options(agent_name, model):
-            await conn.set_config_option(
-                config_id=config_id, value=value, session_id=session_id
-            )
+        (model_option, *effort_options) = _model_config_options(agent_name, model)
+        await conn.set_config_option(
+            config_id=model_option[0], value=model_option[1], session_id=session_id
+        )
+        for config_id, value in effort_options:
+            try:
+                await conn.set_config_option(
+                    config_id=config_id, value=value, session_id=session_id
+                )
+            except ACPRequestError as e:
+                logger.warning(
+                    "ACP server %s rejected %s=%r for model %r (%s); "
+                    "keeping the model at the server's default effort",
+                    agent_name,
+                    config_id,
+                    value,
+                    model_option[1],
+                    e,
+                )
     elif supports_legacy_model_switch(conn):
         await conn.set_session_model(model_id=model, session_id=session_id)  # type: ignore[attr-defined]
 
