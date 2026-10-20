@@ -2522,9 +2522,10 @@ describe('Auxiliary API clients', () => {
     );
   });
 
-  // The endpoint first ships in 1.56.0, so any released server below that must
-  // be rejected - including 1.55.1, the newest release, which still lacks it.
-  it.each(['1.22.1', '1.55.1'])(
+  // The endpoint first ships in 1.57.0, so every released server below that
+  // must be rejected - including 1.56.0, the newest release, which still lacks
+  // it.
+  it.each(['1.22.1', '1.55.1', '1.56.0'])(
     'ConversationClient.respondToAskUser throws AgentServerVersionError for server %s',
     async (version) => {
       global.fetch = vi.fn().mockResolvedValue(
@@ -2543,7 +2544,7 @@ describe('Auxiliary API clients', () => {
       ).rejects.toMatchObject({
         code: 'AGENT_SERVER_VERSION_TOO_OLD',
         feature: 'ask-user',
-        requiredVersion: '1.56.0',
+        requiredVersion: '1.57.0',
         actualVersion: version,
       });
 
@@ -2552,7 +2553,7 @@ describe('Auxiliary API clients', () => {
   );
 
   it('ConversationClient.respondToAskUser posts the typed response for a supported server', async () => {
-    const responses = [{ version: '1.56.0', uptime: 1, idle_time: 0 }, { success: true }];
+    const responses = [{ version: '1.57.0', uptime: 1, idle_time: 0 }, { success: true }];
     global.fetch = vi.fn().mockImplementation(() => {
       const body = responses.shift();
       return Promise.resolve(
@@ -2592,7 +2593,7 @@ describe('Auxiliary API clients', () => {
   it('RemoteConversation.respondToAskUser posts the response', async () => {
     global.fetch = vi.fn().mockImplementation(() =>
       Promise.resolve(
-        new Response(JSON.stringify({ version: '1.56.0', uptime: 1, idle_time: 0 }), {
+        new Response(JSON.stringify({ version: '1.57.0', uptime: 1, idle_time: 0 }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         })

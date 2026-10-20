@@ -33,10 +33,11 @@ export const AgentServerFeatureRequirements = {
   askUser: {
     feature: 'ask-user',
     displayName: 'ask_user request/response API',
-    // The endpoint ships with this feature, so the floor is the first release
-    // that contains it. 1.55.1 is the newest release and still lacks it; gating
-    // any lower would let a real server pass this check and then 404.
-    minVersion: '1.56.0',
+    // The endpoint ships with this feature, so the floor must be above every
+    // already-released server: 1.56.0 is the newest release and still lacks it,
+    // so gating any lower would let a real server pass this check and then 404.
+    // 1.57.0 is the next unreleased minor.
+    minVersion: '1.57.0',
   },
 } as const satisfies Record<string, AgentServerFeatureRequirement>;
 
