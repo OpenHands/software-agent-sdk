@@ -743,3 +743,173 @@ async def test_codex_routes_are_authenticated_scoped_and_backward_compatible(
         assert (await client.delete(scoped)).status_code == 200
         assert (await client.get(scoped)).status_code == 404
     await app.state.codex_voice.close()
+
+
+async def test_new_speech_suppresses_pending_answer_without_losing_saved_result(
+    protocol, relay_events, tmp_path
+):
+    events, state = relay_events
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def wait(timeout):
+        if timeout:
+            entered.set()
+            await release.wait()
+        return ConversationExecutionStatus.FINISHED
+
+    events.wait_for_run_completion.side_effect = wait
+    relay = CodexRelay(state.id, events, tmp_path / "home")
+    try:
+        await relay.start("v=0", "")
+        await relay.rpc("fixture/notify", _handoff())
+        await asyncio.wait_for(entered.wait(), 3)
+        await relay.rpc(
+            "fixture/notify",
+            {
+                "method": "thread/realtime/transcript/delta",
+                "params": {
+                    "threadId": "bound-thread",
+                    "role": "user",
+                    "delta": "Actually",
+                },
+            },
+        )
+        release.set()
+        assert relay.handoff_task is not None
+        await asyncio.wait_for(asyncio.shield(relay.handoff_task), 3)
+        result = await relay.rpc("fixture/results", {})
+        assert not [
+            x
+            for x in result["requests"]
+            if x["method"] == "thread/realtime/appendSpeech"
+        ]
+        events.send_message.assert_awaited_once()
+        assert list(state.events)[-1].action.message == "Saved coral."
+    finally:
+        release.set()
+        await relay.close()
+
+
+async def test_typed_followup_suppresses_pending_answer_instead_of_speaking_other_turn(
+    protocol, relay_events, tmp_path
+):
+    events, state = relay_events
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def wait(timeout):
+        if timeout:
+            entered.set()
+            await release.wait()
+        return ConversationExecutionStatus.FINISHED
+
+    events.wait_for_run_completion.side_effect = wait
+    relay = CodexRelay(state.id, events, tmp_path / "home")
+    try:
+        await relay.start("v=0", "")
+        await relay.rpc("fixture/notify", _handoff())
+        await asyncio.wait_for(entered.wait(), 3)
+        state.events.append(
+            MessageEvent(
+                llm_message=Message(
+                    role="user", content=[TextContent(text="Typed correction")]
+                ),
+                source="user",
+            )
+        )
+        release.set()
+        assert relay.handoff_task is not None
+        await asyncio.wait_for(asyncio.shield(relay.handoff_task), 3)
+        result = await relay.rpc("fixture/results", {})
+        assert not [
+            x
+            for x in result["requests"]
+            if x["method"] == "thread/realtime/appendSpeech"
+        ]
+        assert any(isinstance(e, ActionEvent) for e in state.events)
+        events.send_message.assert_awaited_once()
+    finally:
+        release.set()
+        await relay.close()
+
+
+async def test_typed_message_during_voice_submission_is_not_its_owned_input(
+    protocol, relay_events, tmp_path
+):
+    events, state = relay_events
+    send = events.send_message.side_effect
+
+    async def interleaved(message, run):
+        await send(message, run)
+        state.events.append(
+            MessageEvent(
+                llm_message=Message(
+                    role="user", content=[TextContent(text="Typed during submission")]
+                ),
+                source="user",
+            )
+        )
+
+    events.send_message.side_effect = interleaved
+    relay = CodexRelay(state.id, events, tmp_path / "home")
+    try:
+        await relay.start("v=0", "")
+        await relay.rpc("fixture/notify", _handoff())
+        while relay.handoff_task is None:
+            await asyncio.sleep(0)
+        await asyncio.wait_for(asyncio.shield(relay.handoff_task), 3)
+        result = await relay.rpc("fixture/results", {})
+        assert not [
+            x
+            for x in result["requests"]
+            if x["method"] == "thread/realtime/appendSpeech"
+        ]
+        events.send_message.assert_awaited_once()
+    finally:
+        await relay.close()
+
+
+async def test_late_final_for_delegated_utterance_does_not_suppress_its_answer(
+    protocol, relay_events, tmp_path
+):
+    events, state = relay_events
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def wait(timeout):
+        if timeout:
+            entered.set()
+            await release.wait()
+        return ConversationExecutionStatus.FINISHED
+
+    events.wait_for_run_completion.side_effect = wait
+    relay = CodexRelay(state.id, events, tmp_path / "home")
+    try:
+        await relay.start("v=0", "")
+        await relay.rpc(
+            "fixture/notify",
+            {
+                "method": "thread/realtime/transcript/delta",
+                "params": {
+                    "threadId": "bound-thread",
+                    "role": "user",
+                    "delta": "Remember coral",
+                },
+            },
+        )
+        await relay.rpc("fixture/notify", _handoff())
+        await asyncio.wait_for(entered.wait(), 3)
+        await relay.rpc(
+            "fixture/notify",
+            {
+                "method": "thread/realtime/transcript/done",
+                "params": {
+                    "threadId": "bound-thread",
+                    "role": "user",
+                    "text": "Remember coral",
+                },
+            },
+        )
+        release.set()
+        assert await _speeches(relay, 1) == ["Saved coral."]
+    finally:
+        release.set()
+        await relay.close()
