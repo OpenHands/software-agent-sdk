@@ -32,8 +32,6 @@ from openhands.sdk.agent.acp_agent import (
     _auth_selection_failure_reason,
     _classify_acp_init_error,
     _classify_acp_turn_error,
-    _claude_model_config_options,
-    _codex_model_config_options,
     _estimate_cost_from_tokens,
     _extract_session_models,
     _extract_token_usage,
@@ -43,6 +41,7 @@ from openhands.sdk.agent.acp_agent import (
     _mask_json_value,
     _maybe_set_session_model,
     _mcp_config_to_acp_servers,
+    _model_config_options,
     _NewSessionResponse,
     _npx_packages,
     _OpenHandsACPBridge,
@@ -5390,31 +5389,35 @@ class TestWithCodexBaseUrl:
         assert _with_codex_base_url("codex-acp", [], env) == env
 
 
-class TestCodexModelConfigOptions:
-    def test_splits_combined_model_and_reasoning_effort(self):
-        assert _codex_model_config_options("gpt-5.5/high") == (
+class TestModelConfigOptions:
+    def test_codex_splits_reasoning_effort(self):
+        assert _model_config_options("codex-acp", "gpt-5.5/high") == (
             ("model", "gpt-5.5"),
             ("reasoning_effort", "high"),
         )
 
+    def test_claude_splits_effort(self):
+        assert _model_config_options("claude-agent-acp", "opus[1m]/max") == (
+            ("model", "opus[1m]"),
+            ("effort", "max"),
+        )
+
     def test_leaves_base_or_custom_model_id_unchanged(self):
-        assert _codex_model_config_options("gpt-5.5") == (("model", "gpt-5.5"),)
-        assert _codex_model_config_options("custom/provider/model") == (
+        assert _model_config_options("codex-acp", "gpt-5.5") == (("model", "gpt-5.5"),)
+        assert _model_config_options("codex-acp", "custom/provider/model") == (
             ("model", "custom/provider/model"),
         )
-
-
-class TestClaudeModelConfigOptions:
-    def test_splits_combined_model_and_effort(self):
-        assert _claude_model_config_options("opus[1m]/high") == (
-            ("model", "opus[1m]"),
-            ("effort", "high"),
+        # `max` is a Claude level, not a Codex one.
+        assert _model_config_options("codex-acp", "gpt-5.5/max") == (
+            ("model", "gpt-5.5/max"),
         )
 
-    def test_leaves_base_or_custom_model_id_unchanged(self):
-        assert _claude_model_config_options("sonnet") == (("model", "sonnet"),)
-        assert _claude_model_config_options("custom/model") == (
-            ("model", "custom/model"),
+    def test_provider_without_effort_option_is_unchanged(self):
+        assert _model_config_options("gemini-cli", "gemini-2.5-pro/high") == (
+            ("model", "gemini-2.5-pro/high"),
+        )
+        assert _model_config_options("my-acp", "model/high") == (
+            ("model", "model/high"),
         )
 
 

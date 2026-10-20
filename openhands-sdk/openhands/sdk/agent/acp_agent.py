@@ -138,7 +138,6 @@ from openhands.sdk.settings.acp_providers import (
     detect_acp_provider_by_agent_name,
     detect_acp_provider_by_command,
     get_acp_provider,
-    split_claude_model_effort,
 )
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
@@ -579,43 +578,26 @@ def _with_codex_base_url(
 # (codex-acp, claude-agent-acp 0.44+) rather than the UNSTABLE ``models``
 # capability + ``session/set_model`` (gemini-cli, older codex/claude).
 _MODEL_CONFIG_OPTION_ID = "model"
-_CLAUDE_EFFORT_CONFIG_OPTION_ID = "effort"
-_CODEX_REASONING_EFFORTS: Final[frozenset[str]] = frozenset(
-    {"low", "medium", "high", "xhigh"}
-)
-
-
-def _codex_model_config_options(model: str) -> tuple[tuple[str, str], ...]:
-    """Map combined Canvas Codex model IDs to codex-acp config options."""
-    base_model, sep, effort = model.rpartition("/")
-    if sep and base_model and effort in _CODEX_REASONING_EFFORTS:
-        return (
-            (_MODEL_CONFIG_OPTION_ID, base_model),
-            ("reasoning_effort", effort),
-        )
-    return ((_MODEL_CONFIG_OPTION_ID, model),)
-
-
-def _claude_model_config_options(model: str) -> tuple[tuple[str, str], ...]:
-    """Map combined Claude model IDs to claude-agent-acp config options."""
-    base_model, effort = split_claude_model_effort(model)
-    if effort is not None:
-        return (
-            (_MODEL_CONFIG_OPTION_ID, base_model),
-            (_CLAUDE_EFFORT_CONFIG_OPTION_ID, effort),
-        )
-    return ((_MODEL_CONFIG_OPTION_ID, model),)
 
 
 def _model_config_options(
     agent_name: str | None,
     model: str,
 ) -> tuple[tuple[str, str], ...]:
+    """Map a model id to ``set_config_option`` calls.
+
+    A combined ``<model>/<effort>`` id is split into the ``model`` selection
+    plus the provider's effort config option (see
+    :meth:`ACPProviderInfo.split_model_effort`).
+    """
     provider = detect_acp_provider_by_agent_name(agent_name or "")
-    if provider is not None and provider.key == "codex":
-        return _codex_model_config_options(model)
-    if provider is not None and provider.key == "claude-code":
-        return _claude_model_config_options(model)
+    if provider is not None and provider.effort_config_id is not None:
+        base_model, effort = provider.split_model_effort(model)
+        if effort is not None:
+            return (
+                (_MODEL_CONFIG_OPTION_ID, base_model),
+                (provider.effort_config_id, effort),
+            )
     return ((_MODEL_CONFIG_OPTION_ID, model),)
 
 
@@ -631,11 +613,10 @@ async def _apply_acp_model(
     advertised: ``set_config_option(configId="model")`` for configOptions-based
     servers (codex-acp, claude-agent-acp 0.44+), else ``set_session_model``.
 
-    The model id is normally the bare preset id listed by the server. For
-    Codex, callers may still pass a combined Canvas id such as ``gpt-5.5/high``;
-    codex-acp exposes reasoning effort as a separate config option, so split it
-    only on the config-options mechanism. Claude works the same way with ids
-    such as ``opus[1m]/high``, mapped to claude-agent-acp's ``effort`` option.
+    The model id is normally the bare preset id listed by the server. Callers
+    may still pass a combined id such as ``gpt-5.5/high`` or ``opus[1m]/high``;
+    providers that declare an ``effort_config_id`` expose effort as a separate
+    config option, so split it only on the config-options mechanism.
 
     agent-client-protocol 0.12.1 removed ``ClientSideConnection.set_session_model``;
     :class:`_ACPClientConnection` restores it, and a connection without it
