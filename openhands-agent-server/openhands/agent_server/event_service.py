@@ -288,6 +288,10 @@ class EventService:
     # began) so the operation's worker thread can stop waiting and let the
     # thread exit.
     _direct_tool_abandon: int = field(default=0, init=False)
+    # The worker future of a direct execution that has reached the tool
+    # executor. close() interrupts and awaits it so teardown cannot close the
+    # executor out from under a command that is still running.
+    _direct_tool_worker: asyncio.Future[Any] | None = field(default=None, init=False)
     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
     _lease: ConversationLease | None = field(default=None, init=False)
     _lease_generation: int | None = field(default=None, init=False)
@@ -2203,11 +2207,35 @@ class EventService:
         self._acp_internal_rerun_requested = False
         # Abandon any in-flight direct tool call: it does not hold the
         # conversation state lock, so it would otherwise keep running (and keep
-        # holding the executor) through the teardown below. The bump makes its
-        # worker exit without touching the executor, and lets a blocked
-        # admission through.
+        # holding the executor) through the teardown below. The bump makes a
+        # worker that has not reached the executor yet exit without touching it,
+        # and lets a blocked admission through.
         self._direct_tool_abandon += 1
         self._direct_tool_in_flight = False
+        # A worker that has already entered the tool executor cannot be stopped
+        # by the bump, so interrupt the command (Ctrl+C for the terminal) and
+        # wait for the thread to return before the teardown below closes that
+        # executor. Without this the command loses its terminal mid-run or keeps
+        # writing after the conversation is deleted.
+        direct_worker = self._direct_tool_worker
+        if direct_worker is not None and not direct_worker.done():
+            if self._conversation is not None:
+                with suppress(Exception):
+                    for tool in self._conversation.agent.tools_map.values():
+                        with suppress(Exception):
+                            tool.as_executable().executor.interrupt()
+            try:
+                await asyncio.wait_for(asyncio.shield(direct_worker), timeout=10.0)
+            except TimeoutError:
+                logger.warning(
+                    "Direct tool worker did not exit within 10s of close(); "
+                    "continuing teardown"
+                )
+            except asyncio.CancelledError:
+                pass  # Expected: the request that started it was cancelled.
+            except Exception as exc:
+                logger.debug("Direct tool worker failed during close: %s", exc)
+        self._direct_tool_worker = None
         # Drop any pin held by a supersede window that is being torn down, then
         # return this conversation's session permit; close() cancels the runs
         # that would otherwise have done so, and a leaked permit would shrink
@@ -2380,6 +2408,8 @@ class EventService:
         warning.
         """
         self._direct_tool_in_flight = False
+        if self._direct_tool_worker is worker:
+            self._direct_tool_worker = None
         with suppress(BaseException):
             worker.exception()
 
@@ -2445,6 +2475,13 @@ class EventService:
                 action_type,
                 action,
             )
+            # Publish the worker so close() can interrupt it and wait for the
+            # command to finish before tearing the executor down. The done
+            # callback clears the flag only when the worker has really exited,
+            # which is what keeps a later direct call out while an abandoned
+            # worker still holds the executor.
+            self._direct_tool_worker = worker
+            worker.add_done_callback(self._direct_tool_worker_done)
             return await asyncio.shield(worker)
         except asyncio.CancelledError:
             if worker is None:
@@ -2460,7 +2497,6 @@ class EventService:
             # future done at once (the thread keeps running), which would fire
             # the release callback too early.
             self._direct_tool_abandon += 1
-            worker.add_done_callback(self._direct_tool_worker_done)
             raise
         finally:
             # Success, a resolve/validation failure, or a cancellation that

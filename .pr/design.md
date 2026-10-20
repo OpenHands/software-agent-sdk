@@ -64,7 +64,9 @@ back into the tool's own observation model.
   a direct call is in flight is 409, and a second direct call is 409. The flag is
   released on success, on a validation failure, and, for a cancelled
   request whose synchronous worker already started, only when that worker
-  actually exits, since cancellation cannot stop it.
+  actually exits, since cancellation cannot stop it. `close()` interrupts the
+  running command and waits for its worker before closing the executors, so
+  teardown cannot pull a terminal out from under a command mid-run.
 - **A direct call pins the terminal pane pool.** Shell state set by a bootstrap
   script (exports, functions, the working directory) is local to the one tmux
   pane that ran it, so the executor pins the pool to that pane; a later parallel

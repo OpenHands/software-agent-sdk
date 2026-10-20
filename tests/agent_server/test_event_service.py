@@ -3322,6 +3322,50 @@ class TestEventServiceDirectToolExecution:
             await event_service.close()
 
     @pytest.mark.asyncio
+    async def test_close_interrupts_and_drains_a_running_direct_call(
+        self, event_service, tmp_path
+    ):
+        """close() interrupts the command and waits before closing its executor.
+
+        Regression: the generation bump only stops a worker that has not
+        reached the executor yet. A worker already inside ``execute_tool`` kept
+        running while close() closed the terminal under it, so a setup command
+        lost its terminal or kept writing after the conversation was deleted.
+        """
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        conversation._ensure_agent_ready()
+        executor = conversation.agent.tools_map["terminal"].as_executable().executor
+        interrupts: list[str] = []
+        executor.interrupt = lambda: interrupts.append("interrupt")  # type: ignore[method-assign]
+
+        started = threading.Event()
+        finished = threading.Event()
+
+        def slow_execute_tool(tool_name, action):
+            started.set()
+            for _ in range(600):
+                if interrupts:
+                    break
+                time.sleep(0.05)
+            finished.set()
+            return TerminalObservation.from_text("done", command=action.command)
+
+        conversation.execute_tool = slow_execute_tool  # type: ignore[method-assign]
+        task = asyncio.create_task(
+            event_service.execute_tool(
+                "terminal", {"kind": "TerminalAction", "command": "echo a"}
+            )
+        )
+        await asyncio.to_thread(started.wait, 10)
+        await event_service.close()
+        # close() must not return until the worker has really exited, or the
+        # teardown would close the executor mid-command.
+        assert interrupts == ["interrupt"]
+        assert finished.is_set()
+        result = await task
+        assert result.command == "echo a"
+
+    @pytest.mark.asyncio
     async def test_close_abandons_in_flight_direct_call(self, event_service, tmp_path):
         """close() bumps the generation so a waiting worker does not run."""
         conversation = self._service_with_terminal_conversation(event_service, tmp_path)
