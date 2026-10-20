@@ -502,6 +502,12 @@ class TestBuildSessionModelMeta:
         result = build_session_model_meta("claude-agent-acp v0.29.0", "claude-opus-4")
         assert result == {"claudeCode": {"options": {"model": "claude-opus-4"}}}
 
+    def test_claude_splits_effort(self):
+        result = build_session_model_meta("claude-agent-acp", "opus[1m]/high")
+        assert result == {
+            "claudeCode": {"options": {"model": "opus[1m]", "effort": "high"}}
+        }
+
     def test_codex_returns_empty(self):
         result = build_session_model_meta("codex-acp", "gpt-4o")
         assert result == {}

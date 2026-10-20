@@ -820,6 +820,24 @@ def detect_acp_provider_by_command(
     return None
 
 
+CLAUDE_EFFORT_LEVELS: frozenset[str] = frozenset(
+    {"low", "medium", "high", "xhigh", "max"}
+)
+
+
+def split_claude_model_effort(model: str) -> tuple[str, str | None]:
+    """Split a combined Claude model id such as ``opus[1m]/high``.
+
+    claude-agent-acp exposes effort as a separate ``effort`` config option, so a
+    trailing ``/<effort>`` is peeled off the model id. Ids without a known effort
+    suffix are returned unchanged with ``None``.
+    """
+    base_model, sep, effort = model.rpartition("/")
+    if sep and base_model and effort in CLAUDE_EFFORT_LEVELS:
+        return base_model, effort
+    return model, None
+
+
 def build_session_model_meta(agent_name: str, acp_model: str | None) -> dict[str, Any]:
     """Build ACP session ``_meta`` content for model selection.
 
@@ -835,4 +853,10 @@ def build_session_model_meta(agent_name: str, acp_model: str | None) -> dict[str
     provider = detect_acp_provider_by_agent_name(agent_name)
     if provider is None or provider.session_meta_key is None:
         return {}
-    return {provider.session_meta_key: {"options": {"model": acp_model}}}
+    options: dict[str, str] = {"model": acp_model}
+    if provider.key == "claude-code":
+        model, effort = split_claude_model_effort(acp_model)
+        options = {"model": model}
+        if effort is not None:
+            options["effort"] = effort
+    return {provider.session_meta_key: {"options": options}}

@@ -138,6 +138,7 @@ from openhands.sdk.settings.acp_providers import (
     detect_acp_provider_by_agent_name,
     detect_acp_provider_by_command,
     get_acp_provider,
+    split_claude_model_effort,
 )
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
@@ -578,6 +579,7 @@ def _with_codex_base_url(
 # (codex-acp, claude-agent-acp 0.44+) rather than the UNSTABLE ``models``
 # capability + ``session/set_model`` (gemini-cli, older codex/claude).
 _MODEL_CONFIG_OPTION_ID = "model"
+_CLAUDE_EFFORT_CONFIG_OPTION_ID = "effort"
 _CODEX_REASONING_EFFORTS: Final[frozenset[str]] = frozenset(
     {"low", "medium", "high", "xhigh"}
 )
@@ -594,6 +596,17 @@ def _codex_model_config_options(model: str) -> tuple[tuple[str, str], ...]:
     return ((_MODEL_CONFIG_OPTION_ID, model),)
 
 
+def _claude_model_config_options(model: str) -> tuple[tuple[str, str], ...]:
+    """Map combined Claude model IDs to claude-agent-acp config options."""
+    base_model, effort = split_claude_model_effort(model)
+    if effort is not None:
+        return (
+            (_MODEL_CONFIG_OPTION_ID, base_model),
+            (_CLAUDE_EFFORT_CONFIG_OPTION_ID, effort),
+        )
+    return ((_MODEL_CONFIG_OPTION_ID, model),)
+
+
 def _model_config_options(
     agent_name: str | None,
     model: str,
@@ -601,6 +614,8 @@ def _model_config_options(
     provider = detect_acp_provider_by_agent_name(agent_name or "")
     if provider is not None and provider.key == "codex":
         return _codex_model_config_options(model)
+    if provider is not None and provider.key == "claude-code":
+        return _claude_model_config_options(model)
     return ((_MODEL_CONFIG_OPTION_ID, model),)
 
 
@@ -619,7 +634,8 @@ async def _apply_acp_model(
     The model id is normally the bare preset id listed by the server. For
     Codex, callers may still pass a combined Canvas id such as ``gpt-5.5/high``;
     codex-acp exposes reasoning effort as a separate config option, so split it
-    only on the config-options mechanism.
+    only on the config-options mechanism. Claude works the same way with ids
+    such as ``opus[1m]/high``, mapped to claude-agent-acp's ``effort`` option.
 
     agent-client-protocol 0.12.1 removed ``ClientSideConnection.set_session_model``;
     :class:`_ACPClientConnection` restores it, and a connection without it
