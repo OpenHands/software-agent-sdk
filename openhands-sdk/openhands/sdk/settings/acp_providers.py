@@ -361,7 +361,7 @@ class ACPProviderInfo:
     ``effort``. See :meth:`split_model_effort`.
     """
 
-    effort_levels: frozenset[str] = field(default=frozenset(), compare=False)
+    effort_levels: tuple[str, ...] = field(default=(), compare=False)
     """Effort values accepted as a ``/<effort>`` model-id suffix."""
 
     def split_model_effort(self, model: str) -> tuple[str, str | None]:
@@ -598,7 +598,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             supports_runtime_model_switch=True,
             session_meta_key="claudeCode",
             effort_config_id="effort",
-            effort_levels=frozenset({"low", "medium", "high", "xhigh", "max"}),
+            effort_levels=("low", "medium", "high", "xhigh", "max"),
             available_models=_CLAUDE_MODELS,
             # The CLI's own default (model configOptions ``currentValue``).
             default_model="opus[1m]",
@@ -628,7 +628,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             supports_runtime_model_switch=True,
             session_meta_key=None,
             effort_config_id="reasoning_effort",
-            effort_levels=frozenset({"low", "medium", "high", "xhigh"}),
+            effort_levels=("low", "medium", "high", "xhigh"),
             available_models=_CODEX_MODELS,
             default_model="gpt-5.5",
             file_secrets=_CODEX_FILE_SECRETS,

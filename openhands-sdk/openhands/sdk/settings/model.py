@@ -1844,7 +1844,10 @@ class ACPAgentSettings(AgentSettingsBase):
             "Model identifier for the ACP server to use (e.g. ``'sonnet'`` or "
             "``'gpt-5.5'``). Applied via the protocol — set_config_option(model) "
             "for configOptions-based servers (codex, claude), else "
-            "set_session_model. Leave blank to let the server pick its default."
+            "set_session_model. Codex and Claude also accept "
+            "``'<model>/<effort>'`` (e.g. ``'gpt-5.5/high'`` or "
+            "``'opus[1m]/high'``) to set reasoning effort. Leave blank to let "
+            "the server pick its default."
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
