@@ -15,7 +15,7 @@ from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.hooks.executor import HookResult
 from openhands.sdk.hooks.manager import HookManager
 from openhands.sdk.hooks.types import HookEventType
-from openhands.sdk.llm import TextContent
+from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.logger import get_logger
 
 
@@ -337,6 +337,34 @@ class HookEventProcessor:
             )
             if result.error:
                 logger.warning(f"SessionStart hook error: {result.error}")
+
+        # Deliver additional_context to the agent. Unlike UserPromptSubmit,
+        # SessionStart has no triggering message to extend, so emit a new
+        # MessageEvent carrying the collected context into the conversation.
+        self._inject_additional_context(results)
+
+    def _inject_additional_context(self, results: list[HookResult]) -> None:
+        """Emit SessionStart additional_context as a message for the agent."""
+        if not self.original_callback:
+            return
+
+        context_parts = [r.additional_context for r in results if r.additional_context]
+        if not context_parts:
+            return
+
+        additional_context = "\n".join(context_parts)
+        logger.debug(
+            f"SessionStart hook injecting context: {additional_context[:100]}..."
+        )
+        self.original_callback(
+            MessageEvent(
+                source="environment",
+                llm_message=Message(
+                    role="user",
+                    content=[TextContent(text=additional_context)],
+                ),
+            )
+        )
 
     def run_session_end(self) -> None:
         """Run SessionEnd hooks. Call before conversation is closed."""
