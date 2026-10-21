@@ -251,3 +251,55 @@ def test_wrong_cipher_update_raises_not_destroys_key(tmp_path):
     restored = store.get("conn1", cipher=cipher_a)
     assert restored is not None
     assert restored.api_key_value() == "sk-shared"
+
+
+def test_tolerant_list_degrades_undecryptable_entry(tmp_path):
+    """One undecryptable entry degrades instead of failing the whole list."""
+    cipher_a = Cipher("key-a")
+    cipher_b = Cipher("key-b")
+    store = ProviderConnectionStore(base_dir=tmp_path)
+    store.create(_connection(), cipher=cipher_a)
+
+    views = store.list_tolerant(cipher=cipher_b)
+    assert len(views) == 1
+    assert views[0].undecryptable is True
+    assert views[0].connection.api_key_value() is None
+
+    # Ciphertext preserved verbatim on disk.
+    restored = store.get("conn1", cipher=cipher_a)
+    assert restored is not None
+    assert restored.api_key_value() == "sk-shared"
+
+
+def test_update_good_entry_preserves_undecryptable_entry(tmp_path):
+    """Writes to a good entry preserve unrelated undecryptable ciphertext."""
+    import json
+
+    cipher_a = Cipher("key-a")
+    cipher_b = Cipher("key-b")
+    store = ProviderConnectionStore(base_dir=tmp_path)
+    store.create(_connection(), cipher=cipher_a)
+    store.create(
+        _connection(id="conn2", display_name="Other", api_key="sk-other"),
+        cipher=cipher_b,
+    )
+
+    before = (tmp_path / "provider_connections.json").read_text()
+    view = store.get_tolerant("conn2", cipher=cipher_b)
+    assert view is not None and not view.undecryptable
+    store.update(
+        view.connection.model_copy(update={"display_name": "Renamed"}),
+        cipher=cipher_b,
+    )
+
+    views = store.list_tolerant(cipher=cipher_b)
+    by_id = {v.connection.id: v for v in views}
+    assert by_id["conn2"].connection.display_name == "Renamed"
+    assert by_id["conn1"].undecryptable is True
+    raw = json.loads((tmp_path / "provider_connections.json").read_text())
+    assert len(raw["connections"]) == 2
+    assert before != (tmp_path / "provider_connections.json").read_text()
+    # Original key still recoverable with the original cipher.
+    view_a = store.get_tolerant("conn1", cipher=cipher_a)
+    assert view_a is not None and not view_a.undecryptable
+    assert view_a.connection.api_key_value() == "sk-shared"
