@@ -77,7 +77,7 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 - REST, provider search (global only):
   `GET /api/git/repositories/search?provider=github&query=...&limit=1..100&page_id=...`;
   the token comes from the server's secrets store (`PUT /api/settings/secrets`,
-  names `github_token`, `GITHUB_TOKEN`, `GH_TOKEN`, `github`, in that order).
+  names `GITHUB_TOKEN`, `github_token`, `GH_TOKEN`, `github`, in that order).
 - SDK: `RemoteWorkspace.git_changes(path)` and `git_diff(path)` (and the
   `AsyncRemoteWorkspace` versions) join a relative `path` to `working_dir` and
   call the global routes, or the scoped ones when the workspace has
