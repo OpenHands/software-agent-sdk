@@ -6,15 +6,9 @@ showing them as "object | object | object...".
 """
 
 import pytest
-from deprecation import DeprecatedWarning
 from fastapi.testclient import TestClient
 
-from openhands.agent_server import models as agent_server_models
 from openhands.agent_server.api import create_app
-from openhands.agent_server.models import (
-    ConversationInfo,
-    ConversationPage,
-)
 
 
 @pytest.fixture
@@ -35,35 +29,20 @@ def test_action_schema_has_discriminator(client):
     assert "schemas" in openapi_schema["components"]
     schemas = openapi_schema["components"]["schemas"]
 
-    assert "Action" in schemas, "Action schema should be in components/schemas"
-    action_schema = schemas["Action"]
+    names = ["Action"] if "Action" in schemas else ["Action-Input", "Action-Output"]
+    for name in names:
+        assert name in schemas, f"{name} schema should be in components/schemas"
+        action_schema = schemas[name]
 
-    # Check that it has oneOf
-    assert "oneOf" in action_schema, "Action should have oneOf field"
-    assert len(action_schema["oneOf"]) > 0, "Action should have at least one variant"
+        assert "oneOf" in action_schema, f"{name} should have oneOf field"
+        assert action_schema["oneOf"], f"{name} should have at least one variant"
+        for variant in action_schema["oneOf"]:
+            assert "$ref" in variant, f"Each variant should be a $ref, got: {variant}"
 
-    # Check that all variants are $ref (not inline)
-    for variant in action_schema["oneOf"]:
-        assert "$ref" in variant, f"Each variant should be a $ref, got: {variant}"
-
-    # Check that it has discriminator
-    assert "discriminator" in action_schema, (
-        "Action should have discriminator field for proper OpenAPI documentation"
-    )
-
-    # Check discriminator structure
-    discriminator = action_schema["discriminator"]
-    assert "propertyName" in discriminator, (
-        "discriminator should have propertyName field"
-    )
-    assert discriminator["propertyName"] == "kind", (
-        "discriminator propertyName should be 'kind'"
-    )
-
-    # Optionally check for mapping (though not strictly required)
-    # if "mapping" in discriminator:
-    #     # Mapping should have entries for each variant
-    #     assert len(discriminator["mapping"]) > 0
+        assert "discriminator" in action_schema, (
+            f"{name} should have discriminator field for proper OpenAPI documentation"
+        )
+        assert action_schema["discriminator"]["propertyName"] == "kind"
 
 
 def test_observation_schema_has_discriminator(client):
@@ -209,19 +188,3 @@ def test_conversation_contracts_use_unified_acp_capable_endpoint(client):
     assert "/api/conversations" in openapi_schema["paths"]
     # The deprecated /api/acp/conversations routes were removed in v1.27.0.
     assert "/api/acp/conversations" not in openapi_schema["paths"]
-
-
-def test_acp_conversation_response_names_are_type_aliases():
-    with pytest.warns(DeprecatedWarning, match="ACPConversationInfo") as info_records:
-        acp_info = getattr(agent_server_models, "ACPConversationInfo")
-    with pytest.warns(DeprecatedWarning, match="ACPConversationPage") as page_records:
-        acp_page = getattr(agent_server_models, "ACPConversationPage")
-
-    info_message = str(info_records[0].message)
-    page_message = str(page_records[0].message)
-    assert "deprecated as of 1.36.0" in info_message
-    assert "removed in 1.41.0" in info_message
-    assert "deprecated as of 1.36.0" in page_message
-    assert "removed in 1.41.0" in page_message
-    assert acp_info is ConversationInfo
-    assert acp_page is ConversationPage

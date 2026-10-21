@@ -16,6 +16,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    field_validator,
     model_validator,
 )
 
@@ -43,8 +44,8 @@ from openhands.sdk.tool.builtins.vision_inspect import (
     VisionInspectTool,
     has_vision_profile_available,
 )
-from openhands.sdk.utils.deprecation import deprecated
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 if TYPE_CHECKING:
@@ -58,10 +59,11 @@ logger = get_logger(__name__)
 
 
 # -- SOUL.md loader -------------------------------------------------------
-# SOUL.md is the agent's identity file (~/.openhands/SOUL.md).  When present
-# it replaces the default identity in the system prompt.
+# SOUL.md is the agent's identity file, ``SOUL.md`` under the user persistence
+# directory (~/.openhands/SOUL.md absent OH_PERSISTENCE_DIR).  When present it
+# replaces the default identity in the system prompt.
 
-_SOUL_PATH = os.path.join(os.path.expanduser("~"), ".openhands", "SOUL.md")
+_SOUL_PATH = get_user_persistence_dir() / "SOUL.md"
 _DEFAULT_SOUL = (
     "You are OpenHands agent, a helpful AI assistant that can interact"
     " with a computer to solve tasks."
@@ -84,7 +86,7 @@ _PRESET_BY_FILENAME: dict[str, PromptPreset] = {
 
 
 def _load_soul_md() -> str:
-    """Load ``~/.openhands/SOUL.md``, falling back to the built-in default."""
+    """Load ``SOUL.md`` from the user persistence dir, else the built-in default."""
     try:
         with open(_SOUL_PATH, encoding="utf-8") as f:
             content = f.read().strip()
@@ -262,6 +264,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             )
         return data
 
+    @field_validator("system_prompt_kwargs")
+    @classmethod
+    def _drop_retired_enable_browser(
+        cls, value: dict[str, object]
+    ) -> dict[str, object]:
+        """Old saved conversations may still carry this retired prompt flag."""
+        return {key: item for key, item in value.items() if key != "enable_browser"}
+
     condenser: CondenserBase | None = Field(
         default=None,
         description="Optional condenser to use for condensing conversation history.",
@@ -342,14 +352,15 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         Built-in prompts (the ``default`` and ``planning`` presets) are assembled from
         the typed section registry, which also resolves a custom
         ``security_policy_filename``. Escape hatches keep the Jinja path: an inline
-        ``system_prompt`` is returned verbatim; a custom ``system_prompt_filename`` or
-        subclass ``prompt_dir`` renders its own template.
+        ``system_prompt`` is used verbatim, followed by the loaded tools' guidance; a
+        custom ``system_prompt_filename`` or subclass ``prompt_dir`` renders its own
+        template.
 
         Returns:
             The static system prompt without dynamic context.
         """
         if self.system_prompt is not None:
-            return self.system_prompt
+            return "\n\n".join((self.system_prompt, *self._tool_guidance()))
 
         # Escape hatch: a custom filename or a subclass's own prompt_dir renders its
         # own Jinja template; everything else (incl. custom policies) uses the registry.
@@ -363,6 +374,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         return create_registry(preset).build(self._build_prompt_context()).static
 
+    def _tool_guidance(self) -> tuple[str, ...]:
+        """Distinct ``prompt_guidance`` texts of the loaded tools, in tool order."""
+        with self._tools_lock:
+            tools = list(self._tools.values())
+        return tuple(
+            dict.fromkeys(t.prompt_guidance for t in tools if t.prompt_guidance)
+        )
+
     def _resolved_template_kwargs(self) -> dict[str, object]:
         """Resolve the system-prompt template kwargs.
 
@@ -375,10 +394,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if "soul_content" not in template_kwargs:
             template_kwargs["soul_content"] = _load_soul_md()
 
-        template_kwargs.setdefault(
-            "enable_browser",
-            any(t.name == "browser_tool_set" for t in self.tools),
-        )
         template_kwargs.setdefault(
             "memory_enabled",
             self.agent_context is not None and self.agent_context.load_memory,
@@ -483,6 +498,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         return PromptContext(
             template_kwargs=template_kwargs,
             tool_names=tuple(t.name for t in self.tools),
+            tool_guidance=self._tool_guidance(),
             platform=Platform.current(),
             working_dir=None,
             now=now,
@@ -564,7 +580,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if self.filter_tools_regex:
             pattern = re.compile(self.filter_tools_regex)
             tools = [tool for tool in tools if pattern.match(tool.name)]
-            tool_names = [tool.name for tool in tools]
             logger.info("Filtered to %d tools after applying regex filter", len(tools))
 
         # Include default tools from include_default_tools; not subject to regex
@@ -736,21 +751,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         return self
 
-    @deprecated(
-        deprecated_in="1.40.0",
-        removed_in="1.45.0",
-        details="Use model_dump(exclude_none=True) instead.",
-    )
-    def model_dump_succint(self, **kwargs):
-        """Like model_dump, but excludes None fields by default."""
-        if "exclude_none" not in kwargs:
-            kwargs["exclude_none"] = True
-        dumped = super().model_dump(**kwargs)
-        # remove tool schema details for brevity
-        if "tools" in dumped and isinstance(dumped["tools"], dict):
-            dumped["tools"] = list(dumped["tools"].keys())
-        return dumped
-
     def get_all_llms(self) -> Generator[LLM]:
         """Recursively yield unique *base-class* LLM objects reachable from `self`.
 
@@ -872,13 +872,35 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             }
             raise ValueError(f"Duplicate runtime tool names found: {duplicates}")
         with self._tools_lock:
-            existing = set(self._tools) & set(tool_names)
-            if existing:
-                raise ValueError(f"Duplicate tool names found: {existing}")
-
-            # AgentBase is frozen, so update its mutable tool map in place.
+            # A tools/list_changed notification can race the caller: if it
+            # arrives while the provider's initial create_tools() call is
+            # still in flight, _on_mcp_tools_changed/_on_mcp_tools_reconciled
+            # may already have installed the same tool via this same client
+            # before the caller's own add_runtime_tools() call (using the
+            # client's returned snapshot) gets here. Treat that as a refresh,
+            # not a conflict, matching the same-client exemption already used
+            # by _on_mcp_tools_changed/_on_mcp_tools_reconciled.
+            conflicts: set[str] = set()
             for tool in tools:
-                self._tools[tool.name] = tool
+                existing_tool = self._tools.get(tool.name)
+                if existing_tool is None:
+                    continue
+                existing_executor = existing_tool.executor
+                replacement_executor = tool.executor
+                if (
+                    isinstance(existing_executor, MCPToolExecutor)
+                    and isinstance(replacement_executor, MCPToolExecutor)
+                    and existing_executor.client is replacement_executor.client
+                ):
+                    continue
+                conflicts.add(tool.name)
+            if conflicts:
+                raise ValueError(f"Duplicate tool names found: {conflicts}")
+
+            # AgentBase is frozen; replace the tool map rather than mutating
+            # it in place, so Agent.model_copy() snapshots don't share state.
+            updated = {**self._tools, **{tool.name: tool for tool in tools}}
+            object.__setattr__(self, "_tools", updated)
 
     def _on_mcp_tools_changed(self, tools: Sequence[ToolDefinition]) -> None:
         """Handle dynamically advertised MCP tools.
@@ -930,8 +952,12 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 )
 
             self.add_runtime_tools(additions)
-            for tool in replacements:
-                self._tools[tool.name] = tool
+            if replacements:
+                updated = {
+                    **self._tools,
+                    **{tool.name: tool for tool in replacements},
+                }
+                object.__setattr__(self, "_tools", updated)
 
         if additions:
             logger.info(

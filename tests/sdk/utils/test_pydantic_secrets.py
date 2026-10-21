@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import SecretStr
 
+from openhands.sdk.settings import OpenHandsAgentSettings
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.pydantic_secrets import (
     REDACTED_SECRET_VALUE,
@@ -412,6 +413,7 @@ def test_real_pydantic_persisted_settings_roundtrip(cipher):
 
     # Create settings with secret
     settings = PersistedSettings()
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     settings.agent_settings.llm.api_key = SecretStr("sk-test-key-12345")
 
     # Serialize with cipher
@@ -424,6 +426,7 @@ def test_real_pydantic_persisted_settings_roundtrip(cipher):
 
     # Deserialize (decrypt)
     restored = PersistedSettings.model_validate(data, context={"cipher": cipher})
+    assert isinstance(restored.agent_settings, OpenHandsAgentSettings)
     restored_key = restored.agent_settings.llm.api_key
     assert restored_key is not None
     assert isinstance(restored_key, SecretStr)

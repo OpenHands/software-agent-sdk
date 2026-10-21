@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.1.0/plugin.schema.json",
+  "name": "unsupported-schema",
+  "version": "1.0.0",
+  "description": "Declares a published schema version the SDK does not vendor."
+}

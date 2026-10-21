@@ -1,5 +1,7 @@
 """Common test fixtures and utilities."""
 
+import os
+import re
 import uuid
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -20,6 +22,20 @@ TOKENIZER_FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "tokenizers"
 QWEN3_TOKENIZER_CONFIG = (
     TOKENIZER_FIXTURES_DIR / "qwen3-4b-instruct-2507-tokenizer_config.json"
 )
+
+# Settings that point an agent server at, or authenticate it to, a live
+# deployment. A run inside an OpenHands sandbox inherits them from the sandbox.
+_LIVE_DEPLOYMENT_ENV = re.compile(
+    r"SESSION_API_KEY|OH_SESSION_API_KEYS_\d+|OH_WEBHOOKS(_\w+)?"
+    r"|OH_CONVERSATIONS_PATH|OH_BASH_EVENTS_DIR|OH_INTERNAL_SERVER_URL"
+    r"|OH_LLM_API_KEY_REFRESH_\w+"
+)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    # Before collection: some modules read the agent-server config at import.
+    for name in [n for n in os.environ if _LIVE_DEPLOYMENT_ENV.fullmatch(n)]:
+        del os.environ[name]
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -177,3 +193,22 @@ def suppress_logging(monkeypatch):
     """Suppress logging during tests to reduce noise."""
     mock_logger = MagicMock()
     monkeypatch.setattr("openhands.sdk.llm.llm.logger", mock_logger)
+
+
+@pytest.fixture(autouse=True)
+def restore_observability_latch():
+    """Keep one test's tracing setup from changing how every later test behaves.
+
+    ``should_enable_observability`` caches ``True`` in a module global that is
+    never re-checked, and ``Laminar.shutdown()`` does not clear it. A test that
+    brings lmnr up therefore leaves every later ``@observe`` building its real
+    wrapper on first call — which silently breaks tests that trigger that lazy
+    build themselves, and only when they share an xdist worker.
+    """
+    from openhands.sdk.observability import laminar
+
+    previous = laminar._observability_enabled
+    try:
+        yield
+    finally:
+        laminar._observability_enabled = previous

@@ -1,0 +1,11 @@
+{
+  "__expected__": {
+    "agent_kind": "acp",
+    "acp_server": "codex",
+    "acp_model": "fixture-v7-acp-model"
+  },
+  "schema_version": 7,
+  "agent_kind": "acp",
+  "acp_server": "codex",
+  "acp_model": "fixture-v7-acp-model"
+}

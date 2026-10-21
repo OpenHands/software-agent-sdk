@@ -5,7 +5,12 @@ from pathlib import Path
 import pytest
 
 from openhands.sdk.mcp.config import dump_mcp_config
-from openhands.sdk.plugin import Plugin, PluginManifest
+from openhands.sdk.plugin import (
+    ClaudeCodePluginFormat,
+    Plugin,
+    PluginManifest,
+    detect_format,
+)
 from openhands.sdk.plugin.types import (
     CommandDefinition,
     PluginAuthor,
@@ -223,6 +228,39 @@ Body.
         plugin = Plugin.load(plugin_dir)
 
         assert plugin.skills == []
+
+    def test_skills_dir_nested_md_and_relaxed_names(self, tmp_path: Path):
+        """Nested .md files are skill resources, not skills; names are relaxed."""
+        plugin_dir = tmp_path / "nested"
+        skill_dir = plugin_dir / "skills" / "Summarize_Tool"
+        (skill_dir / "references").mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: Summarize_Tool\ndescription: d\n---\nbody\n"
+        )
+        (skill_dir / "references" / "notes.md").write_text("# notes\n")
+        (plugin_dir / "skills" / "shared").mkdir()
+        (plugin_dir / "skills" / "shared" / "notes.md").write_text("# notes\n")
+        (plugin_dir / "skills" / "loose.md").write_text("loose skill\n")
+        (plugin_dir / "skills" / "readme.md").write_text("# readme\n")
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert [s.name for s in plugin.skills] == ["Summarize_Tool", "loose"]
+
+    def test_skills_dir_bad_skill_skips_only_itself(self, tmp_path: Path):
+        """A skill that fails to load does not abort the remaining skills."""
+        plugin_dir = tmp_path / "partial"
+        skills_dir = plugin_dir / "skills"
+        (skills_dir / "broken").mkdir(parents=True)
+        (skills_dir / "broken" / "SKILL.md").write_bytes(b"\xff\xfe\xfa")
+        (skills_dir / "good").mkdir()
+        (skills_dir / "good" / "SKILL.md").write_text(
+            "---\nname: good\ndescription: d\n---\nbody\n"
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert [s.name for s in plugin.skills] == ["good"]
 
     def test_load_plugin_with_hooks(self, tmp_path: Path):
         """Test loading a plugin with hooks."""
@@ -1160,3 +1198,85 @@ description: A nested skill
         # Nested skill SHOULD have mcp_tools (not skipped)
         assert plugin.skills[0].mcp_tools is not None
         assert "nested-server" in plugin.skills[0].mcp_tools
+
+
+class TestDetectFormat:
+    """Tests for the plugin-format selection contract (detect_format()).
+
+    detect_format() is the seam that decides which PluginFormat loads a plugin
+    directory. Today only the Claude Code layout is registered, so it is the
+    fallback for every directory; these tests pin that precedence so the future
+    Agent Plugins format (root plugin.json) can be slotted ahead of it without
+    silently changing the Claude Code behavior.
+    """
+
+    def test_detects_claude_code_for_nested_manifest(self, tmp_path: Path):
+        """A directory with a nested .claude-plugin manifest selects Claude Code."""
+        plugin_dir = tmp_path / "with-manifest"
+        manifest_dir = plugin_dir / ".claude-plugin"
+        manifest_dir.mkdir(parents=True)
+        (manifest_dir / "plugin.json").write_text('{"name": "with-manifest"}')
+
+        fmt = detect_format(plugin_dir)
+
+        assert isinstance(fmt, ClaudeCodePluginFormat)
+        assert fmt.name == "claude-code"
+
+    def test_detects_claude_code_for_bare_dir(self, tmp_path: Path):
+        """A directory with no manifest still falls back to Claude Code."""
+        plugin_dir = tmp_path / "bare-plugin"
+        plugin_dir.mkdir()
+
+        assert isinstance(detect_format(plugin_dir), ClaudeCodePluginFormat)
+
+    def test_detected_format_loads_equivalent_plugin(self, tmp_path: Path):
+        """The strategy from detect_format() loads the same plugin as Plugin.load()."""
+        plugin_dir = tmp_path / "roundtrip"
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir(parents=True)
+        (manifest_dir / "plugin.json").write_text(
+            '{"name": "roundtrip", "version": "3.1.4"}'
+        )
+
+        # Plugin.load() must resolve first: the strategy operates on the resolved
+        # dir, and path is stored resolved on the returned Plugin.
+        resolved_dir = plugin_dir.resolve()
+        via_strategy = detect_format(resolved_dir).load(resolved_dir)
+        via_load = Plugin.load(plugin_dir)
+
+        assert via_strategy.name == via_load.name == "roundtrip"
+        assert via_strategy.version == via_load.version == "3.1.4"
+        assert via_strategy.path == via_load.path
+
+    def test_strategy_load_raises_for_missing_dir(self, tmp_path: Path):
+        """The direct strategy API guards a missing dir, like Plugin.load()."""
+        missing = tmp_path / "does-not-exist"
+
+        with pytest.raises(FileNotFoundError):
+            detect_format(missing).load(missing)
+
+    def test_subclass_without_name_is_rejected(self):
+        """A PluginFormat subclass must declare a class-level ``name``."""
+        from openhands.sdk.plugin.format.base import PluginFormat
+
+        with pytest.raises(TypeError, match="name"):
+
+            class _NamelessFormat(PluginFormat):  # pyright: ignore[reportUnusedClass]
+                @classmethod
+                def detect(cls, plugin_dir: Path) -> bool:
+                    return False
+
+                def load_manifest(self, plugin_dir: Path) -> PluginManifest:
+                    raise NotImplementedError
+
+                def load_mcp_config(self, plugin_dir: Path):
+                    raise NotImplementedError
+
+                def load_hooks(self, plugin_dir: Path):
+                    raise NotImplementedError
+
+                def load_agents(self, plugin_dir: Path):
+                    raise NotImplementedError
+
+                def load_commands(self, plugin_dir: Path):
+                    raise NotImplementedError

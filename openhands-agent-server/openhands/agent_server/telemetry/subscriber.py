@@ -62,6 +62,7 @@ _FAILURE_STATUSES: Final[frozenset[str]] = _TERMINAL_STATUSES - {
     ConversationExecutionStatus.FINISHED.value
 }
 _EXECUTION_STATUS_KEY: Final[str] = "execution_status"
+_STATS_KEY: Final[str] = "stats"
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +78,7 @@ class ConversationTelemetryContext:
     has_agent_profile: bool
     workspace_kind: str
     confirmation_policy: str
+    is_automation: bool = False
 
 
 @dataclass(slots=True)
@@ -115,6 +117,10 @@ class TelemetrySubscriber(Subscriber[Event]):
                 self._handle_state_update(event)
 
     def _handle_state_update(self, event: ConversationStateUpdateEvent) -> None:
+        # Usage is tracked from every update that carries stats: in a live run
+        # the terminal status arrives as a bare-string ``execution_status``
+        # update, before the final ``full_state`` snapshot.
+        self._capture_usage(event)
         status = _extract_status(event)
         if status is None:
             return
@@ -131,11 +137,10 @@ class TelemetrySubscriber(Subscriber[Event]):
             self._run_observed = True
 
         if status in _TERMINAL_STATUSES:
-            self._capture_usage(event)
             self._emit_terminal(status)
 
     def emit_started(self) -> None:
-        """Emit ``conversation_started``. Called once, at registration."""
+        """Emit canonical ``conversation_created`` once at registration."""
         try:
             properties = m.ConversationStartedProperties(
                 conversation_ref=self.context.conversation_ref,
@@ -146,16 +151,18 @@ class TelemetrySubscriber(Subscriber[Event]):
                 has_agent_profile=self.context.has_agent_profile,
                 workspace_kind=self.context.workspace_kind,
                 confirmation_policy=self.context.confirmation_policy,
+                is_automation=self.context.is_automation,
             )
             self.sink.emit(
                 self.factory.build(
-                    m.EventName.CONVERSATION_STARTED,
+                    m.EventName.CONVERSATION_CREATED,
                     properties,
                     user_id=self.context.user_id,
+                    insert_id=(f"conversation_created:{self.context.conversation_ref}"),
                 )
             )
         except Exception:
-            logger.debug("Telemetry failed to emit conversation_started", exc_info=True)
+            logger.debug("Telemetry failed to emit conversation_created", exc_info=True)
 
     def _emit_terminal(self, status: str) -> None:
         if self._terminal_emitted:
@@ -184,18 +191,26 @@ class TelemetrySubscriber(Subscriber[Event]):
         )
 
     def _capture_usage(self, event: ConversationStateUpdateEvent) -> None:
-        """Pull aggregate token/cost out of the terminal state snapshot.
+        """Record aggregate token/cost from a state update carrying stats.
 
-        ``full_state`` carries ``stats.usage_to_metrics``, a map of usage id to
-        a ``MetricsSnapshot``. Summing it gives the conversation totals, which
-        are then bucketed — the raw figures are never reported. Best-effort:
-        any shape change degrades to ``unknown`` rather than raising.
+        Both a ``stats`` key update (published after each LLM call) and a
+        ``full_state`` snapshot carry ``usage_to_metrics``, a map of usage id
+        to a ``MetricsSnapshot``. Summing it gives the conversation totals,
+        which are bucketed at the terminal event — the raw figures are never
+        reported. Best-effort: any shape change degrades to ``unknown``
+        rather than raising.
         """
         try:
+            key = getattr(event, "key", None)
             value = getattr(event, "value", None)
             if not isinstance(value, dict):
                 return None
-            stats = value.get("stats")
+            if key == _STATS_KEY:
+                stats = value
+            elif key == FULL_STATE_KEY:
+                stats = value.get("stats")
+            else:
+                return None
             if not isinstance(stats, dict):
                 return None
             per_usage = stats.get("usage_to_metrics")
@@ -287,7 +302,7 @@ class TelemetrySubscriber(Subscriber[Event]):
         conversation. Emitting unconditionally here produced a
         ``conversation_finished`` — carrying a non-terminal
         ``terminal_status`` like ``paused`` — for a conversation that did
-        nothing this session, with no matching ``conversation_started``, and
+        nothing this session, with no matching ``conversation_created``, and
         again on every view-then-restart cycle for the same
         ``conversation_ref``.
 

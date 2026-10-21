@@ -197,7 +197,6 @@ async def test_start_conversation_with_plugins_list(conversation_service, tmp_pa
             mock_event_service.get_state.return_value = mock_state
             mock_event_service.stored = StoredConversation(
                 id=mock_state.id,
-                agent=request.agent,
                 **request.model_dump(exclude={"agent"}),
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
@@ -211,8 +210,11 @@ async def test_start_conversation_with_plugins_list(conversation_service, tmp_pa
             assert stored.plugins is not None
             assert len(stored.plugins) == 1
             assert stored.plugins[0].source == str(plugin_dir)
-            # Agent context NOT populated yet (lazy loading in LocalConversation)
-            assert stored.agent.agent_context is None
+            # Agent is passed to EventService separately (persisted to
+            # base_state.json, not meta.json). Agent context NOT populated yet
+            # (lazy loading in LocalConversation).
+            agent = mock_event_service_class.call_args.kwargs["agent"]
+            assert agent.agent_context is None
 
 
 @pytest.mark.asyncio
@@ -257,7 +259,6 @@ async def test_start_conversation_with_multiple_plugins(conversation_service, tm
             mock_event_service.get_state.return_value = mock_state
             mock_event_service.stored = StoredConversation(
                 id=mock_state.id,
-                agent=request.agent,
                 **request.model_dump(exclude={"agent"}),
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
@@ -310,7 +311,6 @@ async def test_plugins_persisted_in_stored_conversation_for_lazy_loading(
             mock_event_service.get_state.return_value = mock_state
             mock_event_service.stored = StoredConversation(
                 id=mock_state.id,
-                agent=request.agent,
                 **request.model_dump(exclude={"agent"}),
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
@@ -446,7 +446,6 @@ async def test_start_conversation_stores_both_hooks_and_plugins_for_lazy_merge(
             mock_event_service.get_state.return_value = mock_state
             mock_event_service.stored = StoredConversation(
                 id=mock_state.id,
-                agent=request.agent,
                 **request.model_dump(exclude={"agent"}),
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),

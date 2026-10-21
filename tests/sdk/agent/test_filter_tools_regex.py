@@ -8,7 +8,7 @@ both paths.
 
 import uuid
 from collections.abc import Sequence
-from typing import ClassVar, cast
+from typing import Any, ClassVar, cast
 
 import pytest
 
@@ -252,6 +252,7 @@ class _StaticMCPToolProvider:
         timeout: float = 30.0,
         *,
         on_tools_changed: ToolsChangedCallback | None = None,
+        on_tools_reconciled: Any = None,
     ) -> MCPClient:
         return cast(
             MCPClient,

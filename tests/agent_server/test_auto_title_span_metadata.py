@@ -72,7 +72,6 @@ def _probe_auto_title_spans() -> dict[str, Any]:
 
     stored = StoredConversation(
         id=uuid4(),
-        agent=agent,
         workspace=LocalWorkspace(working_dir="workspace/project"),
         confirmation_policy=NeverConfirm(),
         initial_message=None,
@@ -82,6 +81,13 @@ def _probe_auto_title_spans() -> dict[str, Any]:
     service = AsyncMock(spec=EventService)
     service.stored = stored
     service._conversation = conversation
+
+    async def save_meta(new_stored: StoredConversation | None = None) -> None:
+        # Like EventService.save_meta: adopt the metadata once it is written.
+        if new_stored is not None:
+            service.stored = new_stored
+
+    service.save_meta.side_effect = save_meta
 
     event = MessageEvent(
         id="evt-1",
@@ -98,7 +104,7 @@ def _probe_auto_title_spans() -> dict[str, Any]:
             await AutoTitleSubscriber(service=service)(event)
             for _ in range(250):
                 await asyncio.sleep(0.02)
-                if stored.title is not None:
+                if service.stored.title is not None:
                     return
 
     asyncio.run(drive())
@@ -111,7 +117,7 @@ def _probe_auto_title_spans() -> dict[str, Any]:
         span.context.span_id: span.name for span in spans if span.context is not None
     }
     return {
-        "title": stored.title,
+        "title": service.stored.title,
         "conversation_trace_id": root_span.span.get_span_context().trace_id,
         "spans": [
             {
@@ -145,7 +151,13 @@ def test_auto_title_llm_span_joins_the_conversation_trace() -> None:
     assert len(llm_spans) == 1
     title_llm = llm_spans[0]
 
-    assert title_llm["parent"] == "conversation.generate_title"
+    sdk_llm_spans = [span for span in probe["spans"] if span["name"] == "llm.gpt-4o"]
+    assert len(sdk_llm_spans) == 1
+    sdk_llm = sdk_llm_spans[0]
+
+    assert sdk_llm["parent"] == "conversation.generate_title"
+    assert title_llm["parent"] == "llm.gpt-4o"
+    assert sdk_llm["trace_id"] == probe["conversation_trace_id"]
     assert title_llm["trace_id"] == probe["conversation_trace_id"]
 
     # Spelled out, not derived from OPERATION_METADATA_KEY: this exact attribute

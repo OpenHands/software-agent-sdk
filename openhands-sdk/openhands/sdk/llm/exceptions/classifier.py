@@ -4,18 +4,22 @@ from typing import Final
 
 from litellm.exceptions import (
     APIConnectionError,
+    APIError,
     AuthenticationError,
     BadRequestError,
+    BudgetExceededError,
     ContentPolicyViolationError,
     ContextWindowExceededError,
     InternalServerError,
     OpenAIError,
     PermissionDeniedError,
+    RateLimitError,
 )
 
 from .types import (
     LLMContextWindowExceedError,
     LLMMalformedConversationHistoryError,
+    LLMRateLimitError,
 )
 
 
@@ -65,6 +69,15 @@ MALFORMED_HISTORY_PATTERNS: Final[list[str]] = [
 # pattern if the API phrasing changes.
 PROMPT_CACHE_TOO_SMALL_PATTERNS: Final[list[str]] = [
     "minimum token count to start caching",
+]
+
+# Deterministic "you have exhausted your allowance" outcomes. Unlike a transient
+# 429, these will NOT recover by retrying until the limit resets or is raised,
+# so retrying only burns backoff time. Callers (e.g. the LLM retry loop) use
+# this to skip retries; budget denials also stop model fallback.
+QUOTA_EXHAUSTION_PATTERNS: Final[list[str]] = [
+    "usage_limit_reached",
+    "insufficient_quota",
 ]
 
 AUTH_PATTERNS: Final[list[str]] = [
@@ -127,6 +140,24 @@ def is_prompt_cache_too_small(exception: Exception) -> bool:
     return any(p in s for p in PROMPT_CACHE_TOO_SMALL_PATTERNS)
 
 
+def is_budget_exceeded_error(exception: BaseException) -> bool:
+    """Recognize explicit budget denials before or after SDK error mapping."""
+    if isinstance(exception, BudgetExceededError):
+        return True
+    if not isinstance(exception, (RateLimitError, LLMRateLimitError)):
+        return False
+    message = str(exception).lower()
+    return "budget_exceeded" in message or "budget has been exceeded" in message
+
+
+def is_quota_exhaustion_error(exception: BaseException) -> bool:
+    """Identify exhausted allowances that require a reset or limit increase."""
+    s = str(exception).lower()
+    return is_budget_exceeded_error(exception) or any(
+        p in s for p in QUOTA_EXHAUSTION_PATTERNS
+    )
+
+
 def looks_like_auth_error(exception: Exception) -> bool:
     # Trust the typed exception when the provider/LiteLLM raised an explicit
     # 401/403 — its message text may not contain the heuristic patterns below.
@@ -151,3 +182,10 @@ def is_content_policy_violation(exception: Exception) -> bool:
         return False
     s = str(exception).lower()
     return any(p in s for p in CONTENT_POLICY_PATTERNS)
+
+
+def is_transient_http_error(exception: BaseException) -> bool:
+    """Match provider HTTP failures eligible for retry and model fallback."""
+    return isinstance(exception, APIError) and (
+        exception.status_code in (408, 409, 429) or 500 <= exception.status_code < 600
+    )

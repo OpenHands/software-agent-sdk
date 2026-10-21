@@ -12,7 +12,7 @@ This eliminates the need for Python tool code in JavaScript repos and the comple
 import copy
 import threading
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, ClassVar, Self
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -184,6 +184,8 @@ class ClientTool(ToolDefinition[Action, ClientToolObservation]):
     over WebSocket for the client to handle.
     """
 
+    user_selectable: ClassVar[bool] = False
+
     client_tool_name: str = Field(
         description="Per-instance tool name from the ClientToolSpec.",
     )
@@ -298,6 +300,7 @@ class ClientTool(ToolDefinition[Action, ClientToolObservation]):
                     required = merged.setdefault("required", [])
                     if meta not in required:
                         required.append(meta)
+        merged = self._merge_response_schema(merged)
 
         from openhands.sdk.tool.tool import _prioritize_schema_fields
 

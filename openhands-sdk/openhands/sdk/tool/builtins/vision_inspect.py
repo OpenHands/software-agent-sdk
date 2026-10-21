@@ -246,9 +246,7 @@ class VisionInspectExecutor(ToolExecutor):
                 ],
             ),
         ]
-        from openhands.sdk.agent.utils import make_llm_completion
-
-        response = make_llm_completion(vision_llm, messages, tools=[])
+        response = vision_llm.generate(messages=messages, store=False)
         answer = next(
             (
                 content.text
@@ -294,6 +292,8 @@ _DESCRIPTION_TEMPLATE = (
 
 class VisionInspectTool(ToolDefinition[VisionInspectAction, VisionInspectObservation]):
     """Tool for one-off image inspection through a saved vision profile."""
+
+    user_selectable: ClassVar[bool] = False
 
     name: ClassVar[str] = VISION_INSPECT_TOOL_NAME
 

@@ -56,6 +56,17 @@ You may find that occasionally we are opinionated about several things:
 - **Compatibility is part of the API**: if something could break downstream clients, call it
   out explicitly and consider a migration path. We have a deprecation mechanism you may want to use.
 
+### New AI providers
+
+Adding a new AI provider is generally out of scope for the SDK unless it is broadly popular and
+commonly used by OpenHands users. The SDK should provide reusable interfaces and extension points,
+not maintain a long tail of provider-specific integrations.
+
+Feature requests and pull requests for providers that do not meet that bar should be marked as
+out of scope and closed politely. Contributors can still use the existing generic provider
+interfaces or maintain integrations externally. If demand becomes broad and sustained, a future
+request can be reassessed with evidence of user adoption and a maintainable integration shape.
+
 If you’re not sure whether a change crosses these lines, please ask early. We’re happy to help think
 through the shape of a clean interface.
 
@@ -67,6 +78,36 @@ This file is mostly about principles. For the mechanics, please see:
 - [openhands-sdk/openhands/sdk/subagent/AGENTS.md](openhands-sdk/openhands/sdk/subagent/AGENTS.md) for file-based subagent discovery, precedence, and task handoff conventions
 - `examples/01_standalone_sdk/41_task_tool_set.py` for delegating work to registered subagents with resume support
 - `examples/01_standalone_sdk/42_file_based_subagents.py` for programmatic `AgentDefinition` registration
+
+## Design doc for non-trivial PRs
+
+For a non-trivial PR — a new or changed public API (Python or the agent-server REST/WebSocket
+surface), a new subsystem, a behavior change in the agent loop, or a migration — a reviewer
+often has to reconstruct the design from the diff alone. That is slow, and it is where the
+compatibility risks we care about hide. You are encouraged (though not required) to add a short design
+doc so reviewers grasp the proposal at a glance.
+
+The convention:
+
+1. Write a **self-contained HTML** page (inline CSS/SVG, opens by double-click) that covers the
+   code/API design and a **before/after** of your change, grounded to the actual code. Show the
+   interface before and after when you touch one — signatures, schemas, or event shapes — and
+   state the compatibility impact (additive, breaking, or behind a flag).
+2. Commit it under the temporary **`.pr/`** directory, e.g. `.pr/design.html`. This directory is
+   for PR-only artifacts. After a PR merges to `main`, `.github/workflows/pr-artifacts.yml`
+   automatically opens or updates a cleanup PR to remove the directory from `main`.
+3. Link it near the top of the PR description via htmlpreview, pointing at the fork and branch the
+   PR is opened from so it renders before the PR is merged:
+
+   ```
+   https://htmlpreview.github.io/?https://github.com/<your-fork>/<repo>/blob/<your-branch>/.pr/design.html
+   ```
+
+Skip this for trivial PRs (a typo, a one-line guard, a dependency bump, a small bug fix) — there, a design doc is
+just noise.
+
+The `pr-design-doc` skill in the [OpenHands extensions](https://github.com/OpenHands/extensions)
+repo can generate the page for you.
 
 ## Questions / discussion
 
