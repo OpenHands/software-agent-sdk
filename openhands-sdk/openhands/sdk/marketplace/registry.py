@@ -9,6 +9,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.marketplace.types import Marketplace
 from openhands.sdk.plugin.fetch import fetch_plugin_with_resolution
+from openhands.sdk.plugin.format import agent_plugins
 from openhands.sdk.plugin.format.claude_code import (
     PLUGIN_MANIFEST_DIRS,
     PLUGIN_MANIFEST_FILE,
@@ -100,8 +101,8 @@ def _load_marketplace(path: Path, name: str) -> Marketplace:
         if plugin_manifest:
             logger.warning(
                 "Marketplace '%s' is a plugin (%s), not a marketplace; only its "
-                "skills are loaded, and its hooks, MCP servers and commands are "
-                "ignored",
+                "skills are loaded, and its hooks, MCP servers, commands and "
+                "agents are ignored",
                 name,
                 plugin_manifest,
             )
@@ -110,6 +111,8 @@ def _load_marketplace(path: Path, name: str) -> Marketplace:
 
 def _plugin_manifest(path: Path) -> str | None:
     """The manifest of a single plugin at ``path``, if it is one."""
+    if (path / agent_plugins.MANIFEST_FILE).is_file():
+        return agent_plugins.MANIFEST_FILE
     for manifest_dir in PLUGIN_MANIFEST_DIRS:
         if (path / manifest_dir / PLUGIN_MANIFEST_FILE).is_file():
             return f"{manifest_dir}/{PLUGIN_MANIFEST_FILE}"

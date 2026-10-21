@@ -15,6 +15,7 @@ from openhands.sdk.marketplace import (
     PluginNotFoundError,
     PluginResolutionError,
 )
+from openhands.sdk.plugin.format.agent_plugins import MANIFEST_SCHEMA_URL
 
 
 def _create_marketplace(
@@ -430,13 +431,25 @@ def test_get_marketplace_reads_skills_folder_named_by_repo_path(
     assert [(s.name, s.source) for s in marketplace.skills] == [("greet", "./greet")]
 
 
+@pytest.mark.parametrize(
+    ("manifest_path", "manifest"),
+    [
+        (".plugin/plugin.json", {"name": "tools"}),
+        ("plugin.json", {"$schema": MANIFEST_SCHEMA_URL, "name": "tools"}),
+        ("plugin.json", {"name": "tools"}),
+    ],
+    ids=["claude-code", "agent-plugins", "root-without-schema"],
+)
 def test_get_marketplace_warns_that_a_plugin_loads_only_its_skills(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    manifest_path: str,
+    manifest: dict,
 ) -> None:
     """A plugin registered as a marketplace keeps only its skills, and says so."""
     repo = tmp_path / "repo"
-    (repo / ".plugin").mkdir(parents=True)
-    (repo / ".plugin" / "plugin.json").write_text(json.dumps({"name": "tools"}))
+    (repo / manifest_path).parent.mkdir(parents=True)
+    (repo / manifest_path).write_text(json.dumps(manifest))
     _write_skill(repo / "skills" / "greet", "greet")
     registry = MarketplaceRegistry(
         [MarketplaceRegistration(name="team", source=str(repo))]
@@ -445,8 +458,29 @@ def test_get_marketplace_warns_that_a_plugin_loads_only_its_skills(
     marketplace, _ = registry.get_marketplace("team")
 
     assert [s.name for s in marketplace.skills] == ["greet"]
-    assert "'team' is a plugin (.plugin/plugin.json)" in caplog.text
-    assert "hooks, MCP servers and commands are ignored" in caplog.text
+    assert f"'team' is a plugin ({manifest_path})" in caplog.text
+    assert "hooks, MCP servers, commands and agents are ignored" in caplog.text
+
+
+def test_get_marketplace_does_not_call_a_skills_repository_a_plugin(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Folders a plugin could also use do not make a skills repository a plugin."""
+    repo = tmp_path / "repo"
+    _write_skill(repo / "skills" / "greet", "greet")
+    (repo / "agents").mkdir()
+    (repo / "agents" / "helper.md").write_text(
+        "---\nname: helper\ndescription: helper description\n---\nhelper body"
+    )
+    (repo / "mcp.json").write_text(json.dumps({"mcpServers": {}}))
+    registry = MarketplaceRegistry(
+        [MarketplaceRegistration(name="team", source=str(repo))]
+    )
+
+    marketplace, _ = registry.get_marketplace("team")
+
+    assert [s.name for s in marketplace.skills] == ["greet"]
+    assert "is a plugin" not in caplog.text
 
 
 def test_get_marketplace_warns_about_a_duplicate_skill_name(
