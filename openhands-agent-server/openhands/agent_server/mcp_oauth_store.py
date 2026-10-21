@@ -55,6 +55,14 @@ _OAUTH_KEY_SPECS: tuple[_OAuthKeySpec, ...] = (
 )
 
 
+def _client_id(client_info: MCPOAuthClientInfoState | None) -> str | None:
+    """The client a stored registration names."""
+    if client_info is None:
+        return None
+    client_id = (client_info.model_extra or {}).get("client_id")
+    return client_id if isinstance(client_id, str) else None
+
+
 def _server_url_from_fastmcp_key(key: str) -> str:
     """Extract FastMCP's server-url prefix from its OAuth token-store key."""
     for spec in _OAUTH_KEY_SPECS:
@@ -114,16 +122,23 @@ class MCPSettingsOAuthTokenStore:
         session_api_key: str | None = None,
     ):
         self._seeded: dict[str, MCPOAuthState] = {}
-        self._seeded_clients: dict[str, MCPOAuthClientInfoState | None] = {}
+        self._seeded_client_ids: dict[str, str | None] = {}
         self._seeded_lock = threading.Lock()
         self._write_back_webhooks = tuple(write_back_webhooks)
         self._session_api_key = session_api_key
         for server in (seed_mcp_config or {}).values():
-            if server.url is None or server.oauth_auth is None:
+            oauth_auth = server.oauth_auth
+            if server.url is None or oauth_auth is None:
                 continue
             state = server.initial_oauth_state(cipher=cipher) or MCPOAuthState()
             self._seeded[server.url.rstrip("/")] = state
-            self._seeded_clients[server.url.rstrip("/")] = state.client_info
+            # FastMCP always uses a configured static client, rewriting its
+            # stored registration on every connect.
+            authentication = oauth_auth.authentication
+            static_client_id = authentication.client_id if authentication else None
+            self._seeded_client_ids[server.url.rstrip("/")] = (
+                static_client_id or _client_id(state.client_info)
+            )
 
     def _seeded_state(self, key: str) -> MCPOAuthState | None:
         with self._seeded_lock:
@@ -224,15 +239,15 @@ class MCPSettingsOAuthTokenStore:
         the previous refresh token, which providers that rotate refresh
         tokens have already revoked. Best effort: a failure only logs, and
         the in-memory overlay keeps serving the new tokens. Only a state with
-        tokens and the client registration it was seeded with is posted, so
-        neither FastMCP dropping the stored credentials nor a client it
-        registers during the conversation can replace them on the app server.
+        tokens for the client it was seeded with is posted, so neither FastMCP
+        dropping the stored credentials nor a client it registers during the
+        conversation can replace them on the app server.
         """
         if not self._write_back_webhooks:
             return
         if state.tokens is None or state.tokens.access_token is None:
             return
-        if state.client_info != self._seeded_clients.get(server_url):
+        if _client_id(state.client_info) != self._seeded_client_ids.get(server_url):
             return
         payload = {
             "server_url": server_url,

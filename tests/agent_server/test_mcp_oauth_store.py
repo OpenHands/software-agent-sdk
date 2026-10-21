@@ -767,7 +767,10 @@ def _installed_client(oauth_provider: InMemoryOAuthProvider) -> dict[str, Any]:
 
 
 def _expired_inline_oauth_server(
-    url: str, client_info: dict[str, Any] | None, refresh_token: str
+    url: str,
+    client_info: dict[str, Any] | None,
+    refresh_token: str,
+    static_client_id: str | None = None,
 ) -> dict[str, MCPServer]:
     """An inline OAuth server whose stored access token has expired."""
     return coerce_mcp_config(
@@ -781,6 +784,7 @@ def _expired_inline_oauth_server(
                         "type": "oauth",
                         "client_auth_method": "none",
                         "scopes": ["mail.read"],
+                        "client_id": static_client_id,
                     },
                     "state": {
                         "tokens": {
@@ -907,5 +911,48 @@ def test_settings_backed_provider_writes_back_tokens_refreshed_on_connect(
         assert state["tokens"]["refresh_token"] != "issued-refresh-token"
         assert state["client_info"]["client_id"] == "installed-client"
         assert state["token_expires_at"] > time.time()
+    finally:
+        reset_stores()
+
+
+@pytest.mark.parametrize("stored_client", [True, False])
+def test_settings_backed_provider_writes_back_tokens_refreshed_for_a_static_client(
+    tmp_path: Path,
+    oauth_provider: InMemoryOAuthProvider,
+    protected_oauth_mcp_server: str,
+    write_backs: list[dict],
+    stored_client: bool,
+):
+    """FastMCP rewrites a static client's registration with a loopback
+    redirect URI on every connect; its refreshed tokens still go back."""
+    reset_stores()
+    try:
+        # Arrange
+        config = _hosted_config(tmp_path)
+        get_settings_store(config).save(PersistedSettings())
+        client_info = _installed_client(oauth_provider)
+        oauth_provider.refresh_tokens["issued-refresh-token"] = RefreshToken(
+            token="issued-refresh-token",
+            client_id="installed-client",
+            scopes=["mail.read"],
+        )
+        mcp_config = _expired_inline_oauth_server(
+            protected_oauth_mcp_server,
+            client_info if stored_client else None,
+            "issued-refresh-token",
+            static_client_id="installed-client",
+        )
+        provider = create_settings_backed_mcp_tool_provider(config)
+
+        # Act
+        with provider.create_tools(mcp_config, timeout=10.0) as client:
+            tool_names = [tool.name for tool in client.tools]
+
+        # Assert
+        assert "read_subject" in tool_names
+        state = write_backs[-1]["oauth_state"]
+        assert state["tokens"]["refresh_token"] in oauth_provider.refresh_tokens
+        assert state["tokens"]["refresh_token"] != "issued-refresh-token"
+        assert state["client_info"]["client_id"] == "installed-client"
     finally:
         reset_stores()
