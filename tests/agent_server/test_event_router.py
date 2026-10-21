@@ -354,6 +354,55 @@ class TestSendMessageEndpoint:
         assert message.content == content
 
 
+class TestRespondToAskUserEndpoint:
+    """Test cases for the ask_user response endpoint."""
+
+    def test_respond_to_ask_user(
+        self, client, sample_conversation_id, mock_event_service
+    ):
+        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        mock_event_service.respond_to_ask_user = AsyncMock()
+        try:
+            response = client.post(
+                f"/api/conversations/{sample_conversation_id}/events/"
+                "respond_to_ask_user",
+                json={
+                    "request_id": "req-1",
+                    "action": "accept",
+                    "answers": {"auth": [{"option_id": "jwt", "label": "JWT"}]},
+                },
+            )
+
+            assert response.status_code == 200
+            assert response.json() == {"success": True}
+            mock_event_service.respond_to_ask_user.assert_awaited_once()
+            call_request = mock_event_service.respond_to_ask_user.call_args[0][0]
+            assert call_request.request_id == "req-1"
+            assert call_request.action == "accept"
+        finally:
+            client.app.dependency_overrides.clear()
+
+    def test_respond_to_ask_user_rejects_mismatched_request_id(
+        self, client, sample_conversation_id, mock_event_service
+    ):
+        from openhands.sdk.event import AskUserRequestError
+
+        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        mock_event_service.respond_to_ask_user = AsyncMock(
+            side_effect=AskUserRequestError("no matching pending request")
+        )
+        try:
+            response = client.post(
+                f"/api/conversations/{sample_conversation_id}/events/"
+                "respond_to_ask_user",
+                json={"request_id": "stale", "action": "cancel"},
+            )
+
+            assert response.status_code == 409
+        finally:
+            client.app.dependency_overrides.clear()
+
+
 class TestSearchEventsEndpoint:
     """Test cases for the search events endpoint with timestamp filtering."""
 

@@ -18,13 +18,14 @@ from starlette.responses import JSONResponse
 from openhands.agent_server.dependencies import get_event_service
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
+    AskUserResponseRequest,
     ConfirmationResponseRequest,
     EventSortOrder,
     SendMessageRequest,
     Success,
 )
 from openhands.sdk import Message
-from openhands.sdk.event import Event
+from openhands.sdk.event import AskUserRequestError, Event
 
 
 event_read_router = APIRouter(
@@ -241,6 +242,30 @@ async def respond_to_confirmation(
 ) -> Success:
     """Accept or reject a pending action in confirmation mode."""
     await event_service.respond_to_confirmation(request)
+    return Success()
+
+
+@event_write_router.post(
+    "/respond_to_ask_user",
+    responses={
+        404: {"description": "Conversation not found"},
+        409: {"description": "No matching pending ask_user request"},
+        429: {"description": "Server conversation run capacity is full"},
+    },
+)
+async def respond_to_ask_user(
+    request: AskUserResponseRequest,
+    event_service: EventService = Depends(get_event_service),
+) -> Success:
+    """Answer a pending ``ask_user`` request.
+
+    The ``request_id`` must match the conversation's single pending request;
+    otherwise the request is rejected with 409.
+    """
+    try:
+        await event_service.respond_to_ask_user(request)
+    except AskUserRequestError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
     return Success()
 
 

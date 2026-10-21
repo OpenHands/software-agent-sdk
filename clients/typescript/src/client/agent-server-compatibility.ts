@@ -30,6 +30,15 @@ export const AgentServerFeatureRequirements = {
     displayName: 'MCP OAuth API',
     minVersion: '1.31.0',
   },
+  askUser: {
+    feature: 'ask-user',
+    displayName: 'ask_user request/response API',
+    // The endpoint ships with this feature, so the floor must be above every
+    // already-released server: 1.56.0 is the newest release and still lacks it,
+    // so gating any lower would let a real server pass this check and then 404.
+    // 1.57.0 is the next unreleased minor.
+    minVersion: '1.57.0',
+  },
 } as const satisfies Record<string, AgentServerFeatureRequirement>;
 
 export class AgentServerVersionError extends Error {

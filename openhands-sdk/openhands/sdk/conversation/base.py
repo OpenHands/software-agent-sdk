@@ -1,8 +1,8 @@
 import contextlib
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Iterable, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
@@ -13,6 +13,7 @@ from openhands.sdk.conversation.types import (
     ConversationTokenCallbackType,
     TraceMetadataValue,
 )
+from openhands.sdk.event.ask_user_schema import AskUserAnswer, AskUserResponseAction
 from openhands.sdk.event.types import EventID
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import Message
@@ -284,6 +285,29 @@ class BaseConversation(ABC):
 
     @abstractmethod
     def pause(self) -> None: ...
+
+    def respond_to_ask_user(
+        self,
+        request_id: str,
+        action: AskUserResponseAction,
+        answers: Mapping[
+            str, AskUserAnswer | Sequence[AskUserAnswer] | Mapping[str, Any]
+        ]
+        | None = None,
+    ) -> None:
+        """Answer this conversation's pending ``ask_user`` request.
+
+        ``action`` is ``"accept"`` (with ``answers`` keyed by question id),
+        ``"decline"``, or ``"cancel"``. Each answer may be an
+        :class:`AskUserAnswer`, a list of them (multi-select), or a plain
+        mapping with ``option_id``/``label`` keys.
+
+        Implementations raise ``ValueError`` when ``request_id`` does not match
+        the single pending request.
+        """
+        raise NotImplementedError(
+            "This conversation does not support answering ask_user requests"
+        )
 
     def interrupt(self) -> None:
         """Immediately cancel an in-flight ``arun()`` LLM call.
