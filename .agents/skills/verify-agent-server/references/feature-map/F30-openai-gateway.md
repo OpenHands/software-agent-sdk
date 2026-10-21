@@ -38,7 +38,7 @@ Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`
 - `F30.observability-headers`: `X-OpenHands-Observability-*` headers are stored on the new conversation (chat and responses); invalid values are 422 before anything runs.
 - `F30.chat-run-error-500`: a run that ends in `error` answers 500 with the rewritten body (`exception` `500: Agent run ended with status: error`), without the conversation header, and leaves the conversation in `error`.
 - `F30.chat-confirmation-409`: with confirmation mode saved in the settings, a new conversation that stops `waiting_for_confirmation` answers 409 at once.
-- `F30.chat-reuse-confirmation`: a continued conversation that stops `waiting_for_confirmation` must also answer 409 promptly (reproduces a real bug: it waits out 120 s and answers 504).
+- `F30.chat-reuse-confirmation`: a continued conversation that stops `waiting_for_confirmation` also answers 409 within seconds, like a new one.
 - `F30.chat-run-limit-429`: when `max_concurrent_runs` is full a new gateway conversation is refused with 429 and nothing is created; the same request succeeds once a slot is free.
 - `F30.chat-reuse-run-limit-429`: on a continued conversation a 429 also leaves nothing behind, so a client retry is safe.
 - `F30.chat-timeout-504`: a run longer than the fixed 120 s answers 504 `Agent run timed out`, and the run keeps going server-side.
@@ -606,7 +606,7 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   The gateway answers 409 within seconds; the conversation inherited
   `AlwaysConfirm` from the saved settings and waits with the command not run.
   The settings are restored at the end.
-- **Confirmation on a continued conversation (`F30.chat-reuse-confirmation`), known bug.**
+- **Confirmation on a continued conversation (`F30.chat-reuse-confirmation`).**
   The same settings (restored by a trap even when the bullet fails); the
   stub answers the first turn with text and the second with a command.
   ```sh
@@ -621,7 +621,7 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
     --check choices.0.message.content eq QA_F30_FIRST_OK --print-header X-OpenHands-ServerConversation-ID)
   control-agent-server api POST /v1/chat/completions --auth bearer --timeout 180 --header "X-OpenHands-ServerConversation-ID: $RCID" \
     --json '{"model": "openhands_qa-f30-reconf", "messages": [{"role": "user", "content": "QA_F30_RECONF_2"}]}' \
-    --expect 409,504 --check-header x-openhands-serverconversation-id missing \
+    --expect 409 --check-header x-openhands-serverconversation-id missing \
     --save F30.chat-reuse-confirmation/second-turn > "$F30/reconf-2.json" &
   XPID=$!
   control-agent-server sink read --name qa-f30-reconf --expect-min 2 --wait 30 > /dev/null
@@ -630,17 +630,15 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   test ! -e "$AGENT_SERVER_VERIFY_RUN/server/workspace/project/qa_f30_reconf.txt"
   wait "$XPID" || { cat "$F30/reconf-2.json"; false; }
   control-agent-server state cat fixtures/qa-f30/reconf-2.json --check status eq 409 \
-    --check response.body.detail eq 'Agent run ended with status: waiting_for_confirmation' --check elapsed_ms lt 30000  # bug: content.status eq 504 && content.response.body.exception contains 'Agent run timed out'
+    --check response.body.detail eq 'Agent run ended with status: waiting_for_confirmation' --check elapsed_ms lt 30000
   ```
   The second turn's model call proposes the command and the conversation is
   `waiting_for_confirmation` within seconds (the command not run), while the
-  gateway request is still open; the request then ends with 409 or 504 (any
-  other answer is not this bug). Expected: it answers 409 within seconds,
-  like a new conversation. Today it blocks for the full 120 s and answers 504
-  `Agent run timed out` (`exception` `504: Agent run timed out`):
-  `_wait_for_reused_conversation_completion` only returns on `is_terminal()`
-  (finished, error, stuck), so `paused` and `waiting_for_confirmation` are
-  never seen. The bullet takes about two minutes.
+  gateway request is still open; the request then answers 409
+  `Agent run ended with status: waiting_for_confirmation` within seconds,
+  like a new conversation: the continued-conversation wait
+  (`_wait_for_reused_conversation_completion`) stops on `paused` and
+  `waiting_for_confirmation` as well as on terminal states.
 - **Run limit (`F30.chat-run-limit-429`).** Restart with one run slot, hold
   it with a conversation whose model call hangs, then call the gateway.
   ```sh

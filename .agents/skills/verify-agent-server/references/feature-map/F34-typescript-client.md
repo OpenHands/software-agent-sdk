@@ -474,14 +474,12 @@ Preconditions:
   fixture's own path, outside the conversation workspace). Both methods wrap a refusal in a plain `Error` (`Failed to get git changes:
   ...`) whose `cause` is the `HttpError`: 422 for a path outside the
   conversation workspace, 401 without a key. REST agrees.
-- **Git status type (`F34.workspace-git-types`), known bug.** The exported
-  `GitChange` type declares `status: 'added' | 'modified' | 'deleted' |
-  'renamed'` (`clients/typescript/src/models/workspace.ts:31`), while the
-  server and the client's own generated contract (`GitChangeStatus`) use
-  `'MOVED' | 'ADDED' | 'DELETED' | 'UPDATED'`, so a TypeScript consumer's
-  `change.status === 'modified'` compiles and never matches. The program
-  writes what `gitChanges` returned into three tiny `.mts` files and the
-  client's own `tsc` type-checks them: the statuses against the generated
+- **Git status type (`F34.workspace-git-types`).** The exported `GitChange`
+  types `status` as the generated contract's `GitChangeStatus`
+  (`'MOVED' | 'ADDED' | 'DELETED' | 'UPDATED'`), the values the server
+  sends, so a TypeScript consumer compares against the wire values. The
+  program writes what `gitChanges` returned into three tiny `.mts` files and
+  the client's own `tsc` type-checks them: the statuses against the generated
   contract and the paths against the exported `GitChange` (positive
   controls: the same compiler, flags and import resolve), then the statuses
   against the exported `GitChange`.
@@ -507,11 +505,10 @@ Preconditions:
   TSC="node clients/typescript/node_modules/typescript/bin/tsc --noEmit --strict --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022"
   $TSC "$F34/git-contract.mts"
   $TSC "$F34/git-paths.mts"
-  $TSC "$F34/git-types.mts" | control-agent-server assert --check . eq ''  # bug: value matches 'TS2322: Type ..UPDATED.. is not assignable'
+  $TSC "$F34/git-types.mts" | control-agent-server assert --check . eq ''
   ```
-  Expected: both files type-check. Today the contract file compiles and
-  the exported type fails with `Type '"UPDATED"' is not assignable to type
-  '"added" | "modified" | "deleted" | "renamed"'`.
+  Expected: all three files type-check, the statuses against both the
+  generated contract and the exported `GitChange`.
 - **Bash client (`F34.bash-client`).** Background command, lookups, stop and
   clear, with the socket and the REST history as second views.
   ```sh
@@ -798,15 +795,12 @@ Preconditions:
   reject with a 500 `HttpError` whose `response.exception` is
   `'Unknown event_id: 00000000-0000-0000-0000-000000000000'`, so one missing
   id fails the whole `getEventsById`.
-- **Short event kinds (`F34.events-search-kind`), known bug.** The same
-  server bug as `F06.search-kind-short`, reached through the client: the
-  service compares `kind` with `<module>.<ClassName>`
-  (`openhands-agent-server/openhands/agent_server/event_service.py:555`)
-  while the route and `EventSearchOptions.kind`
-  (`clients/typescript/src/events/remote-events-list.ts:23`) document
-  `ActionEvent, MessageEvent`. Runs on `SCID`'s queued user message; the
-  fully-qualified kind finds it first (positive control); the bug is the
-  same for every kind (`F06.search-kind-short` shows it on the REST route).
+- **Short event kinds (`F34.events-search-kind`).** `F06.search-kind-short`
+  reached through the client: the route and `EventSearchOptions.kind`
+  (`clients/typescript/src/events/remote-events-list.ts`) document
+  `ActionEvent, MessageEvent`, and the server accepts that bare class name as
+  well as `<module>.<ClassName>`. Runs on `SCID`'s queued user message; the
+  fully-qualified kind finds it first (positive control).
   ```sh
   cat > "$F34/kind.mjs" <<'JS'
   import { writeFileSync } from 'node:fs';
@@ -823,10 +817,9 @@ Preconditions:
   JS
   control-agent-server exec --timeout 60 --expect-output QA_F34_KIND_READ --save F34.events-search-kind/program -- node "$F34/kind.mjs" "$SCID"
   cat "$F34/kind.json"
-  control-agent-server assert --json "$F34/kind.json" --check short len-eq 1 --check short.0 eq "$(jq -r '.full[0]' "$F34/kind.json")" --check short_count eq 1  # bug: value.short len-eq 0 && value.short_count eq 0
+  control-agent-server assert --json "$F34/kind.json" --check short len-eq 1 --check short.0 eq "$(jq -r '.full[0]' "$F34/kind.json")" --check short_count eq 1
   ```
-  Expected: the short name finds the same message. Today it returns no items
-  and a count of 0.
+  The short name finds the same message and counts `1`.
 - **Event stream on Node's WebSocket (`F34.event-stream`).** Replay, a turn
   sent over the socket, and a wrong key.
 
@@ -976,12 +969,12 @@ Preconditions:
   input order with `null` for the unknown id, the loaded conversation carries
   its server working directory, and the created conversation is gone after
   the delete (404, count back to `COUNT`).
-- **Update result (`F34.manager-update-result`), known bug.** `PATCH
+- **Update result (`F34.manager-update-result`).** `PATCH
   /api/conversations/{id}` answers `Success` (`{"success": true}`, also in
-  the client's generated contract), but `ConversationManager.updateConversation`
-  and `ConversationClient.updateConversation` are typed to resolve with the
-  updated `ConversationInfo` (`clients/typescript/src/conversation/conversation-manager.ts:384`,
-  `clients/typescript/src/client/conversation-client.ts:430`).
+  the client's generated contract), so `ConversationManager.updateConversation`
+  and `ConversationClient.updateConversation` read the conversation back
+  after the PATCH and resolve with the updated `ConversationInfo` they are
+  typed to return.
   The program checks that the title was stored (positive control, also
   through REST) and records what the call resolved with.
   ```sh
@@ -998,19 +991,16 @@ Preconditions:
   control-agent-server exec --timeout 60 --expect-output QA_F34_UPDATE_READ --save F34.manager-update-result/program -- node "$F34/update.mjs" "$SCID"
   control-agent-server api GET "/api/conversations/$SCID" --max-chars 300 --check title eq qa-f34-renamed
   cat "$F34/update.json"
-  control-agent-server assert --json "$F34/update.json" --check id eq "$SCID" --check title eq qa-f34-renamed  # bug: value.success eq true && value.id missing
+  control-agent-server assert --json "$F34/update.json" --check id eq "$SCID" --check title eq qa-f34-renamed
   ```
   Expected: the stored title and a `ConversationInfo` with the conversation's
-  `id` and new title. Today the title is stored but the promise resolves with
-  `{success: true}`, so `result.id` and `result.title` are `undefined`.
-- **Create options (`F34.manager-create-options`), known bug.**
-  `ConversationManager.createConversation` hands `maxIterations` and
-  `stuckDetection` to the `RemoteConversation` constructor, which ignores
-  them, and calls `start()` without them, so the server always gets
-  `max_iterations` 500 and `stuck_detection: true`
-  (`clients/typescript/src/conversation/conversation-manager.ts:221`).
-  `RemoteConversation.start({maxIterations, stuckDetection})` does forward
-  both, as the program shows first (positive control). It records what the
+  `id` and new title.
+- **Create options (`F34.manager-create-options`).**
+  `ConversationManager.createConversation` forwards `maxIterations` and
+  `stuckDetection` to `start()`, so the server stores the caller's
+  `max_iterations` and `stuck_detection`, the same as
+  `RemoteConversation.start({maxIterations, stuckDetection})`, which the
+  program checks first (positive control). It records what the
   server stored for the manager's conversation, deletes both conversations,
   and REST confirms they are gone.
   ```sh
@@ -1034,12 +1024,10 @@ Preconditions:
   control-agent-server exec --timeout 60 --expect-output QA_F34_CREATE_OPTIONS_READ --save F34.manager-create-options/program -- node "$F34/create-options.mjs"
   for ID in $(jq -r '.ids[]' "$F34/create-options.json"); do control-agent-server api GET "/api/conversations/$ID" --expect 404; done
   cat "$F34/create-options.json"
-  control-agent-server assert --json "$F34/create-options.json" --check max_iterations eq 7 --check stuck_detection eq false  # bug: value.max_iterations eq 500 && value.stuck_detection eq true
+  control-agent-server assert --json "$F34/create-options.json" --check max_iterations eq 7 --check stuck_detection eq false
   ```
   Expected: `max_iterations` 7 and `stuck_detection: false`, as the
-  direct `start()` gets. Today the manager's conversation has
-  `{"max_iterations":500,"stuck_detection":true}`. Both conversations are
-  deleted either way.
+  direct `start()` gets. Both conversations are deleted.
 - **ACP conversations (`F34.manager-acp`).** `ConversationManager.acp` with
   the inline ACP Codex agent F12 uses; the ACP subprocess only starts on
   the first run, so nothing runs and no Codex binary is needed.
@@ -1480,14 +1468,14 @@ Preconditions:
 - `RemoteWorkspace.fileDownload`, `downloadAsBlob` and `downloadAsText`
   decode the body as text (`F34.workspace-binary-download`); use
   `FileClient.downloadFile` for bytes.
-- `GitChange` (main entry) types `status` as lowercase
-  `added|modified|deleted|renamed`, but the server sends
-  `UPDATED|ADDED|DELETED|MOVED` (`F34.workspace-git-types`); compare against
-  the server's values, typed with the generated `GitChangeStatus`.
+- `GitChange['status']` (main entry, also exported as `GitChangeStatus`) is
+  the server's `UPDATED|ADDED|DELETED|MOVED`, not lowercase words
+  (`F34.workspace-git-types`).
   `gitChanges` and `gitDiff` wrap every refusal in a plain `Error`, so read
   the status from `isHttpError(e.cause)`, not from `e`.
-- The `kind` filter of `RemoteEventsList.search` and `count` needs the
-  fully-qualified class path (`F34.events-search-kind`, `F06.search-kind-short`).
+- The `kind` filter of `RemoteEventsList.search` and `count` takes the bare
+  class name or the fully-qualified class path (`F34.events-search-kind`,
+  `F06.search-kind-short`).
 - A `RemoteWorkspace` with `conversationId` checks `/server_info` once per
   transport and only then picks the conversation-scoped routes; it refuses a
   path with a query string or `..` and a `cid` parameter client-side.
@@ -1495,9 +1483,9 @@ Preconditions:
   agent field) can be passed directly; without `tools` the server agent has
   none. `RemoteConversation.start()` sends `max_iterations` 500 and
   `stuck_detection: true` unless told otherwise.
-- `updateConversation` resolves with `{success: true}`, not the conversation
-  (`F34.manager-update-result`); read the conversation back with
-  `getConversation`.
+- `PATCH /api/conversations/{id}` answers only `{success: true}`;
+  `updateConversation` reads the conversation back with a second `GET`
+  (`F34.manager-update-result`).
 - The version gate only reads `version` from `/server_info`; a server
   reporting `unknown` (a build without package metadata) fails every gated
   call. `F34.version-gate-old` needs PyPI (or a cached `uvx` environment) for

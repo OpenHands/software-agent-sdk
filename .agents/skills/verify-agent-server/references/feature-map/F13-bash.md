@@ -420,7 +420,7 @@ Preconditions:
   keeps only commands (ascending, the first command of the run first);
   `command_id__eq` returns only that command's outputs; the descending pages
   are PAGE_3, PAGE_2, then PAGE_1; every bad parameter is 422.
-- **Offset timestamps (`F13.timestamp-offset`), known bug.** The same instant
+- **Offset timestamps (`F13.timestamp-offset`).** The same instant
   written with `+02:00` must select the same events as its `Z` spelling.
   ```sh
   TZ_CMD=$(control-agent-server api POST /api/bash/execute_bash_command \
@@ -430,13 +430,13 @@ Preconditions:
   control-agent-server api GET /api/bash/bash_events/search --query kind__eq=BashCommand \
     --query timestamp__gte="$GTE_UTC" --check items contains "$TZ_CMD" --save F13.timestamp-offset/utc
   control-agent-server api GET /api/bash/bash_events/search --query kind__eq=BashCommand \
-    --query timestamp__gte="$GTE_PLUS2" --check items contains "$TZ_CMD" --save F13.timestamp-offset/plus-two  # bug: status eq 200 && checks.0.actual eq '[]'
+    --query timestamp__gte="$GTE_PLUS2" --check items contains "$TZ_CMD" --save F13.timestamp-offset/plus-two
   ```
-  Expected: both searches contain the command. Today the `Z` window does (the
-  positive control) and the `+02:00` window, the `# bug` assertion, is
-  empty: the service formats the bound with
-  `strftime` without converting it to UTC (`bash_service.py`
-  `_timestamp_to_str`), so the bound is read two hours late.
+  Both searches contain the command: the `Z` window is the positive control,
+  and the service converts an aware bound to UTC before comparing it with
+  the UTC file-name prefixes (`bash_service.py` `_timestamp_to_str`), so the
+  `+02:00` window selects the same instant. A bound without an offset is
+  read as UTC.
 - **Output chunks (`F13.output-chunks`).** 1,100,012 characters of output,
   read back through search and through the SDK.
   ```sh
@@ -763,23 +763,20 @@ Preconditions:
   `/server_info` uptime keeps growing (no restart happened); the scoped
   command written at the same time is still there. The last restart
   switches retention off again.
-- **Malformed conversation id (`F13.scoped-bad-id`), known bug.** A non-UUID
+- **Malformed conversation id (`F13.scoped-bad-id`).** A non-UUID
   conversation id must be a validation error.
   ```sh
   control-agent-server api GET "/api/conversations/$CID/bash/bash_events/search" --expect 200
   control-agent-server api GET /api/conversations/not-a-uuid/bash/bash_events/search --expect 422 \
-    --save F13.scoped-bad-id/search  # bug: status eq 500 && response.body.exception contains runtime_event_service
+    --save F13.scoped-bad-id/search
   control-agent-server api POST /api/conversations/not-a-uuid/bash/execute_bash_command \
-    --json '{"command": "echo QA_F13_BADID"}' --expect 422  # bug: status eq 500 && response.body.exception contains runtime_event_service
+    --json '{"command": "echo QA_F13_BADID"}' --expect 422
   ```
   The same search on a real conversation id answers 200 (the positive
-  control). Expected: 422 for `not-a-uuid`. Today every scoped bash route answers 500
-  `'State' object has no attribute 'runtime_event_service'` and logs a
-  traceback: FastAPI still calls `get_bash_event_service` after the
-  router dependency `bind_local_conversation_runtime` failed validation, and
-  it reads `request.state.runtime_event_service`, which was never set.
-  Nothing runs. Run `doctor` before this bullet, not after (it fails on the
-  logged tracebacks).
+  control). Every scoped bash route answers 422 for `not-a-uuid`, with the
+  standard validation error at `["path", "runtime_conversation_id"]`, like
+  the scoped file, git and vscode routes, and logs no traceback. Nothing
+  runs.
 - **Idle eviction kills a running command (`F13.scoped-idle-eviction`), known bug.**
   A second run with a 5 s idle TTL and two never-run conversations:
   `EV_CID` with a running scoped command, then `EV_IDLE` with nothing, the
@@ -834,8 +831,8 @@ Preconditions:
 - An unknown `page_id` silently restarts at the first page. `order__gt`
   filters before `limit` applies (`F13.order-gt-paging`), so only the last
   page is short; follow `next_page_id` until it is `null`.
-- `timestamp__gte`/`__lt` compare against UTC file-name prefixes: send `Z`
-  times (see `F13.timestamp-offset`).
+- `timestamp__gte`/`__lt` accept any UTC offset; a bound without one is read
+  as UTC (see `F13.timestamp-offset`).
 - Exit codes: the real code, `-1` for a timeout or a spawn error (missing
   cwd), `-15` (or `-9` after the 1 s escalation) when stopped. A command
   killed by server shutdown or idle eviction gets no final `BashOutput` at

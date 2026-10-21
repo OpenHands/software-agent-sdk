@@ -62,7 +62,7 @@ def test_upload_file_query_param_success(client, tmp_path):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"success": True}
+    assert response.json() == {"success": True, "file_size": len(file_content)}
     assert target_path.exists()
     assert target_path.read_bytes() == file_content
 
@@ -325,6 +325,7 @@ def test_upload_large_file_chunked(client, tmp_path):
     )
 
     assert response.status_code == 200
+    assert response.json()["file_size"] == len(large_content)
     assert target_path.exists()
     assert target_path.read_bytes() == large_content
 
@@ -342,6 +343,7 @@ def test_upload_overwrites_existing_file(client, tmp_path):
     )
 
     assert response.status_code == 200
+    assert response.json()["file_size"] == len(new_content)
     assert target_path.read_bytes() == new_content
 
 
@@ -987,6 +989,45 @@ def test_search_subdirs_paginates_with_limit_and_page_id(client, tmp_path):
     third_body = third.json()
     assert [e["name"] for e in third_body["items"]] == ["echo"]
     assert third_body["next_page_id"] is None
+
+
+def test_search_subdirs_pages_past_case_only_twins(client, tmp_path):
+    """Following next_page_id reaches each of two names that differ by case."""
+    (tmp_path / "foo").mkdir()
+    if (tmp_path / "Foo").exists():
+        pytest.skip("filesystem does not distinguish case-only directory names")
+    for name in ["Foo", "bar"]:
+        (tmp_path / name).mkdir()
+
+    seen: list[str] = []
+    page_id: str | None = None
+    for _ in range(5):
+        params: dict[str, str | int] = {"path": str(tmp_path), "limit": 1}
+        if page_id is not None:
+            params["page_id"] = page_id
+        response = client.get("/api/file/search_subdirs", params=params)
+        assert response.status_code == 200
+        body = response.json()
+        seen.extend(e["name"] for e in body["items"])
+        page_id = body["next_page_id"]
+        if page_id is None:
+            break
+
+    assert seen == ["bar", "Foo", "foo"]
+    assert page_id is None
+
+
+def test_search_subdirs_accepts_lowercase_cursor(client, tmp_path):
+    """A lowercase cursor from an older server still resumes at its entry."""
+    for name in ["Alpha", "Bravo"]:
+        (tmp_path / name).mkdir()
+
+    response = client.get(
+        "/api/file/search_subdirs",
+        params={"path": str(tmp_path), "limit": 1, "page_id": "bravo"},
+    )
+    assert response.status_code == 200
+    assert [e["name"] for e in response.json()["items"]] == ["Bravo"]
 
 
 def test_search_subdirs_limit_too_low_returns_422(client, tmp_path):

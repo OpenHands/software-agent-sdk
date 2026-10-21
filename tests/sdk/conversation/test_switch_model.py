@@ -142,6 +142,25 @@ def test_switch_acp_model_before_session_defers_and_persists(tmp_path):
     assert reloaded.agent.llm.model == "model-b"
 
 
+@pytest.mark.parametrize("model", ["", "   "])
+def test_switch_acp_model_before_session_rejects_blank_model(tmp_path, model):
+    """A blank model is refused before the first ``run()`` too, as it is live.
+
+    The pre-session path used to skip ``set_acp_model`` (which owns the
+    non-empty check) and persist the value unchecked, so ``acp_model`` became
+    ``"   "``.
+    """
+    conv, agent = _make_pre_session_acp_conversation(tmp_path)
+
+    with pytest.raises(ValueError, match="non-empty"):
+        conv.switch_acp_model(model)
+
+    assert conv.agent is agent
+    assert isinstance(conv.state.agent, ACPAgent)
+    assert conv.state.agent.acp_model == "model-a"
+    assert conv.state.agent_state.get("acp_current_model_id") != model
+
+
 def test_switch_acp_model_persists_authoritative_model(tmp_path):
     """A runtime switch persists as the authoritative ``acp_model``.
 

@@ -165,8 +165,9 @@ def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
     unusable ``default`` "ghost" profile (#4031), so we skip the save and leave
     ``llm_profile_ref="default"`` as a soft/dangling ref — the canvas
     "LLM not configured" banner and the legible launch-time error already cover
-    that state, and materialize/dry-run reports it as ``dangling_llm_profile_ref``
-    rather than raising.
+    that state, and materialize reports it rather than raising: ``valid`` false,
+    ``llm_profile_resolved`` false and an ``errors`` entry
+    ``"LLM profile 'default' not found"``.
 
     Existence is checked via ``load()``, not ``list()``: the store resolves a
     name straight to a filesystem path, so on a case-insensitive filesystem

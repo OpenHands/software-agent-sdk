@@ -76,11 +76,6 @@ class NotOnProfile:
 
 
 @dataclass(frozen=True)
-class Legacy:
-    removed_in: str
-
-
-@dataclass(frozen=True)
 class Nested:
     fields: dict[str, Any]
 
@@ -156,7 +151,6 @@ ACP_FIELDS: dict[str, Any] = {
         "set by the deploying application when conversations share a sandbox"
     ),
     "acp_file_secrets": NotOnProfile("a code-level spec for other ACP CLIs"),
-    "llm": Legacy(removed_in="1.56.0"),
     "agent_context": Nested(ACP_CONTEXT),
 }
 

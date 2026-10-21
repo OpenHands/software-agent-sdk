@@ -4,7 +4,7 @@ import json
 import os
 import signal
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
@@ -72,6 +72,10 @@ class BashEventService:
         # Include microseconds so filename-based ordering reflects emission
         # order for sub-second bursts (e.g. fast `yes`-style floods that
         # emit several BashOutput chunks in the same wall-clock second).
+        # File names hold UTC times, so convert aware datetimes (e.g. a
+        # ``+02:00`` search bound) to UTC first; naive ones are taken as UTC.
+        if timestamp.tzinfo is not None:
+            timestamp = timestamp.astimezone(UTC)
         return timestamp.strftime("%Y%m%d%H%M%S%f")
 
     def _get_event_filename(self, event: BashEventBase) -> str:

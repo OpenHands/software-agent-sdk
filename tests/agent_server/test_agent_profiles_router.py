@@ -184,6 +184,9 @@ def test_seed_skips_ghost_llm_profile_for_bare_defaults(
     materialized = client.post("/api/agent-profiles/default/materialize").json()
     assert materialized["valid"] is False
     assert materialized["llm_profile_resolved"] is False
+    assert "LLM profile 'default' not found" in materialized["errors"]
+    # Only the launch's 422 detail names the ref in this field (#5871).
+    assert "dangling_llm_profile_ref" not in materialized
 
 
 def test_seed_does_not_clobber_existing_default_llm_profile(
@@ -1401,21 +1404,13 @@ def test_save_migrates_a_v2_profile_carrying_retired_switches(client):
     assert "enable_switch_llm_tool" not in prof
 
 
-def test_save_accepts_retired_switches_as_deprecated_input(client):
+def test_save_rejects_removed_tool_switches(client):
     response = client.post(
         "/api/agent-profiles/p",
         json={"llm_profile_ref": "default", "enable_switch_llm_tool": False},
     )
 
-    assert response.status_code == 201
-    assert _tool_names(client, "p") == [
-        "terminal",
-        "file_editor",
-        "task_tracker",
-        "browser_tool_set",
-    ]
-    stored = client.get("/api/agent-profiles/p").json()["profile"]
-    assert "enable_switch_llm_tool" not in stored
+    assert response.status_code == 422
 
 
 def test_save_rejects_params_on_a_parameterless_builtin(client):

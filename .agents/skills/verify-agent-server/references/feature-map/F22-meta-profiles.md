@@ -652,7 +652,7 @@ Preconditions:
   missing name and invalid bodies or names reject with `HttpError` status
   404 and 422. It re-activates `qa-direct`, so the list afterwards is as
   before.
-- **Persistence directory with `~` (`F22.persistence-dir`), known bug.**
+- **Persistence directory with `~` (`F22.persistence-dir`).**
   Launch a second server whose `OH_PERSISTENCE_DIR` is `~/qa-f22-tilde`
   (its `HOME` is the run's `home/`), save and activate a meta-profile there,
   and look where the files landed. The second server is stopped when the
@@ -666,18 +666,14 @@ Preconditions:
   control-agent-server api POST /api/meta-profiles/qa-tilde/activate --run "$T" --expect 200
   control-agent-server api GET /api/meta-profiles --run "$T" --check meta_profiles len-eq 1 --check active_meta_profile eq qa-tilde
   control-agent-server state ls 'home/qa-f22-tilde/settings.json' --run "$T" --expect-count 1
-  control-agent-server state ls 'home/qa-f22-tilde/meta-profiles/qa-tilde.json' --run "$T" --expect-count 1  # bug: count eq 0
+  control-agent-server state ls 'home/qa-f22-tilde/meta-profiles/qa-tilde.json' --run "$T" --expect-count 1
   ```
-  `settings.json` lands in `home/qa-f22-tilde/` (the settings store expands
-  `~` through `get_user_persistence_dir`). Expected the meta-profile next to
-  it; today it is written to `server/~/qa-f22-tilde/meta-profiles/qa-tilde.json`,
-  a directory literally named `~` under the server's working directory,
-  because `default_meta_profile_dir()` uses `Path(os.environ["OH_PERSISTENCE_DIR"])`
-  without `expanduser()` or the relative-path anchoring every other store
-  gets (`meta_profile_store.py`). The API still works because the router and
-  the routing tool share that helper; the files are just outside the
-  persistence directory. The `--save` file lands under the second run's
-  `evidence/` directory.
+  `settings.json` lands in `home/qa-f22-tilde/` and the meta-profile next to
+  it in `home/qa-f22-tilde/meta-profiles/qa-tilde.json`: both stores resolve
+  `OH_PERSISTENCE_DIR` through `get_user_persistence_dir`, which expands `~`
+  and anchors a relative value, so nothing is written to a directory
+  literally named `~` under the server's working directory. The `--save`
+  file lands under the second run's `evidence/` directory.
 
 ## Gotchas
 
@@ -723,6 +719,6 @@ Preconditions:
 - `503` and `500` bodies use the server's generic shape: `detail` is
   `Internal Server Error` and the route's message is in `exception`.
 - The store directory comes from `OH_PERSISTENCE_DIR` read at call time
-  (`default_meta_profile_dir()`), falling back to `~/.openhands/meta-profiles`
-  when it is unset; give the server an absolute `OH_PERSISTENCE_DIR`
-  (`F22.persistence-dir`).
+  (`default_meta_profile_dir()`, through `get_user_persistence_dir`, so `~`
+  is expanded like in every other store), falling back to
+  `~/.openhands/meta-profiles` when it is unset (`F22.persistence-dir`).

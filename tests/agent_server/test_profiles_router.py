@@ -164,6 +164,47 @@ def test_rename_llm_profile_cascades_to_agent_refs(client, store, agent_store):
     assert agent_store.load("agent-a").llm_profile_ref == "new-llm"
 
 
+def test_delete_referenced_llm_profile_via_json_alias_returns_409(
+    client, store, agent_store
+):
+    """The ``.json`` alias addresses the same profile, so the FK guard applies."""
+    store.save("base-llm", LLM(model="gpt-4o"))
+    agent_store.save(OpenHandsAgentProfile(name="agent-a", llm_profile_ref="base-llm"))
+
+    response = client.delete("/api/profiles/base-llm.json")
+
+    assert response.status_code == 409
+    assert "agent-a" in response.json()["detail"]
+    assert store.load("base-llm").model == "gpt-4o"
+
+
+def test_delete_active_profile_via_json_alias_clears_active_profile(client, store):
+    store.save("active-profile", LLM(model="gpt-4o"))
+    assert client.post("/api/profiles/active-profile.json/activate").status_code == 200
+    assert client.get("/api/settings").json()["active_profile"] == "active-profile"
+
+    response = client.delete("/api/profiles/active-profile.json")
+
+    assert response.status_code == 200
+    assert client.get("/api/settings").json()["active_profile"] is None
+
+
+def test_rename_llm_profile_via_json_alias_moves_refs_and_active(
+    client, store, agent_store
+):
+    store.save("old-llm", LLM(model="gpt-4o"))
+    agent_store.save(OpenHandsAgentProfile(name="agent-a", llm_profile_ref="old-llm"))
+    assert client.post("/api/profiles/old-llm/activate").status_code == 200
+
+    response = client.post(
+        "/api/profiles/old-llm.json/rename", json={"new_name": "new-llm.json"}
+    )
+
+    assert response.status_code == 200
+    assert agent_store.load("agent-a").llm_profile_ref == "new-llm"
+    assert client.get("/api/settings").json()["active_profile"] == "new-llm"
+
+
 # ── List Profiles ──────────────────────────────────────────────────────────
 
 

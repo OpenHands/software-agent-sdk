@@ -23,6 +23,7 @@ from openhands.agent_server.persistence import (
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
 from openhands.sdk.llm import LLM
+from openhands.sdk.settings import OpenHandsAgentSettings
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -72,6 +73,7 @@ def _assert_original_key_reads_back(persistence_dir: Path) -> None:
     cipher = Cipher(KEY_A)
     settings = FileSettingsStore(persistence_dir, cipher=cipher).load()
     assert settings is not None
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     llm = settings.agent_settings.llm
     assert isinstance(llm, LLM)
     assert llm.api_key is not None
@@ -118,6 +120,7 @@ def test_reads_stay_lenient_under_wrong_cipher(persistence_dir):
 
     settings = FileSettingsStore(persistence_dir, cipher=cipher).load()
     assert settings is not None
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     assert isinstance(settings.agent_settings.llm, LLM)
     assert settings.agent_settings.llm.api_key is None
     secrets_store = FileSecretsStore(persistence_dir, cipher=cipher)
@@ -167,6 +170,7 @@ def _assert_readable_with(persistence_dir: Path, cipher: Cipher) -> None:
     """Every stored value loads strictly (no ``None``) under ``cipher``."""
     settings = FileSettingsStore(persistence_dir, cipher=cipher).load(strict=True)
     assert settings is not None
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     llm = settings.agent_settings.llm
     assert isinstance(llm, LLM)
     assert isinstance(llm.api_key, SecretStr)
@@ -203,6 +207,7 @@ def test_rotation_keeps_values_readable_and_reencrypts_on_save(persistence_dir):
     # ... and the old key alone can no longer read anything.
     old = FileSettingsStore(persistence_dir, cipher=Cipher(KEY_A)).load()
     assert old is not None
+    assert isinstance(old.agent_settings, OpenHandsAgentSettings)
     assert isinstance(old.agent_settings.llm, LLM)
     assert old.agent_settings.llm.api_key is None
 

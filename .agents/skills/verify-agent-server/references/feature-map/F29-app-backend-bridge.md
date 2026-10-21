@@ -596,10 +596,9 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   ```
   The backend answers 302 and sets `qa_upstream`; through the bridge the
   redirect is 502 without `Location` and the body arrives without the cookie.
-- **One Date and Server header (`F29.proxy-response-headers`), known bug.**
-  The proxy copies the backend's `Date` and `Server` headers and uvicorn adds
-  its own, so a proxied response carries two of each (a client joins them
-  with `, `).
+- **One Date and Server header (`F29.proxy-response-headers`).**
+  The proxy drops the backend's `Date` and `Server` headers because uvicorn
+  adds its own, so a proxied response carries exactly one of each.
   ```sh
   control-agent-server api GET /server_info --auth none --expect 200 \
     --check-header date matches '^[A-Z][a-z]{2}, [0-9]{2} [A-Z][a-z]{2} [0-9]{4} [0-9:]{8} GMT$' --check-header server eq uvicorn
@@ -610,13 +609,13 @@ control-agent-server api POST /api/canvas-extensions/installed/qa-headers/backen
   test -n "$RH"
   control-agent-server api GET /app-backends/qa-backend/echo --auth none --cookie "oh_app_backend_session=$RH" --expect 200 \
     --check-header date matches '^[A-Z][a-z]{2}, [0-9]{2} [A-Z][a-z]{2} [0-9]{4} [0-9:]{8} GMT$' \
-    --check-header server not-contains ', ' --all-headers --save F29.proxy-response-headers/echo  # bug: status eq 200 && checks.0.actual contains 'GMT, ' && checks.1.actual contains aiohttp
+    --check-header server not-contains ', ' --all-headers --save F29.proxy-response-headers/echo
   ```
   The controls: a route the server answers itself carries one `Date` and
   `server: uvicorn`, and the backend answered directly sends one of each.
-  Expected: one `Date` and one `Server` through the bridge too. Actual: `date: <uvicorn's>, <aiohttp's>`
-  and `server: uvicorn, Python/3.x aiohttp/3.x` (RFC 9110 allows a single
-  `Date`; the second `Server` also discloses the backend stack).
+  Through the bridge the response carries one `Date` and `server: uvicorn`
+  too: no `date: <uvicorn's>, <aiohttp's>` (RFC 9110 allows a single `Date`)
+  and no `Python/3.x aiohttp/3.x` disclosing the backend stack.
 - **Path traversal (`F29.proxy-path-traversal`).** Checked first, so no
   credential is needed to see it.
 

@@ -872,7 +872,7 @@ Preconditions:
   views, while `agent_settings.llm` still holds the deleted profile's model
   and key; the repeated delete is 200 too. `deepseek-flash` is re-activated
   to restore the preset state.
-- **Delete through the `.json` alias (`F20.json-alias-guard`), known bug.**
+- **Delete through the `.json` alias (`F20.json-alias-guard`).**
   Save `qa-alias`, cite it from a new agent profile, and delete it as
   `qa-alias.json`.
   ```sh
@@ -881,32 +881,25 @@ Preconditions:
   control-agent-server api DELETE /api/profiles/qa-alias --expect 409 \
     --check detail eq 'LLM profile is referenced by 1 agent profile(s): qa-f20-alias-agent'
   control-agent-server api GET /api/profiles/qa-alias.json --expect 200 --check config.model eq openai/qa-alias
-  control-agent-server api DELETE /api/profiles/qa-alias.json --expect 200,409 --save F20.json-alias-guard/delete | tee "$F20/alias-delete.json"
-  control-agent-server api GET /api/profiles/qa-alias --expect 200,404 --save F20.json-alias-guard/after | tee "$F20/alias-after.json"
+  control-agent-server api DELETE /api/profiles/qa-alias.json --expect 409 \
+    --check detail eq 'LLM profile is referenced by 1 agent profile(s): qa-f20-alias-agent' \
+    --save F20.json-alias-guard/delete
+  control-agent-server api GET /api/profiles/qa-alias --expect 200 --check config.model eq openai/qa-alias \
+    --save F20.json-alias-guard/after
   control-agent-server api DELETE /api/agent-profiles/qa-f20-alias-agent --expect 200
   control-agent-server api DELETE /api/profiles/qa-alias --expect 200
   control-agent-server api GET /api/profiles --check profiles not-contains '"name": "qa-alias"'
-  control-agent-server assert --json "$F20/alias-delete.json" --check status eq 409  # bug: value.status eq 200 && value.response.body.message eq "Profile 'qa-alias.json' deleted"
-  control-agent-server assert --json "$F20/alias-after.json" --check status eq 200  # bug: value.status eq 404 && value.response.body.detail eq "Profile 'qa-alias' not found"
   ```
-  Expected the alias delete to be 409 like the plain one (positive control:
+  The alias delete is 409 like the plain one (positive control:
   `DELETE /api/profiles/qa-alias` is 409, and `GET .../qa-alias.json` reads
-  the same profile), and `qa-alias` to survive it. The alias delete and the
-  read after it accept either outcome and are recorded; cleanup runs; then
-  the first line marked `# bug` checks the delete's status (the second, the
-  profile's survival, each alone encoding the bug). Today the alias delete
-  answers 200 `Profile 'qa-alias.json' deleted`
-  and `qa-alias` is gone while `qa-f20-alias-agent` still cites it: the store
-  strips a `.json` suffix (`_get_profile_path` in
-  `openhands-sdk/openhands/sdk/llm/llm_profile_store.py`), but the FK scan
+  the same profile), and `qa-alias` survives it. The store strips a `.json`
+  suffix (`_get_profile_path` in
+  `openhands-sdk/openhands/sdk/llm/llm_profile_store.py`), and the FK scan
   (`_scan_referrers` in `openhands-sdk/openhands/sdk/profiles/profile_refs.py`)
-  and `_set_active_profile_if_matches` (`profiles_router.py`) compare the raw
-  path name. The same mismatch, checked by hand on a review run, leaves
-  `active_profile` naming a deleted profile after an alias delete, and an
-  alias rename (`POST /api/profiles/qa-alias.json/rename`) moves the file
-  without moving `active_profile` or the agent profile's `llm_profile_ref`.
-  The bullet removes the agent profile and the (possibly already deleted)
-  profile, and checks the list no longer has it, before it fails.
+  and `_set_active_profile_if_matches` (`profiles_router.py`) compare the same
+  store key, so an alias delete or rename also clears or moves
+  `active_profile` and cascades `llm_profile_ref`. Cleanup removes the agent
+  profile and the profile, and checks the list no longer has it.
 - **Secret key rotation (`F20.secret-key-rotation`), known bug.** Save a
   profile, restart with a new secret key, then activate it.
   ```sh
@@ -982,10 +975,10 @@ Preconditions:
   after that, deleting the active LLM profile is 409. This family only reads
   agent profiles by name, which seeds nothing.
 - Names ending in `.json` are stored without the suffix, so `foo` and
-  `foo.json` are the same profile for `GET`, save, delete and rename, but the
-  agent-profile delete guard, the rename cascade and the `active_profile`
-  pointer compare names literally (`F20.json-alias-guard`). Never address a
-  profile through the alias.
+  `foo.json` are the same profile for `GET`, save, delete and rename,
+  including the agent-profile delete guard, the rename cascade and the
+  `active_profile` pointer, which always records the plain name
+  (`F20.json-alias-guard`).
 - `launch` sets `OH_SECRET_KEY`. `--no-secret-key` alone still leaves a
   cipher, derived from the first session key (and `restart --rotate-key` then
   loses every stored key, as in `F20.secret-key-rotation`); only
