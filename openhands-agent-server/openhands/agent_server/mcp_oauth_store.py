@@ -27,6 +27,7 @@ from openhands.sdk.mcp.config import (
     MCPOAuthTokenStorageField,
     MCPServer,
 )
+from openhands.sdk.mcp.oauth import NonInteractiveMCPOAuth
 from openhands.sdk.mcp.utils import (
     ToolsChangedCallback,
     ToolsReconciledCallback,
@@ -219,9 +220,13 @@ class MCPSettingsOAuthTokenStore:
         tokens die with the sandbox, and the next conversation starts from
         the previous refresh token, which providers that rotate refresh
         tokens have already revoked. Best effort: a failure only logs, and
-        the in-memory overlay keeps serving the new tokens.
+        the in-memory overlay keeps serving the new tokens. A state without
+        tokens is never posted, so FastMCP dropping the stored credentials
+        cannot replace them on the app server.
         """
         if not self._write_back_webhooks:
+            return
+        if state.tokens is None or state.tokens.access_token is None:
             return
         payload = {
             "server_url": server_url,
@@ -430,7 +435,9 @@ class SettingsBackedMCPToolProvider:
 
     OAuth servers absent from settings (passed inline on the agent) fall back
     to the OAuth state they carry, and their refreshed state is posted back
-    through ``webhooks``; see ``MCPSettingsOAuthTokenStore``.
+    through ``webhooks``; see ``MCPSettingsOAuthTokenStore``. Conversations
+    only use and refresh that state: authorizing a server again is left to
+    the user.
     """
 
     cipher: Cipher | None = None
@@ -454,6 +461,7 @@ class SettingsBackedMCPToolProvider:
                 write_back_webhooks=self.webhooks,
                 session_api_key=self.session_api_key,
             ),
+            mcp_oauth_class=NonInteractiveMCPOAuth,
             on_tools_changed=on_tools_changed,
             on_tools_reconciled=on_tools_reconciled,
         )

@@ -13,6 +13,7 @@ from mcp.client.auth.utils import (
 )
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.exceptions import MCPError
 
 
 logger = get_logger(__name__)
@@ -83,3 +84,21 @@ class MCPOAuth(OAuth):
                 server_url,
                 exc,
             )
+
+
+class NonInteractiveMCPOAuth(MCPOAuth):
+    """``MCPOAuth`` that only uses the stored tokens and refreshes them.
+
+    When no stored token is usable, FastMCP starts a new authorization: it
+    preflights the authorization URL with a loopback redirect URI, and if the
+    server rejects that URI it clears the token storage and registers a new
+    client before opening a browser. Nobody can complete that flow for an
+    unattended client, so this one fails the connection instead and leaves
+    the stored state for the user to replace by authorizing again.
+    """
+
+    async def redirect_handler(self, authorization_url: str) -> None:  # noqa: ARG002
+        raise MCPError(
+            f"MCP server {self.mcp_url} must be authorized again: its stored "
+            "OAuth tokens are missing or could not be refreshed."
+        )

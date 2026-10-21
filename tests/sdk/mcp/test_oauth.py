@@ -10,7 +10,8 @@ import httpx
 import pytest
 from key_value.aio.stores.memory import MemoryStore
 
-from openhands.sdk.mcp.oauth import MCPOAuth
+from openhands.sdk.mcp.exceptions import MCPError
+from openhands.sdk.mcp.oauth import MCPOAuth, NonInteractiveMCPOAuth
 
 
 pytestmark = pytest.mark.filterwarnings("ignore:Using in-memory token storage")
@@ -68,7 +69,9 @@ def _discovery(request: httpx.Request) -> httpx.Response:
 
 
 def _oauth(
-    store: MemoryStore, handler: Callable[[httpx.Request], httpx.Response]
+    store: MemoryStore,
+    handler: Callable[[httpx.Request], httpx.Response],
+    oauth_class: type[MCPOAuth] = MCPOAuth,
 ) -> tuple[MCPOAuth, list[str]]:
     """An ``MCPOAuth`` whose discovery client is served by ``handler``."""
     requested: list[str] = []
@@ -85,7 +88,7 @@ def _oauth(
             auth=auth,
         )
 
-    oauth = MCPOAuth(mcp_url=MCP_URL, token_storage=store, client_name="test")
+    oauth = oauth_class(mcp_url=MCP_URL, token_storage=store, client_name="test")
     oauth.httpx_client_factory = factory
     return oauth, requested
 
@@ -95,6 +98,21 @@ async def _first_request(oauth: MCPOAuth) -> httpx.Request:
     flow = oauth.async_auth_flow(httpx.Request("POST", MCP_URL, json={}))
     try:
         return await flow.__anext__()
+    finally:
+        await flow.aclose()
+
+
+async def _serve_flow(
+    oauth: MCPOAuth, handler: Callable[[httpx.Request], httpx.Response]
+) -> None:
+    """Answer every request the auth flow emits for an MCP call."""
+    flow = oauth.async_auth_flow(httpx.Request("POST", MCP_URL, json={}))
+    try:
+        request = await anext(flow)
+        while True:
+            request = await flow.asend(handler(request))
+    except StopAsyncIteration:
+        pass
     finally:
         await flow.aclose()
 
@@ -147,3 +165,34 @@ async def test_valid_token_is_sent_without_discovery_or_refresh():
     assert str(request.url) == MCP_URL
     assert request.headers["Authorization"] == "Bearer stored-access-token"
     assert requested == []
+
+
+@pytest.mark.asyncio
+async def test_non_interactive_client_fails_instead_of_authorizing_again():
+    # Arrange: the server rejects the stored refresh token and then the
+    # unauthenticated MCP call.
+    store = await _stored_state(time.time() - 60)
+    requested: list[str] = []
+
+    def server(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        if str(request.url) == TOKEN_ENDPOINT:
+            return httpx.Response(400, json={"error": "invalid_grant"})
+        if str(request.url) == MCP_URL:
+            return httpx.Response(401)
+        return _discovery(request)
+
+    oauth, _ = _oauth(store, server, NonInteractiveMCPOAuth)
+
+    # Act
+    with pytest.raises(MCPError):
+        await _serve_flow(oauth, server)
+
+    # Assert: no authorization request or client registration, and the
+    # stored state is left for the user to replace by authorizing again.
+    paths = {httpx.URL(url).path for url in requested}
+    assert not paths & {"/oauth/authorize", "/register"}
+    assert await store.get(key=f"{MCP_URL}/tokens", collection="mcp-oauth-token")
+    assert await store.get(
+        key=f"{MCP_URL}/client_info", collection="mcp-oauth-client-info"
+    )
