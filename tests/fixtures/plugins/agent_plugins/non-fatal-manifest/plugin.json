@@ -1,0 +1,8 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "non-fatal-manifest",
+  "version": "1.0.0",
+  "description": "Carries both violations the spec marks non-fatal.",
+  "futureField": { "arrived": "in a later version" },
+  "extensions": "not an object"
+}

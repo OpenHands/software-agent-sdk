@@ -12,6 +12,8 @@ from pydantic import BaseModel, Field
 from openhands.agent_server.skills_service import (
     ExposedUrlData,
     MarketplaceSkillInfo,
+    discover_profile_skills,
+    discover_public_skill_names,
     load_all_skills,
     service_disable_skill,
     service_enable_skill,
@@ -117,14 +119,6 @@ class SkillsRequest(BaseModel):
         default=None,
         description="Organization/user skill repositories to load concurrently",
     )
-    org_config: OrgConfig | None = Field(
-        default=None,
-        deprecated=True,
-        description=(
-            "Deprecated since v1.28.0 and scheduled for removal in v1.33.0. "
-            "Single organization skills configuration; prefer org_configs."
-        ),
-    )
     sandbox_config: SandboxConfig | None = Field(
         default=None, description="Sandbox skills configuration"
     )
@@ -138,6 +132,23 @@ class SkillsResponse(BaseModel):
         default_factory=dict,
         description="Count of skills loaded from each source",
     )
+
+
+class SkillCatalogEntry(SkillInfo):
+    """A skill an Agent Profile launch can load."""
+
+    origin: Literal["public", "user"] = Field(
+        description=(
+            "`public`: the public extensions catalog. `user`: the user's own "
+            "skills, including marketplace installs."
+        )
+    )
+
+
+class SkillCatalogResponse(BaseModel):
+    """Response for ``GET /api/skills/catalog``."""
+
+    skills: list[SkillCatalogEntry]
 
 
 class SyncResponse(BaseModel):
@@ -158,11 +169,12 @@ class InstallSkillRequest(BaseModel):
     source: str = Field(
         min_length=1,
         description=(
-            "Skill source - git URL, GitHub shorthand, or local path. "
-            "Examples: "
-            "'https://github.com/OpenHands/extensions/tree/main/skills/github', "
+            "Skill source - git URL, GitHub shorthand (github:owner/repo, "
+            "optionally followed by the skill's path in the repository), or "
+            "local path. Examples: "
             "'github:OpenHands/extensions/skills/github', "
-            "'/path/to/skill'"
+            "'https://github.com/OpenHands/extensions.git' with repo_path "
+            "'skills/github', '/path/to/skill'"
         ),
     )
     ref: str | None = Field(
@@ -288,13 +300,9 @@ def get_skills(request: SkillsRequest, http_request: Request) -> SkillsResponse:
             for url in request.sandbox_config.exposed_urls
         ]
 
-    # Prefer the list form; fall back to the deprecated single org_config so
-    # older app-servers keep working.
     org_repos: list[tuple[str, str]] = []
     if request.org_configs:
         org_repos = [(c.org_repo_url, c.org_name) for c in request.org_configs]
-    elif "org_config" in request.model_fields_set and request.org_config:
-        org_repos = [(request.org_config.org_repo_url, request.org_config.org_name)]
 
     config = getattr(http_request.app.state, "config", None)
     server_registrations = config.registered_marketplaces if config is not None else []
@@ -319,6 +327,26 @@ def get_skills(request: SkillsRequest, http_request: Request) -> SkillsResponse:
     skills_info = [skill.to_skill_info() for skill in result.skills]
 
     return SkillsResponse(skills=skills_info, sources=result.sources)
+
+
+@skills_router.get("/catalog", response_model=SkillCatalogResponse)
+def get_skill_catalog() -> SkillCatalogResponse:
+    """List the skills an Agent Profile launch can load.
+
+    A profile's ``public_skills`` and ``disabled_skills`` select from exactly
+    this list. Project skills load only when a conversation opens its
+    workspace, so they are not listed.
+    """
+    public_names = discover_public_skill_names()
+    return SkillCatalogResponse(
+        skills=[
+            SkillCatalogEntry(
+                **skill.to_skill_info().model_dump(),
+                origin="public" if skill.name in public_names else "user",
+            )
+            for skill in discover_profile_skills()
+        ]
+    )
 
 
 @skills_router.post("/sync", response_model=SyncResponse)

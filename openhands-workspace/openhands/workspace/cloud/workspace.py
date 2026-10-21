@@ -620,7 +620,12 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
 
         return LLM(**kwargs)
 
-    def get_secrets(self, names: list[str] | None = None) -> dict[str, LookupSecret]:
+    def get_secrets(
+        self,
+        names: list[str] | None = None,
+        *,
+        agent_profile_id: str | None = None,
+    ) -> dict[str, LookupSecret]:
         """Build ``LookupSecret`` references for the user's SaaS secrets.
 
         Fetches the list of available secret **names** from the SaaS (no raw
@@ -634,6 +639,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         Args:
             names: Optional list of secret names to include. If ``None``,
                 all available secrets are returned.
+            agent_profile_id: Optional agent profile whose ``secret_refs``
+                restrict the names returned by the agent server.
 
         Returns:
             A dictionary mapping secret names to ``LookupSecret`` instances.
@@ -656,7 +663,12 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         if not self._sandbox_id:
             raise RuntimeError("Sandbox is not running")
 
-        resp = self._send_settings_request("GET", f"{self._settings_base_url}/secrets")
+        request_kwargs: dict[str, Any] = {}
+        if agent_profile_id is not None:
+            request_kwargs["params"] = {"agent_profile_id": agent_profile_id}
+        resp = self._send_settings_request(
+            "GET", f"{self._settings_base_url}/secrets", **request_kwargs
+        )
         data = resp.json()
 
         result: dict[str, LookupSecret] = {}
@@ -927,6 +939,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         load_project: bool = True,
         load_org: bool = True,
         timeout: float = 60.0,
+        base_context: AgentContext | None = None,
     ) -> tuple[list[Skill], AgentContext]:
         """Load skills from the agent server.
 
@@ -939,6 +952,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             load_project=load_project,
             load_org=load_org,
             timeout=timeout,
+            base_context=base_context,
         )
 
     def _call_skills_api(
@@ -961,7 +975,6 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             "load_project": load_project,
             "load_org": load_org,
             "project_dir": project_dir,
-            "org_config": None,
             "sandbox_config": None,
         }
 

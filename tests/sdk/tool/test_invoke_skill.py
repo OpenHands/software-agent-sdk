@@ -20,6 +20,7 @@ from openhands.sdk.tool.builtins import (
     InvokeSkillObservation,
     InvokeSkillTool,
 )
+from openhands.sdk.tool.schema import Action
 from openhands.sdk.workspace.local import LocalWorkspace
 
 
@@ -395,3 +396,18 @@ def test_agent_auto_attaches_invoke_skill_tool(
 
     attached = "invoke_skill" in agent._tools
     assert attached is expect_attached
+
+
+def test_invoke_skill_declared_resources_typed():
+    """InvokeSkillTool.declared_resources accesses action.name typed."""
+    tool = InvokeSkillTool(description="invoke skill", action_type=InvokeSkillAction)
+    action = InvokeSkillAction(name="test-skill")
+    res = tool.declared_resources(action)
+    assert res.keys == ("skill:test-skill",)
+
+    class OtherAction(Action):
+        pass
+
+    other_action = OtherAction()
+    res_other = tool.declared_resources(other_action)
+    assert res_other.keys == ("skill:",)

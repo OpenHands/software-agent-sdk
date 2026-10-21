@@ -175,6 +175,30 @@ async def test_first_message_auth_missing_key_field():
 
 
 @pytest.mark.asyncio
+async def test_legacy_empty_key_rejected_even_if_listed():
+    ws = _make_mock_websocket()
+    with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
+        mock_config.return_value.session_api_keys = ["sk-oh-valid", ""]
+        result = await _accept_authenticated_websocket(ws, session_api_key="")
+
+    assert result is False
+    ws.close.assert_called_once_with(code=4001, reason="Authentication failed")
+    ws.accept.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_first_message_auth_empty_key_rejected_even_if_listed():
+    ws = _make_mock_websocket()
+    ws.receive_text.return_value = json.dumps({"type": "auth", "session_api_key": ""})
+    with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
+        mock_config.return_value.session_api_keys = ["sk-oh-valid", ""]
+        result = await _accept_authenticated_websocket(ws, session_api_key=None)
+
+    assert result is False
+    ws.close.assert_called_once_with(code=4001, reason="Authentication failed")
+
+
+@pytest.mark.asyncio
 async def test_first_message_auth_malformed_json():
     ws = _make_mock_websocket()
     ws.receive_text.return_value = "not json at all"

@@ -1,7 +1,10 @@
 """Tests for redact utility functions."""
 
+import pytest
+
 from openhands.sdk.utils.redact import (
     SENSITIVE_URL_PARAMS,
+    redact_api_key_literals,
     redact_text_secrets,
     redact_url_credentials,
     redact_url_credentials_in_text,
@@ -284,3 +287,85 @@ class TestRedactTextSecretsDictKeys:
     def test_non_sensitive_entries_unchanged(self):
         text = "{'name': 'alice', 'path': '/tmp/x'}"
         assert redact_text_secrets(text) == text
+
+
+@pytest.mark.parametrize(
+    ("key", "key_quote", "value_quote"),
+    [
+        ("private_key", "'", "'"),
+        ("token", '"', '"'),
+        ("authorization", "'", '"'),
+        ("password", '\\"', '\\"'),
+    ],
+    ids=["pem", "double-quotes", "mixed-quotes", "escaped-quotes"],
+)
+def test_redact_text_secrets_redacts_multiline_values(key, key_quote, value_quote):
+    head = f"{{{key_quote}{key}{key_quote}: {value_quote}"
+    secret = "-----BEGIN PRIVATE KEY-----\nsecret-content\n-----END PRIVATE KEY-----"
+    tail = f"{value_quote}, 'note': 'first public line\nsecond public line'}}"
+
+    assert redact_text_secrets(f"{head}{secret}{tail}") == f"{head}<redacted>{tail}"
+
+
+class TestRedactTextSecretsHeaders:
+    """Header entries as provider errors echo them: any case, either quote
+    style, hyphenated names, and JSON embedded with escaped quotes."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "{'authorization': 'Bearer hdr-secret-1'}",
+            '{"Authorization": "Bearer hdr-secret-1"}',
+            '{"authorization": "Bearer hdr-secret-1"}',
+            '{"api-key": "hdr-secret-1"}',
+            "{'x-api-key': \"hdr-secret-1\"}",
+            "{'X-Session-API-Key': 'hdr-secret-1'}",
+            'Error: {\\"Authorization\\": \\"Bearer hdr-secret-1\\"}',
+        ],
+    )
+    def test_redacts_credential_headers(self, text):
+        redacted = redact_text_secrets(text)
+        assert "hdr-secret-1" not in redacted
+        assert "<redacted>" in redacted
+
+    def test_keeps_other_headers(self):
+        text = "{'content-type': 'application/json', 'x-title': 'OpenHands'}"
+        assert redact_text_secrets(text) == text
+
+
+# ---------------------------------------------------------------------------
+# redact_api_key_literals
+# ---------------------------------------------------------------------------
+
+
+class TestRedactApiKeyLiterals:
+    """Tests for redact_api_key_literals() — bare API key pattern matching."""
+
+    def test_redacts_sk_oh_api_key(self):
+        """sk-oh-* OpenHands API keys are redacted."""
+        text = "key is sk-oh-abcdef1234567890 here"
+        result = redact_api_key_literals(text)
+        assert "sk-oh-abcdef1234567890" not in result
+        assert result == "key is <redacted> here"
+
+    def test_redacts_sk_oh_key_with_hyphens_and_underscores(self):
+        """sk-oh-* keys containing hyphens and underscores are redacted."""
+        text = "export KEY=sk-oh-abc_def-123_XYZ-456"
+        result = redact_api_key_literals(text)
+        assert "sk-oh-abc_def-123_XYZ-456" not in result
+        assert "export KEY=<redacted>" == result
+
+    def test_does_not_redact_short_sk_oh_key(self):
+        """sk-oh- followed by fewer than 10 characters should NOT match."""
+        text = "sk-oh-short"
+        result = redact_api_key_literals(text)
+        assert result == text
+
+    def test_redacts_sk_oh_key_in_log_line(self):
+        """Realistic log line with an sk-oh-* key is redacted."""
+        text = (
+            'ERROR runtime stderr: api_key="sk-oh-Xk9mP2vL4nR7wQ1y" connection refused'
+        )
+        result = redact_api_key_literals(text)
+        assert "sk-oh-Xk9mP2vL4nR7wQ1y" not in result
+        assert "ERROR runtime stderr:" in result

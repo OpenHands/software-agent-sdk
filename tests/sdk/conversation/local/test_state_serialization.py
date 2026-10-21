@@ -1427,3 +1427,41 @@ def test_context_manager_batches_saves() -> None:
     # Mutation outside a context-manager block → immediate save
     state.max_iterations = 42
     assert save_count == 2
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_saved_conversation_with_retired_browser_kwarg_resumes(tmp_path, enabled):
+    conversation_id = uuid.uuid4()
+    agent = Agent(llm=LLM(model="test-model"), tools=[])
+    workspace = LocalWorkspace(working_dir=str(tmp_path))
+    persistence_dir = LocalConversation.get_persistence_dir(tmp_path, conversation_id)
+    state = ConversationState.create(
+        workspace=workspace,
+        persistence_dir=persistence_dir,
+        agent=agent,
+        id=conversation_id,
+    )
+    state.events.append(
+        MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="old")]),
+        )
+    )
+    path = Path(persistence_dir) / "base_state.json"
+    saved = json.loads(path.read_text())
+    saved["agent"]["system_prompt_kwargs"]["enable_browser"] = enabled
+    path.write_text(json.dumps(saved))
+
+    conversation = Conversation(
+        agent=agent,
+        workspace=workspace,
+        persistence_dir=str(tmp_path),
+        conversation_id=conversation_id,
+    )
+    try:
+        assert "enable_browser" not in conversation.state.agent.system_prompt_kwargs
+        assert any(
+            isinstance(event, MessageEvent) for event in conversation.state.events
+        )
+    finally:
+        conversation.close()

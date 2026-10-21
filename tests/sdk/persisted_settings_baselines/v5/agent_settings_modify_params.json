@@ -1,0 +1,12 @@
+{
+  "__expected__": {
+    "agent_kind": "openhands",
+    "llm.model": "fixture-v5-modify-params"
+  },
+  "schema_version": 5,
+  "agent_kind": "openhands",
+  "llm": {
+    "model": "fixture-v5-modify-params",
+    "modify_params": true
+  }
+}
