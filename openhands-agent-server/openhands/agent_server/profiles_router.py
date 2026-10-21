@@ -544,7 +544,11 @@ async def activate_profile(
         logger.error(f"Failed to activate profile: {e}")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Settings file is corrupted or encrypted with a different key",
+            detail=(
+                "Settings file is corrupted or encrypted with a different key: "
+                "restore that key as OH_SECRET_KEY or add it to "
+                "OH_PREVIOUS_SECRET_KEYS"
+            ),
         )
 
     logger.info(f"Activated profile '{name}'")

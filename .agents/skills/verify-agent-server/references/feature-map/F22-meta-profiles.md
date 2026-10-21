@@ -522,7 +522,7 @@ Preconditions:
   trap restore_settings EXIT
   printf '{"agent_settings": ' > "$S"
   control-agent-server api POST /api/profiles/deepseek-flash/activate --expect 409 \
-    --check detail eq 'Settings file is corrupted or encrypted with a different key' --save F22.corrupt-settings/llm-profile-activate
+    --check detail contains 'Settings file is corrupted or encrypted with a different key' --save F22.corrupt-settings/llm-profile-activate
   test "$(cat "$S")" = '{"agent_settings": '
   control-agent-server api POST /api/meta-profiles/qa-direct/activate --expect 4xx,5xx --save F22.corrupt-settings/activate \
     | tee "$F22/corrupt-settings-activate.json"

@@ -126,9 +126,11 @@ a = Analysis(
         *collect_data_files("binaryornot"),
 
         # OpenHands SDK prompt templates (adjusted for shallow namespace layout)
-        *collect_data_files("openhands.sdk.agent", includes=["prompts/*.j2"]),
         *collect_data_files("openhands.sdk.context.condenser", includes=["prompts/*.j2"]),
         *collect_data_files("openhands.sdk.context.prompts", includes=["templates/*.j2"]),
+
+        # Plugin / MCP format schemas, read from disk next to the module
+        *collect_data_files("openhands.sdk.plugin.format", includes=["schemas/*.json"]),
 
         # OpenHands Tools templates
         *collect_data_files("openhands.tools.delegate", includes=["templates/*.j2"]),

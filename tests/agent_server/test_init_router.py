@@ -144,6 +144,19 @@ class TestBuildInitializedConfig:
         assert merged.secret_key is not None
         assert merged.secret_key.get_secret_value() == "s1"
 
+    def test_previous_secret_keys_reach_the_cipher(self):
+        base = Config(deferred_init=True)
+        merged = _build_initialized_config(
+            base,
+            InitRequest(
+                session_api_keys=["new-session-key"],
+                previous_secret_keys=[SecretStr("old-session-key")],
+            ),
+        )
+        assert merged.cipher is not None
+        assert merged.cipher.secret_key == "new-session-key"
+        assert merged.cipher.previous_keys == ("old-session-key",)
+
     def test_explicit_secret_key_wins(self):
         base = Config(deferred_init=True)
         merged = _build_initialized_config(

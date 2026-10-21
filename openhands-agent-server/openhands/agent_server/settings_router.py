@@ -349,7 +349,11 @@ def _apply_settings_update(
         logger.error(f"Settings update blocked: {e}")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Settings file is corrupted or encrypted with a different key",
+            detail=(
+                "Settings file is corrupted or encrypted with a different key: "
+                "restore that key as OH_SECRET_KEY or add it to "
+                "OH_PREVIOUS_SECRET_KEYS"
+            ),
         )
     except (OSError, PermissionError):
         # Note: exc_info omitted to prevent secrets in scope from leaking in tracebacks
@@ -558,7 +562,11 @@ async def create_secret(
         logger.error(f"Secret create blocked: {e}")
         raise HTTPException(
             status_code=500,
-            detail="Secrets file is corrupted or encrypted with a different key",
+            detail=(
+                "Secrets file is corrupted or encrypted with a different key: "
+                "restore that key as OH_SECRET_KEY or add it to "
+                "OH_PREVIOUS_SECRET_KEYS"
+            ),
         )
     except (OSError, PermissionError):
         # Note: exc_info omitted to prevent secret values from leaking in tracebacks
@@ -596,7 +604,11 @@ async def delete_secret(request: Request, name: str) -> dict[str, bool]:
         logger.error(f"Secret delete blocked: {e}")
         raise HTTPException(
             status_code=500,
-            detail="Secrets file is corrupted or encrypted with a different key",
+            detail=(
+                "Secrets file is corrupted or encrypted with a different key: "
+                "restore that key as OH_SECRET_KEY or add it to "
+                "OH_PREVIOUS_SECRET_KEYS"
+            ),
         )
 
     if not deleted:

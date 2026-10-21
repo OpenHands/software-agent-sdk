@@ -43,7 +43,7 @@ Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
 - `F25.install-documented-sources`: every GitHub source form the OpenAPI description of `InstallSkillRequest.source` advertises installs, including the `github:owner/repo/<path>` shorthand.
 - `F25.refresh`: refresh re-fetches from the recorded source: a new commit in the git source updates `resolved_ref` and the installed files, an edited local source updates the description, and the enabled flag is preserved.
 - `F25.install-ref`: installing a git source with `ref` pins that commit (`resolved_ref`, the installed files, `requested_ref` in `.installed.json`); refresh moves it to the source's latest commit and drops `requested_ref`.
-- `F25.install-unknown-ref`: a `ref` the git source does not have is 400 and leaves the installation unchanged; today that holds only for a first clone, while a source whose clone is cached installs the cached HEAD with 200.
+- `F25.install-unknown-ref`: a `ref` the git source does not have is 400 and leaves the installation unchanged for both a first clone and a cached source.
 - `F25.refresh-unfetchable`: refreshing a skill whose recorded source no longer exists is a client error and keeps the installation; today it is a 500.
 - `F25.name-errors`: an unknown skill name is 404 and a name outside `^[a-z0-9]+(-[a-z0-9]+)*$` is 422 on get, enable/disable, uninstall and refresh.
 - `F25.self-heal`: a skill directory copied into the store by hand is invisible to the single view until the list call discovers it with source `local`; a tracked directory removed by hand is pruned from the metadata by the list call.
@@ -481,7 +481,7 @@ Preconditions:
   in the installed file) and records the requested ref. Refresh reinstalls
   with `ref` dropped, by design ("latest version"), so the skill is back at
   `H2` and `requested_ref` is gone.
-- **Unknown ref (`F25.install-unknown-ref`), known bug.** Ask for a ref that
+- **Unknown ref (`F25.install-unknown-ref`).** Ask for a ref that
   neither git source has: first for a source never cloned, then for the
   cached `qa-f25-src` source.
 
@@ -494,19 +494,15 @@ Preconditions:
   T2=$(control-agent-server api GET /api/skills/installed/qa-f25-src-skill --field installed_at)
   ls -d "$AGENT_SERVER_VERIFY_RUN"/home/.openhands/cache/extensions/qa-f25-src-*/.git
   control-agent-server api POST /api/skills/install --json '{"source": "file://'"$G"'", "repo_path": "skills/qa-f25-src-skill", "ref": "qa-f25-no-such-ref", "force": true}' \
-    --expect 400 --save F25.install-unknown-ref/cached  # bug: status eq 200 && response.body.name eq qa-f25-src-skill
+    --expect 400 --save F25.install-unknown-ref/cached
   control-agent-server api GET /api/skills/installed/qa-f25-src-skill --expect 200 --check installed_at eq "$T2"
   ```
   The first clone fails (`git clone --branch qa-f25-no-such-ref`), so the
-  install is `400` and nothing is installed (the positive control). The
-  `qa-f25-src` clone is in the extensions cache, and that cached source should
-  fail the same way. Today it answers `200` and reinstalls the cached HEAD
-  (`H2` after the refresh bullet)
-  with `requested_ref: "qa-f25-no-such-ref"` in `.installed.json`:
-  `_try_checkout_and_reset` only logs `Failed to checkout ... Using cached
-  version.` and `fetch_with_resolution` resolves whatever is checked out.
-  From source, a real ref that the cache does not hold yet ends the same way
-  when the fetch fails (offline).
+  install is `400` and nothing is installed. The `qa-f25-src` clone is in the
+  extensions cache; it also returns `400` and keeps the installed copy at
+  `H2`, with its prior `installed_at` value. A valid ref that is not in the
+  cache is fetched before checkout. If that fetch fails, the install returns
+  `400` and keeps the prior installation.
 - **Refresh of a vanished source (`F25.refresh-unfetchable`), known bug.**
   Install from a temporary directory, delete it, refresh.
   ```sh
@@ -885,9 +881,8 @@ Preconditions:
   git install still clones. `version` is always `1.0.0` (the frontmatter
   `version` is not read). Refresh reinstalls with `ref` dropped, so a skill
   installed at a tag moves to the default branch (`F25.install-ref`). A
-  `ref` that cannot be checked out in an already cached clone is ignored
-  with a log warning (`F25.install-unknown-ref`): compare `resolved_ref`
-  with the commit you asked for.
+  `ref` that cannot be checked out in an already cached clone returns a client
+  error and leaves the installed skill unchanged (`F25.install-unknown-ref`).
 - Only the list call and `PATCH` reconcile `.installed.json` with the disk;
   the single view, `DELETE` and refresh do not, so call order matters for hand
   edits (`F25.self-heal`).

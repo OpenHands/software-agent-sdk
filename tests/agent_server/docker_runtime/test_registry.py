@@ -22,6 +22,7 @@ from openhands.agent_server.docker_runtime.registry import (
 from openhands.agent_server.models import StartConversationRequest
 from openhands.agent_server.storage import trash as trash_module
 from openhands.sdk import LLM, Agent, Message, TextContent
+from openhands.sdk.conversation.request import ConversationContainerOptions
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
@@ -900,3 +901,42 @@ def test_container_gets_the_host_browser_setting(
     assert ["-e", "OH_ENABLE_BROWSER"] == command[
         command.index("OH_ENABLE_BROWSER") - 1 : command.index("OH_ENABLE_BROWSER") + 1
     ]
+
+
+@pytest.mark.parametrize(
+    ("options", "memory", "cpus", "browser"),
+    [
+        (None, "2g", "1.5", "1"),
+        (
+            ConversationContainerOptions(memory="6g", cpus=3, browser=False),
+            "6g",
+            "3.0",
+            "0",
+        ),
+    ],
+)
+def test_container_options_override_the_host_limits(
+    tmp_path, monkeypatch, options, memory, cpus, browser
+):
+    runtime = registry(
+        tmp_path,
+        monkeypatch,
+        conversation_container_memory="2g",
+        conversation_container_cpus=1.5,
+        conversation_image_has_browser=True,
+    )
+    conversation_id = uuid4()
+    identity = runtime.provisioning.create(conversation_id)
+    runtime.provisioning.save(identity.model_copy(update={"container": options}))
+    commands = capture_docker_run(runtime, monkeypatch)
+
+    runtime._build_container(conversation_id)
+
+    command, env = commands[0]
+    assert ["--memory", memory] == command[
+        command.index("--memory") : command.index("--memory") + 2
+    ]
+    assert ["--cpus", cpus] == command[
+        command.index("--cpus") : command.index("--cpus") + 2
+    ]
+    assert env["OH_ENABLE_BROWSER"] == browser

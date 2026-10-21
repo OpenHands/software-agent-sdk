@@ -25,7 +25,11 @@ from openhands.agent_server.conversation_lease import (
     ConversationLease,
 )
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.event_service import EventService, RunSlot
+from openhands.agent_server.event_service import (
+    EventService,
+    RunSlot,
+    _log_emit_failure,
+)
 from openhands.agent_server.file_router import _create_zip_from_directory
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
@@ -2592,6 +2596,21 @@ class TestEventServiceSaveMeta:
         assert loaded.updated_at == original_updated_at
 
     @pytest.mark.asyncio
+    async def test_save_meta_round_trips_title_prompt(self, event_service, tmp_path):
+        event_service.stored.prompt = (
+            "Create a concise title for {conversation_content}."
+        )
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        await event_service.save_meta()
+
+        meta_file = conv_dir / "meta.json"
+        loaded = StoredConversation.model_validate_json(meta_file.read_text())
+        assert loaded.prompt == ("Create a concise title for {conversation_content}.")
+
+    @pytest.mark.asyncio
     async def test_save_meta_round_trips_agent_definition_mcp_secrets(
         self, sample_stored_conversation, tmp_path
     ):
@@ -4201,6 +4220,9 @@ def test_emit_event_from_thread_uses_captured_loop(event_service: EventService) 
         # Simulate concurrent close() nulling self._main_loop mid-call
         object.__setattr__(event_service, "_main_loop", None)
         captured_calls.append(args)
+        # run_in_executor always returns a Future; the caller attaches a
+        # done-callback to surface executor failures.
+        return MagicMock()
 
     mock_loop.run_in_executor.side_effect = record_and_null
 
@@ -4336,3 +4358,91 @@ async def test_close_releases_real_lease_after_settled_durability_failure(
     )
     claim = next_owner.claim()
     next_owner.release(claim.generation)
+
+
+class TestEmitEventFromThreadFailures:
+    """Executor failures must surface instead of dying with the future (#4386)."""
+
+    @pytest.mark.asyncio
+    async def test_emit_failure_is_logged(
+        self, sample_stored_conversation, tmp_path, caplog
+    ):
+        service = EventService(
+            stored=sample_stored_conversation, conversations_dir=tmp_path
+        )
+        conversation = MagicMock()
+        conversation._state = MagicMock()
+        conversation._state.__enter__ = MagicMock(return_value=None)
+        conversation._state.__exit__ = MagicMock(return_value=False)
+        conversation._on_event.side_effect = RuntimeError("disk full")
+
+        service._conversation = conversation
+        service._main_loop = asyncio.get_running_loop()
+
+        event = MessageEvent(
+            id="emit-failure", source="agent", llm_message=Message(role="assistant")
+        )
+
+        with caplog.at_level(logging.ERROR):
+            service._emit_event_from_thread(event)
+            # Let the executor run and the done-callback fire.
+            for _ in range(20):
+                await asyncio.sleep(0)
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("Failed to emit MessageEvent from thread" in m for m in messages), (
+            f"emission failure was not surfaced; captured={messages}"
+        )
+        assert any("disk full" in m for m in messages)
+
+    @pytest.mark.asyncio
+    async def test_cancelled_future_is_not_reported(self, caplog):
+        """A cancelled emission is not a failure and must not log or raise."""
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        future.cancel()
+        # Let the cancellation settle so `cancelled()` is True.
+        with suppress(asyncio.CancelledError):
+            await future
+
+        with caplog.at_level(logging.ERROR):
+            _log_emit_failure("MessageEvent", future)
+
+        assert [record.getMessage() for record in caplog.records] == []
+
+    @pytest.mark.asyncio
+    async def test_callback_is_attached_from_the_loop_thread(
+        self, sample_stored_conversation, tmp_path
+    ):
+        """`add_done_callback` must be scheduled with call_soon_threadsafe.
+
+        This helper runs on foreign threads, and attaching directly to an
+        already-done future would use plain `call_soon`, which does not wake an
+        idle loop.
+        """
+        service = EventService(
+            stored=sample_stored_conversation, conversations_dir=tmp_path
+        )
+        conversation = MagicMock()
+        conversation._state = MagicMock()
+        conversation._state.__enter__ = MagicMock(return_value=None)
+        conversation._state.__exit__ = MagicMock(return_value=False)
+        service._conversation = conversation
+
+        real_loop = asyncio.get_running_loop()
+        mock_loop = MagicMock()
+        mock_loop.is_running.return_value = True
+        finished: asyncio.Future[None] = real_loop.create_future()
+        finished.set_result(None)
+        mock_loop.run_in_executor.return_value = finished
+        service._main_loop = mock_loop
+
+        event = MessageEvent(
+            id="thread-safety", source="agent", llm_message=Message(role="assistant")
+        )
+        service._emit_event_from_thread(event)
+
+        assert mock_loop.call_soon_threadsafe.called, (
+            "done-callback must be attached via call_soon_threadsafe"
+        )
+        scheduled = mock_loop.call_soon_threadsafe.call_args.args
+        assert scheduled[0] == finished.add_done_callback

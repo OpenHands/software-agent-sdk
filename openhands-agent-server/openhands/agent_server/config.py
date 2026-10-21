@@ -362,6 +362,21 @@ class Config(BaseModel):
             "be restored between restarts."
         ),
     )
+    previous_secret_keys: list[SecretStr] = Field(
+        default_factory=list,
+        description=(
+            "Earlier values of secret_key, used only to decrypt. Values saved "
+            "under one of them stay readable and are re-encrypted under "
+            "secret_key when next saved (the settings and secrets stores are "
+            "re-encrypted at startup). To rotate, set the new key as "
+            "secret_key and put the old one here. Prefer setting OH_SECRET_KEY "
+            "explicitly: while secret_key falls back to the first session API "
+            "key, rotating that session key also rotates the encryption key, "
+            "so the old session key must go here. Set with "
+            "OH_PREVIOUS_SECRET_KEYS as a JSON list, or "
+            "OH_PREVIOUS_SECRET_KEYS_0, OH_PREVIOUS_SECRET_KEYS_1, ..."
+        ),
+    )
     web_url: str | None = Field(
         default_factory=_default_web_url,
         description=(
@@ -386,6 +401,16 @@ class Config(BaseModel):
         ),
     )
     conversation_runtime: Literal["local", "docker"] = "local"
+    conversation_runtime_selectable: bool = Field(
+        default=False,
+        description=(
+            "Serve both the local and the docker runtime and let each start "
+            "request pick one with `conversation_runtime`; requests that leave "
+            "it unset use this server's `conversation_runtime`. Requires a "
+            "Docker daemon and "
+            "`OH_SECRET_KEY`."
+        ),
+    )
     conversation_image: str = DEFAULT_CONVERSATION_IMAGE
     conversation_image_has_browser: bool | None = Field(
         default=None,
@@ -538,17 +563,28 @@ class Config(BaseModel):
 
     @property
     def cipher(self) -> Cipher | None:
-        cipher = getattr(self, "_cipher", None)
-        if cipher is None:
-            if self.secret_key is None:
+        if self.secret_key is None:
+            if getattr(self, "_cipher", None) is not False:
                 _logger.warning(
                     "⚠️ OH_SECRET_KEY was not defined. Secrets will not "
                     "be persisted between restarts."
                 )
-                cipher = None
-            else:
-                cipher = Cipher(self.secret_key.get_secret_value())
+                setattr(self, "_cipher", False)
+            return None
+        keys = (
+            self.secret_key.get_secret_value(),
+            tuple(key.get_secret_value() for key in self.previous_secret_keys),
+        )
+        cipher = getattr(self, "_cipher", None)
+        # ``model_copy`` carries the cached cipher over, so rebuild it when the
+        # copy was given other keys (e.g. by ``POST /api/init``).
+        if (
+            not isinstance(cipher, Cipher)
+            or getattr(self, "_cipher_keys", None) != keys
+        ):
+            cipher = Cipher(keys[0], previous_keys=keys[1])
             setattr(self, "_cipher", cipher)
+            setattr(self, "_cipher_keys", keys)
         return cipher
 
 

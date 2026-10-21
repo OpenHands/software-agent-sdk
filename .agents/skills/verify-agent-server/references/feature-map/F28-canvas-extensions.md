@@ -918,7 +918,7 @@ Preconditions:
   passes and only the archive format is wrong: the prepare answers 409
   `backend artifact is not a valid gzip tar archive`, and no approval or
   extracted artifact is left behind.
-- **Unknown ref on a cached source (`F28.install-ref-cached`), known bug.**
+- **Unknown ref on a cached source (`F28.install-ref-cached`).**
   Pin `qa-f28-git` (which caches its clone), then force a ref that does not
   exist.
   ```sh
@@ -926,21 +926,14 @@ Preconditions:
     --expect 200 --check resolved_ref eq "$GV1" --quiet
   control-agent-server state ls 'home/.openhands/cache/extensions/qa-f28-git-*/canvas-extension.json' --expect-count 1
   control-agent-server api POST /api/canvas-extensions/install --json "{\"source\": \"file://$GX\", \"ref\": \"qa-no-such-ref\", \"force\": true}" \
-    --expect 400 --check detail contains 'Could not read canvas extension source' --save F28.install-ref-cached/unknown-ref  # bug: status eq 200 && response.body.requested_ref eq qa-no-such-ref
+    --expect 400 --check detail contains 'Could not read canvas extension source' --save F28.install-ref-cached/unknown-ref
   control-agent-server state cat home/.openhands/canvas-extensions/installed/.installed.json \
-    --check extensions.qa-f28-git.requested_ref eq "$GV1" --check extensions.qa-f28-git.resolved_ref eq "$GV1"  # bug: content.extensions.qa-f28-git.requested_ref eq qa-no-such-ref
+    --check extensions.qa-f28-git.requested_ref eq "$GV1" --check extensions.qa-f28-git.resolved_ref eq "$GV1"
   control-agent-server api DELETE /api/canvas-extensions/installed/qa-f28-git --expect 200 --quiet
   ```
-  The pinned install leaves exactly one cached clone of the source. Expected:
-  400 as on a first fetch (`F28.install-ref`), with the pinned install
-  untouched. Actual: 200 at the first `# bug` line; the SDK's cached clone
-  logs `Failed to checkout qa-no-such-ref ... Using cached version`
-  (`openhands/sdk/git/cached_repo.py` `_update_repository`), the forced
-  install replaces the app with whatever commit the cache had checked out,
-  and `.installed.json` records `requested_ref: "qa-no-such-ref"` next to
-  that commit (the second `# bug` line, for a fix that answers 400 but still
-  writes the record). Once fixed, the bullet uninstalls the app; while the
-  bug lasts the app stays installed, which no later bullet counts.
+  The pinned install leaves exactly one cached clone of the source. The unknown
+  ref returns 400 as on a first fetch (`F28.install-ref`). The requested and
+  resolved refs remain at the prior pinned commit.
 - **Health probe latch (`F28.status-probe-latch`).** Make the
   running backend answer one status probe slower than the 1 s probe timeout,
   then fast again.
@@ -1042,10 +1035,10 @@ Preconditions:
   (disabled, `source: "local"`) and prunes records whose directory is gone.
   GET by name, bundle, icon and the backend routes do not discover; they 404
   (or report `missing`) until a list call ran.
-- `ref` goes through the SDK's cached git clone (`cache/extensions/<name>-<hash>`),
-  which falls back to the cached checkout when the ref cannot be checked out:
-  an unknown ref is 400 only on the first fetch of a source
-  (`F28.install-ref-cached`). Every git fetch failure reads
+- `ref` goes through the SDK's cached git clone (`cache/extensions/<name>-<hash>`).
+  An unknown ref returns 400 and leaves the installed app unchanged on a first
+  fetch and on a cached source (`F28.install-ref-cached`). Every git fetch
+  failure reads
   `Could not read canvas extension source: Failed to fetch extension from <url>`
   without naming the ref, although the router avoids "failed to fetch" wording
   on purpose (the Canvas client treats it as a network outage).
