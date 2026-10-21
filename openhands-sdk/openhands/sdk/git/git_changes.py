@@ -9,7 +9,11 @@ import logging
 import os
 from pathlib import Path
 
-from openhands.sdk.git.exceptions import GitCommandError, GitError
+from openhands.sdk.git.exceptions import (
+    GitCommandError,
+    GitError,
+    GitRepositoryError,
+)
 from openhands.sdk.git.models import GitChange, GitChangeStatus
 from openhands.sdk.git.utils import (
     get_valid_ref,
@@ -159,7 +163,9 @@ def get_changes_in_repo(
     vs the latest commit) instead.
 
     Args:
-        repo_dir: Path to the git repository
+        repo_dir: Path to the git repository, or to a directory inside one.
+            Only changes under this directory are listed, with paths relative
+            to it.
         ref: Optional explicit ref to compare against (e.g. ``"HEAD"`` or a
             commit hash). When ``None``, behaves as before and compares
             against the upstream/default branch.
@@ -183,12 +189,11 @@ def get_changes_in_repo(
         logger.warning(f"No valid git reference found for {validated_repo}")
         return []
 
-    # Get changed files using secure git command. The ``-z`` form keeps
-    # paths verbatim (NUL-separated, no C-style quoting) so names with
-    # spaces or non-ASCII characters survive parsing unchanged.
+    # Keep paths verbatim and relative to repo_dir, including when it is a
+    # subdirectory of the repository.
     try:
         changed_files_output = run_git_command(
-            ["git", "--no-pager", "diff", "--name-status", "-z", ref],
+            ["git", "--no-pager", "diff", "--name-status", "-z", "--relative", ref],
             validated_repo,
         )
     except GitCommandError as e:
@@ -233,8 +238,17 @@ def get_git_changes(cwd: str | Path, ref: str | None = None) -> list[GitChange]:
         for f in glob.glob("./*/.git", root_dir=cwd, recursive=True)
     }
 
-    # First try the workspace directory
-    changes = get_changes_in_repo(cwd, ref=ref)
+    # First try the workspace directory. A directory that is not a repository
+    # itself but holds repositories below it (the ``{base}/{repo}`` layout of a
+    # repository-backed conversation) contributes no changes of its own.
+    base_error: GitRepositoryError | None = None
+    try:
+        changes = get_changes_in_repo(cwd, ref=ref)
+    except GitRepositoryError as e:
+        if not git_dirs:
+            raise
+        base_error = e
+        changes = []
 
     # Filter out any changes which are inside one of the nested repositories.
     # This compares path ancestry rather than string prefixes: a nested
@@ -248,6 +262,7 @@ def get_git_changes(cwd: str | Path, ref: str | None = None) -> list[GitChange]:
     ]
 
     # Add changes from git directories
+    found_nested_repo = False
     for git_dir in git_dirs:
         try:
             git_dir_changes = get_changes_in_repo(str(Path(cwd, git_dir)), ref=ref)
@@ -256,6 +271,7 @@ def get_git_changes(cwd: str | Path, ref: str | None = None) -> list[GitChange]:
                 f"Skipping nested git directory {git_dir}: not a valid repository"
             )
             continue
+        found_nested_repo = True
         for change in git_dir_changes:
             # Create a new GitChange with the updated path
             updated_change = GitChange(
@@ -263,6 +279,10 @@ def get_git_changes(cwd: str | Path, ref: str | None = None) -> list[GitChange]:
                 path=Path(git_dir) / change.path,
             )
             changes.append(updated_change)
+
+    # Neither the directory nor anything below it is a repository.
+    if base_error is not None and not found_nested_repo:
+        raise base_error
 
     changes.sort(key=lambda change: str(change.path))
 

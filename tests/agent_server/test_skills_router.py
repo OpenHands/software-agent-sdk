@@ -401,6 +401,34 @@ class TestGetSkillsEndpoint:
             assert data["sources"]["sandbox"] == 1
 
 
+def test_skill_catalog_lists_profile_skills_with_their_origin(client):
+    catalog = [
+        Skill(name="from-catalog", content="c", description="catalog skill"),
+        Skill(name="mine", content="m", description="user skill"),
+        Skill(name="shadowed", content="s", description="user copy"),
+    ]
+    with (
+        patch(
+            "openhands.agent_server.skills_router.discover_profile_skills",
+            return_value=catalog,
+        ),
+        patch(
+            "openhands.agent_server.skills_router.discover_public_skill_names",
+            return_value={"from-catalog"},
+        ),
+    ):
+        response = client.get("/api/skills/catalog")
+
+    assert response.status_code == 200
+    skills = response.json()["skills"]
+    assert [(s["name"], s["origin"]) for s in skills] == [
+        ("from-catalog", "public"),
+        ("mine", "user"),
+        ("shadowed", "user"),
+    ]
+    assert skills[0]["description"] == "catalog skill"
+
+
 class TestSyncSkillsEndpoint:
     """Tests for POST /skills/sync endpoint."""
 

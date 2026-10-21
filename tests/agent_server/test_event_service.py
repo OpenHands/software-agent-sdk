@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import io
 import json
+import logging
 import shutil
 import threading
 import time
@@ -271,6 +272,31 @@ class TestEventServiceSearchEvents:
 
         # Test filtering by non-existent kind
         result = await event_service.search_events(kind="NonExistentEvent")
+        assert len(result.items) == 0
+
+    @pytest.mark.asyncio
+    async def test_search_events_short_kind_matches_qualified_kind(
+        self, event_service, mock_conversation_with_events
+    ):
+        """The bare class name (the wire ``kind``) filters like the full path."""
+        event_service._conversation = mock_conversation_with_events
+
+        qualified = await event_service.search_events(
+            kind="openhands.sdk.event.llm_convertible.message.MessageEvent"
+        )
+        short = await event_service.search_events(kind="MessageEvent")
+        assert len(short.items) == 5
+        assert [e.id for e in short.items] == [e.id for e in qualified.items]
+        assert short.next_page_id == qualified.next_page_id
+
+        # Combined with another filter, both apply.
+        result = await event_service.search_events(kind="MessageEvent", source="user")
+        assert len(result.items) == 5
+        result = await event_service.search_events(kind="MessageEvent", source="agent")
+        assert len(result.items) == 0
+
+        # A partial module path is neither the short nor the full name.
+        result = await event_service.search_events(kind="message.MessageEvent")
         assert len(result.items) == 0
 
     @pytest.mark.asyncio
@@ -716,6 +742,12 @@ class TestEventServiceCountEvents:
             kind="openhands.sdk.event.llm_convertible.message.MessageEvent"
         )
         assert result == 5
+
+        # The bare class name (the wire ``kind``) counts the same events
+        result = await event_service.count_events(kind="MessageEvent")
+        assert result == 5
+        result = await event_service.count_events(kind="MessageEvent", source="agent")
+        assert result == 0
 
         # Count non-existent event type (should be 0)
         result = await event_service.count_events(kind="NonExistentEvent")
@@ -1358,6 +1390,54 @@ class TestEventServiceSendMessage:
         assert event_service._acp_internal_rerun_requested is False
 
     @pytest.mark.asyncio
+    async def test_late_stop_during_run_lock_wait_drops_internal_acp_rerun(
+        self, event_service, tmp_path
+    ):
+        """A stop that lands while run() waits on _run_lock must win, even when
+        the old run task is still alive (its interrupt drain timed out)."""
+        agent = ACPAgent(acp_command=["echo", "test"])
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            max_iteration_per_run=3,
+            stuck_detection=False,
+        )
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+        event_service._mark_running_acp_prompt_superseded = AsyncMock(
+            return_value=(True, False)
+        )
+        event_service.interrupt = AsyncMock()
+        event_service._get_execution_status = AsyncMock(
+            return_value=ConversationExecutionStatus.PAUSED
+        )
+        run_task = asyncio.create_task(asyncio.Event().wait())
+        event_service._run_task = run_task
+        await event_service._run_lock.acquire()
+        try:
+            send = asyncio.create_task(
+                event_service.send_message(Message(role="user", content=[]), run=True)
+            )
+            for _ in range(200):
+                if event_service.interrupt.await_count:
+                    break
+                await asyncio.sleep(0.01)
+            event_service.interrupt.assert_awaited_once_with(internal_acp_rerun=True)
+            for _ in range(5):
+                await asyncio.sleep(0)
+
+            event_service._explicit_interrupt_generation += 1
+            event_service._rerun_requested = False
+            event_service._acp_internal_rerun_requested = False
+            event_service._run_lock.release()
+            await asyncio.wait_for(send, timeout=2)
+        finally:
+            run_task.cancel()
+
+        assert event_service._rerun_requested is False
+        assert event_service._acp_internal_rerun_requested is False
+
+    @pytest.mark.asyncio
     async def test_send_message_with_run_true_logs_exception(self, event_service):
         """Test that exceptions from conversation.run() are caught and logged."""
         # Mock conversation and its methods
@@ -1384,17 +1464,73 @@ class TestEventServiceSendMessage:
             assert event_service._run_task is not None
             await event_service._run_task
 
-            # Verify the exception was logged via logger.exception()
-            # (logged by run()'s _run_and_publish handler)
-            mock_logger.exception.assert_called_once_with(
-                "Error during conversation run"
-            )
+            # Verify the failure was logged with its traceback (logged by
+            # run()'s _run_and_publish handler).
+            mock_logger.error.assert_called_once()
+            fmt, detail = mock_logger.error.call_args.args
+            assert fmt == "Error during conversation run\n%s"
+            assert detail.startswith("Traceback (most recent call last):")
+            assert detail.endswith("RuntimeError: Test error")
 
         # Verify send_message was still called
         conversation.send_message.assert_called_once_with(message)
 
         # Verify run was called (and raised the exception)
         conversation.run.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_error_log_has_no_exc_info(self, event_service):
+        """A failed run's traceback is logged as plain text, never as exc_info:
+        the default Rich console handler renders exc_info synchronously on the
+        event loop, which stalled the server for seconds per failed run
+        (issue #5633)."""
+        conversation = MagicMock()
+        state = MagicMock()
+        state.execution_status = ConversationExecutionStatus.ERROR
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation.state = state
+        conversation._state = state
+        conversation.send_message = MagicMock()
+        try:
+            try:
+                raise ConnectionRefusedError("connection refused")
+            except ConnectionRefusedError as cause:
+                raise RuntimeError("LLM call failed") from cause
+        except RuntimeError as chained:
+            conversation.run = MagicMock(side_effect=chained)
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        records: list[logging.LogRecord] = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        capture = _Capture(level=logging.DEBUG)
+        service_logger = logging.getLogger("openhands.agent_server.event_service")
+        service_logger.addHandler(capture)
+        try:
+            await event_service.send_message(Message(role="user", content=[]), run=True)
+            assert event_service._run_task is not None
+            await event_service._run_task
+        finally:
+            service_logger.removeHandler(capture)
+
+        failures = [
+            r
+            for r in records
+            if r.getMessage().startswith("Error during conversation run")
+        ]
+        assert len(failures) == 1
+        record = failures[0]
+        assert record.levelno == logging.ERROR
+        assert record.exc_info is None
+        message = record.getMessage()
+        assert "ConnectionRefusedError: connection refused" in message
+        assert message.endswith("RuntimeError: LLM call failed")
 
     @pytest.mark.asyncio
     async def test_run_exception_forces_error_status(self, event_service):
@@ -1917,6 +2053,33 @@ class TestEventServiceRun:
 
         with pytest.raises(ValueError, match="conversation_already_running"):
             await event_service.run()
+
+    @pytest.mark.asyncio
+    async def test_run_already_running_does_not_wait_for_state_lock(
+        self, event_service
+    ):
+        """A live run holds the state lock for its whole step (e.g. a long tool
+        call); run() must refuse at once instead of blocking behind it."""
+        lock_released = threading.Event()
+        state = MagicMock(spec=ConversationState)
+        state.execution_status = ConversationExecutionStatus.RUNNING
+        state.__enter__ = MagicMock(
+            side_effect=lambda: (lock_released.wait(10), state)[1]
+        )
+        state.__exit__ = MagicMock(return_value=None)
+        conversation = MagicMock(spec=Conversation)
+        conversation._state = state
+        event_service._conversation = conversation
+
+        run_task = asyncio.create_task(asyncio.Event().wait())
+        event_service._run_task = run_task
+        try:
+            with pytest.raises(ValueError, match="conversation_already_running"):
+                await asyncio.wait_for(event_service.run(), timeout=2)
+            state.__enter__.assert_not_called()
+        finally:
+            lock_released.set()
+            run_task.cancel()
 
     @pytest.mark.asyncio
     async def test_run_starts_background_task(self, event_service):

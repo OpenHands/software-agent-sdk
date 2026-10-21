@@ -1,0 +1,12 @@
+{
+  "schema_version": 8,
+  "agent_kind": "acp",
+  "acp_model": "fixture-v8-acp",
+  "llm": {
+    "model": "ignored",
+    "api_key": "fixture-retired-secret"
+  },
+  "__expected__": {
+    "acp_model": "fixture-v8-acp"
+  }
+}

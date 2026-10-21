@@ -193,6 +193,30 @@ def test_get_changes_in_repo_nested_directories():
             assert change.status == GitChangeStatus.ADDED
 
 
+def test_get_changes_in_repo_subdirectory_paths_are_relative_to_it(tmp_path):
+    """A subdirectory of a repository lists only its own changes, on its base."""
+    setup_git_repo(str(tmp_path))
+    (tmp_path / "src").mkdir()
+    (tmp_path / "README.md").write_text("hello\n")
+    (tmp_path / "src" / "app.py").write_text("x = 1\n")
+    (tmp_path / "src" / "old.py").write_text("old\n")
+    run_bash_command("git add . && git commit -m init", str(tmp_path))
+
+    (tmp_path / "README.md").write_text("edited\n")
+    (tmp_path / "notes.txt").write_text("note\n")
+    (tmp_path / "src" / "app.py").write_text("x = 2\n")
+    (tmp_path / "src" / "old.py").unlink()
+    (tmp_path / "src" / "new.py").write_text("new\n")
+
+    changes = get_changes_in_repo(tmp_path / "src", ref="HEAD")
+
+    assert sorted((str(c.path), c.status) for c in changes) == [
+        ("app.py", GitChangeStatus.UPDATED),
+        ("new.py", GitChangeStatus.ADDED),
+        ("old.py", GitChangeStatus.DELETED),
+    ]
+
+
 def test_get_changes_in_repo_staged_and_unstaged():
     """Test get_changes_in_repo with both staged and unstaged changes."""
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -474,7 +498,7 @@ def test_get_changes_in_repo_ref_head_shows_only_uncommitted():
 
         changes = get_changes_in_repo(temp_dir, ref="HEAD")
 
-        paths = {str(c.path) for c in changes}
+        paths = {c.path.as_posix() for c in changes}
         # Files committed at HEAD must not appear; only working-tree changes.
         assert "second.txt" not in paths
         assert "committed.txt" in paths
@@ -543,7 +567,7 @@ def test_get_changes_in_repo_ref_head_on_orphan_branch_returns_untracked_as_adde
         # Act / Assert: must not raise GitCommandError; untracked file shows
         # up as added (mirrors the empty-repo behavior).
         changes = get_changes_in_repo(temp_dir, ref="HEAD")
-        paths = {str(c.path) for c in changes}
+        paths = {c.path.as_posix() for c in changes}
         assert "untracked.txt" in paths
 
 
@@ -577,7 +601,7 @@ def test_get_git_changes_propagates_ref():
         (Path(temp_dir) / "b.txt").write_text("b")
 
         changes = get_git_changes(temp_dir, ref="HEAD")
-        paths = {str(c.path) for c in changes}
+        paths = {c.path.as_posix() for c in changes}
         assert paths == {"b.txt"}
 
 
@@ -748,7 +772,7 @@ def test_get_git_changes_keeps_paths_that_merely_share_a_nested_repo_prefix():
         (Path(temp_dir) / "foo-config.yaml").write_text("changed\n")
         (Path(temp_dir) / "README.md").write_text("changed\n")
 
-        paths = {str(change.path) for change in get_git_changes(temp_dir)}
+        paths = {change.path.as_posix() for change in get_git_changes(temp_dir)}
 
         assert "foobar/file.py" in paths
         assert "foo-config.yaml" in paths
@@ -770,7 +794,7 @@ def test_get_git_changes_still_excludes_paths_inside_a_nested_repo():
         (nested / "nested.txt").write_text("changed in nested\n")
 
         changes = get_git_changes(temp_dir)
-        nested_entries = [c for c in changes if str(c.path) == "foo/nested.txt"]
+        nested_entries = [c for c in changes if c.path.as_posix() == "foo/nested.txt"]
 
         # Reported once, by the nested repository, not by the parent.
         assert len(nested_entries) == 1
@@ -820,3 +844,63 @@ def test_get_changes_in_repo_special_names_kept_verbatim():
             "to delete.txt": GitChangeStatus.DELETED,
             "日本.txt": GitChangeStatus.ADDED,
         }
+
+
+def test_get_git_changes_lists_repo_below_non_repo_directory():
+    """A plain directory holding a repository lists that repository's changes.
+
+    This is the ``{base}/{repo}`` layout of a repository-backed conversation:
+    the base is not a repository itself, so its changes must come from the
+    repository below it, prefixed with its directory name.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        repo = Path(temp_dir) / "proj"
+        repo.mkdir()
+        setup_git_repo(str(repo))
+        (repo / "README.md").write_text("hello\n")
+        run_bash_command("git add -A && git commit -m init", str(repo))
+        (repo / "README.md").write_text("hello\nedit\n")
+        (repo / "notes.txt").write_text("note\n")
+
+        changes = get_git_changes(temp_dir, ref="HEAD")
+
+        assert [(c.status, c.path.as_posix()) for c in changes] == [
+            (GitChangeStatus.UPDATED, "proj/README.md"),
+            (GitChangeStatus.ADDED, "proj/notes.txt"),
+        ]
+
+
+def test_get_git_changes_non_repo_without_repo_below_still_raises():
+    """A plain directory with nothing but a broken ``.git`` below it is no repo."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / "plain.txt").write_text("plain\n")
+        broken = Path(temp_dir) / "broken"
+        broken.mkdir()
+        (broken / ".git").write_text("gitdir: /path/that/does/not/exist\n")
+
+        with pytest.raises(GitRepositoryError):
+            get_git_changes(temp_dir)
+
+
+def test_special_names_stay_relative_to_requested_subdirectory(tmp_path: Path):
+    def git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-b", "main")
+    git("config", "user.name", "Test User")
+    git("config", "user.email", "test@example.com")
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "my notes.md").write_text("before", encoding="utf-8")
+    (tmp_path / "outside.txt").write_text("before", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "initial")
+    (nested / "my notes.md").write_text("after", encoding="utf-8")
+    (nested / "日本.txt").write_text("new", encoding="utf-8")
+    (tmp_path / "outside.txt").write_text("after", encoding="utf-8")
+    assert {
+        c.path.as_posix(): c.status for c in get_changes_in_repo(nested, ref="HEAD")
+    } == {
+        "my notes.md": GitChangeStatus.UPDATED,
+        "日本.txt": GitChangeStatus.ADDED,
+    }
