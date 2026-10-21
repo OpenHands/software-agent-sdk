@@ -2,6 +2,7 @@
 
 import logging
 import os
+import shlex
 import sys
 import time
 import uuid
@@ -29,6 +30,9 @@ from openhands.tools.terminal.env import (
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal import TerminalInterface
 from openhands.tools.terminal.terminal.interface import parse_ctrl_key
+from openhands.tools.terminal.terminal.process_priority import (
+    process_priority_prefix,
+)
 
 
 logger = get_logger(__name__)
@@ -212,12 +216,12 @@ class TmuxTerminal(TerminalInterface):
         # auto-launch `less` on a TTY don't capture the pane and wedge the session.
         env.setdefault("GIT_PAGER", "cat")
         env.setdefault("PAGER", "cat")
-        _shell_command = "/bin/bash"
+        shell_command = ["/bin/bash"]
         if self.username in ["root", "openhands"]:
             # This starts a non-login (new) shell for the given user
-            _shell_command = f"su {self.username} -"
+            shell_command = ["su", self.username, "-"]
 
-        window_command = _shell_command
+        window_command = shlex.join([*process_priority_prefix(env), *shell_command])
 
         logger.debug(f"Initializing tmux terminal with command: {window_command}")
         # Never reuse a socket: tmux numeric IDs restart at zero after server exit.
