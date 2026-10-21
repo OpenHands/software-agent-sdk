@@ -47,6 +47,11 @@ from openhands.agent_server.models import (
     ServerErrorEvent,
 )
 from openhands.agent_server.pub_sub import MaxSubscribersError, Subscriber
+from openhands.agent_server.server_details_router import (
+    register_websocket_connection,
+    signal_websocket_activity,
+    unregister_websocket_connection,
+)
 from openhands.sdk import Event, Message
 from openhands.sdk.utils.paging import page_iterator
 
@@ -152,6 +157,7 @@ async def _accept_authenticated_websocket(
     # No auth configured — accept unconditionally.
     if not config.session_api_keys:
         await websocket.accept()
+        register_websocket_connection()
         return True
 
     # Legacy path: key supplied via query param or header.
@@ -162,6 +168,7 @@ async def _accept_authenticated_websocket(
                 "Use first-message auth instead."
             )
             await websocket.accept()
+            register_websocket_connection()
             return True
         logger.warning("WebSocket authentication failed: invalid API key")
         await websocket.close(code=4001, reason="Authentication failed")
@@ -222,6 +229,7 @@ async def _accept_authenticated_websocket(
         return False
 
     logger.info("WebSocket authenticated via first-message auth")
+    register_websocket_connection()
     return True
 
 
@@ -282,107 +290,119 @@ async def events_socket(
         return
 
     logger.info(f"Event Websocket Connected: {conversation_id}")
-    conv_service = _get_conversation_service(websocket)
     try:
-        event_service = await conv_service.get_event_service(conversation_id)
-    except CredentialBindingActivationRequired:
-        await websocket.close(
-            code=1013,
-            reason="credential_binding_activation_required",
-        )
-        return
-    if event_service is None:
-        logger.warning(f"Converation not found: {conversation_id}")
-        await websocket.close(code=4004, reason="Conversation not found")
-        return
+        conv_service = _get_conversation_service(websocket)
+        try:
+            event_service = await conv_service.get_event_service(conversation_id)
+        except CredentialBindingActivationRequired:
+            await websocket.close(
+                code=1013,
+                reason="credential_binding_activation_required",
+            )
+            return
+        if event_service is None:
+            logger.warning(f"Converation not found: {conversation_id}")
+            await websocket.close(code=4004, reason="Conversation not found")
+            return
 
-    try:
-        subscriber_id = await event_service.subscribe_to_events(
-            _WebSocketSubscriber(websocket)
-        )
-    except MaxSubscribersError:
-        logger.warning(f"Subscriber limit reached for conversation {conversation_id}")
-        await websocket.close(
-            code=1013, reason="Too many connections for this conversation"
-        )
-        return
+        try:
+            subscriber_id = await event_service.subscribe_to_events(
+                _WebSocketSubscriber(websocket)
+            )
+        except MaxSubscribersError:
+            logger.warning(
+                f"Subscriber limit reached for conversation {conversation_id}"
+            )
+            await websocket.close(
+                code=1013, reason="Too many connections for this conversation"
+            )
+            return
 
-    # Determine effective resend mode (handle deprecated resend_all)
-    effective_mode = resend_mode
-    if effective_mode is None and resend_all:
-        logger.warning(
-            "resend_all is deprecated, use resend_mode='all' instead: "
-            f"{conversation_id}"
+        # Determine effective resend mode (handle deprecated resend_all)
+        effective_mode = resend_mode
+        if effective_mode is None and resend_all:
+            logger.warning(
+                "resend_all is deprecated, use resend_mode='all' instead: "
+                f"{conversation_id}"
+            )
+            effective_mode = "all"
+
+        # Normalize timezone-aware datetimes to server timezone
+        normalized_after_timestamp = (
+            normalize_datetime_to_server_timezone(after_timestamp)
+            if after_timestamp
+            else None
         )
-        effective_mode = "all"
 
-    # Normalize timezone-aware datetimes to server timezone
-    normalized_after_timestamp = (
-        normalize_datetime_to_server_timezone(after_timestamp)
-        if after_timestamp
-        else None
-    )
-
-    try:
-        # Resend existing events based on mode
-        if effective_mode == "all":
-            logger.info(f"Resending all events: {conversation_id}")
-            async for event in page_iterator(event_service.search_events):
-                await _send_event(event, websocket)
-        elif effective_mode == "since":
-            if not normalized_after_timestamp:
-                logger.warning(
-                    f"resend_mode='since' requires after_timestamp, "
-                    f"no events will be resent: {conversation_id}"
-                )
-            else:
-                logger.info(
-                    f"Resending events since {normalized_after_timestamp}: "
-                    f"{conversation_id}"
-                )
-                async for event in page_iterator(
-                    event_service.search_events,
-                    timestamp__gte=normalized_after_timestamp,
-                ):
+        try:
+            # Resend existing events based on mode
+            if effective_mode == "all":
+                logger.info(f"Resending all events: {conversation_id}")
+                async for event in page_iterator(event_service.search_events):
                     await _send_event(event, websocket)
+            elif effective_mode == "since":
+                if not normalized_after_timestamp:
+                    logger.warning(
+                        f"resend_mode='since' requires after_timestamp, "
+                        f"no events will be resent: {conversation_id}"
+                    )
+                else:
+                    logger.info(
+                        f"Resending events since {normalized_after_timestamp}: "
+                        f"{conversation_id}"
+                    )
+                    async for event in page_iterator(
+                        event_service.search_events,
+                        timestamp__gte=normalized_after_timestamp,
+                    ):
+                        await _send_event(event, websocket)
 
-        # Listen for messages over the socket
-        while True:
-            try:
-                data = await websocket.receive_json()
-                if _is_auth_control_message(data):
-                    logger.debug(
-                        "ignoring redundant auth control frame: %s",
-                        conversation_id,
-                    )
-                    continue
-                logger.info(f"Received message: {conversation_id}")
-                message = Message.model_validate(data)
-                await event_service.send_message(message, True)
-            except WebSocketDisconnect:
-                logger.info("Event websocket disconnected")
-                return
-            except Exception as e:
-                # Something went wrong - Tell the client so they can handle it
+            # Listen for messages over the socket
+            while True:
                 try:
-                    error_event = ServerErrorEvent(
-                        source="environment",
-                        code=e.__class__.__name__,
-                        detail=str(e),
-                    )
-                    dumped = error_event.model_dump(mode="json", exclude_none=True)
-                    await websocket.send_json(dumped)
-                    # Log after - if send event raises an error logging is handled
-                    # in the except block
-                    logger.exception("error_in_subscription", stack_info=True)
-                except Exception:
-                    # Sending the error event failed - likely a closed socket
+                    data = await websocket.receive_json()
+                    # A client that reads and answers frames is present; the
+                    # server's own pings are not, so this is the liveness signal.
+                    signal_websocket_activity()
+                    if _is_auth_control_message(data):
+                        logger.debug(
+                            "ignoring redundant auth control frame: %s",
+                            conversation_id,
+                        )
+                        continue
+                    logger.info(f"Received message: {conversation_id}")
+                    message = Message.model_validate(data)
+                    await event_service.send_message(message, True)
+                except WebSocketDisconnect:
                     logger.info("Event websocket disconnected")
-                    logger.debug("error_sending_error", exc_info=True, stack_info=True)
-                    await _safe_close_websocket(websocket)
                     return
+                except Exception as e:
+                    # Something went wrong - Tell the client so they can handle it
+                    try:
+                        error_event = ServerErrorEvent(
+                            source="environment",
+                            code=e.__class__.__name__,
+                            detail=str(e),
+                        )
+                        dumped = error_event.model_dump(mode="json", exclude_none=True)
+                        await websocket.send_json(dumped)
+                        # Log after - if send event raises an error logging is
+                        # handled in the except block
+                        logger.exception("error_in_subscription", stack_info=True)
+                    except Exception:
+                        # Sending the error event failed - likely a closed socket
+                        logger.info("Event websocket disconnected")
+                        logger.debug(
+                            "error_sending_error", exc_info=True, stack_info=True
+                        )
+                        await _safe_close_websocket(websocket)
+                        return
+        finally:
+            await event_service.unsubscribe_from_events(subscriber_id)
     finally:
-        await event_service.unsubscribe_from_events(subscriber_id)
+        # Always release the socket's claim on the runtime idle timer, on every
+        # exit path (normal close, auth/limit rejection, unexpected error).
+        unregister_websocket_connection()
 
 
 @bash_sockets_router.websocket("/bash-events")
@@ -423,62 +443,67 @@ async def bash_events_socket(
     bash_service = _get_bash_event_service(websocket)
     logger.info("Bash Websocket Connected")
     try:
-        subscriber_id = await bash_service.subscribe_to_events(
-            _BashWebSocketSubscriber(websocket)
-        )
-    except MaxSubscribersError:
-        logger.warning("Subscriber limit reached for bash events")
-        await websocket.close(code=1013, reason="Too many bash event connections")
-        return
+        try:
+            subscriber_id = await bash_service.subscribe_to_events(
+                _BashWebSocketSubscriber(websocket)
+            )
+        except MaxSubscribersError:
+            logger.warning("Subscriber limit reached for bash events")
+            await websocket.close(code=1013, reason="Too many bash event connections")
+            return
 
-    # Determine effective resend mode (handle deprecated resend_all)
-    effective_mode = resend_mode
-    if effective_mode is None and resend_all:
-        logger.warning("resend_all is deprecated, use resend_mode='all' instead")
-        effective_mode = "all"
+        # Determine effective resend mode (handle deprecated resend_all)
+        effective_mode = resend_mode
+        if effective_mode is None and resend_all:
+            logger.warning("resend_all is deprecated, use resend_mode='all' instead")
+            effective_mode = "all"
 
-    try:
-        # Resend all existing events if requested
-        if effective_mode == "all":
-            logger.info("Resending bash events")
-            async for event in page_iterator(bash_service.search_bash_events):
-                await _send_bash_event(event, websocket)
+        try:
+            # Resend all existing events if requested
+            if effective_mode == "all":
+                logger.info("Resending bash events")
+                async for event in page_iterator(bash_service.search_bash_events):
+                    await _send_bash_event(event, websocket)
 
-        while True:
-            try:
-                # Keep the connection alive and handle any incoming messages
-                data = await websocket.receive_json()
-                if _is_auth_control_message(data):
-                    continue
-                logger.info("Received bash request")
-                request = ExecuteBashRequest.model_validate(data)
-                await bash_service.start_bash_command(request)
-            except WebSocketDisconnect:
-                logger.info("Bash websocket disconnected")
-                return
-            except Exception as e:
+            while True:
                 try:
-                    error_event = BashError(
-                        code=e.__class__.__name__,
-                        detail=str(e),
-                    )
-                    dumped = error_event.model_dump(mode="json")
-                    await websocket.send_json(dumped)
-                    logger.error(
-                        "error_in_bash_event_subscription (error_type=%s)",
-                        type(e).__name__,
-                    )
-                except Exception as send_error:
+                    # Keep the connection alive and handle any incoming messages
+                    data = await websocket.receive_json()
+                    signal_websocket_activity()
+                    if _is_auth_control_message(data):
+                        continue
+                    logger.info("Received bash request")
+                    request = ExecuteBashRequest.model_validate(data)
+                    await bash_service.start_bash_command(request)
+                except WebSocketDisconnect:
                     logger.info("Bash websocket disconnected")
-                    logger.debug(
-                        "error_sending_bash_error (error_type=%s, send_error_type=%s)",
-                        type(e).__name__,
-                        type(send_error).__name__,
-                    )
-                    await _safe_close_websocket(websocket)
                     return
+                except Exception as e:
+                    try:
+                        error_event = BashError(
+                            code=e.__class__.__name__,
+                            detail=str(e),
+                        )
+                        dumped = error_event.model_dump(mode="json")
+                        await websocket.send_json(dumped)
+                        logger.error(
+                            "error_in_bash_event_subscription (error_type=%s)",
+                            type(e).__name__,
+                        )
+                    except Exception as send_error:
+                        logger.info("Bash websocket disconnected")
+                        logger.debug(
+                            "error_sending_bash_error "
+                            "(error_type=%s, send_error_type=%s)",
+                            type(e).__name__,
+                            type(send_error).__name__,
+                        )
+                        await _safe_close_websocket(websocket)
+                        return
+        finally:
+            await bash_service.unsubscribe_from_events(subscriber_id)
     finally:
-        await bash_service.unsubscribe_from_events(subscriber_id)
+        unregister_websocket_connection()
 
 
 async def _send_event(event: Event, websocket: WebSocket):

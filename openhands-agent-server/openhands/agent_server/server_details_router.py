@@ -3,7 +3,7 @@ import os
 import sys
 import time
 from importlib.metadata import version
-from typing import Literal
+from typing import Final, Literal
 
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field
@@ -106,6 +106,58 @@ class ServerInfo(BaseModel):
 def update_last_execution_time():
     global _last_event_time
     _last_event_time = time.time()
+
+
+# --- WebSocket keep-alive for the runtime idle timer ------------------------
+#
+# A connected WebSocket is user presence, but it never reaches the file/bash/git
+# routers and does not necessarily persist an event, so it never refreshes
+# ``_last_event_time``.  A user who merely *watches* a conversation therefore
+# accrues idle time 1:1 until the runtime reaps the pod
+# (OH_RUNTIME_IDLE_TIMEOUT_SECONDS, default 20 min) and every socket on the pod
+# drops at once.
+#
+# We refresh the timer for as long as at least one socket is attached, plus
+# immediately on connect and on each inbound frame.  Dead sockets are already
+# reaped by the server's protocol-level ping/pong timeout, so "attached" means
+# "the peer is still answering at the transport level"; we deliberately do not
+# invent a second liveness deadline here.
+WS_KEEPALIVE_INTERVAL_SECONDS: Final[float] = 15.0
+"""How often the background loop refreshes the idle timer for attached sockets."""
+
+# Live WebSocket connections, counted per connection so several clients (or
+# several conversations) on one pod are tracked independently.
+_active_ws_connections: int = 0
+
+
+def register_websocket_connection() -> None:
+    """Record a newly authenticated WebSocket and refresh the idle timer."""
+    global _active_ws_connections
+    _active_ws_connections += 1
+    update_last_execution_time()
+
+
+def unregister_websocket_connection() -> None:
+    """Record a WebSocket close."""
+    global _active_ws_connections
+    _active_ws_connections = max(0, _active_ws_connections - 1)
+
+
+def signal_websocket_activity() -> None:
+    """Refresh the idle timer on behalf of a live WebSocket client."""
+    if _active_ws_connections > 0:
+        update_last_execution_time()
+
+
+def refresh_websocket_keepalive() -> None:
+    """Periodic tick: hold the runtime open while any socket is attached."""
+    if _active_ws_connections > 0:
+        update_last_execution_time()
+
+
+def websocket_keepalive_interval_seconds() -> float:
+    """Keep-alive tick period."""
+    return WS_KEEPALIVE_INTERVAL_SECONDS
 
 
 def mark_initialization_complete() -> None:
