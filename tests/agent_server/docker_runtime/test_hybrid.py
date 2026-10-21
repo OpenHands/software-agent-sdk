@@ -88,6 +88,40 @@ async def test_dispatch_routes_conversations_by_runtime(config):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "uuid_format",
+    [
+        pytest.param("{{{}}}", id="braced"),
+        pytest.param("urn:uuid:{}", id="urn"),
+    ],
+)
+async def test_dispatch_routes_fastapi_uuid_forms(config, uuid_format):
+    registry = HybridConversationRegistry(config)
+    docker_id = uuid4()
+    registry.provisioning.create(docker_id)
+    path_id = uuid_format.format(docker_id)
+
+    for method, suffix in (("POST", "/run"), ("DELETE", "")):
+        path = f"/api/conversations/{path_id}{suffix}"
+        seen = await _dispatch(
+            registry, {"type": "http", "method": method, "path": path}
+        )
+        assert seen["path"] == f"/api/_docker/conversations/{path_id}{suffix}"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_leaves_invalid_uuid_for_route_validation(config):
+    registry = HybridConversationRegistry(config)
+    path = "/api/conversations/not-a-uuid/run"
+    seen = await _dispatch(registry, {"type": "http", "method": "POST", "path": path})
+    assert seen["path"] == path
+
+    path = "/sockets/events/not-a-uuid"
+    seen = await _dispatch(registry, {"type": "websocket", "path": path})
+    assert seen["path"] == path
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("default", "requested", "expected"),
     [
         ("local", None, "/api/conversations"),
@@ -137,11 +171,20 @@ def test_start_existing_docker_conversation_as_local_is_rejected(config):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_routes_docker_sockets(config):
+@pytest.mark.parametrize(
+    "uuid_format",
+    [
+        pytest.param("{}", id="canonical"),
+        pytest.param("{{{}}}", id="braced"),
+        pytest.param("urn:uuid:{}", id="urn"),
+    ],
+)
+async def test_dispatch_routes_docker_sockets(config, uuid_format):
     registry = HybridConversationRegistry(config)
     docker_id = uuid4()
     registry.provisioning.create(docker_id)
+    path_id = uuid_format.format(docker_id)
     seen = await _dispatch(
-        registry, {"type": "websocket", "path": f"/sockets/events/{docker_id}"}
+        registry, {"type": "websocket", "path": f"/sockets/events/{path_id}"}
     )
-    assert seen["path"] == f"/_docker/sockets/events/{docker_id}"
+    assert seen["path"] == f"/_docker/sockets/events/{path_id}"

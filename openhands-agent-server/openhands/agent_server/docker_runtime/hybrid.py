@@ -21,11 +21,8 @@ from openhands.agent_server.models import ConversationRuntimeInfo
 
 DOCKER_ROUTE_PREFIX: Final[str] = "/_docker"
 
-_UUID = (
-    r"[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}"
-)
-_CONVERSATION_PATH = re.compile(rf"^/api/conversations/({_UUID})(/.*)?$")
-_SOCKET_PATH = re.compile(rf"^/sockets/(?:events|session)/({_UUID})$")
+_CONVERSATION_PATH = re.compile(r"^/api/conversations/([^/]+)(/.*)?$")
+_SOCKET_PATH = re.compile(r"^/sockets/(?:events|session)/([^/]+)$")
 
 
 class HybridConversationRegistry(DockerConversationRegistry):
@@ -109,7 +106,10 @@ class RuntimeDispatchMiddleware:
         to_docker = False
         if scope["type"] == "websocket":
             match = _SOCKET_PATH.match(path)
-            to_docker = match is not None and registry.is_docker(UUID(match[1]))
+            conversation_id = _conversation_id(match[1]) if match is not None else None
+            to_docker = conversation_id is not None and registry.is_docker(
+                conversation_id
+            )
         elif path == "/api/conversations" and method == "POST":
             receive, body = await _buffer_body(receive)
             request = _json_object(body)
@@ -122,7 +122,12 @@ class RuntimeDispatchMiddleware:
         elif match := _CONVERSATION_PATH.match(path):
             # GET of the conversation itself is the shared catalog record.
             catalog_read = match[2] is None and method in ("GET", "HEAD")
-            to_docker = not catalog_read and registry.is_docker(UUID(match[1]))
+            conversation_id = _conversation_id(match[1])
+            to_docker = (
+                conversation_id is not None
+                and not catalog_read
+                and registry.is_docker(conversation_id)
+            )
 
         if to_docker:
             prefix = "/api" if path.startswith("/api/") else ""
