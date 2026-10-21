@@ -1458,6 +1458,18 @@ def test_execute_tool_live_server_errors(server_env, tmp_path: Path):
             )
         assert exc_info.value.response.status_code == 422
         assert "not_a_tool" in exc_info.value.response.text
+
+        # An action that omits its discriminator is a 422 too: the request model
+        # documents 'kind' as the discriminator, so a bare body must not run.
+        with httpx.Client() as client:
+            response = client.post(
+                f"{server_env['host']}/api/conversations/{conversation.id}"
+                "/execute_tool",
+                json={"tool_name": "terminal", "action": {"command": "echo no-kind"}},
+                timeout=10.0,
+            )
+            assert response.status_code == 422
+            assert "kind" in response.json()["detail"]
     finally:
         conversation.close()
 

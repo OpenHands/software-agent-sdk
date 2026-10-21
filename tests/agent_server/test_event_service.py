@@ -3191,6 +3191,31 @@ class TestEventServiceDirectToolExecution:
             await event_service.close()
 
     @pytest.mark.asyncio
+    async def test_action_without_a_kind_is_rejected(self, event_service, tmp_path):
+        """A payload must declare its ``kind``; a bare body is a 422, not a run.
+
+        The request model documents ``kind`` as the discriminator, and the map
+        states a bare ``{"command": ...}`` is 422. Validation must enforce that
+        rather than accepting any body that happens to validate as the named
+        tool's action type.
+        """
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        ran: list[str] = []
+
+        def record(tool_name, action):
+            ran.append(tool_name)
+            return TerminalObservation.from_text("done", command="x")
+
+        conversation.execute_tool = record  # type: ignore[method-assign]
+        try:
+            with pytest.raises(InvalidToolActionError, match="kind"):
+                await event_service.execute_tool("terminal", {"command": "echo hi"})
+            assert ran == []
+            assert event_service._direct_tool_in_flight is False
+        finally:
+            await event_service.close()
+
+    @pytest.mark.asyncio
     async def test_admission_is_serialized_with_run_under_the_run_lock(
         self, event_service, tmp_path
     ):
@@ -3763,6 +3788,83 @@ class TestEventServiceDirectToolExecution:
         finally:
             interrupt_release.set()
             release.set()
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_delayed_interrupt_keeps_the_conversation_busy(
+        self, event_service, tmp_path
+    ):
+        """A lingering interrupt must block admission until it finishes.
+
+        Reviewer's repro: the synchronous worker returns first, then the
+        offloaded interrupt keeps scanning for the terminal process. If the
+        in-flight guard cleared at worker exit, a new direct call (or run) would
+        be admitted while the old scan can still signal and kill its process.
+        The guard must outlive the interrupt.
+        """
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        conversation._ensure_agent_ready()
+        executor = conversation.agent.tools_map["terminal"].as_executable().executor
+
+        interrupt_entered = threading.Event()
+        interrupt_release = threading.Event()
+
+        def blocking_interrupt():
+            interrupt_entered.set()
+            interrupt_release.wait(timeout=30)
+
+        executor.interrupt = blocking_interrupt  # type: ignore[method-assign]
+
+        started = threading.Event()
+        worker_release = threading.Event()
+
+        def slow_execute_tool(tool_name, action):
+            started.set()
+            worker_release.wait(timeout=30)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        conversation.execute_tool = slow_execute_tool  # type: ignore[method-assign]
+        try:
+            task = asyncio.create_task(
+                event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo a"}
+                )
+            )
+            await asyncio.to_thread(started.wait, 10)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await asyncio.to_thread(interrupt_entered.wait, 10)
+
+            # Now let the synchronous worker exit *while* the interrupt is still
+            # blocked: this is the reviewer's ordering.
+            worker_release.set()
+            for _ in range(100):
+                if event_service._direct_tool_worker is None:
+                    break
+                await asyncio.sleep(0.05)
+            assert event_service._direct_tool_worker is None
+
+            # The worker has exited, but its interrupt still runs: the
+            # conversation must stay busy so the next command is not admitted
+            # under the lingering scan.
+            assert event_service._direct_tool_in_flight is True
+            assert event_service.is_idle_evictable() is False
+            with pytest.raises(ConversationBusyError):
+                await event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo b"}
+                )
+
+            # Once the interrupt finishes, the conversation is free again.
+            interrupt_release.set()
+            for _ in range(100):
+                if event_service._direct_tool_in_flight is False:
+                    break
+                await asyncio.sleep(0.05)
+            assert event_service._direct_tool_in_flight is False
+        finally:
+            worker_release.set()
+            interrupt_release.set()
             await event_service.close()
 
 

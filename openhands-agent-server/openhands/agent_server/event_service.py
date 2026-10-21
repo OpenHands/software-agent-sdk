@@ -2398,11 +2398,18 @@ class EventService:
 
         The transport type carries no discriminator, so validation here is what
         keeps a payload for another tool from reaching an executor that cannot
-        handle it. The ``kind`` is checked explicitly rather than relying on the
-        discriminator's assertion, which is stripped under ``python -O``.
+        handle it. The ``kind`` is required and checked explicitly rather than
+        relying on the discriminator's assertion, which is stripped under
+        ``python -O``: without it a payload cannot be attributed to the named
+        tool on the wire.
         """
         declared_kind = payload.get("kind")
-        if declared_kind is not None and declared_kind != action_type.__name__:
+        if declared_kind is None:
+            raise InvalidToolActionError(
+                f"Action for tool '{tool_name}' must declare its 'kind' "
+                f"(expected '{action_type.__name__}')"
+            )
+        if declared_kind != action_type.__name__:
             raise InvalidToolActionError(
                 f"Action kind '{declared_kind}' does not belong to tool "
                 f"'{tool_name}' (expected '{action_type.__name__}')"
@@ -2434,9 +2441,33 @@ class EventService:
         return self._conversation.execute_tool(tool_name, action)
 
     def _end_direct_tool_sync(self, generation: int) -> None:
-        """Clear the in-flight flag if this call still owns it."""
+        """Release the in-flight flag if this call still owns it.
+
+        Ownership here means the call was never abandoned, so it has no
+        offloaded interrupt of its own and the flag can be cleared directly.
+        (An abandoned call has bumped the generation and transferred its
+        release to the worker/interrupt callbacks.)
+        """
         if generation == self._direct_tool_abandon:
             self._direct_tool_in_flight = False
+
+    def _release_direct_tool_if_settled(self) -> None:
+        """Clear the in-flight guard once the worker *and* its interrupts are done.
+
+        A cancelled call offloads ``executor.interrupt()``. On the PowerShell
+        backend that interrupt keeps scanning for the terminal process after
+        the synchronous worker returns, so clearing the guard at worker exit
+        alone would admit a new command (or a run) whose process the lingering
+        scan can then signal and kill. The guard must therefore outlive the
+        interrupt, not just the worker: admission (``execute_tool``, ``run``,
+        ``start_goal_loop``) and ``is_idle_evictable`` all read this one flag.
+        """
+        worker = self._direct_tool_worker
+        if worker is not None and not worker.done():
+            return
+        if any(not task.done() for task in self._direct_tool_interrupt_tasks):
+            return
+        self._direct_tool_in_flight = False
 
     def _direct_tool_worker_done(self, worker: Any) -> None:
         """Release the conversation once a direct tool worker has really exited.
@@ -2444,14 +2475,16 @@ class EventService:
         The flag is also cleared here, not only by the request, because
         cancelling the request cannot stop the synchronous worker: the worker
         holds the executor until it returns, so a later direct call must not be
-        admitted before then. Retrieving the exception keeps an abandoned
-        worker's ``CancelledError`` from surfacing as an unretrieved-future
-        warning.
+        admitted before then. Release is deferred further while an offloaded
+        interrupt still uses the executor (see
+        ``_release_direct_tool_if_settled``). Retrieving the exception keeps an
+        abandoned worker's ``CancelledError`` from surfacing as an
+        unretrieved-future warning.
         """
         if self._direct_tool_worker is worker:
             self._direct_tool_worker = None
             self._direct_tool_executor = None
-        self._direct_tool_in_flight = False
+        self._release_direct_tool_if_settled()
         with suppress(BaseException):
             worker.exception()
 
@@ -2467,13 +2500,27 @@ class EventService:
         with suppress(BaseException):
             executor.interrupt()
 
+    def _direct_tool_interrupt_done(self, task: asyncio.Future[Any]) -> None:
+        """Release the guard once an offloaded interrupt has finished.
+
+        The interrupt outlives the worker it belongs to, so the in-flight guard
+        must not clear until this fires; otherwise a later command could start
+        while the interrupt still scans for (and can signal) the terminal
+        process. The exception is retrieved here so a failed interrupt does not
+        surface as an unretrieved-future warning.
+        """
+        with suppress(BaseException):
+            task.exception()
+        self._release_direct_tool_if_settled()
+
     def _offload_direct_tool_interrupt(self, executor: Any) -> None:
         """Interrupt a direct call's executor off the event loop.
 
         Retains the future in ``_direct_tool_interrupt_tasks`` so close() can
-        drain it before teardown. Already-finished entries are pruned here (and
-        their result retrieved) so repeated cancellations do not accumulate
-        them.
+        drain it before teardown, and so the in-flight guard can outlive it
+        (see ``_release_direct_tool_if_settled``). Already-finished entries are
+        pruned here (and their result retrieved) so repeated cancellations do
+        not accumulate them.
         """
         retained: list[asyncio.Future[Any]] = []
         for task in self._direct_tool_interrupt_tasks:
@@ -2482,11 +2529,11 @@ class EventService:
                     task.exception()
             else:
                 retained.append(task)
-        retained.append(
-            asyncio.get_running_loop().run_in_executor(
-                None, self._interrupt_executor_sync, executor
-            )
+        interrupt = asyncio.get_running_loop().run_in_executor(
+            None, self._interrupt_executor_sync, executor
         )
+        interrupt.add_done_callback(self._direct_tool_interrupt_done)
+        retained.append(interrupt)
         self._direct_tool_interrupt_tasks = retained
 
     async def _drain_direct_tool_interrupt(self) -> None:

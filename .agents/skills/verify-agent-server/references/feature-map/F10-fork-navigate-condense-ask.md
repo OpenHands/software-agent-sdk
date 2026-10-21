@@ -59,7 +59,7 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
 - `F10.execute-tool-tool-scoped`: only the `terminal` tool may run directly, and the action is validated against that tool's own action type: a `GrepAction` with `tool_name="terminal"` is 422, not a 500 from `TerminalExecutor`, and the generic-route hazards (a `ClientTool` reporting a dispatch with no `ActionEvent` to deliver it, skipped tool hooks and audit events) cannot be reached.
 - `F10.execute-tool-direct-serialized`: direct calls are serialized per conversation under the per-conversation lifecycle, and cannot overlap a run in either direction: a run admitted while a direct call is in flight is 409 at every entry point that can start one (`/run`, `/goal`, and `/events` with `run=true`, via the registered `ConversationBusyError` handler rather than a 500), a second direct call while one is in flight is 409, and a call that finishes (or whose action is rejected) releases the conversation, so the next call is admitted rather than refused.
 - `F10.execute-tool-pane-pinned`: the shell state a setup script establishes (exports, functions, the working directory) is local to the one tmux pane it ran on, so the direct call pins the pane pool to that pane: a later parallel `terminal` command waits for it instead of landing on a fresh pane and missing the state.
-- `F10.execute-tool-teardown-owner`: a direct call whose request is cancelled does not leave an orphaned command: the worker is interrupted (the interrupt runs on a worker thread, so the cancel path never blocks the event loop on the PowerShell child-process scans), the service keeps ownership of both the worker and the offloaded interrupt, and closing or deleting the conversation joins both (bounded) before the terminal executor is torn down, so the command, the interrupt and teardown cannot overlap; cancellation itself returns promptly rather than blocking on the worker.
+- `F10.execute-tool-teardown-owner`: a direct call whose request is cancelled does not leave an orphaned command: the worker is interrupted (the interrupt runs on a worker thread, so the cancel path never blocks the event loop on the PowerShell child-process scans), the service keeps ownership of both the worker and the offloaded interrupt, and closing or deleting the conversation joins both (bounded) before the terminal executor is torn down, so the command, the interrupt and teardown cannot overlap; cancellation itself returns promptly rather than blocking on the worker. The conversation stays busy — refusing a later direct call or run with 409 — until the interrupt as well as the worker has finished, so a lingering interrupt cannot signal (and kill) the next command's process.
 - `F10.execute-tool-capability`: `/server_info` advertises `direct_tool_execution_v1`, so a client gates `execute_tool` on that capability rather than a package-version floor (the route ships in the same version as servers that predate it, so a version compare would reject a working server).
 - `F10.restart-persist`: after a restart, forks keep their lineage, title, tags, HEAD and events, a fork id that names a persisted but not yet loaded conversation is still 409, and a navigated empty HEAD stays empty (the next message is still a new root).
 - `F10.restart-cold-calls`: after a restart, condense and ask_agent work on a conversation whose agent has not been initialized yet, and ask_agent still sees the history (the codename).
@@ -681,10 +681,14 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   control-agent-server api POST "/api/conversations/$ET/execute_tool" \
     --json '{"tool_name": "terminal", "action": {"kind": "GrepAction", "pattern": "x", "path": "."}}' \
     --expect 422 --save F10.execute-tool-tool-scoped/foreign-action
+  control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"command": "echo no-kind"}}' \
+    --expect 422 --save F10.execute-tool-tool-scoped/missing-kind
   ```
   The action is validated against `terminal`'s own `action_type`
   (`TerminalAction`), so the mismatch is 422 and never reaches the executor; an
-  unlisted tool such as `file_editor` is likewise 422.
+  unlisted tool such as `file_editor` is likewise 422, and a body that omits the
+  `kind` discriminator is 422 rather than being accepted as a `TerminalAction`.
 - **Direct calls are serialized (`F10.execute-tool-direct-serialized`).** Prove
   overlap is refused in both directions and that a completed call releases the
   conversation.
@@ -738,7 +742,11 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   the request that is still awaiting the slow call is abandoned, not left
   holding the executor. The interrupt itself is offloaded to a worker thread and
   joined too, so teardown cannot close an executor an interrupt is still using
-  and the delete never blocks the event loop on the PowerShell scans.
+  and the delete never blocks the event loop on the PowerShell scans. Until the
+  interrupt as well as the worker has finished the conversation stays busy: a
+  direct call made while the interrupt still runs is 409 (see
+  `test_delayed_interrupt_keeps_the_conversation_busy`), not admitted under a
+  scan that could signal the new command's process.
 - **A client gates on the capability, not the version (`F10.execute-tool-capability`).**
   The server advertises the route as a capability so a client does not reject a
   working server on a package-version floor.
@@ -765,8 +773,9 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   tool hooks and audit events the agent loop records. The action is validated
   against the named tool's action type, so a `GrepAction` with
   `tool_name="terminal"` is 422 rather than a 500 out of `TerminalExecutor`.
-  The action must be a real tool action (`TerminalAction`, etc.), discriminated
-  by `kind`; a bare `{"command": ...}` without `kind` is 422.
+  The action must be a real tool action (`TerminalAction`, etc.) and must carry
+  the `kind` discriminator naming that action; a body that omits `kind` is 422
+  rather than being accepted as the named tool's action.
 - Direct calls are serialized per conversation and cannot overlap a run in
   either direction (`F10.execute-tool-direct-serialized`): a run started while a
   direct call is in flight is 409, and so is a direct call while a run is in

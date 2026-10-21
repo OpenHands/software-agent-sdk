@@ -73,8 +73,11 @@ a version compare would reject a working endpoint.
   `run=true` — answers 409 rather than letting a `RuntimeError` surface as a
   500), and a second direct call is 409. The flag is released on success, on a
   validation failure, and, for a cancelled request whose synchronous worker
-  already started, only when that worker actually exits, since cancellation
-  cannot stop it.
+  already started, only when that worker actually exits — and, because the
+  offloaded interrupt outlives the worker, only once that interrupt has also
+  finished. A lingering interrupt can otherwise still scan for (and signal) the
+  terminal process after the worker returns, killing the next admitted command,
+  so the guard must cover the interrupt, not just the worker.
 - **Cancellation returns promptly; teardown owns the worker and the
   interrupt.** Cancelling the request cannot stop the synchronous worker, and
   blocking the cancel on it would hold the request open for as long as the
@@ -89,7 +92,10 @@ a version compare would reject a working endpoint.
   performs two blocking child-process scans (each able to wait five seconds for
   a subprocess); calling it on the event loop would stall every request on that
   loop, `/alive` included. `close()` drains the interrupt futures too, so
-  teardown cannot close an executor an offloaded interrupt is still using.
+  teardown cannot close an executor an offloaded interrupt is still using. The
+  interrupt future carries a done callback that releases the in-flight guard
+  once it (and the worker) have finished, so admission of the next direct call
+  or run waits out the interrupt rather than racing it.
 - **A direct call pins the terminal pane pool.** Shell state set by a bootstrap
   script (exports, functions, the working directory) is local to the one tmux
   pane that ran it, so the executor pins the pool to that pane; a later parallel
@@ -125,7 +131,10 @@ a version compare would reject a working endpoint.
   `tool_name="terminal"` would validate and then reach `TerminalExecutor`, which
   cannot handle it. The server resolves `tool_name`, requires it to be in
   `DIRECT_EXECUTION_TOOLS` (currently `terminal`), and validates the payload
-  against **that tool's** `action_type`: a mismatch is a 422, not a 500.
+  against **that tool's** `action_type`: a mismatch is a 422, not a 500. The
+  payload must also carry the `kind` discriminator naming that action; a body
+  that omits it is 422 rather than being accepted as the named tool's action,
+  which is what the request model documents and what the feature map asserts.
 - Contract stability: typing the field as the union makes FastAPI split every
   action schema into `<Name>-Input` / `<Name>-Output` twins (38 renames,
   446 -> 486 schemas), renaming existing public components. With
@@ -142,13 +151,14 @@ i.e. pre-existing drift, not from this change.
 
 ## Evidence
 
-- `control-agent-server map check` -> ok, 34 files, 945 ids.
+- `control-agent-server map check` -> ok, 34 files, 947 ids.
 - Live server (`control-agent-server exec` / `pytest tests/cross/...live_server.py
-  -k execute_tool`) -> 5 passed: an `export` from one `execute_tool` is visible to
+  -k execute_tool`) -> 6 passed: an `export` from one `execute_tool` is visible to
   the next in the same conversation (real `TerminalObservation`), a completed call
-  is admitted again, a `GrepAction` with `tool_name="terminal"` is 422, an unknown
-  tool is 422 naming it, an unknown id is 404, an unauthenticated call is 401, and
-  a registered secret is masked.
+  is admitted again, a `GrepAction` with `tool_name="terminal"` is 422, an action
+  without `kind` is 422, an unknown tool is 422 naming it, an unknown id is 404, an
+  unauthenticated call is 401, a registered secret is masked, and a dropped request
+  does not stall `/alive`.
 - `uv run pytest tests/agent_server tests/sdk/conversation tests/tools/terminal`
   -> passes (see CI).
 - `npm run check:agent-server-api` -> clean; `ruff check` / `ruff format --check`
