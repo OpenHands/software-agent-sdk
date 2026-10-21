@@ -23,6 +23,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
     MCPOAuthAuthCredential,
+    MCPOAuthClientInfoState,
     MCPOAuthState,
     MCPOAuthTokenStorageField,
     MCPServer,
@@ -113,6 +114,7 @@ class MCPSettingsOAuthTokenStore:
         session_api_key: str | None = None,
     ):
         self._seeded: dict[str, MCPOAuthState] = {}
+        self._seeded_clients: dict[str, MCPOAuthClientInfoState | None] = {}
         self._seeded_lock = threading.Lock()
         self._write_back_webhooks = tuple(write_back_webhooks)
         self._session_api_key = session_api_key
@@ -121,6 +123,7 @@ class MCPSettingsOAuthTokenStore:
                 continue
             state = server.initial_oauth_state(cipher=cipher) or MCPOAuthState()
             self._seeded[server.url.rstrip("/")] = state
+            self._seeded_clients[server.url.rstrip("/")] = state.client_info
 
     def _seeded_state(self, key: str) -> MCPOAuthState | None:
         with self._seeded_lock:
@@ -220,13 +223,16 @@ class MCPSettingsOAuthTokenStore:
         tokens die with the sandbox, and the next conversation starts from
         the previous refresh token, which providers that rotate refresh
         tokens have already revoked. Best effort: a failure only logs, and
-        the in-memory overlay keeps serving the new tokens. A state without
-        tokens is never posted, so FastMCP dropping the stored credentials
-        cannot replace them on the app server.
+        the in-memory overlay keeps serving the new tokens. Only a state with
+        tokens and the client registration it was seeded with is posted, so
+        neither FastMCP dropping the stored credentials nor a client it
+        registers during the conversation can replace them on the app server.
         """
         if not self._write_back_webhooks:
             return
         if state.tokens is None or state.tokens.access_token is None:
+            return
+        if state.client_info != self._seeded_clients.get(server_url):
             return
         payload = {
             "server_url": server_url,

@@ -718,6 +718,38 @@ async def test_mcp_oauth_token_store_does_not_write_back_state_without_tokens(
         reset_stores()
 
 
+@pytest.mark.asyncio
+async def test_mcp_oauth_token_store_does_not_write_back_a_client_it_registered(
+    tmp_path: Path, write_backs: list[dict]
+):
+    reset_stores()
+    try:
+        # Arrange: the inline state has tokens but no client registration.
+        config = _hosted_config(tmp_path)
+        get_settings_store(config).save(PersistedSettings())
+        store = MCPSettingsOAuthTokenStore(
+            seed_mcp_config=_inline_oauth_server("agent-access-token"),
+            cipher=config.cipher,
+            write_back_webhooks=config.webhooks,
+            session_api_key="sandbox-session-key",
+        )
+
+        # Act: FastMCP registers a loopback client while keeping the tokens.
+        await store.put(
+            key="https://mcp.example.com/mcp/client_info",
+            value={
+                "client_id": "loopback-client",
+                "redirect_uris": ["http://localhost:4321/callback"],
+            },
+            collection="mcp-oauth-client-info",
+        )
+
+        # Assert
+        assert write_backs == []
+    finally:
+        reset_stores()
+
+
 def _installed_client(oauth_provider: InMemoryOAuthProvider) -> dict[str, Any]:
     """A client registered for the app server's public callback only."""
     client = OAuthClientInformationFull.model_validate(
@@ -735,7 +767,7 @@ def _installed_client(oauth_provider: InMemoryOAuthProvider) -> dict[str, Any]:
 
 
 def _expired_inline_oauth_server(
-    url: str, client_info: dict[str, Any], refresh_token: str
+    url: str, client_info: dict[str, Any] | None, refresh_token: str
 ) -> dict[str, MCPServer]:
     """An inline OAuth server whose stored access token has expired."""
     return coerce_mcp_config(
@@ -801,6 +833,41 @@ def test_settings_backed_provider_keeps_stored_state_when_refresh_fails(
         assert not isinstance(exc_info.value, MCPTimeoutError)
         assert opened == []
         assert list(oauth_provider.clients) == ["installed-client"]
+        assert write_backs == []
+    finally:
+        reset_stores()
+
+
+def test_settings_backed_provider_does_not_write_back_a_client_it_registers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    protected_oauth_mcp_server: str,
+    write_backs: list[dict],
+):
+    """Stored tokens without a client registration cannot be refreshed.
+
+    FastMCP registers a loopback client before it asks for authorization;
+    that client must not reach the app server.
+    """
+    reset_stores()
+    opened: list[str] = []
+    monkeypatch.setattr(webbrowser, "open", lambda url, *_, **__: opened.append(url))
+    try:
+        # Arrange
+        config = _hosted_config(tmp_path)
+        get_settings_store(config).save(PersistedSettings())
+        mcp_config = _expired_inline_oauth_server(
+            protected_oauth_mcp_server, None, "stored-refresh-token"
+        )
+        provider = create_settings_backed_mcp_tool_provider(config)
+
+        # Act
+        with pytest.raises(MCPError) as exc_info:
+            provider.create_tools(mcp_config, timeout=5.0)
+
+        # Assert
+        assert not isinstance(exc_info.value, MCPTimeoutError)
+        assert opened == []
         assert write_backs == []
     finally:
         reset_stores()
