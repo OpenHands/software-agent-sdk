@@ -32,6 +32,7 @@ _TARGET_DIRECTORIES = (
     EXAMPLES_ROOT / "01_standalone_sdk" / "51_agent_hooks",
     EXAMPLES_ROOT / "01_standalone_sdk" / "57_prompt_hooks",
     EXAMPLES_ROOT / "01_standalone_sdk" / "58_ask_oracle_tool",
+    EXAMPLES_ROOT / "01_standalone_sdk" / "60_ask_user",
     EXAMPLES_ROOT / "02_remote_agent_server" / "06_custom_tool",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "01_loading_agentskills",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "02_loading_plugins",

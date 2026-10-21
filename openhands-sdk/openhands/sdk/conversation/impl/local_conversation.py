@@ -40,6 +40,7 @@ from openhands.sdk.credential import CredentialBindingError
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
+    AskUserAnswerNoticeEvent,
     CondensationRequest,
     Event,
     EventID,
@@ -1881,6 +1882,13 @@ class LocalConversation(BaseConversation):
                     ConversationExecutionStatus.IDLE
                 )  # new message resets terminal states
 
+            # Resolve a pending pause-for-user-input call *before* touching
+            # per-turn skill state: the answer is consumed as the tool
+            # observation, so its text must not activate knowledge skills that
+            # would then be marked delivered without ever reaching the LLM.
+            if self._try_resolve_ask_user(message):
+                return
+
             activated_skill_names: list[str] = []
             extended_content: list[TextContent] = []
 
@@ -1911,6 +1919,128 @@ class LocalConversation(BaseConversation):
                 sender=sender,
             )
             self._on_event(user_msg_event)
+
+    def _pending_ask_user_action(self) -> ActionEvent | None:
+        """The single unmatched pause-for-user-input action, or None.
+
+        The pending request is derived from the event log rather than a separate
+        field, so it survives a resume and needs no new persisted state. Its
+        ``id`` is the ``request_id`` the answer is matched against.
+        """
+        for ae in ConversationState.get_unmatched_actions(self._state.active_branch()):
+            if self._tool_pauses_for_user_input(ae.tool_name):
+                return ae
+        return None
+
+    def _tool_pauses_for_user_input(self, tool_name: str) -> bool:
+        # ACPAgent initialization is deliberately deferred to run(), so this
+        # resolver can run from send_message() before tools_map exists. An
+        # uninitialized agent has no resolved tools, hence nothing pauses.
+        if not self.agent._initialized:
+            return False
+        tool = self.agent.tools_map.get(tool_name)
+        return tool is not None and tool.pauses_run_for_user_input
+
+    def _try_resolve_ask_user(self, message: Message) -> bool:
+        """Resolve a pending pause-for-user-input call from a user message.
+
+        Returns True when the message was consumed here (as the tool
+        observation, or as a corrective signal for a malformed answer), so the
+        caller must not append it as a normal user turn. Returns False when
+        there is no pending request or the message is not an answer, leaving it
+        to the normal user-turn path.
+        """
+        pending = self._pending_ask_user_action()
+        if pending is None:
+            return False
+        tool = self.agent.tools_map.get(pending.tool_name)
+        if tool is None:
+            return False
+
+        try:
+            observation = tool.resolve_user_input(pending, message)
+        except ValueError as e:
+            # Answer-shaped but unusable: keep the request pending and record a
+            # client-visible notice. The notice is deliberately not
+            # LLM-convertible so it cannot land between the pending tool call
+            # and its eventual result (which Anthropic rejects).
+            logger.warning("Rejected ask_user answer: %s", e)
+            self._on_event(
+                AskUserAnswerNoticeEvent(request_id=pending.id, detail=str(e))
+            )
+            return True
+        if observation is None:
+            return False
+
+        observation_event = ObservationEvent(
+            observation=observation,
+            action_id=pending.id,
+            tool_name=pending.tool_name,
+            tool_call_id=pending.tool_call_id,
+        )
+        record_tool_result(
+            self,
+            name=pending.tool_name,
+            tool_call_id=pending.tool_call_id,
+            tool_input=pending.action,
+            tool_output=observation_event.to_llm_message(),
+        )
+        self._on_event(observation_event)
+        # A refusal (ask_user decline/cancel) is not approval for the rest of the
+        # batch: reject any sibling calls that were still awaiting the answer so
+        # the resumed run cannot execute them without the user's consent. On an
+        # accepting resolution the siblings stay pending and resume normally.
+        if tool.resolution_rejects_pending(observation):
+            self._reject_paused_siblings(pending)
+        # On a cold load the cached view dropped this pending action (tool-call
+        # matching removes actions without observations), so appending only the
+        # observation would leave a tool result without its tool call. When the
+        # whole batch is now resolved, re-derive the view to restore the pair.
+        # When sibling calls in the same response are still pending, leave the
+        # view alone: full enforcement would drop the incomplete batch, and the
+        # post-execution rebuild groups the complete batch once the siblings run.
+        if not self._has_pending_sibling_action(pending):
+            self._state.rebuild_view()
+        return True
+
+    def _reject_paused_siblings(self, pending: ActionEvent) -> None:
+        """Reject sibling calls that shared ``pending``'s response and are pending.
+
+        Used when the user declines or dismisses the question: the siblings were
+        part of the same step, and the user's refusal must not be treated as
+        approval for them. Each still-unmatched sibling gets a
+        ``UserRejectObservation`` so the batch stays coherent and the agent can
+        re-issue the work if it is still needed.
+        """
+        for ae in ConversationState.get_unmatched_actions(self._state.active_branch()):
+            if ae.id == pending.id or ae.llm_response_id != pending.llm_response_id:
+                continue
+            rejection = UserRejectObservation(
+                action_id=ae.id,
+                tool_name=ae.tool_name,
+                tool_call_id=ae.tool_call_id,
+                rejection_reason=(
+                    "Not executed: the user declined the request for input that "
+                    "shared this step. Re-issue it if it is still needed."
+                ),
+            )
+            record_tool_result(
+                self,
+                name=extract_action_name(ae),
+                tool_call_id=ae.tool_call_id,
+                tool_input=ae.action,
+                tool_output=rejection.to_llm_message(),
+            )
+            self._on_event(rejection)
+
+    def _has_pending_sibling_action(self, action: ActionEvent) -> bool:
+        """Whether another unresolved call shares ``action``'s batch."""
+        return any(
+            ae.llm_response_id == action.llm_response_id
+            for ae in ConversationState.get_unmatched_actions(
+                self._state.active_branch()
+            )
+        )
 
     def _on_event_with_state_lock(self, event: Event) -> None:
         """Emit an event while holding the conversation state lock."""
