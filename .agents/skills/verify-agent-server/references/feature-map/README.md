@@ -10,7 +10,7 @@ recipe.
 
 Maintenance baseline: main@8ba966d1d3af49f08e04349c055009e1614b48d6 (2026-10-07). The first pass; the next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **935 sub-features**.
+The map has **936 sub-features**.
 
 ## Baseline preconditions
 
@@ -81,7 +81,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | F14 | [File upload, download, archive and directory helpers](F14-files.md) | upload, download, create directory, home and subdirectory search, git-delta and tar.gz archives, trajectory zips, conversation-scoped variants and their path guard | `/api/file/*`, `/api/conversations/{id}/file/*` | llm, git, node | 30 |
 | F15 | [Git changes, diffs, commits and repository search](F15-git.md) | working-tree changes and diffs, explicit refs, nested repositories, commit history and per-commit changes, scoped variants, GitHub repository search | `/api/git/*`, `/api/conversations/{id}/git/*`, `GET /api/git/repositories/search` | llm, git, node | 28 |
 | F16 | [Workspace file serving and VS Code endpoints](F16-workspace-serving-and-vscode.md) | the per-conversation static workspace server (index, content types, ranges, traversal, cookie auth) and the VS Code status and URL routes | `GET /api/conversations/{id}/workspace[/{path}]`, `/api/vscode/*`, `/api/conversations/{id}/vscode/*` | llm, git | 26 |
-| F17 | [Workspace registry and parents](F17-workspaces-registry.md) | saved workspaces and parents: add, list, delete, validation, persistence, concurrent writers, corrupted files | `GET`/`POST`/`DELETE /api/workspaces`, `/api/workspaces/parents` | git, node | 24 |
+| F17 | [Workspace registry and parents](F17-workspaces-registry.md) | saved workspaces and parents: add, list, delete, validation, persistence, concurrent writers, lock responsiveness, corrupted files | `GET`/`POST`/`DELETE /api/workspaces`, `/api/workspaces/parents` | git, node | 25 |
 | F18 | [Server settings, settings schemas and the secrets store](F18-settings-and-secrets.md) | persisted settings with redacted, plaintext and encrypted exposure, sparse PATCH, settings schemas, the named secrets store, encryption at rest, cipher-key changes | `GET`/`PATCH /api/settings`, `/api/settings/agent-schema`, `/conversation-schema`, `/api/settings/secrets[/{name}]` | git, node | 29 |
 | F19 | [MCP server settings, connection test and OAuth](F19-mcp.md) | MCP server settings CRUD, connection tests (stdio and HTTP), install-time OAuth jobs and token refresh, a model-driven MCP tool call | `/api/settings/mcp/{key}`, `POST /api/mcp/test`, `/api/mcp/oauth/*` | llm; launch `--webhook-sink` | 28 |
 | F20 | [LLM profiles](F20-llm-profiles.md) | LLM profiles: save, read, validate against real and stubbed providers, activate, rename, delete, name rules, limits, store contention, restart | `/api/profiles[/{name}]`, `/validate`, `/activate`, `/rename` | llm, node | 35 |
