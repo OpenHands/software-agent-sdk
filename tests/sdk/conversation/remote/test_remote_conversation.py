@@ -2352,3 +2352,66 @@ class TestRemoteConversation:
 
             # Verify register_conversation was called with the conversation ID
             mock_register.assert_called_once_with(conversation_id)
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_reconnect_replays_missed_events_to_callbacks_once(self, mock_ws_client):
+        """Events stored while the socket was down reach callbacks on reconnect."""
+
+        def user_message(text: str) -> MessageEvent:
+            return MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text=text)]),
+            )
+
+        history = user_message("history")
+        live = user_message("live")
+        missed_1 = user_message("missed 1")
+        missed_2 = user_message("missed 2")
+        after = user_message("after")
+        server_events = [history]
+
+        mock_client_instance = self.setup_mock_client()
+        default_side_effect = mock_client_instance.request.side_effect
+
+        def request_side_effect(method, url, **kwargs):
+            if method == "GET" and url.endswith("/events/search"):
+                return self.create_mock_events_response(
+                    [event.model_dump(mode="json") for event in server_events]
+                )
+            return default_side_effect(method, url, **kwargs)
+
+        mock_client_instance.request.side_effect = request_side_effect
+        mock_ws_client.return_value = Mock()
+        seen: list[str] = []
+
+        conversation = RemoteConversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            callbacks=[
+                lambda e: seen.append(e.id) if isinstance(e, MessageEvent) else None
+            ],
+        )
+        ws_callback = mock_ws_client.call_args.kwargs["callback"]
+        on_reconnect = mock_ws_client.call_args.kwargs["on_reconnect"]
+
+        server_events.append(live)
+        ws_callback(live)
+        # The socket drops; the server records two events nobody streams.
+        server_events.extend([missed_1, missed_2])
+
+        on_reconnect()
+        # The new subscription may still deliver an event the replay covered.
+        ws_callback(missed_2)
+        server_events.append(after)
+        ws_callback(after)
+
+        assert seen == [live.id, missed_1.id, missed_2.id, after.id]
+        assert [e.id for e in conversation.state.events] == [
+            history.id,
+            live.id,
+            missed_1.id,
+            missed_2.id,
+            after.id,
+        ]

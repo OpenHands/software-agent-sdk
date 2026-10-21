@@ -175,7 +175,6 @@ class WebSocketCallbackClient:
 
     host: str
     conversation_id: str
-    callback: ConversationCallbackType
     on_reconnect: Callable[[], object] | None
     api_key: str | None
     _thread: threading.Thread | None
@@ -192,7 +191,7 @@ class WebSocketCallbackClient:
     ):
         self.host = host
         self.conversation_id = conversation_id
-        self.callback = callback
+        self.callback: ConversationCallbackType = callback
         self.api_key = api_key
         self.on_reconnect = on_reconnect
         self._thread = None
@@ -1222,6 +1221,33 @@ class RemoteConversation(BaseConversation):
         all_callbacks = self._callbacks + [run_complete_callback]
         composed_callback = BaseConversation.compose_callbacks(all_callbacks)
 
+        # Track which events the callbacks have seen, so that events the
+        # server recorded while the socket was reconnecting (and that only
+        # reached the cache through REST reconciliation) can be replayed to
+        # them once, without the live socket delivering them a second time.
+        delivered_ids: set[str] = set()
+        replayed_ids: set[str] = set()
+
+        def socket_callback(event: Event) -> None:
+            if event.id in replayed_ids:
+                replayed_ids.discard(event.id)
+                return
+            delivered_ids.add(event.id)
+            composed_callback(event)
+
+        def replay_missed_events() -> None:
+            self._state.events.reconcile()
+            replayed_ids.clear()
+            for event in self._state.events[:]:
+                if event.id in delivered_ids:
+                    continue
+                delivered_ids.add(event.id)
+                replayed_ids.add(event.id)
+                try:
+                    composed_callback(event)
+                except Exception:
+                    logger.exception("ws_replay_callback_error", stack_info=True)
+
         # Initialize WebSocket client for callbacks
         factory = (
             WebSocketCallbackClient
@@ -1231,9 +1257,9 @@ class RemoteConversation(BaseConversation):
         self._ws_client = factory(
             host=self.workspace.host,
             conversation_id=str(self._id),
-            callback=composed_callback,
+            callback=socket_callback,
             api_key=self.workspace.api_key,
-            on_reconnect=self._state.events.reconcile,
+            on_reconnect=replay_missed_events,
         )
         try:
             self._ws_client.start()
@@ -1262,6 +1288,9 @@ class RemoteConversation(BaseConversation):
                     )
 
             self._state.events.reconcile()
+            # Preserve upstream's reconnect replay boundary: historical events
+            # are already known, while later missed events reach callbacks.
+            delivered_ids.update(event.id for event in self._state.events[:])
         except BaseException:
             try:
                 self._ws_client.stop()

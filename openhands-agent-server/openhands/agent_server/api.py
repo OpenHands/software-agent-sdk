@@ -50,8 +50,8 @@ from openhands.agent_server.conversation_router import (
     conversation_router,
 )
 from openhands.agent_server.conversation_service import (
+    ConversationService,
     CredentialBindingActivationRequired,
-    get_default_conversation_service,
 )
 from openhands.agent_server.credential_binding import (
     router as credential_binding_router,
@@ -379,7 +379,9 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         # A key that came from the config file is visible only in ``config``;
         # in-process callers of this server read it from the environment.
         export_session_api_key(config)
-        service = get_default_conversation_service()
+        # Not get_default_conversation_service(): it rebuilds config from OH_*
+        # env, ignoring the config passed to create_app().
+        service = ConversationService.get_instance(config)
         mark_initialization_complete()
         logger.info("Server initialization complete - ready to serve requests")
 

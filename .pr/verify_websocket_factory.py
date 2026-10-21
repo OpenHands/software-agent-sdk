@@ -128,8 +128,10 @@ class UnixEventClient:
                     self.connection = None
 
 
-def wait_for(predicate: Callable[[], bool], description: str) -> None:
-    deadline = time.monotonic() + 30
+def wait_for(
+    predicate: Callable[[], bool], description: str, timeout: float = 30
+) -> None:
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
             return
@@ -216,13 +218,17 @@ def main() -> None:
                     return False
 
             try:
-                wait_for(healthy, "Agent Server did not start")
+                wait_for(healthy, "Agent Server did not start", timeout=90)
             except BaseException:
                 log.flush()
                 log.seek(0)
                 print(log.read()[-5000:], file=sys.stderr)
                 child.terminate()
-                child.wait(timeout=10)
+                try:
+                    child.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait(timeout=5)
                 raise
             return child
 

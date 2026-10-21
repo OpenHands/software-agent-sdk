@@ -58,17 +58,12 @@ from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
 from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, ClassifyAndSwitchLLMTool
 from openhands.sdk.tool.defaults import (
-    SUB_AGENT_TOOL_NAME,
-    SWITCH_LLM_TOOL_NAME,
     drop_retired_tool_switches,
     effective_builtin_class,
-    fold_deprecated_tool_switches,
     fold_retired_tool_switches,
     merge_duplicate_tools,
     resolve_tool_specs,
-    selects_tool,
 )
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import (
     serialize_secret,
     validate_secret,
@@ -494,7 +489,7 @@ def _default_llm_settings() -> LLM:
 _RequestT = TypeVar("_RequestT")
 
 type AgentKind = Literal["openhands", "llm", "acp"]
-AGENT_SETTINGS_SCHEMA_VERSION = 8
+AGENT_SETTINGS_SCHEMA_VERSION = 9
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
@@ -735,16 +730,6 @@ def _migrate_agent_settings_v6_to_v7(payload: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
-def _warn_retired_tool_switches() -> None:
-    warn_deprecated(
-        "OpenHandsAgentSettings.enable_sub_agents and "
-        "OpenHandsAgentSettings.enable_switch_llm_tool",
-        deprecated_in="1.51.0",
-        removed_in="1.56.0",
-        details="Select task_tool_set and switch_llm in `tools` instead.",
-    )
-
-
 def _migrate_agent_settings_v7_to_v8(payload: dict[str, Any]) -> dict[str, Any]:
     """Fold the retired tool switches into ``tools``."""
     if payload.get("agent_kind", "openhands") == "acp":
@@ -755,11 +740,13 @@ def _migrate_agent_settings_v7_to_v8(payload: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
-def _migrate_agent_settings_v7_to_v8_request(
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    """Advance a request to v8, leaving its switches to be folded as input."""
-    return {**payload, "schema_version": 8}
+def _migrate_agent_settings_v8_to_v9(payload: dict[str, Any]) -> dict[str, Any]:
+    """Discard retired input fields without restoring their former behavior."""
+    migrated = drop_retired_tool_switches(payload)
+    if payload.get("agent_kind", "openhands") == "acp":
+        migrated.pop("llm", None)
+    migrated["schema_version"] = 9
+    return migrated
 
 
 def _migrate_agent_settings_payload(
@@ -767,7 +754,9 @@ def _migrate_agent_settings_payload(
 ) -> dict[str, Any]:
     payload = _copy_persisted_payload(data)
     is_request = not persisted and payload.get("schema_version") is None
-    payload = _apply_persisted_migrations(
+    if is_request:
+        _reject_removed_settings_input(payload)
+    return _apply_persisted_migrations(
         payload,
         current_version=AGENT_SETTINGS_SCHEMA_VERSION,
         migrations=(
@@ -777,13 +766,16 @@ def _migrate_agent_settings_payload(
         ),
         payload_name="AgentSettings",
     )
-    if payload.get("agent_kind", "openhands") == "acp":
-        return drop_retired_tool_switches(payload)
-    # A loaded payload is launched by a serving layer, which drops a browser
-    # the runtime can't run.
-    return fold_deprecated_tool_switches(
-        payload, owner="OpenHandsAgentSettings", enable_browser=True
-    )
+
+
+def _reject_removed_settings_input(data: Any) -> Any:
+    if isinstance(data, Mapping):
+        removed = {"enable_sub_agents", "enable_switch_llm_tool"}.intersection(data)
+        if data.get("agent_kind") == "acp" and "llm" in data:
+            removed.add("llm")
+        if removed:
+            raise ValueError(f"Removed agent settings: {', '.join(sorted(removed))}")
+    return data
 
 
 _MCP_OAUTH_TOKEN_COLLECTION = "mcp-oauth-token"
@@ -1084,10 +1076,12 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     5: _migrate_agent_settings_v5_to_v6,
     6: _migrate_agent_settings_v6_to_v7,
     7: _migrate_agent_settings_v7_to_v8,
+    8: _migrate_agent_settings_v8_to_v9,
 }
 _REQUEST_AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     **_AGENT_SETTINGS_MIGRATIONS,
-    7: _migrate_agent_settings_v7_to_v8_request,
+    7: lambda payload: {**payload, "schema_version": 8},
+    8: lambda payload: {**payload, "schema_version": 9},
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,
@@ -1500,22 +1494,8 @@ class OpenHandsAgentSettings(AgentSettingsBase):
 
     @model_validator(mode="before")
     @classmethod
-    def _fold_retired_tool_switches(cls, data: Any) -> Any:
-        # Settings built in code are launched by create_agent, which adds no
-        # browser to the standard set.
-        return fold_deprecated_tool_switches(
-            data, owner="OpenHandsAgentSettings", enable_browser=False
-        )
-
-    @property
-    def enable_sub_agents(self) -> bool:
-        _warn_retired_tool_switches()
-        return self.tools is not None and selects_tool(self.tools, SUB_AGENT_TOOL_NAME)
-
-    @property
-    def enable_switch_llm_tool(self) -> bool:
-        _warn_retired_tool_switches()
-        return self.tools is None or selects_tool(self.tools, SWITCH_LLM_TOOL_NAME)
+    def _reject_removed_tool_switches(cls, data: Any) -> Any:
+        return _reject_removed_settings_input(data)
 
     @field_validator("condenser", mode="before")
     @classmethod
@@ -1846,18 +1826,6 @@ class ACPAgentSettings(AgentSettingsBase):
             "file-auth schemes."
         ),
     )
-    llm: LLM = Field(
-        default_factory=_default_llm_settings,
-        exclude=True,
-        description=(
-            "Deprecated since v1.51.0 and scheduled for removal in v1.56.0. "
-            "Ignored and not serialized: the ACP subprocess makes its own model "
-            "calls and ``acp_model`` is the model identity. Route provider "
-            "credentials through the conversation secrets channel, keyed by the "
-            "provider's env var name."
-        ),
-        deprecated="ACPAgentSettings.llm is ignored; remove this argument.",
-    )
     agent_context: AgentContext | None = Field(
         default=None,
         description=(
@@ -1875,16 +1843,10 @@ class ACPAgentSettings(AgentSettingsBase):
 
     @model_validator(mode="before")
     @classmethod
-    def _warn_deprecated_llm(cls, data: Any) -> Any:
+    def _reject_removed_llm(cls, data: Any) -> Any:
         if isinstance(data, Mapping) and "llm" in data:
-            warn_deprecated(
-                "ACPAgentSettings.llm",
-                deprecated_in="1.51.0",
-                removed_in="1.56.0",
-                details="It is ignored; remove this argument.",
-                stacklevel=4,
-            )
-        return data
+            raise ValueError("ACPAgentSettings.llm was removed; use acp_model instead.")
+        return _reject_removed_settings_input(data)
 
     @property
     def provider_info(self) -> ACPProviderInfo | None:
@@ -2182,7 +2144,7 @@ def apply_agent_settings_diff(
     This is the single owner of agent-settings diff application; settings stores
     should delegate here instead of hand-rolling the dump/merge/validate dance.
     """
-    base_settings = validate_agent_settings(base, context=context)
+    base_settings = validate_agent_settings(base, context=context, persisted=True)
     if not diff:
         return base_settings
     new_kind = diff.get("agent_kind")
