@@ -6,9 +6,9 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import LocalConversation
-from openhands.sdk.event import HookExecutionEvent, LLMConvertibleEvent
+from openhands.sdk.event import HookExecutionEvent, LLMConvertibleEvent, MessageEvent
 from openhands.sdk.hooks.config import HookConfig
-from openhands.sdk.llm import LLM, TextContent
+from openhands.sdk.llm import LLM, Message, TextContent
 from tests.command_utils import python_command
 
 
@@ -31,20 +31,22 @@ def _conversation(tmp_path: Path, hook_config: HookConfig) -> LocalConversation:
     )
 
 
-def _llm_texts(conversation: LocalConversation) -> list[str]:
+def _llm_messages(conversation: LocalConversation) -> list[Message]:
     events = [
         e for e in conversation.state.events if isinstance(e, LLMConvertibleEvent)
     ]
-    return [
-        content.text
-        for message in LLMConvertibleEvent.events_to_messages(events)
+    return LLMConvertibleEvent.events_to_messages(events)
+
+
+def _message_has_marker(message: Message) -> bool:
+    return any(
+        isinstance(content, TextContent) and MARKER in content.text
         for content in message.content
-        if isinstance(content, TextContent)
-    ]
+    )
 
 
 def test_session_start_additional_context_reaches_llm_messages(tmp_path):
-    """The documented additionalContext output must reach the agent's prompt."""
+    """additionalContext must reach the agent without displacing the system prompt."""
     command = python_command(
         f"import json; print(json.dumps({{'additionalContext': {MARKER!r}}}))"
     )
@@ -57,7 +59,26 @@ def test_session_start_additional_context_reaches_llm_messages(tmp_path):
         ]
         assert [e.additional_context for e in hook_events] == [MARKER]
 
-        assert any(MARKER in text for text in _llm_texts(conversation))
+        messages = _llm_messages(conversation)
+        # Repository-wide invariant: a system message precedes the first user
+        # message in every request. SessionStart runs before the agent emits its
+        # SystemPromptEvent, so the context must be delivered after it, not before.
+        assert messages[0].role == "system"
+
+        marker_indexes = [i for i, m in enumerate(messages) if _message_has_marker(m)]
+        assert marker_indexes, "additionalContext did not reach the agent"
+        assert all(i > 0 for i in marker_indexes), "context displaced the system prompt"
+        assert all(messages[i].role == "user" for i in marker_indexes)
+
+        # Delivered exactly once (no duplicate environment injection).
+        injected = [
+            e
+            for e in conversation.state.events
+            if isinstance(e, MessageEvent)
+            and e.source == "environment"
+            and _message_has_marker(e.llm_message)
+        ]
+        assert len(injected) == 1
     finally:
         conversation.close()
 

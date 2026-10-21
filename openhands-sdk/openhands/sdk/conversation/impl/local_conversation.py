@@ -1605,6 +1605,13 @@ class LocalConversation(BaseConversation):
                     self._state,
                     on_event=self._on_event,
                 )
+
+                # Deliver any SessionStart additional_context now that
+                # init_state() has emitted the SystemPromptEvent, so the system
+                # prompt stays first in the LLM request. The hook processor
+                # collected it earlier during _ensure_plugins_loaded().
+                if self._hook_processor is not None:
+                    self._hook_processor.inject_pending_additional_context()
             except Exception:
                 self._close_runtime_tools(runtime_mcp_tools)
                 raise
