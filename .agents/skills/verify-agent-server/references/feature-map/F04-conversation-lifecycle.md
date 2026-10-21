@@ -18,7 +18,9 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 `GET /api/conversations/{conversation_id}/agent_final_response`,
 `GET /api/conversations`, `POST /api/conversations`,
 `DELETE /api/conversations/{conversation_id}`,
-`PATCH /api/conversations/{conversation_id}`
+`PATCH /api/conversations/{conversation_id}`,
+`PUT /api/conversations/{conversation_id}/tags/{key}`,
+`DELETE /api/conversations/{conversation_id}/tags/{key}`
 
 ## Sub-features
 
@@ -47,6 +49,8 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - `F04.count`: `GET /api/conversations/count` equals the number of conversations search lists.
 - `F04.patch-title`: PATCH `title` is stripped, stored in `meta.json`, bumps `updated_at` and moves the conversation to the top of `UPDATED_AT_DESC`.
 - `F04.patch-tags`: PATCH `tags` replaces the whole map in `meta.json` and `base_state.json` and pushes a `tags` state update on the events socket.
+- `F04.tag-key`: PUT `/tags/{key}` sets one tag and DELETE `/tags/{key}` removes one, leaving the other tags and `updated_at` alone; both land in `meta.json` and `base_state.json` and push a `tags` state update on the events socket.
+- `F04.tag-key-errors`: DELETE of a key that is not set and either route on an unknown conversation are 404; a bad key and a 257-character value are 422; no key is 401; the stored tags are untouched.
 - `F04.patch-errors`: an empty or 201-character title, a bad tag key and a malformed id are 422; no key is 401; the stored values are untouched.
 - `F04.patch-whitespace-title`: a whitespace-only title is rejected instead of erasing the stored title.
 - `F04.patch-unknown-id`: PATCH on an unknown id answers the 404 the OpenAPI document declares, not 200 `{"success": false}`.
@@ -76,6 +80,8 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
   `sort_order`, `include_skills`), `GET /api/conversations/count` (`status`),
   `GET /api/conversations/{conversation_id}/agent_final_response`.
 - REST writes: `PATCH /api/conversations/{conversation_id}` (`title`, `tags`),
+  `PUT /api/conversations/{conversation_id}/tags/{key}` (body `{"value": ...}`),
+  `DELETE /api/conversations/{conversation_id}/tags/{key}`,
   `DELETE /api/conversations/{conversation_id}`.
 - WebSocket (owned by the events family, used here as a second view):
   `/sockets/events/{conversation_id}` replays the initial message and run,
@@ -590,6 +596,41 @@ EOF
   ```
   Only `env=prod` remains, in both files; the live capture and the replay both
   carry the `tags` state update.
+- **Per-key tags (`F04.tag-key`).** One key changes; nothing else does.
+
+  Requires: `F04.patch-tags`
+  ```sh
+  U0=$(control-agent-server api GET "/api/conversations/$CID" --field updated_at)
+  control-agent-server ws start "/sockets/events/$CID" --name qa-f04-tag-key --duration 120
+  control-agent-server api PUT "/api/conversations/$CID/tags/team" --json '{"value": "qa"}' --expect 200 --check success eq true --save F04.tag-key/put
+  control-agent-server api GET "/api/conversations/$CID" --check tags.team eq qa --check tags.env eq prod --check updated_at eq "$U0" --save F04.tag-key/after-put
+  control-agent-server state cat "server/workspace/conversations/${CID//-/}/base_state.json" --max-chars 200 --check tags.team eq qa --check tags.env eq prod
+  control-agent-server state cat "server/workspace/conversations/${CID//-/}/meta.json" --max-chars 200 --check tags.team eq qa --check tags.env eq prod
+  control-agent-server api DELETE "/api/conversations/$CID/tags/team" --expect 200 --check success eq true --save F04.tag-key/delete
+  control-agent-server api GET "/api/conversations/$CID" --check tags.team missing --check tags.env eq prod --check updated_at eq "$U0" --save F04.tag-key/after-delete
+  control-agent-server state cat "server/workspace/conversations/${CID//-/}/base_state.json" --max-chars 200 --check tags.team missing --check tags.env eq prod
+  control-agent-server ws stop qa-f04-tag-key --kinds ConversationStateUpdateEvent --contains '"key": "tags"' \
+    --expect-min 2 --wait 15 --save F04.tag-key/live
+  ```
+  `env=prod` from the retag survives both calls, `updated_at` never moves (so
+  the conversation keeps its place in `UPDATED_AT_DESC`), and the socket
+  carries one `tags` update per call.
+- **Per-key tag errors (`F04.tag-key-errors`).** Nothing changes on a refused
+  call.
+
+  Requires: `F04.tag-key`
+  ```sh
+  control-agent-server api DELETE "/api/conversations/$CID/tags/nosuchkey" --expect 404 --check detail contains 'Tag key not found'
+  control-agent-server api PUT "/api/conversations/$(python3 -c 'import uuid; print(uuid.uuid4())')/tags/team" --json '{"value": "qa"}' --expect 404
+  control-agent-server api DELETE "/api/conversations/$(python3 -c 'import uuid; print(uuid.uuid4())')/tags/team" --expect 404
+  control-agent-server api PUT "/api/conversations/$CID/tags/Bad-Key" --json '{"value": "x"}' --expect 422
+  LONG=$(python3 -c 'print("x" * 257)')
+  control-agent-server api PUT "/api/conversations/$CID/tags/team" --json "{\"value\": \"$LONG\"}" --expect 422
+  control-agent-server api PUT "/api/conversations/$CID/tags/team" --json '{"value": "qa"}' --auth none --expect 401
+  control-agent-server api GET "/api/conversations/$CID" --check tags.team missing --check tags.env eq prod --save F04.tag-key-errors/get
+  ```
+  A key that was never set is 404 rather than a silent 200, so a client can
+  tell a stale delete apart from a real one.
 - **PATCH errors (`F04.patch-errors`).** Nothing changes on a refused update.
 
   Requires: `F04.create-settings`
