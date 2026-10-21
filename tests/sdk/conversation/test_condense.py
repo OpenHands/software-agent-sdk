@@ -10,12 +10,15 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
+from openhands.sdk.context.view import View
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
+from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.event.llm_convertible import (
     ActionEvent,
     MessageEvent,
     ObservationEvent,
+    SystemPromptEvent,
 )
 from openhands.sdk.llm import (
     LLM,
@@ -307,6 +310,30 @@ def test_local_conversation_condense_force_condenser_bypasses_window(tmp_path, a
         ValueError, match="Cannot condense conversation: No condenser configured"
     ):
         conv.condense()
+
+
+def test_local_conversation_condense_truncates_when_summarizer_fails(
+    tmp_path, agent_with_condenser
+):
+    """A forced condensation survives a dead summarizer by truncating history."""
+    conv = Conversation(
+        agent=agent_with_condenser,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+    for i in range(20):
+        conv.send_message(f"Message {i}")
+    events_before = len(View.from_events(conv.state.events))
+
+    with patch.object(LLM, "generate", side_effect=RuntimeError("summarizer down")):
+        conv.condense()
+
+    condensations = [e for e in conv.state.events if isinstance(e, Condensation)]
+    assert len(condensations) == 1
+    assert condensations[0].summary is None
+    view = View.from_events(conv.state.events)
+    assert len(view) < events_before
+    assert isinstance(view.events[0], SystemPromptEvent)
 
 
 # ---------------------------------------------------------------------------

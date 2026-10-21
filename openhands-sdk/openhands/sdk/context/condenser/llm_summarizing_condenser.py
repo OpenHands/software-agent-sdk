@@ -1,4 +1,5 @@
 import os
+import uuid
 from collections.abc import Sequence
 from enum import Enum
 from typing import Final
@@ -79,7 +80,9 @@ class LLMSummarizingCondenser(RollingCondenser):
     """
 
     hard_context_reset_max_retries: int = Field(default=5, gt=0)
-    """Number of attempts to perform hard context reset before raising an error."""
+    """Number of attempts to perform hard context reset before falling back to
+    truncating history without a summary.
+    """
 
     hard_context_reset_context_scaling: float = Field(default=0.8, gt=0.0, lt=1.0)
     """When performing hard context reset, if the summarization fails, reduce the max
@@ -275,6 +278,18 @@ class LLMSummarizingCondenser(RollingCondenser):
             llm_response_id=llm_response.id,
         )
 
+    def _protected_prefix(self, view: View) -> int:
+        """Number of leading events that must never be forgotten.
+
+        Covers ``keep_first`` and the leading ``SystemPromptEvent``: forgetting the
+        latter would open the condensed view with a non-system message (this also
+        covers keep_first=0).
+        """
+        system_idx = _leading_system_prompt_index(view.events)
+        if system_idx is None:
+            return self.keep_first
+        return max(self.keep_first, system_idx + 1)
+
     def _get_forgotten_events(
         self, view: View, agent_llm: LLM | None = None
     ) -> tuple[Sequence[LLMConvertibleEvent], int]:
@@ -331,13 +346,7 @@ class LLMSummarizingCondenser(RollingCondenser):
         # Calculate naive forgetting end (without considering atomic boundaries)
         naive_end = len(view) - events_from_tail
 
-        # The leading SystemPromptEvent must never be forgotten, otherwise the
-        # condensed view would open with a non-system message. Floor the start
-        # of the forgetting range just past it (this also covers keep_first=0).
-        protected_prefix = self.keep_first
-        system_idx = _leading_system_prompt_index(view.events)
-        if system_idx is not None:
-            protected_prefix = max(protected_prefix, system_idx + 1)
+        protected_prefix = self._protected_prefix(view)
 
         # Find actual forgetting_start: smallest manipulation index >= protected_prefix
         forgetting_start = view.manipulation_indices.find_next(protected_prefix)
@@ -351,17 +360,63 @@ class LLMSummarizingCondenser(RollingCondenser):
         # Summary offset is the same as forgetting_start
         return forgotten_events, forgetting_start
 
+    def _truncation_condensation(self, view: View) -> Condensation:
+        """Forget the older half of the unprotected events without a summary.
+
+        Last resort once summarization is unavailable. Keeps the protected prefix
+        and, where atomic units allow, the most recent events. Cuts only at
+        manipulation indices, so when everything after the prefix is one tool
+        loop the whole loop is forgotten.
+        """
+        protected_prefix = self._protected_prefix(view)
+        forgotten_events: list[LLMConvertibleEvent] = []
+        if protected_prefix < len(view):
+            forgetting_start = view.manipulation_indices.find_next(protected_prefix)
+            # Size from the actual start: an atomic unit can push it past the
+            # midpoint implied by the protected prefix alone.
+            midpoint = (forgetting_start + len(view) + 1) // 2
+            # Cut at the last boundary before the midpoint so recent events
+            # survive; overshoot only when no such boundary exists.
+            forgetting_end = max(
+                (
+                    i
+                    for i in view.manipulation_indices
+                    if forgetting_start < i <= midpoint
+                ),
+                default=None,
+            )
+            if forgetting_end is None:
+                forgetting_end = view.manipulation_indices.find_next(midpoint)
+            forgotten_events = view[forgetting_start:forgetting_end]
+        if not forgotten_events:
+            raise NoCondensationAvailableException(
+                "Neither summarization nor truncation could reduce the context: "
+                "nothing past the protected prefix can be forgotten without "
+                "splitting an atomic unit."
+            )
+
+        logger.warning(
+            "Summarization unavailable; truncating %d of %d events without a summary.",
+            len(forgotten_events),
+            len(view),
+        )
+        return Condensation(
+            forgotten_event_ids={event.id for event in forgotten_events},
+            llm_response_id=str(uuid.uuid4()),
+        )
+
     @observe(ignore_inputs=["view", "agent_llm"])
     def hard_context_reset(
         self,
         view: View,
         agent_llm: LLM | None = None,  # noqa: ARG002
-    ) -> Condensation | None:
+    ) -> Condensation:
         """Perform a hard context reset by summarizing all events in the view.
 
         Depending on how the hard context reset is triggered, this may fail (e.g., if
         the view is too large for the summarizing LLM to handle). In that case, we keep
-        trimming down the contents until a summary can be generated.
+        trimming down the contents until a summary can be generated. If no summary can
+        be generated at all, the oldest eligible events are truncated without one.
         """
         # Preserve the leading SystemPromptEvent: it must stay at the head of the
         # view so the request still opens with a system message. Summarize the
@@ -402,7 +457,7 @@ class LLMSummarizingCondenser(RollingCondenser):
             attempts_remaining -= 1
 
         logger.error("Hard context reset summarization failed after multiple attempts.")
-        return None
+        return self._truncation_condensation(view)
 
     @observe(ignore_inputs=["view", "agent_llm"])
     def get_condensation(
@@ -514,7 +569,7 @@ class LLMSummarizingCondenser(RollingCondenser):
         self,
         view: View,
         agent_llm: LLM | None = None,  # noqa: ARG002
-    ) -> Condensation | None:
+    ) -> Condensation:
         """Async variant of :meth:`hard_context_reset`."""
         # Preserve the leading SystemPromptEvent (see hard_context_reset).
         system_idx = _leading_system_prompt_index(view.events)
@@ -546,7 +601,7 @@ class LLMSummarizingCondenser(RollingCondenser):
             attempts_remaining -= 1
 
         logger.error("Hard context reset summarization failed after multiple attempts.")
-        return None
+        return self._truncation_condensation(view)
 
 
 # Sizing for the standard summarizing condenser. Kept here so the default agent and

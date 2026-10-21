@@ -283,7 +283,10 @@ class LLMSummarizingCondenserSettings(CondenserSettings):
     hard_context_reset_max_retries: int = Field(
         default=5,
         gt=0,
-        description="Number of hard context reset attempts before raising an error.",
+        description=(
+            "Number of hard context reset attempts before falling back to "
+            "truncating history without a summary."
+        ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Hard reset retries",

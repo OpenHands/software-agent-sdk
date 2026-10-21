@@ -1,0 +1,21 @@
+# Reproduction for #6048
+# Run: uv run python .pr/repro_6048.py
+# 20 user messages, forced condense(), LLM.generate patched to raise RuntimeError('summarizer provider returned 503')
+
+## main (before this PR)
+
+ERROR Hard context reset summarization failed after multiple attempts. llm_summarizing_condenser.py:404
+condense(): RAISED NoCondensationAvailableException: Summarization LLM call failed: summarizer provider returned 503
+view events: before=21 after=21
+Condensation events: 0
+first event in view: SystemPromptEvent
+
+## this branch
+
+ERROR Hard context reset summarization failed after multiple attempts. llm_summarizing_condenser.py:450
+WARNING Summarization unavailable; truncating 8 of 21 events without a summary. llm_summarizing_condenser.py:389
+condense(): returned normally
+view events: before=21 after=13
+Condensation events: 1
+ forgotten=8 summary=None
+first event in view: SystemPromptEvent

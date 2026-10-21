@@ -21,14 +21,22 @@ from openhands.sdk.context.condenser.llm_summarizing_condenser import (
 from openhands.sdk.context.view import View
 from openhands.sdk.event.base import Event, LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
-from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
+from openhands.sdk.event.llm_convertible import (
+    ActionEvent,
+    MessageEvent,
+    ObservationEvent,
+    SystemPromptEvent,
+)
 from openhands.sdk.llm import (
     LLM,
     LLMResponse,
     Message,
+    MessageToolCall,
     MetricsSnapshot,
     TextContent,
+    ThinkingBlock,
 )
+from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
 
 
 def message_event(content: str) -> MessageEvent:
@@ -1158,3 +1166,194 @@ def test_condensation_with_keep_first_zero_keeps_system_first(mock_llm: LLM) -> 
     assert messages[0].role == "system"
     # The forgotten set must not include the leading system prompt event.
     assert events[0].id not in result.forgotten_event_ids
+
+
+# --------------------------------------------------------------------------- #
+# Truncation fallback when summarization is unavailable (#6048)
+# --------------------------------------------------------------------------- #
+
+
+def _dead_summarizer_condenser(mock_llm: LLM, **config: int) -> LLMSummarizingCondenser:
+    """A condenser whose summarization LLM always raises."""
+    cast(MagicMock, mock_llm.generate).side_effect = RuntimeError("summarizer down")
+    mock_llm.agenerate = AsyncMock(side_effect=RuntimeError("summarizer down"))
+    return LLMSummarizingCondenser(llm=mock_llm, **config)
+
+
+def _tool_pair(
+    response_id: str, call_id: str, *, thinking: bool = False
+) -> tuple[ActionEvent, ObservationEvent]:
+    """An ActionEvent and its matching ObservationEvent."""
+    action = ActionEvent(
+        thought=[TextContent(text="Test thought")],
+        thinking_blocks=[ThinkingBlock(thinking="...")] if thinking else [],
+        action=MCPToolAction(data={}),
+        tool_name="test_tool",
+        tool_call_id=call_id,
+        tool_call=MessageToolCall(
+            id=call_id, name="test_tool", arguments="{}", origin="completion"
+        ),
+        llm_response_id=response_id,
+        source="agent",
+    )
+    observation = ObservationEvent(
+        observation=MCPToolObservation.from_text(text="Success", tool_name="test_tool"),
+        tool_name="test_tool",
+        tool_call_id=call_id,
+        action_id=action.id,
+        source="environment",
+    )
+    return action, observation
+
+
+def _tool_loop_history() -> list[Event]:
+    """System prompt, a user task, five tool-call/result pairs, then a request.
+
+    With ``keep_first=2`` the midpoint of the view falls inside the third pair, so
+    the fallback has to move its cut to a pair boundary.
+    """
+    events: list[Event] = [_system_prompt_event(), message_event("Do the task")]
+    for i in range(5):
+        events.extend(_tool_pair(f"resp-{i}", f"call-{i}"))
+    events.append(CondensationRequest())
+    return events
+
+
+def _assert_structurally_valid_truncation(
+    result: View | Condensation, view: View
+) -> Condensation:
+    assert isinstance(result, Condensation)
+    assert result.summary is None
+    assert result.forgotten_event_ids
+    # The leading system prompt and keep_first prefix survive.
+    assert view.events[0].id not in result.forgotten_event_ids
+    assert view.events[1].id not in result.forgotten_event_ids
+    # Nothing is orphaned: re-enforcing the view properties drops no events.
+    applied = result.apply(list(view.events))
+    assert View.from_events(applied).events == applied
+    assert LLMConvertibleEvent.events_to_messages(applied)[0].role == "system"
+    return result
+
+
+def test_hard_requirement_truncates_when_summarization_unavailable(
+    mock_llm: LLM,
+) -> None:
+    """A HARD requirement with a dead summarizer forgets a prefix instead of failing.
+
+    Regression for #6048: once ``hard_context_reset`` exhausted its retries the
+    ``NoCondensationAvailableException`` propagated and the conversation died.
+    """
+    condenser = _dead_summarizer_condenser(mock_llm, keep_first=2)
+    view = View.from_events(_tool_loop_history())
+
+    result = _assert_structurally_valid_truncation(condenser.condense(view), view)
+
+    # The cut moved back to a pair boundary: two whole pairs go, the newest stay.
+    assert len(result.forgotten_event_ids) == 4
+    assert view.events[-1].id not in result.forgotten_event_ids
+    # Summarization was attempted and retried before falling back.
+    assert (
+        cast(MagicMock, mock_llm.generate).call_count
+        == 1 + condenser.hard_context_reset_max_retries
+    )
+
+
+@pytest.mark.asyncio
+async def test_async_hard_requirement_truncates_when_summarization_unavailable(
+    mock_llm: LLM,
+) -> None:
+    """The async path must fall back to truncation the same way."""
+    condenser = _dead_summarizer_condenser(mock_llm, keep_first=2)
+    view = View.from_events(_tool_loop_history())
+
+    result = await condenser.acondense(view)
+
+    _assert_structurally_valid_truncation(result, view)
+
+
+def test_truncation_fallback_forgets_a_whole_tool_loop(mock_llm: LLM) -> None:
+    """A thinking-model tool loop is atomic, so the cut overshoots to its end."""
+    condenser = _dead_summarizer_condenser(mock_llm, keep_first=2)
+    events: list[Event] = [_system_prompt_event(), message_event("Do the task")]
+    events.extend(_tool_pair("resp-0", "call-0", thinking=True))
+    for i in range(1, 3):
+        events.extend(_tool_pair(f"resp-{i}", f"call-{i}"))
+    events.append(CondensationRequest())
+    view = View.from_events(events)
+
+    result = _assert_structurally_valid_truncation(condenser.condense(view), view)
+
+    assert result.forgotten_event_ids == {e.id for e in view.events[2:]}
+
+
+def test_truncation_fallback_keeps_recent_events_on_a_small_view(
+    mock_llm: LLM,
+) -> None:
+    """A view barely past keep_first still truncates instead of failing.
+
+    The balanced range used for summaries is empty here, so the fallback must
+    size its own cut: keep the prefix, drop the older half, keep the newest.
+    """
+    condenser = _dead_summarizer_condenser(mock_llm, keep_first=4)
+    events: list[Event] = [
+        _system_prompt_event(),
+        *[message_event(f"Event {i}") for i in range(8)],
+        CondensationRequest(),
+    ]
+    view = View.from_events(events)
+
+    result = condenser.condense(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary is None
+    kept = result.apply(list(view.events))
+    assert kept[:4] == view.events[:4]
+    assert kept[-1] == view.events[-1]
+    assert 0 < len(result.forgotten_event_ids) < len(view) - 4
+
+
+def test_truncation_fallback_raises_when_nothing_is_forgettable(
+    mock_llm: LLM,
+) -> None:
+    """A tool call opened inside the protected prefix leaves no safe cut point."""
+    condenser = _dead_summarizer_condenser(mock_llm, keep_first=2)
+    action, observation = _tool_pair("resp-0", "call-0")
+    events: list[Event] = [
+        _system_prompt_event(),
+        action,
+        *[message_event(f"Event {i}") for i in range(10)],
+        observation,
+        CondensationRequest(),
+    ]
+    view = View.from_events(events)
+
+    with pytest.raises(
+        NoCondensationAvailableException,
+        match="Neither summarization nor truncation",
+    ):
+        condenser.condense(view)
+
+
+def test_truncation_fallback_still_cuts_past_a_protected_tool_loop(
+    mock_llm: LLM,
+) -> None:
+    """A tool loop that overruns keep_first must not block a later safe cut.
+
+    The loop pushes the actual start of the forgettable range past the
+    midpoint implied by ``keep_first`` alone; the fallback must size its cut
+    from that actual start instead of reporting nothing is forgettable.
+    """
+    condenser = _dead_summarizer_condenser(mock_llm, keep_first=4)
+    events: list[Event] = [_system_prompt_event(), message_event("Original task")]
+    for i in range(6):
+        events.extend(_tool_pair(f"resp-{i}", f"call-{i}", thinking=(i == 0)))
+    events.extend(message_event(f"Later {i}") for i in range(4))
+    events.append(CondensationRequest())
+    view = View.from_events(events)
+
+    result = _assert_structurally_valid_truncation(condenser.condense(view), view)
+
+    # The whole tool loop survives; only the trailing messages are cut.
+    loop_ids = {e.id for e in view.events[2:14]}
+    assert result.forgotten_event_ids.isdisjoint(loop_ids)
+    assert result.forgotten_event_ids
