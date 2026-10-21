@@ -173,9 +173,10 @@ def test_terminal_tool_does_not_expose_observability_credentials(monkeypatch):
             result = tool(TerminalAction(command=f'printf "%s\\n" {values}'))
             assert isinstance(result, TerminalObservation)
             assert result.text.count("unset") >= len(names)
-            assert "https://collector.example.test" in tool(
-                TerminalAction(command='printf "%s" "$OTEL_ENDPOINT"')
-            ).text
+            assert (
+                "https://collector.example.test"
+                in tool(TerminalAction(command='printf "%s" "$OTEL_ENDPOINT"')).text
+            )
             for secret in (
                 "host-secret-",
                 "host-cipher-key",
