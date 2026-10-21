@@ -1,10 +1,11 @@
 import logging
+import os
 import re
 import shlex
 import subprocess
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.utils.redact import (
@@ -20,13 +21,78 @@ logger = logging.getLogger(__name__)
 # representing the hash of an empty tree object
 GIT_EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
+# Environment variables read by the inline credential helper below. The secret
+# travels through the child process environment, so it never appears in argv
+# (visible in `ps`) and never lands in a repository's `.git/config`.
+GIT_CREDENTIAL_USERNAME_ENV = "OPENHANDS_GIT_USERNAME"
+GIT_CREDENTIAL_PASSWORD_ENV = "OPENHANDS_GIT_PASSWORD"
+
+
+def split_url_credentials(url: str) -> tuple[str, tuple[str, str] | None]:
+    """Split inline URL credentials from the URL itself.
+
+    ``https://x-access-token:TOKEN@github.com/o/r.git`` becomes
+    ``("https://github.com/o/r.git", ("x-access-token", "TOKEN"))``.
+
+    Returns ``(url, None)`` when there is no inline userinfo, or when the
+    userinfo is a ``${VAR}`` placeholder: placeholders are expanded later from
+    the secret registry, so they are not themselves secrets and must survive
+    unchanged for the clone to authenticate.
+    """
+    match = re.match(r"^(https?://)([^@/]+)@(.+)$", url)
+    if not match:
+        return url, None
+
+    scheme, userinfo, remainder = match.groups()
+    if "${" in userinfo:
+        return url, None
+
+    username, sep, password = userinfo.partition(":")
+    if not sep:
+        # Token-only userinfo, e.g. ``https://TOKEN@host``. Git treats the
+        # whole userinfo as the username, so pair it with a conventional
+        # username that GitHub accepts for token auth.
+        username, password = "x-access-token", userinfo
+    return f"{scheme}{remainder}", (unquote(username), unquote(password))
+
+
+def credential_helper_args() -> list[str]:
+    """Return ``git -c`` arguments enabling an environment-backed helper.
+
+    The helper reads credentials from environment variables rather than from
+    the URL, so the secret never reaches argv or ``.git/config``. A leading
+    empty ``credential.helper=`` clears any inherited helper so a system-wide
+    helper cannot shadow or outlive this one.
+    """
+    helper = (
+        "!f() { "
+        f"echo username=${GIT_CREDENTIAL_USERNAME_ENV}; "
+        f"echo password=${GIT_CREDENTIAL_PASSWORD_ENV}; "
+        "}; f"
+    )
+    return ["-c", "credential.helper=", "-c", f"credential.helper={helper}"]
+
+
+def credential_env(username: str, password: str) -> dict[str, str]:
+    """Environment for the helper installed by :func:`credential_helper_args`."""
+    return {
+        GIT_CREDENTIAL_USERNAME_ENV: username,
+        GIT_CREDENTIAL_PASSWORD_ENV: password,
+    }
+
 
 def _run_git_subprocess(
     args: list[str],
     cwd: str | Path | None,
     timeout: int,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a subprocess with the capture/decode settings all git callers need."""
+    """Run a subprocess with the capture/decode settings all git callers need.
+
+    ``env`` is merged over the current environment when provided. Callers use it
+    to pass credentials to the inline credential helper instead of embedding
+    them in the remote URL.
+    """
     return subprocess.run(
         args,
         cwd=cwd,
@@ -35,6 +101,7 @@ def _run_git_subprocess(
         errors="replace",
         check=False,
         timeout=timeout,
+        env={**os.environ, **env} if env else None,
     )
 
 
@@ -73,6 +140,7 @@ def run_git_command(
     *,
     expected_failure: bool = False,
     strip: bool = True,
+    env: dict[str, str] | None = None,
 ) -> str:
     """Run a git command safely without shell injection vulnerabilities.
 
@@ -85,6 +153,8 @@ def run_git_command(
         strip: Strip leading and trailing whitespace from the output. Pass
             ``False`` to read file contents (e.g. ``git show rev:path``)
             verbatim.
+        env: Extra environment variables merged over the current environment.
+            Used to hand credentials to the inline credential helper.
 
     Returns:
         Command output as string
@@ -96,7 +166,7 @@ def run_git_command(
     cmd_str = shlex.join(redacted_args)
 
     try:
-        result = _run_git_subprocess(args, cwd, timeout)
+        result = _run_git_subprocess(args, cwd, timeout, env)
 
         if result.returncode != 0:
             error_msg = f"Git command failed: {cmd_str}"

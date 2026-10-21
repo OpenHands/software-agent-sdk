@@ -10,6 +10,7 @@ from openhands.sdk.git.cached_repo import (
     GitHelper,
     _checkout_ref,
     _clone_repository,
+    _do_clone_or_update,
     _update_repository,
 )
 from openhands.sdk.git.exceptions import GitCommandError
@@ -536,3 +537,109 @@ def test_lock_released_on_error(tmp_path: Path):
     lock = FileLock(lock_path)
     lock.acquire(timeout=0)
     lock.release()
+
+
+# -- credential-free remote URLs -----------------------------------------------
+
+
+def test_clone_splits_inline_credentials_from_url(tmp_path: Path):
+    """A tokenized clone URL must not be passed to git verbatim.
+
+    Git writes the clone URL into ``.git/config``, so the token has to be
+    stripped from the URL and handed to the credential helper instead.
+    """
+    mock_git = create_autospec(GitHelper)
+    dest = tmp_path / "repo"
+
+    _clone_repository(
+        "https://github.com/owner/repo.git",
+        dest,
+        None,
+        mock_git,
+        credentials=("x-access-token", "ghu_TOKEN"),
+    )
+
+    mock_git.clone.assert_called_once_with(
+        "https://github.com/owner/repo.git",
+        dest,
+        depth=1,
+        branch=None,
+        credentials=("x-access-token", "ghu_TOKEN"),
+    )
+
+
+def test_clone_without_credentials_omits_kwarg(tmp_path: Path):
+    """Public clones keep the original call shape (no credentials kwarg)."""
+    mock_git = create_autospec(GitHelper)
+    dest = tmp_path / "repo"
+
+    _clone_repository("https://github.com/owner/repo.git", dest, None, mock_git)
+
+    mock_git.clone.assert_called_once_with(
+        "https://github.com/owner/repo.git", dest, depth=1, branch=None
+    )
+
+
+def test_do_clone_or_update_strips_token_before_clone(tmp_path: Path):
+    """The token must be removed from the URL before git ever sees it."""
+    mock_git = create_autospec(GitHelper)
+    repo_path = tmp_path / "repo"
+
+    _do_clone_or_update(
+        "https://x-access-token:ghu_TOKEN@github.com/owner/repo.git",
+        repo_path,
+        None,
+        True,
+        mock_git,
+    )
+
+    passed_url = mock_git.clone.call_args.args[0]
+    assert passed_url == "https://github.com/owner/repo.git"
+    assert "ghu_TOKEN" not in passed_url
+    assert mock_git.clone.call_args.kwargs["credentials"] == (
+        "x-access-token",
+        "ghu_TOKEN",
+    )
+
+
+def test_update_sanitizes_tokenized_cached_remote(tmp_path: Path):
+    """A cache written by an older version is cleaned up on update."""
+    mock_git = create_autospec(GitHelper)
+    mock_git.get_remote_url.return_value = (
+        "https://x-access-token:ghu_TOKEN@github.com/owner/repo.git"
+    )
+    mock_git.get_current_branch.return_value = "main"
+
+    _update_repository(
+        tmp_path, None, mock_git, credentials=("x-access-token", "ghu_TOKEN")
+    )
+
+    mock_git.set_remote_url.assert_called_once_with(
+        tmp_path, "https://github.com/owner/repo.git"
+    )
+    # The fetch still happens, now with credentials from the helper.
+    mock_git.fetch.assert_called_once_with(
+        tmp_path, credentials=("x-access-token", "ghu_TOKEN")
+    )
+
+
+def test_update_without_credentials_keeps_original_fetch_shape(tmp_path: Path):
+    """A public cache keeps the original fetch call (no credentials kwarg)."""
+    mock_git = create_autospec(GitHelper)
+    mock_git.get_remote_url.return_value = "https://github.com/owner/repo.git"
+    mock_git.get_current_branch.return_value = "main"
+
+    _update_repository(tmp_path, None, mock_git)
+
+    mock_git.fetch.assert_called_once_with(tmp_path)
+
+
+def test_update_skips_rewrite_for_clean_remote(tmp_path: Path):
+    """A credential-free remote is left untouched."""
+    mock_git = create_autospec(GitHelper)
+    mock_git.get_remote_url.return_value = "https://github.com/owner/repo.git"
+    mock_git.get_current_branch.return_value = "main"
+
+    _update_repository(tmp_path, None, mock_git)
+
+    mock_git.set_remote_url.assert_not_called()
