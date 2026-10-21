@@ -16,6 +16,8 @@ ConversationCallbackType = Callable[[Event], None]
 class WebSocketClient(Protocol):
     """Lifecycle of a remote conversation's event transport."""
 
+    callback: ConversationCallbackType
+
     def start(self) -> None:
         """Start receiving events in the background."""
         ...

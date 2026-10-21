@@ -16,7 +16,7 @@ This implementation addresses the recorded return-type and public-entry-point fi
 <table>
 <tr><th>Before</th><th>After</th></tr>
 <tr><td><code>Conversation(..., websocket_client_factory=...)</code> raises <code>TypeError</code>.</td><td>The public factory forwards the optional transport factory to the remote conversation. Local workspaces reject a supplied factory explicitly.</td></tr>
-<tr><td>The earlier proposal returned the concrete <code>WebSocketCallbackClient</code>.</td><td><code>WebSocketClientFactory</code> returns a structural <code>WebSocketClient</code>. A transport need only implement <code>start</code>, <code>stop</code>, and <code>wait_until_ready</code>.</td></tr>
+<tr><td>The earlier proposal returned the concrete <code>WebSocketCallbackClient</code>.</td><td><code>WebSocketClientFactory</code> returns a structural <code>WebSocketClient</code>. A transport exposes a writable <code>callback</code> attribute and implements <code>start</code>, <code>stop</code>, and <code>wait_until_ready</code>.</td></tr>
 <tr><td>Default transport is selected at connection initialization.</td><td>This remains late-bound when the factory is <code>None</code>; existing default-client patching continues to work.</td></tr>
 </table>
 <h2>Public Construction Paths</h2>
