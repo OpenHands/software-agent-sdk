@@ -60,7 +60,10 @@ _OBSERVABILITY_ENV_VARS: Final[tuple[str, ...]] = (
     "OTEL_ENDPOINT",
     "OTEL_EXPORTER",
     "OTEL_HEADERS",
+    "OTEL_PROTOCOL",
     "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_HEADERS",
+    "OTEL_EXPORTER_OTLP_PROTOCOL",
     "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
     "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
     "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
@@ -458,8 +461,10 @@ class DockerConversationRegistry(ConversationRegistry):
         # server initializes tracing with the same Laminar/OTEL backend.
         for name in _OBSERVABILITY_ENV_VARS:
             value = os.environ.get(name)
-            if value is not None:
+            if value:
                 env[name] = value
+            else:
+                env.pop(name, None)
 
         flags: list[str] = []
         forwarded_env_names: list[str] = [

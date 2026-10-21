@@ -439,20 +439,43 @@ def test_container_command_does_not_forward_unset_observability_vars(
 
     assert "LMNR_PROJECT_API_KEY" not in env
     assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in env
+    assert "LMNR_PROJECT_API_KEY" not in command
+    assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in command
 
 
 def test_container_command_forwards_observability_vars(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
-    monkeypatch.setenv("LMNR_PROJECT_API_KEY", "laminar-key")
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://localhost:4317")
+    values = {
+        "LMNR_PROJECT_API_KEY": "laminar-key",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://localhost:4317",
+        "OTEL_EXPORTER_OTLP_HEADERS": "Authorization=Bearer%20token",
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+        "OTEL_PROTOCOL": "grpc",
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
 
     _, command, env = _build_container(runtime, monkeypatch, uuid4())
 
-    assert env["LMNR_PROJECT_API_KEY"] == "laminar-key"
-    assert env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == "http://localhost:4317"
-    for name in ("LMNR_PROJECT_API_KEY", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"):
+    for name, value in values.items():
+        assert env[name] == value
         index = command.index(name)
         assert ["-e", name] == command[index - 1 : index + 1]
+
+
+def test_container_command_does_not_forward_empty_observability_vars(
+    tmp_path, monkeypatch
+):
+    runtime = registry(tmp_path, monkeypatch)
+    names = ("LMNR_PROJECT_API_KEY", "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_PROTOCOL")
+    for name in names:
+        monkeypatch.setenv(name, "")
+
+    _, command, env = _build_container(runtime, monkeypatch, uuid4())
+
+    for name in names:
+        assert name not in env
+        assert name not in command
 
 
 def seed_runtime(
