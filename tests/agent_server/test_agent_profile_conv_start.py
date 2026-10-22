@@ -225,15 +225,6 @@ class TestStartConversationRequestValidation:
                 workspace=LocalWorkspace(working_dir="/tmp"),
             )
 
-    def test_an_inline_profile_is_validated(self):
-        req = StartConversationRequest.model_validate(
-            {
-                "agent_profile": {"name": "draft", "llm_profile_ref": "default"},
-                "workspace": {"working_dir": "/tmp"},
-            }
-        )
-        assert isinstance(req.agent_profile, OpenHandsAgentProfile)
-
     @pytest.mark.parametrize(
         "sources",
         [
@@ -241,14 +232,6 @@ class TestStartConversationRequestValidation:
             {
                 "agent_profile_id": str(uuid4()),
                 "agent_settings": {"agent_kind": "openhands"},
-            },
-            {
-                "agent_profile_id": str(uuid4()),
-                "agent_profile": {"name": "d", "llm_profile_ref": "x"},
-            },
-            {
-                "agent_profile": {"name": "d", "llm_profile_ref": "x"},
-                "agent": _make_agent(),
             },
         ],
     )
@@ -264,11 +247,19 @@ class TestStartConversationRequestValidation:
                 "agent_profile_id": str(uuid4()),
                 "agent": None,
                 "agent_settings": None,
-                "agent_profile": None,
                 "workspace": {"working_dir": "/tmp"},
             }
         )
         assert req.agent is None
+
+    def test_an_inline_agent_profile_is_not_a_launch_source(self):
+        with pytest.raises(ValidationError, match="agent_profile_id"):
+            StartConversationRequest.model_validate(
+                {
+                    "agent_profile": {"name": "draft", "llm_profile_ref": "default"},
+                    "workspace": {"working_dir": "/tmp"},
+                }
+            )
 
     def test_no_agent_source_is_invalid(self):
         with pytest.raises(ValidationError, match="agent_profile_id"):
@@ -313,19 +304,6 @@ class TestProfileLaunch:
         assert stored.launched_agent_profile.revision == 3
         assert stored.launched_agent_profile.secret_refs == ["GITHUB_TOKEN"]
         assert launched.profile == stored.launched_agent_profile
-
-    @pytest.mark.asyncio
-    async def test_an_inline_profile_is_recorded_as_inline(self, tmp_path):
-        draft = _make_openhands_profile()
-        request = StartConversationRequest(
-            agent_profile=draft, workspace=LocalWorkspace(working_dir=str(tmp_path))
-        )
-
-        stored, _ = await _start(tmp_path, request)
-
-        assert stored.launched_agent_profile is not None
-        assert stored.launched_agent_profile.inline is True
-        assert stored.launched_agent_profile.agent_profile_id == draft.id
 
     @pytest.mark.asyncio
     async def test_an_unknown_profile_is_not_found(self, tmp_path):

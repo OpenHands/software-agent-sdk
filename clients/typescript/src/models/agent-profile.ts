@@ -65,12 +65,20 @@ export interface OpenHandsAgentProfile extends AgentProfileBase {
   /** Name of the LLM profile to resolve. */
   llm_profile_ref: string;
   agent: string;
-  skills: unknown[];
+  /**
+   * Names of server-discovered skills to exclude (a deny-list over the
+   * catalog). `[]` = all discovered skills; an unknown name is a no-op.
+   */
+  disabled_skills?: string[];
   /** Replaces the built-in persona, keeping capability guidance; needs `profile_persona_v1`. */
   persona?: string | null;
   system_message_suffix: string | null;
   condenser: unknown;
   verification: ProfileVerificationSettings;
+  /** Enables the built-in task-routing tool, which uses `meta_profile_ref`. */
+  enable_classify_and_switch_llm_tool?: boolean;
+  /** Meta-profile the routing tool uses; `null` = the first one in the store. */
+  meta_profile_ref?: string | null;
   /** Tools to launch with; `null` = the server's standard set. */
   tools: ProfileToolSpec[] | null;
   tool_concurrency_limit: number;
@@ -84,6 +92,8 @@ export interface ACPAgentProfile extends AgentProfileBase {
   acp_model: string | null;
   acp_session_mode: string | null;
   acp_prompt_timeout: number;
+  /** Timeout (seconds) for ACP server startup. */
+  acp_startup_timeout?: number;
   acp_command: string | null;
   acp_args: string[] | null;
 }
@@ -145,8 +155,13 @@ export interface AgentProfileDiagnostics {
 
   // MCP composition (both variants).
   mcp_server_refs: string[] | null;
-  resolved_mcp_servers: string[];
+  /** MCP config keys the launch would expose. */
+  resolved_mcp_config_keys?: string[];
   dangling_mcp_server_refs: string[];
+
+  // Skill selection (OpenHands only): the deny-list and what reaches the agent.
+  disabled_skills?: string[];
+  resolved_skills?: string[];
 
   /** Selected tools the runtime cannot run. */
   unusable_tools?: string[];
@@ -155,6 +170,11 @@ export interface AgentProfileDiagnostics {
   acp_api_key_secret_name: string | null;
   acp_base_url_secret_name: string | null;
   acp_file_secret_names: string[];
+
+  // Meta-profile routing (OpenHands only).
+  meta_profile_ref?: string | null;
+  dangling_meta_profile_ref?: string | null;
+  dangling_meta_profile_llm_refs?: string[];
 
   // Redacted resolved settings, present iff valid.
   resolved_settings: Record<string, unknown> | null;
