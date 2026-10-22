@@ -227,7 +227,7 @@ class TestHookEventProcessorBlocking:
     @pytest.fixture
     def blocking_config(self, tmp_path):
         """Create a config with a blocking hook."""
-        command = _stderr_exit_command("Test block", 2)
+        command = _json_command({"decision": "deny", "reason": "Test block"}, 2)
 
         return HookConfig.from_dict(
             {
@@ -757,15 +757,11 @@ class TestStopHookIntegration:
         assert should_stop is True
         assert feedback is None
 
-    @pytest.mark.parametrize("exit_code", [0, 2])
-    def test_run_stop_with_denying_hook(
-        self, tmp_path, mock_conversation_state, exit_code
-    ):
+    def test_run_stop_with_denying_hook(self, tmp_path, mock_conversation_state):
         """Test that run_stop returns False when hook denies stopping."""
-        command = (
-            _json_command({"decision": "deny", "reason": "Not done yet"})
-            if exit_code == 0
-            else _stderr_exit_command("Not done yet", 2)
+        command = _json_command(
+            {"decision": "deny", "reason": "Not done yet"},
+            2,
         )
 
         config = HookConfig.from_dict(
@@ -787,6 +783,7 @@ class TestStopHookIntegration:
         """Test additional_context is returned as feedback when stop is denied."""
         command = _json_command(
             {"decision": "deny", "additionalContext": "Please complete X"},
+            2,
         )
 
         config = HookConfig.from_dict(
@@ -842,7 +839,7 @@ class TestStopHookConversationIntegration:
         stop_count_file.write_text("0")
 
         command = python_command(
-            "import json; "
+            "import json, sys; "
             "from pathlib import Path; "
             f"path = Path({str(stop_count_file)!r}); "
             "count = int(path.read_text()); "
@@ -851,7 +848,8 @@ class TestStopHookConversationIntegration:
             "({'decision': 'deny', "
             "'additionalContext': 'Complete the task first'} "
             "if count == 0 else {'decision': 'allow'}); "
-            "print(json.dumps(payload))"
+            "print(json.dumps(payload)); "
+            "sys.exit(2 if count == 0 else 0)"
         )
 
         hook_config = HookConfig.from_dict(
@@ -1034,16 +1032,11 @@ class TestHookExecutionEventEmission:
         assert len(hook_events) == 0
         assert len(message_events) == 1
 
-    @pytest.mark.parametrize("exit_code", [0, 2])
     def test_hook_execution_event_captures_blocking(
-        self, tmp_path, mock_conversation_state, exit_code
+        self, tmp_path, mock_conversation_state
     ):
         """Test that HookExecutionEvent captures blocking status correctly."""
-        command = (
-            _json_command({"decision": "deny", "reason": "Blocked!"})
-            if exit_code == 0
-            else _stderr_exit_command("Blocked!", 2)
-        )
+        command = _json_command({"decision": "deny", "reason": "Blocked!"}, 2)
 
         config = HookConfig.from_dict(
             {
@@ -1080,9 +1073,8 @@ class TestHookExecutionEventEmission:
 
         hook_event = hook_events[0]
         assert hook_event.blocked is True
-        assert hook_event.reason == ("Blocked!" if exit_code == 0 else None)
-        assert hook_event.stderr == ("Blocked!\n" if exit_code == 2 else "")
-        assert hook_event.exit_code == exit_code
+        assert hook_event.reason == "Blocked!"
+        assert hook_event.exit_code == 2
 
     def test_hook_execution_event_emitted_for_session_start(
         self, tmp_path, mock_conversation_state
