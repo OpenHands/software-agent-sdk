@@ -20,7 +20,7 @@ from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
 
 
 def test_schema_version_tracks_nested_agent_settings_change():
-    assert PERSISTED_SETTINGS_SCHEMA_VERSION == 6
+    assert PERSISTED_SETTINGS_SCHEMA_VERSION == 7
 
 
 def test_there_is_no_typed_consent_field():

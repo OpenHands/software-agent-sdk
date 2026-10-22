@@ -1,7 +1,8 @@
 {
   "__expected__": {
+    "schema_version": 10,
     "agent_kind": "openhands",
-    "llm.model": "fixture-v9-llm",
+    "llm.model": "fixture-v8-llm",
     "tools": [
       {
         "name": "terminal",
@@ -16,7 +17,7 @@
   "schema_version": 9,
   "agent_kind": "openhands",
   "llm": {
-    "model": "fixture-v9-llm"
+    "model": "fixture-v8-llm"
   },
   "tools": [
     {

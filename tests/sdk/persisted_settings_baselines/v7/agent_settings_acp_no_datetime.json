@@ -1,6 +1,6 @@
 {
   "__expected__": {
-    "schema_version": 9,
+    "schema_version": 10,
     "agent_kind": "acp",
     "acp_server": "codex",
     "agent_context.current_datetime": null
