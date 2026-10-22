@@ -38,9 +38,9 @@ Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`
 - `F30.observability-headers`: `X-OpenHands-Observability-*` headers are stored on the new conversation (chat and responses); invalid values are 422 before anything runs.
 - `F30.chat-run-error-500`: a run that ends in `error` answers 500 with the rewritten body (`exception` `500: Agent run ended with status: error`), without the conversation header, and leaves the conversation in `error`.
 - `F30.chat-confirmation-409`: with confirmation mode saved in the settings, a new conversation that stops `waiting_for_confirmation` answers 409 at once.
-- `F30.chat-reuse-confirmation`: a continued conversation that stops `waiting_for_confirmation` must also answer 409 promptly (reproduces a real bug: it waits out 120 s and answers 504).
+- `F30.chat-reuse-confirmation`: a continued conversation that stops `waiting_for_confirmation` also answers 409 within seconds, like a new one.
 - `F30.chat-run-limit-429`: when `max_concurrent_runs` is full a new gateway conversation is refused with 429 and nothing is created; the same request succeeds once a slot is free.
-- `F30.chat-reuse-run-limit-429`: on a continued conversation a 429 must also leave nothing behind, so a client retry is safe (reproduces a real bug: each refused try appends the user message again).
+- `F30.chat-reuse-run-limit-429`: on a continued conversation a 429 also leaves nothing behind, so a client retry is safe.
 - `F30.chat-timeout-504`: a run longer than the fixed 120 s answers 504 `Agent run timed out`, and the run keeps going server-side.
 - `F30.responses-basic`: `POST /v1/responses` on a real model returns a completed `response` with one `output_text` message equal to the agent's final answer, echoes `instructions` and `metadata`, and puts the instructions in the system suffix.
 - `F30.responses-stateless-replay`: every responses call is a new conversation (the conversation header is ignored); replayed items become one user message wrapped in `<message role="...">` markers, and developer items go to the system suffix.
@@ -606,7 +606,7 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   The gateway answers 409 within seconds; the conversation inherited
   `AlwaysConfirm` from the saved settings and waits with the command not run.
   The settings are restored at the end.
-- **Confirmation on a continued conversation (`F30.chat-reuse-confirmation`), known bug.**
+- **Confirmation on a continued conversation (`F30.chat-reuse-confirmation`).**
   The same settings (restored by a trap even when the bullet fails); the
   stub answers the first turn with text and the second with a command.
   ```sh
@@ -621,7 +621,7 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
     --check choices.0.message.content eq QA_F30_FIRST_OK --print-header X-OpenHands-ServerConversation-ID)
   control-agent-server api POST /v1/chat/completions --auth bearer --timeout 180 --header "X-OpenHands-ServerConversation-ID: $RCID" \
     --json '{"model": "openhands_qa-f30-reconf", "messages": [{"role": "user", "content": "QA_F30_RECONF_2"}]}' \
-    --expect 409,504 --check-header x-openhands-serverconversation-id missing \
+    --expect 409 --check-header x-openhands-serverconversation-id missing \
     --save F30.chat-reuse-confirmation/second-turn > "$F30/reconf-2.json" &
   XPID=$!
   control-agent-server sink read --name qa-f30-reconf --expect-min 2 --wait 30 > /dev/null
@@ -630,17 +630,15 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   test ! -e "$AGENT_SERVER_VERIFY_RUN/server/workspace/project/qa_f30_reconf.txt"
   wait "$XPID" || { cat "$F30/reconf-2.json"; false; }
   control-agent-server state cat fixtures/qa-f30/reconf-2.json --check status eq 409 \
-    --check response.body.detail eq 'Agent run ended with status: waiting_for_confirmation' --check elapsed_ms lt 30000  # bug: content.status eq 504 && content.response.body.exception contains 'Agent run timed out'
+    --check response.body.detail eq 'Agent run ended with status: waiting_for_confirmation' --check elapsed_ms lt 30000
   ```
   The second turn's model call proposes the command and the conversation is
   `waiting_for_confirmation` within seconds (the command not run), while the
-  gateway request is still open; the request then ends with 409 or 504 (any
-  other answer is not this bug). Expected: it answers 409 within seconds,
-  like a new conversation. Today it blocks for the full 120 s and answers 504
-  `Agent run timed out` (`exception` `504: Agent run timed out`):
-  `_wait_for_reused_conversation_completion` only returns on `is_terminal()`
-  (finished, error, stuck), so `paused` and `waiting_for_confirmation` are
-  never seen. The bullet takes about two minutes.
+  gateway request is still open; the request then answers 409
+  `Agent run ended with status: waiting_for_confirmation` within seconds,
+  like a new conversation: the continued-conversation wait
+  (`_wait_for_reused_conversation_completion`) stops on `paused` and
+  `waiting_for_confirmation` as well as on terminal states.
 - **Run limit (`F30.chat-run-limit-429`).** Restart with one run slot, hold
   it with a conversation whose model call hangs, then call the gateway.
   ```sh
@@ -672,13 +670,13 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   caller-chosen id does not exist and the count is unchanged. Once the holder
   is deleted the same request succeeds and creates `$LID`. The last line
   restores the default capacity.
-- **Run limit on a continued conversation (`F30.chat-reuse-run-limit-429`), known bug.**
+- **Run limit on a continued conversation (`F30.chat-reuse-run-limit-429`).**
   The same full slot, then a turn on the finished `CID` sent twice, as an
   OpenAI SDK does when it retries a 429 (`max_retries` defaults to 2). A trap
   frees the slot and restores the default capacity even when the bullet
   fails.
 
-  Requires: `F30.chat-basic`
+  Requires: `F30.chat-reuse-header`
   ```sh
   trap 'control-agent-server api DELETE "/api/conversations/$HOLD2" >/dev/null || true; control-agent-server restart --reset-config >/dev/null || true' EXIT
   control-agent-server restart --config-json '{"max_concurrent_runs": 1}'
@@ -698,20 +696,16 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
     --expect 429 --expect-max-ms 10000 --save F30.chat-reuse-run-limit-429/retry
   control-agent-server api GET "/api/conversations/$HOLD2" --check execution_status eq running --quiet
   control-agent-server api GET "/api/conversations/$CID/events/search" --query source=user --query body=QA_F30_429_REUSE \
-    --check items len-eq 0 --save F30.chat-reuse-run-limit-429/user-messages  # bug: status eq 200 && response.body.items len-ge 1 && response.body.items.0.source eq user
+    --check items len-eq 0 --save F30.chat-reuse-run-limit-429/user-messages
   ```
   Both tries are refused with 429 at once while the holder still runs, and
   the same `body` search finds an earlier user turn of `CID` (so an empty
-  result is not a filter that matches nothing). Expected: like a new
-  conversation, a 429 leaves nothing behind, so the client's retry is safe.
-  Today the gateway appends the user message before the run is refused
-  (`EventService.send_message` saves it, then `run()` raises
-  `ConversationRunLimitExceeded`, whose 429 detail says `Message saved, but
-  the conversation run limit was reached. Retry POST
-  /api/conversations/<id>/run without resending the message.`), so the
-  conversation holds one copy per try (2 here), and a retry that finally
-  succeeds adds a third. An OpenAI client cannot follow that detail without
-  the native API.
+  result is not a filter that matches nothing). Like a new conversation, a
+  429 leaves nothing behind: the gateway reserves the run slot
+  (`EventService.reserve_run_slot`) before it saves the user message, so the
+  refused tries add no user turn and the client's retry is safe. (The native
+  `POST /api/conversations/{id}/events` still saves the message and answers
+  429 with a `/run` retry hint.)
 - **Gateway timeout (`F30.chat-timeout-504`).** A stub whose model call
   hangs past the gateway's fixed 120 s; the server's own timer is under test,
   so the bullet takes two minutes.
@@ -939,10 +933,9 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   `max_concurrent_runs` (default 10) is full the gateway answers 429 at once
   instead of queueing. For a new conversation a 429 creates nothing, so
   retrying the same request (even with the same caller-chosen id) is safe.
-  On a continued conversation the user message is already saved when the
-  429 comes back (see `F30.chat-reuse-run-limit-429`), and OpenAI SDKs retry
-  429 automatically, so turn off SDK retries (`max_retries=0`) for continued
-  conversations or expect duplicate turns.
+  The same holds on a continued conversation (`F30.chat-reuse-run-limit-429`):
+  the 429 comes before the user message is saved, so the OpenAI SDKs'
+  automatic 429 retries add no duplicate turns.
 - Gateway conversations are untitled (`autotitle` off) and never deleted;
   `store: false` is not a retention control. Delete them with
   `DELETE /api/conversations/{id}`.

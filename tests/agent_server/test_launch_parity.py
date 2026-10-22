@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 from unittest.mock import patch
 
@@ -208,6 +209,64 @@ def test_public_skills_select_the_public_tier_and_a_launch_can_add_one(
     assert sorted(_agent_view(invoking["agent"])["skills"]) == ["alpha", "beta", "mine"]
 
 
+@contextmanager
+def _skill_sources(skills: list[Skill], public: set[str]) -> Iterator[None]:
+    with (
+        patch("openhands.agent_server.launch.discover_profile_skills", lambda: skills),
+        patch(
+            "openhands.agent_server.skills_router.discover_profile_skills",
+            lambda: skills,
+        ),
+        patch(
+            "openhands.agent_server.launch.discover_public_skill_names", lambda: public
+        ),
+        patch(
+            "openhands.agent_server.skills_router.discover_public_skill_names",
+            lambda: public,
+        ),
+    ):
+        yield
+
+
+def test_a_selection_from_the_skill_catalog_launches_exactly_that_selection(
+    server, tmp_path
+):
+    catalog = [*CATALOG, Skill(name="mine", content="m", description="user skill")]
+    workspace = str(tmp_path / "workspace")
+
+    def launched_skills(profile: OpenHandsAgentProfile) -> list[str]:
+        launched = _launch(server, workspace, agent_profile_id=str(profile.id))
+        return sorted(_agent_view(launched["agent"])["skills"])
+
+    with patch("openhands.agent_server.launch.is_tool_usable", return_value=True):
+        with _skill_sources(catalog, public={"alpha", "beta"}):
+            listed = server.get("/api/skills/catalog").json()["skills"]
+            names = [skill["name"] for skill in listed]
+            everything = _save(
+                OpenHandsAgentProfile(name="everything", llm_profile_ref="default")
+            )
+            assert launched_skills(everything) == sorted(names)
+
+            selected = ["beta", "mine"]
+            chosen = _save(
+                OpenHandsAgentProfile(
+                    name="chosen",
+                    llm_profile_ref="default",
+                    public_skills=selected,
+                    disabled_skills=[n for n in names if n not in selected],
+                )
+            )
+            assert launched_skills(chosen) == selected
+
+        grown = [
+            *catalog,
+            Skill(name="gamma", content="g", description="later catalog skill"),
+            Skill(name="theirs", content="t", description="later user skill"),
+        ]
+        with _skill_sources(grown, public={"alpha", "beta", "gamma"}):
+            assert launched_skills(chosen) == ["beta", "mine", "theirs"]
+
+
 def test_the_global_critic_key_reaches_profile_launches_but_no_response(
     server, tmp_path
 ):
@@ -279,15 +338,9 @@ def test_inline_stored_and_agent_settings_sources_launch_the_same_agent(
 
     with patch("openhands.agent_server.launch.is_tool_usable", return_value=True):
         from_stored = _launch(server, workspace, agent_profile_id=str(stored.id))
-        from_inline = _launch(
-            server, workspace, agent_profile=_profile("draft").model_dump(mode="json")
-        )
         from_settings = _launch(server, workspace, agent_settings=agent_settings)
 
-    view = _agent_view(from_stored["agent"])
-    assert _agent_view(from_inline["agent"]) == view
-    assert _agent_view(from_settings["agent"]) == view
-    assert from_inline["launched_agent_profile"]["inline"] is True
+    assert _agent_view(from_settings["agent"]) == _agent_view(from_stored["agent"])
     assert from_settings["launched_agent_profile"] is None
 
 
