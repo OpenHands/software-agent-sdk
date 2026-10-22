@@ -37,7 +37,7 @@ ARG ENABLE_VSCODE=true
 # stages below when needed. Package upgrades resolve against a dated snapshot so
 # newly published Debian packages have a three-day observation period.
 ####################################################################################
-FROM python:3.13.15-slim-trixie AS python-runtime
+FROM python:3.13.16-slim-trixie AS python-runtime
 FROM node:24.21.0-trixie-slim AS node-runtime
 
 # pip 26.2.1 vendors urllib3 2.7.0 (CVE-2026-97689) and msgpack 1.1.2
@@ -156,7 +156,7 @@ ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 # uv 0.11.5+ embeds python-build-standalone 20260408 metadata, which is the
 # first release with the PT_GNU_STACK fix. Pin to 0.12.15 (latest eligible at time of
 # writing) rather than :latest so builds are reproducible.
-COPY --from=ghcr.io/astral-sh/uv:0.12.15 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.0 /uv /uvx /bin/
 
 RUN groupadd -g ${GID} ${USERNAME} \
  && useradd -m -u ${UID} -g ${GID} -s /usr/sbin/nologin ${USERNAME} \
@@ -439,7 +439,7 @@ RUN set -eux; \
     echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Keep uv as part of the full development environment, but not binary-minimal.
-COPY --from=ghcr.io/astral-sh/uv:0.12.15 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.0 /uv /uvx /bin/
 
 # Fail fast on a typo'd capability name before spending any time on the
 # installs below (each block only checks for ITS OWN keyword's presence, so
