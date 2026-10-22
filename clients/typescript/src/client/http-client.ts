@@ -2,6 +2,8 @@
  * HTTP client for OpenHands Agent Server API
  */
 
+import type { ValidationError as AgentServerValidationError } from '../generated/agent-server-schema';
+
 export interface HttpClientOptions {
   baseUrl: string;
   apiKey?: string;
@@ -26,6 +28,14 @@ export interface RequestOptions {
    * origins.
    */
   credentials?: RequestCredentials;
+  /**
+   * Caller-owned cancellation signal, combined with the client timeout so a
+   * request aborts on whichever fires first. Pass the lifecycle signal of the
+   * component that owns the request (e.g. a React mount/`AbortController`) so
+   * teardown or a retry cancels the in-flight call instead of leaving it to
+   * resolve into a stale consumer.
+   */
+  signal?: AbortSignal;
 }
 
 export interface HttpResponse<T = unknown> {
@@ -35,6 +45,29 @@ export interface HttpResponse<T = unknown> {
   headers: Record<string, string>;
 }
 
+/**
+ * One entry of an Agent Server validation error body:
+ * `{"detail": [{"loc": [...], "msg": "...", "type": "..."}]}`. FastAPI request
+ * validation answers 422 with this shape, and a few handlers reuse it.
+ */
+export type HttpValidationErrorItem = Pick<AgentServerValidationError, 'loc' | 'msg' | 'type'>;
+
+/**
+ * Marks HttpError instances. `Symbol.for` returns the same symbol in every
+ * copy of this package, so {@link isHttpError} recognizes an error thrown by
+ * another bundled copy, where `instanceof HttpError` is false. Copies built
+ * before this brand existed do not set it.
+ */
+const HTTP_ERROR_BRAND = Symbol.for('@openhands/typescript-client/HttpError');
+
+/**
+ * Thrown when the server answers with a status the request does not accept.
+ *
+ * `message` is the transport text (`HTTP request failed (<status> <text>):
+ * <body>`), meant for logs. Use {@link HttpError.detail} for the server's own
+ * message, and {@link isHttpError} instead of `instanceof` when more than one
+ * copy of this package may be loaded.
+ */
 export class HttpError extends Error {
   constructor(
     public status: number,
@@ -44,7 +77,104 @@ export class HttpError extends Error {
   ) {
     super(message || `HTTP ${status}: ${statusText}`);
     this.name = 'HttpError';
+    Object.defineProperty(this, HTTP_ERROR_BRAND, { value: true });
   }
+
+  /**
+   * The server's readable message from the parsed error body, or `undefined`
+   * when the body carries none. Reads the Agent Server's error shapes:
+   *
+   * - `{"detail": "<message>"}`: returned as is.
+   * - `{"detail": [{"loc", "msg", "type"}, ...]}` (validation errors): one
+   *   entry gives its `msg`. Several entries are joined with `"; "`, and each
+   *   `msg` is prefixed with its field name (the last string in `loc`) so the
+   *   messages can be told apart, e.g. `"name: Field required; model: Field
+   *   required"`. Use {@link HttpError.validationErrors} for the full `loc`.
+   * - `{"detail": {"message": "<message>", ...}}` (e.g. a launch error with a
+   *   `code`): the `message`.
+   *
+   * Any other body, including a non-JSON body (such as an HTML page from a
+   * proxy) or a blank message, gives `undefined`; `response` still holds it.
+   */
+  get detail(): string | undefined {
+    const body = this.response;
+    if (!isRecord(body)) return undefined;
+    const { detail } = body;
+    if (typeof detail === 'string') return nonBlank(detail);
+    if (Array.isArray(detail)) return formatValidationErrors(this.validationErrors);
+    if (isRecord(detail) && typeof detail.message === 'string') return nonBlank(detail.message);
+    return undefined;
+  }
+
+  /**
+   * The entries of a validation error body (`{"detail": [{"loc", "msg",
+   * "type"}, ...]}`), or `undefined` when the body is not one. Each entry is
+   * copied with only `loc`, `msg` and `type`; an entry is skipped unless `loc`
+   * is an array of strings and numbers and `msg` and `type` are strings.
+   */
+  get validationErrors(): HttpValidationErrorItem[] | undefined {
+    const body = this.response;
+    if (!isRecord(body) || !Array.isArray(body.detail)) return undefined;
+    const items = body.detail
+      .filter(isValidationErrorItem)
+      .map(({ loc, msg, type }) => ({ loc: [...loc], msg, type }));
+    return items.length > 0 ? items : undefined;
+  }
+}
+
+/**
+ * Whether `value` is an {@link HttpError}, including one created by another
+ * copy of this package (for example when an app and a library each bundle
+ * their own), where `instanceof HttpError` is false. The other copy must be
+ * a version that brands its errors, i.e. this one or later.
+ */
+export function isHttpError(value: unknown): value is HttpError {
+  return (
+    value instanceof HttpError ||
+    (typeof value === 'object' &&
+      value !== null &&
+      (value as Record<symbol, unknown>)[HTTP_ERROR_BRAND] === true)
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function nonBlank(text: string): string | undefined {
+  return text.trim() ? text : undefined;
+}
+
+function isValidationErrorItem(value: unknown): value is HttpValidationErrorItem {
+  if (!isRecord(value)) return false;
+  const { loc, msg, type } = value;
+  return (
+    typeof msg === 'string' &&
+    typeof type === 'string' &&
+    Array.isArray(loc) &&
+    loc.every((part) => typeof part === 'string' || typeof part === 'number')
+  );
+}
+
+function formatValidationErrors(items: HttpValidationErrorItem[] | undefined): string | undefined {
+  const withMessage = (items ?? []).filter(({ msg }) => msg.trim());
+  if (withMessage.length === 0) return undefined;
+  if (withMessage.length === 1) return withMessage[0].msg;
+  return withMessage
+    .map(({ loc, msg }) => {
+      const field = fieldName(loc);
+      return field ? `${field}: ${msg}` : msg;
+    })
+    .join('; ');
+}
+
+/** The last non-empty string in a validation `loc`, e.g. `name` in `['body', 'name']`. */
+function fieldName(loc: HttpValidationErrorItem['loc']): string | undefined {
+  for (let index = loc.length - 1; index >= 0; index -= 1) {
+    const part = loc[index];
+    if (typeof part === 'string' && part !== '') return part;
+  }
+  return undefined;
 }
 
 export class HttpClient {
@@ -101,7 +231,10 @@ export class HttpClient {
     const requestInit: RequestInit = {
       method: options.method,
       headers,
-      signal: AbortSignal.timeout(options.timeout || this.timeout),
+      signal: combineAbortSignals(
+        options.signal,
+        AbortSignal.timeout(options.timeout || this.timeout)
+      ),
     };
 
     if (options.credentials) {
@@ -164,7 +297,12 @@ export class HttpClient {
       }
 
       if (error instanceof Error) {
-        if (error.name === 'AbortError') {
+        if (error.name === 'AbortError' || error.name === 'TimeoutError') {
+          // A caller-owned signal that already fired means the request was
+          // cancelled by its owner, not that the client timeout elapsed.
+          if (options.signal?.aborted) {
+            throw error;
+          }
           throw new Error(`Request timeout after ${options.timeout || this.timeout}ms`, {
             cause: error,
           });
@@ -366,4 +504,19 @@ export class HttpClient {
   close(): void {
     // No cleanup needed for fetch-based client
   }
+}
+
+/**
+ * Combine a caller-owned signal with the client timeout signal so the request
+ * aborts on whichever fires first. Returns the timeout signal unchanged when no
+ * caller signal is supplied, keeping the single-signal behavior identical.
+ */
+function combineAbortSignals(
+  callerSignal: AbortSignal | undefined,
+  timeoutSignal: AbortSignal
+): AbortSignal {
+  if (!callerSignal) {
+    return timeoutSignal;
+  }
+  return AbortSignal.any([callerSignal, timeoutSignal]);
 }

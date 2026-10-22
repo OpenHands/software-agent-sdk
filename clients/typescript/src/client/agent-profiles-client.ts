@@ -140,11 +140,15 @@ export class AgentProfilesClient {
    * dangling refs — those appear in the body with `valid: false`.
    *
    * @param name  Profile name (path slug, not the UUID).
+   * @param draft  Unsaved profile to resolve instead of the stored one; validated like a save.
    */
-  async materializeAgentProfile(name: string): Promise<AgentProfileDiagnostics> {
+  async materializeAgentProfile(
+    name: string,
+    draft?: AgentProfileSaveInput
+  ): Promise<AgentProfileDiagnostics> {
     const response = await this.client.post<AgentProfileDiagnostics>(
       `/api/agent-profiles/${encodeURIComponent(name)}/materialize`,
-      {}
+      draft ? { profile: draft } : {}
     );
     return response.data;
   }

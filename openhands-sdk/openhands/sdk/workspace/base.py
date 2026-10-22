@@ -10,6 +10,7 @@ from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.logger import get_logger
+from openhands.sdk.observability.laminar import observability_headers_from_env
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 
@@ -145,7 +146,7 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
             payload["cost"] = self._accumulated_cost
 
         try:
-            headers: dict[str, str] = {}
+            headers = observability_headers_from_env()
             if callback_api_key:
                 headers["Authorization"] = f"Bearer {callback_api_key}"
             with httpx.Client(timeout=10.0) as cb_client:

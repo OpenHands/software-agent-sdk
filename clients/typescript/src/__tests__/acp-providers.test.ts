@@ -1,4 +1,4 @@
-import { ACP_PROVIDERS, getAcpProvider } from '../index';
+import { ACP_PROVIDERS, ACP_SETTINGS_KEYS, getAcpProvider } from '../index';
 import type { ACPProviderKey } from '../index';
 
 /**
@@ -81,7 +81,7 @@ describe('ACP provider credential descriptors', () => {
       'npx',
       '-y',
       '--prefer-offline',
-      '@agentclientprotocol/codex-acp@1.1.7',
+      '@agentclientprotocol/codex-acp@1.10.0',
     ]);
     expect(codex.default_session_mode).toBe('agent-full-access');
     expect(codex.available_models.map((model) => model.id)).toEqual(
@@ -136,6 +136,20 @@ describe('ACP provider credential descriptors', () => {
           expect(spec.env_var.length).toBeGreaterThan(0);
         }
       }
+    });
+  });
+
+  describe('ACP_SETTINGS_KEYS', () => {
+    it('forwards the data-dir isolation flag', () => {
+      expect(ACP_SETTINGS_KEYS).toContain('acp_isolate_data_dir');
+    });
+
+    it('keeps the isolation flag when filtering a settings payload', () => {
+      const settings = { acp_model: 'x', acp_isolate_data_dir: true };
+      const forwarded = Object.fromEntries(
+        Object.entries(settings).filter(([key]) => ACP_SETTINGS_KEYS.includes(key))
+      );
+      expect(forwarded).toEqual(settings);
     });
   });
 

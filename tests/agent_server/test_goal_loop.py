@@ -61,6 +61,41 @@ class _GatedLLM(TestLLM):
         )
 
 
+class _GatedJudge(TestLLM):
+    """Judge LLM that blocks on its first call, to catch the inter-round gap.
+
+    Between rounds the goal loop has no run in flight while it awaits the judge,
+    which is exactly where a competing request could claim a freshly-released
+    permit if the loop did not keep its own for its whole lifetime.
+    """
+
+    _gate: Event = PrivateAttr(default_factory=Event)
+    _entered: Event = PrivateAttr(default_factory=Event)
+    _calls: int = PrivateAttr(default=0)
+
+    def completion(
+        self,
+        messages,
+        tools=None,
+        add_security_risk_prediction=False,
+        on_token=None,
+        call_context=None,
+        **kwargs,
+    ):
+        self._calls += 1
+        if self._calls == 1:
+            self._entered.set()
+            self._gate.wait(timeout=10)
+        return super().completion(
+            messages,
+            tools,
+            add_security_risk_prediction,
+            on_token,
+            call_context,
+            **kwargs,
+        )
+
+
 def _goal_status_updates(event_service: EventService) -> list:
     return [
         e.value
@@ -286,7 +321,8 @@ async def test_stop_running_goal_loop_emits_interrupted(event_service, tmp_path)
         updates = _goal_status_updates(event_service)
         assert updates[-1]["status"] == "interrupted"
         assert updates[-1]["active"] is False
-        assert updates[-1]["iteration"] == 1
+        # The audit was abandoned, so the round is not counted as completed.
+        assert updates[-1]["iteration"] == 0
     finally:
         judge._gate.set()  # release the orphaned judge thread for cleanup
         await event_service.close()
@@ -322,6 +358,85 @@ async def test_resume_from_interrupted_status(event_service, tmp_path):
         assert outcome is not None
         assert outcome.status == "complete"
         assert outcome.iterations == 2  # resumed from round 1 -> completed at round 2
+    finally:
+        await event_service.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_after_failed_audit_never_exceeds_cap(event_service, tmp_path):
+    # The only round's judge call fails -> interrupted at 0 of 1 (the failed
+    # audit is not a completed round); the resume re-runs that round and caps
+    # at 1 of 1, never above max_iterations.
+    await _start(event_service, tmp_path, "did the work", "tried again")
+    failing_judge = TestLLM.from_messages(
+        [RuntimeError("judge network error")], usage_id="judge"
+    )
+    try:
+        await event_service.start_goal_loop(
+            "build x", judge_llm=failing_judge, max_iterations=1
+        )
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
+        updates = _goal_status_updates(event_service)
+        assert updates[-1]["status"] == "interrupted"
+        assert updates[-1]["iteration"] == 0
+
+        await event_service.resume_goal_loop(
+            judge_llm=_scripted(_NOT_DONE, usage_id="judge")
+        )
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
+
+        updates = _goal_status_updates(event_service)
+        assert updates[-1]["status"] == "capped"
+        assert updates[-1]["iteration"] == 1
+        assert all(u["iteration"] <= u["max_iterations"] for u in updates)
+    finally:
+        await event_service.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored_iteration", "stored_max", "override_max", "final_iteration"),
+    [(1, 1, None, 1), (3, 5, 2, 2)],
+    ids=["stored-at-cap", "lower-max-override"],
+)
+async def test_resume_from_status_at_cap_never_exceeds_cap(
+    event_service,
+    tmp_path,
+    stored_iteration,
+    stored_max,
+    override_max,
+    final_iteration,
+):
+    # An interrupted status already at (or past) the cap -- persisted by an
+    # older server that counted the failed audit, or resumed with a lower
+    # max_iterations -- resumes into one final round, not past the cap.
+    await _start(event_service, tmp_path, "resumed")
+    conversation = event_service.get_conversation()
+    with conversation._state:
+        conversation._on_event(
+            ConversationStateUpdateEvent(
+                key="goal",
+                value={
+                    "active": False,
+                    "status": "interrupted",
+                    "iteration": stored_iteration,
+                    "max_iterations": stored_max,
+                    "objective": "build x",
+                    "verdict": None,
+                },
+            )
+        )
+    try:
+        await event_service.resume_goal_loop(
+            judge_llm=_scripted(_NOT_DONE, usage_id="judge"),
+            max_iterations=override_max,
+        )
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
+
+        updates = _goal_status_updates(event_service)[1:]  # skip the stored one
+        assert updates[-1]["status"] == "capped"
+        assert updates[-1]["iteration"] == final_iteration
+        assert all(u["iteration"] <= u["max_iterations"] for u in updates)
     finally:
         await event_service.close()
 
@@ -505,3 +620,192 @@ async def test_resume_goal_loop_rejected_while_run_active(event_service, tmp_pat
         event_service._run_task.cancel()
         event_service._run_task = None
         await event_service.close()
+
+
+@pytest.mark.asyncio
+async def test_goal_loop_holds_capacity_across_rounds(event_service, tmp_path):
+    """Every goal round must run on the permit the loop reserved up front.
+
+    Only the first round ran on the reserved permit; later rounds called a plain
+    ``run()`` and needed a fresh one, and between rounds the permit was free
+    while the judge LLM call ran. A competing request could take it there, and
+    the next round's ``run()`` would then raise ``ConversationRunLimitExceeded``
+    (a ``RuntimeError``, not a ``ValueError``), escaping to the outer handler and
+    ending the goal as ``interrupted`` with work still remaining. The loop keeps
+    one permit for its whole lifetime instead.
+    """
+    await _start(event_service, tmp_path, "turn 1", "turn 2")
+    event_service._run_semaphore = asyncio.Semaphore(1)
+    judge = cast(
+        _GatedJudge,
+        _GatedJudge.from_messages(
+            [
+                Message(role="assistant", content=[TextContent(text=_NOT_DONE)]),
+                Message(role="assistant", content=[TextContent(text=_DONE)]),
+            ],
+            usage_id="judge",
+        ),
+    )
+    try:
+        await event_service.start_goal_loop(
+            "build x", judge_llm=judge, max_iterations=5
+        )
+        loop = asyncio.get_running_loop()
+        # Mid-audit: the first round finished and no run is in flight, but the
+        # loop must still hold capacity for the round it is about to start.
+        await loop.run_in_executor(None, judge._entered.wait, 5.0)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(event_service._run_semaphore.acquire(), timeout=0.25)
+
+        judge._gate.set()
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
+
+        outcome = event_service._goal_loop_outcome
+        assert outcome is not None
+        assert outcome.status == "complete"
+        assert outcome.iterations == 2
+
+        # The permit is returned to the shared pool once the loop is done.
+        await asyncio.wait_for(event_service._run_semaphore.acquire(), timeout=5)
+        event_service._run_semaphore.release()
+    finally:
+        judge._gate.set()  # release the judge thread if still blocked
+        await event_service.close()
+
+
+@pytest.mark.asyncio
+async def test_goal_loop_release_returns_capacity(event_service, tmp_path):
+    """A finished goal loop must not leak the permit it reserved."""
+    await _start(event_service, tmp_path, "done")
+    event_service._run_semaphore = asyncio.Semaphore(1)
+    judge = _scripted(_DONE, usage_id="judge")
+    try:
+        await event_service.start_goal_loop(
+            "build x", judge_llm=judge, max_iterations=3
+        )
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
+        assert event_service._run_session_slot is None
+        assert event_service._run_session_pins == 0
+        await asyncio.wait_for(event_service._run_semaphore.acquire(), timeout=5)
+        event_service._run_semaphore.release()
+    finally:
+        await event_service.close()
+
+
+def _reopen(service: EventService, tmp_path) -> EventService:
+    """A fresh EventService over the same persisted conversation (a restart)."""
+    return EventService(
+        stored=service.stored,
+        conversations_dir=tmp_path / "conversations",
+    )
+
+
+def _persist_goal_status(service: EventService, **value) -> None:
+    conversation = service.get_conversation()
+    with conversation._state:
+        conversation._on_event(
+            ConversationStateUpdateEvent(
+                key="goal",
+                value={
+                    "iteration": 1,
+                    "max_iterations": 5,
+                    "objective": "build x",
+                    "verdict": None,
+                    **value,
+                },
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_graceful_restart_marks_active_goal_interrupted(event_service, tmp_path):
+    await _start(event_service, tmp_path, "did the work")
+    judge = cast(
+        _GatedLLM,
+        _GatedLLM.from_messages(
+            [
+                Message(
+                    role="assistant",
+                    content=[TextContent(text='{"score": 0.2, "complete": false}')],
+                )
+            ],
+            usage_id="judge",
+        ),
+    )
+    try:
+        await event_service.start_goal_loop(
+            "build x", judge_llm=judge, max_iterations=5
+        )
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, judge._entered.wait, 5.0)
+        assert _goal_status_updates(event_service)[-1]["status"] == "running"
+        # Graceful shutdown with the loop active: close() records nothing.
+        await event_service.close()
+    finally:
+        judge._gate.set()
+
+    restarted = _reopen(event_service, tmp_path)
+    await restarted.start()
+    try:
+        last = _goal_status_updates(restarted)[-1]
+        assert last["active"] is False
+        assert last["status"] == "interrupted"
+        assert last["objective"] == "build x"
+        assert last["iteration"] == 0
+        assert last["max_iterations"] == 5
+    finally:
+        await restarted.close()
+
+
+@pytest.mark.asyncio
+async def test_hard_kill_restart_marks_active_goal_interrupted_and_resumable(
+    event_service, tmp_path
+):
+    await _start(event_service, tmp_path, "noop")
+    # The last status a killed process left behind: still active.
+    _persist_goal_status(event_service, active=True, status="running")
+    await event_service.close()
+
+    restarted = _reopen(event_service, tmp_path)
+    await restarted.start()
+    try:
+        updates = _goal_status_updates(restarted)
+        assert updates[-1] == {
+            "active": False,
+            "status": "interrupted",
+            "iteration": 1,
+            "max_iterations": 5,
+            "objective": "build x",
+            "verdict": None,
+        }
+        restarted.get_conversation().switch_llm(
+            _scripted("resumed and finished", usage_id="agent")
+        )
+        await restarted.resume_goal_loop(judge_llm=_scripted(_DONE, usage_id="judge"))
+        task = restarted._goal_loop_task
+        assert task is not None
+        await asyncio.wait_for(task, timeout=15)
+        outcome = restarted._goal_loop_outcome
+        assert outcome is not None
+        assert outcome.status == "complete"
+        assert outcome.iterations == 2
+    finally:
+        await restarted.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["complete", "capped", "interrupted"])
+async def test_restart_leaves_inactive_goal_status_alone(
+    event_service, tmp_path, status
+):
+    await _start(event_service, tmp_path, "noop")
+    _persist_goal_status(event_service, active=False, status=status)
+    before = _goal_status_updates(event_service)
+    await event_service.close()
+
+    restarted = _reopen(event_service, tmp_path)
+    await restarted.start()
+    try:
+        assert _goal_status_updates(restarted) == before
+    finally:
+        await restarted.close()

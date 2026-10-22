@@ -10,6 +10,7 @@ from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Protocol
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.subagent import SubAgentScope
 from openhands.sdk.tool import ToolExecutor
 from openhands.tools.task.manager import TaskManager
 from openhands.tools.workflow.definition import WorkflowObservation
@@ -80,13 +81,14 @@ class WorkflowContext:
         parent_conversation: LocalConversation,
         max_concurrency: int,
         manager: _TaskStarter | None = None,
+        sub_agent_scope: SubAgentScope | None = None,
     ) -> None:
         if max_concurrency < 1:
             raise ValueError("max_concurrency must be at least 1")
         self._parent_conversation = parent_conversation
         self._max_concurrency = max_concurrency
         if manager is None:
-            task_manager = TaskManager()
+            task_manager = TaskManager(sub_agent_scope=sub_agent_scope)
             task_manager.attach_parent(parent_conversation)
             self._manager = task_manager
         else:
@@ -501,6 +503,9 @@ def _safe_globals() -> dict[str, Any]:
 class WorkflowExecutor(ToolExecutor["WorkflowAction", WorkflowObservation]):
     """Executor for the dynamic workflow tool."""
 
+    def __init__(self, sub_agent_scope: SubAgentScope | None = None) -> None:
+        self._sub_agent_scope = sub_agent_scope
+
     def __call__(
         self,
         action: WorkflowAction,
@@ -517,6 +522,7 @@ class WorkflowExecutor(ToolExecutor["WorkflowAction", WorkflowObservation]):
         context = WorkflowContext(
             parent_conversation=conversation,
             max_concurrency=action.max_concurrency,
+            sub_agent_scope=self._sub_agent_scope,
         )
         try:
             result = execute_workflow_script(action.script, context)

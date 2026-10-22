@@ -5,25 +5,33 @@ while keeping the LLM deterministic via monkeypatching.
 """
 
 import json
+import os
 import shutil
 import sys
+import tempfile
 import textwrap
 import threading
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 from uuid import UUID
 
 import httpx
 import pytest
 import uvicorn
+from fastapi import WebSocket
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
+from openai.types.responses import ResponseInputItemParam
 from pydantic import SecretStr
+from websockets.exceptions import ConnectionClosed, InvalidStatus
+from websockets.sync.client import connect
 
 from openhands.agent_server.__main__ import preload_modules
-from openhands.sdk import LLM, Agent, AgentContext, Conversation
+from openhands.agent_server.config import load_config
+from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.event import (
     ActionEvent,
@@ -48,6 +56,8 @@ from openhands.sdk.subagent.registry import (
     register_agent,
     register_agent_if_absent,
 )
+from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace import RemoteWorkspace
 from openhands.workspace.docker.workspace import find_available_tcp_port
 
@@ -58,6 +68,8 @@ def live_server_env(
     monkeypatch: pytest.MonkeyPatch,
     import_modules: str | None = None,
     session_api_keys: list[str] | None = None,
+    deferred_init: bool = False,
+    config_overrides: dict[str, object] | None = None,
 ) -> Generator[dict]:
     """Launch a real FastAPI server backed by temp workspace and conversations.
 
@@ -97,17 +109,25 @@ def live_server_env(
         f"Conversations path not empty: {list(conversations_path.iterdir())}"
     )
 
-    cfg = {
+    cfg: dict[str, object] = {
         "session_api_keys": session_api_keys or [],
         "conversations_path": str(conversations_path),
         "workspace_path": str(workspace_path),
+        "bash_events_dir": str(tmp_path / "bash-events"),
     }
+    if deferred_init:
+        cfg.update(deferred_init=True, secret_key="test-bootstrap-key")
+    cfg.update(config_overrides or {})
     cfg_file = tmp_path / "config.json"
     cfg_file.write_text(json.dumps(cfg))
 
     # Ensure default config uses our file and disable any env key override
     monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg_file))
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / ".openhands"))
+    monkeypatch.delenv("OH_CONVERSATIONS_PATH", raising=False)
     monkeypatch.delenv("SESSION_API_KEY", raising=False)
+    monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
+    monkeypatch.delenv("TMUX_TMPDIR", raising=False)
 
     if import_modules is not None:
         preload_modules(import_modules)
@@ -115,14 +135,18 @@ def live_server_env(
     # Build app after env is set
     from openhands.agent_server.api import create_app
     from openhands.agent_server.config import Config
+    from openhands.agent_server.persistence import reset_stores
 
+    reset_stores()
     cfg_obj = Config.model_validate_json(cfg_file.read_text())
 
     app = create_app(cfg_obj)
 
     # Start uvicorn on a free port
     port = find_available_tcp_port()
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    config = uvicorn.Config(
+        app, host="127.0.0.1", port=port, log_level="warning", ws="wsproto"
+    )
     server = uvicorn.Server(config)
 
     thread = threading.Thread(target=server.run, daemon=True)
@@ -149,7 +173,9 @@ def live_server_env(
     try:
         yield {
             "app": app,
-            "conversation_service": app.state.conversation_service,
+            "conversation_service": (
+                None if deferred_init else app.state.conversation_service
+            ),
             "host": f"http://127.0.0.1:{port}",
             "workspace_path": workspace_path,
         }
@@ -162,6 +188,7 @@ def live_server_env(
         cwd_conversations = Path("workspace/conversations")
         if cwd_conversations.exists():
             shutil.rmtree(cwd_conversations)
+        reset_stores()
 
 
 def _assert_secret(value: "str | SecretStr", expected: str) -> None:
@@ -172,12 +199,207 @@ def _assert_secret(value: "str | SecretStr", expected: str) -> None:
         assert value == expected
 
 
+def test_deferred_websocket_initialization_lifecycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    async def accept_app_backend_websocket(
+        websocket: WebSocket, _extension_name: str, _path: str
+    ) -> None:
+        await websocket.accept()
+        await websocket.close()
+
+    monkeypatch.setattr(
+        "openhands.agent_server.canvas_extensions_bridge_router."
+        "proxy_app_backend_websocket",
+        accept_app_backend_websocket,
+    )
+
+    with live_server_env(tmp_path, monkeypatch, deferred_init=True) as environment:
+        host = environment["host"]
+        websocket_origin = host.replace("http://", "ws://")
+        bash_socket_url = f"{websocket_origin}/sockets/bash-events"
+        app_backend_socket_urls = (
+            f"{websocket_origin}/app-backends/test-extension",
+            f"{websocket_origin}/app-backends/test-extension/events",
+        )
+
+        with httpx.Client(base_url=host, trust_env=False) as client:
+            assert client.get("/api/init").json()["state"] == "dormant"
+            assert client.get("/api/conversations/count").status_code == 503
+
+            for socket_url in (*app_backend_socket_urls, bash_socket_url):
+                with pytest.raises(InvalidStatus) as rejected:
+                    with connect(socket_url):
+                        pytest.fail(f"Dormant WebSocket accepted: {socket_url}")
+                assert rejected.value.response.status_code == 403
+
+            initialized = client.post(
+                "/api/init",
+                headers={"X-Init-API-Key": "test-bootstrap-key"},
+                json={"session_api_keys": ["test-ready-key"]},
+            )
+            assert initialized.status_code == 200
+            assert initialized.json()["state"] == "ready"
+            assert client.get("/api/conversations/count").status_code == 401
+            assert (
+                client.get(
+                    "/api/conversations/count",
+                    headers={"X-Session-API-Key": "test-ready-key"},
+                ).status_code
+                == 200
+            )
+
+            for socket_url in app_backend_socket_urls:
+                with connect(socket_url):
+                    pass
+
+            with connect(bash_socket_url) as websocket:
+                websocket.send(json.dumps({"type": "auth", "session_api_key": "wrong"}))
+                with pytest.raises(ConnectionClosed) as unauthorized:
+                    websocket.recv(timeout=5)
+                assert unauthorized.value.rcvd is not None
+                assert unauthorized.value.rcvd.code == 4001
+
+            with connect(bash_socket_url) as websocket:
+                websocket.send(
+                    json.dumps({"type": "auth", "session_api_key": "test-ready-key"})
+                )
+                websocket.send(
+                    json.dumps({"command": "printf websocket-ready", "timeout": 5})
+                )
+                output = ""
+                while True:
+                    event = json.loads(websocket.recv(timeout=10))
+                    if event["kind"] == "BashOutput":
+                        output += event.get("stdout") or ""
+                        if event["exit_code"] is not None:
+                            assert event["exit_code"] == 0
+                            break
+                assert output == "websocket-ready"
+
+
+@pytest.mark.parametrize(
+    ("stored_key", "previous_keys"),
+    [
+        ("test-old-key", ["test-old-key"]),
+        ("test-current-key", []),
+    ],
+    ids=["rotated-key", "current-key"],
+)
+def test_deferred_init_refreshes_persistence_ciphers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stored_key: str,
+    previous_keys: list[str],
+):
+    with live_server_env(
+        tmp_path, monkeypatch, config_overrides={"secret_key": stored_key}
+    ) as environment:
+        with httpx.Client(base_url=environment["host"], trust_env=False) as client:
+            assert (
+                client.patch(
+                    "/api/settings",
+                    json={"agent_settings_diff": {"llm": {"api_key": "sk-test-saved"}}},
+                ).status_code
+                == 200
+            )
+            assert (
+                client.put(
+                    "/api/settings/secrets",
+                    json={"name": "QA_TOKEN", "value": "test-saved-secret"},
+                ).status_code
+                == 200
+            )
+
+    with live_server_env(
+        tmp_path,
+        monkeypatch,
+        deferred_init=True,
+        config_overrides={
+            "telemetry": {
+                "exporter": "http",
+                "http_endpoint": "http://127.0.0.1:9",
+            },
+        },
+    ) as environment:
+        with httpx.Client(base_url=environment["host"], trust_env=False) as client:
+            response = client.post(
+                "/api/init",
+                headers={"X-Init-API-Key": "test-bootstrap-key"},
+                json={
+                    "secret_key": "test-current-key",
+                    "previous_secret_keys": previous_keys,
+                },
+            )
+            assert response.status_code == 200
+            settings = client.get(
+                "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+            ).json()
+            assert settings["llm_api_key_is_set"] is True
+            assert settings["agent_settings"]["llm"]["api_key"] == "sk-test-saved"
+            assert client.get("/api/settings/secrets/QA_TOKEN").text == (
+                "test-saved-secret"
+            )
+
+            persistence_dir = tmp_path / ".openhands"
+            cipher = Cipher("test-current-key")
+            saved_settings = json.loads((persistence_dir / "settings.json").read_text())
+            saved_secrets = json.loads((persistence_dir / "secrets.json").read_text())
+            assert (
+                cipher.try_decrypt_str(
+                    saved_settings["agent_settings"]["llm"]["api_key"]
+                )
+                == "sk-test-saved"
+            )
+            assert (
+                cipher.try_decrypt_str(
+                    saved_secrets["custom_secrets"]["QA_TOKEN"]["secret"]
+                )
+                == "test-saved-secret"
+            )
+
+            assert (
+                client.patch(
+                    "/api/settings", json={"misc_settings_diff": {"qa_note": True}}
+                ).status_code
+                == 200
+            )
+            assert (
+                client.put(
+                    "/api/settings/secrets", json={"name": "QA_OTHER", "value": "x"}
+                ).status_code
+                == 200
+            )
+
+
 def test_health_endpoints_return_ok_json(server_env):
     with httpx.Client() as client:
         for endpoint in ("/alive", "/health"):
             response = client.get(f"{server_env['host']}{endpoint}", timeout=1.0)
             assert response.status_code == 200
             assert response.json() == {"status": "ok"}
+
+
+@pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix sockets")
+def test_live_server_does_not_use_inherited_tmux_namespace(tmp_path, monkeypatch):
+    with tempfile.TemporaryDirectory(prefix="oh-host-tmux-", dir="/tmp") as shared:
+        monkeypatch.setenv("TMUX_TMPDIR", shared)
+        with live_server_env(tmp_path, monkeypatch):
+            socket_root = os.environ.get("TMUX_TMPDIR")
+            assert socket_root != shared
+            assert socket_root is not None and Path(socket_root).is_dir()
+
+
+def test_live_server_does_not_use_inherited_session_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("OH_SESSION_API_KEYS_0", "host-session-key")
+    with live_server_env(tmp_path, monkeypatch):
+        assert "OH_SESSION_API_KEYS_0" not in os.environ
+
+
+def test_live_server_uses_configured_conversations_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("OH_CONVERSATIONS_PATH", str(tmp_path / "host-conversations"))
+    with live_server_env(tmp_path, monkeypatch):
+        assert load_config().conversations_path == tmp_path / "conversations"
 
 
 def test_prepare_for_sandbox_pause_drains_conversations(server_env):
@@ -226,8 +448,10 @@ def authenticated_server_env(
 
 
 @pytest.fixture
-def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+def patched_llm(monkeypatch: pytest.MonkeyPatch) -> list[list[Message]]:
     """Patch LLM.completion to a deterministic assistant message response."""
+
+    calls: list[list[Message]] = []
 
     def fake_completion(
         self,
@@ -237,7 +461,8 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         **kwargs,
     ):  # type: ignore[no-untyped-def]
         from openhands.sdk.llm.llm_response import LLMResponse
-        from openhands.sdk.llm.message import Message
+
+        calls.append(messages)
 
         # Create a minimal ModelResponse with a single assistant message
         litellm_msg = LiteLLMMessage.model_validate(
@@ -279,6 +504,7 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         return fake_completion(self, messages, tools, **kwargs)
 
     monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
+    return calls
 
 
 def test_remote_conversation_websocket_first_message_auth(
@@ -376,7 +602,7 @@ def test_preloaded_custom_tool_resolves_in_live_server(
 
     registry_snapshot = dict(tool_registry._REG)
     usability_snapshot = dict(tool_registry._USABILITY_REG)
-    module_snapshot = dict(tool_registry._MODULE_QUALNAMES)
+    tool_class_snapshot = dict(tool_registry._TOOL_CLASSES)
     monkeypatch.syspath_prepend(str(tmp_path))
     sys.modules.pop(package_name, None)
     sys.modules.pop(module_qualname, None)
@@ -421,8 +647,8 @@ def test_preloaded_custom_tool_resolves_in_live_server(
         tool_registry._REG.update(registry_snapshot)
         tool_registry._USABILITY_REG.clear()
         tool_registry._USABILITY_REG.update(usability_snapshot)
-        tool_registry._MODULE_QUALNAMES.clear()
-        tool_registry._MODULE_QUALNAMES.update(module_snapshot)
+        tool_registry._TOOL_CLASSES.clear()
+        tool_registry._TOOL_CLASSES.update(tool_class_snapshot)
 
 
 def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
@@ -569,6 +795,20 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
     conv: RemoteConversation = Conversation(
         agent=agent, workspace=workspace
     )  # RemoteConversation
+
+    # Lifecycle inspection/reprovision is available without a Docker backend.
+    runtime_url = f"{server_env['host']}/api/conversations/{conv.id}/runtime"
+    with httpx.Client() as client:
+        before = client.get(runtime_url)
+        before.raise_for_status()
+        assert before.json() == {
+            "runtime_status": "available",
+            "can_resume": True,
+            "runtime_error": None,
+        }
+        after = client.post(runtime_url + "/reprovision")
+        after.raise_for_status()
+        assert after.json() == before.json()
 
     # Send a message and run
     conv.send_message("Say hello")
@@ -729,6 +969,69 @@ def test_conversation_read_state_over_real_server(server_env, patched_llm):
         conversation.close()
 
 
+@pytest.mark.parametrize(
+    "tags", [None, {"purpose": "debugging"}, {"title": "user tag"}]
+)
+def test_remote_fork_title_stays_out_of_tags(server_env, tags: dict[str, str] | None):
+    agent = Agent(llm=LLM(model="gpt-4o-mini", usage_id="test"), tools=[])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    source = Conversation(agent=agent, workspace=workspace, tags={"source": "original"})
+    expected_tags = tags or {}
+    assert isinstance(source, RemoteConversation)
+    try:
+        fork = source.fork(title="Debug investigation", tags=tags)
+        try:
+            response = httpx.get(f"{server_env['host']}/api/conversations/{fork.id}")
+            response.raise_for_status()
+            assert response.json()["title"] == "Debug investigation"
+            assert response.json()["tags"] == expected_tags
+
+            pause = httpx.post(
+                f"{server_env['host']}/api/conversations/prepare-for-sandbox-pause"
+            )
+            pause.raise_for_status()
+            state_file = (
+                server_env["conversation_service"].conversations_dir
+                / fork.id.hex
+                / "base_state.json"
+            )
+            assert json.loads(state_file.read_text())["tags"] == expected_tags
+            metadata_file = state_file.with_name("meta.json")
+            assert json.loads(metadata_file.read_text())["tags"] == expected_tags
+            reloaded = httpx.get(f"{server_env['host']}/api/conversations/{fork.id}")
+            reloaded.raise_for_status()
+            assert reloaded.json()["title"] == "Debug investigation"
+            assert reloaded.json()["tags"] == expected_tags
+        finally:
+            fork.close()
+    finally:
+        source.close()
+
+
+def test_remote_conversation_created_from_agent_settings(server_env):
+    from openhands.sdk.conversation.request import StartConversationRequest
+    from openhands.sdk.workspace import LocalWorkspace
+
+    working_dir = str(server_env["workspace_path"])
+    conversation = RemoteConversation.create(
+        RemoteWorkspace(host=server_env["host"], working_dir=working_dir),
+        StartConversationRequest(
+            agent_settings={
+                "agent_kind": "openhands",
+                "llm": {"model": "settings-model", "api_key": "sk-settings"},
+                "tools": [],
+            },
+            workspace=LocalWorkspace(working_dir=working_dir),
+        ),
+        visualizer=None,
+    )
+
+    assert conversation.agent.llm.model == "settings-model"
+    conversation.close()
+
+
 def test_openai_chat_completions_gateway_over_real_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patched_llm
 ):
@@ -750,9 +1053,14 @@ def test_openai_chat_completions_gateway_over_real_server(
         include_secrets=True,
     )
 
-    with patch(
-        "openhands.agent_server.openai.service.get_llm_profile_store",
-        lambda: LLMProfileStore(base_dir=profiles_dir),
+    def llm_profiles() -> LLMProfileStore:
+        return LLMProfileStore(base_dir=profiles_dir)
+
+    with (
+        patch(
+            "openhands.agent_server.openai.service.get_llm_profile_store", llm_profiles
+        ),
+        patch("openhands.agent_server.launch.get_llm_profile_store", llm_profiles),
     ):
         with live_server_env(tmp_path, monkeypatch) as env:
             with httpx.Client() as client:
@@ -822,7 +1130,7 @@ def test_openai_chat_completions_gateway_over_real_server(
                     "content": "Hello from patched LLM",
                 }
 
-                from openai import OpenAI
+                from openai import BadRequestError, OpenAI
 
                 openai_client = OpenAI(
                     api_key="unused",
@@ -870,6 +1178,146 @@ def test_openai_chat_completions_gateway_over_real_server(
                 usage_chunks = [chunk.usage for chunk in chunks if chunk.usage]
                 assert streamed_text == "Hello from patched LLM"
                 assert usage_chunks == []
+
+                raw_response = openai_client.responses.with_raw_response.create(
+                    model="openhands_smoke",
+                    instructions="Answer briefly.",
+                    input="Say hello through Responses.",
+                    store=False,
+                )
+                responses_result = raw_response.parse()
+                assert responses_result.object == "response"
+                assert responses_result.status == "completed"
+                assert responses_result.model == "openhands_smoke"
+                assert responses_result.output_text == "Hello from patched LLM"
+                assert responses_result.previous_response_id is None
+                assert responses_result.usage is not None
+                assert responses_result.usage.input_tokens == 7
+                assert responses_result.usage.output_tokens == 5
+                assert responses_result.usage.total_tokens == 12
+                assert responses_result.id.startswith("resp_")
+                UUID(hex=responses_result.id.removeprefix("resp_"))
+                response_system_text = "\n".join(
+                    part.text
+                    for message in patched_llm[-1]
+                    if message.role == "system"
+                    for part in message.content
+                    if isinstance(part, TextContent)
+                )
+                response_user_text = "\n".join(
+                    part.text
+                    for message in patched_llm[-1]
+                    if message.role == "user"
+                    for part in message.content
+                    if isinstance(part, TextContent)
+                )
+                assert "Answer briefly." in response_system_text
+                assert "Answer briefly." not in response_user_text
+                assert "Say hello through Responses." in response_user_text
+
+                responses_conversation_id = raw_response.headers[
+                    "X-OpenHands-ServerConversation-ID"
+                ]
+                UUID(responses_conversation_id)
+
+                llm_calls_before_rejected_continuation = len(patched_llm)
+                with pytest.raises(BadRequestError) as exc_info:
+                    openai_client.responses.create(
+                        model="openhands_smoke",
+                        input="This must not continue server-side.",
+                        previous_response_id=responses_result.id,
+                        store=False,
+                    )
+                assert exc_info.value.status_code == 400
+                assert exc_info.value.response.json()["detail"] == (
+                    "previous_response_id is not supported; replay input items instead"
+                )
+                assert len(patched_llm) == llm_calls_before_rejected_continuation
+
+                second_stateless_response = (
+                    openai_client.responses.with_raw_response.create(
+                        model="openhands_smoke",
+                        input=[
+                            {
+                                "role": "developer",
+                                "content": "Use replayed context.",
+                            },
+                            {
+                                "role": "user",
+                                "content": "Say hello through Responses.",
+                            },
+                            *[
+                                cast(
+                                    ResponseInputItemParam,
+                                    item.model_dump(mode="json", exclude_none=True),
+                                )
+                                for item in responses_result.output
+                            ],
+                            {
+                                "role": "user",
+                                "content": "Follow up using the prior answer.",
+                            },
+                        ],
+                        store=False,
+                    )
+                )
+                second_stateless_result = second_stateless_response.parse()
+                assert second_stateless_result.output_text == "Hello from patched LLM"
+                assert (
+                    second_stateless_response.headers[
+                        "X-OpenHands-ServerConversation-ID"
+                    ]
+                    != responses_conversation_id
+                )
+                stateless_system_text = "\n".join(
+                    part.text
+                    for message in patched_llm[-1]
+                    if message.role == "system"
+                    for part in message.content
+                    if isinstance(part, TextContent)
+                )
+                stateless_history_text = "\n".join(
+                    part.text
+                    for message in patched_llm[-1]
+                    if message.role == "user"
+                    for part in message.content
+                    if isinstance(part, TextContent)
+                )
+                assert "Use replayed context." in stateless_system_text
+                assert "Use replayed context." not in stateless_history_text
+                assert '<message role="user">' in stateless_history_text
+                assert '<message role="assistant">' in stateless_history_text
+                assert "Say hello through Responses." in stateless_history_text
+                assert "Hello from patched LLM" in stateless_history_text
+                assert "Follow up using the prior answer." in stateless_history_text
+
+                streaming_response = client.post(
+                    f"{env['host']}/v1/responses",
+                    json={
+                        "model": "openhands_smoke",
+                        "input": "This must not run as a buffered stream.",
+                        "stream": True,
+                    },
+                    timeout=2.0,
+                )
+                assert streaming_response.status_code == 400
+                assert streaming_response.json()["detail"] == (
+                    "Streaming responses are not supported yet"
+                )
+
+                store_response = client.post(
+                    f"{env['host']}/v1/responses",
+                    json={
+                        "model": "openhands_smoke",
+                        "input": "This must not run as a stored response.",
+                        "store": True,
+                    },
+                    timeout=2.0,
+                )
+                assert store_response.status_code == 400
+                assert store_response.json()["detail"] == (
+                    "Persistent response storage (store=True) is not supported yet"
+                )
 
 
 def test_openai_gateway_replays_frozen_llm_fixtures(
@@ -1010,6 +1458,28 @@ def test_bash_command_endpoint_with_live_server(server_env):
     assert "8" in result.stdout, (
         f"Expected '8' (result of 5+3) not found in stdout: {result.stdout}"
     )
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="The live bash endpoint depends on the Unix terminal backend.",
+)
+def test_stop_bash_command_endpoint_with_live_server(server_env):
+    """Stop a long-running command through the live server end to end."""
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/test_workspace"
+    )
+    command_id = workspace.start_command("sleep 30", timeout=60.0)
+    workspace.stop_command(command_id)
+
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        output = workspace.get_command_output(command_id)
+        if output is not None and output.get("exit_code") is not None:
+            break
+        time.sleep(0.2)
+    else:
+        pytest.fail(f"command {command_id} did not finish after stop")
 
 
 def test_file_upload_endpoint_with_live_server(server_env, tmp_path: Path):
@@ -1743,10 +2213,16 @@ def test_hook_config_sent_to_server(
         from openhands.sdk.llm.message import Message
         from openhands.sdk.llm.utils.metrics import MetricsSnapshot
 
-        call_count["count"] += 1
+        is_title_call = not tools
+        if not is_title_call:
+            call_count["count"] += 1
 
-        # First call: return finish tool call (triggers PostToolUse and Stop hooks)
-        if call_count["count"] == 1:
+        if is_title_call:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Generated title"}
+            )
+        # First agent call triggers PostToolUse and Stop hooks.
+        elif call_count["count"] == 1:
             litellm_msg = LiteLLMMessage.model_validate(
                 {
                     "role": "assistant",
@@ -1961,9 +2437,15 @@ def test_agent_final_response_endpoint(server_env, monkeypatch: pytest.MonkeyPat
         from openhands.sdk.llm.message import Message
         from openhands.sdk.llm.utils.metrics import MetricsSnapshot
 
-        call_count["count"] += 1
+        is_title_call = not tools
+        if not is_title_call:
+            call_count["count"] += 1
 
-        if call_count["count"] == 1:
+        if is_title_call:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Generated title"}
+            )
+        elif call_count["count"] == 1:
             litellm_msg = LiteLLMMessage.model_validate(
                 {
                     "role": "assistant",
@@ -2098,8 +2580,15 @@ def test_remote_state_exposes_invoked_skills(
         from openhands.sdk.llm.message import Message
         from openhands.sdk.llm.utils.metrics import MetricsSnapshot
 
-        call_count["count"] += 1
-        if call_count["count"] == 1:
+        is_title_call = not tools
+        if not is_title_call:
+            call_count["count"] += 1
+
+        if is_title_call:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Generated title"}
+            )
+        elif call_count["count"] == 1:
             litellm_msg = LiteLLMMessage.model_validate(
                 {
                     "role": "assistant",
@@ -2263,6 +2752,66 @@ def test_workspace_default_llm_resolves_active_profile_despite_settings_drift(
         assert explicit_llm.usage_id == "profile:explicit-model"
 
 
+def test_workspace_named_llm_resolves_current_provider_credentials(
+    tmp_path, monkeypatch
+):
+    """Selecting a linked profile resolves credentials without activating it."""
+    with live_server_env(tmp_path, monkeypatch) as env:
+        workspace = RemoteWorkspace(
+            host=env["host"], working_dir=str(env["workspace_path"])
+        )
+        with httpx.Client(base_url=env["host"], timeout=10.0) as client:
+            settings_before = client.get("/api/settings").json()
+            connection = client.post(
+                "/api/llm/provider-connections",
+                json={
+                    "display_name": "Automation provider",
+                    "provider": "openai",
+                    "api_key": "sk-provider-old",
+                    "base_url": "https://provider.example/v1",
+                },
+            )
+            assert connection.status_code == 201
+            connection_id = connection.json()["id"]
+            saved = client.post(
+                "/api/profiles/automation-model",
+                json={
+                    "llm": {
+                        "model": "openai/gpt-4o-mini",
+                        "provider_connection_id": connection_id,
+                    }
+                },
+            )
+            assert saved.status_code == 201
+
+            detail = client.get("/api/profiles/automation-model").json()
+            assert detail["config"]["api_key"] is None
+            assert detail["config"]["base_url"] is None
+            assert detail["api_key_set"] is True
+
+            selected = workspace.get_llm(profile_name="automation-model")
+            assert selected.model == "openai/gpt-4o-mini"
+            assert selected.base_url == "https://provider.example/v1"
+            assert selected.api_key is not None
+            _assert_secret(selected.api_key, "sk-provider-old")
+
+            rotated = client.patch(
+                f"/api/llm/provider-connections/{connection_id}",
+                json={"api_key": "sk-provider-new"},
+            )
+            assert rotated.status_code == 200
+            selected = workspace.get_llm(profile_name="automation-model")
+            assert selected.api_key is not None
+            _assert_secret(selected.api_key, "sk-provider-new")
+
+            settings_after = client.get("/api/settings").json()
+            assert settings_after["active_profile"] == settings_before["active_profile"]
+            assert (
+                settings_after["agent_settings"]["llm"]
+                == settings_before["agent_settings"]["llm"]
+            )
+
+
 def test_settings_and_secrets_api_with_live_server(server_env):
     """End-to-end test for settings and secrets API endpoints.
 
@@ -2362,6 +2911,30 @@ def test_settings_and_secrets_api_with_live_server(server_env):
         value_resp = client.get("/api/settings/secrets/TEST_API_KEY")
         assert value_resp.status_code == 200
         assert value_resp.text == "sk-updated-value"
+
+        invalid_update_resp = client.put(
+            "/api/settings/secrets",
+            json={
+                "name": "TEST_API_KEY",
+                "value": REDACTED_SECRET_VALUE,
+                "description": "Must not persist",
+            },
+        )
+        assert invalid_update_resp.status_code == 422
+        value_resp = client.get("/api/settings/secrets/TEST_API_KEY")
+        assert value_resp.status_code == 200
+        assert value_resp.text == "sk-updated-value"
+
+        invalid_create_resp = client.put(
+            "/api/settings/secrets",
+            json={"name": "EMPTY_SECRET", "value": ""},
+        )
+        assert invalid_create_resp.status_code == 422
+        listed_names = {
+            item["name"]
+            for item in client.get("/api/settings/secrets").json()["secrets"]
+        }
+        assert "EMPTY_SECRET" not in listed_names
 
         # Create another secret
         client.put(

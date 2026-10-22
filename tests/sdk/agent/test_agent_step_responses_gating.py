@@ -13,6 +13,7 @@ from openhands.sdk.llm.utils.metrics import MetricsSnapshot, TokenUsage
 
 class DummyLLM(LLM):
     _calls: list[str] = PrivateAttr(default_factory=list)
+    _call_kwargs: list[dict] = PrivateAttr(default_factory=list)
     _force_responses: bool = PrivateAttr(default=False)
 
     def __init__(self, *, model: str, force_responses: bool):
@@ -25,6 +26,7 @@ class DummyLLM(LLM):
     # Minimal stubs; not actually invoking providers
     def completion(self, *, messages, tools=None, **kwargs) -> LLMResponse:  # type: ignore[override]
         self._calls.append("completion")
+        self._call_kwargs.append(kwargs)
         # Return an assistant message with no tool calls to end the step
         return LLMResponse(
             message=Message(role="assistant", content=[]),
@@ -39,6 +41,7 @@ class DummyLLM(LLM):
 
     def responses(self, *, messages, tools=None, **kwargs) -> LLMResponse:  # type: ignore[override]
         self._calls.append("responses")
+        self._call_kwargs.append(kwargs)
         return LLMResponse(
             message=Message(role="assistant", content=[]),
             metrics=MetricsSnapshot(
@@ -76,6 +79,14 @@ def test_agent_step_routes_to_responses_or_completion(force_responses, expected)
     agent.step(convo, on_event=on_event)
 
     assert llm._calls == [expected]
+    assert llm._call_kwargs == [
+        {
+            "add_security_risk_prediction": True,
+            "on_token": None,
+            "call_context": convo.get_llm_call_context(),
+            **({"include": None, "store": False} if force_responses else {}),
+        }
+    ]
     assert any(isinstance(e, MessageEvent) for e in events)
 
 

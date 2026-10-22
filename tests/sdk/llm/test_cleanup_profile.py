@@ -103,7 +103,7 @@ def test_returns_cleaned_text_from_cleanup_profile(
     assert result == "Done! I appreciate the nudge."
     # Stateless call: only a system + user message, no tools, no history.
     assert [message.role for message in cleanup_llm.last_messages] == ["system", "user"]
-    assert cleanup_llm.last_tools == []
+    assert cleanup_llm.last_tools is None
     assert "repair" in _message_text(cleanup_llm.last_messages[0]).lower()
     assert original in _message_text(cleanup_llm.last_messages[1])
 

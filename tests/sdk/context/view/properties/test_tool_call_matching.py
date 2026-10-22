@@ -6,6 +6,7 @@ The property ensures unmatched actions and observations are filtered out.
 
 from unittest.mock import create_autospec
 
+from openhands.sdk.context.view import View
 from openhands.sdk.context.view.manipulation_indices import ManipulationIndices
 from openhands.sdk.context.view.properties.tool_call_matching import (
     ToolCallMatchingProperty,
@@ -16,6 +17,10 @@ from openhands.sdk.event.llm_convertible import (
     AgentErrorEvent,
     ObservationEvent,
     UserRejectObservation,
+)
+from tests.sdk.context.view.conftest import (
+    create_action_event,
+    create_observation_event,
 )
 from tests.sdk.context.view.properties.conftest import (
     create_action_event_with_none_action,
@@ -429,3 +434,45 @@ class TestToolCallMatchingPropertyManipulationIndices(TestToolCallMatchingBase):
 
         result = self.property.manipulation_indices(events)
         assert result == ManipulationIndices.complete(events)
+
+    def test_view_tolerates_orphaned_agent_error(self) -> None:
+        """A recovery error without its action cannot brick View consumers."""
+        orphan = AgentErrorEvent(
+            error="Tool execution was interrupted by a restart",
+            tool_name="TerminalTool",
+            tool_call_id="orphaned_call",
+        )
+        message = message_event("Continue")
+        events: list[LLMConvertibleEvent] = [orphan, message]
+
+        assert View(events=events).manipulation_indices == ManipulationIndices.complete(
+            events
+        )
+
+    def test_orphan_does_not_resolve_another_pending_action(self) -> None:
+        """An unrelated orphan leaves a valid action interval protected."""
+        action = create_action_event("response", "pending_call")
+        orphan = AgentErrorEvent(
+            error="Tool execution was interrupted by a restart",
+            tool_name="TerminalTool",
+            tool_call_id="orphaned_call",
+        )
+        observation = create_observation_event("pending_call")
+        events: list[LLMConvertibleEvent] = [action, orphan, observation]
+
+        result = View(events=events).manipulation_indices
+
+        assert result == {0, 3}
+
+    def test_duplicate_observation_does_not_crash_manipulation_indices(self) -> None:
+        """Duplicate cleanup belongs to property enforcement, not boundary lookup."""
+        action = create_action_event("response", "call")
+        first = create_observation_event("call")
+        duplicate = create_observation_event("call")
+        events: list[LLMConvertibleEvent] = [action, first, duplicate]
+
+        assert View(events=events).manipulation_indices == {0, 2, 3}
+        assert [event.id for event in View.from_events(events).events] == [
+            action.id,
+            first.id,
+        ]

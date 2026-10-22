@@ -8,6 +8,7 @@
  */
 
 import type { ACPProviderKey } from './acp';
+import type { MCPJsonValue } from './api';
 
 // ── Shared supporting types ──────────────────────────────────────────────────
 
@@ -28,6 +29,12 @@ export interface ProfileVerificationSettings {
   critic_model_name: string | null;
 }
 
+/** A tool selected by name, with optional `create()` params. */
+export interface ProfileToolSpec {
+  name: string;
+  params?: Record<string, MCPJsonValue>;
+}
+
 // ── Profile variants ─────────────────────────────────────────────────────────
 
 interface AgentProfileBase {
@@ -43,6 +50,13 @@ interface AgentProfileBase {
    * `null` = all; `[]` = none; a non-null list = filter to the named keys.
    */
   mcp_server_refs: string[] | null;
+  /**
+   * Which of the user's saved secrets to expose. Names only — the values live
+   * in the secrets store. `null` = all; `[]` = none; a non-null list = filter
+   * to the named keys. Strict: nothing is added back, so an ACP profile must
+   * list its own provider credential to receive it.
+   */
+  secret_refs?: string[] | null;
 }
 
 /** `agent_kind="openhands"` variant — references an LLM profile by name. */
@@ -51,11 +65,22 @@ export interface OpenHandsAgentProfile extends AgentProfileBase {
   /** Name of the LLM profile to resolve. */
   llm_profile_ref: string;
   agent: string;
-  skills: unknown[];
+  /**
+   * Names of server-discovered skills to exclude (a deny-list over the
+   * catalog). `[]` = all discovered skills; an unknown name is a no-op.
+   */
+  disabled_skills?: string[];
+  /** Replaces the built-in persona, keeping capability guidance; needs `profile_persona_v1`. */
+  persona?: string | null;
   system_message_suffix: string | null;
   condenser: unknown;
   verification: ProfileVerificationSettings;
-  enable_sub_agents: boolean;
+  /** Enables the built-in task-routing tool, which uses `meta_profile_ref`. */
+  enable_classify_and_switch_llm_tool?: boolean;
+  /** Meta-profile the routing tool uses; `null` = the first one in the store. */
+  meta_profile_ref?: string | null;
+  /** Tools to launch with; `null` = the server's standard set. */
+  tools: ProfileToolSpec[] | null;
   tool_concurrency_limit: number;
 }
 
@@ -67,6 +92,8 @@ export interface ACPAgentProfile extends AgentProfileBase {
   acp_model: string | null;
   acp_session_mode: string | null;
   acp_prompt_timeout: number;
+  /** Timeout (seconds) for ACP server startup. */
+  acp_startup_timeout?: number;
   acp_command: string | null;
   acp_args: string[] | null;
 }
@@ -118,6 +145,9 @@ export interface AgentProfileDiagnostics {
   valid: boolean;
   errors: string[];
 
+  /** Secret scope; `null` = unrestricted. */
+  secret_refs?: string[] | null;
+
   // OpenHands LLM reference.
   llm_profile_ref: string | null;
   llm_profile_resolved: boolean;
@@ -125,23 +155,44 @@ export interface AgentProfileDiagnostics {
 
   // MCP composition (both variants).
   mcp_server_refs: string[] | null;
-  resolved_mcp_servers: string[];
+  /** MCP config keys the launch would expose. */
+  resolved_mcp_config_keys?: string[];
   dangling_mcp_server_refs: string[];
+
+  // Skill selection (OpenHands only): the deny-list and what reaches the agent.
+  disabled_skills?: string[];
+  resolved_skills?: string[];
+
+  /** Selected tools the runtime cannot run. */
+  unusable_tools?: string[];
 
   // ACP provider credential channels (ACP variant only).
   acp_api_key_secret_name: string | null;
   acp_base_url_secret_name: string | null;
   acp_file_secret_names: string[];
 
+  // Meta-profile routing (OpenHands only).
+  meta_profile_ref?: string | null;
+  dangling_meta_profile_ref?: string | null;
+  dangling_meta_profile_llm_refs?: string[];
+
   // Redacted resolved settings, present iff valid.
   resolved_settings: Record<string, unknown> | null;
 }
 
-// ── Provenance (Part B — lands with PR #3784) ────────────────────────────────
+// ── Launch provenance ──────────────────────────────────────────────────────
+
+/** Mirrors `openhands.sdk.profiles.agent_profile.LaunchedAgentProfile`. */
+export interface LaunchedAgentProfile {
+  agent_profile_id: string;
+  revision: number;
+  /** Launch-time secret allow-list, also enforced on resume. */
+  secret_refs?: string[] | null;
+}
 
 /**
  * Provenance snapshot recorded when a profile launches a conversation.
- * Mirrors `openhands.sdk.profiles.agent_profile.LaunchedProfile`.
+ * @deprecated Use LaunchedAgentProfile, which mirrors the server payload.
  *
  * Stored on the conversation so clients can identify which profile is current
  * without fragile settings-comparison. See epic #3713.

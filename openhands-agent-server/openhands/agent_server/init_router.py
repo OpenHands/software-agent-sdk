@@ -1,7 +1,7 @@
 """Deferred-init router for warm-pool agent servers.
 
 When ``Config.deferred_init`` is True the server starts in *dormant* mode:
-stateless services (VSCode, desktop, tool preload) come up as usual, but
+stateless services (VSCode, tool preload) come up as usual, but
 the conversation, event, and bash routers return 503 until ``POST /api/init``
 delivers the runtime configuration. This is intended for warm-pool
 deployments where pods are pre-warmed before a user is matched and the
@@ -17,19 +17,40 @@ import os
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    WebSocketException,
+    status,
+)
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from starlette.requests import HTTPConnection
 
 from openhands.agent_server.bash_service import BashEventService
-from openhands.agent_server.config import Config, TelemetrySpec, WebhookSpec
+from openhands.agent_server.config import (
+    V1_SESSION_API_KEY_ENV,
+    Config,
+    TelemetrySpec,
+    WebhookSpec,
+    export_session_api_key,
+)
+from openhands.agent_server.conversation_registry import (
+    ConversationRegistry,
+    create_conversation_registry,
+)
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.persistence import reencrypt_stale_stores, reset_stores
 from openhands.agent_server.server_details_router import mark_initialization_complete
 from openhands.agent_server.telemetry import (
     build_telemetry_sink,
     emit_server_started,
     shutdown_telemetry_sink,
 )
+from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability import maybe_init_laminar
 
@@ -76,6 +97,14 @@ class InitRequest(BaseModel):
             "Symmetric secret used to encrypt persisted secrets. If not "
             "provided, falls back to the first session_api_key (matching the "
             "default Config behavior)."
+        ),
+    )
+    previous_secret_keys: list[SecretStr] | None = Field(
+        default=None,
+        description=(
+            "Earlier values of secret_key (or of the first session_api_key it "
+            "falls back to), used only to decrypt values saved under them; "
+            "they are re-encrypted under the current key when next saved."
         ),
     )
     conversations_path: Path | None = Field(
@@ -161,12 +190,15 @@ def _build_initialized_config(base: Config, req: InitRequest) -> Config:
     updates: dict[str, Any] = {"deferred_init": False}
     if req.session_api_keys is not None:
         updates["session_api_keys"] = req.session_api_keys
-    if req.secret_key is not None:
+    # A blank secret_key is treated as unset, like a blank OH_SECRET_KEY.
+    if req.secret_key is not None and req.secret_key.get_secret_value().strip():
         updates["secret_key"] = req.secret_key
     elif req.session_api_keys and base.secret_key is None:
         # Match the Config default: fall back to first session key when no
         # secret_key was provided.
         updates["secret_key"] = SecretStr(req.session_api_keys[0])
+    if req.previous_secret_keys is not None:
+        updates["previous_secret_keys"] = req.previous_secret_keys
     if req.conversations_path is not None:
         updates["conversations_path"] = req.conversations_path
     if req.bash_events_dir is not None:
@@ -201,7 +233,14 @@ class InitService:
         self._error: str | None = None
         self._lock = asyncio.Lock()
         self._entered_service: ConversationService | None = None
+        self._entered_conversation_registry: ConversationRegistry | None = None
         self._entered_bash_service: BashEventService | None = None
+        # ``initialize`` exports the delivered session key to the environment;
+        # ``(None, None)`` means nothing to put back.
+        self._session_api_key_env_before_init: tuple[bool, str | None] = (
+            False,
+            None,
+        )
 
     @property
     def state(self) -> InitState:
@@ -217,6 +256,13 @@ class InitService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"server already in state: {self._state}",
                 )
+            if req.session_api_keys is not None and any(
+                not key for key in req.session_api_keys
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="session_api_keys cannot contain empty keys",
+                )
             self._state = "initializing"
             self._error = None
         try:
@@ -227,6 +273,16 @@ class InitService:
                 # tools pick up credentials.
                 for key, value in req.env.items():
                     os.environ[key] = value
+            # The key this server now authenticates with must also reach the
+            # in-process callers that read it from the environment (the
+            # start_child_conversation tool, the managed LLM key refresh); it
+            # replaces whatever key the dormant process booted with, and
+            # ``teardown`` puts the previous value back.
+            self._session_api_key_env_before_init = (
+                True,
+                os.environ.get(V1_SESSION_API_KEY_ENV),
+            )
+            export_session_api_key(new_config)
             maybe_init_laminar()
 
             # Must precede get_instance(), which captures the sink. The
@@ -235,6 +291,8 @@ class InitService:
             # for an init that later fails and rolls back to dormant, leaving
             # an unpaired start and letting a retry emit a second one.
             await shutdown_telemetry_sink()
+            reset_stores()
+            await asyncio.to_thread(reencrypt_stale_stores, new_config)
             self._app.state.telemetry_sink = await build_telemetry_sink(new_config)
 
             # Reset the module-level singleton so other call sites that go
@@ -244,6 +302,8 @@ class InitService:
 
             service = ConversationService.get_instance(new_config)
             cs_mod._conversation_service = service
+            conversation_registry = create_conversation_registry(new_config)
+            conversation_registry.configure_service(service)
 
             bash_svc = BashEventService(bash_events_dir=new_config.bash_events_dir)
             await bash_svc.__aenter__()
@@ -251,8 +311,11 @@ class InitService:
 
             await service.__aenter__()
             self._entered_service = service
+            await conversation_registry.start()
+            self._entered_conversation_registry = conversation_registry
             self._app.state.config = new_config
             self._app.state.conversation_service = service
+            self._app.state.conversation_registry = conversation_registry
             self._app.state.bash_event_service = bash_svc
 
             # Re-derive root_path from the merged config so Doc URLS are valid
@@ -260,6 +323,15 @@ class InitService:
 
             new_root_path = _get_root_path(new_config)
             self._app.root_path = new_root_path
+
+            # VSCode's token is the first session key, as on a normal boot. A
+            # dormant server that booted without one gave VSCode a random
+            # token, so switch it to the key delivered here.
+            vscode_service = get_vscode_service()
+            if vscode_service is not None and new_config.session_api_keys:
+                await vscode_service.set_connection_token(
+                    new_config.session_api_keys[0]
+                )
 
             mark_initialization_complete()
             self._state = "ready"
@@ -270,6 +342,7 @@ class InitService:
             return self.snapshot()
         except Exception as exc:  # pragma: no cover - logged + re-raised
             logger.exception("deferred_init: /api/init failed; rolling back to dormant")
+            self._restore_session_api_key_env()
             self._error = f"{type(exc).__name__}: {exc}"
             self._state = "dormant"
             raise HTTPException(
@@ -284,11 +357,26 @@ class InitService:
         that were never initialized don't need any cleanup.
         """
         if self._entered_service is not None:
+            if self._entered_conversation_registry is not None:
+                await self._entered_conversation_registry.shutdown()
+                self._entered_conversation_registry = None
             await self._entered_service.__aexit__(None, None, None)
             self._entered_service = None
         if self._entered_bash_service is not None:
             await self._entered_bash_service.__aexit__(None, None, None)
             self._entered_bash_service = None
+        self._restore_session_api_key_env()
+
+    def _restore_session_api_key_env(self) -> None:
+        """Undo the export ``initialize`` made, if it made one."""
+        exported, previous = self._session_api_key_env_before_init
+        if not exported:
+            return
+        self._session_api_key_env_before_init = (False, None)
+        if previous is None:
+            os.environ.pop(V1_SESSION_API_KEY_ENV, None)
+        else:
+            os.environ[V1_SESSION_API_KEY_ENV] = previous
 
 
 def get_init_service(request: Request) -> InitService:
@@ -314,6 +402,10 @@ def check_init_api_key(
     per-user runtime config."""
     config: Config | None = getattr(request.app.state, "config", None)
     if config is None or config.secret_key is None:
+        if config is not None and config.secret_key_was_blank:
+            # A blank key was configured but no usable key remains → fail
+            # closed, since no client can present a blank key.
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
         # No key configured → endpoint is open. Acceptable for dev.
         return
     expected = config.secret_key.get_secret_value()
@@ -321,22 +413,26 @@ def check_init_api_key(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
 
-def require_initialized(request: Request) -> None:
-    """Dependency that 503s every /api/* route while the server is dormant.
+def require_initialized(connection: HTTPConnection) -> None:
+    """Dependency that rejects requests and WebSockets while the server is dormant.
 
-    Returns immediately when ``deferred_init`` is False (the normal path) so
-    this has zero cost for non-deferred deployments.
+    HTTP requests get a 503; WebSockets are closed with 1013 (Try Again Later)
+    before the handshake is accepted. Returns immediately when
+    ``deferred_init`` is False (the normal path) so this has zero cost for
+    non-deferred deployments.
     """
-    init_service: InitService | None = getattr(request.app.state, "init_service", None)
+    init_service: InitService | None = getattr(
+        connection.app.state, "init_service", None
+    )
     if init_service is None or init_service.state == "ready":
         return
-    raise HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail=(
-            f"server is in deferred-init state '{init_service.state}'; "
-            "call POST /api/init first"
-        ),
+    reason = (
+        f"server is in deferred-init state '{init_service.state}'; "
+        "call POST /api/init first"
     )
+    if connection.scope["type"] == "websocket":
+        raise WebSocketException(code=status.WS_1013_TRY_AGAIN_LATER, reason=reason)
+    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=reason)
 
 
 init_router = APIRouter(prefix="/init", tags=["Init"])

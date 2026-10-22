@@ -14,10 +14,23 @@ jobs:
 
         steps:
             - name: Checkout code
-              uses: actions/checkout@v7
+              uses: actions/checkout@v7.0.1
+              with:
+                  fetch-depth: 0
+
+            - name: Reject temporary artifacts in release PRs
+              if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'rel-')
+              run: |
+                  set -euo pipefail
+                  artifacts="$(git ls-tree -r --name-only HEAD -- .pr)"
+                  if [ -n "$artifacts" ]; then
+                    echo "::error::Release contains temporary .pr artifacts. Merge the cleanup PR and update the release PR before releasing."
+                    printf '%s\n' "$artifacts"
+                    exit 1
+                  fi
 
             - name: Set up Python
-              uses: actions/setup-python@v6
+              uses: actions/setup-python@v7
               with:
                   python-version: '3.13'
 
@@ -26,6 +39,11 @@ jobs:
 
             - name: Install dependencies
               run: uv sync --frozen --group dev
+
+            - name: Ensure dynamic attribute baseline only shrinks
+              run: >-
+                  uv run python scripts/check_forbidden_dynamic_attributes.py
+                  --baseline-ref ${{ github.event.pull_request.base.sha || github.event.before }}
 
             - name: Run pre-commit (all files)
               run: uv run pre-commit run --all-files --show-diff-on-failure

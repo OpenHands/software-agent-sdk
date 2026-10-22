@@ -12,6 +12,8 @@ from jinja2 import (
     TemplateNotFound,
 )
 
+from openhands.sdk.utils.path import get_user_persistence_dir
+
 
 class FlexibleFileSystemLoader(BaseLoader):
     """A Jinja2 loader that supports both relative paths (within a base directory)
@@ -61,9 +63,9 @@ def _get_env(prompt_dir: str) -> Environment:
     # BytecodeCache avoids reparsing templates across processes
     # Use user-specific cache directory to avoid permission issues
     # in multi-user environments
-    cache_folder = os.path.join(os.path.expanduser("~"), ".openhands", "cache", "jinja")
-    os.makedirs(cache_folder, exist_ok=True)
-    bcc = FileSystemBytecodeCache(directory=cache_folder)
+    cache_folder = get_user_persistence_dir() / "cache" / "jinja"
+    cache_folder.mkdir(parents=True, exist_ok=True)
+    bcc = FileSystemBytecodeCache(directory=str(cache_folder))
     env = Environment(
         loader=FlexibleFileSystemLoader(prompt_dir),
         bytecode_cache=bcc,

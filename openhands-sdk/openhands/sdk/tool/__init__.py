@@ -16,10 +16,15 @@ from openhands.sdk.tool.defaults import (
     DEFAULT_EXEC_TOOL_NAMES,
     SUB_AGENT_TOOL_NAME,
     default_tool_specs,
+    launch_tool_specs,
+    resolve_tool_specs,
 )
 from openhands.sdk.tool.registry import (
+    ToolCatalogEntry,
+    is_tool_available,
     is_tool_usable,
     list_registered_tools,
+    list_tool_catalog,
     register_tool,
     resolve_tool,
 )
@@ -49,6 +54,9 @@ __all__ = [
     "DEFAULT_EXEC_TOOL_NAMES",
     "SUB_AGENT_TOOL_NAME",
     "default_tool_specs",
+    "launch_tool_specs",
+    "resolve_tool_specs",
+    "is_tool_available",
     "is_tool_usable",
     "ToolDefinition",
     "ToolAnnotations",
@@ -63,4 +71,6 @@ __all__ = [
     "register_tool",
     "resolve_tool",
     "list_registered_tools",
+    "list_tool_catalog",
+    "ToolCatalogEntry",
 ]

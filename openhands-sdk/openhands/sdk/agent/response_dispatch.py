@@ -9,8 +9,9 @@ Contains:
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from openhands.sdk.agent.stream_context import StreamContext
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.llm import LLMResponse, Message, TextContent
@@ -106,6 +107,7 @@ class ResponseDispatchMixin:
                 list[ThinkingBlock | RedactedThinkingBlock] | None
             ) = None,
             responses_reasoning_item: ReasoningItemModel | None = None,
+            stream: StreamContext | None = None,
         ) -> ActionEvent | None: ...
 
         def _execute_actions(
@@ -126,6 +128,15 @@ class ResponseDispatchMixin:
             self,
             state: ConversationState,
             action_events: list[ActionEvent],
+            on_event: ConversationCallbackType | None = None,
+        ) -> bool: ...
+
+        async def _arequires_user_confirmation(
+            self,
+            conversation: LocalConversation,
+            state: ConversationState,
+            action_events: list[ActionEvent],
+            on_event: ConversationCallbackType,
         ) -> bool: ...
 
         def _maybe_emit_vllm_tokens(
@@ -147,6 +158,7 @@ class ResponseDispatchMixin:
         conversation: LocalConversation,
         state: ConversationState,
         on_event: ConversationCallbackType,
+        stream: StreamContext | None = None,
     ) -> None:
         """Handle LLM response containing tool calls."""
         if not all(isinstance(c, TextContent) for c in message.content):
@@ -172,12 +184,15 @@ class ResponseDispatchMixin:
                 responses_reasoning_item=(
                     message.responses_reasoning_item if i == 0 else None
                 ),
+                # The streamed text is this action's thought, so the first
+                # action event is what retires the slot.
+                stream=stream if i == 0 else None,
             )
             if action_event is None:
                 continue
             action_events.append(action_event)
 
-        if self._requires_user_confirmation(state, action_events):
+        if self._requires_user_confirmation(state, action_events, on_event):
             return
 
         if action_events:
@@ -192,6 +207,7 @@ class ResponseDispatchMixin:
         conversation: LocalConversation,
         state: ConversationState,
         on_event: ConversationCallbackType,
+        stream: StreamContext | None = None,
     ) -> None:
         """Async variant of :meth:`_handle_tool_calls`.
 
@@ -222,12 +238,17 @@ class ResponseDispatchMixin:
                 responses_reasoning_item=(
                     message.responses_reasoning_item if i == 0 else None
                 ),
+                # The streamed text is this action's thought, so the first
+                # action event is what retires the slot.
+                stream=stream if i == 0 else None,
             )
             if action_event is None:
                 continue
             action_events.append(action_event)
 
-        if self._requires_user_confirmation(state, action_events):
+        if await self._arequires_user_confirmation(
+            conversation, state, action_events, on_event
+        ):
             return
 
         if action_events:
@@ -242,9 +263,19 @@ class ResponseDispatchMixin:
         conversation: LocalConversation,
         state: ConversationState,
         on_event: ConversationCallbackType,
+        stream: StreamContext | None = None,
+        *,
+        mask_secrets: bool = True,
     ) -> None:
         """Handle LLM response with text content — finishes conversation."""
-        self._emit_message_event(message, llm_response, conversation, on_event)
+        self._emit_message_event(
+            message,
+            llm_response,
+            conversation,
+            on_event,
+            stream,
+            mask_secrets=mask_secrets,
+        )
         self._maybe_emit_vllm_tokens(llm_response, on_event)
         logger.debug("LLM produced a message response - awaits user input")
         state.execution_status = ConversationExecutionStatus.FINISHED
@@ -256,8 +287,10 @@ class ResponseDispatchMixin:
         conversation: LocalConversation,
         state: ConversationState,  # noqa: ARG002
         on_event: ConversationCallbackType,
+        stream: StreamContext | None = None,
         *,
         response_type: LLMResponseType,
+        mask_secrets: bool = True,
     ) -> None:
         """Handle LLM response with no user-facing content.
 
@@ -267,7 +300,14 @@ class ResponseDispatchMixin:
         """
         if response_type is LLMResponseType.EMPTY:
             logger.warning("LLM produced empty response - continuing agent loop")
-        self._emit_message_event(message, llm_response, conversation, on_event)
+        self._emit_message_event(
+            message,
+            llm_response,
+            conversation,
+            on_event,
+            stream,
+            mask_secrets=mask_secrets,
+        )
         self._maybe_emit_vllm_tokens(llm_response, on_event)
         self._send_corrective_nudge(on_event)
 
@@ -277,11 +317,24 @@ class ResponseDispatchMixin:
         llm_response: LLMResponse,
         conversation: LocalConversation,
         on_event: ConversationCallbackType,
+        stream: StreamContext | None = None,
+        *,
+        mask_secrets: bool = True,
     ) -> MessageEvent:
-        """Create and emit a MessageEvent, running critic if configured."""
+        """Create and emit a MessageEvent, running critic if configured.
+
+        The message carries the id its own stream minted, so a client holding
+        an open slot retires it on ``frame.event.id == slot.item_id``.
+        """
+        minted: dict[str, Any] = {}
+        if stream is not None and (item_id := stream.claim()):
+            minted["id"] = item_id
         msg_event = MessageEvent(
+            **minted,
             source="agent",
-            llm_message=self._mask_secrets(message, conversation),
+            llm_message=self._mask_secrets(message, conversation)
+            if mask_secrets
+            else message,
             llm_response_id=llm_response.id,
         )
         if self.critic is not None and self.critic.mode == "finish_and_message":
@@ -291,6 +344,10 @@ class ResponseDispatchMixin:
                     update={"critic_result": critic_result}
                 )
         on_event(msg_event)
+        # Retired only now: on_event can raise while persisting, and a slot
+        # retired before that leaves the client holding it open forever.
+        if stream is not None and minted:
+            stream.commit()
         return msg_event
 
     @staticmethod
