@@ -71,6 +71,9 @@ class ListDirectoryExecutor(
 
         try:
             entries = []
+            # Set only when an entry was left out, so a directory with exactly
+            # MAX_ENTRIES entries is not reported as truncated.
+            is_truncated = False
 
             if recursive:
                 # List up to 2 levels deep
@@ -79,6 +82,13 @@ class ListDirectoryExecutor(
                     depth = len(root_path.relative_to(resolved_path).parts)
                     if depth >= 2:
                         dirs.clear()
+                        continue
+
+                    if len(entries) >= MAX_ENTRIES:
+                        # Already full. Anything still to list here is left out.
+                        if dirs or files:
+                            is_truncated = True
+                            break
                         continue
 
                     # Add directories
@@ -114,12 +124,13 @@ class ListDirectoryExecutor(
                             )
                         except Exception:
                             continue
-
-                    if len(entries) >= MAX_ENTRIES:
-                        break
             else:
                 # List only immediate contents
                 for entry in sorted(resolved_path.iterdir()):
+                    if len(entries) >= MAX_ENTRIES:
+                        # Already full, and this entry is left out.
+                        is_truncated = True
+                        break
                     try:
                         stat = entry.stat()
                         entries.append(
@@ -131,14 +142,12 @@ class ListDirectoryExecutor(
                                 modified_time=datetime.fromtimestamp(stat.st_mtime),
                             )
                         )
-
-                        if len(entries) >= MAX_ENTRIES:
-                            break
                     except Exception:
                         continue
 
             total_count = len(entries)
-            is_truncated = total_count >= MAX_ENTRIES
+            # One directory in a recursive walk can push the list past the cap.
+            is_truncated = is_truncated or total_count > MAX_ENTRIES
 
             agent_obs = f"Listed directory: {resolved_path} ({total_count} entries"
             if is_truncated:
