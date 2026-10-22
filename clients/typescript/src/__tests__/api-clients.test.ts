@@ -2334,6 +2334,53 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('SettingsClient fetches the canonical settings document and schema', async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ schema_version: 1, resources: {} }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ model_name: 'SettingsDocument', sections: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ schema_version: 1, resources: {} }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      ) as typeof fetch;
+
+    const client = new SettingsClient({ host: 'http://example.com' });
+    await client.getDocument();
+    await client.getDocumentSchema();
+    await client.updateDocument({ product: { language: 'fr' } });
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/settings/document',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/settings/document-schema',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      'http://example.com/api/settings/document',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ product: { language: 'fr' } }),
+      })
+    );
+  });
+
   it('FileClient wraps file browsing and download endpoints', async () => {
     const binary = new TextEncoder().encode('hello').buffer;
     global.fetch = vi

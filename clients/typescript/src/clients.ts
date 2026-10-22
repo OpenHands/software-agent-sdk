@@ -137,6 +137,20 @@ export type {
   StdioMCPServer,
 } from './models/mcp-settings';
 export type {
+  SettingsDocument,
+  SettingsDocumentObject,
+  SettingsDocumentPatch,
+  SettingsDocumentValue,
+  SettingsProfilePointers,
+  SettingsProfilePointersPatch,
+  SettingsResources,
+  SettingsSecretReference,
+  ProductSettings,
+  LLMProfileDocument,
+  ProviderConnectionDocument,
+} from './models/settings-document';
+
+export type {
   OpenHandsClientKind,
   OpenHandsClientOptions,
   OpenHandsRequestAuthMode,

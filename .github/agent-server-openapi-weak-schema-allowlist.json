@@ -48,7 +48,7 @@
     "owner": "OpenHands OSS"
   },
   {
-    "pointer": "/components/schemas/AgentDefinition/properties/metadata/additionalProperties",
+    "pointer": "/components/schemas/AgentDefinition-Input/properties/metadata/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Tool metadata is intentionally extensible across tool providers.",
     "owner": "OpenHands OSS"

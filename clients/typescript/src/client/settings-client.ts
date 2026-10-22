@@ -21,6 +21,7 @@ import type {
   AgentServerSettingsSchema,
 } from '../models/agent-server-api';
 import type { MCPServer, MCPServerPatch } from '../models/mcp-settings';
+import type { SettingsDocument, SettingsDocumentPatch } from '../models/settings-document';
 
 export interface SettingsClientOptions {
   host: string;
@@ -52,6 +53,23 @@ export class SettingsClient {
 
   async getAgentSchema(): Promise<AgentServerSettingsSchema> {
     const response = await this.client.get<AgentServerSettingsSchema>('/api/settings/agent-schema');
+    return response.data;
+  }
+
+  async getDocumentSchema(): Promise<AgentServerSettingsSchema> {
+    const response = await this.client.get<AgentServerSettingsSchema>(
+      '/api/settings/document-schema'
+    );
+    return response.data;
+  }
+
+  async getDocument(): Promise<SettingsDocument> {
+    const response = await this.client.get<SettingsDocument>('/api/settings/document');
+    return response.data;
+  }
+
+  async updateDocument(patch: SettingsDocumentPatch): Promise<SettingsDocument> {
+    const response = await this.client.patch<SettingsDocument>('/api/settings/document', patch);
     return response.data;
   }
 

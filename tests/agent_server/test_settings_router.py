@@ -135,6 +135,125 @@ def test_get_conversation_settings_schema():
     assert "security_analyzer" in verification_field_keys
 
 
+def test_get_settings_document_schema():
+    client = TestClient(create_app(Config(static_files_path=None, session_api_keys=[])))
+
+    response = client.get("/api/settings/document-schema")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["model_name"] == "SettingsDocument"
+    section_keys = {section["key"] for section in body["sections"]}
+    assert "agent.llm" in section_keys
+    assert "conversation.general" in section_keys
+    assert "product.general" in section_keys
+    assert "resources" in section_keys
+
+
+def test_register_settings_document_field_refreshes_schema_and_persists_value(
+    client_with_settings, temp_persistence_dir, monkeypatch
+):
+    overlay_path = temp_persistence_dir / "settings-schema-overlay.json"
+    monkeypatch.setenv("OH_SETTINGS_SCHEMA_OVERLAY", str(overlay_path))
+
+    registration = client_with_settings.put(
+        "/api/settings/document-schema/fields",
+        json={
+            "key": "product.browser_previews",
+            "label": "Browser previews",
+            "description": "Open a live preview when an application starts.",
+            "section": "product.prototype",
+            "section_label": "Prototype settings",
+            "value_type": "boolean",
+            "default": True,
+            "prominence": "major",
+        },
+    )
+
+    assert registration.status_code == 200
+    schema = client_with_settings.get("/api/settings/document-schema").json()
+    prototype_section = next(
+        section
+        for section in schema["sections"]
+        if section["key"] == "product.prototype"
+    )
+    assert [field["key"] for field in prototype_section["fields"]] == [
+        "product.browser_previews"
+    ]
+
+    update = client_with_settings.patch(
+        "/api/settings/document",
+        json={"product": {"browser_previews": False}},
+    )
+
+    assert update.status_code == 200
+    assert update.json()["product"]["browser_previews"] is False
+    persisted = client_with_settings.get("/api/settings/document").json()
+    assert persisted["product"]["browser_previews"] is False
+
+
+def test_register_settings_document_field_requires_overlay_configuration(
+    client_with_settings, monkeypatch
+):
+    monkeypatch.delenv("OH_SETTINGS_SCHEMA_OVERLAY", raising=False)
+
+    response = client_with_settings.put(
+        "/api/settings/document-schema/fields",
+        json={
+            "key": "product.browser_previews",
+            "label": "Browser previews",
+            "section": "product.prototype",
+            "section_label": "Prototype settings",
+            "value_type": "boolean",
+            "default": True,
+        },
+    )
+
+    assert response.status_code == 404
+
+
+def test_get_settings_document_replaces_secrets_with_references(client_with_settings):
+    update_response = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"llm": {"api_key": "sk-document-test"}}},
+    )
+    assert update_response.status_code == 200
+
+    response = client_with_settings.get("/api/settings/document")
+
+    assert response.status_code == 200
+    body = response.json()
+    serialized = json.dumps(body)
+    assert "sk-document-test" not in serialized
+    assert body["schema_version"] == 1
+    assert body["product"]["language"] == "en"
+    assert body["agent"]["llm"]["api_key"] is None
+    reference = body["resources"]["credentials"]["agent.llm.api_key"]
+    assert reference == {
+        "ref": "settings:agent.llm.api_key",
+        "is_set": True,
+    }
+
+
+def test_patch_settings_document_persists_transparent_sections(client_with_settings):
+    response = client_with_settings.patch(
+        "/api/settings/document",
+        json={
+            "conversation": {"max_iterations": 41},
+            "product": {"language": "fr"},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["conversation"]["max_iterations"] == 41
+    assert body["product"]["language"] == "fr"
+
+    persisted = client_with_settings.get("/api/settings/document").json()
+    assert persisted["conversation"]["max_iterations"] == 41
+    assert persisted["product"]["language"] == "fr"
+
+
 # ── GET /api/settings tests ─────────────────────────────────────────────
 
 

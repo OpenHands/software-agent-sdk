@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from functools import lru_cache
-from typing import cast
+from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import ValidationError
@@ -18,23 +18,37 @@ from openhands.agent_server.persistence import (
     PersistedSettings,
     get_agent_profile_store,
     get_llm_profile_store,
+    get_provider_connections_store,
     get_secrets_store,
     get_settings_store,
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
 from openhands.agent_server.telemetry import notify_misc_settings_changed
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.meta_profile_store import MetaProfileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.settings import (
     ConversationSettings,
+    LLMProfileDocument,
+    ProductSettings,
+    ProviderConnectionDocument,
     SecretCreateRequest,
     SecretItemResponse,
     SecretsListResponse,
+    SettingsDocument,
+    SettingsDocumentPatch,
+    SettingsFieldSchema,
+    SettingsProfilePointers,
+    SettingsResources,
     SettingsResponse,
     SettingsSchema,
+    SettingsSecretReference,
     SettingsUpdateRequest,
     export_agent_settings_schema,
+    export_settings_document_schema,
+    register_settings_document_field,
+    validate_agent_settings,
 )
 from openhands.sdk.settings.api_models import MCPServerPatch
 from openhands.sdk.utils.pydantic_secrets import is_redacted_secret
@@ -49,6 +63,8 @@ logger = get_logger(__name__)
 # while this router uses relative paths. The paths are intentionally separate
 # to match their respective contexts (router prefix vs full URL path).
 SETTINGS_PATH = ""  # -> /api/settings
+SETTINGS_DOCUMENT_PATH = "/document"
+SETTINGS_DOCUMENT_SCHEMA_PATH = "/document-schema"
 MCP_SERVER_PATH = "/mcp/{settings_key}"  # -> /api/settings/mcp/{settings_key}
 SECRETS_PATH = "/secrets"  # -> /api/settings/secrets
 SECRET_VALUE_PATH = "/secrets/{name}"  # -> /api/settings/secrets/{name}
@@ -74,6 +90,10 @@ def _get_conversation_settings_schema() -> SettingsSchema:
     return ConversationSettings.export_schema()
 
 
+def _get_settings_document_schema() -> SettingsSchema:
+    return export_settings_document_schema()
+
+
 @settings_router.get("/agent-schema", response_model=SettingsSchema)
 async def get_agent_settings_schema() -> SettingsSchema:
     """Return the schema used to render AgentSettings-based settings forms."""
@@ -84,6 +104,33 @@ async def get_agent_settings_schema() -> SettingsSchema:
 async def get_conversation_settings_schema() -> SettingsSchema:
     """Return the schema used to render ConversationSettings-based forms."""
     return _get_conversation_settings_schema()
+
+
+@settings_router.get(SETTINGS_DOCUMENT_SCHEMA_PATH, response_model=SettingsSchema)
+async def get_settings_document_schema() -> SettingsSchema:
+    """Return one renderer schema for the canonical settings document."""
+    return _get_settings_document_schema()
+
+
+@settings_router.put(
+    f"{SETTINGS_DOCUMENT_SCHEMA_PATH}/fields",
+    response_model=SettingsSchema,
+)
+async def put_settings_document_schema_field(
+    field: SettingsFieldSchema,
+) -> SettingsSchema:
+    """Upsert a prototype field when a shared schema overlay is configured."""
+    try:
+        return register_settings_document_field(field)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
 
 
 # ── Settings CRUD Endpoints ──────────────────────────────────────────────
@@ -109,6 +156,168 @@ def _validate_secret_name(name: str) -> None:
                 "and be 1-64 characters long."
             ),
         )
+
+
+def _replace_redacted_secrets(
+    value: Any,
+    *,
+    path: str,
+    references: dict[str, SettingsSecretReference],
+) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _replace_redacted_secrets(
+                child,
+                path=f"{path}.{key}" if path else key,
+                references=references,
+            )
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _replace_redacted_secrets(
+                child,
+                path=f"{path}.{index}",
+                references=references,
+            )
+            for index, child in enumerate(value)
+        ]
+    if isinstance(value, str) and is_redacted_secret(value):
+        references[path] = SettingsSecretReference(
+            ref=f"settings:{path}",
+            is_set=True,
+        )
+        return None
+    return value
+
+
+def _canonical_profile_name(filename: str) -> str:
+    return filename.removesuffix(".json")
+
+
+@settings_router.get(SETTINGS_DOCUMENT_PATH, response_model=SettingsDocument)
+async def get_settings_document(request: Request) -> SettingsDocument:
+    """Return all transparent settings as one reference-safe document."""
+
+    config = get_config(request)
+    settings = get_settings_store(config).load() or PersistedSettings()
+    credential_references: dict[str, SettingsSecretReference] = {}
+
+    raw_agent = settings.agent_settings.model_dump(mode="json")
+    safe_agent = _replace_redacted_secrets(
+        raw_agent,
+        path="agent",
+        references=credential_references,
+    )
+
+    llm_profiles: dict[str, LLMProfileDocument] = {}
+    llm_store = get_llm_profile_store()
+    for filename in llm_store.list():
+        name = _canonical_profile_name(filename)
+        llm = llm_store.load(name, cipher=config.cipher, resolve_provider=False)
+        profile_references: dict[str, SettingsSecretReference] = {}
+        profile_settings = _replace_redacted_secrets(
+            llm.model_dump(mode="json"),
+            path=f"resources.llm_profiles.{name}.settings",
+            references=profile_references,
+        )
+        llm_profiles[name] = LLMProfileDocument(
+            settings=profile_settings,
+            secret_references=profile_references,
+        )
+        credential_references.update(profile_references)
+
+    agent_profiles = {}
+    agent_profile_store = get_agent_profile_store()
+    for filename in agent_profile_store.list():
+        name = _canonical_profile_name(filename)
+        agent_profiles[name] = agent_profile_store.load(name)
+
+    provider_connections: dict[str, ProviderConnectionDocument] = {}
+    for connection in get_provider_connections_store().list(cipher=config.cipher):
+        reference = None
+        if connection.api_key_value():
+            path = f"resources.provider_connections.{connection.id}.api_key"
+            reference = SettingsSecretReference(
+                ref=f"settings:{path}",
+                is_set=True,
+            )
+            credential_references[path] = reference
+        provider_connections[connection.id] = ProviderConnectionDocument(
+            id=connection.id,
+            display_name=connection.display_name,
+            provider=connection.provider,
+            base_url=connection.base_url,
+            created_at=connection.created_at,
+            updated_at=connection.updated_at,
+            api_key=reference,
+        )
+
+    model_routers = {}
+    meta_profile_store = MetaProfileStore()
+    for filename in meta_profile_store.list():
+        name = _canonical_profile_name(filename)
+        model_routers[name] = meta_profile_store.load(name)
+
+    secrets = get_secrets_store(config).load()
+    if secrets:
+        for name, custom_secret in secrets.custom_secrets.items():
+            path = f"resources.credentials.{name}"
+            credential_references[path] = SettingsSecretReference(
+                ref=f"secret:{name}",
+                is_set=custom_secret.secret is not None,
+            )
+
+    product_payload = settings.misc_settings.get("app_preferences", {})
+    product = ProductSettings.model_validate(product_payload)
+    return SettingsDocument(
+        agent=validate_agent_settings(safe_agent),
+        conversation=settings.conversation_settings,
+        product=product,
+        resources=SettingsResources(
+            llm_profiles=llm_profiles,
+            agent_profiles=agent_profiles,
+            provider_connections=provider_connections,
+            model_routers=model_routers,
+            marketplaces=config.registered_marketplaces,
+            credentials=credential_references,
+            pointers=SettingsProfilePointers(
+                active_llm_profile=settings.active_profile,
+                active_agent_profile_id=settings.active_agent_profile_id,
+                active_model_router=settings.active_meta_profile,
+            ),
+        ),
+    )
+
+
+@settings_router.patch(SETTINGS_DOCUMENT_PATH, response_model=SettingsDocument)
+async def update_settings_document(
+    request: Request,
+    patch: SettingsDocumentPatch,
+) -> SettingsDocument:
+    """Apply a sparse canonical patch through existing production stores."""
+
+    update_kwargs: dict[str, Any] = {}
+    if "agent" in patch.model_fields_set and patch.agent is not None:
+        update_kwargs["agent_settings_diff"] = patch.agent
+    if "conversation" in patch.model_fields_set and patch.conversation is not None:
+        update_kwargs["conversation_settings_diff"] = patch.conversation
+    if "product" in patch.model_fields_set and patch.product is not None:
+        update_kwargs["misc_settings_diff"] = {
+            "app_preferences": patch.product.model_dump(exclude_unset=True)
+        }
+
+    if patch.resources and patch.resources.pointers:
+        pointers = patch.resources.pointers
+        if "active_llm_profile" in pointers.model_fields_set:
+            update_kwargs["active_profile"] = pointers.active_llm_profile
+        if "active_agent_profile_id" in pointers.model_fields_set:
+            update_kwargs["active_agent_profile_id"] = pointers.active_agent_profile_id
+        if "active_model_router" in pointers.model_fields_set:
+            update_kwargs["active_meta_profile"] = pointers.active_model_router
+
+    await update_settings(request, SettingsUpdateRequest(**update_kwargs))
+    return await get_settings_document(request)
 
 
 @settings_router.get(SETTINGS_PATH, response_model=SettingsResponse)
