@@ -115,17 +115,16 @@ class ConversationAgentRegistry:
         with self._lock:
             scoped_factories = list(self._factories.values())
 
+        programmatic_factories = [
+            factory
+            for factory in global_factories
+            if factory.definition.level in (None, "programmatic")
+        ]
+        ordered_factories = programmatic_factories + scoped_factories + global_factories
+
         definitions: list[AgentDefinition] = []
         seen: set[str] = set()
-        for factory in [
-            *(
-                f
-                for f in global_factories
-                if f.definition.level in (None, "programmatic")
-            ),
-            *scoped_factories,
-            *global_factories,
-        ]:
+        for factory in ordered_factories:
             if factory.definition.name not in seen:
                 seen.add(factory.definition.name)
                 definitions.append(factory.definition)
@@ -389,23 +388,43 @@ def register_file_agents(
     Returns:
         List of agent names that were actually registered.
     """
-    register = registry.register_if_absent if registry else register_agent_if_absent
     registered: list[str] = []
     for agent_def in discover_agents(work_dir):
-        factory = agent_definition_to_factory(agent_def, work_dir=work_dir)
-        was_registered = register(
-            name=agent_def.name,
-            factory_func=factory,
-            description=agent_def,
-        )
-        if was_registered:
+        if _register_definition(
+            agent_def, work_dir, kind="file-based", registry=registry
+        ):
             registered.append(agent_def.name)
-            logger.info(
-                f"Registered file-based agent '{agent_def.name}'"
-                + (f" from {agent_def.source}" if agent_def.source else "")
-            )
 
     return registered
+
+
+def _register_definition(
+    agent_def: AgentDefinition,
+    work_dir: str | Path | None,
+    kind: str,
+    registry: ConversationAgentRegistry | None = None,
+) -> bool:
+    """Register one agent definition; skip it with a warning if it is invalid.
+
+    A definition that cannot be turned into a factory (for example, one naming
+    a skill that does not exist) is skipped so that it does not break the
+    conversation that loads it or the other agents registered alongside it.
+    """
+    source = f" from {agent_def.source}" if agent_def.source else ""
+    try:
+        factory = agent_definition_to_factory(agent_def, work_dir=work_dir)
+    except ValueError as e:
+        logger.warning(f"Skipping {kind} agent '{agent_def.name}'{source}: {e}")
+        return False
+    register = registry.register_if_absent if registry else register_agent_if_absent
+    was_registered = register(
+        name=agent_def.name,
+        factory_func=factory,
+        description=agent_def,
+    )
+    if was_registered:
+        logger.info(f"Registered {kind} agent '{agent_def.name}'{source}")
+    return was_registered
 
 
 def register_plugin_agents(
@@ -429,20 +448,12 @@ def register_plugin_agents(
     Returns:
         List of agent names that were actually registered.
     """
-    register = registry.register_if_absent if registry else register_agent_if_absent
     registered: list[str] = []
     for agent_def in agents:
         if agent_def.level is None:
             agent_def = agent_def.model_copy(update={"level": "plugin"})
-        factory = agent_definition_to_factory(agent_def, work_dir=work_dir)
-        was_registered = register(
-            name=agent_def.name,
-            factory_func=factory,
-            description=agent_def,
-        )
-        if was_registered:
+        if _register_definition(agent_def, work_dir, kind="plugin", registry=registry):
             registered.append(agent_def.name)
-            logger.info(f"Registered plugin agent '{agent_def.name}'")
 
     return registered
 

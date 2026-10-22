@@ -35,7 +35,11 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import detached_delegate_context
 from openhands.sdk.security import ConfirmationPolicyBase
 from openhands.sdk.subagent.registry import AgentFactory
-from openhands.sdk.subagent.scope import SubAgentScope, scope_delegation_tools
+from openhands.sdk.subagent.scope import (
+    SubAgentScope,
+    inherit_mcp_config,
+    scope_delegation_tools,
+)
 
 
 if TYPE_CHECKING:
@@ -227,6 +231,8 @@ class TaskManager:
                     _parent_llm_call_context=(
                         self.parent_conversation.get_llm_call_context()
                     ),
+                    mcp_tool_provider=self.parent_conversation._mcp_tool_provider,
+                    _mcp_config_from_parent=True,
                     delete_on_close=True,
                     observability_metadata=self._delegate_observability_metadata(
                         task_id=resume, subagent_type=subagent_type, link=link
@@ -335,6 +341,8 @@ class TaskManager:
                 max_budget_per_run=max_budget_per_run,
                 hook_config=hook_config,
                 _parent_llm_call_context=parent.get_llm_call_context(),
+                mcp_tool_provider=parent._mcp_tool_provider,
+                _mcp_config_from_parent=True,
                 delete_on_close=True,
                 prompt_cache_key=str(parent.state.id),
                 observability_metadata=self._delegate_observability_metadata(
@@ -403,7 +411,7 @@ class TaskManager:
             )
 
         # ensuring that the sub-agent LLM has stream deactivated
-        sub_agent = sub_agent.model_copy(
+        sub_agent = inherit_mcp_config(parent.agent, sub_agent).model_copy(
             update={
                 "llm": sub_agent.llm.model_copy(update={"stream": False}),
                 "tools": scope_delegation_tools(sub_agent.tools, self._sub_agent_scope),

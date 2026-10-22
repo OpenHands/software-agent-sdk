@@ -5,7 +5,7 @@ from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Self, cast
 
 from pydantic import Field, PrivateAttr
 
@@ -240,7 +240,7 @@ class ConversationState(OpenHandsModel):
     )
 
     # ===== Private attrs (NOT Fields) =====
-    _fs: FileStore = PrivateAttr()  # filestore for persistence
+    _fs: FileStore = PrivateAttr(default=cast(Any, None))  # filestore for persistence
     _events: EventLog = PrivateAttr()  # now the storage for events
     # Cached projection of `_events` for the *active branch*, lazily updated on
     # read. Derived state — never persisted. `_view_branch_leaf` is the resolved
@@ -613,8 +613,8 @@ class ConversationState(OpenHandsModel):
         super().__setattr__(name, value)
 
         is_field = name in self.__class__.model_fields
-        autosave_enabled = getattr(self, "_autosave_enabled", False)
-        fs = getattr(self, "_fs", None)
+        autosave_enabled = self._autosave_enabled
+        fs = self._fs
 
         if not (autosave_enabled and is_field and fs is not None):
             return
@@ -622,7 +622,7 @@ class ConversationState(OpenHandsModel):
         if old is _sentinel or old != value:
             # Inside a context-manager block, defer the save until __exit__
             # so that multiple field mutations produce a single I/O write.
-            if getattr(self, "_save_depth", 0) > 0:
+            if self._save_depth > 0:
                 self._dirty = True
             else:
                 try:
@@ -635,7 +635,7 @@ class ConversationState(OpenHandsModel):
             # skipped: they are internal HEAD bookkeeping (leaf_event_id changes
             # every event, so broadcasting it would ~double the persisted log) and
             # the HEAD is recoverable from the just-appended event.
-            callback = getattr(self, "_on_state_change", None)
+            callback = self._on_state_change
             if (
                 callback is not None
                 and old is not _sentinel
@@ -765,8 +765,8 @@ class ConversationState(OpenHandsModel):
         try:
             self._save_depth -= 1
             if self._save_depth == 0 and self._dirty:
-                fs = getattr(self, "_fs", None)
-                autosave_enabled = getattr(self, "_autosave_enabled", False)
+                fs = self._fs
+                autosave_enabled = self._autosave_enabled
                 if autosave_enabled and fs is not None:
                     self._save_base_state(fs)
                 self._dirty = False

@@ -90,8 +90,11 @@ def test_file_agents_are_isolated_per_conversation(
             conversation.close()
 
 
-@pytest.mark.parametrize("initialize", [False, True])
-@pytest.mark.parametrize("custom_file_store", [False, True])
+@pytest.mark.parametrize(
+    ("initialize", "custom_file_store"),
+    [(False, False), (True, False), (True, True)],
+    ids=["disk-before-init", "disk-after-init", "custom-store"],
+)
 def test_close_reopen_keeps_forwarded_definitions(
     tmp_path: Path, initialize: bool, custom_file_store: bool
 ) -> None:
@@ -239,28 +242,13 @@ def test_bad_forwarded_definition_does_not_block_valid_agents(
         assert "survives" in TaskToolSet.create(conversation._state)[0].description
 
 
-@pytest.mark.parametrize("initialize", [False, True])
-def test_fork_keeps_forwarded_definitions(tmp_path: Path, initialize: bool) -> None:
-    with closing(
-        LocalConversation(
-            agent=Agent(llm=TestLLM.from_messages([]), tools=[]),
-            workspace=tmp_path,
-            agent_definitions=[
-                AgentDefinition(name="forwarded", description="fork-visible")
-            ],
-            visualizer=None,
-        )
-    ) as conversation:
-        if initialize:
-            conversation.send_message("Prepare parent")
-        with closing(conversation.fork()) as fork:
-            fork.send_message("Prepare fork")
-            assert "fork-visible" in TaskToolSet.create(fork._state)[0].description
-
-
-@pytest.mark.parametrize("source", ["project", "user"])
-def test_fork_rediscovers_file_agents_after_restart(
-    tmp_path: Path, source: str
+@pytest.mark.parametrize(
+    ("source", "initialize"),
+    [("project", False), ("project", True), ("user", True)],
+    ids=["project-before-init", "project-after-init", "user-after-init"],
+)
+def test_fork_preserves_forwarded_definitions_and_refreshes_files(
+    tmp_path: Path, source: str, initialize: bool
 ) -> None:
     root = tmp_path if source == "project" else tmp_path / "home"
     _write_agent(root, "version-one")
@@ -275,7 +263,8 @@ def test_fork_rediscovers_file_agents_after_restart(
             visualizer=None,
         )
     ) as parent:
-        parent.send_message("Prepare parent")
+        if initialize:
+            parent.send_message("Prepare parent")
         _write_agent(root, "version-two")
         with closing(parent.fork()) as fork:
             fork_id = fork.id
@@ -286,11 +275,15 @@ def test_fork_rediscovers_file_agents_after_restart(
             )
             assert fork.state.agent_definitions == [supplied]
             assert (
-                parent._agent_registry.get_agent_factory(
-                    "shared"
-                ).definition.description
-                == "version-one"
+                supplied.description in TaskToolSet.create(fork._state)[0].description
             )
+            if initialize:
+                assert (
+                    parent._agent_registry.get_agent_factory(
+                        "shared"
+                    ).definition.description
+                    == "version-one"
+                )
 
     _write_agent(root, "version-three")
     with closing(

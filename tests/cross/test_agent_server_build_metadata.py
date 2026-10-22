@@ -1,5 +1,10 @@
+import ast
 import re
+from importlib.resources import files
 from pathlib import Path
+from typing import Any
+
+from PyInstaller.utils.hooks import collect_data_files
 
 from openhands.sdk.settings.acp_install_catalog import (
     ACP_INSTALL_CATALOG,
@@ -23,6 +28,10 @@ AGENT_SERVER_SPEC = (
     / "openhands"
     / "agent_server"
     / "agent-server.spec"
+)
+MANIFEST_IN = REPO_ROOT / "MANIFEST.in"
+PLUGIN_FORMAT_SCHEMAS_DIR = (
+    REPO_ROOT / "openhands-sdk" / "openhands" / "sdk" / "plugin" / "format" / "schemas"
 )
 ACP_INSTALL_CATALOG_PY = (
     REPO_ROOT
@@ -111,6 +120,61 @@ def test_agent_server_binary_copies_openhands_distribution_metadata() -> None:
         "openhands-workspace",
     ):
         assert f'*copy_metadata("{distribution}")' in spec_text
+
+
+def test_agent_server_binary_collects_plugin_format_schemas() -> None:
+    """Frozen agent-server must ship plugin/MCP JSON schemas next to the module.
+
+    ``openhands.sdk.plugin.format.base._load_schema`` reads
+    ``schemas/*.json`` via ``Path(__file__).parent / "schemas"``. The schemas
+    are in the SDK wheel, but the published ``*-python`` image builds from an
+    sdist governed by ``MANIFEST.in``, then PyInstaller only packs what
+    ``agent-server.spec`` explicitly ``collect_data_files``. Both layers are
+    required — without either, the onefile binary raises FileNotFoundError for
+    ``plugin-1.0.0.schema.json`` at SETTING_UP_SKILLS
+    (OpenHands/OpenHands#18418 / software-agent-sdk#5989).
+    """
+    package = "openhands.sdk.plugin.format"
+    schema_names = sorted(p.name for p in PLUGIN_FORMAT_SCHEMAS_DIR.glob("*.json"))
+    assert schema_names == ["mcp-1.0.0.schema.json", "plugin-1.0.0.schema.json"]
+
+    # Build context for ghcr.io/openhands/agent-server:*-python comes from the
+    # workspace sdist (see docker/build.py::_make_build_context). MANIFEST.in
+    # must include the schemas or collect_data_files matches nothing in-image.
+    manifest_text = MANIFEST_IN.read_text(encoding="utf-8")
+    assert "recursive-include openhands-sdk schemas/*.json" in manifest_text
+
+    schemas = list(files(package).joinpath("schemas").iterdir())
+    assert {schema.name for schema in schemas} == set(schema_names)
+
+    bundled = _spec_collected_datas(package)
+    dest = f"{package.replace('.', '/')}/schemas"
+    for name in schema_names:
+        assert (name, dest) in bundled
+
+
+def _spec_collected_datas(package: str) -> set[tuple[str, str]]:
+    """Resolve the spec's ``collect_data_files(package, ...)`` calls as
+    PyInstaller would, returning ``(file name, bundle dir)`` pairs."""
+    tree = ast.parse(AGENT_SERVER_SPEC.read_text(encoding="utf-8"))
+    bundled: set[tuple[str, str]] = set()
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "collect_data_files"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == package
+        ):
+            continue
+        kwargs: dict[str, Any] = {}
+        for kw in node.keywords:
+            assert kw.arg is not None
+            kwargs[kw.arg] = ast.literal_eval(kw.value)
+        for src, dst in collect_data_files(package, **kwargs):
+            bundled.add((Path(src).name, dst))
+    return bundled
 
 
 def test_python_image_uses_canonical_minimal_runtime() -> None:

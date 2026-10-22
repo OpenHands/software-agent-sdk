@@ -19,7 +19,7 @@ from fastapi.websockets import WebSocketDisconnect
 from pydantic import SecretStr
 
 from openhands.agent_server.api import api_lifespan, create_app
-from openhands.agent_server.config import Config
+from openhands.agent_server.config import CONFIG_PATH_ENV, Config, load_config
 from openhands.agent_server.init_router import (
     InitRequest,
     InitService,
@@ -144,6 +144,19 @@ class TestBuildInitializedConfig:
         assert merged.secret_key is not None
         assert merged.secret_key.get_secret_value() == "s1"
 
+    def test_previous_secret_keys_reach_the_cipher(self):
+        base = Config(deferred_init=True)
+        merged = _build_initialized_config(
+            base,
+            InitRequest(
+                session_api_keys=["new-session-key"],
+                previous_secret_keys=[SecretStr("old-session-key")],
+            ),
+        )
+        assert merged.cipher is not None
+        assert merged.cipher.secret_key == "new-session-key"
+        assert merged.cipher.previous_keys == ("old-session-key",)
+
     def test_explicit_secret_key_wins(self):
         base = Config(deferred_init=True)
         merged = _build_initialized_config(
@@ -154,6 +167,15 @@ class TestBuildInitializedConfig:
         )
         assert merged.secret_key is not None
         assert merged.secret_key.get_secret_value() == "explicit-secret"
+
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_empty_secret_key_is_treated_as_unset(self, blank):
+        base = Config(deferred_init=True)
+        merged = _build_initialized_config(
+            base, InitRequest(session_api_keys=["s1"], secret_key=SecretStr(blank))
+        )
+        assert merged.secret_key is not None
+        assert merged.secret_key.get_secret_value() == "s1"
 
 
 class TestRouterMounting:
@@ -402,6 +424,45 @@ class TestInitServiceTransitions:
 
 class TestEndToEndOverLifespan:
     """Drive the whole flow through the FastAPI lifespan + TestClient."""
+
+    def test_blank_init_secret_falls_back_to_session_key(self, tmp_path):
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        app = create_app(cfg)
+        with TestClient(app) as client:
+            try:
+                response = client.post(
+                    "/api/init",
+                    json={
+                        "secret_key": "",
+                        "session_api_keys": ["user-session-key"],
+                    },
+                )
+                assert response.status_code == 200
+                assert app.state.config.cipher.secret_key == "user-session-key"
+            finally:
+                _reset_conversation_singleton()
+
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_blank_secret_key_env_keeps_init_closed(self, tmp_path, monkeypatch, blank):
+        _reset_conversation_singleton()
+        monkeypatch.setenv(CONFIG_PATH_ENV, str(tmp_path / "missing.json"))
+        monkeypatch.setenv("OH_SECRET_KEY", blank)
+        monkeypatch.setenv("OH_DEFERRED_INIT", "true")
+        monkeypatch.setenv("OH_CONVERSATIONS_PATH", str(tmp_path / "convs"))
+        monkeypatch.setenv("OH_BASH_EVENTS_DIR", str(tmp_path / "bash"))
+        cfg = load_config()
+        assert cfg.deferred_init and cfg.secret_key is None
+        with TestClient(create_app(cfg)) as client:
+            try:
+                assert client.post("/api/init", json={}).status_code == 401
+                assert client.get("/api/init").json()["state"] == "dormant"
+            finally:
+                _reset_conversation_singleton()
 
     @pytest.mark.parametrize("session_api_keys", [[""], ["", "user-session-key"]])
     def test_init_rejects_empty_session_keys(self, tmp_path, session_api_keys):
@@ -922,3 +983,103 @@ async def test_lifespan_teardown_releases_conversation_service_after_init(
     assert init_svc._entered_bash_service is None
     _reset_conversation_singleton()
     _reset_bash_singleton()
+
+
+class TestSessionKeyExport:
+    """The key the server authenticates with reaches in-process callers that
+    read it from the environment (start_child_conversation, managed LLM key
+    refresh), whether it arrived through /api/init or a config file."""
+
+    def test_init_exports_delivered_key_over_boot_key(self, tmp_path, monkeypatch):
+        """A dormant pod boots holding a shared key; /api/init replaces it."""
+        monkeypatch.setenv("OH_SESSION_API_KEYS_0", "boot-key")
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=True,
+            session_api_keys=["boot-key"],
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        with TestClient(create_app(cfg)) as client:
+            try:
+                resp = client.post(
+                    "/api/init",
+                    json={
+                        "session_api_keys": ["user-session-key"],
+                        "conversations_path": str(tmp_path / "u" / "convs"),
+                        "bash_events_dir": str(tmp_path / "u" / "bash"),
+                    },
+                    # The bootstrap credential is the dormant secret key, which
+                    # defaults to the first session key.
+                    headers={"X-Init-API-Key": "boot-key"},
+                )
+                assert resp.status_code == 200
+                assert os.environ["OH_SESSION_API_KEYS_0"] == "user-session-key"
+            finally:
+                _reset_conversation_singleton()
+
+    @pytest.mark.asyncio
+    async def test_teardown_restores_the_env_after_a_direct_init(self, tmp_path):
+        """Driving InitService without the lifespan (as other tests do) must
+        not leak the delivered key into the process environment."""
+        _reset_conversation_singleton()
+        _reset_bash_singleton()
+        base = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        app = SimpleNamespace(state=SimpleNamespace(config=base))
+        svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+        try:
+            await svc.initialize(
+                InitRequest(
+                    session_api_keys=["user-key"],
+                    conversations_path=tmp_path / "user" / "convs",
+                    bash_events_dir=tmp_path / "user" / "bash",
+                )
+            )
+            assert os.environ["OH_SESSION_API_KEYS_0"] == "user-key"
+        finally:
+            await svc.teardown()
+            _reset_conversation_singleton()
+            _reset_bash_singleton()
+        assert "OH_SESSION_API_KEYS_0" not in os.environ
+
+    def test_init_without_keys_leaves_env_untouched(self, tmp_path):
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        with TestClient(create_app(cfg)) as client:
+            try:
+                resp = client.post(
+                    "/api/init",
+                    json={
+                        "conversations_path": str(tmp_path / "u" / "convs"),
+                        "bash_events_dir": str(tmp_path / "u" / "bash"),
+                    },
+                )
+                assert resp.status_code == 200
+                assert "OH_SESSION_API_KEYS_0" not in os.environ
+            finally:
+                _reset_conversation_singleton()
+
+    def test_startup_exports_config_key_and_restores_env_on_shutdown(self, tmp_path):
+        """A key read from the config file is exported for the server's
+        lifetime only."""
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=False,
+            session_api_keys=["file-key"],
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        try:
+            with TestClient(create_app(cfg)):
+                assert os.environ["OH_SESSION_API_KEYS_0"] == "file-key"
+            assert "OH_SESSION_API_KEYS_0" not in os.environ
+        finally:
+            _reset_conversation_singleton()

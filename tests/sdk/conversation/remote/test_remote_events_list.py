@@ -9,6 +9,7 @@ import pytest
 from openhands.sdk.conversation.impl.remote_conversation import RemoteEventsList
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
 from openhands.sdk.llm import Message, TextContent
 
 
@@ -147,6 +148,23 @@ def test_remote_events_list_callback_integration(mock_client, conversation_id):
     # Default callback should add event to the list
     assert len(events_list) == 1
     assert events_list[0].id == "callback-event"
+
+
+def test_remote_events_list_callback_skips_streaming_deltas(
+    mock_client, conversation_id
+):
+    """Streamed deltas are transient: the server never stores them, so the
+    default callback must keep them out of the cached events."""
+    mock_client.request.return_value = create_mock_api_response([])
+
+    events_list = RemoteEventsList(mock_client, conversation_id)
+    callback = events_list.create_default_callback()
+
+    callback(StreamingDeltaEvent(content="Hel"))
+    callback(StreamingDeltaEvent(content="lo"))
+    callback(create_mock_event("message-event"))
+
+    assert [e.id for e in events_list] == ["message-event"]
 
 
 def test_remote_events_list_api_error(mock_client, conversation_id):

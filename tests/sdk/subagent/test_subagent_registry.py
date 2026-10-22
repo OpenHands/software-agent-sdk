@@ -85,7 +85,7 @@ def test_conversation_registry_resolves_public_global_registrations(
 
 
 @pytest.mark.parametrize("reverse", [False, True])
-def test_scoped_priority_is_independent_of_registration_order(reverse: bool) -> None:
+def test_scoped_priority_and_catalog_match_lookup(reverse: bool) -> None:
     registry = ConversationAgentRegistry()
     levels: list[AgentDefinitionLevel] = [
         "programmatic",
@@ -94,8 +94,10 @@ def test_scoped_priority_is_independent_of_registration_order(reverse: bool) -> 
         "user",
         "builtin",
     ]
+    expected_descriptions: dict[str, str] = {}
     for start in range(len(levels)):
         name = f"agent-{start}"
+        expected_descriptions[name] = levels[start]
         candidates = levels[start:]
         if reverse:
             candidates = list(reversed(candidates))
@@ -111,41 +113,31 @@ def test_scoped_priority_is_independent_of_registration_order(reverse: bool) -> 
             name, agent_definition_to_factory(duplicate), duplicate
         )
 
-    definitions = registry.get_registered_agent_definitions()
-    assert len(definitions) == len(levels)
-    for definition in definitions:
-        assert definition == registry.get_agent_factory(definition.name).definition
-        assert definition.description == levels[int(definition.name.split("-")[1])]
-
-
-def test_scoped_catalog_and_lookup_agree_with_global_precedence() -> None:
-    registry = ConversationAgentRegistry()
     for level in ("programmatic", "builtin"):
         definition = AgentDefinition(name=level, description=level, level=level)
         register_agent(level, agent_definition_to_factory(definition), definition)
         local = AgentDefinition(name=level, description="local", level="project")
         registry.register_if_absent(level, agent_definition_to_factory(local), local)
+    expected_descriptions.update({"programmatic": "programmatic", "builtin": "local"})
 
     fallback = AgentDefinition(
         name="general-purpose", description="fallback", level="builtin"
     )
     register_agent(fallback.name, agent_definition_to_factory(fallback), fallback)
+    expected_descriptions["general-purpose"] = "fallback"
     assert registry.get_agent_factory(None).definition == fallback
     assert registry.get_agent_factory("").definition == fallback
     assert registry.get_agent_factory("default").definition == fallback
 
     definitions = registry.get_registered_agent_definitions()
-    assert {d.name: d.description for d in definitions} == {
-        "programmatic": "programmatic",
-        "builtin": "local",
-        "general-purpose": "fallback",
-    }
+    assert len(definitions) == len(expected_descriptions)
+    assert {d.name: d.description for d in definitions} == expected_descriptions
     for definition in definitions:
         assert registry.get_agent_factory(definition.name).definition == definition
-    with pytest.raises(
-        ValueError, match="Available types: builtin, general-purpose, programmatic"
-    ):
+    with pytest.raises(ValueError, match="Unknown agent 'missing'") as error:
         registry.get_agent_factory("missing")
+    available_names = ", ".join(sorted(expected_descriptions))
+    assert f"Available types: {available_names}" in str(error.value)
 
 
 def test_register_file_agents_project_priority(tmp_path: Path) -> None:
@@ -249,6 +241,63 @@ def test_register_plugin_agents_skips_existing(tmp_path: Path) -> None:
     # Programmatic version still there
     factory = get_agent_factory("my-agent")
     assert factory.definition.description == "Programmatic"
+
+
+def test_register_file_agents_skips_agent_with_missing_skill(tmp_path: Path) -> None:
+    """An agent naming a missing skill is skipped; the other agents register."""
+    skills_dir = tmp_path / ".agents" / "skills"
+    skills_dir.mkdir(parents=True)
+    _create_skill_file(skills_dir, "real-skill", "Real skill content.")
+
+    agents_dir = tmp_path / ".agents" / "agents"
+    agents_dir.mkdir(parents=True)
+    bad_file = agents_dir / "bad-agent.md"
+    bad_file.write_text(
+        "---\nname: bad-agent\ndescription: Bad\nskills: missing-skill\n---\n\nBad."
+    )
+    (agents_dir / "good-agent.md").write_text(
+        "---\nname: good-agent\ndescription: Good\nskills: real-skill\n---\n\nGood."
+    )
+
+    with (
+        patch(
+            "openhands.sdk.subagent.load.Path.home", return_value=tmp_path / "no_user"
+        ),
+        patch("openhands.sdk.subagent.registry.logger") as mock_logger,
+    ):
+        registered = register_file_agents(tmp_path)
+
+    assert registered == ["good-agent"]
+    with pytest.raises(ValueError, match="Unknown agent 'bad-agent'"):
+        get_agent_factory("bad-agent")
+    agent = get_agent_factory("good-agent").factory_func(_make_test_llm())
+    assert agent.agent_context is not None
+    assert [s.name for s in agent.agent_context.skills] == ["real-skill"]
+
+    warning = mock_logger.warning.call_args.args[0]
+    assert "bad-agent" in warning
+    assert str(bad_file) in warning
+    assert "missing-skill" in warning
+
+
+def test_register_plugin_agents_skips_agent_with_missing_skill(
+    tmp_path: Path,
+) -> None:
+    """A plugin agent naming a missing skill is skipped; the others register."""
+    bad = AgentDefinition(
+        name="bad-plugin-agent",
+        description="Bad",
+        skills=["missing-skill"],
+    )
+    good = AgentDefinition(name="good-plugin-agent", description="Good")
+
+    with patch("openhands.sdk.subagent.registry.logger") as mock_logger:
+        registered = register_plugin_agents([bad, good], work_dir=tmp_path)
+
+    assert registered == ["good-plugin-agent"]
+    warning = mock_logger.warning.call_args.args[0]
+    assert "bad-plugin-agent" in warning
+    assert "missing-skill" in warning
 
 
 def test_register_agent_if_absent_existing() -> None:

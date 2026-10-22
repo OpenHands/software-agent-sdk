@@ -1,11 +1,17 @@
 """Tmux-based terminal backend implementation."""
 
 import logging
+import os
+import shlex
+import sys
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager, suppress
+from pathlib import Path
 
 import libtmux
+from filelock import FileLock
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.redact import redact_api_key_literals
@@ -13,7 +19,9 @@ from openhands.tools.terminal.constants import (
     HISTORY_LIMIT,
     TMUX_SESSION_HEIGHT,
     TMUX_SESSION_WIDTH,
+    TMUX_SOCKET_CREATION_LOCK,
     TMUX_SOCKET_NAME,
+    TMUX_SOCKET_OWNER_OPTION,
 )
 from openhands.tools.terminal.env import (
     build_terminal_env,
@@ -22,6 +30,9 @@ from openhands.tools.terminal.env import (
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal import TerminalInterface
 from openhands.tools.terminal.terminal.interface import parse_ctrl_key
+from openhands.tools.terminal.terminal.process_priority import (
+    process_priority_prefix,
+)
 
 
 logger = get_logger(__name__)
@@ -66,6 +77,89 @@ def _install_libtmux_redaction_filter() -> None:
             for log_filter in libtmux_logger.filters
         ):
             libtmux_logger.addFilter(_SecretRedactFilter())
+
+
+@contextmanager
+def _socket_creation_lock(socket_dir: Path | None = None) -> Iterator[None]:
+    """Serialize socket creation with the agent-server's startup cleanup.
+
+    A tmux socket exists between ``new-session`` and the recording of its owner
+    option. Startup cleanup in a sibling agent-server treats an ownerless socket
+    as reclaimable, so without this lock it can kill a socket whose live owner
+    has not finished initializing. The lock file lives in the tmux socket
+    directory, which is the one path every process sharing ``TMUX_TMPDIR``
+    agrees on even while tmux has not created any socket yet.
+    """
+    if socket_dir is None:
+        socket_dir = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
+    # tmux refuses a socket directory that is group/world accessible, and
+    # FileLock would create it with the umask default, so create it 0700 first.
+    socket_dir.mkdir(parents=True, exist_ok=True)
+    with suppress(OSError):
+        socket_dir.chmod(0o700)
+    with FileLock(socket_dir / TMUX_SOCKET_CREATION_LOCK):
+        yield
+
+
+def mark_socket_owner(server: libtmux.Server) -> None:
+    """Record this process as the owner of *server*'s socket.
+
+    The agent-server's startup cleanup reads this to tell a live sibling's
+    socket apart from a stale one when a shared ``TMUX_TMPDIR`` is in use.
+    Best-effort: a failure here only loses the ownership hint, so it must
+    never break terminal setup.
+    """
+    with suppress(Exception):
+        server.set_option(
+            TMUX_SOCKET_OWNER_OPTION, str(os.getpid()), global_=True, scope=None
+        )
+
+
+def _new_owned_session(
+    env: Mapping[str, str],
+    *,
+    session_name: str,
+    start_directory: str,
+    x: int,
+    y: int,
+) -> tuple[libtmux.Server, libtmux.Session]:
+    """Create a tmux session on a fresh socket owned by this process.
+
+    The socket only starts to exist once the session is created, so the session
+    is created and its owner recorded while holding the cross-process creation
+    lock. Startup cleanup in another process takes the same lock, so it can
+    never observe the socket before its owner is published.
+    """
+    socket_name = f"{TMUX_SOCKET_NAME}-{uuid.uuid4().hex}"
+    socket_dir = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
+    socket_path = socket_dir / socket_name
+    # sun_path includes a NUL byte; limits are 108 on Linux and 104 on macOS/BSD.
+    max_socket_path = 107 if sys.platform.startswith("linux") else 103
+    fallback = (
+        os.name == "posix"
+        and len(os.fsencode(os.path.realpath(socket_path))) > max_socket_path
+    )
+    if fallback:
+        socket_dir = Path("/tmp") / f"tmux-{os.getuid()}"
+        # libtmux resolves socket_name using the process-wide TMUX_TMPDIR, so
+        # use an explicit path without changing other sessions' environment.
+        logger.warning("tmux socket path is too long; using %s", socket_dir)
+
+    with _socket_creation_lock(socket_dir):
+        server = libtmux.Server(
+            socket_name=None if fallback else socket_name,
+            socket_path=str(socket_dir / socket_name) if fallback else None,
+            environment=dict(env),
+        )
+        session = server.new_session(
+            session_name=session_name,
+            start_directory=start_directory,
+            kill_session=True,
+            x=x,
+            y=y,
+        )
+        mark_socket_owner(server)
+        return server, session
 
 
 # Map normalized special key names to tmux key names.
@@ -122,23 +216,20 @@ class TmuxTerminal(TerminalInterface):
         # auto-launch `less` on a TTY don't capture the pane and wedge the session.
         env.setdefault("GIT_PAGER", "cat")
         env.setdefault("PAGER", "cat")
-        # Never reuse a socket: tmux numeric IDs restart at zero after server exit.
-        self.server = libtmux.Server(
-            socket_name=f"{TMUX_SOCKET_NAME}-{uuid.uuid4().hex}", environment=env
-        )
-        _shell_command = "/bin/bash"
+        shell_command = ["/bin/bash"]
         if self.username in ["root", "openhands"]:
             # This starts a non-login (new) shell for the given user
-            _shell_command = f"su {self.username} -"
+            shell_command = ["su", self.username, "-"]
 
-        window_command = _shell_command
+        window_command = shlex.join([*process_priority_prefix(env), *shell_command])
 
         logger.debug(f"Initializing tmux terminal with command: {window_command}")
+        # Never reuse a socket: tmux numeric IDs restart at zero after server exit.
         session_name = f"openhands-{self.username}-{uuid.uuid4()}"
-        self.session = self.server.new_session(
+        self.server, self.session = _new_owned_session(
+            env,
             session_name=session_name,
             start_directory=self.work_dir,
-            kill_session=True,
             x=TMUX_SESSION_WIDTH,
             y=TMUX_SESSION_HEIGHT,
         )
