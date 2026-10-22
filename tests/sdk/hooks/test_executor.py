@@ -36,14 +36,19 @@ class TestHookExecutor:
             session_id="test-session",
         )
 
-    def test_execute_simple_command(self, executor, sample_event):
-        """Test executing a simple echo command."""
-        hook = HookDefinition(command="echo 'success'")
+    @pytest.mark.parametrize("stdout", ["", "success"])
+    def test_execute_simple_command(self, executor, sample_event, stdout):
+        """Successful hooks need not emit JSON."""
+        hook = HookDefinition(
+            command=python_command(f"import sys; sys.stdout.write({stdout!r})")
+        )
         result = executor.execute(hook, sample_event)
 
         assert result.success
         assert result.exit_code == 0
-        assert "success" in result.stdout
+        assert result.stdout == stdout
+        assert not result.blocked
+        assert result.should_continue
 
     def test_execute_receives_json_stdin(self, executor, sample_event, tmp_path):
         """Test that hook receives event data as JSON on stdin."""
@@ -87,9 +92,14 @@ class TestHookExecutor:
 
         assert result.decision == HookDecision.ALLOW
 
-    def test_execute_blocking_exit_code(self, executor, sample_event):
+    @pytest.mark.parametrize("stdout", ["", '{"decision": "allow", "continue": true}'])
+    def test_execute_blocking_exit_code(self, executor, sample_event, stdout):
         """Test that exit code 2 blocks the operation."""
-        hook = HookDefinition(command=python_command("import sys; sys.exit(2)"))
+        hook = HookDefinition(
+            command=python_command(
+                f"import sys; sys.stdout.write({stdout!r}); sys.exit(2)"
+            )
+        )
         result = executor.execute(hook, sample_event)
 
         assert not result.success
@@ -97,19 +107,50 @@ class TestHookExecutor:
         assert result.exit_code == 2
         assert not result.should_continue
 
-    def test_execute_json_output_decision(self, executor, sample_event):
-        """Test parsing JSON output with decision field."""
+    @pytest.mark.parametrize("control", [{"decision": "deny"}, {"continue": False}])
+    def test_execute_json_output_decision(self, executor, sample_event, control):
+        """Successful hooks can block through either structured control field."""
+        stdout = json.dumps(
+            {**control, "reason": "Not allowed", "additionalContext": "Hook context"}
+        )
         hook = HookDefinition(
-            command=python_command(
-                "import json; print(json.dumps("
-                "{'decision': 'deny', 'reason': 'Not allowed'}))"
-            )
+            command=python_command(f"import sys; sys.stdout.write({stdout!r})")
         )
         result = executor.execute(hook, sample_event)
 
-        assert result.decision == HookDecision.DENY
+        assert result.success
+        assert result.exit_code == 0
+        if "decision" in control:
+            assert result.decision == HookDecision.DENY
         assert result.reason == "Not allowed"
+        assert result.additional_context == "Hook context"
         assert result.blocked
+        assert not result.should_continue
+
+    @pytest.mark.parametrize("exit_code", [1, 3])
+    @pytest.mark.parametrize("control", [{"decision": "deny"}, {"continue": False}])
+    def test_execute_nonblocking_error_ignores_json(
+        self, executor, sample_event, exit_code, control
+    ):
+        stdout = json.dumps(
+            {**control, "reason": "Not allowed", "additionalContext": "Hook context"}
+        )
+        hook = HookDefinition(
+            command=python_command(
+                f"import sys; sys.stdout.write({stdout!r}); sys.exit({exit_code})"
+            )
+        )
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.exit_code == exit_code
+        assert not result.success
+        assert not result.blocked
+        assert result.should_continue
+        assert result.decision is None
+        assert result.reason is None
+        assert result.additional_context is None
+        assert result.stdout == stdout
 
     def test_execute_environment_variables(self, executor, sample_event, tmp_path):
         """Test that environment variables are set correctly."""
@@ -136,6 +177,19 @@ class TestHookExecutor:
 
         assert not result.success
         assert "timed out" in result.error.lower()
+        assert not result.blocked
+        assert result.should_continue
+
+    def test_execute_launch_failure_is_nonblocking(self, tmp_path, sample_event):
+        executor = HookExecutor(working_dir=str(tmp_path / "missing"))
+        hook = HookDefinition(command=python_command("pass"))
+
+        result = executor.execute(hook, sample_event)
+
+        assert not result.success
+        assert result.error
+        assert not result.blocked
+        assert result.should_continue
 
     def test_execute_all_stops_on_block(self, executor, sample_event):
         """Test that execute_all stops on blocking hook."""
@@ -150,6 +204,28 @@ class TestHookExecutor:
         assert len(results) == 2  # Stopped after second hook
         assert results[0].success
         assert results[1].blocked
+
+    @pytest.mark.parametrize("stdout", ['{"decision": "deny"}', '{"continue": false}'])
+    def test_execute_all_continues_after_nonblocking_error(
+        self, executor, sample_event, stdout
+    ):
+        hooks = [
+            HookDefinition(
+                command=python_command(
+                    f"import sys; sys.stdout.write({stdout!r}); sys.exit(1)"
+                )
+            ),
+            HookDefinition(command=python_command("print('next hook ran')")),
+        ]
+
+        results = executor.execute_all(hooks, sample_event, stop_on_block=True)
+
+        assert len(results) == 2
+        assert results[0].exit_code == 1
+        assert not results[0].success
+        assert results[0].should_continue
+        assert results[1].success
+        assert results[1].stdout.strip() == "next hook ran"
 
     def test_execute_captures_stderr(self, executor, sample_event):
         """Test that stderr is captured."""
