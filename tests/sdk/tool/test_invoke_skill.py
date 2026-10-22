@@ -385,7 +385,7 @@ def test_agent_auto_attaches_invoke_skill_tool(
     skills: list[Skill], expect_attached: bool, tmp_path
 ):
     """`Agent._initialize` must attach `invoke_skill` iff an AgentSkills-format
-    skill is loaded — regardless of what's in `include_default_tools`."""
+    skill is loaded when `include_default_tools` was omitted."""
     agent = _make_agent(skills)
     state = ConversationState.create(
         id=uuid.uuid4(),
