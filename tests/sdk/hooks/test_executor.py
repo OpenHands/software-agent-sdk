@@ -106,6 +106,7 @@ class TestHookExecutor:
         assert result.blocked
         assert result.exit_code == 2
         assert not result.should_continue
+        assert result.decision is None
 
     @pytest.mark.parametrize("control", [{"decision": "deny"}, {"continue": False}])
     def test_execute_json_output_decision(self, executor, sample_event, control):
