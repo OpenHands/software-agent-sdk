@@ -16,6 +16,7 @@ from openhands.agent_server.persistence import (
     PERSISTED_SETTINGS_SCHEMA_VERSION,
     FileSettingsStore,
     PersistedSettings,
+    get_agent_profile_store,
     get_llm_profile_store,
     reset_stores,
 )
@@ -28,6 +29,7 @@ from openhands.sdk.settings import (
     OpenHandsAgentSettings,
 )
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
 @pytest.fixture
@@ -123,7 +125,7 @@ def test_get_conversation_settings_schema():
     assert body["model_name"] == "ConversationSettings"
 
     section_keys = [section["key"] for section in body["sections"]]
-    assert section_keys == ["general", "verification"]
+    assert section_keys == ["general", "verification", "runtime"]
 
     verification_section = next(
         section for section in body["sections"] if section["key"] == "verification"
@@ -259,6 +261,13 @@ def test_get_settings_migrates_legacy_openhands_settings_and_resaves_current(
         "max_iterations": 42,
         "confirmation_mode": True,
         "security_analyzer": "llm",
+        "default_runtime": "local",
+        "worktree_base_ref": None,
+        "worktree_branch_prefix": "openhands/",
+        "worktree_base": "default_branch",
+        "container_memory": None,
+        "container_cpus": None,
+        "container_browser": True,
     }
 
     patch_response = client_with_settings.patch(
@@ -385,6 +394,7 @@ def test_get_settings_without_header_redacts_secrets(
     cipher = Cipher(secret_key)
     store = FileSettingsStore(persistence_dir=temp_persistence_dir, cipher=cipher)
     settings = PersistedSettings()
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     settings.agent_settings.llm.api_key = SecretStr("sk-test-secret-key")
     store.save(settings)
 
@@ -406,6 +416,7 @@ def test_get_settings_with_plaintext_header_exposes_secrets(
     cipher = Cipher(secret_key)
     store = FileSettingsStore(persistence_dir=temp_persistence_dir, cipher=cipher)
     settings = PersistedSettings()
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     settings.agent_settings.llm.api_key = SecretStr("sk-test-secret-key")
     store.save(settings)
 
@@ -428,6 +439,7 @@ def test_get_settings_with_encrypted_header_encrypts_secrets(
     cipher = Cipher(secret_key)
     store = FileSettingsStore(persistence_dir=temp_persistence_dir, cipher=cipher)
     settings = PersistedSettings()
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     settings.agent_settings.llm.api_key = SecretStr("sk-test-secret-key")
     store.save(settings)
 
@@ -577,6 +589,7 @@ def test_get_settings_with_true_header_treats_as_encrypted(
     cipher = Cipher(secret_key)
     store = FileSettingsStore(persistence_dir=temp_persistence_dir, cipher=cipher)
     settings = PersistedSettings()
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     settings.agent_settings.llm.api_key = SecretStr("sk-test-secret-key")
     store.save(settings)
 
@@ -1401,6 +1414,7 @@ def test_update_agent_settings_same_kind_merge() -> None:
     """Same-kind update deep-merges within the variant."""
     settings = PersistedSettings()
     settings.update({"agent_settings_diff": {"llm": {"model": "gpt-4o"}}})
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     assert settings.agent_settings.llm.model == "gpt-4o"
 
 
@@ -1465,6 +1479,7 @@ def test_update_agent_settings_secret_survives_same_kind_merge() -> None:
 
     settings.update({"agent_settings_diff": {"llm": {"temperature": 0.5}}})
 
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     assert isinstance(settings.agent_settings.llm.api_key, SecretStr)
     assert settings.agent_settings.llm.api_key.get_secret_value() == "sk-SECRET"
 
@@ -1694,6 +1709,48 @@ def test_create_and_list_secrets(client_with_settings):
     assert "value" not in secrets[0]
 
 
+@pytest.mark.parametrize("value", ["", " \t ", REDACTED_SECRET_VALUE])
+def test_create_secret_rejects_unusable_value(client_with_settings, value):
+    response = client_with_settings.put(
+        "/api/settings/secrets",
+        json={"name": "MY_SECRET", "value": value},
+    )
+
+    assert response.status_code == 422
+    assert client_with_settings.get("/api/settings/secrets").json()["secrets"] == []
+    assert (
+        client_with_settings.get("/api/settings/secrets/MY_SECRET").status_code == 404
+    )
+
+
+@pytest.mark.parametrize("value", ["", " \t ", REDACTED_SECRET_VALUE])
+def test_secret_upsert_rejects_unusable_value_without_changing_existing(
+    client_with_settings, value
+):
+    created = client_with_settings.put(
+        "/api/settings/secrets",
+        json={
+            "name": "MY_SECRET",
+            "value": "original-value",
+            "description": "Original",
+        },
+    )
+    assert created.status_code == 200
+
+    response = client_with_settings.put(
+        "/api/settings/secrets",
+        json={"name": "MY_SECRET", "value": value, "description": "Updated"},
+    )
+
+    assert response.status_code == 422
+    stored = client_with_settings.get("/api/settings/secrets/MY_SECRET")
+    assert stored.status_code == 200
+    assert stored.text == "original-value"
+    assert client_with_settings.get("/api/settings/secrets").json()["secrets"] == [
+        {"name": "MY_SECRET", "description": "Original"}
+    ]
+
+
 def test_list_secrets_scoped_by_agent_profile(client_with_settings):
     for name in ("ALLOWED", "EXCLUDED"):
         client_with_settings.put(
@@ -1722,6 +1779,53 @@ def test_list_secrets_rejects_unknown_agent_profile(client_with_settings):
     )
 
     assert response.status_code == 404
+
+
+def test_list_secrets_unloadable_agent_profile_is_400(
+    client_with_settings, temp_persistence_dir
+):
+    """A scoping profile that no longer validates answers 400, as the
+    agent-profile routes do, not an unhandled 500."""
+    create = client_with_settings.post(
+        "/api/agent-profiles/broken",
+        json={"llm_profile_ref": "default", "secret_refs": ["ALLOWED"]},
+    )
+    assert create.status_code == 201
+    profile_id = client_with_settings.get("/api/agent-profiles/broken").json()[
+        "profile"
+    ]["id"]
+    path = temp_persistence_dir / "agent-profiles" / "broken.json"
+    data = json.loads(path.read_text())
+    data["secret_refs"] = "ALLOWED"
+    path.write_text(json.dumps(data))
+    assert client_with_settings.get("/api/agent-profiles/broken").status_code == 400
+
+    response = client_with_settings.get(
+        "/api/settings/secrets", params={"agent_profile_id": profile_id}
+    )
+
+    assert response.status_code == 400
+    assert "Failed to load profile" in response.json()["detail"]
+
+
+def test_list_secrets_busy_agent_profile_store_is_503(
+    client_with_settings, monkeypatch
+):
+    """A lock timeout on the agent-profile store answers 503, not 500."""
+    store = get_agent_profile_store()
+
+    def _timeout(*_args, **_kwargs):
+        raise TimeoutError("Agent profile store lock acquisition timed out")
+
+    monkeypatch.setattr(store, "name_for_id", _timeout)
+
+    response = client_with_settings.get(
+        "/api/settings/secrets",
+        params={"agent_profile_id": "00000000-0000-4000-8000-0000000000f1"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["exception"] == "503: Profile store is busy. Please retry."
 
 
 def test_get_secret_value(client_with_settings):
@@ -1853,6 +1957,9 @@ def test_secret_upsert_updates_existing(client_with_settings):
     get_response = client_with_settings.get("/api/settings/secrets/MY_SECRET")
     assert get_response.status_code == 200
     assert get_response.text == "updated-value"
+    assert client_with_settings.get("/api/settings/secrets").json()["secrets"] == [
+        {"name": "MY_SECRET", "description": "Updated"}
+    ]
 
 
 def test_secret_name_validation_on_get(client_with_settings):
@@ -1867,6 +1974,29 @@ def test_secret_name_validation_on_delete(client_with_settings):
     # Invalid name format
     response = client_with_settings.delete("/api/settings/secrets/invalid-name")
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "request_kwargs"),
+    [
+        ("get", "/api/settings/secrets/{name}", {}),
+        ("delete", "/api/settings/secrets/{name}", {}),
+        ("put", "/api/settings/secrets", {"json": {"name": "1bad", "value": "x"}}),
+    ],
+)
+def test_secret_routes_document_the_invalid_name_status(
+    client_with_settings, method, path, request_kwargs
+):
+    """The OpenAPI description names the status an invalid secret name gets."""
+    url = path.replace("{name}", "1bad")
+    response = client_with_settings.request(method.upper(), url, **request_kwargs)
+    assert response.status_code == 422
+
+    description = client_with_settings.get("/openapi.json").json()["paths"][path][
+        method
+    ]["description"]
+    assert "422 if" in description
+    assert "400" not in description
 
 
 # ── Concurrent update tests ────────────────────────────────────────────────
@@ -1941,6 +2071,7 @@ def test_get_settings_encrypted_mode_without_cipher_returns_503(temp_persistence
     # Note: Without cipher, we need to manually create a settings file
     store = FileSettingsStore(persistence_dir=temp_persistence_dir, cipher=None)
     settings = PersistedSettings()
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     settings.agent_settings.llm.api_key = SecretStr("sk-test-secret-key")
     store.save(settings)
 

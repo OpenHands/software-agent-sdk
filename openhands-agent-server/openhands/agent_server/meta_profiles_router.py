@@ -253,6 +253,12 @@ async def activate_meta_profile(
     except (OSError, PermissionError):
         logger.error("Failed to activate meta-profile - file I/O error")
         raise HTTPException(status_code=500, detail="Failed to activate meta-profile")
+    except RuntimeError as e:
+        logger.error(f"Failed to activate meta-profile: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Settings file is corrupted or encrypted with a different key",
+        )
 
     logger.info(f"Activated meta-profile '{name}'")
     return ActivateMetaProfileResponse(

@@ -2,9 +2,18 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, ClassVar, Final, Literal
+from typing import Any, ClassVar, Final, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 from openhands.agent_server.conversation_lease import DEFAULT_LEASE_TTL_SECONDS
 from openhands.agent_server.env_parser import (
@@ -59,6 +68,12 @@ def _default_secret_key() -> SecretStr | None:
     if session_api_key:
         return SecretStr(session_api_key)
     return None
+
+
+def _is_blank_secret(value: object) -> bool:
+    if isinstance(value, SecretStr):
+        value = value.get_secret_value()
+    return isinstance(value, str) and not value.strip()
 
 
 def _default_web_url() -> str | None:
@@ -189,8 +204,11 @@ class TelemetrySpec(BaseModel):
         default=None,
         description=(
             "Key used to pseudonymize conversation identifiers. Falls back to "
-            "a per-process random salt, which keeps pseudonyms stable within a "
-            "run but unlinkable across runs."
+            "the server's secret key (OH_SECRET_KEY, which defaults to the "
+            "first session API key), so pseudonyms stay stable and linkable "
+            "across restarts until that key changes. Only when there is no "
+            "secret key either is a random key generated per process, which "
+            "makes pseudonyms unlinkable across runs."
         ),
     )
     max_queue_size: int = Field(
@@ -344,6 +362,21 @@ class Config(BaseModel):
             "be restored between restarts."
         ),
     )
+    previous_secret_keys: list[SecretStr] = Field(
+        default_factory=list,
+        description=(
+            "Earlier values of secret_key, used only to decrypt. Values saved "
+            "under one of them stay readable and are re-encrypted under "
+            "secret_key when next saved (the settings and secrets stores are "
+            "re-encrypted at startup). To rotate, set the new key as "
+            "secret_key and put the old one here. Prefer setting OH_SECRET_KEY "
+            "explicitly: while secret_key falls back to the first session API "
+            "key, rotating that session key also rotates the encryption key, "
+            "so the old session key must go here. Set with "
+            "OH_PREVIOUS_SECRET_KEYS as a JSON list, or "
+            "OH_PREVIOUS_SECRET_KEYS_0, OH_PREVIOUS_SECRET_KEYS_1, ..."
+        ),
+    )
     web_url: str | None = Field(
         default_factory=_default_web_url,
         description=(
@@ -368,6 +401,16 @@ class Config(BaseModel):
         ),
     )
     conversation_runtime: Literal["local", "docker"] = "local"
+    conversation_runtime_selectable: bool = Field(
+        default=False,
+        description=(
+            "Serve both the local and the docker runtime and let each start "
+            "request pick one with `conversation_runtime`; requests that leave "
+            "it unset use this server's `conversation_runtime`. Requires a "
+            "Docker daemon and "
+            "`OH_SECRET_KEY`."
+        ),
+    )
     conversation_image: str = DEFAULT_CONVERSATION_IMAGE
     conversation_image_has_browser: bool | None = Field(
         default=None,
@@ -484,20 +527,64 @@ class Config(BaseModel):
         ),
     )
     model_config: ClassVar[ConfigDict] = {"frozen": True}
+    _secret_key_was_blank: bool = PrivateAttr(default=False)
+
+    @field_validator("session_api_keys")
+    @classmethod
+    def _drop_empty_session_api_keys(cls, value: list[str]) -> list[str]:
+        # An empty key (e.g. ``OH_SESSION_API_KEYS_0=``) is never a real
+        # credential; keeping it would make an empty string authenticate.
+        return [key for key in value if key]
+
+    @field_validator("secret_key")
+    @classmethod
+    def _empty_secret_key_is_unset(cls, value: SecretStr | None) -> SecretStr | None:
+        """Treat a blank secret key (e.g. ``OH_SECRET_KEY=`` or whitespace only)
+        as unset, so the session-key fallback applies instead of encrypting with
+        a key anyone can guess."""
+        if _is_blank_secret(value):
+            return _default_secret_key()
+        return value
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _remember_blank_secret_key(
+        cls, data: Any, handler: ModelWrapValidatorHandler[Self]
+    ) -> Self:
+        config = handler(data)
+        if isinstance(data, dict) and _is_blank_secret(data.get("secret_key")):
+            config._secret_key_was_blank = True
+        return config
+
+    @property
+    def secret_key_was_blank(self) -> bool:
+        """Whether a blank secret key was configured (and so treated as unset)."""
+        return self._secret_key_was_blank
 
     @property
     def cipher(self) -> Cipher | None:
-        cipher = getattr(self, "_cipher", None)
-        if cipher is None:
-            if self.secret_key is None:
+        if self.secret_key is None:
+            if getattr(self, "_cipher", None) is not False:
                 _logger.warning(
                     "⚠️ OH_SECRET_KEY was not defined. Secrets will not "
                     "be persisted between restarts."
                 )
-                cipher = None
-            else:
-                cipher = Cipher(self.secret_key.get_secret_value())
+                setattr(self, "_cipher", False)
+            return None
+        keys = (
+            self.secret_key.get_secret_value(),
+            tuple(key.get_secret_value() for key in self.previous_secret_keys),
+        )
+        cipher = getattr(self, "_cipher", None)
+        # ``model_copy`` carries the cached cipher over, so rebuild it when the
+        # copy was given other keys (e.g. by ``POST /api/init``).
+        if (
+            not isinstance(cipher, Cipher)
+            or getattr(self, "_cipher_keys", None) != keys
+        ):
+            cipher = Cipher(keys[0], previous_keys=keys[1])
             setattr(self, "_cipher", cipher)
+            setattr(self, "_cipher_keys", keys)
         return cipher
 
 
@@ -511,6 +598,22 @@ def _read_config_file(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"Config file must contain a JSON object: {path}")
     return data
+
+
+def export_session_api_key(config: Config) -> None:
+    """Publish the server's first session key to the process environment.
+
+    In-process callers of this server read the key from the environment:
+    the ``start_child_conversation`` tool and the managed LLM key refresh look
+    at ``OH_SESSION_API_KEYS_0`` / ``SESSION_API_KEY``, which is the contract
+    the Docker and remote runtimes meet by setting one of them before the
+    server boots. A key delivered through a config file or ``POST /api/init``
+    exists only in :class:`Config` until it is exported here. The effective
+    key always wins, so a dormant process that booted with one key and was
+    initialized with another ends up with the one it authenticates with.
+    """
+    if config.session_api_keys:
+        os.environ[V1_SESSION_API_KEY_ENV] = config.session_api_keys[0]
 
 
 def load_config(config_path: Path | None = None) -> Config:
@@ -530,7 +633,8 @@ def load_config(config_path: Path | None = None) -> Config:
     if env_data is MISSING:
         data = file_data
     else:
-        data = merge(file_data, env_data)
+        # An explicit environment null (OH_<FIELD>_IS_NONE=1) clears a file value.
+        data = merge(file_data, env_data, none_overrides=True)
 
     if not data:
         return Config()

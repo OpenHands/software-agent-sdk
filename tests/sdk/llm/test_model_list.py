@@ -1,6 +1,9 @@
 import sys
 from unittest.mock import patch
 
+import litellm
+from pydantic import SecretStr
+
 from openhands.sdk.llm.utils.unverified_models import (
     _list_bedrock_foundation_models,
     get_supported_llm_models,
@@ -144,21 +147,69 @@ def test_openrouter_is_a_verified_provider():
     assert not any(m.startswith("openrouter/") for m in VERIFIED_MODELS["openrouter"])
 
 
-def test_openrouter_entries_are_real_catalog_ids():
-    """Every OpenRouter verified entry must resolve to a real LiteLLM catalog
-    model (``openrouter/<entry>``), so the route has known context-window
-    metadata for condensation. An alias-only id like ``openai/gpt-5.6`` that no
-    catalog exposes must not be listed.
-    """
-    catalog = set(get_supported_llm_models())
-    missing = [
-        entry
-        for entry in VERIFIED_MODELS["openrouter"]
-        if f"openrouter/{entry}" not in catalog
-    ]
-    assert not missing, (
-        f"OpenRouter verified entries are not real LiteLLM catalog ids: {missing}"
+def test_openrouter_models_remain_discoverable_without_litellm_catalog(monkeypatch):
+    monkeypatch.setattr(
+        litellm,
+        "model_list",
+        ["deepseek/deepseek-chat", "bedrock/anthropic.claude-3"],
     )
+    monkeypatch.setattr(litellm, "model_cost", {})
+
+    models = get_supported_llm_models()
+
+    assert "openrouter/deepseek/deepseek-chat" in models
+    assert "deepseek/deepseek-chat" in models
+    assert "bedrock/anthropic.claude-3" not in models
+    assert "openrouter/openai/gpt-5.6" not in models
+    assert "openrouter" not in get_unverified_models()
+
+
+def test_bedrock_ids_without_bedrock_prefix_are_excluded(monkeypatch):
+    """LiteLLM files Bedrock ids like ``deepseek.r1-v1:0`` under a Bedrock
+    provider; they must not leak into the list as other providers' models."""
+    monkeypatch.setattr(litellm, "model_list", ["deepseek/deepseek-chat"])
+    monkeypatch.setattr(
+        litellm,
+        "model_cost",
+        {
+            "deepseek.r1-v1:0": {"litellm_provider": "bedrock_converse"},
+            "anthropic.claude-v2:1": {"litellm_provider": "bedrock"},
+            "us.anthropic.claude-3-5-haiku-20241022-v1:0": {
+                "litellm_provider": "bedrock_converse"
+            },
+            "bedrock_mantle/openai.gpt-oss-120b": {
+                "litellm_provider": "bedrock_mantle"
+            },
+            "deepseek/deepseek-chat": {"litellm_provider": "deepseek"},
+            "claude-3-5-haiku-20241022": {"litellm_provider": "anthropic"},
+        },
+    )
+
+    models = get_supported_llm_models()
+
+    assert "deepseek/deepseek-chat" in models
+    assert "claude-3-5-haiku-20241022" in models
+    assert not any(".claude-" in m or m.startswith("deepseek.") for m in models)
+    assert not any(m.startswith("bedrock") for m in models)
+
+
+def test_bedrock_models_from_aws_are_kept_when_credentials_are_set(monkeypatch):
+    monkeypatch.setattr(litellm, "model_list", [])
+    monkeypatch.setattr(
+        litellm,
+        "model_cost",
+        {"deepseek.r1-v1:0": {"litellm_provider": "bedrock_converse"}},
+    )
+    with patch(
+        "openhands.sdk.llm.utils.unverified_models._list_bedrock_foundation_models",
+        return_value=["bedrock/deepseek.r1-v1:0"],
+    ):
+        models = get_supported_llm_models(
+            "us-east-1", SecretStr("key"), SecretStr("secret")
+        )
+
+    assert "bedrock/deepseek.r1-v1:0" in models
+    assert "deepseek.r1-v1:0" not in models
 
 
 def test_nemotron_3_super_uses_full_infra_name():
@@ -193,17 +244,26 @@ def test_verified_lists_keep_two_latest_versions_per_line():
     expectations = {
         "openai": ({"gpt-6-astra", "gpt-5.6"}, {"gpt-5.5", "gpt-5.4", "gpt-4o", "o3"}),
         "anthropic": (
-            {"claude-opus-5-5", "claude-opus-5"},
-            {"claude-opus-4-8", "claude-opus-4-7"},
+            {
+                "claude-opus-5-5",
+                "claude-opus-5",
+                "claude-sonnet-5-5",
+                "claude-sonnet-5",
+                "claude-haiku-5-5",
+            },
+            {"claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-4-6"},
         ),
         "mistral": (
             {"devstral-2512", "devstral-medium-2512"},
             {"devstral-medium-2507"},
         ),
-        "gemini": ({"gemini-3.8-flash", "gemini-3.7-flash"}, {"gemini-3.6-flash"}),
+        "gemini": ({"gemini-4-argon", "gemini-3.8-flash"}, {"gemini-3.6-flash"}),
         "deepseek": ({"deepseek-v4-pro", "deepseek-v3.2-reasoner"}, set()),
         "moonshot": ({"kimi-k3", "kimi-k2.7-code"}, {"kimi-k2.6"}),
-        "minimax": ({"minimax-m3", "minimax-m2.7"}, {"minimax-m2.5"}),
+        "minimax": (
+            {"minimax-m3.1-flash", "minimax-m3", "minimax-m2.7"},
+            {"minimax-m2.5"},
+        ),
         "glm": ({"glm-5.3", "glm-5.2"}, {"glm-5.1"}),
         "nvidia": ({"nemotron-3.5-lightning-30b-a3b", "nemotron-3-nano"}, set()),
         "qwen": ({"qwen3.8-max", "qwen3.7-max"}, {"qwen3-max", "qwen3-6-plus"}),
@@ -212,6 +272,10 @@ def test_verified_lists_keep_two_latest_versions_per_line():
         "openrouter": (
             {"anthropic/claude-opus-5", "openai/gpt-6-astra"},
             {"anthropic/claude-opus-4-7"},
+        ),
+        "digitalocean": (
+            {"anthropic-claude-opus-5.5", "anthropic-claude-opus-5"},
+            {"anthropic-claude-opus-4.8", "openai-gpt-6-astra"},
         ),
     }
     assert set(expectations) == set(VERIFIED_MODELS) - {"openhands"}

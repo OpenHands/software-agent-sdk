@@ -8,7 +8,10 @@ from typing import Literal
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field
 
-from openhands.sdk.tool.registry import list_usable_tools
+from openhands.agent_server.launch import configured_browser_available
+from openhands.sdk.settings.model import ConversationRuntime
+from openhands.sdk.tool import BROWSER_TOOL_NAME
+from openhands.sdk.tool.registry import list_registered_tools, list_usable_tools
 from openhands.tools.terminal.timeout_policy import (
     get_max_foreground_timeout_seconds,
     get_runtime_idle_timeout_seconds,
@@ -60,6 +63,13 @@ class ServerInfo(BaseModel):
         default_factory=lambda: get_runtime_idle_timeout_seconds()
     )
     conversation_runtime: Literal["local", "docker"] = "local"
+    available_conversation_runtimes: list[ConversationRuntime] = Field(
+        default_factory=list,
+        description=(
+            "Runtimes a start request may select with `conversation_runtime`. "
+            "Empty means only `conversation_runtime` is served."
+        ),
+    )
     capabilities: list[str] = Field(
         default_factory=lambda: [
             "conversation_runtime_routes_v1",
@@ -74,6 +84,9 @@ class ServerInfo(BaseModel):
             "idempotent_conversation_create_v1",
             "tool_catalog_v1",
             "agent_profile_draft_materialize_v1",
+            "agent_launch_pipeline_v1",
+            "profile_public_skills_v1",
+            "skill_catalog_v1",
         ]
     )
     app_backend_ingress_url: str | None = Field(
@@ -131,16 +144,35 @@ async def ready(response: Response) -> dict[str, str]:
         return {"status": "initializing", "message": "Server is still initializing"}
 
 
+def _usable_tools(browser_available: bool | None) -> list[str]:
+    """Usable tools, with the browser fixed by config as the tool catalog does."""
+    tools = list_usable_tools()
+    if browser_available is None:
+        return tools
+    if not browser_available:
+        return [name for name in tools if name != BROWSER_TOOL_NAME]
+    if BROWSER_TOOL_NAME not in tools and BROWSER_TOOL_NAME in list_registered_tools():
+        tools.append(BROWSER_TOOL_NAME)
+    return tools
+
+
 def build_server_info(
     conversation_runtime: Literal["local", "docker"] = "local",
     app_backend_ingress_url: str | None = None,
+    conversation_runtime_selectable: bool = False,
+    browser_available: bool | None = None,
 ) -> ServerInfo:
+    """Build the server info; ``browser_available`` None probes this process."""
     now = time.time()
     info = ServerInfo(
         uptime=int(now - _start_time),
         idle_time=int(now - _last_event_time),
         conversation_runtime=conversation_runtime,
+        available_conversation_runtimes=(
+            ["local", "docker"] if conversation_runtime_selectable else []
+        ),
         app_backend_ingress_url=app_backend_ingress_url,
+        usable_tools=_usable_tools(browser_available),
     )
     if app_backend_ingress_url:
         info.capabilities.append("canvas_app_backend_bridge_v1")
@@ -153,4 +185,6 @@ async def get_server_info(request: Request) -> ServerInfo:
     return build_server_info(
         config.conversation_runtime,
         app_backend_ingress_url=config.app_backend_public_url,
+        conversation_runtime_selectable=config.conversation_runtime_selectable,
+        browser_available=configured_browser_available(config),
     )

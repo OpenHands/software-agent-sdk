@@ -263,6 +263,44 @@ def test_activate_missing_returns_404(client):
     assert response.status_code == 404
 
 
+def test_activate_with_corrupted_settings_returns_409(client, store, temp_settings_dir):
+    """An unreadable settings.json is refused with 409, as LLM-profile
+    activation does, without leaking the settings path or touching the file."""
+    store.save("p", MetaProfile.model_validate(_meta()))
+    store.save("q", MetaProfile.model_validate(_meta()))
+    assert client.post("/api/meta-profiles/p/activate").status_code == 200
+    settings_path = temp_settings_dir / "settings.json"
+    valid = settings_path.read_bytes()
+    settings_path.write_bytes(b'{"agent_settings": ')
+
+    response = client.post("/api/meta-profiles/q/activate")
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "Settings file is corrupted or encrypted with a different key"
+    }
+    assert str(settings_path) not in response.text
+    assert settings_path.read_bytes() == b'{"agent_settings": '
+
+    settings_path.write_bytes(valid)
+    assert client.get("/api/meta-profiles").json()["active_meta_profile"] == "p"
+
+
+def test_activate_settings_io_error_returns_500(client, store, monkeypatch):
+    """Filesystem errors keep their 500, distinct from a corrupted file."""
+    store.save("p", MetaProfile.model_validate(_meta()))
+
+    def fail(self, update_fn):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(type(get_settings_store()), "update", fail)
+
+    response = client.post("/api/meta-profiles/p/activate")
+
+    assert response.status_code == 500
+    assert "disk full" not in response.text
+
+
 def test_concurrent_delete_and_activate_keep_settings_consistent(client, store):
     """Racing delete(active) against activate(other) must not corrupt settings.
 
