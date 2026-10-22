@@ -228,6 +228,12 @@ to another service; require real scored events before recording a pass.
   here (`OpenHands/agent-sdk`), Agent Canvas UI in `OpenHands/OpenHands`,
   scheduling and dispatch in `OpenHands/automation`. Never rewrite an expected
   result to bless broken behavior.
+  To learn whether users can see it, run `control-agent-server map dependents
+  <ID>`: it lists the Agent Canvas and automation families whose `Server:`
+  line names that feature. Drive them on a baseline and on the fix
+  (verify-openhands: `launch --sdk-ref main` and `--sdk-ref <branch>`). A bug
+  users can see gets a known-bug block in that consumer's map too; one no
+  consumer path shows stays in this map only.
 - **Blocked**: name the missing prerequisite (key, account, Docker, binary, OS)
   and the route you attempted. Unreachable is never a pass.
   `control-agent-server capabilities` says what this machine can drive and

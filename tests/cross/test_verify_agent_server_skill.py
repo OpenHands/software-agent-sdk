@@ -1150,3 +1150,61 @@ def test_without_a_run_errors_are_one_json_object(tmp_path, monkeypatch, capsys)
     assert code == 3
     assert payload["ok"] is False
     assert "launch --new --print-run" in payload["hint"]
+
+
+def _consumer(tmp_path, name, families):
+    feature_map = tmp_path / name / ".agents/skills/verify-x/references/feature-map"
+    feature_map.mkdir(parents=True)
+    for file, head in families.items():
+        (feature_map / file).write_text(
+            f"# {file}\n\nText.\n\n{head}\n## Sub-features\n\n- `F01.x`: x\n\n"
+            "Server: F99\n"
+        )
+    return tmp_path / name
+
+
+def test_server_line_ids_reads_only_the_head():
+    text = (
+        "# F08\n\nSource: `src/x.ts`.\n\nServer: F13, F15.changes, `F14`.\n\n"
+        "## Sub-features\n\nServer: F16\n"
+    )
+    assert cas.server_line_ids(text) == ["F13", "F15.changes"]
+    assert cas.server_line_ids("# F01\n\n## Sub-features\n") == []
+    assert cas.server_ids_overlap("F15", "F15.changes")
+    assert cas.server_ids_overlap("F15.changes", "F15")
+    assert cas.server_ids_overlap("F15.diff", "F15.diff")
+    assert not cas.server_ids_overlap("F15.diff", "F15.changes")
+    assert not cas.server_ids_overlap("F14", "F15.changes")
+
+
+def test_map_dependents_lists_consumer_families(tmp_path, capsys):
+    canvas = _consumer(
+        tmp_path,
+        "canvas",
+        {
+            "F08-files.md": "Server: F13, F15, F16.",
+            "F24-sync.md": "Server: F15.commits.",
+            "F02-shell.md": "",
+        },
+    )
+    code, out = _run(
+        capsys, "map", "dependents", "F15.changes", "F16", "--consumer", str(canvas)
+    )
+    assert code == 0, out
+    (consumer,) = json.loads(out)["consumers"]
+    assert consumer["skill"] == "verify-x"
+    assert consumer["families"] == [{"file": "F08-files.md", "server": ["F15", "F16"]}]
+    assert consumer["undeclared"] == ["F02-shell.md"]
+
+    code, out = _run(capsys, "map", "dependents", "F15", "--consumer", str(canvas))
+    files = [f["file"] for f in json.loads(out)["consumers"][0]["families"]]
+    assert files == ["F08-files.md", "F24-sync.md"]
+
+
+def test_map_dependents_rejects_unknown_ids_and_empty_checkouts(tmp_path, capsys):
+    code, out = _run(capsys, "map", "dependents", "F99.nope", "--consumer", ".")
+    assert code == 2
+    assert "F99.nope" in out
+    code, out = _run(capsys, "map", "dependents", "F15", "--consumer", str(tmp_path))
+    assert code == 2
+    assert "feature-map" in out

@@ -5151,6 +5151,142 @@ def cmd_map_owners(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+# Consumer maps (Agent Canvas in OpenHands/OpenHands, automation in
+# OpenHands/automation) declare which server features a family calls on a
+# `Server:` line in the family's head, with this map's IDs:
+#   Server: F13, F15.changes, F15.diff, F16.
+# The consumer declares the dependency because only its code knows it; this
+# side looks it up to find the user features a server change can reach.
+CONSUMER_REPOS = {
+    "OpenHands/OpenHands": "verify-openhands",
+    "OpenHands/automation": "verify-automation",
+}
+SERVER_TOKEN_RE = re.compile(r"^F\d{2}(\.[a-z0-9-]+)?$")
+
+
+def server_line_ids(text: str) -> list[str]:
+    """The IDs on the `Server:` line of a family's head (before the first H2)."""
+    head = re.split(r"^## ", text, maxsplit=1, flags=re.M)[0]
+    match = re.search(r"^Server:(.*)$", head, re.M)
+    if not match:
+        return []
+    tokens = (t.strip() for t in match.group(1).strip().rstrip(".").split(","))
+    return [t for t in tokens if SERVER_TOKEN_RE.match(t)]
+
+
+def server_ids_overlap(declared: str, wanted: str) -> bool:
+    """`F15` covers every `F15.*` ID and the reverse; sub-features match exactly."""
+    if declared.split(".")[0] != wanted.split(".")[0]:
+        return False
+    return "." not in declared or "." not in wanted or declared == wanted
+
+
+def consumer_map_dirs(checkout: Path) -> list[Path]:
+    return sorted(
+        d
+        for d in checkout.glob(".agents/skills/*/references/feature-map")
+        if d.is_dir() and d.resolve() != FEATURE_MAP_DIR.resolve()
+    )
+
+
+def fetch_consumer(repo: str, ref: str, into: Path) -> Path:
+    """A sparse, shallow clone of a consumer repository's `.agents/skills`."""
+    dest = into / repo.replace("/", "__")
+    if dest.exists():
+        shutil.rmtree(dest)
+    steps = [
+        [
+            "git",
+            "clone",
+            "-q",
+            "--depth",
+            "1",
+            "--filter=blob:none",
+            "--sparse",
+            "--branch",
+            ref,
+            f"https://github.com/{repo}.git",
+            str(dest),
+        ],
+        ["git", "-C", str(dest), "sparse-checkout", "set", ".agents/skills"],
+    ]
+    for cmd in steps:
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if done.returncode:
+            env_error(
+                f"could not fetch {repo}@{ref}: {done.stderr.strip()[-300:]}",
+                hint="Pass local checkouts with --consumer DIR instead.",
+            )
+    return dest
+
+
+def cmd_map_dependents(args: argparse.Namespace) -> dict[str, Any]:
+    wanted = list(args.ids)
+    if args.changed:
+        owners = cmd_map_owners(
+            argparse.Namespace(changed=args.changed, paths=[], target=None)
+        )
+        wanted += [name[:3] for name in owners["families"]]
+    if not wanted:
+        usage_error(
+            "name server IDs or a --changed range",
+            example=f"{CLI} map dependents F15.changes-repo-below-path",
+        )
+    known = {row["id"] for row in collect_ids()} | {
+        path.name[:3] for path in family_files()
+    }
+    unknown = [i for i in wanted if i not in known]
+    if unknown:
+        usage_error(
+            f"not in this map: {', '.join(unknown)}",
+            example=f"{CLI} map ids --file {unknown[0][:3]}",
+        )
+    if args.consumer:
+        checkouts = [(None, Path(c).resolve()) for c in args.consumer]
+    else:
+        cache = (
+            Path(args.cache).resolve()
+            if args.cache
+            else Path(os.environ.get("TMPDIR", "/tmp"))
+            / "verify-agent-server-consumers"
+        )
+        cache.mkdir(parents=True, exist_ok=True)
+        checkouts = [
+            (repo, fetch_consumer(repo, args.ref, cache)) for repo in CONSUMER_REPOS
+        ]
+    consumers = []
+    for repo, checkout in checkouts:
+        maps = consumer_map_dirs(checkout)
+        if not maps:
+            usage_error(
+                f"no .agents/skills/*/references/feature-map under {checkout}",
+                example=f"{CLI} map dependents F15 --consumer ../OpenHands",
+            )
+        for feature_map in maps:
+            families, undeclared = [], []
+            for path in sorted(feature_map.glob("F[0-9][0-9]-*.md")):
+                declared = server_line_ids(path.read_text())
+                if not declared:
+                    undeclared.append(path.name)
+                    continue
+                matches = sorted(
+                    {d for d in declared for w in wanted if server_ids_overlap(d, w)}
+                )
+                if matches:
+                    families.append({"file": path.name, "server": matches})
+            consumers.append(
+                {
+                    "repo": repo,
+                    "map": str(feature_map),
+                    "skill": feature_map.parent.parent.name,
+                    "families": families,
+                    # Families without a Server: line cannot be ruled out.
+                    "undeclared": undeclared,
+                }
+            )
+    return {"ok": True, "ids": wanted, "consumers": consumers}
+
+
 # The maintenance baseline recorded in the map index, on a line of the form
 #   Maintenance baseline: main@<sha> (<YYYY-MM-DD>). <prose>
 # A pass reads it as BASE; a pass that finished its changed families moves it
@@ -6318,11 +6454,12 @@ Prints the value (parsed as JSON when it is JSON) and the --check results like
   {CLI} map diff --base ../agent-sdk-base       # routes added/removed/deprecated since BASE
   {CLI} map owners --changed origin/main...HEAD
   {CLI} map owners                          # families changed since the maintenance baseline
+  {CLI} map dependents F15.changes          # Canvas/automation families that call it
   {CLI} map baseline                        # the recorded baseline and how far HEAD is from it""",
     )
     mp_sub = mp.add_subparsers(
         dest="map_command",
-        metavar="<run|check|coverage|ids|routes|diff|owners|baseline>",
+        metavar="<run|check|coverage|ids|routes|diff|owners|dependents|baseline>",
     )
     mc = mp_sub.add_parser(
         "check",
@@ -6439,6 +6576,34 @@ reported and not executed. Transcripts are saved under <run>/evidence/map-run/."
     mo.set_defaults(func=cmd_map_owners)
     mo.add_argument("paths", nargs="*")
     mo.add_argument("--changed", metavar="BASE..TARGET")
+    mdep = mp_sub.add_parser(
+        "dependents",
+        help="consumer families whose Server: line names these server features",
+        formatter_class=Formatter,
+        epilog=f"""Examples:
+  {CLI} map dependents F15.changes-repo-below-path
+  {CLI} map dependents --changed origin/main...HEAD     # families a server PR touches
+  {CLI} map dependents F15 --consumer ../OpenHands --consumer ../automation
+
+Agent Canvas (OpenHands/OpenHands) and automation (OpenHands/automation)
+declare the server features each family calls on a `Server:` line with this
+map's IDs. A family ID (F15) matches every sub-feature of that family.
+Without --consumer, both repositories' `.agents/skills` are fetched from
+--ref (main) with a sparse, shallow clone. Drive the families listed on a
+baseline and on the change (verify-openhands: `launch --sdk-ref`) to see
+whether users can tell; `undeclared` families have no Server: line yet.""",
+    )
+    mdep.set_defaults(func=cmd_map_dependents)
+    mdep.add_argument("ids", nargs="*", help="server IDs: F15 or F15.changes")
+    mdep.add_argument("--changed", metavar="BASE..TARGET")
+    mdep.add_argument(
+        "--consumer",
+        action="append",
+        metavar="DIR",
+        help="a consumer checkout (repeatable); default: fetch from GitHub",
+    )
+    mdep.add_argument("--ref", default="main", help="branch to fetch (default main)")
+    mdep.add_argument("--cache", metavar="DIR", help="where fetched clones go")
     mo.add_argument(
         "--target",
         help="with neither paths nor --changed: diff baseline..TARGET (default HEAD)",
