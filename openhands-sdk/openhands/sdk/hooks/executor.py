@@ -570,7 +570,7 @@ class HookExecutor:
             )
 
             # Try to parse JSON from stdout
-            if result.stdout.strip():
+            if result.returncode == 0 and result.stdout.strip():
                 try:
                     output_data = json.loads(result.stdout)
                     if isinstance(output_data, dict):
