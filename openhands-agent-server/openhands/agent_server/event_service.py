@@ -62,6 +62,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.conversation.types import ConversationCallbackType
 from openhands.sdk.credential import (
     CredentialBindingError,
     CredentialNeedsReauthentication,
@@ -1055,6 +1056,10 @@ class EventService:
         This schedules event emission in the main event loop, making it safe to call
         from callbacks that may run in different threads. Events are emitted through
         the conversation's normal event flow to ensure they are persisted.
+
+        The event is re-stamped once the lock is held: it is appended only
+        after the step holding the lock appends its own events, and search
+        and ``resend_mode=since`` rely on log order being timestamp order.
         """
         main_loop = self._main_loop
         conversation = self._conversation
@@ -1063,7 +1068,11 @@ class EventService:
             # to conversation state and event log during concurrent operations
             def locked_on_event():
                 with conversation._state:
-                    conversation._on_event(event)
+                    conversation._on_event(
+                        event.model_copy(
+                            update={"timestamp": datetime.now().isoformat()}
+                        )
+                    )
 
             # Run the locked callback in an executor to ensure the event is
             # both persisted and sent to WebSocket subscribers. The future
@@ -1139,6 +1148,24 @@ class EventService:
             return
         self._last_stream_activity_signal = now
         update_last_execution_time()
+
+    @staticmethod
+    def _state_change_callback(
+        conversation: LocalConversation,
+    ) -> ConversationCallbackType:
+        """Publish state changes, re-wiring the managed-key hook on a new agent.
+
+        ``switch_llm`` / ``switch_profile`` (REST endpoints and the agent's
+        switch tools) install a new LLM object without the refresh hook that
+        ``start()`` registered (#5890).
+        """
+
+        def callback(event: Event) -> None:
+            if isinstance(event, ConversationStateUpdateEvent) and event.key == "agent":
+                register_managed_llm_key_refresh(conversation._state.agent)
+            conversation._on_event(event)
+
+        return callback
 
     def _setup_stats_streaming(self, agent: AgentBase) -> None:
         """Configure stats update callbacks to stream stats changes via events."""
@@ -1368,7 +1395,9 @@ class EventService:
             self._lease_task = asyncio.create_task(self._renew_lease_loop())
 
         # Register state change callback to automatically publish updates
-        self._conversation._state.set_on_state_change(self._conversation._on_event)
+        self._conversation._state.set_on_state_change(
+            self._state_change_callback(self._conversation)
+        )
 
         # Setup LLM log streaming for remote execution
         self._setup_llm_log_streaming(self._conversation.agent)

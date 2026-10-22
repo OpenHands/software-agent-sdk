@@ -385,9 +385,14 @@ def test_a_corrupt_default_alone_leaves_no_profile_active(
     assert response.json() == {"profiles": [], "active_agent_profile_id": None}
 
 
-def test_a_dangling_pointer_moves_to_a_seeded_default(client):
-    stale = "12345678-1234-1234-1234-1234567890ab"
-    client.patch("/api/settings", json={"active_agent_profile_id": stale})
+def test_a_dangling_pointer_moves_to_a_seeded_default(client, store):
+    # PATCH /api/settings refuses unknown ids (#5847), so activate a real
+    # profile and then remove its file out of band.
+    profile = OpenHandsAgentProfile(name="gone", llm_profile_ref="x")
+    store.save(profile)
+    stale = str(profile.id)
+    assert client.post(f"/api/agent-profiles/{stale}/activate").status_code == 200
+    (store.base_dir / "gone.json").unlink()
 
     body = client.get("/api/agent-profiles").json()
 

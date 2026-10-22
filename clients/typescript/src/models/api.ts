@@ -399,6 +399,8 @@ export interface MetaProfileMutationResponse {
 export interface ActivateMetaProfileResponse {
   name: string;
   message: string;
+  /** False when the agent settings cannot route (e.g. ACP), so nothing was activated. */
+  applied?: boolean;
 }
 
 export type ExposeSecretsMode = 'encrypted' | 'plaintext';

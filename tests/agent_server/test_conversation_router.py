@@ -1014,6 +1014,60 @@ def test_start_conversation_invalid_request(client, mock_conversation_service):
         client.app.dependency_overrides.clear()
 
 
+@pytest.mark.parametrize("value", ["plain-value", 5, None, True])
+def test_start_conversation_non_object_secret_is_422(
+    client, mock_conversation_service, value
+):
+    """A secret value that is not an object is a 422, never a 500."""
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        request = {
+            "agent": {
+                "kind": "Agent",
+                "llm": {"model": "gpt-4o", "api_key": "k", "usage_id": "test-llm"},
+                "tools": [],
+            },
+            "workspace": {"working_dir": "/tmp/test"},
+            "secrets": {"PLAIN": value},
+        }
+
+        response = client.post("/api/conversations", json=request)
+
+        assert response.status_code == 422
+        assert response.json()["detail"][0]["loc"] == ["body", "secrets", "PLAIN"]
+        mock_conversation_service.start_conversation.assert_not_called()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize("value", [5, None, True])
+def test_update_secrets_non_string_value_is_422(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id, value
+):
+    """A number, null or boolean secret value is a 422, never a 500."""
+
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/secrets",
+            json={"secrets": {"BAD": value}},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"][0]["loc"] == ["body", "secrets", "BAD"]
+        mock_event_service.update_secrets.assert_not_called()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_start_conversation_minimal_request(
     client, mock_conversation_service, sample_conversation_info
 ):
