@@ -43,6 +43,12 @@ def _is_abstract(type_: type) -> bool:
         return False
 
 
+def _is_object_input(data: Any, cls: type) -> bool:
+    """Whether ``data`` is a dict or an instance of ``cls`` (a bool, so that
+    pyright does not narrow ``data`` at the call site)."""
+    return isinstance(data, (dict, cls))
+
+
 def get_handler_class_name(handler: SerializerFunctionWrapHandler) -> str:
     """Extract the class name from a Pydantic serializer handler's repr string.
 
@@ -209,6 +215,10 @@ class DiscriminatedUnionMixin(OpenHandsModel):
     def _validate_subtype(
         cls, data: Any, handler: ModelWrapValidatorHandler[Self], info: ValidationInfo
     ) -> Self:
+        if not _is_object_input(data, cls):
+            # Let pydantic report a non-object input (a string, number, null,
+            # list...) as a ValidationError instead of failing on .pop().
+            return handler(data)
         if isinstance(data, cls):
             return data
         if not _is_abstract(cls):

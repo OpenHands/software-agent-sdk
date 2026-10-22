@@ -34,7 +34,7 @@ Routes: `GET /api/meta-profiles`, `GET /api/meta-profiles/{name}`,
 - `F22.overwrite`: saving an existing name replaces the whole config (here classes mode becomes direct mode) without adding a list entry.
 - `F22.name-rules`: names must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`: a leading `-` is 422 on all four named routes, 64 characters are accepted and 65 are 422.
 - `F22.not-found`: `GET` and `activate` of an unknown name answer 404 `Meta-profile '<name>' not found` and the active pointer stays; `DELETE` of an unknown name is 200 (idempotent).
-- `F22.activate`: `activate` answers 200 `Meta-profile '<name>' activated`; the list's `active_meta_profile` and `GET /api/settings` (`active_meta_profile`, `agent_settings.active_meta_profile`, `enable_classify_and_switch_llm_tool: true`, inline `meta_profile`) follow, the agent's LLM is unchanged, and `settings.json` stores it.
+- `F22.activate`: `activate` answers 200 `Meta-profile '<name>' activated` with `applied: true`; the list's `active_meta_profile` and `GET /api/settings` (`active_meta_profile`, `agent_settings.active_meta_profile`, `enable_classify_and_switch_llm_tool: true`, inline `meta_profile`) follow, the agent's LLM is unchanged, and `settings.json` stores it.
 - `F22.route-classes`: a conversation started from the settings carries the `ClassifyAndSwitchLLMTool` spec; when the agent calls `route_task_to_model`, the classifier profile picks the class, the observation names the class, profile and model, the conversation switches to `deepseek-pro`, both LLMs' usage is metered, and the events socket shows the switch live.
 - `F22.route-direct`: with a direct-routing meta-profile active, the classifier's JSON answer switches the conversation to the named profile (`chosen_class` `model: deepseek-pro`).
 - `F22.route-missing-profile`: a meta-profile whose `classifier_model` names no saved LLM profile is accepted at save time; overwriting the active one takes effect without re-activation (the store wins over the inline copy), and the tool then answers an error observation naming the missing profile while the conversation keeps its LLM.
@@ -42,7 +42,7 @@ Routes: `GET /api/meta-profiles`, `GET /api/meta-profiles/{name}`,
 - `F22.delete`: deleting an inactive meta-profile removes the file and the list entry, keeps the active pointer, and a repeated delete is 200.
 - `F22.delete-active-clears`: deleting the active meta-profile clears `active_meta_profile` in the list and settings, disables the routing tool and drops the inline copy; new conversations no longer get the tool.
 - `F22.acp-clears-pointer`: switching the settings' agent kind to ACP clears the active pointer; back on OpenHands settings the meta-profile can be activated again.
-- `F22.activate-acp`: on ACP agent settings, where no routing tool can be attached, activation is refused with a 4xx instead of answering `activated` while nothing is active.
+- `F22.activate-acp`: on ACP agent settings, where no routing tool can be attached, activation answers 200 `applied: false` with `Meta-profile '<name>' not activated: ...`, and `active_meta_profile` stays `null` in the list and in settings (as LLM-profile activation reports `llm_applied: false`).
 - `F22.corrupt-files`: a meta-profile file that is not valid JSON or not an object is left out of the list and answers 400 `Failed to load meta-profile ...` on `GET` and `activate`; saving over it repairs it.
 - `F22.corrupt-settings`: with an unreadable `settings.json`, activation is refused with 409 (as LLM-profile activation does) and the file is left untouched.
 - `F22.store-busy`: while another process holds the meta-profile store's lock, a save and a delete each wait out the 30-second lock timeout and answer 503 `Meta-profile store is busy. Please retry.` without changing anything; once the lock is free the same save is 201.
@@ -62,9 +62,9 @@ Routes: `GET /api/meta-profiles`, `GET /api/meta-profiles/{name}`,
 - REST, second views: `GET /api/settings` (`active_meta_profile` and
   `agent_settings.{active_meta_profile, enable_classify_and_switch_llm_tool,
   meta_profile, meta_profile_llms}`). `PATCH /api/settings` with
-  `active_meta_profile` sets the same pointer without the existence check or
-  the inline copy (owned by the settings family; its dangling-pointer case is
-  `F18.dangling-pointers`).
+  `active_meta_profile` sets the same pointer after the same existence check
+  (404 for an unknown name) but without the inline copy (owned by the settings
+  family; its dangling-pointer case is `F18.dangling-pointers`).
 - Runtime: a conversation created with `agent_settings` from
   `GET /api/settings` (the Agent Canvas path, which `conversation start`
   follows) gets the `ClassifyAndSwitchLLMTool` spec with
@@ -108,9 +108,9 @@ Preconditions:
 - `F22.persist-restart` restarts the run; `F22.store-busy` holds the store
   lock for about 66 seconds and `F22.store-busy-responsive` for about 40;
   `F22.persistence-dir` launches and stops a second server.
-- The known-bug bullets that change shared state (`F22.empty-router`,
+- The bullets that change shared state (`F22.empty-router`,
   `F22.activate-acp`, `F22.corrupt-settings`) undo it in an `EXIT` trap, so
-  the bullets after them find the same state whether the bug reproduced or
+  the bullets after them find the same state whether their assertion held or
   not.
 
   ```sh
@@ -133,7 +133,7 @@ Preconditions:
   assert.deepEqual(got.config, { ...config, prompt_template: null, model_table: null });
   const listed = await client.listMetaProfiles();
   assert.ok(listed.meta_profiles.some((p) => p.name === 'qa-ts' && p.classifier_model === 'deepseek-flash' && p.num_classes === 1));
-  assert.deepEqual(await client.activateMetaProfile('qa-ts'), { name: 'qa-ts', message: "Meta-profile 'qa-ts' activated" });
+  assert.deepEqual(await client.activateMetaProfile('qa-ts'), { name: 'qa-ts', message: "Meta-profile 'qa-ts' activated", applied: true });
   assert.equal((await client.listMetaProfiles()).active_meta_profile, 'qa-ts');
   assert.deepEqual(await client.deleteMetaProfile('qa-ts'), { name: 'qa-ts', message: "Meta-profile 'qa-ts' deleted" });
   assert.equal((await client.listMetaProfiles()).active_meta_profile, null);
@@ -290,7 +290,7 @@ Preconditions:
 - **Activate (`F22.activate`).** Activate `qa-router` and read every view.
   ```sh
   control-agent-server api POST /api/meta-profiles/qa-router/activate --expect 200 --check name eq qa-router \
-    --check message eq "Meta-profile 'qa-router' activated" --save F22.activate/activate
+    --check message eq "Meta-profile 'qa-router' activated" --check applied eq true --save F22.activate/activate
   control-agent-server api POST /api/meta-profiles/qa-missing/activate --expect 404
   control-agent-server api GET /api/meta-profiles --check active_meta_profile eq qa-router --save F22.activate/list
   control-agent-server api GET /api/settings --expect 200 --max-chars 300 --check active_meta_profile eq qa-router \
@@ -450,12 +450,11 @@ Preconditions:
   the routing tool); the switch back does not restore it. After
   re-activating the `deepseek-flash` LLM profile (the switch back starts from
   default OpenHands settings), `qa-direct` activates again.
-- **Activation on ACP settings (`F22.activate-acp`), known bug.** Switch to
+- **Activation on ACP settings (`F22.activate-acp`).** Switch to
   ACP, activate, read the list and settings, then assert the activation's
-  status (the bug assertion, last, so the list and settings are read on
-  every replay). An `EXIT` trap restores OpenHands settings with
-  `deepseek-flash` and `qa-direct` active (and checks it) whether the
-  assertion held or not.
+  status (last, so the list and settings are read on every replay). An
+  `EXIT` trap restores OpenHands settings with `deepseek-flash` and
+  `qa-direct` active (and checks it) whether the assertion held or not.
   ```sh
   restore_openhands() {
     control-agent-server api PATCH /api/settings --json '{"agent_settings_diff": {"agent_kind": "openhands"}}' --expect 200 --quiet
@@ -472,19 +471,14 @@ Preconditions:
     | tee "$F22/acp-activate.json"
   control-agent-server api GET /api/meta-profiles --check active_meta_profile eq null --save F22.activate-acp/list
   control-agent-server api GET /api/settings --max-chars 200 --check active_meta_profile eq null --check agent_settings.agent_kind eq acp
-  control-agent-server assert --json "$F22/acp-activate.json" --check status ge 400 --check status lt 500  # bug: value.status eq 200 && value.response.body.message eq "Meta-profile 'qa-direct' activated"
+  control-agent-server assert --json "$F22/acp-activate.json" --check status eq 200 --check response.body.applied eq false \
+    --check response.body.message eq "Meta-profile 'qa-direct' not activated: the current agent settings cannot route between models"
   ```
-  Expected a 4xx: settings that cannot attach the routing tool should refuse
-  the activation, the way `PersistedSettings` refuses to record it. Today the
-  route answers 200 `Meta-profile 'qa-direct' activated` while
-  `active_meta_profile` stays `null` in the list and in settings:
-  `_apply_active_meta_profile` silently drops the pointer for ACP, and
-  `activate_meta_profile` reports success regardless
-  (`meta_profiles_router.py`). LLM-profile activation on ACP settings is
-  honest in a different way: it answers 200 with `llm_applied: false`. A fix
-  that answers 200 with a similar flag instead of a 4xx would also be honest;
-  in that case, rewrite this bullet's assertion. The bullet restores
-  OpenHands settings with `deepseek-flash` and `qa-direct` active either way.
+  ACP settings cannot attach the routing tool, so `PersistedSettings` does
+  not record the pointer; the route says so with 200 `applied: false` and a
+  `not activated` message, the way LLM-profile activation on ACP settings
+  answers `llm_applied: false`. The bullet restores OpenHands settings with
+  `deepseek-flash` and `qa-direct` active either way.
 - **Corrupted files (`F22.corrupt-files`).** Write a truncated meta-profile
   and one that is a JSON list (arrange: a crash mid-write or a hand edit).
   ```sh
@@ -510,10 +504,10 @@ Preconditions:
   Both broken files are missing from the list, `GET` and `activate` are 400
   with the parser's message (not 500) and `qa-direct` stays active; saving
   over `qa-corrupt` repairs it and both deletes remove the files.
-- **Unreadable settings (`F22.corrupt-settings`), known bug.** Truncate
+- **Unreadable settings (`F22.corrupt-settings`).** Truncate
   `settings.json`, show that LLM-profile activation refuses it with 409, then
   activate a meta-profile, check the file was left alone, put it back, and
-  assert the activation's status last (the bug assertion). An `EXIT` trap
+  assert the activation's status last. An `EXIT` trap
   puts the saved `settings.json` back if an earlier step breaks.
   ```sh
   S="$AGENT_SERVER_VERIFY_RUN/home/.openhands/settings.json"
@@ -529,15 +523,14 @@ Preconditions:
   test "$(cat "$S")" = '{"agent_settings": '
   restore_settings
   control-agent-server api GET /api/meta-profiles --check active_meta_profile eq qa-direct
-  control-agent-server assert --json "$F22/corrupt-settings-activate.json" --check status eq 409  # bug: value.status eq 500 && value.response.body.exception contains 'Cannot load settings from'
+  control-agent-server assert --json "$F22/corrupt-settings-activate.json" --check status eq 409 \
+    --check response.body.detail eq 'Settings file is corrupted or encrypted with a different key'
   ```
-  Expected 409, as `POST /api/profiles/{name}/activate` answers for the same
-  file (`Settings file is corrupted or encrypted with a different key`; the
-  positive control above). Today the meta-profile activation is an unmapped
-  500 whose `exception` field carries the `RuntimeError` text with the
-  absolute settings path: the route catches only `OSError` around
-  `settings_store.update`. The file is left as written in both cases and is
-  put back afterwards.
+  The meta-profile activation answers 409 `Settings file is corrupted or
+  encrypted with a different key`, as `POST /api/profiles/{name}/activate`
+  does for the same file (the control above), without naming the settings
+  path. The file is left as written in both cases and is put back
+  afterwards.
 - **Store busy (`F22.store-busy`).** Another process (here `flock`, standing
   in for a second server or an SDK `MetaProfileStore` on the same
   persistence directory) holds the store's lock for 66 seconds while a save
@@ -692,8 +685,8 @@ Preconditions:
   `agent_settings.meta_profile` copy is only a fallback for runtimes without
   the store. Overwriting the active meta-profile does not refresh the inline
   copy (re-activate to refresh it), and `PATCH /api/settings` with
-  `active_meta_profile` sets the pointer and enables the tool without any
-  existence check or inline copy (`F18.dangling-pointers`). With the tool
+  `active_meta_profile` sets the pointer and enables the tool without the
+  inline copy; an unknown name is 404 (`F18.dangling-pointers`). With the tool
   enabled, no pointer and no inline copy, it falls back to the alphabetically
   first meta-profile in the store.
 - Routing needs the agent to call `route_task_to_model`; the classifier then

@@ -7,6 +7,7 @@ from pydantic import (
     ConfigDict,
     Field,
     TypeAdapter,
+    ValidationError,
     computed_field,
     model_validator,
 )
@@ -161,6 +162,16 @@ def test_additional_field() -> None:
     assert loaded == original
     assert isinstance(loaded, Dog)
     assert loaded.barking
+
+
+@pytest.mark.parametrize("value", ["plain", 5, None, True, ["x"]])
+def test_non_object_input_is_a_validation_error(value) -> None:
+    """A non-dict value is a ValidationError, not an AttributeError from .pop()."""
+    for target in (Animal, Cat, Dog):
+        with pytest.raises(ValidationError):
+            target.model_validate(value)
+    with pytest.raises(ValidationError):
+        AnimalPack.model_validate({"members": [value]})
 
 
 def test_property() -> None:
