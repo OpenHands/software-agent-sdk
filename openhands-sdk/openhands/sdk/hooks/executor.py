@@ -31,16 +31,16 @@ if TYPE_CHECKING:
 class HookResult(BaseModel):
     """Result from executing a hook.
 
-    Exit-code semantics (matching Claude Code's hook contract):
+    Synchronous command hooks separate execution status from blocking:
 
-    - **Exit 0**: success. ``stdout`` is parsed as JSON for structured output
-      (``decision``, ``reason``, ``additionalContext``, ``continue``).
-    - **Exit 2**: blocking error. The operation is denied / the agent is
-      prevented from stopping. ``stderr`` should explain why.
-    - **Any other non-zero exit code**: non-blocking error. ``success`` is set
-      to ``False`` and the error is logged, but the operation still proceeds.
-      In particular, exit code ``1`` does **not** block — only ``2`` does.
-      Hooks intended to enforce a policy must exit with ``2``.
+    - **Exit 0**: ``success=True``; JSON output can still block.
+    - **Exit 2**: ``success=False`` and blocked, even if JSON allows it.
+    - **Other non-zero exits**, including ``1``: ``success=False``; the exit
+      code alone does not block, but a JSON denial still can.
+
+    ``stdout`` JSON is parsed regardless of the exit code. ``decision: deny``
+    or ``continue: false`` blocks; ``reason`` and ``additionalContext`` are
+    retained on non-zero exits too. JSON cannot undo an exit-2 block.
 
     For agent / prompt hooks, ``success=True`` means the hook produced a
     deliberate verdict (parsed ``allow`` or ``deny``). Fall-open paths set
@@ -570,7 +570,7 @@ class HookExecutor:
             )
 
             # Try to parse JSON from stdout
-            if result.returncode == 0 and result.stdout.strip():
+            if result.stdout.strip():
                 try:
                     output_data = json.loads(result.stdout)
                     if isinstance(output_data, dict):
