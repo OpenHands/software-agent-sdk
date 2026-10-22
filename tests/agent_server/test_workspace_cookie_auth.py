@@ -155,6 +155,8 @@ def test_mint_session_returns_cookie_attrs_over_https(client_factory):
         "localhost:8000",
         "127.0.0.1",
         "127.0.0.1:8000",
+        "[::1]",
+        "[::1]:8000",
     ],
 )
 def test_mint_session_marks_cookie_secure_on_loopback(client_factory, host_header):
@@ -167,6 +169,27 @@ def test_mint_session_marks_cookie_secure_on_loopback(client_factory, host_heade
     resp = client.post(
         "/api/auth/workspace-session",
         headers={"X-Session-API-Key": SESSION_KEY, "Host": host_header},
+    )
+    assert resp.status_code == 204
+
+    set_cookie = resp.headers["set-cookie"]
+    assert "Secure" in set_cookie
+    assert "Partitioned" in set_cookie
+
+
+def test_mint_session_marks_cookie_secure_on_forwarded_ipv6_loopback(
+    client_factory,
+):
+    """A bracketed IPv6 loopback in ``X-Forwarded-Host`` is a secure context."""
+    client = client_factory(conversation_id=uuid4())
+
+    resp = client.post(
+        "/api/auth/workspace-session",
+        headers={
+            "X-Session-API-Key": SESSION_KEY,
+            "Host": "agent.example.com",
+            "X-Forwarded-Host": "[::1]:8000",
+        },
     )
     assert resp.status_code == 204
 
