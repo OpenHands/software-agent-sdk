@@ -678,8 +678,8 @@ Preconditions:
   conversation reports the mapping, and the registry lists the tool from
   then on for every caller, while the catalog, sealed at startup, does not
   offer it. An unimportable module is only a warning: the create is `201`
-  and keeps the mapping (the agent would fail later only if it names that
-  tool). After a restart the registry no longer has the tool; loading the
+  and keeps the mapping (a create whose agent names that tool is a 422,
+  `F33.custom-tool-module-unimportable`). After a restart the registry no longer has the tool; loading the
   conversation for the next message imports the module again and the tool
   runs.
 - **Startup imports (`F27.import-modules`).** `--import-modules` is a

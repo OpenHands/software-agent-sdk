@@ -31,6 +31,7 @@ from openhands.agent_server.persistence.store import (
     get_secrets_store,
     get_settings_store,
     get_workspaces_store,
+    reencrypt_stale_stores,
     reset_stores,
 )
 from openhands.sdk.llm.provider_connection_store import (
@@ -69,5 +70,6 @@ __all__ = [
     "get_secrets_store",
     "get_settings_store",
     "get_workspaces_store",
+    "reencrypt_stale_stores",
     "reset_stores",
 ]

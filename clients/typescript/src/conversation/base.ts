@@ -26,7 +26,7 @@ export interface BaseConversationOptions {
   callback?: ConversationCallbackType;
   /** Initial message to send when starting the conversation */
   initialMessage?: string;
-  /** Maximum iterations before stopping (default: 50) */
+  /** Maximum iterations before stopping (default: 500) */
   maxIterations?: number;
   /** Enable stuck detection (default: true) */
   stuckDetection?: boolean;

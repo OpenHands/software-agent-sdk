@@ -92,6 +92,8 @@ export class RemoteConversation implements IConversation {
   private onError?: ErrorCallbackType;
   private hookConfig?: HookConfig;
   private userId?: string;
+  private maxIterations?: number;
+  private stuckDetection?: boolean;
 
   constructor(
     agent: AgentBase,
@@ -105,6 +107,8 @@ export class RemoteConversation implements IConversation {
     this._conversationId = options.conversationId;
     this.hookConfig = options.hookConfig;
     this.userId = options.userId;
+    this.maxIterations = options.maxIterations;
+    this.stuckDetection = options.stuckDetection;
 
     this.client = new HttpClient({
       baseUrl: workspace.host,
@@ -163,15 +167,15 @@ export class RemoteConversation implements IConversation {
       };
     }
 
-    // Use hook config from start options, falling back to constructor option
+    // Start options take precedence over the constructor options
     const hookConfig = options.hookConfig ?? this.hookConfig ?? undefined;
     const userId = options.userId ?? this.userId ?? undefined;
 
     const request: CreateConversationRequest = {
       agent: this.agent,
       initial_message: initialMessage,
-      max_iterations: options.maxIterations || 500,
-      stuck_detection: options.stuckDetection ?? true,
+      max_iterations: options.maxIterations || this.maxIterations || 500,
+      stuck_detection: options.stuckDetection ?? this.stuckDetection ?? true,
       workspace: { type: 'local', working_dir: this.workspace.workingDir },
       hook_config: hookConfig ?? null,
       user_id: userId ?? null,
@@ -323,11 +327,11 @@ export class RemoteConversation implements IConversation {
   }
 
   /**
-   * Switch the model of a running ACP conversation in place (the ACP analog of
-   * {@link switchLlm}). Calls the wrapper's `session/set_model` on the live
-   * session with context preserved. Only valid once the session exists — the
-   * server returns 409 before the first message and 400 for non-ACP
-   * conversations.
+   * Switch the model of an ACP conversation (the ACP analog of
+   * {@link switchLlm}). On a live session the server calls the wrapper's
+   * `session/set_model` in place with context preserved. Before the first run
+   * there is no session yet, so the server answers 200 and stores the model for
+   * the first session. Non-ACP conversations get 400.
    */
   async switchAcpModel(model: string): Promise<void> {
     await this.client.post(`/api/conversations/${this.id}/switch_acp_model`, { model });

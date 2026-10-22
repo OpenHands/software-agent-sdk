@@ -9,6 +9,7 @@ tests/sdk/extensions/test_fetch.py.  Git infrastructure (clone, update,
 checkout, locking) is tested in tests/sdk/git/test_cached_repo.py.
 """
 
+import subprocess
 from pathlib import Path
 from unittest.mock import create_autospec, patch
 
@@ -48,6 +49,56 @@ def test_fetch_generic_error_raises_plugin_fetch_error(tmp_path: Path):
             cache_dir=tmp_path,
             git_helper=mock_git,
         )
+
+
+def test_fetch_unknown_ref_from_existing_cache_raises_plugin_fetch_error(
+    tmp_path: Path,
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    (source / "version.txt").write_text("v1")
+    subprocess.run(["git", "add", "."], cwd=source, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+        cwd=source,
+        check=True,
+    )
+    source_url = f"file://{source}"
+    cache_path = fetch_plugin(source_url, cache_dir=tmp_path / "cache")
+    head_before = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=cache_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    with pytest.raises(PluginFetchError, match="Failed to fetch plugin"):
+        fetch_plugin(
+            source_url,
+            cache_dir=tmp_path / "cache",
+            ref="missing-ref",
+        )
+
+    head_after = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=cache_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert head_after == head_before
+    assert (cache_path / "version.txt").read_text() == "v1"
 
 
 def test_fetch_local_with_repo_path_resolves_subdirectory(tmp_path: Path):

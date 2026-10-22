@@ -80,8 +80,10 @@ def test_remote_state_initialization(mock_client, conversation_id):
 
     # Events should be RemoteEventsList type
     from openhands.sdk.conversation.impl.remote_conversation import RemoteEventsList
+    from openhands.sdk.conversation.secret_registry import SecretRegistry
 
     assert isinstance(state.events, RemoteEventsList)
+    assert isinstance(state.secret_registry, SecretRegistry)
 
 
 @pytest.mark.parametrize(

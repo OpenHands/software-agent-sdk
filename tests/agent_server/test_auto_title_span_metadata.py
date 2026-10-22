@@ -82,6 +82,13 @@ def _probe_auto_title_spans() -> dict[str, Any]:
     service.stored = stored
     service._conversation = conversation
 
+    async def save_meta(new_stored: StoredConversation | None = None) -> None:
+        # Like EventService.save_meta: adopt the metadata once it is written.
+        if new_stored is not None:
+            service.stored = new_stored
+
+    service.save_meta.side_effect = save_meta
+
     event = MessageEvent(
         id="evt-1",
         source="user",
@@ -97,7 +104,7 @@ def _probe_auto_title_spans() -> dict[str, Any]:
             await AutoTitleSubscriber(service=service)(event)
             for _ in range(250):
                 await asyncio.sleep(0.02)
-                if stored.title is not None:
+                if service.stored.title is not None:
                     return
 
     asyncio.run(drive())
@@ -110,7 +117,7 @@ def _probe_auto_title_spans() -> dict[str, Any]:
         span.context.span_id: span.name for span in spans if span.context is not None
     }
     return {
-        "title": stored.title,
+        "title": service.stored.title,
         "conversation_trace_id": root_span.span.get_span_context().trace_id,
         "spans": [
             {
