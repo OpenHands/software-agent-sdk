@@ -70,8 +70,9 @@ VERIFIED_MOONSHOT_MODELS = [
     "kimi-for-coding",
 ]
 
-# M3 and M2.7.
+# M3 (incl. flash) and M2.7.
 VERIFIED_MINIMAX_MODELS = [
+    "minimax-m3.1-flash",
     "minimax-m3",
     "minimax-m2.7",
 ]
@@ -172,6 +173,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "gpt-5.6",
     "gpt-5.3-codex",
     "gpt-5.2-codex",
+    "minimax-m3.1-flash",
     "minimax-m3",
     "minimax-m2.7",
     "gemini-3.1-pro",

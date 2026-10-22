@@ -34,6 +34,12 @@ _LOCK_TIMEOUT_SECONDS: Final[float] = 30.0
 PROFILE_NAME_PATTERN: Final[str] = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
 PROFILE_NAME_REGEX: Final[re.Pattern[str]] = re.compile(PROFILE_NAME_PATTERN)
 
+
+def canonical_profile_name(name: str) -> str:
+    """Return the store key ``name`` addresses: ``foo.json`` is profile ``foo``."""
+    return name.removesuffix(".json")
+
+
 logger = get_logger(__name__)
 
 
@@ -163,7 +169,7 @@ class LLMProfileStore:
         Raises:
             ValueError: If name does not match the allowed pattern.
         """
-        clean_name = name.removesuffix(".json")
+        clean_name = canonical_profile_name(name)
         if not PROFILE_NAME_REGEX.match(clean_name):
             raise ValueError(
                 f"Invalid profile name: {name!r}. "
