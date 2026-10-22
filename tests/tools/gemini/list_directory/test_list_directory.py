@@ -278,3 +278,33 @@ def test_list_directory_recursive_left_out_subdir_is_truncated(tmp_path):
 
     assert len(obs.entries) == MAX_ENTRIES
     assert obs.is_truncated
+
+
+def test_list_directory_dangling_symlink_after_cap_is_not_truncated(tmp_path):
+    """An entry that would be skipped anyway does not count as left out."""
+    _fill(tmp_path, MAX_ENTRIES)
+    (tmp_path / "zz_broken_link").symlink_to(tmp_path / "missing_target")
+
+    executor = ListDirectoryExecutor(workspace_root=str(tmp_path))
+    obs = executor(ListDirectoryAction(dir_path="."))
+
+    assert not obs.is_error
+    assert len(obs.entries) == MAX_ENTRIES
+    assert not obs.is_truncated
+
+
+def test_list_directory_recursive_dangling_symlink_after_cap_is_not_truncated(
+    tmp_path,
+):
+    """Same as above, for a subdirectory reached once the cap is full."""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    _fill(tmp_path, MAX_ENTRIES - 1)
+    (sub / "broken_link").symlink_to(sub / "missing_target")
+
+    executor = ListDirectoryExecutor(workspace_root=str(tmp_path))
+    obs = executor(ListDirectoryAction(dir_path=".", recursive=True))
+
+    assert not obs.is_error
+    assert len(obs.entries) == MAX_ENTRIES
+    assert not obs.is_truncated
