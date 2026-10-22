@@ -879,11 +879,12 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   hangs until the 30-second lock wait ends, so orchestrator probes fail
   while any other process holds the lock. The background request does not
   inherit the lock, so the server recovers as soon as the shell exits.
-- **How a dangling LLM reference is reported (`F21.dangling-llm-report`), known bug.**
+- **How a dangling LLM reference is reported (`F21.dangling-llm-report`).**
   The server's seed code (`_seed_default_llm_profile` in the checkout that
-  serves the run) says a seeded `default` whose LLM profile does not exist
-  is reported by materialize as `dangling_llm_profile_ref`, the field the
-  launch's 422 `unresolved_profile_references` detail carries (F04).
+  serves the run) documents how materialize reports a seeded `default`
+  whose LLM profile does not exist. `dangling_llm_profile_ref` is the field
+  the launch's 422 `unresolved_profile_references` detail carries (F04);
+  the seed code must promise it from materialize only if materialize sends it.
   ```sh
   CHECKOUT=$(jq -r '.checkout // empty' "$AGENT_SERVER_VERIFY_RUN/run.json")
   SEEDSRC="${CHECKOUT:-$PWD}/openhands-agent-server/openhands/agent_server/agent_profiles_router.py"
@@ -896,7 +897,7 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
     --check errors contains "LLM profile 'qa-f21-missing' not found" --save F21.dangling-llm-report/materialize
   PROMISED=$(grep -c dangling_llm_profile_ref "$SEEDSRC" || true)
   jq -c --argjson promised "${PROMISED:-0}" '{promised: ($promised > 0), reported: .dangling_llm_profile_ref} | .agree = ((.promised | not) or .reported == "qa-f21-missing")' "$RAW" \
-    | control-agent-server assert --check agree eq true  # bug: value.promised eq true && value.reported missing
+    | control-agent-server assert --check agree eq true
   ```
   Correct behavior: the two agree, either because materialize names the
   dangling reference in `dangling_llm_profile_ref` (as it names dangling
@@ -904,17 +905,19 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   `dangling_meta_profile_ref`) or because the seed code stops promising it.
   The draft is previewed without being saved and the arrange step proves
   the reference is reported (`valid` false, `llm_profile_resolved` false,
-  the `errors` entry). Today the documentation names the field and the
-  materialize body has none, so the bullet fails at the `# bug` line. A
-  consumer that follows the documentation finds nothing; one that reads
-  the launch's 422 and the preview needs two shapes.
-- **TypeScript payload types (`F21.ts-payload-types`), known bug.** The
+  the `errors` entry). The seed code describes exactly that report
+  (`valid` false, `llm_profile_resolved` false, an `errors` entry) and does
+  not name `dangling_llm_profile_ref`, which only the launch's 422 carries
+  (#5871).
+- **TypeScript payload types (`F21.ts-payload-types`).** The
   client's hand-written types in `clients/typescript/src/models/agent-profile.ts`
   against what the server sends: a list summary, an OpenHands and an ACP
   profile read back with GET, and a materialize report. Each payload's keys
   become an object literal that the client's own `tsc` type-checks, first
   against the generated contract (`dist/generated/agent-server-schema.js`,
   positive control), then against the exported types.
+
+  Requires: `F21.save-create`, `F21.acp-kind`
   ```sh
   D="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f21-types"
   mkdir -p "$D"
@@ -941,21 +944,19 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
     "export const diagnostics: Shape<AgentProfileDiagnostics> = $DIAG;" > "$D/exported.ts"
   TSC="clients/typescript/node_modules/.bin/tsc --noEmit --strict --skipLibCheck --target es2020 --module esnext --moduleResolution bundler"
   $TSC "$D/contract.ts"
-  $TSC "$D/exported.ts" | control-agent-server assert --check . not-contains 'error TS'  # bug: value matches 'TS2353.*disabled_skills.*Shape<OpenHandsAgentProfile>' && value matches 'TS2353.*acp_startup_timeout.*Shape<ACPAgentProfile>' && value matches 'TS2353.*resolved_mcp_config_keys.*Shape<AgentProfileDiagnostics>'
+  $TSC "$D/exported.ts" | control-agent-server assert --check . not-contains 'error TS'
   ```
   Expected: both files type-check, so a TypeScript consumer (Agent
   Canvas's profile editor) can read every field the server sends under its
-  real name. Today the contract file compiles and the exported types fail:
-  `AgentProfileDiagnostics` declares a required `resolved_mcp_servers` the
-  server never sends and lacks `resolved_mcp_config_keys`,
-  `resolved_skills`, `disabled_skills` and the meta-profile fields;
-  `OpenHandsAgentProfile` requires a `skills` field that a GET never
-  returns and a save refuses (422 `extra_forbidden`), and lacks
+  real name: `AgentProfileDiagnostics` declares `resolved_mcp_config_keys`,
+  `resolved_skills`, `disabled_skills` and the meta-profile fields (and no
+  `resolved_mcp_servers`), `OpenHandsAgentProfile` declares
   `disabled_skills`, `meta_profile_ref` and
-  `enable_classify_and_switch_llm_tool`; `ACPAgentProfile` lacks
-  `acp_startup_timeout`. `tsc` names the first undeclared field of each
-  literal (`resolved_mcp_config_keys`, `disabled_skills`,
-  `acp_startup_timeout`). The summary type matches.
+  `enable_classify_and_switch_llm_tool` (and no `skills`, which a save
+  refuses with 422 `extra_forbidden`), and `ACPAgentProfile` declares
+  `acp_startup_timeout`. The client's unit test
+  `agent-server-contract-types.test.ts` pins the same key sets against the
+  generated contract.
 - **`.json` names lose their identity (`F21.json-suffix-identity`), known bug.**
   The store strips a trailing `.json` from the file name but keeps it in the
   profile's `name`.

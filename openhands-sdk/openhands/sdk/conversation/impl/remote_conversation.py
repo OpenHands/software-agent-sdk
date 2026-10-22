@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 import httpx
 import websockets
+from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
 from websockets.exceptions import ConnectionClosed
 
 from openhands.sdk.agent.base import AgentBase
@@ -28,12 +29,16 @@ from openhands.sdk.conversation.exceptions import (
     ConversationRunError,
     WebSocketConnectionError,
 )
-from openhands.sdk.conversation.secret_registry import SecretValue
+from openhands.sdk.conversation.secret_registry import (
+    SecretRegistry,
+    SecretValue,
+)
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.title_utils import generate_conversation_title
 from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationID,
+    ConversationTokenCallbackType,
     StuckDetectionThresholds,
     TraceMetadataValue,
 )
@@ -49,6 +54,7 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
 from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, TextContent
@@ -90,6 +96,26 @@ def _validate_remote_agent(agent_data: dict) -> AgentBase:
 
         return ACPAgent.model_validate(agent_data)
     return AgentBase.model_validate(agent_data)
+
+
+def _token_delta_callback(
+    token_callbacks: list[ConversationTokenCallbackType],
+) -> ConversationCallbackType:
+    """Hand each streamed delta from the events socket to the token callbacks."""
+    on_token = BaseConversation.compose_callbacks(token_callbacks)
+
+    def callback(event: Event) -> None:
+        if isinstance(event, StreamingDeltaEvent):
+            delta = Delta(
+                content=event.content, reasoning_content=event.reasoning_content
+            )
+            on_token(
+                ModelResponseStream(
+                    id=event.id, choices=[StreamingChoices(index=0, delta=delta)]
+                )
+            )
+
+    return callback
 
 
 def _restore_tool_registrations(tool_module_qualnames: Mapping[str, str]) -> None:
@@ -493,9 +519,16 @@ class RemoteEventsList(EventsListBase):
         return len(self._cached_events) - 1
 
     def create_default_callback(self) -> ConversationCallbackType:
-        """Create a default callback that adds events to this list."""
+        """Create a default callback that adds events to this list.
+
+        Streamed ``StreamingDeltaEvent`` frames are transient: the server never
+        stores them, so they reach the other callbacks but stay out of this
+        list, which keeps matching the server's event log.
+        """
 
         def callback(event: Event) -> None:
+            if isinstance(event, StreamingDeltaEvent):
+                return
             self.add_event(event)
 
         return callback
@@ -689,6 +722,15 @@ class RemoteState(ConversationStateProtocol):
             return HookConfig.model_validate(hook_config_data)
         return None
 
+    @property
+    def secret_registry(self) -> SecretRegistry:
+        """The secret registry for this conversation."""
+        info = self._get_conversation_info()
+        secret_registry_data = info.get("secret_registry")
+        if secret_registry_data is not None:
+            return SecretRegistry.model_validate(secret_registry_data)
+        return SecretRegistry()
+
     def model_dump(self, **_kwargs):
         """Get a dictionary representation of the remote state."""
         info = self._get_conversation_info()
@@ -746,6 +788,7 @@ class RemoteConversation(BaseConversation):
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
         observability_parent_span_context: str | None = None,
+        token_callbacks: list[ConversationTokenCallbackType] | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -783,7 +826,10 @@ class RemoteConversation(BaseConversation):
             observability_tags: Optional root span tags for observability backends.
             observability_span_name: Optional child span name for observability
                       backends. The root span remains named "conversation".
+            token_callbacks: Optional callbacks invoked with each streamed token
+                      delta the server sends (agent LLM with ``stream=True``).
         """
+        super().__init__()
         observability_metadata = merge_observability_metadata(observability_metadata)
         observability_parent_span_context = (
             observability_parent_span_context
@@ -920,6 +966,7 @@ class RemoteConversation(BaseConversation):
             workspace=workspace,
             conversation_id=conversation_id,
             callbacks=callbacks,
+            token_callbacks=token_callbacks,
             max_iteration_per_run=max_iteration_per_run,
             client_tools=[*(client_tools or []), *attached_client_tools],
             visualizer=visualizer,
@@ -1060,10 +1107,13 @@ class RemoteConversation(BaseConversation):
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ),
+        token_callbacks: list[ConversationTokenCallbackType] | None = None,
     ) -> None:
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
         self._callbacks = callbacks or []
+        if token_callbacks:
+            self._callbacks.append(_token_delta_callback(token_callbacks))
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
         self._client = workspace.client
@@ -1166,13 +1216,40 @@ class RemoteConversation(BaseConversation):
         all_callbacks = self._callbacks + [run_complete_callback]
         composed_callback = BaseConversation.compose_callbacks(all_callbacks)
 
+        # Track which events the callbacks have seen, so that events the
+        # server recorded while the socket was reconnecting (and that only
+        # reached the cache through REST reconciliation) can be replayed to
+        # them once, without the live socket delivering them a second time.
+        delivered_ids: set[str] = set()
+        replayed_ids: set[str] = set()
+
+        def socket_callback(event: Event) -> None:
+            if event.id in replayed_ids:
+                replayed_ids.discard(event.id)
+                return
+            delivered_ids.add(event.id)
+            composed_callback(event)
+
+        def replay_missed_events() -> None:
+            self._state.events.reconcile()
+            replayed_ids.clear()
+            for event in self._state.events[:]:
+                if event.id in delivered_ids:
+                    continue
+                delivered_ids.add(event.id)
+                replayed_ids.add(event.id)
+                try:
+                    composed_callback(event)
+                except Exception:
+                    logger.exception("ws_replay_callback_error", stack_info=True)
+
         # Initialize WebSocket client for callbacks
         self._ws_client = WebSocketCallbackClient(
             host=self.workspace.host,
             conversation_id=str(self._id),
-            callback=composed_callback,
+            callback=socket_callback,
             api_key=self.workspace.api_key,
-            on_reconnect=self._state.events.reconcile,
+            on_reconnect=replay_missed_events,
         )
         self._ws_client.start()
 
@@ -1210,6 +1287,9 @@ class RemoteConversation(BaseConversation):
         # were emitted between the initial REST sync and WebSocket subscription.
         # This is the "reconciliation" part of the subscription handshake.
         self._state.events.reconcile()
+        # Callbacks are not replayed history: only events recorded after this
+        # point and missed by the socket are replayed on reconnect.
+        delivered_ids.update(event.id for event in self._state.events[:])
 
     def _create_llm_completion_log_callback(self) -> ConversationCallbackType:
         """Create a callback that writes LLM completion logs to client filesystem."""
@@ -1787,8 +1867,6 @@ class RemoteConversation(BaseConversation):
             self.agent.model_dump(context={"expose_secrets": True}),
         )
 
-        # Use server-returned tags (which include merged title) rather than
-        # the input tags, so the client-side object stays consistent.
         server_tags: dict[str, str] | None = fork_info.get("tags") or None
 
         return RemoteConversation(
@@ -1852,51 +1930,54 @@ class RemoteConversation(BaseConversation):
         The workspace owns the client and will close it during its own cleanup.
         Closing it here would prevent the workspace from making cleanup API calls.
         """
-        if self._cleanup_initiated:
+        if self._cleanup_complete:
             return
-        self._cleanup_initiated = True
+        first_attempt = not self._cleanup_initiated
+        if first_attempt:
+            self._cleanup_initiated = True
 
-        # Best-effort: hand the accumulated LLM cost to the workspace so it can
-        # be included in the automation completion callback. Only read cached
-        # state — close() also runs on the failure path, where a live fetch
-        # could block until timeout against an agent server that is already gone.
-        # The cache tracks this run: the agent server streams a "stats" update
-        # after every LLM response (EventService._setup_stats_streaming), so it
-        # holds the run's spend even on the failure path, which wakes run() from
-        # a per-field ERROR/STUCK update before the post-run full-state snapshot.
-        try:
-            cached = self._state._cached_state
-            # Require an actual "stats" entry: a cache built only from partial
-            # field updates — e.g. the subscribe-time push for a service with no
-            # live conversation — would otherwise yield 0.0 and record a run as
-            # free when its cost is really just unknown.
-            if cached is not None and "stats" in cached:
-                cost = self._state.stats.get_combined_metrics().accumulated_cost
-                self.workspace.register_cost(cost)
-        except Exception as e:
-            logger.debug(f"Could not register accumulated cost: {e}")
-
-        # SessionEnd hooks are executed server-side (via hook_config in payload).
-        try:
-            # Stop WebSocket client if it exists
-            if self._ws_client:
-                self._ws_client.stop()
-                self._ws_client = None
-        except Exception:
-            pass
-
-        self._end_observability_span()
-        if self.delete_on_close:
+            # Best-effort: hand the accumulated LLM cost to the workspace so it can
+            # be included in the automation completion callback. Only read cached
+            # state — close() also runs on the failure path, where a live fetch
+            # could block until timeout against an agent server that is already gone.
+            # The cache tracks this run: the agent server streams a "stats" update
+            # after every LLM response (EventService._setup_stats_streaming), so it
+            # holds the run's spend even on the failure path, which wakes run() from
+            # a per-field ERROR/STUCK update before the post-run full-state snapshot.
             try:
-                # trigger server-side delete_conversation to release resources
-                # like tmux sessions
-                _send_request(
-                    self._client,
-                    "DELETE",
-                    f"{CONVERSATIONS_PATH}/{self.id}",
-                )
+                cached = self._state._cached_state
+                # Require an actual "stats" entry: a cache built only from partial
+                # field updates — e.g. the subscribe-time push for a service with no
+                # live conversation — would otherwise yield 0.0 and record a run as
+                # free when its cost is really just unknown.
+                if cached is not None and "stats" in cached:
+                    cost = self._state.stats.get_combined_metrics().accumulated_cost
+                    self.workspace.register_cost(cost)
+            except Exception as e:
+                logger.debug(f"Could not register accumulated cost: {e}")
+
+            # SessionEnd hooks are executed server-side (via hook_config in payload).
+            try:
+                # Stop WebSocket client if it exists
+                if self._ws_client:
+                    self._ws_client.stop()
+                    self._ws_client = None
             except Exception:
                 pass
+
+            self._end_observability_span()
+            if self.delete_on_close:
+                try:
+                    # trigger server-side delete_conversation to release resources
+                    # like tmux sessions
+                    _send_request(
+                        self._client,
+                        "DELETE",
+                        f"{CONVERSATIONS_PATH}/{self.id}",
+                    )
+                except Exception:
+                    pass
+        self._cleanup_complete = True
 
     def __del__(self) -> None:
         try:
