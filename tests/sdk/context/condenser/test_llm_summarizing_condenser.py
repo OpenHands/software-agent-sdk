@@ -8,7 +8,7 @@ from litellm.types.utils import (
     ModelResponse,
     Usage,
 )
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from openhands.sdk.context.condenser.base import (
     CondensationRequirement,
@@ -1158,3 +1158,26 @@ def test_condensation_with_keep_first_zero_keeps_system_first(mock_llm: LLM) -> 
     assert messages[0].role == "system"
     # The forgotten set must not include the leading system prompt event.
     assert events[0].id not in result.forgotten_event_ids
+
+
+def test_llm_summarizing_condenser_get_llm() -> None:
+    """LLMSummarizingCondenser requires llm and exposes get_llm()."""
+    assert LLMSummarizingCondenser.model_fields["llm"].is_required()
+
+    my_llm = LLM(model="test-condenser-model")
+    summarizing = LLMSummarizingCondenser(llm=my_llm)
+    assert summarizing.llm is not None
+    assert summarizing.llm.model == "test-condenser-model"
+    assert summarizing.get_llm() is summarizing.llm
+
+    summarizing.llm = my_llm.model_copy(update={"model": "updated-model"})
+    assert summarizing.llm.model == "updated-model"
+    updated_llm = summarizing.get_llm()
+    assert updated_llm is not None
+    assert updated_llm.model == "updated-model"
+
+
+def test_llm_summarizing_condenser_requires_llm() -> None:
+    """LLMSummarizingCondenser raises ValidationError when llm is missing."""
+    with pytest.raises(ValidationError):
+        LLMSummarizingCondenser()  # type: ignore[call-arg]

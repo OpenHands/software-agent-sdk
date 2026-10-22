@@ -22,6 +22,8 @@ from openhands.agent_server.persistence import (
 )
 from openhands.agent_server.persistence.models import _deep_merge
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileStore
+from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.settings import (
     AGENT_SETTINGS_SCHEMA_VERSION,
     CONVERSATION_SETTINGS_SCHEMA_VERSION,
@@ -125,7 +127,7 @@ def test_get_conversation_settings_schema():
     assert body["model_name"] == "ConversationSettings"
 
     section_keys = [section["key"] for section in body["sections"]]
-    assert section_keys == ["general", "verification"]
+    assert section_keys == ["general", "verification", "runtime"]
 
     verification_section = next(
         section for section in body["sections"] if section["key"] == "verification"
@@ -261,6 +263,13 @@ def test_get_settings_migrates_legacy_openhands_settings_and_resaves_current(
         "max_iterations": 42,
         "confirmation_mode": True,
         "security_analyzer": "llm",
+        "default_runtime": "local",
+        "worktree_base_ref": None,
+        "worktree_branch_prefix": "openhands/",
+        "worktree_base": "default_branch",
+        "container_memory": None,
+        "container_cpus": None,
+        "container_browser": True,
     }
 
     patch_response = client_with_settings.patch(
@@ -674,8 +683,10 @@ def test_patch_settings_rejects_invalid_active_profile(client_with_settings):
 def test_patch_settings_active_agent_profile_id_independent(client_with_settings):
     """active_agent_profile_id sets/clears independently of active_profile."""
     get_llm_profile_store().save("fast-profile", LLM(model="gpt-4o-mini"))
+    profile = OpenHandsAgentProfile(name="mine", llm_profile_ref="fast-profile")
+    get_agent_profile_store().save(profile)
 
-    agent_id = "12345678-1234-1234-1234-1234567890ab"
+    agent_id = str(profile.id)
     set_response = client_with_settings.patch(
         "/api/settings",
         json={"active_profile": "fast-profile", "active_agent_profile_id": agent_id},
@@ -851,6 +862,58 @@ def test_patch_settings_rejects_malformed_active_agent_profile_id(client_with_se
         json={"active_agent_profile_id": "not-a-uuid"},
     )
     assert response.status_code == 422
+
+
+def test_patch_settings_rejects_unknown_active_agent_profile_id(
+    client_with_settings,
+):
+    """An id that names no stored agent profile is 404, like /activate (#5847)."""
+    unknown = "00000000-0000-4000-8000-0000000000f1"
+    response = client_with_settings.patch(
+        "/api/settings", json={"active_agent_profile_id": unknown}
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == (f"Agent profile with id '{unknown}' not found")
+    assert (
+        client_with_settings.get("/api/settings").json()["active_agent_profile_id"]
+        is None
+    )
+
+
+def test_patch_settings_active_meta_profile_must_exist(
+    client_with_settings, temp_persistence_dir
+):
+    """An unknown meta-profile is 404 and enables nothing; a stored one is
+    accepted and null clears it (#5847)."""
+    response = client_with_settings.patch(
+        "/api/settings", json={"active_meta_profile": "no-router"}
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Meta-profile 'no-router' not found"
+    body = client_with_settings.get("/api/settings").json()
+    assert body["active_meta_profile"] is None
+    assert body["agent_settings"]["enable_classify_and_switch_llm_tool"] is False
+
+    MetaProfileStore(base_dir=Path(temp_persistence_dir) / "meta-profiles").save(
+        "router",
+        MetaProfile.model_validate(
+            {
+                "classifier_model": "minimax",
+                "classes": [{"description": "UI", "model": "deepseek"}],
+            }
+        ),
+    )
+    response = client_with_settings.patch(
+        "/api/settings", json={"active_meta_profile": "router"}
+    )
+    assert response.status_code == 200
+    assert response.json()["active_meta_profile"] == "router"
+
+    response = client_with_settings.patch(
+        "/api/settings", json={"active_meta_profile": None}
+    )
+    assert response.status_code == 200
+    assert response.json()["active_meta_profile"] is None
 
 
 def test_existing_settings_load_with_null_active_agent_profile_id(

@@ -155,6 +155,26 @@ class SettingsSchema(BaseModel):
 
 CriticMode = Literal["finish_and_message", "all_actions"]
 SecurityAnalyzerType = Literal["llm", "none"]
+WorktreeBase = Literal["default_branch", "head", "ref"]
+"""What a conversation worktree branches from: the repository's default branch
+(fetched from ``origin`` when there is one), the checkout's current ``HEAD``, or
+a given ref."""
+DEFAULT_WORKTREE_BRANCH_PREFIX = "openhands/"
+"""Worktree branches are named ``<prefix><conversation id>``."""
+GIT_REF_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._/-]*$"
+"""A branch, tag or commit name. It never starts with ``-``, so git cannot read
+it as an option."""
+GIT_BRANCH_PREFIX_PATTERN = r"^([A-Za-z0-9][A-Za-z0-9._/-]*)?$"
+"""A branch name prefix, possibly empty, under the same rule."""
+ConversationRuntime = Literal["local", "docker"]
+"""Where a conversation runs: on the agent-server's host or in its own container."""
+DefaultRuntime = Literal["local", "worktree", "docker"]
+"""Where new conversations run by default: the workspace on the host, a new git
+worktree of it on the host, or their own container."""
+DOCKER_MEMORY_PATTERN = r"^\d+(\.\d+)? ?[kKmMgGtTpP]?[iI]?[bB]?$"
+"""What `docker run --memory` accepts (Docker's `RAMInBytes`), e.g. `512m`, `4g`."""
+MIN_CONTAINER_CPUS = 0.01
+"""The smallest `docker run --cpus` value Docker accepts."""
 
 
 type CondenserKind = Literal["llm_summarizing", "no_op"]
@@ -491,6 +511,10 @@ _RequestT = TypeVar("_RequestT")
 type AgentKind = Literal["openhands", "llm", "acp"]
 AGENT_SETTINGS_SCHEMA_VERSION = 9
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
+
+_RUNTIME_SECTION_METADATA = SettingsSectionMetadata(
+    key="runtime", label="Runtime"
+).model_dump()
 
 
 class AgentSettingsBase(BaseModel):
@@ -1201,6 +1225,122 @@ class ConversationSettings(BaseModel):
             ).model_dump(),
         },
     )
+    default_runtime: DefaultRuntime = Field(
+        default="local",
+        description=(
+            "Where new conversations run: in the workspace on the host, in a "
+            "new git worktree of it, or in their own Docker container (which "
+            "needs a server that offers it)."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Default runtime",
+                prominence=SettingProminence.MAJOR,
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: _RUNTIME_SECTION_METADATA,
+        },
+    )
+    worktree_base: WorktreeBase = Field(
+        default="default_branch",
+        description=(
+            "What a new conversation worktree branches from: the repository's "
+            "default branch, the checkout's current HEAD, or `worktree_base_ref`."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Create worktrees from",
+                prominence=SettingProminence.MAJOR,
+                depends_on=("default_runtime=worktree",),
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: _RUNTIME_SECTION_METADATA,
+        },
+    )
+    worktree_base_ref: str | None = Field(
+        default=None,
+        pattern=GIT_REF_PATTERN,
+        description=(
+            "Branch, tag or commit new worktrees branch from when "
+            "`worktree_base` is `ref`, e.g. `develop` or `origin/release`."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Ref",
+                prominence=SettingProminence.MAJOR,
+                depends_on=("default_runtime=worktree", "worktree_base=ref"),
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: _RUNTIME_SECTION_METADATA,
+        },
+    )
+    worktree_branch_prefix: str = Field(
+        default=DEFAULT_WORKTREE_BRANCH_PREFIX,
+        pattern=GIT_BRANCH_PREFIX_PATTERN,
+        description=(
+            "Start of each worktree's branch name, which ends in the "
+            "conversation id, e.g. `openhands/` or `me/`."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Branch name prefix",
+                prominence=SettingProminence.MAJOR,
+                depends_on=("default_runtime=worktree",),
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: _RUNTIME_SECTION_METADATA,
+        },
+    )
+    container_memory: str | None = Field(
+        default=None,
+        pattern=DOCKER_MEMORY_PATTERN,
+        description=(
+            "Memory limit for each new Docker conversation's container, in "
+            "`docker run --memory` syntax such as `512m` or `4g`. Unset keeps "
+            "the server default."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Container memory limit",
+                prominence=SettingProminence.MAJOR,
+                depends_on=("default_runtime=docker",),
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: _RUNTIME_SECTION_METADATA,
+        },
+    )
+    container_cpus: float | None = Field(
+        default=None,
+        ge=MIN_CONTAINER_CPUS,
+        description=(
+            "CPUs each new Docker conversation's container may use, from 0.01 "
+            "up to the machine's CPU count. Unset keeps the server default."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Container CPU limit",
+                prominence=SettingProminence.MAJOR,
+                depends_on=("default_runtime=docker",),
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: _RUNTIME_SECTION_METADATA,
+        },
+    )
+    container_browser: bool = Field(
+        default=True,
+        description=(
+            "Run a browser in new Docker conversations' containers. Has no "
+            "effect when the server's image ships without one."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Browser in containers",
+                prominence=SettingProminence.MAJOR,
+                depends_on=("default_runtime=docker",),
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: _RUNTIME_SECTION_METADATA,
+        },
+    )
+
+    @model_validator(mode="after")
+    def _ref_for_ref_base(self) -> ConversationSettings:
+        if self.worktree_base == "ref" and self.worktree_base_ref is None:
+            raise ValueError("Branching worktrees from a ref needs worktree_base_ref")
+        return self
 
     @classmethod
     def export_schema(cls) -> SettingsSchema:

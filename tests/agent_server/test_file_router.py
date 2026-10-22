@@ -1579,6 +1579,40 @@ def test_archive_non_git_directory_has_no_repo_metadata_headers(client, workspac
     assert "x-archive-head-commit" not in resp.headers
 
 
+def test_archive_format_description_matches_single_nested_repo(client, tmp_path):
+    # A non-repo directory holding exactly one repository is archived as that
+    # repository, so files beside it are left out; the public description of
+    # ``format`` must say so instead of promising "the entire directory".
+    parent = tmp_path / "parent"
+    repo = parent / "group" / "proj"
+    repo.mkdir(parents=True)
+    _git(["init", "-q"], repo)
+    (repo / "README.md").write_text("# proj\n", encoding="utf-8")
+    _git(["add", "-A"], repo)
+    _git(["commit", "-qm", "init"], repo)
+    (parent / "top.txt").write_text("top\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(parent), "format": "tar.gz"}
+    )
+    assert resp.status_code == 200, resp.text
+    with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
+        names = tar.getnames()
+    assert "proj/README.md" in names
+    assert not any(name.endswith("top.txt") for name in names)
+
+    paths = client.get("/openapi.json").json()["paths"]
+    for route in (
+        "/api/file/archive",
+        "/api/conversations/{runtime_conversation_id}/file/archive",
+    ):
+        params = paths[route]["get"]["parameters"]
+        descriptions = {p["name"]: p.get("description", "") for p in params}
+        assert "entire directory" not in descriptions["format"]
+        for name in ("format", "path"):
+            assert "exactly one git repository" in descriptions[name]
+
+
 def test_archive_remote_with_embedded_control_char_is_percent_encoded(client, tmp_path):
     # A remote URL is free-form text (unlike a ref name), so it can carry a
     # literal control character straight into what becomes a header value.

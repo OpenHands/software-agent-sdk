@@ -20,7 +20,12 @@ from pydantic import SecretStr
 
 from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.event_service import EventService, RunSlot
+from openhands.agent_server.event_service import (
+    CondensationUnavailable,
+    EventService,
+    RunSlot,
+    _log_emit_failure,
+)
 from openhands.agent_server.file_router import _create_zip_from_directory
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
@@ -31,6 +36,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import LLM, Agent, AgentBase, Conversation, Message
 from openhands.sdk.agent import ACPAgent
+from openhands.sdk.context.condenser import NoOpCondenser
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.fifo_lock import FIFOLock
@@ -2224,6 +2230,21 @@ class TestEventServiceSaveMeta:
         assert loaded.updated_at == original_updated_at
 
     @pytest.mark.asyncio
+    async def test_save_meta_round_trips_title_prompt(self, event_service, tmp_path):
+        event_service.stored.prompt = (
+            "Create a concise title for {conversation_content}."
+        )
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        await event_service.save_meta()
+
+        meta_file = conv_dir / "meta.json"
+        loaded = StoredConversation.model_validate_json(meta_file.read_text())
+        assert loaded.prompt == ("Create a concise title for {conversation_content}.")
+
+    @pytest.mark.asyncio
     async def test_save_meta_round_trips_agent_definition_mcp_secrets(
         self, sample_stored_conversation, tmp_path
     ):
@@ -3833,6 +3854,9 @@ def test_emit_event_from_thread_uses_captured_loop(event_service: EventService) 
         # Simulate concurrent close() nulling self._main_loop mid-call
         object.__setattr__(event_service, "_main_loop", None)
         captured_calls.append(args)
+        # run_in_executor always returns a Future; the caller attaches a
+        # done-callback to surface executor failures.
+        return MagicMock()
 
     mock_loop.run_in_executor.side_effect = record_and_null
 
@@ -3844,6 +3868,42 @@ def test_emit_event_from_thread_uses_captured_loop(event_service: EventService) 
     # Should not raise AttributeError even though self._main_loop is cleared
     event_service._emit_event_from_thread(event)
     assert len(captured_calls) == 1, "run_in_executor should have been called once"
+
+
+async def test_emit_event_from_thread_stamps_event_when_persisted(
+    event_service: EventService,
+) -> None:
+    """An event emitted from a callback is timestamped when it is appended.
+
+    The stats update is built when the model answers, but it is appended only
+    once the step that holds the state lock has appended its action and
+    observation. Keeping the build-time timestamp put it out of timestamp
+    order, so ``timestamp__gte`` and ``resend_mode=since`` skipped it.
+    """
+    state_lock = FIFOLock()
+    appended: list[Event] = []
+    conversation = MagicMock()
+    conversation._state = state_lock
+    conversation._on_event.side_effect = appended.append
+    event_service._main_loop = asyncio.get_running_loop()
+    event_service._conversation = conversation  # type: ignore[assignment]
+
+    event = ConversationStateUpdateEvent(key="stats", value={})
+    with state_lock:
+        event_service._emit_event_from_thread(event)
+        await asyncio.sleep(0.01)
+        # Stands in for the step's action/observation appended under the lock.
+        step_end = datetime.now().isoformat()
+        await asyncio.sleep(0.01)
+
+    for _ in range(200):
+        if appended:
+            break
+        await asyncio.sleep(0.01)
+    assert len(appended) == 1
+    persisted = appended[0]
+    assert persisted.id == event.id
+    assert persisted.timestamp > step_end > event.timestamp
 
 
 def test_llm_log_callback_swallows_emit_failures(
@@ -3928,3 +3988,115 @@ async def test_event_service_creates_lease_with_custom_ttl(tmp_path: Path) -> No
     assert service._lease is not None
     assert service._lease._ttl_seconds == 10.0
     assert (tmp_path / stored.id.hex / LEASE_FILE_NAME).exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("condenser", "message"),
+    [
+        (None, "No condenser configured"),
+        (NoOpCondenser(), "NoOpCondenser does not handle condensation requests"),
+    ],
+)
+async def test_condense_without_request_handling_condenser_is_refused(
+    event_service: EventService, condenser, message: str
+) -> None:
+    """A condenser that cannot serve a request is the caller's configuration,
+    so condense raises CondensationUnavailable (mapped to 409) instead of
+    letting LocalConversation's ValueError become a 500."""
+    conversation = MagicMock()
+    conversation.agent.condenser = condenser
+    event_service._conversation = conversation
+
+    with pytest.raises(CondensationUnavailable, match=message):
+        await event_service.condense()
+
+    conversation.condense.assert_not_called()
+
+
+class TestEmitEventFromThreadFailures:
+    """Executor failures must surface instead of dying with the future (#4386)."""
+
+    @pytest.mark.asyncio
+    async def test_emit_failure_is_logged(
+        self, sample_stored_conversation, tmp_path, caplog
+    ):
+        service = EventService(
+            stored=sample_stored_conversation, conversations_dir=tmp_path
+        )
+        conversation = MagicMock()
+        conversation._state = MagicMock()
+        conversation._state.__enter__ = MagicMock(return_value=None)
+        conversation._state.__exit__ = MagicMock(return_value=False)
+        conversation._on_event.side_effect = RuntimeError("disk full")
+
+        service._conversation = conversation
+        service._main_loop = asyncio.get_running_loop()
+
+        event = MessageEvent(
+            id="emit-failure", source="agent", llm_message=Message(role="assistant")
+        )
+
+        with caplog.at_level(logging.ERROR):
+            service._emit_event_from_thread(event)
+            # Let the executor run and the done-callback fire.
+            for _ in range(20):
+                await asyncio.sleep(0)
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("Failed to emit MessageEvent from thread" in m for m in messages), (
+            f"emission failure was not surfaced; captured={messages}"
+        )
+        assert any("disk full" in m for m in messages)
+
+    @pytest.mark.asyncio
+    async def test_cancelled_future_is_not_reported(self, caplog):
+        """A cancelled emission is not a failure and must not log or raise."""
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        future.cancel()
+        # Let the cancellation settle so `cancelled()` is True.
+        with suppress(asyncio.CancelledError):
+            await future
+
+        with caplog.at_level(logging.ERROR):
+            _log_emit_failure("MessageEvent", future)
+
+        assert [record.getMessage() for record in caplog.records] == []
+
+    @pytest.mark.asyncio
+    async def test_callback_is_attached_from_the_loop_thread(
+        self, sample_stored_conversation, tmp_path
+    ):
+        """`add_done_callback` must be scheduled with call_soon_threadsafe.
+
+        This helper runs on foreign threads, and attaching directly to an
+        already-done future would use plain `call_soon`, which does not wake an
+        idle loop.
+        """
+        service = EventService(
+            stored=sample_stored_conversation, conversations_dir=tmp_path
+        )
+        conversation = MagicMock()
+        conversation._state = MagicMock()
+        conversation._state.__enter__ = MagicMock(return_value=None)
+        conversation._state.__exit__ = MagicMock(return_value=False)
+        service._conversation = conversation
+
+        real_loop = asyncio.get_running_loop()
+        mock_loop = MagicMock()
+        mock_loop.is_running.return_value = True
+        finished: asyncio.Future[None] = real_loop.create_future()
+        finished.set_result(None)
+        mock_loop.run_in_executor.return_value = finished
+        service._main_loop = mock_loop
+
+        event = MessageEvent(
+            id="thread-safety", source="agent", llm_message=Message(role="assistant")
+        )
+        service._emit_event_from_thread(event)
+
+        assert mock_loop.call_soon_threadsafe.called, (
+            "done-callback must be attached via call_soon_threadsafe"
+        )
+        scheduled = mock_loop.call_soon_threadsafe.call_args.args
+        assert scheduled[0] == finished.add_done_callback

@@ -260,7 +260,10 @@ def test_verified_lists_keep_two_latest_versions_per_line():
         "gemini": ({"gemini-4-argon", "gemini-3.8-flash"}, {"gemini-3.6-flash"}),
         "deepseek": ({"deepseek-v4-pro", "deepseek-v3.2-reasoner"}, set()),
         "moonshot": ({"kimi-k3", "kimi-k2.7-code"}, {"kimi-k2.6"}),
-        "minimax": ({"minimax-m3", "minimax-m2.7"}, {"minimax-m2.5"}),
+        "minimax": (
+            {"minimax-m3.1-flash", "minimax-m3", "minimax-m2.7"},
+            {"minimax-m2.5"},
+        ),
         "glm": ({"glm-5.3", "glm-5.2"}, {"glm-5.1"}),
         "nvidia": ({"nemotron-3.5-lightning-30b-a3b", "nemotron-3-nano"}, set()),
         "qwen": ({"qwen3.8-max", "qwen3.7-max"}, {"qwen3-max", "qwen3-6-plus"}),
