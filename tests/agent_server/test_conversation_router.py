@@ -492,18 +492,28 @@ def test_batch_get_conversations_too_many_ids(client, mock_conversation_service)
     )
 
     try:
-        # The assertion is len(ids) < 100, so 100 should fail with AssertionError
+        # 100 ids exceed the 99-id limit: a 422 naming the limit, not a 500
         many_ids = [str(uuid4()) for _ in range(100)]
-        with pytest.raises(AssertionError):
-            response = client.get("/api/conversations", params={"ids": many_ids})
+        response = client.get("/api/conversations", params={"ids": many_ids})
+        assert response.status_code == 422
+        assert "at most 99 items" in response.text
+        mock_conversation_service.batch_get_conversations.assert_not_called()
 
         # Test with 99 IDs (should work)
         mock_conversation_service.batch_get_conversations.return_value = [None] * 99
         valid_ids = [str(uuid4()) for _ in range(99)]
         response = client.get("/api/conversations", params={"ids": valid_ids})
         assert response.status_code == 200
+        assert response.json() == [None] * 99
     finally:
         client.app.dependency_overrides.clear()
+
+
+def test_batch_get_conversations_openapi_declares_id_limit(client):
+    """The 99-id limit is part of the published schema, not only enforced."""
+    operation = client.app.openapi()["paths"]["/api/conversations"]["get"]
+    ids_param = next(p for p in operation["parameters"] if p["name"] == "ids")
+    assert ids_param["schema"]["maxItems"] == 99
 
 
 def test_batch_get_conversations_invalid_uuid(client, mock_conversation_service):
@@ -1837,6 +1847,27 @@ def test_update_conversation_invalid_title(
         client.app.dependency_overrides.clear()
 
 
+@pytest.mark.parametrize("title", ["   ", "\t\n"])
+def test_update_conversation_whitespace_only_title_rejected(
+    client, mock_conversation_service, sample_conversation_id, title
+):
+    """A whitespace-only title is rejected like an empty one (422) and the
+    service is never called, so the stored title is kept."""
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.patch(
+            f"/api/conversations/{sample_conversation_id}", json={"title": title}
+        )
+        assert response.status_code == 422
+        mock_conversation_service.update_conversation.assert_not_called()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_generate_title_endpoint_removed_from_openapi(client):
     response = client.get("/openapi.json")
     assert response.status_code == 200
@@ -2991,6 +3022,28 @@ def test_navigate_conversation_success(
         client.app.dependency_overrides.clear()
 
 
+def test_ask_agent_unknown_conversation_returns_404(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """ask_agent returns 404, not 500, when the conversation does not exist."""
+    mock_conversation_service.ask_agent.return_value = None
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/ask_agent",
+            json={"question": "hi"},
+        )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Conversation not found"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 @pytest.mark.parametrize("failure_mode", ["missing_conversation", "unknown_event"])
 def test_navigate_conversation_returns_404(
     client, mock_conversation_service, sample_conversation_id, failure_mode
@@ -3050,6 +3103,38 @@ def test_start_conversation_client_tool_registration_error_returns_422(
 
         assert response.status_code == 422
         assert "collides with an existing non-client tool" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_unavailable_agent_tool_returns_422(
+    client, mock_conversation_service
+):
+    """An agent tool whose module the server cannot import yields 422, not 500."""
+    from openhands.agent_server.conversation_service import UnavailableAgentTool
+
+    mock_conversation_service.start_conversation.side_effect = UnavailableAgentTool(
+        "The agent uses tools whose modules the agent server cannot import: "
+        "'qa_ghost_tool' (qa_ghost: No module named 'qa_ghost')"
+    )
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+    request = StartConversationRequest(
+        agent=Agent(
+            llm=LLM(model="gpt-4o", api_key=SecretStr("test-key"), usage_id="t"),
+            tools=[],
+        ),
+        workspace=LocalWorkspace(working_dir="/tmp/test"),
+    )
+
+    try:
+        response = client.post(
+            "/api/conversations", json=request.model_dump(mode="json")
+        )
+
+        assert response.status_code == 422
+        assert "'qa_ghost_tool'" in response.json()["detail"]
     finally:
         client.app.dependency_overrides.clear()
 

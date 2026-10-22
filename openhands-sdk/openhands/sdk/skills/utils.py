@@ -591,36 +591,40 @@ def update_skills_repository(
     repo_url: str,
     ref: str,
     cache_dir: Path,
+    strict: bool = False,
 ) -> Path | None:
     """Clone or update the local skills repository.
 
-    Uses the shared git caching infrastructure from openhands.sdk.git.cached_repo.
-    When updating, performs: fetch -> checkout ref -> reset --hard to origin/ref.
+    The shared Git cache resolves ``ref`` to a commit and uses a detached
+    checkout.
 
     Args:
         repo_url: URL of the skills repository.
         ref: Branch name, tag, or full commit SHA to checkout.
         cache_dir: Directory where the repository should be cached.
+        strict: If True, return None when an existing clone cannot be updated
+            (e.g. the fetch fails offline) instead of the stale clone.
 
     Returns:
         Path to the local repository if successful, None otherwise.
     """
     repo_path = cache_dir / "public-skills"
-    return try_cached_clone_or_update(repo_url, repo_path, ref=ref, update=True)
+    return try_cached_clone_or_update(
+        repo_url, repo_path, ref=ref, update=True, strict=strict
+    )
 
 
-def is_skills_repo_pinned(repo_path: Path) -> bool:
-    """Return True if the local skills repo is pinned to a fixed ref.
+def is_skills_repo_pinned(repo_path: Path, ref: str | None = None) -> bool:
+    """Return whether ``ref`` is a cached tag or object ID.
 
-    A pinned ref is one that cannot change over time — a tag or a specific
-    commit SHA. After checking out such a ref the repository is left in
-    detached HEAD state, which is the signal used here.
-
-    Returns False on any git error so callers can safely treat the result
-    as ``False`` (i.e., keep polling) when the state cannot be determined.
+    Public skills treat tags and object IDs as pinned. Branches and other named
+    refs stay refreshable. Without ``ref``, use the legacy detached-HEAD check.
+    Returns False when the ref cannot be classified.
     """
     try:
-        return GitHelper().get_current_branch(repo_path) is None
+        if ref is None:
+            return GitHelper().get_current_branch(repo_path) is None
+        return GitHelper().requested_ref_is_pinned(repo_path, ref)
     except Exception:
         return False
 

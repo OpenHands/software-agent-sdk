@@ -35,7 +35,7 @@ Routes: none
 - `F32.conversation-lifecycle`: pausing, interrupting, updating and deleting a conversation each POST its info again (`paused`, `paused`, the new title, `deleting`).
 - `F32.custom-headers`: a webhook's `headers` and a `base_url` path prefix apply to both event and conversation posts.
 - `F32.buffer-size`: once `event_buffer_size` events are queued they are posted at once, without waiting for `flush_delay`.
-- `F32.buffer-stranded`: events that arrive while a batch is in flight are posted as soon as the buffer is full again, not held until `flush_delay` (reproduces a real delay; see Gotchas).
+- `F32.buffer-stranded`: events that arrive while a batch is in flight are posted as soon as the buffer is full again, not held until `flush_delay` (see Gotchas).
 - `F32.flush-delay`: a partial buffer is posted `flush_delay` seconds after its first event; later events do not restart the timer.
 - `F32.webhook-spec-docs`: the `WebhookSpec` field descriptions published in the OpenAPI schema (the item type of `POST /api/init`'s `webhooks`) state the real event path and flush timer (reproduces a documentation bug; see Gotchas).
 - `F32.flush-on-close`: deleting a conversation posts its queued events before the `DELETE` returns, and a graceful server stop posts every conversation's queue.
@@ -49,12 +49,12 @@ Routes: none
 - `F32.telemetry-conversation`: a run emits `conversation_created` and `conversation_finished` under the request's `user_id`, with a pseudonymous `conversation_ref` and without the prompt or the conversation id.
 - `F32.telemetry-request-failed`: an unhandled 500 emits `request_failed` with the route template (never the concrete path), the exception class and the response's `error_id`, attributed to `X-OpenHands-Telemetry-Distinct-Id`, without the exception message.
 - `F32.telemetry-conversation-failed`: a run that ends in `error` emits `conversation_failed` (`terminal_status` `error`) and `conversation_error` with the error code as `error_class`, without the error's detail text.
-- `F32.telemetry-usage-buckets`: `conversation_finished` reports token and cost buckets from the run's real usage (reproduces a real gap; see Gotchas).
+- `F32.telemetry-usage-buckets`: `conversation_finished` reports token and cost buckets from the run's real usage.
 - `F32.telemetry-consent-settings`: granting or denying consent with `PATCH /api/settings` `misc_settings_diff` starts or stops delivery immediately, and persisted consent enables telemetry after a restart.
 - `F32.telemetry-env-override`: `OH_TELEMETRY_CONSENT=denied` with `OH_TELEMETRY_CONSENT_MODE=override` beats a granted setting.
 - `F32.telemetry-kill-switch`: `DO_NOT_TRACK=1` beats every consent source.
 - `F32.telemetry-salt-and-kind`: without a salt `conversation_ref` is keyed by `OH_SECRET_KEY` (the same ref across restarts); `OH_TELEMETRY_SALT` re-keys it (again the same across restarts), and `OH_TELEMETRY_DEPLOYMENT_KIND` tags every event.
-- `F32.telemetry-salt-docs`: the `TelemetrySpec.salt` description published in the OpenAPI schema states the real fallback key (reproduces a documentation bug; see Gotchas).
+- `F32.telemetry-salt-docs`: the `TelemetrySpec.salt` description published in the OpenAPI schema states the real fallback key (the secret key).
 - `F32.deferred-init`: a dormant pod sends nothing until `POST /api/init` delivers `telemetry` and `webhooks`; then `server_started`, conversation telemetry and webhooks flow.
 - `F32.deferred-init-flag`: events from an initialized deferred pod report `deferred_init: true` (reproduces a real mislabel; see Gotchas).
 
@@ -234,30 +234,26 @@ Preconditions:
   `SystemPromptEvent`) was posted within seconds although the timer is
   600 s. Both the event batch and the conversation post went under
   `/qa-f32-b/` with `X-QA-F32` (plus the session key).
-- **Events stranded behind an in-flight batch (`F32.buffer-stranded`), known bug.**
+- **Events published during an in-flight batch (`F32.buffer-stranded`).**
   Same conversation: the message and its `last_user_message_id` update were
   published while that first batch was being posted, so the buffer (2) is
-  full again and they should be posted at once. The stored events come
-  first, so the bullet can only fail on the delivery.
+  full again and they are posted as soon as that POST returns. The stored
+  events come first, so the bullet can only fail on the delivery.
 
   Requires: `F32.custom-headers`
   ```sh
   control-agent-server conversation events "$BID" --kinds MessageEvent --contains QA_F32_BUFFER --expect-count 1
   control-agent-server conversation events "$BID" --key last_user_message_id --expect-count 1
-  control-agent-server sink read --path "/qa-f32-b/events/${BID//-/}" --expect-min 1 --expect-max 1
-  control-agent-server sink read --path "/qa-f32-b/events/${BID//-/}" --contains QA_F32_BUFFER --expect-min 1 --wait 10 --save F32.buffer-stranded/after-wait  # bug: requests eq 0
+  control-agent-server sink read --path "/qa-f32-b/events/${BID//-/}" --contains QA_F32_BUFFER --expect-min 1 --wait 10 --save F32.buffer-stranded/after-wait
   ```
-  The message and its update are stored, and only the first batch was
-  posted. Expected: the user message reaches the sink within 10 s. Actual:
-  it stays queued until the 600 s timer, the next burst of events, or the
-  conversation's close (the restart in `F32.flush-on-close` delivers it).
-  See Gotchas.
+  The message and its update are stored, and the user message reached the
+  sink within 10 s in a second batch, without waiting for the 600 s timer,
+  the next burst of events, or the conversation's close. See Gotchas.
 - **Flush on delete and on shutdown (`F32.flush-on-close`).**
   Restart with `event_buffer_size` 100 and a 600 s timer, so nothing is
   posted unless the conversation closes. The `sleep` gives a wrongly short
   timer the chance to fire (the server's timer is under test). Both restarts
-  are shutdowns under test: the first one's graceful stop delivers the
-  previous bullet's stranded message (late, not lost).
+  are shutdowns under test.
 
   Requires: `F32.custom-headers`
   ```sh
@@ -274,7 +270,8 @@ Preconditions:
   control-agent-server sink read --path "/qa-f32-c/events/${ZID//-/}" --contains QA_F32_SHUTDOWN --expect-min 1 --save F32.flush-on-close/after-restart
   control-agent-server api GET "/api/conversations/$ZID" --expect 200
   ```
-  The first restart delivered `QA_F32_BUFFER` to `/qa-f32-b/`. Nothing was
+  `QA_F32_BUFFER` is at `/qa-f32-b/` after the first restart (already
+  posted by `F32.buffer-stranded`, or by that graceful stop). Nothing was
   posted for either new conversation after 2 s; the `DELETE` returned only
   after the queued events (snapshot, system prompt, message and its
   `last_user_message_id` update) were posted in one batch, and the graceful
@@ -447,6 +444,8 @@ Preconditions:
   The next bullet is the positive control on the same endpoint.
 - **Server lifecycle events (`F32.telemetry-lifecycle`).** Seed consent from
   the environment and add a token.
+
+  Requires: `F32.telemetry-off-by-default`
   ```sh
   control-agent-server restart --env OH_TELEMETRY_CONSENT=granted --env OH_TELEMETRY_HTTP_TOKEN=qa-f32-token
   control-agent-server logs --grep 'enabled=True \(env_seed\)' --expect-min 1
@@ -462,6 +461,8 @@ Preconditions:
   own `server_started`.
 - **Conversation telemetry is sanitized (`F32.telemetry-conversation`).** A
   real run with a `user_id`, an automation tag and a marker in the prompt.
+
+  Requires: `F32.telemetry-lifecycle`
   ```sh
   UCID=$(control-agent-server conversation start --tools none --no-autotitle --prompt 'Reply with exactly: ok QA_F32_PRIVATE' --body-json '{"user_id": "qa-f32-user"}' --tag automationid=qa-f32 --wait --print-id)
   control-agent-server sink read --name qa-f32-telemetry --contains '"event": "agent_server.conversation_finished", "distinct_id": "qa-f32-user"' --expect-min 1 --expect-max 1 --wait 15 --save F32.telemetry-conversation/finished
@@ -504,18 +505,17 @@ Preconditions:
   `ValueError`; neither the conversation id nor the exception text (which
   the server log shows) reached the endpoint. If the condense route stops answering 500, find another
   unhandled exception: an `HTTPException` 5xx is not reported.
-- **Token and cost buckets from real usage (`F32.telemetry-usage-buckets`), known bug.**
+- **Token and cost buckets from real usage (`F32.telemetry-usage-buckets`).**
   The run above used tokens; its outcome event should say so.
 
   Requires: `F32.telemetry-conversation`
   ```sh
   control-agent-server api GET "/api/conversations/$UCID" --check stats.usage_to_metrics.default.accumulated_token_usage.prompt_tokens gt 0
   control-agent-server sink read --name qa-f32-telemetry --contains '"total_tokens_bucket": "' --expect-min 1
-  control-agent-server sink read --name qa-f32-telemetry --contains '"total_tokens_bucket": "unknown"' --expect-max 0 --save F32.telemetry-usage-buckets/outcome  # bug: requests ge 1
+  control-agent-server sink read --name qa-f32-telemetry --contains '"total_tokens_bucket": "unknown"' --expect-max 0 --save F32.telemetry-usage-buckets/outcome
   ```
-  Expected: a token bucket such as `1000-10000`. Actual: `unknown` (and
-  `cost_bucket` `unknown`), although the conversation's stats hold the
-  tokens. See Gotchas.
+  The outcome carries a token bucket such as `1000-10000` and a
+  `cost_bucket` other than `unknown`, from the conversation's stats.
 - **Failed runs (`F32.telemetry-conversation-failed`).** The same
   unreachable model, this time with a run, so the conversation ends in
   `error` without a model call. The stored `ConversationErrorEvent` is the
@@ -637,22 +637,20 @@ Preconditions:
   on, every event is `remote` (both `server_started` events and the
   `server_stopped` between them, and the conversation errors) and no new
   `local` one arrived. The variables stay set for the rest of the run.
-- **Salt description (`F32.telemetry-salt-docs`), known bug.** The
+- **Salt description (`F32.telemetry-salt-docs`).** The
   `TelemetrySpec` schema (the type of `POST /api/init`'s `telemetry`)
-  should describe the fallback the previous bullet proved: without a salt
+  describes the fallback the previous bullet proved: without a salt
   the server keys pseudonyms with its secret key.
   ```sh
   control-agent-server api GET /openapi.json --auth none --quiet --check 'components.schemas.InitRequest.properties.telemetry.anyOf.0.$ref' eq '#/components/schemas/TelemetrySpec' --check components.schemas.TelemetrySpec.properties.salt.description exists
-  control-agent-server api GET /openapi.json --auth none --quiet --check components.schemas.TelemetrySpec.properties.salt.description matches '(?i)secret'  # bug: status eq 200 && checks.0.actual contains 'per-process random salt'
+  control-agent-server api GET /openapi.json --auth none --quiet --check components.schemas.TelemetrySpec.properties.salt.description matches '(?i)secret'
   ```
-  Expected: the description names the secret-key fallback. Actual: "Falls
-  back to a per-process random salt, which keeps pseudonyms stable within a
-  run but unlinkable across runs", while `build_telemetry_sink` falls back
-  to `OH_SECRET_KEY` first (a random salt only when there is no secret key
-  either), so refs are linkable across restarts. If the code changes to
-  match the description instead, the secret-key ref check of
-  `F32.telemetry-salt-and-kind` fails and both bullets need updating. See
-  Gotchas.
+  The description names the secret-key fallback (`OH_SECRET_KEY`, which
+  defaults to the first session API key) and says the refs are then
+  linkable across restarts; a random per-process key is only the last
+  resort, when there is no secret key either. If the code ever changes to
+  the random fallback, the secret-key ref check of
+  `F32.telemetry-salt-and-kind` fails and both bullets need updating.
 - **Deferred pod gets telemetry and webhooks from `/api/init` (`F32.deferred-init`).**
   A second, dormant server boots with telemetry already configured (to
   `/boot` on a sink of this run) and receives a different endpoint
@@ -716,19 +714,19 @@ Preconditions:
   while mapping this family, a `last_user_message_id` update was posted
   before the `MessageEvent` it names, although the event store (and
   `timestamp`) has the message first.
-- **Stranded events (`F32.buffer-stranded`).** When the buffer fills, the
-  batch is posted inline while `_post_lock` is held; an event published
-  during that POST only starts the flush timer (`if
-  self._post_lock.locked(): self._start_flush_timer(); return`), and
-  `_post_events` only drains what was queued when it started. So events
-  that arrive during an in-flight POST wait for `flush_delay` (30 s by
-  default), the next burst, or the conversation's close, although the
-  buffer is full. They are late, not lost. It happens on every
-  conversation's first message: the `SystemPromptEvent` fills a buffer of
-  2 and the message and its `last_user_message_id` update are published
-  during that POST. The unit test
-  `test_concurrent_event_delivery_has_one_request_in_flight` calls
-  `close()` before counting, which hides it. Low severity (latency).
+- **Events during an in-flight POST (`F32.buffer-stranded`).** When the
+  buffer fills, the batch is posted inline while `_post_lock` is held; an
+  event published during that POST only starts the flush timer and returns.
+  `_post_events` re-checks the buffer after it has drained what was queued
+  when it started, and keeps posting while it is full again, so those events
+  go out right after the in-flight POST instead of after `flush_delay`. The
+  timer still covers a buffer that is not full, and is cancelled when the
+  queue drains. A POST that fails arms the timer again for its requeued
+  events, since a timer that fired during it found an empty queue and
+  exited. It shows on every conversation's first message: the
+  `SystemPromptEvent` fills a
+  buffer of 2 and the message and its `last_user_message_id` update are
+  published during that POST.
 - **Slow receiver (`F32.slow-receiver`).** With a full buffer the POST runs
   inside the fan-out of that event, so its publish future stays pending
   while the receiver is slow (httpx timeout 30 s per attempt, plus
@@ -788,9 +786,8 @@ Preconditions:
   and no explicit secret key uses the first session key as its secret key,
   so the random fallback only happens with neither. The refs are therefore
   stable across restarts and change with `restart --rotate-secret-key`. The
-  `salt` description (also in the OpenAPI schema) promises the random
-  fallback and "unlinkable across runs". Documentation bug, trivial
-  severity; operators who rely on the description get linkable refs.
+  `salt` description (also in the OpenAPI schema) says so; set a salt to
+  re-key them.
 - A conversation reports one terminal outcome per subscriber: after a
   restart, a conversation whose stored status is already terminal is
   seeded as reported, so rerunning it emits `conversation_error` events but
@@ -801,12 +798,11 @@ Preconditions:
   emitted start. The anonymous `distinct_id` (`anon:<hex>`) is per process;
   a request's `user_id` passes through verbatim.
 - **Usage buckets (`F32.telemetry-usage-buckets`).** The subscriber emits
-  the outcome on the first terminal status it sees. A live run publishes
-  the `execution_status` update (a bare string) before its final
-  `full_state` snapshot, so `_capture_usage` never sees `stats` and
-  `total_tokens_bucket` and `cost_bucket` are always `unknown`.
-  `test_outcome_reports_real_bucketed_usage` only feeds `full_state`
-  snapshots, so it passes. Low severity (analytics quality).
+  the outcome on the first terminal status it sees, which in a live run is
+  the bare-string `execution_status` update, published before the final
+  `full_state` snapshot. Usage therefore comes from the `stats` updates
+  `EventService` publishes after each LLM call (and from any `full_state`
+  snapshot); the outcome buckets the latest totals.
 - **`deferred_init` label (`F32.deferred-init-flag`).**
   `_build_initialized_config` sets `deferred_init=False` and `/api/init`
   builds the telemetry sink, runtime properties included, from that merged
