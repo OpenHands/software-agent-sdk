@@ -13,6 +13,7 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent import get_agent_factory
+from openhands.sdk.subagent.scope import inherit_mcp_config
 from openhands.sdk.tool.tool import ToolExecutor
 from openhands.tools.delegate.definition import DelegateObservation
 
@@ -188,7 +189,9 @@ class DelegateExecutor(ToolExecutor):
                 worker_agent = factory.factory_func(sub_agent_llm)
 
                 # ensuring that the sub-agent LLM has stream deactivated
-                worker_agent = worker_agent.model_copy(
+                worker_agent = inherit_mcp_config(
+                    parent_conversation.agent, worker_agent
+                ).model_copy(
                     update={
                         "llm": worker_agent.llm.model_copy(update={"stream": False})
                     }
@@ -223,6 +226,8 @@ class DelegateExecutor(ToolExecutor):
                     "_parent_llm_call_context": (
                         parent_conversation.get_llm_call_context()
                     ),
+                    "mcp_tool_provider": parent_conversation._mcp_tool_provider,
+                    "_mcp_config_from_parent": True,
                 }
 
                 if factory.definition.max_iteration_per_run is not None:

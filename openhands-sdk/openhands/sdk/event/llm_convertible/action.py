@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Protocol, cast
 
 from pydantic import Field
 from rich.text import Text
@@ -18,7 +19,21 @@ from openhands.sdk.llm import (
     ThinkingBlock,
 )
 from openhands.sdk.security import risk
+from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.tool.schema import Action
+
+
+class _MessageAction(Protocol):
+    @property
+    def message(self) -> str: ...
+
+
+def _action_declares_message(action: Action) -> bool:
+    # Field values live on the instance, but a ``message`` property or class
+    # attribute lives on the class. Instance ``__dict__`` misses those.
+    if "message" in type(action).model_fields:
+        return True
+    return any("message" in cls.__dict__ for cls in type(action).__mro__)
 
 
 class ActionEvent(LLMConvertibleEvent):
@@ -87,6 +102,21 @@ class ActionEvent(LLMConvertibleEvent):
             "'viewing directory structure to locate source files'"
         ),
     )
+
+    @property
+    def message(self) -> str | None:
+        """User-facing message or summary from the action, if any."""
+        action = self.action
+        if action is None:
+            return None
+        if isinstance(action, FinishAction):
+            return action.message
+        if not _action_declares_message(action):
+            return None
+        message = cast(_MessageAction, action).message
+        if isinstance(message, str) and message.strip():
+            return message
+        return None
 
     @property
     def visualize(self) -> Text:

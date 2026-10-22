@@ -309,11 +309,11 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   ```
   Both calls are accepted on the `finished` and the `error` conversation, and
   neither the status nor the event count moves.
-- **Responsive while a run fails (`F05.run-error-responsive`), known bug.**
+- **Responsive while a run fails (`F05.run-error-responsive`).**
   Re-run `E` and keep probing `/alive` and the error count, recording the
   slowest answer, until three rounds after the second
   `ConversationErrorEvent` lands (the failure is logged after the event is
-  stored). A probe before the run is the positive control; the single bug
+  stored). A probe before the run is the positive control; the final
   assertion is that no probe during the failure took over 1.5 s (normally
   about 100 ms).
   ```sh
@@ -336,17 +336,16 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   test "$AFTER" -ge 3
   control-agent-server api GET "/api/conversations/$E" --check execution_status eq error --quiet --save F05.run-error-responsive/after
   echo "slowest probe while the run failed: $SLOWEST ms"
-  control-agent-server assert --value "$SLOWEST" --check . le 1500  # bug: value ge 3000
+  control-agent-server assert --value "$SLOWEST" --check . le 1500
   ```
-  Expected: every probe answers in about 100 ms. Today one of them waits
-  about 5 s: `_run_and_publish` logs the run failure with `logger.exception`
-  on the event loop (`event_service.py`, "Error during conversation run"),
-  and the default console handler (`LOG_RICH_TRACEBACKS` defaults to true in
-  `openhands-sdk/openhands/sdk/logger/logger.py`) renders a rich traceback of
-  about 1,000 lines synchronously, blocking every request, socket and run on
-  the server meanwhile. After `restart --env LOG_RICH_TRACEBACKS=false` (or
-  with `LOG_JSON=true`, the Docker images' setting) the same probe answers in
-  under 200 ms.
+  Expected: every probe answers in about 100 ms, with the default console
+  logging as with `LOG_JSON=true` (the Docker images' setting).
+  `_run_and_publish` logs the failure ("Error during conversation run" in
+  `event_service.py`) with its traceback as plain text rather than
+  `exc_info`, because the default Rich console handler (`LOG_RICH_TRACEBACKS`
+  defaults to true in `openhands-sdk/openhands/sdk/logger/logger.py`) would
+  render a rich traceback of a chained LLM error synchronously on the event
+  loop, blocking every request, socket and run for about 5 s.
 - **Run an unknown id (`F05.unknown-id-run`).**
   ```sh
   control-agent-server api POST "/api/conversations/$NOPE/run" --expect 404 --check detail eq 'Not Found' --save F05.unknown-id-run/run
@@ -762,8 +761,8 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   `conversation wait`, the events socket or the event log. A provider failure
   is a 200 from `/run` followed by `error` and a `ConversationErrorEvent`.
 - `events/count` and `events/search` filter `kind` by the fully-qualified
-  class path (`openhands.sdk.event.user_action.PauseEvent`), not the short
-  `kind` value the events carry (F06).
+  class path (`openhands.sdk.event.user_action.PauseEvent`) or the short
+  `kind` value the events carry (`PauseEvent`, `F06.search-kind-short`).
 - Every state change is also persisted as a `ConversationStateUpdateEvent`,
   so count specific kinds instead of total events, except to prove that
   nothing happened (`F05.run-finished-noop`).
@@ -773,11 +772,11 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   tool call, if any. A lease held by a dead process on the same host is taken
   over immediately; a lease from another host must expire first
   (`OH_LEASE_TTL_SECONDS`, default 45), and until then `/run` answers 404.
-- The 5 s stall in `F05.run-error-responsive` depends on logging: it happens
-  with the default console logging (`launch` sets neither `LOG_JSON` nor
-  `LOG_RICH_TRACEBACKS`) and not with `LOG_JSON=true` or
-  `LOG_RICH_TRACEBACKS=false`. Every failed run also delays the socket's
-  error frames by the same amount, so wait for them with `ws read --wait`.
+- `F05.run-error-responsive` only means something with the default console
+  logging (`launch` sets neither `LOG_JSON` nor `LOG_RICH_TRACEBACKS`): a
+  rich traceback rendered on the event loop stalls the server only there, not
+  with `LOG_JSON=true` or `LOG_RICH_TRACEBACKS=false`. Any such stall also
+  delays the socket's error frames, so wait for them with `ws read --wait`.
 - A run's end is visible on the socket as a `full_state`
   `ConversationStateUpdateEvent`; the server also sends one on connect and
   after every pause and interrupt. Counting them (`--expect-min`) is how the
