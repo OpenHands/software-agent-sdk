@@ -26,6 +26,7 @@ from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import (
     ConversationService,
     InvalidParentConversation,
+    UnavailableAgentTool,
 )
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.launch import launch_http_exception
@@ -43,6 +44,8 @@ from openhands.agent_server.models import (
     NavigateConversationRequest,
     SetConfirmationPolicyRequest,
     SetSecurityAnalyzerRequest,
+    StartChildConversationRequest,
+    StartChildConversationResponse,
     StartConversationRequest,
     StartGoalRequest,
     Success,
@@ -283,13 +286,12 @@ async def get_conversation_agent_final_response(
 @conversation_router.get("")
 async def batch_get_conversations(
     request: Request,
-    ids: Annotated[list[UUID], Query()],
+    ids: Annotated[list[UUID], Query(max_length=99)],
     include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> list[ConversationInfo | None]:
-    """Get a batch of conversations given their ids, returning null for
-    any missing item"""
-    assert len(ids) < 100
+    """Get a batch of up to 99 conversations given their ids, returning null
+    for any missing item"""
     conversations = await conversation_service.batch_get_conversations(ids)
     conversations = [
         _with_runtime_info(request, conversation) if conversation is not None else None
@@ -330,6 +332,11 @@ async def start_conversation(
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationInfo:
     """Start a conversation in the local environment."""
+    if request.conversation_runtime not in (None, "local"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="This server only runs local conversations",
+        )
     request = _request_with_observability_headers(
         request,
         span_name=x_openhands_observability_span_name,
@@ -345,7 +352,7 @@ async def start_conversation(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
         ) from e
-    except InvalidParentConversation as e:
+    except (InvalidParentConversation, UnavailableAgentTool) as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
         ) from e
@@ -759,7 +766,7 @@ async def ask_agent(
     """Ask the agent a simple question without affecting conversation state."""
     response = await conversation_service.ask_agent(conversation_id, request.question)
     if response is None:
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR)
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return AskAgentResponse(response=response)
 
 
@@ -824,6 +831,42 @@ async def fork_conversation(
     if not include_skills:
         info = trim_conversation_response_skills(info)
     return info
+
+
+@conversation_router.post(
+    "/{conversation_id}/children",
+    responses={
+        201: {"description": "Child conversation created"},
+        404: {"description": "Parent conversation not found"},
+        429: {"description": "Server conversation run capacity is full"},
+    },
+    status_code=status.HTTP_201_CREATED,
+)
+async def start_child_conversation(
+    conversation_id: UUID,
+    request: Annotated[StartChildConversationRequest, Body()],
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> StartChildConversationResponse:
+    """Start a child conversation of ``conversation_id`` on this server.
+
+    The child inherits the parent's configuration and workspace (optionally
+    isolated in a git worktree), is linked via ``parent_conversation_id`` and
+    receives ``task`` as its first user message. This is the default launcher
+    behind the ``start_child_conversation`` tool.
+    """
+    try:
+        result = await conversation_service.start_child_conversation(
+            conversation_id, request
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    if result is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, detail="Parent conversation not found"
+        )
+    return result
 
 
 @conversation_router.post(

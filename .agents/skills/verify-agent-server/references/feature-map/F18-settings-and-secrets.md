@@ -53,8 +53,9 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
 - `F18.secret-empty-value`: a PUT whose value is empty, blank or the redaction placeholder is refused with 422 and neither wipes an existing value nor leaves a listed but unreadable secret (fixed by #5682).
 - `F18.dangling-pointers`: PATCH must refuse an `active_agent_profile_id` or `active_meta_profile` that names nothing, as the dedicated activate routes do (404).
 - `F18.secret-scope-profile-errors`: `GET /api/settings/secrets?agent_profile_id=` naming an agent profile whose file no longer validates, or arriving while the agent-profile store's lock is held elsewhere, must answer as the agent-profile routes do (400 and 503), not with an unhandled 500.
-- `F18.secret-name-contract`: the published OpenAPI description of the secret routes must name the status an invalid secret name actually gets (it says 400; the code answers 422).
-- `F18.secret-key-rotation`: after a restart with a new cipher key, a write must not destroy values stored under the old key, so rotating back recovers them.
+- `F18.secret-name-contract`: the published OpenAPI description of the secret routes names the status an invalid secret name actually gets, 422 (fixed by #5846).
+- `F18.secret-key-rotation`: after a restart with a new cipher key and the old one lost (not in `OH_PREVIOUS_SECRET_KEYS`), reads degrade, writes are refused instead of destroying values stored under the old key, and rotating back recovers them.
+- `F18.secret-key-previous-keys`: a restart with a new cipher key and the old one in `OH_PREVIOUS_SECRET_KEYS` (a supported rotation) keeps every value readable and writable and re-encrypts both files under the new key, so a later restart without the old key still reads them.
 
 ## How to get to it (agent POV)
 
@@ -106,6 +107,21 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
   diffs; the secrets page lists, upserts and deletes (context only).
 
 ## Driving it with control-agent-server
+
+**Critic-check precondition.**
+
+If an authorized OpenHands (`openhands/…`) or compatible OpenHands LLM-proxy
+profile is available, use it for a critic check, regardless of the profile
+used for the rest of the pass. With the critic enabled and
+`verification.critic_api_key` unset, `OpenHandsAgentSettings.build_critic()`
+reuses the selected LLM profile's key; no separate critic key is required.
+The default critic endpoint is `https://llm-proxy.app.all-hands.dev/vllm`.
+A profile for a different proxy deployment must use that deployment's
+compatible critic endpoint rather than assume its credential works on the
+default endpoint. Restore the previous profile and verification settings
+afterwards. Availability is not a scored result: report the actual service
+response, and record `blocked` only when the authorized prerequisites are
+unavailable. Do not send an unrelated provider's key to the critic service.
 
 Preconditions:
 
@@ -642,7 +658,7 @@ Preconditions:
   control-agent-server api GET /api/settings --expect 200 --check llm_api_key_is_set eq false \
     --check agent_settings.llm.model eq "$DEFAULT_MODEL" --save F18.corrupted-files/get-settings
   control-agent-server api PATCH /api/settings --json '{"misc_settings_diff": {"qa_f18_probe": 1}}' --expect 409 \
-    --check detail eq 'Settings file is corrupted or encrypted with a different key' --save F18.corrupted-files/patch
+    --check detail contains 'Settings file is corrupted or encrypted with a different key' --save F18.corrupted-files/patch
   control-agent-server state cat home/.openhands/settings.json --contains qa-f18-corrupt
   control-agent-server api GET /api/settings/secrets --expect 200 --check secrets len-eq 0 --save F18.corrupted-files/list-secrets
   control-agent-server api GET /api/settings/secrets/QA_F18_TOKEN --expect 404
@@ -758,10 +774,11 @@ Preconditions:
   Today it answers 200, stores the pointer and turns on
   `enable_classify_and_switch_llm_tool` with no meta-profile behind it. The
   trap clears the pointer, which turns the switch tool off again.
-- **Agent profile that no longer loads (`F18.secret-scope-profile-errors`), known bug.**
+- **Agent profile that no longer loads (`F18.secret-scope-profile-errors`).**
   Save an agent profile that scopes `QA_F18_TOKEN` (arrange), break its file
   so it no longer validates (`secret_refs` a string instead of a list), then
   list secrets scoped by its id.
+  Requires: `F18.secret-put-list-get`
   ```sh
   AP="$AGENT_SERVER_VERIFY_RUN/home/.openhands/agent-profiles"
   trap 'rm -f "$AP/qa-f18-broken.json" || true' EXIT
@@ -772,15 +789,15 @@ Preconditions:
   cp "$F18/qa-f18-broken.json" "$AP/qa-f18-broken.json"
   control-agent-server api GET /api/agent-profiles/qa-f18-broken --expect 400 \
     --check detail contains 'Failed to load profile' --save F18.secret-scope-profile-errors/agent-profile-route
-  control-agent-server api GET /api/settings/secrets --query "agent_profile_id=$BROKEN" --expect 4xx --save F18.secret-scope-profile-errors/unloadable  # bug: status eq 500 && response.body.exception contains 'Failed to load profile'
+  control-agent-server api GET /api/settings/secrets --query "agent_profile_id=$BROKEN" --expect 400 \
+    --check detail contains 'Failed to load profile' --save F18.secret-scope-profile-errors/unloadable
   ```
   Scoping works while the profile is valid (one secret), and the
   agent-profile route reports the broken file as 400 `Failed to load profile
-  ...`. Expected: the scoped list answers a client error too. Today it is an
-  unhandled 500 (`exception` carries the validation error): `list_secrets`
-  calls `AgentProfileStore.load` outside `store_errors()`. The trap removes
-  the profile file.
-- **Agent-profile store busy (`F18.secret-scope-profile-errors`), known bug.**
+  ...`. The scoped list answers the same 400 with the load error in
+  `detail`: `list_secrets` reads the profile inside `store_errors()`, as the
+  agent-profile routes do. The trap removes the profile file.
+- **Agent-profile store busy (`F18.secret-scope-profile-errors`).**
   Another process (here `flock`, standing in for a second server on the same
   persistence directory) holds the agent-profile store's lock for 75 seconds.
   The server's own 30-second lock timeout is under test, so the bullet waits
@@ -797,31 +814,28 @@ Preconditions:
   control-agent-server api GET /api/agent-profiles/qa-f18-busy --timeout 60 --expect 503 \
     --check exception eq '503: Profile store is busy. Please retry.' --save F18.secret-scope-profile-errors/agent-profile-busy
   control-agent-server api GET /api/settings/secrets --query agent_profile_id=00000000-0000-4000-8000-0000000000f1 --timeout 60 \
-    --expect 503 --save F18.secret-scope-profile-errors/secrets-busy  # bug: status eq 500 && response.body.exception contains 'lock acquisition timed out'
+    --expect 503 --check exception eq '503: Profile store is busy. Please retry.' --save F18.secret-scope-profile-errors/secrets-busy
   ```
   After 30 seconds the agent-profile route answers 503 `Profile store is
-  busy. Please retry.`. Expected: the scoped secrets list answers 503 as
-  well. Today it waits the same 30 seconds and answers an unhandled 500
-  (`Agent profile store lock acquisition timed out after 30.0s`). The trap
-  waits until `flock` lets go.
-- **Documented status for an invalid name (`F18.secret-name-contract`), known bug.**
+  busy. Please retry.`, and the scoped secrets list answers the same 503
+  after the same wait. The trap waits until `flock` lets go.
+- **Documented status for an invalid name (`F18.secret-name-contract`).**
   Read the status the published OpenAPI description promises for an invalid
   secret name, then send one.
   ```sh
   control-agent-server api GET /openapi.json --expect 200 --quiet --raw-out "$F18/openapi.json"
   CLAIMED=$(jq -r '.paths["/api/settings/secrets/{name}"].get.description // ""' "$F18/openapi.json" | sed -n 's/.* \([0-9][0-9][0-9]\) if name format is invalid.*/\1/p')
-  control-agent-server api GET /api/settings/secrets/1bad --expect "${CLAIMED:-422}" --save F18.secret-name-contract/invalid-name  # bug: status eq 422 && response.body.detail contains 'Invalid secret name format'
+  control-agent-server api GET /api/settings/secrets/1bad --expect "${CLAIMED:-422}" --save F18.secret-name-contract/invalid-name
   ```
-  Expected: the documented and the real status agree (either the docstring
-  says 422 or the code answers 400). Today the description of `GET`,
-  `DELETE /api/settings/secrets/{name}` and `PUT /api/settings/secrets`
-  says `400 if name format is invalid` while every one answers 422
-  (`F18.secret-name-validation`); clients generated from the OpenAPI
-  document inherit the wrong promise.
-- **Cipher key rotation (`F18.secret-key-rotation`), known bug.** Store a
-  secret and an LLM key; rotate the cipher key and rotate back with no write
-  in between (the control); then rotate again, write something unrelated
-  under the new key, and rotate back.
+  Expected: the documented and the real status agree. The descriptions of
+  `GET` and `DELETE /api/settings/secrets/{name}` say `422 if name format is
+  invalid` (`PUT /api/settings/secrets` says `422 if the name or value is
+  invalid`), and every one answers 422 (`F18.secret-name-validation`), so
+  clients generated from the OpenAPI document get the right promise.
+- **Cipher key lost (`F18.secret-key-rotation`).** Store a
+  secret and an LLM key; rotate the cipher key without keeping the old one
+  and rotate back with no write in between (the control); then rotate again,
+  write something unrelated under the new key, and rotate back.
   ```sh
   restore_values() {
     control-agent-server api DELETE /api/settings/secrets/QA_F18_ROTATED --expect 200,404 >/dev/null
@@ -840,25 +854,54 @@ Preconditions:
   control-agent-server api GET /api/settings/secrets/QA_F18_TOKEN --expect 200 --check . eq "$QA_F18_SECRET" --save F18.secret-key-rotation/control-rotated-back
   control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --check agent_settings.llm.api_key eq "$QA_F18_LLM_KEY"
   control-agent-server restart --rotate-secret-key
-  control-agent-server api PUT /api/settings/secrets --json '{"name": "QA_F18_ROTATED", "value": "qa-f18-rotated-value"}' --expect 200,409,500 --save F18.secret-key-rotation/put-under-new-key
-  control-agent-server api PATCH /api/settings --json '{"misc_settings_diff": {"qa_f18_rotated": true}}' --expect 200,409 --save F18.secret-key-rotation/patch-under-new-key
+  control-agent-server api PUT /api/settings/secrets --json '{"name": "QA_F18_ROTATED", "value": "qa-f18-rotated-value"}' --expect 500 --save F18.secret-key-rotation/put-under-new-key
+  control-agent-server api PATCH /api/settings --json '{"misc_settings_diff": {"qa_f18_rotated": true}}' --expect 409 --check detail contains 'encrypted with a different key' --check detail contains OH_PREVIOUS_SECRET_KEYS --save F18.secret-key-rotation/patch-under-new-key
   control-agent-server restart --restore-secret-key
-  control-agent-server state cat home/.openhands/secrets.json --check custom_secrets.QA_F18_TOKEN.secret matches '^gAAAAA'  # bug: content.custom_secrets.QA_F18_TOKEN exists && content.custom_secrets.QA_F18_TOKEN.secret eq null
-  control-agent-server state cat home/.openhands/settings.json --check agent_settings.llm.api_key matches '^gAAAAA'  # bug: content.agent_settings.llm exists && content.agent_settings.llm.api_key eq null
-  control-agent-server api GET /api/settings/secrets/QA_F18_TOKEN --expect 200 --check . eq "$QA_F18_SECRET" --save F18.secret-key-rotation/after-rotating-back  # bug: status eq 404 && response.body.detail eq 'Secret not found'
-  control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --check agent_settings.llm.api_key eq "$QA_F18_LLM_KEY" --save F18.secret-key-rotation/settings-after-rotating-back  # bug: status eq 200 && checks.0.actual eq null
+  control-agent-server state cat home/.openhands/secrets.json --check custom_secrets.QA_F18_TOKEN.secret matches '^gAAAAA'
+  control-agent-server state cat home/.openhands/settings.json --check agent_settings.llm.api_key matches '^gAAAAA'
+  control-agent-server api GET /api/settings/secrets/QA_F18_TOKEN --expect 200 --check . eq "$QA_F18_SECRET" --save F18.secret-key-rotation/after-rotating-back
+  control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --check agent_settings.llm.api_key eq "$QA_F18_LLM_KEY" --save F18.secret-key-rotation/settings-after-rotating-back
   ```
   Under the new key every read degrades silently: the secret is 404 `Secret
   not found`, `llm_api_key_is_set` is `false`, and the log says `Failed to
   decrypt secret value`; rotating straight back reads both values again (the
-  control). Expected: a write under the new key either refuses (the store's
-  own "encrypted with a different key" protection: 409 for settings, 500 for
-  secrets) or leaves the old ciphertext alone, so the original key still
-  reads the values. Today the PUT of an unrelated secret and the misc PATCH
-  both answer 200 and rewrite `QA_F18_TOKEN.secret` and `llm.api_key` as
-  `null` on disk, so after rotating back both are gone for good. The run is
-  back on its original key before the first `# bug` line; the trap stores
-  both values again and deletes `QA_F18_ROTATED`.
+  control). A write under the new key refuses with the store's own
+  "encrypted with a different key" protection (409 for the settings PATCH,
+  whose detail says to restore the key or add it to
+  `OH_PREVIOUS_SECRET_KEYS`; 500 for the secrets PUT, #5622) and leaves both
+  files untouched, so after rotating back the original key reads
+  `QA_F18_TOKEN.secret` and `llm.api_key` again. The trap stores both values
+  again and deletes `QA_F18_ROTATED` in case a write went through.
+- **Supported key rotation (`F18.secret-key-previous-keys`).** Store a secret
+  and an LLM key; rotate the cipher key keeping the old one as
+  `OH_PREVIOUS_SECRET_KEYS_0`, read and write under the new key, then restart
+  without the old key.
+  ```sh
+  trap 'control-agent-server api DELETE /api/settings/secrets/QA_F18_PREVIOUS --expect 200,404,409,500 >/dev/null || true' EXIT
+  control-agent-server api PUT /api/settings/secrets --json "{\"name\": \"QA_F18_TOKEN\", \"value\": \"$QA_F18_SECRET\", \"description\": \"qa f18 token\"}" --expect 200
+  control-agent-server api PATCH /api/settings --json "{\"agent_settings_diff\": {\"llm\": {\"api_key\": \"$QA_F18_LLM_KEY\"}}}" --expect 200 --check llm_api_key_is_set eq true
+  control-agent-server restart --rotate-secret-key --keep-previous-secret-key
+  control-agent-server api GET /api/settings/secrets/QA_F18_TOKEN --expect 200 --check . eq "$QA_F18_SECRET" --save F18.secret-key-previous-keys/read-under-new-key
+  control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --check agent_settings.llm.api_key eq "$QA_F18_LLM_KEY" --save F18.secret-key-previous-keys/settings-under-new-key
+  control-agent-server api PUT /api/settings/secrets --json '{"name": "QA_F18_PREVIOUS", "value": "qa-f18-previous-value"}' --expect 200 --save F18.secret-key-previous-keys/put-under-new-key
+  control-agent-server api PATCH /api/settings --json '{"misc_settings_diff": {"qa_f18_previous": true}}' --expect 200 --save F18.secret-key-previous-keys/patch-under-new-key
+  control-agent-server restart
+  control-agent-server api GET /api/settings/secrets/QA_F18_TOKEN --expect 200 --check . eq "$QA_F18_SECRET" --save F18.secret-key-previous-keys/read-without-old-key
+  control-agent-server api GET /api/settings/secrets/QA_F18_PREVIOUS --expect 200 --check . eq qa-f18-previous-value
+  control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --check agent_settings.llm.api_key eq "$QA_F18_LLM_KEY" --check misc_settings.qa_f18_previous eq true --save F18.secret-key-previous-keys/settings-without-old-key
+  control-agent-server api PATCH /api/settings --json '{"misc_settings_diff": {"qa_f18_previous": null}}' --expect 200
+  ```
+  With the old key in `OH_PREVIOUS_SECRET_KEYS`, every read and write under
+  the new key works: the server decrypts with the new key first, then each
+  previous key, and encrypts only with the new key. At startup it also
+  re-encrypts `settings.json` and `secrets.json` under the new key (the log
+  says `Re-encrypted the settings store under the current key`), so after the
+  plain `restart`, which drops the previous key again, both files still read.
+  Other encrypted files (conversations, LLM profiles, provider connections)
+  are re-encrypted only when next saved, so keep the old key listed while
+  they matter. When `OH_SECRET_KEY` is unset the cipher is the first session
+  key: rotating that key is the same operation, with the old session key in
+  `OH_PREVIOUS_SECRET_KEYS`.
 
 ## Gotchas
 
@@ -869,7 +912,10 @@ Preconditions:
 - The cipher is `OH_SECRET_KEY`, else the first session key, else none
   (plaintext at rest, `encrypted` 503). Rotating the session key without
   setting `OH_SECRET_KEY` therefore changes the cipher too
-  (`F18.secret-key-rotation`). Go back to the run's previous cipher
+  (`F18.secret-key-rotation`); keep the old key readable with
+  `OH_PREVIOUS_SECRET_KEYS` (`restart --rotate-secret-key
+  --keep-previous-secret-key`, `F18.secret-key-previous-keys`), which a
+  later plain `restart` drops again. Go back to the run's previous cipher
   with `restart --restore-secret-key`, not `restart --env OH_SECRET_KEY=...`:
   an `--env` override sticks to every later restart and silently turns a
   later `--rotate-secret-key` into a no-op.
@@ -895,15 +941,15 @@ Preconditions:
   empty; PUT and DELETE answer 500.
 - 5xx bodies are rewritten to `{"detail": "Internal Server Error",
   "exception": "<code>: <reason>"}`; assert on the status and `exception`.
-- Invalid secret names are 422, although the route docstrings, and so the
-  OpenAPI descriptions, say 400 (`F18.secret-name-contract`). The 404 detail
+- Invalid secret names are 422, as the route docstrings, and so the OpenAPI
+  descriptions, say (`F18.secret-name-contract`). The 404 detail
   is always `Secret not found`, also for a stored `null` value.
-- `?agent_profile_id=` loads the agent profile outside the store's error
-  mapping: a profile file that no longer validates, or a lock held by
-  another process for 30 seconds, is an unhandled 500 there, while the
-  agent-profile routes answer 400 and 503 (`F18.secret-scope-profile-errors`).
-  Like every file-locked store route, a held lock also stalls the whole
-  server for those 30 seconds.
+- `?agent_profile_id=` loads the agent profile under the store's error
+  mapping: a profile file that no longer validates answers 400, and a lock
+  held by another process for 30 seconds answers 503, as on the
+  agent-profile routes (`F18.secret-scope-profile-errors`). Like every
+  file-locked store route, a held lock also stalls the whole server for
+  those 30 seconds.
 - `RemoteWorkspace.clone_repos` runs `git` on the client's machine, not on
   the server, and leaves the token in the clone's `remote.origin.url`
   (`https://<github_token>@github.com/...`). A local stand-in therefore
