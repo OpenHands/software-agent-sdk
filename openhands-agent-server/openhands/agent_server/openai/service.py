@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
@@ -336,6 +337,36 @@ def _response_id() -> str:
     return f"{_RESPONSE_ID_PREFIX}{uuid4().hex}"
 
 
+# A continued conversation takes one gateway turn at a time. The gateway reads
+# the conversation's latest final answer once the run ends, so an overlapping
+# request (queued for a rerun) would hand its answer to the earlier request.
+_GATEWAY_TURNS_IN_FLIGHT: set[UUID] = set()
+
+
+def _conversation_busy_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            "Conversation is already running; wait for its current turn to "
+            "finish before sending another message"
+        ),
+    )
+
+
+@contextmanager
+def _exclusive_gateway_turn(conversation_id: UUID | None) -> Iterator[None]:
+    if conversation_id is None:
+        yield
+        return
+    if conversation_id in _GATEWAY_TURNS_IN_FLIGHT:
+        raise _conversation_busy_error()
+    _GATEWAY_TURNS_IN_FLIGHT.add(conversation_id)
+    try:
+        yield
+    finally:
+        _GATEWAY_TURNS_IN_FLIGHT.discard(conversation_id)
+
+
 # A run also stops, without being terminal, when it waits for the user; the
 # fresh-conversation path sees this because its run task ends there.
 _STOPPED_RUN_STATUSES = frozenset(
@@ -559,6 +590,8 @@ async def _run_agent(
         )
         if event_service is not None:
             state_before = await event_service.get_state()
+            if state_before.execution_status == ConversationExecutionStatus.RUNNING:
+                raise _conversation_busy_error()
             min_event_count = len(state_before.events) + 1
             # Claim capacity before saving the message: a 429 must leave
             # nothing behind so an OpenAI client can retry the same request.
@@ -641,12 +674,13 @@ async def run_chat_completion(
     if observability_overrides:
         start_request = start_request.model_copy(update=observability_overrides)
     user_message = _latest_user_message(request.messages)
-    agent_result = await _run_agent(
-        start_request=start_request,
-        user_content=_content_to_sdk_parts(user_message),
-        conversation_service=conversation_service,
-        reusable_conversation_id=reusable_conversation_id,
-    )
+    with _exclusive_gateway_turn(reusable_conversation_id):
+        agent_result = await _run_agent(
+            start_request=start_request,
+            user_content=_content_to_sdk_parts(user_message),
+            conversation_service=conversation_service,
+            reusable_conversation_id=reusable_conversation_id,
+        )
     # EventService.get_agent_final_response() returns final text from the SDK's
     # get_agent_final_response(), so the gateway emits assistant text only.
     response = OpenAIChatCompletionResponse(
