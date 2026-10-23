@@ -4,12 +4,15 @@ These tests perform actual git operations and may require network access.
 They are designed to test the full end-to-end flow of plugin fetching.
 """
 
+import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from openhands.sdk.git.cached_repo import GitHelper
 from openhands.sdk.plugin import Plugin
-from openhands.sdk.plugin.fetch import fetch_plugin
+from openhands.sdk.plugin.fetch import PluginFetchError, fetch_plugin
 
 
 class TestGitHelperIntegration:
@@ -254,6 +257,45 @@ class TestFetchPluginIntegration:
             f"file://{plugin_repo}", cache_dir=cache_dir, ref="v1.0.0"
         )
         assert (result / "version.txt").read_text() == "v1"
+
+    def test_fetch_unknown_ref_fails_for_cached_source(self, tmp_path: Path):
+        """An unknown ref fails even once the source's clone is cached."""
+        plugin_repo = tmp_path / "plugin"
+        plugin_repo.mkdir()
+        subprocess.run(["git", "init"], cwd=plugin_repo, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"],
+            cwd=plugin_repo,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"], cwd=plugin_repo, check=True
+        )
+        (plugin_repo / "version.txt").write_text("v1")
+        subprocess.run(["git", "add", "."], cwd=plugin_repo, check=True)
+        subprocess.run(["git", "commit", "-m", "v1"], cwd=plugin_repo, check=True)
+        subprocess.run(["git", "tag", "v1.0.0"], cwd=plugin_repo, check=True)
+        source = f"file://{plugin_repo}"
+        cache_dir = tmp_path / "cache"
+
+        # First clone: an unknown ref fails.
+        with pytest.raises(PluginFetchError):
+            fetch_plugin(source, cache_dir=cache_dir, ref="no-such-ref")
+
+        # Cache the clone, then ask for the unknown ref again.
+        cached = fetch_plugin(source, cache_dir=cache_dir)
+        with pytest.raises(PluginFetchError):
+            fetch_plugin(source, cache_dir=cache_dir, ref="no-such-ref")
+
+        # A ref the source has still resolves from the cache.
+        assert fetch_plugin(source, cache_dir=cache_dir, ref="v1.0.0") == cached
+
+        # Without a ref, a failed fetch still falls back to the cached clone.
+        shutil.rmtree(plugin_repo)
+        assert fetch_plugin(source, cache_dir=cache_dir) == cached
+        assert (cached / "version.txt").read_text() == "v1"
+        with pytest.raises(PluginFetchError):
+            fetch_plugin(source, cache_dir=cache_dir, ref="no-such-ref")
 
 
 class TestPluginFetchMethodIntegration:
