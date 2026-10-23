@@ -26,6 +26,7 @@ from openhands.agent_server.conversation_lease import (
 )
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import (
+    CondensationUnavailable,
     EventService,
     RunSlot,
     _log_emit_failure,
@@ -42,6 +43,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import LLM, Agent, AgentBase, Conversation, Message
 from openhands.sdk.agent import ACPAgent
+from openhands.sdk.context.condenser import NoOpCondenser
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.fifo_lock import FIFOLock
@@ -4236,6 +4238,42 @@ def test_emit_event_from_thread_uses_captured_loop(event_service: EventService) 
     assert len(captured_calls) == 1, "run_in_executor should have been called once"
 
 
+async def test_emit_event_from_thread_stamps_event_when_persisted(
+    event_service: EventService,
+) -> None:
+    """An event emitted from a callback is timestamped when it is appended.
+
+    The stats update is built when the model answers, but it is appended only
+    once the step that holds the state lock has appended its action and
+    observation. Keeping the build-time timestamp put it out of timestamp
+    order, so ``timestamp__gte`` and ``resend_mode=since`` skipped it.
+    """
+    state_lock = FIFOLock()
+    appended: list[Event] = []
+    conversation = MagicMock()
+    conversation._state = state_lock
+    conversation._on_event.side_effect = appended.append
+    event_service._main_loop = asyncio.get_running_loop()
+    event_service._conversation = conversation  # type: ignore[assignment]
+
+    event = ConversationStateUpdateEvent(key="stats", value={})
+    with state_lock:
+        event_service._emit_event_from_thread(event)
+        await asyncio.sleep(0.01)
+        # Stands in for the step's action/observation appended under the lock.
+        step_end = datetime.now().isoformat()
+        await asyncio.sleep(0.01)
+
+    for _ in range(200):
+        if appended:
+            break
+        await asyncio.sleep(0.01)
+    assert len(appended) == 1
+    persisted = appended[0]
+    assert persisted.id == event.id
+    assert persisted.timestamp > step_end > event.timestamp
+
+
 def test_llm_log_callback_swallows_emit_failures(
     event_service: EventService, caplog
 ) -> None:
@@ -4358,6 +4396,61 @@ async def test_close_releases_real_lease_after_settled_durability_failure(
     )
     claim = next_owner.claim()
     next_owner.release(claim.generation)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flush_fails", [False, True])
+async def test_condense_waits_for_durability(event_service, flush_fails):
+    conversation = MagicMock()
+    conversation.agent.condenser.handles_condensation_requests.return_value = True
+    entered = threading.Event()
+    release = threading.Event()
+
+    def flush() -> None:
+        entered.set()
+        if not release.wait(10):
+            raise TimeoutError("condense flush latch was not released")
+        if flush_fails:
+            raise OSError("injected condense flush failure")
+
+    conversation._state.flush.side_effect = flush
+    event_service._conversation = conversation
+    task = asyncio.create_task(event_service.condense())
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        conversation.condense.assert_called_once()
+        assert not task.done(), "condense returned before durability settled"
+    finally:
+        release.set()
+    if flush_fails:
+        with pytest.raises(OSError, match="injected condense flush failure"):
+            await task
+    else:
+        await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("condenser", "message"),
+    [
+        (None, "No condenser configured"),
+        (NoOpCondenser(), "NoOpCondenser does not handle condensation requests"),
+    ],
+)
+async def test_condense_without_request_handling_condenser_is_refused(
+    event_service: EventService, condenser, message: str
+) -> None:
+    """A condenser that cannot serve a request is the caller's configuration,
+    so condense raises CondensationUnavailable (mapped to 409) instead of
+    letting LocalConversation's ValueError become a 500."""
+    conversation = MagicMock()
+    conversation.agent.condenser = condenser
+    event_service._conversation = conversation
+
+    with pytest.raises(CondensationUnavailable, match=message):
+        await event_service.condense()
+
+    conversation.condense.assert_not_called()
 
 
 class TestEmitEventFromThreadFailures:

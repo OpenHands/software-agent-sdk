@@ -29,6 +29,7 @@ from openhands.agent_server.conversation_service import (
     UnavailableAgentTool,
 )
 from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.event_service import CondensationUnavailable
 from openhands.agent_server.launch import launch_http_exception
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
@@ -372,7 +373,7 @@ async def pause_conversation(
     """Pause a conversation, allowing it to be resumed later."""
     paused = await conversation_service.pause_conversation(conversation_id)
     if not paused:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST)
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
     return Success()
 
 
@@ -392,7 +393,7 @@ async def interrupt_conversation(
     """
     interrupted = await conversation_service.interrupt_conversation(conversation_id)
     if not interrupted:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST)
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
     return Success()
 
 
@@ -406,7 +407,7 @@ async def delete_conversation(
     """Permanently delete a conversation."""
     deleted = await conversation_service.delete_conversation(conversation_id)
     if not deleted:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST)
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
     return Success()
 
 
@@ -750,7 +751,7 @@ async def update_conversation(
     """
     updated = await conversation_service.update_conversation(conversation_id, request)
     if not updated:
-        return Success(success=False)
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
     return Success()
 
 
@@ -772,14 +773,20 @@ async def ask_agent(
 
 @conversation_router.post(
     "/{conversation_id}/condense",
-    responses={404: {"description": "Item not found"}},
+    responses={
+        404: {"description": "Item not found"},
+        409: {"description": "The agent has no condenser that handles requests"},
+    },
 )
 async def condense_conversation(
     conversation_id: UUID,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> Success:
     """Force condensation of the conversation history."""
-    success = await conversation_service.condense(conversation_id)
+    try:
+        success = await conversation_service.condense(conversation_id)
+    except CondensationUnavailable as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if not success:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return Success()
