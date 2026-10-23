@@ -79,6 +79,21 @@ class DetailedAnalyzer(SecurityAnalyzerBase):
         )
 
 
+class MappedAnalyzer(SecurityAnalyzerBase):
+    def security_risk(self, action: ActionEvent) -> SecurityRisk:
+        return {
+            "call_0": SecurityRisk.LOW,
+            "call_1": SecurityRisk.HIGH,
+            "call_2": SecurityRisk.MEDIUM,
+        }[action.tool_call_id]
+
+    def analyze_action(self, action: ActionEvent) -> SecurityAnalysis:
+        return SecurityAnalysis(
+            risk=self.security_risk(action),
+            details={"tool_call_id": action.tool_call_id},
+        )
+
+
 class ExplodingAnalyzer(SecurityAnalyzerBase):
     def security_risk(self, action: ActionEvent) -> SecurityRisk:
         raise RuntimeError("analyzer down")
@@ -245,14 +260,26 @@ def test_event_precedes_confirmation_wait_and_carries_analyzer_details():
 
 
 def test_one_event_per_batch_keyed_by_action_id():
-    _, events = _run_step(DetailedAnalyzer(), NeverConfirm(), n_calls=3)
-
-    analyses = [e for e in events if isinstance(e, SecurityAnalysisEvent)]
-    actions = [e for e in events if isinstance(e, ActionEvent)]
-    assert len(actions) == 3
-    assert len(analyses) == 1
-    assert set(analyses[0].risks) == {a.id for a in actions}
-    assert set(analyses[0].details) == {a.id for a in actions}
+    conversation, events = _run_step(MappedAnalyzer(), NeverConfirm(), n_calls=3)
+    try:
+        analyses = [e for e in events if isinstance(e, SecurityAnalysisEvent)]
+        actions = [e for e in events if isinstance(e, ActionEvent)]
+        assert len(actions) == 3
+        assert len(analyses) == 1
+        expected_risks = {
+            "call_0": SecurityRisk.LOW,
+            "call_1": SecurityRisk.HIGH,
+            "call_2": SecurityRisk.MEDIUM,
+        }
+        assert analyses[0].risks == {
+            action.id: expected_risks[action.tool_call_id] for action in actions
+        }
+        assert analyses[0].details == {
+            action.id: {"tool_call_id": action.tool_call_id} for action in actions
+        }
+        assert all(action.security_risk == SecurityRisk.LOW for action in actions)
+    finally:
+        conversation.close()
 
 
 def test_analyzer_error_defaults_to_high_with_error_detail():
