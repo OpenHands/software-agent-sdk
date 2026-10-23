@@ -20,6 +20,18 @@ import type {
   UpdateSettingsApiSettingsPatchData,
   UpdateSettingsApiSettingsPatchResponse,
 } from '../generated/agent-server-schema';
+import type {
+  PromptEnhancementAvailabilityResponse,
+  PromptEnhancementErrorCode,
+  PromptEnhancementRequest,
+  PromptEnhancementResponse,
+} from '../generated/prompt-enhancement-schema';
+
+export type AgentServerPromptEnhancementRequest = PromptEnhancementRequest;
+export type AgentServerPromptEnhancementResponse = PromptEnhancementResponse;
+export type AgentServerPromptEnhancementAvailabilityResponse =
+  PromptEnhancementAvailabilityResponse;
+export type AgentServerPromptEnhancementErrorCode = PromptEnhancementErrorCode;
 
 export type AgentServerSettingsSchema = GetAgentSettingsSchemaApiSettingsAgentSchemaGetResponse;
 export type AgentServerConversationSettingsSchema =

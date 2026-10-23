@@ -18,6 +18,11 @@ export { GitClient } from './client/git-client';
 export { LLMMetadataClient } from './client/llm-client';
 export { MCPClient } from './client/mcp-client';
 export { ProfilesClient } from './client/profiles-client';
+export {
+  PROMPT_ENHANCEMENT_CAPABILITY,
+  PromptEnhancementClient,
+  PromptEnhancementUnavailableError,
+} from './client/prompt-enhancement-client';
 export { MetaProfilesClient } from './client/meta-profiles-client';
 export { SettingsClient } from './client/settings-client';
 export { SkillsClient } from './client/skills-client';
@@ -61,6 +66,11 @@ export type { GitClientOptions, SearchRepositoriesOptions } from './client/git-c
 export type { LLMMetadataClientOptions } from './client/llm-client';
 export type { MCPClientOptions } from './client/mcp-client';
 export type { ProfilesClientOptions, GetProfileOptions } from './client/profiles-client';
+export type {
+  PromptEnhancementAvailability,
+  PromptEnhancementClientOptions,
+  PromptEnhancementRequestOptions,
+} from './client/prompt-enhancement-client';
 export type {
   AgentProfilesClientOptions,
   GetAgentProfileOptions,
@@ -113,6 +123,10 @@ export type {
   AgentServerMCPTestResponse,
   AgentServerMCPToolCall,
   AgentServerMCPToolCallResult,
+  AgentServerPromptEnhancementAvailabilityResponse,
+  AgentServerPromptEnhancementErrorCode,
+  AgentServerPromptEnhancementRequest,
+  AgentServerPromptEnhancementResponse,
   AgentServerSettingsPatchRequest,
   AgentServerSettingsPatchResponse,
   AgentServerSettingsResponse,
