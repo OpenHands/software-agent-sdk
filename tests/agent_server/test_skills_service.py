@@ -433,6 +433,28 @@ class TestLoadAllSkills:
 
         assert skills == []
 
+    def test_load_registered_marketplace_skills_loads_plain_skills_repository(
+        self, tmp_path: Path
+    ):
+        """A repository with no manifest contributes its skills folder."""
+        repo = tmp_path / "repo"
+        _create_standalone_skill(repo / "skills" / "greet", "greet")
+        _create_standalone_skill(repo / "skills" / "commit", "commit")
+
+        loaded = load_registered_marketplace_skills(
+            [MarketplaceRegistration(name="plain", source=str(repo), auto_load=True)]
+        )
+        selected = load_registered_marketplace_skills(
+            [
+                MarketplaceRegistration(
+                    name="plain", source=str(repo), auto_load=["greet"]
+                )
+            ]
+        )
+
+        assert {skill.name for skill in loaded} == {"greet", "commit"}
+        assert [skill.name for skill in selected] == ["greet"]
+
     def test_load_registered_marketplace_skills_loads_plugins_and_standalone(
         self, tmp_path: Path
     ):

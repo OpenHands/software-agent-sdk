@@ -411,11 +411,11 @@ export class ConversationClient {
   }
 
   /**
-   * Switch the model of a running ACP conversation in place (the ACP analog of
-   * {@link switchLLM}). Calls the wrapper's `session/set_model` on the live
-   * session; context is preserved. Only valid once the ACP session exists —
-   * the server returns 409 before the first message (set the default via
-   * settings instead) and 400 for non-ACP conversations.
+   * Switch the model of an ACP conversation (the ACP analog of
+   * {@link switchLLM}). On a live session the server calls the wrapper's
+   * `session/set_model` in place; context is preserved. Before the first run
+   * there is no session yet, so the server answers 200 and stores the model for
+   * the first session. Non-ACP conversations get 400.
    */
   async switchAcpModel(conversationId: string, model: string): Promise<void> {
     await this.client.post<Success>(`/api/conversations/${conversationId}/switch_acp_model`, {
@@ -427,15 +427,17 @@ export class ConversationClient {
     await this.client.delete<Success>(`/api/conversations/${conversationId}`);
   }
 
+  /**
+   * Update conversation metadata (e.g. title) and resolve with the updated
+   * conversation. The PATCH endpoint answers only `Success`, so the
+   * conversation is read back after the update.
+   */
   async updateConversation<TConversation = ConversationInfo>(
     conversationId: string,
     update: UpdateConversationRequest
   ): Promise<TConversation> {
-    const response = await this.client.patch<TConversation>(
-      `/api/conversations/${conversationId}`,
-      update
-    );
-    return response.data;
+    await this.client.patch<Success>(`/api/conversations/${conversationId}`, update);
+    return this.getConversation<TConversation>(conversationId);
   }
 
   close(): void {

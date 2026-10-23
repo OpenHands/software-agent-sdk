@@ -2829,7 +2829,10 @@ class TestACPAgentAstep:
                     autospec=True,
                     side_effect=lambda _agent: threading.Event().wait(0.05),
                 ),
-                patch.object(acp_agent_module, "_ACP_CANCEL_DRAIN_TIMEOUT", 0.01),
+                # Must exceed the 0.05s credential-sync delay above: with
+                # 0.01s the drain window expires before the released prompt
+                # can complete on loaded runners, flaking to `idle`.
+                patch.object(acp_agent_module, "_ACP_CANCEL_DRAIN_TIMEOUT", 5.0),
             ):
                 task = asyncio.create_task(
                     agent.astep(conversation, on_event=emitted.append)

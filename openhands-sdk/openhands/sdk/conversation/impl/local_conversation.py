@@ -177,6 +177,16 @@ def _copy_event_for_fork(event: Event) -> Event:
     return Event.model_validate_json(event.model_dump_json(exclude_none=True))
 
 
+def _same_llm_config(a: LLM, b: LLM) -> bool:
+    """Return whether two LLMs serialize to the same config, secrets included."""
+    if a is b:
+        return True
+    context = {"expose_secrets": True}
+    return a.model_dump(mode="json", context=context) == b.model_dump(
+        mode="json", context=context
+    )
+
+
 class LocalConversation(BaseConversation):
     agent: AgentBase
     workspace: LocalWorkspace
@@ -436,8 +446,14 @@ class LocalConversation(BaseConversation):
             # Single chokepoint: stamps parent_id (catching any event a hook
             # swapped in downstream of _tree_stamping) and advances HEAD.
             self._state.append_event(e)
+
+        def _track_last_user_message(e):
             # Track user MessageEvent IDs here so hook callbacks (which may
             # synthesize or alter user messages) are captured in one place.
+            # This runs after the caller-supplied callbacks: setting the field
+            # can emit a ConversationStateUpdateEvent through on_state_change
+            # (the agent server wires it to this chain), and that update must
+            # reach subscribers after the message that caused it.
             if isinstance(e, MessageEvent) and e.source == "user":
                 # Track the latest real user message ID for hook-blocked checks.
                 # Stop-hook feedback is emitted with source="environment".
@@ -451,7 +467,7 @@ class LocalConversation(BaseConversation):
         # list never run. The visualizer is prepended below and so still renders
         # ahead of persist — that is local terminal output, not an announcement
         # a client can act on.
-        composed_list = [_default_callback] + callback_list
+        composed_list = [_default_callback] + callback_list + [_track_last_user_message]
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
             # Use custom visualizer instance
@@ -528,8 +544,8 @@ class LocalConversation(BaseConversation):
         # Idempotent with the create_request() lift; lower priority than
         # request.secrets (below). On resume, fill-if-absent so a persisted
         # value is never downgraded (or lost to redacted/no-cipher serialization).
-        if (ctx := getattr(self.agent, "agent_context", None)) is not None:
-            ctx_secrets = getattr(ctx, "secrets", None)
+        if self.agent is not None and self.agent.agent_context is not None:
+            ctx_secrets = self.agent.agent_context.secrets
             if ctx_secrets:
                 existing_sources = self._state.secret_registry.secret_sources
                 fill_secrets: dict[str, SecretValue] = {}
@@ -1595,6 +1611,13 @@ class LocalConversation(BaseConversation):
                     self._state,
                     on_event=self._on_event,
                 )
+
+                # Deliver any SessionStart additional_context now that
+                # init_state() has emitted the SystemPromptEvent, so the system
+                # prompt stays first in the LLM request. The hook processor
+                # collected it earlier during _ensure_plugins_loaded().
+                if self._hook_processor is not None:
+                    self._hook_processor.inject_pending_additional_context()
             except Exception:
                 self._close_runtime_tools(runtime_mcp_tools)
                 raise
@@ -1664,18 +1687,31 @@ class LocalConversation(BaseConversation):
         """Swap the agent's LLM to the given object.
 
         The caller owns ``llm.usage_id``; it is the registry key. If an
-        entry with that key already exists, the cached LLM is reused and
-        the passed ``llm`` is dropped — matching the rest of the
-        registry's "first-write-wins" contract.
+        entry with that key already exists and has the same config, the
+        cached LLM is reused. If its config differs (e.g. ``default``, which
+        agent initialization registers, posted with another model), the
+        passed ``llm`` replaces the entry and takes over the metrics already
+        recorded under that ``usage_id``.
 
         Args:
             llm: LLM to install on the agent.
         """
+        usage_id = llm.usage_id
         try:
-            new_llm = self.llm_registry.get(llm.usage_id)
+            registered = self.llm_registry.get(usage_id)
         except KeyError:
+            registered = None
+        if registered is not None and _same_llm_config(registered, llm):
+            new_llm = registered
+        else:
             new_llm = create_subscription_llm_from_config(llm)
+            if registered is not None:
+                self.llm_registry.remove(usage_id)
             self.llm_registry.add(new_llm)
+            if registered is not None:
+                # Keep one metrics object per usage_id: ConversationStats
+                # tracks the registered LLM's, so accrued usage is retained.
+                new_llm.restore_metrics(registered.metrics)
         # A switch_llm tool runs on a worker thread while run()/arun() holds the
         # state lock across the agent step on another thread, blocked awaiting
         # this very tool. Re-acquiring _state here would deadlock, so skip it:
@@ -1760,7 +1796,8 @@ class LocalConversation(BaseConversation):
 
         Raises:
             ValueError: If the conversation's agent is not an :class:`ACPAgent`,
-                or (for a live switch) the provider does not support runtime
+                if ``model`` is empty or whitespace-only (live or not), or
+                (for a live switch) the provider does not support runtime
                 model switching, or the ACP server rejects the switch.
             TimeoutError: If a live switch's ``session/set_model`` round-trip
                 exceeds ``acp_prompt_timeout`` seconds.
@@ -1769,6 +1806,10 @@ class LocalConversation(BaseConversation):
             raise ValueError(
                 "switch_acp_model is only supported for ACP conversations."
             )
+        # Check here, not only in set_acp_model: the pre-run path below skips
+        # that call and would persist a blank model unchecked.
+        if not model or not model.strip():
+            raise ValueError("model must be a non-empty string")
         with self._state:
             # With a live session, perform the protocol switch first; if it
             # fails we leave the persisted state untouched. Without one (pre
@@ -2818,9 +2859,9 @@ class LocalConversation(BaseConversation):
 
     def close(self) -> None:
         """Close the conversation and clean up all tool executors."""
-        if getattr(self, "_cleanup_complete", False):
+        if self._cleanup_complete:
             return
-        first_attempt = not getattr(self, "_cleanup_initiated", False)
+        first_attempt = not self._cleanup_initiated
         if first_attempt:
             self._cleanup_initiated = True
 
@@ -2835,7 +2876,7 @@ class LocalConversation(BaseConversation):
                 logger.debug(f"Could not register accumulated cost: {e}")
 
             logger.debug("Closing conversation and cleaning up tool executors")
-            hook_processor = getattr(self, "_hook_processor", None)
+            hook_processor = self._hook_processor
             if hook_processor is not None:
                 hook_processor.run_session_end()
             try:

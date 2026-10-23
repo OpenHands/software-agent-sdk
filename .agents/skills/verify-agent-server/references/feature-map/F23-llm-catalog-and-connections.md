@@ -82,8 +82,9 @@ Routes: `GET /api/llm/providers`, `GET /api/llm/models`,
   `active_profile` resolve the connection into `agent_settings.llm`
   (`GET /api/settings` with `X-Expose-Secrets: plaintext` shows it);
   `POST /api/conversations/{conversation_id}/switch_llm` resolves it for a
-  running conversation (model switching family). `POST /api/profiles/{name}/validate`
-  does not resolve it today (`F23.validate-linked-draft`).
+  running conversation (model switching family), and
+  `POST /api/profiles/{name}/validate` resolves it for the pre-flight of a
+  draft (`F23.validate-linked-draft`).
 - SDK: no Python client calls these routes. In-process code uses
   `ProviderConnectionStore` and `LLMProfileStore(provider_store=...)`
   (`openhands-sdk/openhands/sdk/llm/`). `RemoteWorkspace.get_llm()` of a
@@ -205,7 +206,7 @@ Preconditions:
   the OpenRouter list has only `openrouter/` ids, although
   `deepseek/deepseek-chat` is also an OpenRouter verified entry; an unknown
   provider gets `{"models": []}`.
-- **No Bedrock ids under a provider (`F23.models-no-bedrock`), known bug.**
+- **No Bedrock ids under a provider (`F23.models-no-bedrock`).**
   The route says Bedrock models are excluded without AWS credentials. Both
   lists are first shown to hold the provider's own ids (positive controls),
   then each is searched for Bedrock ids, which the `assert` prints.
@@ -214,18 +215,15 @@ Preconditions:
     --save F23.models-no-bedrock/deepseek
   control-agent-server api GET /api/llm/models --query provider=anthropic --quiet --check models len-ge 1 --save F23.models-no-bedrock/anthropic
   control-agent-server api GET /api/llm/models --query provider=anthropic --field models | jq -e 'any(.[]; startswith("claude-"))'
-  control-agent-server api GET /api/llm/models --query provider=deepseek --field models | jq -c 'map(select(test("^deepseek\\.")))' | control-agent-server assert --check . len-eq 0  # bug: value len-ge 1 && value contains deepseek.
-  control-agent-server api GET /api/llm/models --query provider=anthropic --field models | jq -c 'map(select(test("^anthropic\\.")))' | control-agent-server assert --check . len-eq 0  # bug: value len-ge 1 && value contains anthropic.claude-
+  control-agent-server api GET /api/llm/models --query provider=deepseek --field models | jq -c 'map(select(test("^deepseek\\.")))' | control-agent-server assert --check . len-eq 0
+  control-agent-server api GET /api/llm/models --query provider=anthropic --field models | jq -c 'map(select(test("^anthropic\\.")))' | control-agent-server assert --check . len-eq 0
   ```
-  Expected: no id in the Bedrock `vendor.model` form under either provider.
-  Today `?provider=deepseek` lists `deepseek.r1-v1:0`, `deepseek.v3-v1:0`
-  and `deepseek.v3.2`, and `?provider=anthropic` about 30
-  `anthropic.claude-...` ids (29 with the installed LiteLLM). LiteLLM files them under `bedrock_converse`, but `get_supported_llm_models`
-  only drops ids that start with `bedrock`, and `_extract_model_and_provider`
-  reads the part before the first `.` as the provider. The unfiltered list
-  carries about 330 such ids (`us.anthropic.*`, `amazon.nova-*`). A picker
-  that offers them under DeepSeek or Anthropic sends a direct-API user to a
-  Bedrock route that needs AWS credentials.
+  No id in the Bedrock `vendor.model` form under either provider:
+  `get_supported_llm_models` drops every id LiteLLM's model-cost map files
+  under a Bedrock provider (`bedrock`, `bedrock_converse`, `bedrock_mantle`),
+  not only `bedrock`-prefixed ids, so `deepseek.r1-v1:0`,
+  `anthropic.claude-...-v1:0`, `us.anthropic.*` and `amazon.nova-*` are
+  absent from every list without AWS credentials.
 - **Verified models (`F23.verified-models`).** The curated short list.
   ```sh
   control-agent-server api GET /api/llm/models/verified --expect 200 --check models.deepseek contains deepseek-chat \
@@ -333,11 +331,13 @@ Preconditions:
   ```
   Each is 422 with the pydantic error type and location; the list still
   has the two connections.
-- **Blank keys on create (`F23.conn-create-blank-key`), known bug.**
+- **Blank keys on create (`F23.conn-create-blank-key`).**
   An empty key is refused (positive control); then create with a
   whitespace-only key and with the redacted placeholder, record both
   statuses, and assert them together. An `EXIT` trap deletes whatever was
   created, however the bullet ends.
+
+  Requires: `F23.conn-create`
   ```sh
   trap 'BLANK=$(control-agent-server api GET /api/llm/provider-connections --field . \
       | jq -r "[.[] | select(.display_name | startswith(\"qa-f23-blank-\")) | .id] | join(\" \")") || true
@@ -350,15 +350,13 @@ Preconditions:
     --expect 201,422 --save F23.conn-create-blank-key/placeholder | jq -r .status)
   control-agent-server api GET /api/llm/provider-connections --save F23.conn-create-blank-key/list
   echo "whitespace key: $S_SPACE, placeholder key: $S_MASK"
-  control-agent-server assert --value "$S_SPACE $S_MASK" --check . eq '422 422'  # bug: value eq '201 201'
+  control-agent-server assert --value "$S_SPACE $S_MASK" --check . eq '422 422'
   control-agent-server api GET /api/llm/provider-connections --check . len-eq 2 --check . not-contains qa-f23-blank-
   ```
-  Expected: both are 422 like `""`, and nothing is created. Today both are
-  201 and the list shows them with `api_key_set: false`: `min_length=1`
-  accepts them, and the stored model's validator then turns a blank or
-  `**********` key into `null`, so a keyless connection exists although the
-  API says a connection always has a key. The trap deletes them, so later
-  bullets see the same two connections.
+  Both are 422 like `""`, and nothing is created: the list still holds
+  only the two connections from `F23.conn-create`, so a connection always
+  has a usable key. The trap deletes anything a regression would create,
+  so later bullets see the same two connections.
 - **Linked profile runs on the connection (`F23.linked-run`).** Save a
   profile linked to `CONN` with a stray inline key, activate it, and run a
   tiny conversation from the resulting settings.
@@ -434,7 +432,7 @@ Preconditions:
   ```
   Each is refused with the quoted message; the list is byte-for-byte the
   same afterwards (no `updated_at` bump).
-- **Blank keys on update (`F23.conn-patch-blank-key`), known bug.** Link a
+- **Blank keys on update (`F23.conn-patch-blank-key`).** Link a
   probe profile to `DEF` (key `sk-qa-f23-default`), then for an empty, a
   whitespace-only and the placeholder key: `PATCH`, activate the probe,
   record the applied key, and put the original key back.
@@ -461,22 +459,14 @@ Preconditions:
     control-agent-server api PATCH "/api/llm/provider-connections/$DEF" --json '{"api_key": "sk-qa-f23-default"}' --expect 200 --quiet > /dev/null
   done
   echo "applied keys: $APPLIED"
-  control-agent-server assert --value "$APPLIED" --check . eq '[sk-qa-f23-default][sk-qa-f23-default][sk-qa-f23-default]'  # bug: value eq '[null][null][**********]'
+  control-agent-server assert --value "$APPLIED" --check . eq '[sk-qa-f23-default][sk-qa-f23-default][sk-qa-f23-default]'
   ```
   Before any blank `PATCH`, activating the probe applies
   `sk-qa-f23-default` (positive control).
-  Expected: each `PATCH` is 422 (or leaves the key alone), so all three
-  activations apply `sk-qa-f23-default`. Today each is 200 and the key is
-  replaced: `""` and `"   "` clear it (response `api_key_set: false`,
-  activation applies no key, although `api_key: null` is refused as
-  "cannot be cleared"), and `**********` becomes the literal key (response
-  `api_key_set: true`, activation applies `**********`). The handler copies
-  the body into the stored model with `model_copy`, which skips the
-  validator that would drop blank or redacted keys. While the key is blank,
-  `GET /api/profiles` still lists the probe with `api_key_set: true` (it
-  counts the encrypted token without decrypting it) and `GET` of the probe
-  says `false`. An `EXIT` trap restores the key and `qa-f23-linked` as the
-  active profile and deletes the probe, however the bullet ends.
+  Each `PATCH` is 422, like `api_key: null`, and leaves the stored key
+  alone, so all three activations apply `sk-qa-f23-default`. An `EXIT` trap restores the key
+  and `qa-f23-linked` as the active profile and deletes the probe, however
+  the bullet ends.
 - **Rotate the key (`F23.conn-rotate-key`).** Rotate `CONN` to a key
   DeepSeek rejects, check that active settings keep the old key until the
   next activation, run a conversation on the rotated key, then rotate back.
@@ -505,7 +495,7 @@ Preconditions:
   (`****QA23`). With the real key rotated back and the profile activated
   through `POST /api/profiles/{name}/activate`, a new conversation
   finishes.
-- **Validate a linked draft (`F23.validate-linked-draft`), known bug.**
+- **Validate a linked draft (`F23.validate-linked-draft`).**
   Pre-flight the same DeepSeek model with the key inline (positive
   control), then as a draft linked to `CONN`.
 
@@ -515,15 +505,13 @@ Preconditions:
     | control-agent-server api POST /api/profiles/qa-f23-draft/validate --stdin --timeout 120 --expect 200 --check valid eq true
   control-agent-server api POST /api/profiles/qa-f23-draft/validate --timeout 120 --expect 200 \
     --json "{\"llm\": {\"model\": \"deepseek/deepseek-flash\", \"provider_connection_id\": \"$CONN\", \"num_retries\": 0}}" \
-    --save F23.validate-linked-draft/linked --check valid eq true --check error eq null  # bug: status eq 200 && response.body.valid eq false && response.body.error.type eq LLMAuthenticationError
+    --save F23.validate-linked-draft/linked --check valid eq true --check error eq null
   ```
-  Expected: both `valid: true`, since a linked draft runs on the
-  connection's key once saved and activated. Today the linked draft is
-  `valid: false` with `LLMAuthenticationError` (`Authentication Fails`):
-  `validate_profile` sends the posted LLM unchanged and never calls
-  `resolve_provider_connection`, unlike activation and `switch_llm`. A
-  client cannot work around it by sending the key, because the connection
-  routes never return it.
+  Expected: both `valid: true`. `validate_profile` resolves
+  `provider_connection_id` to the connection's `api_key` and `base_url`
+  before the pre-flight, as activation and `switch_llm` do, so a client
+  never needs the key (the connection routes never return it). A dangling
+  `provider_connection_id` is 422 naming the missing connection.
 - **Restart (`F23.persist-restart`).** Restart the run and read everything
   back.
 
@@ -740,8 +728,8 @@ Preconditions:
   to the two latest versions per model line). Assert membership, ordering
   and filtering, never exact counts or a specific new model.
 - `GET /api/llm/models?provider=` (empty value) is not "no filter": it
-  returns the ids whose provider is not recognized (LiteLLM image sizes,
-  region-prefixed Bedrock ids). A verified bare id (`deepseek-chat`) is
+  returns the ids whose provider is not recognized (for example LiteLLM
+  image sizes). A verified bare id (`deepseek-chat`) is
   attributed to its verified provider; an unknown prefix (`moonshotai/...`)
   to none.
 - `?provider=X` only filters ids the installed LiteLLM knows: a verified
@@ -751,9 +739,9 @@ Preconditions:
 - The connection id is minted by the server (uuid4 hex); a client-chosen
   `id` is 422. There is no `GET` for a single connection: read the list.
 - `PATCH` copies the body onto the stored connection without re-running its
-  validators, which is why blank keys slip through
-  (`F23.conn-patch-blank-key`); the response is built from that copy, not
-  from a re-read.
+  validators, so the request models refuse blank and `**********` keys
+  themselves (`F23.conn-create-blank-key`, `F23.conn-patch-blank-key`); the
+  response is built from that copy, not from a re-read.
 - Resolution is read-at-use: a rotation or `base_url` change reaches a
   profile only on its next activation (or `PATCH /api/settings` with
   `active_profile`, or `switch_llm`); `agent_settings.llm` keeps the copy

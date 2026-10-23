@@ -47,6 +47,8 @@ from openhands.sdk.profiles import (
     ACPAgentProfile,
     AgentProfile,
     AgentProfileDiagnostics,
+    AgentProfileInfo,
+    AgentProfileListResponse,
     AgentProfileStore,
     OpenHandsAgentProfile,
     ProfileLimitExceeded,
@@ -55,7 +57,10 @@ from openhands.sdk.profiles import (
     save_profile_preserving_identity,
     validate_agent_profile,
 )
-from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
+from openhands.sdk.profiles.agent_profile_store import (
+    PROFILE_NAME_PATTERN,
+    canonical_profile_name,
+)
 from openhands.sdk.settings.model import OpenHandsAgentSettings
 from openhands.sdk.utils.cipher import Cipher
 
@@ -71,22 +76,6 @@ ProfileName = Annotated[
     Path(min_length=1, max_length=64, pattern=PROFILE_NAME_PATTERN),
 ]
 ProfileId = Annotated[str, Path(min_length=1, max_length=128)]
-
-
-class AgentProfileInfo(BaseModel):
-    """Summary projection of a stored profile (no secret instantiation)."""
-
-    id: str | None = None
-    name: str
-    agent_kind: str = "openhands"
-    revision: int | None = None
-    llm_profile_ref: str | None = None
-    mcp_server_refs: list[str] | None = None
-
-
-class AgentProfileListResponse(BaseModel):
-    profiles: list[AgentProfileInfo]
-    active_agent_profile_id: str | None = None
 
 
 class AgentProfileDetailResponse(BaseModel):
@@ -179,8 +168,9 @@ def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
     unusable ``default`` "ghost" profile (#4031), so we skip the save and leave
     ``llm_profile_ref="default"`` as a soft/dangling ref — the canvas
     "LLM not configured" banner and the legible launch-time error already cover
-    that state, and materialize/dry-run reports it as ``dangling_llm_profile_ref``
-    rather than raising.
+    that state, and materialize reports it rather than raising: ``valid`` false,
+    ``llm_profile_resolved`` false and an ``errors`` entry
+    ``"LLM profile 'default' not found"``.
 
     Existence is checked via ``load()``, not ``list()``: the store resolves a
     name straight to a filesystem path, so on a case-insensitive filesystem
@@ -334,6 +324,7 @@ def active_agent_profile(
 
 def _summary_id_for_name(store: AgentProfileStore, name: str) -> str | None:
     """Return the stable id of the profile stored under ``name``, if present."""
+    name = canonical_profile_name(name)
     with store_errors():
         for summary in store.list_summaries():
             if summary.get("name") == name:

@@ -634,8 +634,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
         Clones specified repositories to meaningful directory names (e.g.,
         'openhands-cli' instead of 'repo_0'). Automatically fetches GitHub,
-        GitLab, and Bitbucket tokens from the agent server's secrets for
-        authentication.
+        GitLab, Bitbucket and Azure DevOps tokens from the agent server's
+        secrets for authentication.
 
         Args:
             repos: List of repositories to clone. Can be:

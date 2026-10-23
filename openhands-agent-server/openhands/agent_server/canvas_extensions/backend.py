@@ -1,6 +1,7 @@
 """Owned lifecycle for optional Canvas App backend subprocesses."""
 
 import asyncio
+import gzip
 import hashlib
 import os
 import platform
@@ -12,6 +13,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import zlib
 from collections import deque
 from pathlib import Path, PurePosixPath
 from typing import Final, Literal
@@ -404,12 +406,22 @@ class CanvasExtensionBackendManager:
                     )
                 )
                 try:
-                    await asyncio.to_thread(
-                        self._extract_archive,
-                        archive,
-                        temporary,
-                        artifact.strip_components,
-                    )
+                    try:
+                        await asyncio.to_thread(
+                            self._extract_archive,
+                            archive,
+                            temporary,
+                            artifact.strip_components,
+                        )
+                    except (
+                        tarfile.TarError,
+                        gzip.BadGzipFile,
+                        EOFError,
+                        zlib.error,
+                    ) as exc:
+                        raise ValueError(
+                            "backend artifact is not a valid gzip tar archive"
+                        ) from exc
                     try:
                         os.replace(temporary, artifact_dir)
                     except OSError:
