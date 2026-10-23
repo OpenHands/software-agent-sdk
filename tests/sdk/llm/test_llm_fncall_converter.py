@@ -1017,18 +1017,19 @@ def test_security_risk_param_allowed_for_tool_that_does_not_declare_it():
 
 
 @pytest.mark.parametrize(
-    "content",
+    ("content", "expected_content"),
     [
         (
             "I'll list the files.\n"
             "<tool_call>terminal\n"
             "<parameter=command>ls</parameter>\n"
-            "</tool_call>"
+            "</tool_call>",
+            "I'll list the files.",
         ),
-        "<tool_call>terminal\n<parameter=command>ls</parameter>",
+        ("<tool_call>terminal\n<parameter=command>ls</parameter>", ""),
     ],
 )
-def test_tool_call_wrapper_normalized_to_function_call(content):
+def test_tool_call_wrapper_normalized_to_function_call(content, expected_content):
     messages = [
         {"role": "user", "content": "run ls"},
         {"role": "assistant", "content": content},
@@ -1041,16 +1042,17 @@ def test_tool_call_wrapper_normalized_to_function_call(content):
     tool_call = fncall_messages[1]["tool_calls"][0]["function"]
     assert tool_call["name"] == "terminal"
     assert json.loads(tool_call["arguments"]) == {"command": "ls"}
+    assert fncall_messages[1]["content"] == expected_content
 
 
 @pytest.mark.parametrize(
-    "content",
+    ("content", "expected_content"),
     [
-        "<tool_call>finish\n</tool_call>",
-        "All done.\n<tool_call>finish\n</tool_call>",
+        ("<tool_call>finish\n</tool_call>", ""),
+        ("All done.\n<tool_call>finish\n</tool_call>", "All done."),
     ],
 )
-def test_tool_call_wrapper_without_parameters_normalized(content):
+def test_tool_call_wrapper_without_parameters_normalized(content, expected_content):
     messages = [
         {"role": "user", "content": "finish up"},
         {"role": "assistant", "content": content},
@@ -1063,6 +1065,7 @@ def test_tool_call_wrapper_without_parameters_normalized(content):
     tool_call = fncall_messages[1]["tool_calls"][0]["function"]
     assert tool_call["name"] == "finish"
     assert json.loads(tool_call["arguments"]) == {}
+    assert fncall_messages[1]["content"] == expected_content
 
 
 def test_tool_call_wrapper_preserves_closing_tag_in_parameter():
@@ -1082,24 +1085,19 @@ def test_tool_call_wrapper_preserves_closing_tag_in_parameter():
 
     tool_call = fncall_messages[1]["tool_calls"][0]["function"]
     assert json.loads(tool_call["arguments"]) == {"command": "printf '</tool_call>'"}
+    assert fncall_messages[1]["content"] == ""
 
 
 @pytest.mark.parametrize(
     "content",
     [
-        "To call a tool, write:\n<tool_call>finish\n</tool_call>\nThat's it.",
-        "The format is:\n\n```\n<tool_call>terminal\n"
-        "<parameter=command>ls</parameter>\n</tool_call>\n```\n",
-        "To call a tool, write:\n<tool_call>terminal\n"
-        "<parameter=command>ls</parameter>\n</tool_call>\nThat's it.",
-        "The format is:\n```\n<tool_call>finish\n</tool_call>\n```",
-        "The format is:\n```\n<tool_call>terminal\n"
-        "<parameter=command>ls</parameter>\n```",
-        "<tool_call>terminal\n<parameter=command>ls</parameter>\n"
-        "An explanation follows.\n<parameter=command>pwd</parameter>\n</tool_call>",
+        # Bare mention: no name or parameter body.
+        "Here is how you write a tool call:\n\n<tool_call> is the opening tag.",
+        # Truncated wrapper: the parameter body never closes.
+        "The format is:\n\n<tool_call>terminal\n<parameter=command",
     ],
 )
-def test_tool_call_documentation_is_not_converted(content):
+def test_incomplete_tool_call_text_is_not_converted(content):
     messages = [
         {"role": "user", "content": "explain the format"},
         {"role": "assistant", "content": content},
@@ -1109,6 +1107,42 @@ def test_tool_call_documentation_is_not_converted(content):
 
     assert not result[1].get("tool_calls")
     assert result[1]["content"] == content
+
+
+def test_complete_tool_call_wrapper_in_documentation_converts_like_canonical():
+    """A complete wrapper in prose parses exactly like a canonical call.
+
+    Documentation that contains a full call is ambiguous in both dialects; the
+    wrapper path mirrors the <function=> path: the call fires, leading prose is
+    kept, and trailing prose is dropped.
+    """
+    wrapper = (
+        "To call a tool, write:\n"
+        "<tool_call>terminal\n"
+        "<parameter=command>ls</parameter>\n"
+        "</tool_call>\n"
+        "That's it."
+    )
+    canonical = (
+        "To call a tool, write:\n"
+        "<function=terminal>\n"
+        "<parameter=command>ls</parameter>\n"
+        "</function>\n"
+        "That's it."
+    )
+
+    for content in (wrapper, canonical):
+        result = convert_non_fncall_messages_to_fncall_messages(
+            [
+                {"role": "user", "content": "explain the format"},
+                {"role": "assistant", "content": content},
+            ],
+            FNCALL_TOOLS,
+        )
+        tool_call = result[1]["tool_calls"][0]["function"]
+        assert tool_call["name"] == "terminal"
+        assert json.loads(tool_call["arguments"]) == {"command": "ls"}
+        assert result[1]["content"] == "To call a tool, write:"
 
 
 @pytest.mark.parametrize(
@@ -1161,3 +1195,138 @@ def test_tool_call_mention_in_plain_text_is_not_converted():
     )
 
     assert not fncall_messages[1].get("tool_calls")
+
+
+def test_tool_call_wrapper_keeps_leading_prose_and_drops_trailing_prose():
+    content = (
+        "I'll check the directory.\n"
+        "<tool_call>terminal\n"
+        "<parameter=command>ls</parameter>\n"
+        "</tool_call>\n"
+        "Let me look at the output."
+    )
+    messages = [
+        {"role": "user", "content": "run ls"},
+        {"role": "assistant", "content": content},
+    ]
+
+    fncall_messages = convert_non_fncall_messages_to_fncall_messages(
+        messages, FNCALL_TOOLS
+    )
+
+    tool_call = fncall_messages[1]["tool_calls"][0]["function"]
+    assert tool_call["name"] == "terminal"
+    assert json.loads(tool_call["arguments"]) == {"command": "ls"}
+    assert fncall_messages[1]["content"] == "I'll check the directory."
+
+
+def test_tool_call_wrapper_strips_leading_think_tag():
+    content = (
+        "</think>\n<tool_call>terminal\n<parameter=command>ls</parameter>\n</tool_call>"
+    )
+    messages = [
+        {"role": "user", "content": "run ls"},
+        {"role": "assistant", "content": content},
+    ]
+
+    fncall_messages = convert_non_fncall_messages_to_fncall_messages(
+        messages, FNCALL_TOOLS
+    )
+
+    assert fncall_messages[1]["tool_calls"][0]["function"]["name"] == "terminal"
+    assert fncall_messages[1]["content"] == ""
+
+
+def test_tool_call_wrapper_without_newline_after_name_is_normalized():
+    content = "<tool_call>terminal<parameter=command>ls</parameter></tool_call>"
+    messages = [
+        {"role": "user", "content": "run ls"},
+        {"role": "assistant", "content": content},
+    ]
+
+    fncall_messages = convert_non_fncall_messages_to_fncall_messages(
+        messages, FNCALL_TOOLS
+    )
+
+    tool_call = fncall_messages[1]["tool_calls"][0]["function"]
+    assert json.loads(tool_call["arguments"]) == {"command": "ls"}
+    assert fncall_messages[1]["content"] == ""
+
+
+def test_tool_call_wrapper_repairs_name_equals_value_parameter():
+    content = "<tool_call>terminal\n<parameter=command=ls</parameter>\n</tool_call>"
+    messages = [
+        {"role": "user", "content": "run ls"},
+        {"role": "assistant", "content": content},
+    ]
+
+    fncall_messages = convert_non_fncall_messages_to_fncall_messages(
+        messages, FNCALL_TOOLS
+    )
+
+    tool_call = fncall_messages[1]["tool_calls"][0]["function"]
+    assert json.loads(tool_call["arguments"]) == {"command": "ls"}
+
+
+def test_tool_call_wrapper_quoted_inside_parameter_value_is_normalized():
+    content = (
+        "<tool_call>terminal\n"
+        "<parameter=command>printf '<tool_call>finish\n"
+        "</tool_call>'</parameter>\n"
+        "</tool_call>"
+    )
+    messages = [
+        {"role": "user", "content": "print the wrapper"},
+        {"role": "assistant", "content": content},
+    ]
+
+    fncall_messages = convert_non_fncall_messages_to_fncall_messages(
+        messages, FNCALL_TOOLS
+    )
+
+    tool_call = fncall_messages[1]["tool_calls"][0]["function"]
+    assert tool_call["name"] == "terminal"
+    assert json.loads(tool_call["arguments"]) == {
+        "command": "printf '<tool_call>finish\n</tool_call>'"
+    }
+
+
+def test_tool_call_wrapper_in_history_with_unknown_tool_is_left_as_text():
+    content = "<tool_call>removed_tool\n<parameter=command>ls</parameter>\n</tool_call>"
+    messages = [
+        {"role": "user", "content": "run it"},
+        {"role": "assistant", "content": content},
+        {"role": "user", "content": "what happened?"},
+    ]
+
+    result = convert_non_fncall_messages_to_fncall_messages(messages, FNCALL_TOOLS)
+
+    assert result[1]["content"] == content
+    assert not result[1].get("tool_calls")
+
+
+def test_tool_call_wrapper_in_history_with_invalid_parameters_is_left_as_text():
+    content = (
+        "<tool_call>terminal\n<parameter=unknown_parameter>ls</parameter>\n</tool_call>"
+    )
+    messages = [
+        {"role": "user", "content": "run it"},
+        {"role": "assistant", "content": content},
+        {"role": "user", "content": "what happened?"},
+    ]
+
+    result = convert_non_fncall_messages_to_fncall_messages(messages, FNCALL_TOOLS)
+
+    assert result[1]["content"] == content
+    assert not result[1].get("tool_calls")
+
+
+def test_tool_call_wrapper_in_fresh_response_raises_for_unknown_tool():
+    content = "<tool_call>removed_tool\n<parameter=command>ls</parameter>\n</tool_call>"
+    messages = [
+        {"role": "user", "content": "run it"},
+        {"role": "assistant", "content": content},
+    ]
+
+    with pytest.raises(FunctionCallValidationError):
+        convert_non_fncall_messages_to_fncall_messages(messages, FNCALL_TOOLS)
