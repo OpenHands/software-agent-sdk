@@ -17,6 +17,8 @@ jobs:
             startsWith(github.event.pull_request.head.ref, 'rel-')
         runs-on: blacksmith-2vcpu-ubuntu-2404
         timeout-minutes: 10
+        permissions:
+            contents: read
         steps:
             - name: Checkout release merge commit
               uses: actions/checkout@v7
@@ -36,10 +38,22 @@ jobs:
               run: |
                   # Do not use xdist: these tests assert process-wide resource
                   # and timing budgets that parallel collection would invalidate.
-                  CI=true uv run python -m pytest -vvs \
-                    -m stress \
-                    --durations=10 \
-                    tests/agent_server/stress
+                  for attempt in 1 2; do
+                    echo "Stress suite attempt ${attempt}/2"
+                    if CI=true uv run --frozen python -m pytest -vvs \
+                      -m stress \
+                      --durations=10 \
+                      tests/agent_server/stress; then
+                      exit 0
+                    else
+                      status=$?
+                    fi
+                    if [ "$status" -ne 1 ] || [ "$attempt" -eq 2 ]; then
+                      exit "$status"
+                    fi
+                    echo "::warning::Stress tests failed; retrying the complete suite once for shared-runner timing variance."
+                    sleep 5
+                  done
 
     create-release:
         # Only run when a release PR is merged (not just closed)

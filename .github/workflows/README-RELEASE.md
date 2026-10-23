@@ -51,7 +51,7 @@ Merging the release PR runs **create-release.yml**, which:
 - explicitly dispatches versioned agent-server image builds against tag `vX.Y.Z`;
 - explicitly dispatches release binaries against tag `vX.Y.Z`.
 
-A failing stress gate prevents tag and release creation and all publisher dispatches. Each publisher validates that its checked-out package version matches the requested version before publishing. Monitor the dispatched workflows in the [Actions tab](https://github.com/OpenHands/software-agent-sdk/actions).
+A pytest exit code of 1 retries the complete stress suite once, with the same timing budgets, to tolerate shared-runner variance. Both attempts remain in the job log. Other exit codes fail immediately; dependency installation failures and any failing second attempt also block tag and release creation and all publisher dispatches. Each publisher validates that its checked-out package version matches the requested version before publishing. Monitor the dispatched workflows in the [Actions tab](https://github.com/OpenHands/software-agent-sdk/actions).
 
 ### Step 4: Release Binaries + Docker Smoke Test (Automated)
 
