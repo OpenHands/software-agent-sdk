@@ -83,18 +83,23 @@ class RemoteWorkspaceMixin(BaseModel):
         self,
         command: str,
         cwd: str | Path | None,
-        timeout: float,
+        timeout: float | None,
     ) -> Generator[dict[str, Any], httpx.Response, str]:
-        payload: dict[str, Any] = {"command": command, "timeout": int(timeout)}
+        payload: dict[str, Any] = {
+            "command": command,
+            "timeout": None if timeout is None else int(timeout),
+        }
         if cwd is not None:
             payload["cwd"] = _remote_path(cwd)
-        response = yield {
+        request: dict[str, Any] = {
             "method": "POST",
             "url": f"{self.host}{self.api_prefix}/bash/start_bash_command",
             "json": payload,
             "headers": self._headers,
-            "timeout": timeout + 5,
         }
+        if timeout is not None:
+            request["timeout"] = timeout + 5
+        response = yield request
         response.raise_for_status()
         command_id = response.json().get("id")
         if not isinstance(command_id, str) or not command_id:
@@ -192,6 +197,11 @@ class RemoteWorkspaceMixin(BaseModel):
         Returns:
             CommandResult: Result with stdout, stderr, exit_code, and other metadata
         """
+        if timeout is None:
+            raise ValueError(
+                "execute_command needs a timeout; to run a command until it is "
+                "stopped, use start_command(timeout=None) and stop_command"
+            )
         _logger.debug("Executing remote command")
 
         try:
