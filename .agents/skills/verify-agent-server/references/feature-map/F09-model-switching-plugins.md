@@ -495,32 +495,31 @@ Preconditions:
   `base_state.json` follow, with the same `acp_session_id` (switched in
   place, not a new session). A blank model is 400 `model must be a
   non-empty string`. An id the adapter does not offer is refused and the
-  model stays `haiku` (which status it is refused with is
+  model stays `haiku` (refused with 400, see
   `F09.acp-model-live-unknown`). The next turn finishes in the same
   session, and its usage is recorded on `acp-managed` with `model_name`
   `haiku`. Every built-in provider declares
   runtime switching, so the route's other 400 (`does not support runtime
   model switching`) is not reachable with them.
-- **Unknown model on a live session (`F09.acp-model-live-unknown`), known bug.**
+- **Unknown model on a live session (`F09.acp-model-live-unknown`).**
   `LID` from the bullet above, whose adapter lists its models.
 
   Requires: `F09.acp-model-live`
   ```sh
   control-agent-server api GET "/api/conversations/$LID" --quiet --check supports_runtime_model_switch eq true \
     --check available_models contains '"model_id": "sonnet"' --check available_models not-contains qa-f09-nope
-  control-agent-server api POST "/api/conversations/$LID/switch_acp_model" --json '{"model": "qa-f09-nope"}' --expect 400,422 --save F09.acp-model-live-unknown/switch  # bug: status eq 500 && response.body.exception contains 'Internal error'
+  control-agent-server api POST "/api/conversations/$LID/switch_acp_model" --json '{"model": "qa-f09-nope"}' --expect 400 --check detail contains 'is not offered by this ACP session' --save F09.acp-model-live-unknown/switch
   ```
-  Expected: a client error, as `ACPAgent.set_acp_model` documents ("the ACP
-  server rejects the model-switch call (e.g. ... an invalid model id)" is a
-  `ValueError`, which the route turns into 400) and as a blank model already
-  is. Today it is 500 `Internal Server Error` with `exception` `Internal
-  error`: claude-agent-acp answers `set_config_option(model)` with an id it
-  does not offer with JSON-RPC -32603, and `set_acp_model` re-raises -32603
-  as a server-side failure instead of a `ValueError`, although the session's
-  `available_models` already shows the id is not offered. A consumer that
-  mistypes a model sees a retriable-looking 500 for a request that can
-  never succeed. Nothing changes either way (`F09.acp-model-live` checks
-  that the model stays `haiku`).
+  A client error, as for a blank model: 400 with `detail` `Model
+  'qa-f09-nope' is not offered by this ACP session (available: default,
+  haiku, opus[1m], sonnet, sonnet[1m]): Internal error`. claude-agent-acp
+  answers `set_config_option(model)` with an id it does not offer with
+  JSON-RPC -32603; `ACPAgent.set_acp_model` turns that -32603 into a
+  `ValueError` (which the route maps to 400) when the session's
+  `available_models` shows the id is not offered, and still lets a -32603
+  for an offered id (or from a server that lists no models) through as a
+  500. Nothing changes either way (`F09.acp-model-live` checks that the
+  model stays `haiku`).
 - **Live switch that times out (`F09.acp-model-live-timeout`).** The same
   translated provider, on a conversation created with
   `acp_prompt_timeout: 0.001`: the server's own timer is what is under test.
