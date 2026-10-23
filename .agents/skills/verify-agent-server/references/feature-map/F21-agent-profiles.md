@@ -10,7 +10,8 @@ one JSON file under `OH_PERSISTENCE_DIR/agent-profiles`, keyed by a renameable
 name, with a server-managed stable `id` and a `revision` that every overwrite
 bumps. The server keeps a separate active pointer
 (`settings.active_agent_profile_id`, set by id and never copied into
-`agent_settings`), seeds a `default` profile on the first list, previews a
+`agent_settings`), restores a missing or dangling pointer to `default`
+(seeding it when absent), previews a
 launch without starting anything (`materialize`), and resolves a profile when
 a conversation is started with `agent_profile_id`. The TypeScript
 `AgentProfilesClient` and Agent Canvas's profile editor are the consumers.
@@ -28,7 +29,7 @@ Routes: `GET /api/agent-profiles`, `GET /api/agent-profiles/{name}`,
 ## Sub-features
 
 - `F21.auth-required`: every agent-profile route answers 401 without a valid `X-Session-API-Key`, and nothing is written (not even the lazy seed).
-- `F21.lazy-seed`: the first list on an empty store seeds one `default` OpenHands profile (revision 0, `llm_profile_ref` = the active LLM profile), points `active_agent_profile_id` at it, and later lists do not seed again.
+- `F21.lazy-seed`: the first list on an empty store seeds one `default` OpenHands profile (revision 0, `llm_profile_ref` = the active LLM profile), points `active_agent_profile_id` at it, and later lists reuse it; a persisted missing or dangling pointer is repaired to the same default.
 - `F21.seed-no-ghost-llm`: on a never-configured server the seeded `default` keeps a soft `llm_profile_ref` `default` without writing a keyless `default` LLM profile (materialize reports it unresolved); once the live LLM has a real key, the next seed mirrors it into a keyed `default` LLM profile.
 - `F21.seed-acp`: when the live `agent_settings` are ACP, the first list seeds an ACP `default` profile with the live backend and model, no LLM reference, and no LLM profile written.
 - `F21.save-create`: `POST /api/agent-profiles/{name}` answers 201 and stores the profile under the path name with a server-minted id (a client `id` and body `name` are ignored) at revision 0; GET, the list summary and the file agree.
@@ -40,8 +41,8 @@ Routes: `GET /api/agent-profiles`, `GET /api/agent-profiles/{name}`,
 - `F21.activate`: `POST /api/agent-profiles/{profile_id}/activate` sets only `active_agent_profile_id` (`agent_settings_applied` false): the list and settings show the id and `agent_settings` is unchanged.
 - `F21.activate-corrupt-settings`: with an unparsable `settings.json`, activate answers 500 `Failed to activate agent profile` (where LLM and meta-profile activation answer 409) and leaves the file as it was; the same activation works again once the file is restored.
 - `F21.rename`: rename moves the profile to the new name with the same `id` and `revision`, keeps the active pointer, frees the old name (404), answers 200 "unchanged" for the same name and 409 when the target exists.
-- `F21.delete`: DELETE removes the profile file; deleting another profile leaves the pointer alone, deleting the active one clears it (and a non-empty store is not reseeded).
-- `F21.delete-active-acp-reset`: deleting the active profile while `agent_settings` are ACP resets them to OpenHands defaults and keeps the server's `mcp_config`.
+- `F21.delete`: DELETE removes the profile file; deleting another profile leaves the pointer alone, deleting the active one selects the existing default, or reseeds it when absent.
+- `F21.delete-active-acp-reset`: deleting the active profile while `agent_settings` are ACP resets them to OpenHands defaults, keeps the server's `mcp_config`, and selects the default profile.
 - `F21.materialize-valid`: materializing a stored profile whose references resolve answers `valid` true with `llm_profile_resolved`, `llm_api_key_set`, the resolved MCP keys and skills, the secret allow-list and `resolved_settings` with the key masked (the raw key appears nowhere), and persists nothing.
 - `F21.materialize-dangling`: dangling LLM, MCP and meta-profile references and a tool the server cannot run give 200 `valid` false with every problem in `errors`, the dangling names in their fields, and no `resolved_settings`.
 - `F21.materialize-draft`: a draft body is previewed under the path name without being saved: an ACP draft reports its credential secret names, `disabled_skills` removes a skill from `resolved_skills`, `mcp_server_refs` null exposes every configured MCP server and `[]` none, and an invalid draft or an extra top-level key is 422.
@@ -64,7 +65,8 @@ Routes: `GET /api/agent-profiles`, `GET /api/agent-profiles/{name}`,
 
 - REST: `GET /api/agent-profiles` (summaries `{id, name, agent_kind,
   revision, llm_profile_ref, mcp_server_refs}` and
-  `active_agent_profile_id`; seeds `default` on an empty store),
+  `active_agent_profile_id`; repairs an unset or dangling pointer by
+  selecting `default`, seeding it when absent),
   `GET /api/agent-profiles/{name}` (`{name, profile}`),
   `POST /api/agent-profiles/{name}` (the body is the profile; 201 `{name,
   message}` without the id, so read it back with GET),
@@ -169,10 +171,18 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   control-agent-server api GET /api/settings --check active_agent_profile_id eq "$SEED" --check active_profile eq deepseek-flash
   control-agent-server state cat home/.openhands/agent-profiles/default.json --check id eq "$SEED" --check name eq default
   control-agent-server api GET /api/agent-profiles --check profiles len-eq 1 --check active_agent_profile_id eq "$SEED" --save F21.lazy-seed/second-list
+  SETTINGS="$AGENT_SERVER_VERIFY_RUN/home/.openhands/settings.json"
+  jq '.active_agent_profile_id = "00000000-0000-4000-8000-000000000000"' "$SETTINGS" > "$SETTINGS.tmp"
+  mv "$SETTINGS.tmp" "$SETTINGS"
+  control-agent-server api GET /api/agent-profiles --check profiles len-eq 1 --check active_agent_profile_id eq "$SEED" \
+    --save F21.lazy-seed/repaired-pointer
+  control-agent-server api GET /api/settings --check active_agent_profile_id eq "$SEED"
   ```
   One `default` profile appears, referencing the active LLM profile
   `deepseek-flash`, and the pointer names its id in the list, in settings
-  and in the file; the second list returns the same single profile.
+  and in the file; the second list returns the same single profile. After
+  arranging a stale persisted pointer, the next list restores that same
+  default id in both views (#5983).
 - **No ghost LLM profile (`F21.seed-no-ghost-llm`).** A second server that
   never had an LLM configured, then the same server with a real key.
   ```sh
@@ -188,7 +198,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
     --json '{"agent_settings_diff": {"llm": {"model": "openai/qa-f21-model", "api_key": "qa-f21-fake-key"}}}' \
     --expect 200 --check llm_api_key_is_set eq true
   control-agent-server api DELETE /api/agent-profiles/default --run "$B" --expect 200
-  control-agent-server api GET /api/settings --run "$B" --check active_agent_profile_id missing
+  RESEEDED=$(control-agent-server api GET /api/agent-profiles/default --run "$B" --field profile.id)
+  control-agent-server api GET /api/settings --run "$B" --check active_agent_profile_id eq "$RESEEDED"
   control-agent-server api GET /api/agent-profiles --run "$B" --check profiles len-eq 1 --check profiles.0.llm_profile_ref eq default \
     --check active_agent_profile_id exists
   control-agent-server api GET /api/profiles --run "$B" --check profiles len-eq 1 --check profiles.0.name eq default \
@@ -198,8 +209,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   ```
   The keyless seed writes no LLM profile and materialize calls its
   reference unresolved. After the live LLM gets a key, deleting the active
-  `default` empties the store and clears the pointer, so the next list
-  seeds again and this time mirrors the LLM into a keyed `default` LLM
+  `default` immediately reseeds and selects its replacement, this time
+  mirroring the LLM into a keyed `default` LLM
   profile that the agent profile resolves. Server B is stopped on exit.
 - **ACP seed (`F21.seed-acp`).** A third server whose live settings are
   switched to ACP before anything lists the profiles.
@@ -413,6 +424,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
 
   Requires: `F21.save-create`
   ```sh
+  DEFAULT_ID=$(control-agent-server api GET /api/agent-profiles --field profiles | jq -r '.[] | select(.name == "default") | .id')
+  control-agent-server api POST "/api/agent-profiles/$CODER/activate" --expect 200
   control-agent-server api POST /api/agent-profiles/qa-f21-tmp --json '{"llm_profile_ref": "deepseek-flash"}' --expect 201
   control-agent-server api DELETE /api/agent-profiles/qa-f21-tmp --expect 200 --check message eq "Agent profile 'qa-f21-tmp' deleted" \
     --save F21.delete/delete
@@ -423,21 +436,22 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   DOOMED=$(control-agent-server api GET /api/agent-profiles/qa-f21-doomed --field profile.id)
   control-agent-server api POST "/api/agent-profiles/$DOOMED/activate" --expect 200
   control-agent-server api DELETE /api/agent-profiles/qa-f21-doomed --expect 200
-  control-agent-server api GET /api/agent-profiles --check active_agent_profile_id missing --save F21.delete/list-after-active \
+  control-agent-server api GET /api/agent-profiles --check active_agent_profile_id eq "$DEFAULT_ID" --save F21.delete/list-after-active \
     --field profiles | jq -e 'map(.name) | (index("qa-f21-doomed") == null) and (map(select(. == "default")) | length == 1)'
-  control-agent-server api GET /api/settings --check active_agent_profile_id missing --check agent_settings.agent_kind eq openhands \
+  control-agent-server api GET /api/settings --check active_agent_profile_id eq "$DEFAULT_ID" --check agent_settings.agent_kind eq openhands \
     --check agent_settings.llm.model eq deepseek/deepseek-flash
   control-agent-server api POST "/api/agent-profiles/$CODER/activate" --expect 200
   ```
   The inactive delete removes the file and keeps the pointer; deleting the
-  active profile clears the pointer in both views, leaves OpenHands
-  settings alone, and does not reseed (the store is not empty). The pointer
+  active profile selects the existing default in both views, leaves
+  OpenHands settings alone, and preserves the default id. The pointer
   goes back to `qa-f21-coder`.
 - **Active ACP reset (`F21.delete-active-acp-reset`).** Live settings on
   ACP with one MCP server, then the active profile is deleted.
 
   Requires: `F21.save-create`
   ```sh
+  DEFAULT_ID=$(control-agent-server api GET /api/agent-profiles --field profiles | jq -r '.[] | select(.name == "default") | .id')
   control-agent-server api PATCH /api/settings --json '{"agent_settings_diff": {"agent_kind": "acp", "acp_server": "codex"}}' \
     --expect 200 --check agent_settings.agent_kind eq acp
   control-agent-server api POST /api/settings/mcp/qa-f21-mcp --expect 201 \
@@ -448,7 +462,7 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   control-agent-server api GET /api/settings --check active_agent_profile_id eq "$ACTIVE_ACP" --check agent_settings.agent_kind eq acp \
     --check agent_settings.mcp_config.qa-f21-mcp exists
   control-agent-server api DELETE /api/agent-profiles/qa-f21-acp-active --expect 200
-  control-agent-server api GET /api/settings --check active_agent_profile_id missing --check agent_settings.agent_kind eq openhands \
+  control-agent-server api GET /api/settings --check active_agent_profile_id eq "$DEFAULT_ID" --check agent_settings.agent_kind eq openhands \
     --check agent_settings.acp_server missing --check agent_settings.mcp_config.qa-f21-mcp.url eq https://example.invalid/mcp \
     --save F21.delete-active-acp-reset/settings
   control-agent-server api POST /api/profiles/deepseek-flash/activate --expect 200
@@ -456,7 +470,7 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   control-agent-server api GET /api/settings --check agent_settings.llm.model eq deepseek/deepseek-flash \
     --check llm_api_key_is_set eq true --check active_agent_profile_id eq "$CODER"
   ```
-  After the delete the pointer is clear and `agent_settings` are fresh
+  After the delete the pointer selects `default` and `agent_settings` are fresh
   OpenHands defaults that still hold `qa-f21-mcp`. Re-activating the
   `deepseek-flash` LLM profile and `qa-f21-coder` restores the run.
 - **Materialize a resolvable profile (`F21.materialize-valid`).** A stored
@@ -690,9 +704,10 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   method from the built client (built here when missing), plus the same
   client reached through `AgentServerClient.agentProfiles`.
 
-  Requires: `F21.save-create`
+  Requires: `F21.lazy-seed`, `F21.save-create`
   ```sh
   test -f clients/typescript/dist/clients.js || (cd clients/typescript && npm ci && npm run build)
+  control-agent-server api POST "/api/agent-profiles/$CODER/activate" --expect 200
   F21TS="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f21-ts"
   mkdir -p "$F21TS"
   cat > "$F21TS/ts_agent_profiles.mjs" <<'JS'
@@ -727,8 +742,9 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   assert.equal(stored.valid, true);
   assert.equal(stored.resolved_settings.llm.model, 'deepseek/deepseek-flash');
   assert.equal((await client.getAgentProfile('qa-f21-ts2')).profile.revision, 0);
-  assert.equal((await client.activateAgentProfile(coder)).id, coder);
   assert.equal((await client.deleteAgentProfile('qa-f21-ts2')).message, "Agent profile 'qa-f21-ts2' deleted");
+  assert.equal((await client.listAgentProfiles()).active_agent_profile_id, before.profiles.find((p) => p.name === 'default').id);
+  assert.equal((await client.activateAgentProfile(coder)).id, coder);
   await assert.rejects(client.getAgentProfile('qa-f21-ts2'), (err) => err.name === 'HttpError' && err.status === 404);
   await assert.rejects(client.materializeAgentProfile('qa-f21-ts2'), (err) => err.name === 'HttpError' && err.status === 404);
   await assert.rejects(client.saveAgentProfile('-qa-f21-bad', body), (err) => err.name === 'HttpError' && err.status === 422);
@@ -750,8 +766,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   keeps its id through the rename and is activated by that id
   (`agent_settings_applied` false), which `AgentServerClient.agentProfiles`
   sees too. A draft previews `deepseek-pro` while the stored profile still
-  previews `deepseek-flash` at revision 0 (the draft saved nothing). After
-  re-activating `qa-f21-coder` and deleting the profile, reading or
+  previews `deepseek-flash` at revision 0 (the draft saved nothing). Deleting the active profile selects the original default; after
+  re-activating `qa-f21-coder`, reading or
   previewing it rejects with an `HttpError` 404 and an invalid name with
   422. The REST list afterwards agrees.
 - **Restart (`F21.restart`).**
@@ -910,7 +926,7 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   (`valid` false, `llm_profile_resolved` false, an `errors` entry) and does
   not name `dangling_llm_profile_ref`, which only the launch's 422 carries
   (#5871).
-- **TypeScript payload types (`F21.ts-payload-types`).** The
+- **TypeScript payload types (`F21.ts-payload-types`), known bug.** The
   client's hand-written types in `clients/typescript/src/models/agent-profile.ts`
   against what the server sends: a list summary, an OpenHands and an ACP
   profile read back with GET, and a materialize report. Each payload's keys
@@ -945,7 +961,7 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
     "export const diagnostics: Shape<AgentProfileDiagnostics> = $DIAG;" > "$D/exported.ts"
   TSC="clients/typescript/node_modules/.bin/tsc --noEmit --strict --skipLibCheck --target es2020 --module esnext --moduleResolution bundler"
   $TSC "$D/contract.ts"
-  $TSC "$D/exported.ts" | control-agent-server assert --check . not-contains 'error TS'
+  $TSC "$D/exported.ts" | control-agent-server assert --check . not-contains 'error TS'  # bug: value contains TS2353 && value contains public_skills && value contains 'Shape<OpenHandsAgentProfile>' && value contains 'Shape<AgentProfileDiagnostics>'
   ```
   Expected: both files type-check, so a TypeScript consumer (Agent
   Canvas's profile editor) can read every field the server sends under its
@@ -957,7 +973,11 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   refuses with 422 `extra_forbidden`), and `ACPAgentProfile` declares
   `acp_startup_timeout`. The client's unit test
   `agent-server-contract-types.test.ts` pins the same key sets against the
-  generated contract.
+  generated contract. A later `public_skills` field is now present in live
+  OpenHands profiles and materialize reports and in the generated contract,
+  but absent from both exported types. The generated positive control still
+  passes; the exported types fail with TS2353 naming `public_skills`
+  ([enyst/agent-sdk#41](https://github.com/enyst/agent-sdk/issues/41)).
 - **`.json` names keep their identity (`F21.json-suffix-identity`).**
   The store strips a trailing `.json` from the file name and from the
   profile's `name`, so `x.json` and `x` are one profile.
@@ -991,10 +1011,11 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
 ## Gotchas
 
 - `GET /api/agent-profiles` is not read-only on an empty store with no
-  pointer: it writes `agent-profiles/default.json` and `settings.json`, and
+  valid pointer: it can write `agent-profiles/default.json` and `settings.json`, and
   mirrors a keyed live LLM into a `default` LLM profile when no LLM profile
-  is active. A pointer that names nothing (for example one set through
-  `PATCH /api/settings`) suppresses the seed for good. Use other routes for
+  is active. An unset or dangling pointer selects `default`, seeding it
+  when absent (#5983); an unreadable default or full store falls back to
+  another profile. Deleting the active profile also repairs the pointer. Use other routes for
   read-only probes; `doctor` does.
 - The seeded `default` references the active LLM profile, so that LLM
   profile cannot be deleted (409) while the agent profile exists (F20).

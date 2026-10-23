@@ -414,7 +414,7 @@ Preconditions:
   commit, and the skill leaves the store again. This bullet is the network
   arrange step for `F25.install-documented-sources`: it proves github.com is
   reachable and `skills/github` installs.
-- **Documented install sources (`F25.install-documented-sources`).**
+- **Documented install sources (`F25.install-documented-sources`), known bug.**
   Install the same skill in each GitHub form the OpenAPI description of
   `InstallSkillRequest.source` advertises.
 
@@ -425,14 +425,20 @@ Preconditions:
     case "$DOC" in
       *"'$SRC'"*)
         control-agent-server api POST /api/skills/install --json '{"source": "'"$SRC"'"}' --timeout 240 --expect 200 \
-          --check name eq github --save F25.install-documented-sources/documented
+          --check name eq github --save F25.install-documented-sources/documented  # bug: status eq 422 && response.body.detail eq 'Invalid skill. Ensure the source contains a valid SKILL.md.'
         control-agent-server api DELETE /api/skills/installed/github --expect 200
         ;;
     esac
   done
   ```
-  `F25.install-github` showed the skill installs from github.com, so every
-  documented example installs it too. `github:owner/repo/<path>` clones
+  `F25.install-github` proves the skill installs from github.com when the
+  subpath is explicit. The shorthand should install the same skill, but
+  currently answers 422: the installation manager treats an omitted
+  `repo_path` as a repository-root install and loads the fetched `github`
+  skill from a temporary directory named `extensions`. Skill validation
+  rejects the resulting directory/name mismatch. This regression is tracked
+  in [enyst/agent-sdk#39](https://github.com/enyst/agent-sdk/issues/39).
+  The earlier parser rejection was fixed in #5909; the current shorthand clones
   `owner/repo` and uses `<path>` as `repo_path` (passing both is a `400`).
   The loop also covers the `/tree/<ref>/<path>` URL in case it is documented
   again; that form is not parsed (it would be cloned as
@@ -875,8 +881,12 @@ Preconditions:
   are cloned into `$OH_PERSISTENCE_DIR/cache/extensions/`.
   `github:OpenHands/extensions/skills/github` is the same install as
   `{"source": "github:OpenHands/extensions", "repo_path": "skills/github"}`
-  (`F25.install-documented-sources`), but the record keeps the source as
-  given; a GitHub `/tree/<ref>/<path>` URL is not parsed.
+  in the fetch layer, but installation currently rejects that shorthand with
+  422 because the loader renames the skill directory to the repository name
+  (`F25.install-documented-sources`,
+  [enyst/agent-sdk#39](https://github.com/enyst/agent-sdk/issues/39)). Use the
+  explicit `repo_path` form until fixed. A GitHub `/tree/<ref>/<path>` URL
+  is not parsed.
 - The 409 for an existing skill is decided after the fetch, so a conflicting
   git install still clones. `version` is always `1.0.0` (the frontmatter
   `version` is not read). Refresh reinstalls with `ref` dropped, so a skill
