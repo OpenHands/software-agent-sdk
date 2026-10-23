@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 from uuid import UUID, uuid4
 from weakref import WeakValueDictionary
 
@@ -91,10 +91,6 @@ from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.tool.registry import get_tool_module_qualnames, is_tool_available
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
-
-
-if TYPE_CHECKING:
-    from openhands.sdk.subagent.schema import AgentDefinition
 
 
 _AUTOMATION_TAG_KEYS = ("automationtrigger", "automationid", "automationrunid")
@@ -415,41 +411,6 @@ def _compose_webhook_conversation_info_sync(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
     return _compose_conversation_info_sync(stored, state)
-
-
-def _register_agent_definitions(
-    agent_defs: list["AgentDefinition"],
-    *,
-    context: str,
-) -> None:
-    """Register agent definitions into the subagent registry.
-
-    Used both when creating new conversations (definitions forwarded from the
-    client) and when resuming persisted ones (definitions stored in meta.json).
-    """
-    from openhands.sdk.subagent.registry import (
-        agent_definition_to_factory,
-        register_agent_if_absent,
-    )
-
-    registered = 0
-    for agent_def in agent_defs:
-        try:
-            factory = agent_definition_to_factory(agent_def)
-            register_agent_if_absent(
-                name=agent_def.name,
-                factory_func=factory,
-                description=agent_def,
-            )
-            registered += 1
-        except Exception as e:
-            logger.warning(
-                f"Failed to register agent definition "
-                f"'{agent_def.name}' ({context}): {e}"
-            )
-    logger.debug(
-        f"Registered {registered}/{len(agent_defs)} agent definition(s) ({context})"
-    )
 
 
 def _state_signature(base_state_path: str) -> tuple[int, int] | None:
@@ -1016,11 +977,6 @@ class ConversationService:
                     )
         if stored.client_tools:
             register_client_tools(stored.client_tools)
-        if stored.agent_definitions:
-            _register_agent_definitions(
-                stored.agent_definitions,
-                context=f"resuming conversation {stored.id}",
-            )
 
     def _get_conversation_lock(self, conversation_id: UUID) -> asyncio.Lock:
         lock = self._conversation_locks.get(conversation_id)
@@ -1651,13 +1607,6 @@ class ConversationService:
             module_qualname = registered_tool_modules.get(tool.name)
             if module_qualname is not None and tool.name not in client_tool_names:
                 tool_module_qualnames.setdefault(tool.name, module_qualname)
-
-        # Register subagent definitions forwarded from the client
-        if request.agent_definitions:
-            _register_agent_definitions(
-                request.agent_definitions,
-                context=f"conversation {conversation_id}",
-            )
 
         # Plugin loading is handled lazily by LocalConversation, which fetches
         # plugins on the first run()/send_message(), pins refs to commit SHAs

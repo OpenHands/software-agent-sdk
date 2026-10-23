@@ -12,15 +12,55 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
+    agent_definition_to_factory,
     register_agent,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.tools.preset import register_builtins_agents
+from openhands.tools.task.definition import TaskToolSet
 from openhands.tools.task.manager import (
     Task,
     TaskManager,
     TaskStatus,
 )
+
+
+def test_task_child_and_resume_keep_parent_catalog(tmp_path: Path) -> None:
+    manager, parent = _manager_with_parent(tmp_path, persistence_dir=tmp_path / "state")
+    definition = AgentDefinition(
+        name="scoped-reviewer",
+        description="parent plugin reviewer",
+        system_prompt="Use the parent's plugin",
+        level="plugin",
+    )
+    parent._agent_registry.register_if_absent(
+        definition.name, agent_definition_to_factory(definition), definition
+    )
+    try:
+        task = manager._create_task(subagent_type=definition.name, description=None)
+        child = task.conversation
+        assert child is not None
+        assert child.agent.agent_context is not None
+        assert (
+            child.agent.agent_context.system_message_suffix == definition.system_prompt
+        )
+        child.send_message("Remember this task")
+        assert definition.description in TaskToolSet.create(child._state)[0].description
+        conversation_id = child.id
+        manager._evict_task(task)
+
+        resumed = manager._resume_task(task.id, definition.name)
+        assert resumed.conversation is not None
+        assert resumed.conversation.id == conversation_id
+        resumed.conversation.send_message("Continue the task")
+        assert (
+            definition.description
+            in TaskToolSet.create(resumed.conversation._state)[0].description
+        )
+        assert len(resumed.conversation.state.events) > 1
+    finally:
+        manager.close()
+        parent.close()
 
 
 def _make_llm() -> LLM:

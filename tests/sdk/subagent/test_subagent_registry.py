@@ -11,6 +11,7 @@ from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.subagent.registry import (
+    ConversationAgentRegistry,
     _reset_registry_for_tests,
     agent_definition_to_factory,
     get_agent_factory,
@@ -20,7 +21,7 @@ from openhands.sdk.subagent.registry import (
     register_file_agents,
     register_plugin_agents,
 )
-from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.subagent.schema import AgentDefinition, AgentDefinitionLevel
 
 
 def setup_function() -> None:
@@ -46,6 +47,97 @@ def _create_skill_file(skills_dir: Path, name: str, content: str) -> None:
     skill_file.write_text(
         f"---\nname: {name}\ntriggers:\n  - {name}\n---\n\n{content}\n"
     )
+
+
+@pytest.mark.parametrize("source", ["plugin", "project", "user"])
+def test_conversation_registry_resolves_public_global_registrations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", lambda: home)
+    if source == "plugin":
+        register_plugin_agents(
+            [
+                AgentDefinition(
+                    name="shared",
+                    description="global helper",
+                    system_prompt="Global prompt",
+                )
+            ]
+        )
+    else:
+        root = home if source == "user" else tmp_path
+        directory = root / ".agents" / "agents"
+        directory.mkdir(parents=True)
+        (directory / "shared.md").write_text(
+            "---\nname: shared\ndescription: global helper\n---\nGlobal prompt"
+        )
+        register_file_agents(tmp_path)
+
+    registry = ConversationAgentRegistry()
+    factory = registry.get_agent_factory("shared")
+    assert factory is get_agent_factory("shared")
+    assert registry.get_registered_agent_definitions() == [factory.definition]
+    assert "global helper" in registry.get_factory_info()
+    worker = factory.factory_func(_make_test_llm())
+    assert worker.agent_context is not None
+    assert worker.agent_context.system_message_suffix == "Global prompt"
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_scoped_priority_and_catalog_match_lookup(reverse: bool) -> None:
+    registry = ConversationAgentRegistry()
+    levels: list[AgentDefinitionLevel] = [
+        "programmatic",
+        "plugin",
+        "project",
+        "user",
+        "builtin",
+    ]
+    expected_descriptions: dict[str, str] = {}
+    for start in range(len(levels)):
+        name = f"agent-{start}"
+        expected_descriptions[name] = levels[start]
+        candidates = levels[start:]
+        if reverse:
+            candidates = list(reversed(candidates))
+        for level in candidates:
+            definition = AgentDefinition(name=name, description=level, level=level)
+            registry.register_if_absent(
+                name, agent_definition_to_factory(definition), definition
+            )
+        duplicate = AgentDefinition(
+            name=name, description="duplicate", level=levels[start]
+        )
+        assert not registry.register_if_absent(
+            name, agent_definition_to_factory(duplicate), duplicate
+        )
+
+    for level in ("programmatic", "builtin"):
+        definition = AgentDefinition(name=level, description=level, level=level)
+        register_agent(level, agent_definition_to_factory(definition), definition)
+        local = AgentDefinition(name=level, description="local", level="project")
+        registry.register_if_absent(level, agent_definition_to_factory(local), local)
+    expected_descriptions.update({"programmatic": "programmatic", "builtin": "local"})
+
+    fallback = AgentDefinition(
+        name="general-purpose", description="fallback", level="builtin"
+    )
+    register_agent(fallback.name, agent_definition_to_factory(fallback), fallback)
+    expected_descriptions["general-purpose"] = "fallback"
+    assert registry.get_agent_factory(None).definition == fallback
+    assert registry.get_agent_factory("").definition == fallback
+    assert registry.get_agent_factory("default").definition == fallback
+
+    definitions = registry.get_registered_agent_definitions()
+    assert len(definitions) == len(expected_descriptions)
+    assert {d.name: d.description for d in definitions} == expected_descriptions
+    for definition in definitions:
+        assert registry.get_agent_factory(definition.name).definition == definition
+    with pytest.raises(ValueError, match="Unknown agent 'missing'") as error:
+        registry.get_agent_factory("missing")
+    available_names = ", ".join(sorted(expected_descriptions))
+    assert f"Available types: {available_names}" in str(error.value)
 
 
 def test_register_file_agents_project_priority(tmp_path: Path) -> None:
