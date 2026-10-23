@@ -11,9 +11,13 @@ import pytest_asyncio
 
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import ConversationRunLimitExceeded
+from openhands.agent_server.openai.service import _run_agent
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.conversation.request import StartConversationRequest
+from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.testing import TestLLM
 from openhands.sdk.workspace import LocalWorkspace
+from tests.agent_server.stress.scripts import start_conversation_with_test_llm
 
 
 async def wait_until(predicate):
@@ -258,6 +262,50 @@ async def test_message_retained_but_run_rejected(runs):
     assert spare.get_conversation().state.last_user_message_id is not None
 
 
+async def test_gateway_turn_refused_before_message_is_saved(runs, tmp_path):
+    holders = [await runs.create() for _ in range(2)]
+    spare = await runs.create()
+    for holder in holders:
+        await holder.run()
+    events_before = len((await spare.get_state()).events)
+    for _ in range(2):  # an OpenAI client retries a 429 with the same request
+        with pytest.raises(
+            ConversationRunLimitExceeded, match="Retry the request later"
+        ):
+            await _run_agent(
+                start_request=StartConversationRequest(
+                    agent=Agent(llm=LLM(model="gpt-4o", usage_id="test"), tools=[]),
+                    workspace=LocalWorkspace(working_dir=str(tmp_path)),
+                ),
+                user_content=[TextContent(text="hi")],
+                conversation_service=runs.owner,
+                reusable_conversation_id=spare.stored.id,
+            )
+    assert spare._run_task is None
+    assert len((await spare.get_state()).events) == events_before
+    assert spare.get_conversation().state.last_user_message_id is None
+    runs.release.set()
+    await asyncio.gather(*(h.wait_for_run_completion(5) for h in holders))
+    slot = await spare.reserve_run_slot()
+    assert slot is not None
+    await spare.send_message(
+        Message(role="user", content=[TextContent(text="hi")]),
+        run=True,
+        run_slot=slot,
+    )
+    slot.release()
+    await spare.wait_for_run_completion(5)
+    assert runs.tracker.entered == 3
+    assert runs.tracker.active == 0
+
+
+async def test_reservation_skipped_while_conversation_holds_its_permit(runs):
+    holders = [await runs.create() for _ in range(2)]
+    for holder in holders:
+        await holder.run()
+    assert await holders[0].reserve_run_slot() is None
+
+
 async def test_goal_rejected_before_scheduling(runs):
     holders = [await runs.create() for _ in range(2)]
     spare = await runs.create()
@@ -326,3 +374,75 @@ async def test_rearm_resumes_parked_input_despite_competing_claim(runs_one):
     # Once the chain settles the permit is returned to the shared pool.
     await asyncio.wait_for(runs_one.owner._run_semaphore.acquire(), timeout=5)
     runs_one.owner._run_semaphore.release()
+
+
+async def test_terminal_status_implies_released_permit(tmp_path, monkeypatch):
+    """A run that is observable as terminal must already have returned its permit.
+
+    Regression: ``_maybe_end_run_session`` asked "is a successor run active?"
+    via ``self._run_task is not None and not self._run_task.done()``. The run
+    body calls it from its *own* ``finally``, so the task was always its own
+    "successor" and the release was deferred to the task's done callback --
+    after ``wait_for_pending`` and the final state publish. A conversation that
+    already reported FINISHED therefore still occupied a run slot, so a caller
+    that sized capacity exactly to its workload (the concurrent-conversations
+    benchmark: 16 conversations, max_concurrent_runs=16) got a spurious
+    ConversationRunLimitExceeded.
+
+    Holding the run in its ``wait_for_pending`` tail makes the window
+    deterministic: status is terminal, so the slot must be free.
+    """
+    tail_entered = threading.Event()
+    tail_release = threading.Event()
+
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations",
+        max_concurrent_runs=1,
+    ) as owner:
+        llm = TestLLM.from_messages(
+            [Message(role="assistant", content=[TextContent(text="done")])]
+        )
+        info = await start_conversation_with_test_llm(
+            owner,
+            parent_llm=llm,
+            workspace_dir=str(tmp_path / "ws"),
+            usage_id="admission-terminal",
+        )
+        service = await owner.get_event_service(info.id)
+        assert service is not None
+        wrapper = service._callback_wrapper
+        assert wrapper is not None, "expected an async callback wrapper"
+
+        original_wait_for_pending = wrapper.wait_for_pending
+
+        def blocking_wait_for_pending(timeout: float | None = None) -> None:
+            tail_entered.set()
+            assert tail_release.wait(timeout=10), "tail was never released"
+            original_wait_for_pending(timeout)
+
+        monkeypatch.setattr(wrapper, "wait_for_pending", blocking_wait_for_pending)
+
+        await service.run()
+        assert await asyncio.to_thread(tail_entered.wait, 10), (
+            "run never reached its wait_for_pending tail"
+        )
+
+        # The run is terminal from the client's point of view...
+        status = await service.get_state()
+        assert status.execution_status == ConversationExecutionStatus.FINISHED, (
+            f"expected FINISHED in the tail, got {status.execution_status}"
+        )
+        # ...so it must not still be holding the only permit.
+        semaphore = owner._run_semaphore
+        assert semaphore is not None
+        assert semaphore._value == 1, (
+            "conversation reported terminal status while still holding its run "
+            "permit; a caller that sized capacity to its workload would be "
+            "refused with a spurious ConversationRunLimitExceeded"
+        )
+
+        tail_release.set()
+        assert (
+            await service.wait_for_run_completion(10)
+            == ConversationExecutionStatus.FINISHED
+        )

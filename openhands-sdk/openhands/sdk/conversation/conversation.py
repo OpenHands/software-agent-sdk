@@ -88,6 +88,7 @@ class Conversation:
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        observability_parent_span_context: str | None = None,
     ) -> "LocalConversation": ...
 
     @overload
@@ -117,6 +118,7 @@ class Conversation:
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        observability_parent_span_context: str | None = None,
     ) -> "RemoteConversation": ...
 
     def __new__(
@@ -146,6 +148,7 @@ class Conversation:
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        observability_parent_span_context: str | None = None,
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
         from openhands.sdk.conversation.impl.remote_conversation import (
@@ -209,6 +212,7 @@ class Conversation:
                 observability_metadata=observability_metadata,
                 observability_tags=observability_tags,
                 observability_span_name=observability_span_name,
+                observability_parent_span_context=observability_parent_span_context,
             )
 
         return LocalConversation(
@@ -232,4 +236,5 @@ class Conversation:
             observability_metadata=observability_metadata,
             observability_tags=observability_tags,
             observability_span_name=observability_span_name,
+            observability_parent_span_context=observability_parent_span_context,
         )

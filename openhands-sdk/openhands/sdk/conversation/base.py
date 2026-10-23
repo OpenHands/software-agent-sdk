@@ -2,7 +2,7 @@ import contextlib
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
@@ -18,7 +18,10 @@ from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import Message
 from openhands.sdk.observability.laminar import (
     RootSpan,
+    default_observability_span_name_from_env,
     end_root_span,
+    merge_observability_metadata,
+    observability_parent_span_context_from_env,
     should_enable_observability,
     start_child_span,
     start_root_span,
@@ -42,6 +45,7 @@ def _conversation_tag_attributes(
 
 if TYPE_CHECKING:
     from openhands.sdk.agent.base import AgentBase
+    from openhands.sdk.conversation.secret_registry import SecretRegistry
     from openhands.sdk.conversation.state import ConversationExecutionStatus
     from openhands.sdk.hooks import HookConfig
 
@@ -119,6 +123,11 @@ class ConversationStateProtocol(Protocol):
         """The hook configuration for this conversation."""
         ...
 
+    @property
+    def secret_registry(self) -> "SecretRegistry":
+        """The secret registry for this conversation."""
+        ...
+
 
 class BaseConversation(ABC):
     """Abstract base class for conversation implementations.
@@ -128,9 +137,16 @@ class BaseConversation(ABC):
     exchange, execution control, and state management.
     """
 
+    _cleanup_initiated: bool = False
+    _cleanup_complete: bool = False
+    _hook_processor: Any = None
+
     def __init__(self) -> None:
         """Initialize the base conversation with span tracking."""
         self._span_ended = False
+        self._cleanup_initiated = False
+        self._cleanup_complete = False
+        self._hook_processor = None
         # Owned root span. The ``observe`` decorator looks up this attribute
         # (by name ``_observability_root_span``) on ``self`` at every entry
         # point and re-attaches it via ``Laminar.use_span`` so that nested
@@ -138,6 +154,21 @@ class BaseConversation(ABC):
         # is called from a different asyncio task or thread than the one
         # that constructed the conversation.
         self._observability_root_span: RootSpan | None = None
+
+    @property
+    def cleanup_initiated(self) -> bool:
+        """Whether conversation cleanup has started."""
+        return self._cleanup_initiated
+
+    @property
+    def cleanup_complete(self) -> bool:
+        """Whether conversation cleanup has finished."""
+        return self._cleanup_complete
+
+    @property
+    def hook_processor(self) -> Any:
+        """The active hook processor for the conversation, if configured."""
+        return self._hook_processor
 
     def _start_observability_span(
         self,
@@ -147,6 +178,7 @@ class BaseConversation(ABC):
         metadata: dict[str, TraceMetadataValue] | None = None,
         tags: list[str] | None = None,
         conversation_tags: Mapping[str, str] | None = None,
+        parent_span_context: str | None = None,
     ) -> None:
         """Start a per-conversation observability root span.
 
@@ -163,13 +195,24 @@ class BaseConversation(ABC):
         if self._observability_root_span is not None:
             # Idempotent: never start two roots for one conversation.
             return
+        default_span_name = default_observability_span_name_from_env()
+        if default_span_name and span_name == "conversation":
+            span_name = default_span_name
+
+        metadata = merge_observability_metadata(metadata)
+        attributes: dict[str, TraceMetadataValue] = dict(metadata)
+        tag_attributes = _conversation_tag_attributes(conversation_tags)
+        if tag_attributes:
+            attributes.update(tag_attributes)
         self._observability_root_span = start_root_span(
             "conversation",
             session_id=session_id,
             user_id=user_id,
             metadata=metadata,
             tags=tags,
-            attributes=_conversation_tag_attributes(conversation_tags),
+            attributes=attributes,
+            parent_span_context=parent_span_context
+            or observability_parent_span_context_from_env(),
         )
         if span_name != "conversation":
             start_child_span(self._observability_root_span, span_name, tags=tags)
@@ -429,7 +472,10 @@ class BaseConversation(ABC):
                 if ``None``).
             agent: Agent for the fork. Defaults to a deep-copy of the
                 source agent.
-            title: Optional title for the forked conversation.
+            title: Deprecated on ``LocalConversation`` since 1.54.0 — has no
+                effect there and emits a ``DeprecationWarning``. Still
+                honoured by ``RemoteConversation`` (passed to the agent
+                server which stores it on ``StoredConversation``).
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.

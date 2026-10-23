@@ -45,8 +45,12 @@ async def conversation_service(tmp_path: Path) -> AsyncIterator[ConversationServ
     """
     persist_dir = tmp_path / "persist"
     persist_dir.mkdir(parents=True, exist_ok=True)
-    # The parallelism benchmark admits its entire configured workload;
-    # test_run_admission.py separately verifies rejection beyond capacity.
+    # The parallelism benchmark runs one reference conversation and then n
+    # more at once. The reference run can still hold its permit for a moment
+    # after its status reads FINISHED, so size capacity at n + 1 to leave room
+    # for it; otherwise the last concurrent start is intermittently rejected
+    # with ConversationRunLimitExceeded. Rejection beyond capacity is still
+    # covered by test_run_admission.py.
     service = ConversationService(
         conversations_dir=persist_dir,
         max_concurrent_runs=CONCURRENT_CONVERSATIONS.n_conversations + 1,

@@ -112,6 +112,10 @@ class LLMSummarizingCondenser(RollingCondenser):
     def handles_condensation_requests(self) -> bool:
         return True
 
+    def get_llm(self) -> LLM | None:
+        """The LLM used by the condenser, if any."""
+        return self.llm
+
     def _effective_max_tokens(self, agent_llm: LLM | None) -> int | None:
         """Return the effective token cap that triggers token-based condensation.
 
