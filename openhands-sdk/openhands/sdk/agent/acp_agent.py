@@ -2125,7 +2125,7 @@ class ACPAgent(AgentBase):
         input_tokens, output_tokens, cache_read, cache_write, reasoning = (
             _extract_token_usage(response)
         )
-        if input_tokens or output_tokens:
+        if input_tokens or output_tokens or usage_update is not None:
             self.llm.metrics.add_token_usage(
                 prompt_tokens=input_tokens,
                 completion_tokens=output_tokens,
@@ -2137,6 +2137,11 @@ class ACPAgent(AgentBase):
                 ),
                 response_id=session_id,
             )
+            if usage_update is not None:
+                self.llm.metrics.token_usages[-1].per_turn_token = usage_update.used
+                accumulated = self.llm.metrics.accumulated_token_usage
+                assert accumulated is not None
+                accumulated.per_turn_token = usage_update.used
 
         # -- Cost derivation from tokens --------------------------------------
         # gemini-cli: no UsageUpdate cost, so derive from token counts using
