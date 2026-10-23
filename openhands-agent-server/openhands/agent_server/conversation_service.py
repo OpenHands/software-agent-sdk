@@ -63,7 +63,10 @@ from openhands.sdk import LLM, Event, Message, TextContent
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.agent.base import AgentBase
-from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.impl.local_conversation import (
+    LocalConversation,
+    reject_acp_budget,
+)
 from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.request import ConversationWorktreeOptions
 from openhands.sdk.conversation.state import (
@@ -371,6 +374,7 @@ def _compose_conversation_info(
     )
     return ConversationInfo(
         **state.model_dump(mode="json"),
+        max_budget_per_run=stored.max_budget_per_run,
         title=stored.title,
         metrics=stored.metrics,
         created_at=stored.created_at,
@@ -1634,6 +1638,11 @@ class ConversationService:
                 "The agent uses tools whose modules the agent server cannot "
                 f"import: {', '.join(missing_tools)}"
             )
+        # Reject an unenforceable ACP budget before the worktree/branch below
+        # exists. ``LocalConversation.__init__`` would also reject, but by then
+        # this method has already run ``git worktree add`` and the conversation
+        # is never registered, so ``delete_conversation`` could not clean it up.
+        reject_acp_budget(launched.agent, request.max_budget_per_run)
         workspace = (
             _create_conversation_worktree(worktree)
             if worktree is not None

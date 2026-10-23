@@ -5,6 +5,7 @@ import copy
 import json
 import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path, PurePath
 from typing import Any, Final, TypeGuard, cast
 
@@ -17,7 +18,10 @@ from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.event_store import EventLog
-from openhands.sdk.conversation.exceptions import ConversationRunError
+from openhands.sdk.conversation.exceptions import (
+    ConversationRunError,
+    CostBudgetUnsupportedError,
+)
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -56,7 +60,8 @@ from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
 from openhands.sdk.llm.call_context import LLMCallContext, llm_call_context_scope
-from openhands.sdk.llm.exceptions import LLMAuthenticationError
+from openhands.sdk.llm.cost_budget import CostBudget
+from openhands.sdk.llm.exceptions import LLMAuthenticationError, LLMBudgetExceededError
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
@@ -177,6 +182,30 @@ def _copy_event_for_fork(event: Event) -> Event:
     return Event.model_validate_json(event.model_dump_json(exclude_none=True))
 
 
+def reject_acp_budget(
+    agent: AgentBase | None, max_budget_per_run: float | None
+) -> None:
+    """Reject a per-run budget on an ACP agent, which cannot enforce one.
+
+    ACP prompts run in an external process that reports usage only after the
+    turn, so the SDK cannot reserve a call's worst-case cost before sending and
+    a single prompt can exceed the ceiling. Accepting the budget would silently
+    promise enforcement the SDK cannot deliver.
+
+    Callers that create host-local state for a conversation (the agent server's
+    worktree/branch, for instance) must call this once the agent is known and
+    before that state exists, so a rejection leaves nothing behind.
+    """
+    if max_budget_per_run is None or not isinstance(agent, ACPAgent):
+        return
+    raise CostBudgetUnsupportedError(
+        "max_budget_per_run is not supported for ACP agents: their "
+        "prompts bypass the SDK's pre-call cost reservation, so a single "
+        "prompt can exceed the budget before it is recorded. Use a "
+        "regular (LLM) agent to enforce a per-conversation budget."
+    )
+
+
 def _same_llm_config(a: LLM, b: LLM) -> bool:
     """Return whether two LLMs serialize to the same config, secrets included."""
     if a is b:
@@ -217,6 +246,9 @@ class LocalConversation(BaseConversation):
     _mcp_tool_provider: MCPToolProvider
     _mcp_config_from_parent: bool
     _llm_call_context: LLMCallContext
+    # Lifetime recorded cost at the last run start; ``max_budget_per_run`` is a
+    # per-run ceiling measured from here.
+    _budget_run_baseline: float
 
     def __init__(
         self,
@@ -283,6 +315,11 @@ class LocalConversation(BaseConversation):
             hook_config: Optional hook configuration to auto-wire session hooks.
                 If plugins are loaded, their hooks are combined with this config.
             max_iteration_per_run: Maximum number of iterations per run
+            max_budget_per_run: Maximum cost in USD per run. Enforced before each
+                      LLM call by reserving the call's worst-case cost. Not
+                      supported for ACP agents (their prompts bypass the SDK LLM
+                      call path); passing a budget with one raises
+                      :class:`CostBudgetUnsupportedError`.
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
@@ -403,6 +440,14 @@ class LocalConversation(BaseConversation):
         ws_path = Path(self.workspace.working_dir)
         if not ws_path.exists():
             ws_path.mkdir(parents=True, exist_ok=True)
+        # Reject an ACP budget before ``ConversationState.create`` writes
+        # ``base_state.json``. A later rejection would leave an orphaned state
+        # file behind, so a retry with the same id but a different agent would
+        # resume the rejected ACP agent instead of creating the requested one.
+        # The resumed agent is not known until after ``create``, so only a
+        # caller-supplied agent can be checked here; the resume path re-checks
+        # once the persisted agent is loaded.
+        reject_acp_budget(agent, max_budget_per_run)
         self._state = ConversationState.create(
             id=desired_id,
             agent=agent,
@@ -421,6 +466,10 @@ class LocalConversation(BaseConversation):
         # ``self.agent`` and ``self._state.agent`` are the same object.
         if agent is None:
             agent = self._state.agent
+            # Resume path: the persisted agent is known only now. No state file
+            # is created here (base_state.json already exists), so re-checking
+            # the budget cannot orphan anything.
+            reject_acp_budget(agent, max_budget_per_run)
             # The persisted agent carries client-tool ``Tool`` specs, but in a
             # fresh process the ``ClientTool`` *classes* are absent from the
             # global registry. Re-register them from the persisted specs so
@@ -513,8 +562,34 @@ class LocalConversation(BaseConversation):
         )
 
         self.max_iteration_per_run = max_iteration_per_run
-        # Hard cost ceiling (USD) for a run; None disables the budget check.
+        # Hard cost ceiling (USD) per run; None disables it.
         self.max_budget_per_run = max_budget_per_run
+        self._budget_run_baseline = 0.0
+        inherited_budget = (
+            _parent_llm_call_context.cost_budget
+            if _parent_llm_call_context is not None
+            else None
+        )
+        self._cost_budget: CostBudget | None = None
+        # True only for the conversation that created the budget; a conversation
+        # that inherited a parent's budget shares its ledger and must never
+        # re-seed it mid-flight.
+        self._owns_budget = False
+        if max_budget_per_run is not None:
+            if inherited_budget is not None:
+                # A subagent shares its parent's reservation pool so parent and
+                # children contend on one ceiling; the tightest limit applies.
+                self._cost_budget = inherited_budget.child(max_budget_per_run)
+            else:
+                self._cost_budget = CostBudget(max_budget_per_run)
+                self._owns_budget = True
+            self._llm_call_context = replace(
+                self._llm_call_context, cost_budget=self._cost_budget
+            )
+        elif inherited_budget is not None:
+            # No own ceiling, but inherit the parent's shared budget so a
+            # subagent still draws down the parent's allowance.
+            self._cost_budget = inherited_budget
 
         # Initialize stuck detector
         if stuck_detection:
@@ -731,6 +806,18 @@ class LocalConversation(BaseConversation):
     def conversation_stats(self):
         return self._state.stats
 
+    def _combined_cost(self) -> float:
+        """Recorded cost across the conversation's LLMs in the current run (USD).
+
+        Subtracts the run-start baseline so ``max_budget_per_run`` bounds the
+        current run rather than draining every later run with earlier spend.
+        """
+        return self._combined_cost_total() - self._budget_run_baseline
+
+    def _combined_cost_total(self) -> float:
+        """Lifetime recorded cost across the conversation's LLMs (USD)."""
+        return self.conversation_stats.get_combined_metrics().accumulated_cost
+
     def _latest_acp_prompt_message_id(self) -> str | None:
         """Id of the most recent ACP prompt message, or None if there is none."""
         acp_prompt_messages = [
@@ -743,18 +830,42 @@ class LocalConversation(BaseConversation):
     def _budget_exceeded_detail(self) -> str | None:
         """Error detail if the run has hit its cost budget, else None.
 
-        Bounds total spend across all of the run's LLMs (agent, condenser, ...),
-        complementing the iteration cap which only bounds step count.
+        Bounds spend across all of the conversation's LLMs (agent, condenser,
+        ...) in the current run, complementing the iteration cap which only
+        bounds step count. Uses live cost (recorded + in-flight reservations) so
+        a run in progress cannot slip past the ceiling between checks.
+
         """
-        if self.max_budget_per_run is None:
+        if self._cost_budget is None:
             return None
-        spent = self.conversation_stats.get_combined_metrics().accumulated_cost
+        detail = self._cost_budget.exceeded_detail()
+        if detail is not None:
+            return detail
+        if self.max_budget_per_run is None:
+            # Inherited a parent's ceiling without one of its own; the shared
+            # ledger already enforces it.
+            return None
+        spent = self._combined_cost()
         if spent < self.max_budget_per_run:
             return None
         return (
-            f"Agent reached maximum budget limit "
-            f"(${self.max_budget_per_run:.4f}); accumulated cost ${spent:.4f}."
+            f"Agent reached maximum budget limit (${self.max_budget_per_run:.4f}); "
+            f"accumulated cost ${spent:.4f}."
         )
+
+    def _begin_budget_run(self) -> None:
+        """Start a fresh per-run budget allowance for a top-level run.
+
+        Records the run-start baseline and reseeds the ledger, so each
+        ``run()``/``arun()`` gets its own ``max_budget_per_run`` allowance rather
+        than inheriting earlier runs' spend. A conversation that only inherited a
+        parent's budget shares the parent's ledger and must not reseed it
+        mid-flight.
+        """
+        self._budget_run_baseline = self._combined_cost_total()
+        if self._owns_budget:
+            assert self._cost_budget is not None
+            self._cost_budget.reseed()
 
     def _emit_run_limit_error(self, code: str, detail: str) -> None:
         """Mark the run failed with a run-limit ConversationErrorEvent."""
@@ -906,11 +1017,18 @@ class LocalConversation(BaseConversation):
                 persistence_dir=fork_persistence,
                 conversation_id=fork_id,
                 max_iteration_per_run=self.max_iteration_per_run,
+                max_budget_per_run=self.max_budget_per_run,
                 stuck_detection=self._stuck_detector is not None,
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
                 tags=tags,
-                _parent_llm_call_context=self._llm_call_context,
+                # A fork is an independent conversation: inherit the source's
+                # non-budget call context but not its ceiling, so the fork's
+                # calls never reserve against the source's ledger. Its own
+                # max_budget_per_run (copied from the source) starts fresh.
+                _parent_llm_call_context=replace(
+                    self._llm_call_context, cost_budget=None
+                ),
             )
 
             # Branch slice copies path_to_root(event) (root-first, re-rootable);
@@ -1976,6 +2094,7 @@ class LocalConversation(BaseConversation):
         # Ensure agent is fully initialized (loads plugins and initializes agent)
         self._ensure_agent_ready()
         self._cancel_token = CancellationToken()
+        self._begin_budget_run()
 
         with self._state:
             if self._state.execution_status in [
@@ -2055,6 +2174,11 @@ class LocalConversation(BaseConversation):
                     finally:
                         self._step_holds_state_lock = False
                     iteration += 1
+                    # Metrics accumulate in place on the shared stats, bypassing
+                    # __setattr__ autosave; flag a flush so base_state.json —
+                    # which the API's listing/GET snapshot reads — reports live
+                    # accumulated_cost during the run, not just at completion.
+                    self._state.mark_dirty()
 
                     # Check for non-finished terminal conditions
                     # Note: We intentionally do NOT check for FINISHED status here.
@@ -2116,6 +2240,12 @@ class LocalConversation(BaseConversation):
             raise ConversationRunError(
                 self._state.id, e, persistence_dir=self._state.persistence_dir
             ) from e
+        except LLMBudgetExceededError as e:
+            # A pre-call reservation refusal is a normal terminal condition —
+            # like the iteration cap — not a crash: surface it as MaxBudgetReached
+            # and stop without raising ConversationRunError.
+            with self._state:
+                self._emit_run_limit_error("MaxBudgetReached", str(e))
         except Exception as e:
             with self._state:
                 self._state.execution_status = ConversationExecutionStatus.ERROR
@@ -2180,6 +2310,7 @@ class LocalConversation(BaseConversation):
         # self-deadlock that ReadTimeouts after 30s (agent-canvas#1072).
         # _ensure_agent_ready is thread-safe and already runs off-loop in run().
         await asyncio.to_thread(self._ensure_agent_ready)
+        self._begin_budget_run()
 
         with self._state:
             if isinstance(self.agent, ACPAgent) and self._state.execution_status in (
@@ -2334,6 +2465,11 @@ class LocalConversation(BaseConversation):
                         finally:
                             self._step_holds_state_lock = False
                         iteration += 1
+                        # Metrics accumulate in place on the shared stats,
+                        # bypassing __setattr__ autosave; flag a flush so the
+                        # persisted snapshot reports live accumulated_cost during
+                        # the run, not just at completion.
+                        self._state.mark_dirty()
 
                         # astep releases the state lock for the LLM call, so a
                         # message can land mid-step with status still RUNNING and
@@ -2486,6 +2622,10 @@ class LocalConversation(BaseConversation):
                 )
                 with self._state:
                     iteration += 1
+                    # Metrics accumulate in place on the shared stats, bypassing
+                    # __setattr__ autosave; flag a flush so the persisted
+                    # snapshot reports live accumulated_cost during the run.
+                    self._state.mark_dirty()
                     pause_requested_during_acp_step = any(
                         isinstance(event, PauseEvent)
                         for event in self._state.events[acp_step_start_event_count:]
@@ -2636,6 +2776,12 @@ class LocalConversation(BaseConversation):
             raise ConversationRunError(
                 self._state.id, e, persistence_dir=self._state.persistence_dir
             ) from e
+        except LLMBudgetExceededError as e:
+            # A pre-call reservation refusal is a normal terminal condition —
+            # like the iteration cap — not a crash: surface it as MaxBudgetReached
+            # and stop without raising ConversationRunError.
+            with self._state:
+                self._emit_run_limit_error("MaxBudgetReached", str(e))
         except Exception as e:
             with self._state:
                 updated_agent_state = dict(self._state.agent_state)

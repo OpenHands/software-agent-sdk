@@ -341,6 +341,12 @@ export class ConversationManager {
       stuckDetection?: boolean;
       workingDir?: string;
       userId?: string;
+      /**
+       * Per-run cost ceiling in USD. The server rejects a budget on ACP
+       * conversations with HTTP 422 because their prompts bypass the SDK's
+       * pre-call cost enforcement.
+       */
+      maxBudgetPerRun?: number;
     } = {}
   ): Promise<ACPConversationInfo> {
     let initialMessage: CreateACPConversationRequest['initial_message'];
@@ -355,6 +361,7 @@ export class ConversationManager {
       agent,
       initial_message: initialMessage,
       max_iterations: options.maxIterations || 500,
+      max_budget_per_run: options.maxBudgetPerRun ?? null,
       stuck_detection: options.stuckDetection ?? true,
       workspace: { type: 'local', working_dir: options.workingDir || '/tmp' },
       user_id: options.userId ?? null,

@@ -57,6 +57,11 @@ export interface ConversationInfo {
   workspace: unknown;
   persistence_dir: string;
   max_iterations?: number;
+  /**
+   * Per-conversation cost ceiling in USD, or null/undefined when unbounded.
+   * Enforced server-side before each LLM call.
+   */
+  max_budget_per_run?: number | null;
   stuck_detection?: boolean;
   conversation_stats?: ConversationStats;
   /** API may return stats instead of conversation_stats */
@@ -118,6 +123,12 @@ export interface CreateConversationRequest {
   agent: AgentBase;
   initial_message?: Message;
   max_iterations: number;
+  /**
+   * Per-conversation cost ceiling in USD. Must be > 0 when set; omit or pass
+   * null for an unbounded conversation. Enforced server-side before each LLM
+   * call.
+   */
+  max_budget_per_run?: number | null;
   stuck_detection: boolean;
   workspace: Record<string, unknown>;
   hook_config?: HookConfig | null;
@@ -128,6 +139,8 @@ export interface CreateACPConversationRequest {
   agent: ACPAgentConfig;
   initial_message?: Message;
   max_iterations: number;
+  /** Per-conversation cost ceiling in USD; see {@link CreateConversationRequest}. */
+  max_budget_per_run?: number | null;
   stuck_detection: boolean;
   workspace: Record<string, unknown>;
   hook_config?: HookConfig | null;

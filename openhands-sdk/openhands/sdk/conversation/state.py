@@ -769,6 +769,16 @@ class ConversationState(OpenHandsModel):
         """
         return self._lock.locked()
 
+    def mark_dirty(self) -> None:
+        """Flag ``base_state.json`` for rewrite on the next flush.
+
+        In-place mutations (e.g. the LLM metrics accumulating cost) bypass
+        ``__setattr__`` autosave, so the persisted snapshot can lag the live
+        state. Callers that mutate nested state in place call this so the run
+        loop's ``with self._state`` block persists one fresh snapshot per step.
+        """
+        self._dirty = True
+
     def owned(self) -> bool:
         """
         Return True if the lock is currently held by the calling thread.

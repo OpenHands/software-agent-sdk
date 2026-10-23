@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import inspect
 import json
+import math
 import os
 import threading
 import warnings
@@ -16,6 +18,7 @@ from collections.abc import (
     Sequence,
 )
 from contextvars import ContextVar
+from functools import wraps
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -77,6 +80,7 @@ if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
     from openhands.sdk.tool.tool import ToolDefinition
 
 from openhands.sdk.llm.auth.openai import transform_for_subscription
+from openhands.sdk.llm.call_context import resolve_llm_call_context
 
 
 with warnings.catch_warnings():
@@ -123,7 +127,9 @@ from litellm.utils import (
 )
 from tenacity import retry_if_exception, retry_if_exception_type
 
+from openhands.sdk.llm.cost_budget import BudgetReservation
 from openhands.sdk.llm.exceptions import (
+    LLMBudgetExceededError,
     LLMContextWindowTooSmallError,
     LLMNoResponseError,
     is_prompt_cache_too_small,
@@ -152,7 +158,12 @@ from openhands.sdk.llm.utils.image_inline import (
 from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provider
 from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 from openhands.sdk.llm.utils.metrics import Metrics
-from openhands.sdk.llm.utils.model_features import ModelFeatures, get_features
+from openhands.sdk.llm.utils.model_features import (
+    ModelFeatures,
+    get_features,
+    has_unbounded_search_cost,
+    has_unresolved_regional_endpoint_pricing,
+)
 from openhands.sdk.llm.utils.openhands_provider import (
     LiteLLMCallKwargs,
     canonicalize_openhands_llm_payload,
@@ -1749,6 +1760,301 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Chat Completion API
     # =========================================================================
 
+    def _budget_bound_error(self, detail: str) -> LLMBudgetExceededError:
+        return LLMBudgetExceededError(
+            f"Cannot enforce cost budget for {self.model}: {detail}."
+        )
+
+    def _budget_token_bound(self, value: object, direction: str) -> int:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not math.isfinite(value)
+            or value <= 0
+            or int(value) != value
+        ):
+            raise self._budget_bound_error(
+                f"unknown or invalid {direction} token bound"
+            )
+        return int(value)
+
+    def worst_case_cost(
+        self,
+        *,
+        input_tokens: int | None = None,
+        max_output_tokens: int | None = None,
+    ) -> float:
+        """Upper-bound USD using finite token bounds and published price tiers.
+
+        Unknown pricing or token limits cannot establish a hard ceiling and are
+        refused. Each direction uses its highest known context/cache tier, or
+        the paired custom prices also used by telemetry.
+        """
+        input_upper = self._budget_token_bound(input_tokens, "input")
+        output_upper = self._budget_token_bound(max_output_tokens, "output")
+        in_cost, out_cost = self._cost_per_token_bounds()
+        total = input_upper * in_cost + output_upper * out_cost
+        if not math.isfinite(total):
+            raise self._budget_bound_error("nonfinite price projection")
+        return total
+
+    def _budget_price(self, value: object) -> float:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            raise self._budget_bound_error("unknown or invalid token price")
+        return float(value)
+
+    def _cost_per_token_bounds(self) -> tuple[float, float]:
+        """Conservative directional rates, including context/cache tiers.
+
+        A single custom rate is not a complete override: telemetry uses custom
+        pricing only when both input and output prices are supplied. Explicit
+        zero is a valid known price; missing/nonfinite prices are not.
+        """
+        if (
+            self.input_cost_per_token is not None
+            and self.output_cost_per_token is not None
+        ):
+            return (
+                self._budget_price(self.input_cost_per_token),
+                self._budget_price(self.output_cost_per_token),
+            )
+        info = self._model_info or {}
+        if has_unresolved_regional_endpoint_pricing(info):
+            raise self._budget_bound_error("unknown regional endpoint premium")
+        input_costs = [self._budget_price(info.get("input_cost_per_token"))]
+        output_costs = [self._budget_price(info.get("output_cost_per_token"))]
+        uplifts = [1.0]
+        for key, value in info.items():
+            if value is None:
+                continue
+            if key.startswith(
+                (
+                    "input_cost_per_token",
+                    "cache_read_input_token_cost",
+                    "cache_creation_input_token_cost",
+                )
+            ):
+                input_costs.append(self._budget_price(value))
+            elif key.startswith(
+                ("output_cost_per_token", "output_cost_per_reasoning_token")
+            ):
+                output_costs.append(self._budget_price(value))
+            elif key.startswith(
+                (
+                    "regional_processing_uplift_multiplier",
+                    "regional_endpoint_uplift_multiplier",
+                )
+            ):
+                uplifts.append(self._budget_price(value))
+        uplift = max(uplifts)
+        return max(input_costs) * uplift, max(output_costs) * uplift
+
+    def _reserve_budget(
+        self,
+        call_context: LLMCallContext | None,
+        request_kwargs: dict[str, Any],
+    ) -> BudgetReservation | None:
+        """Atomically reserve the bound for this exact prepared attempt.
+
+        Unsupported request overrides are refused only for budgeted calls:
+        opaque provider bodies, multiple completions and route changes can
+        invalidate the configured model's prices or the outgoing token cap.
+        """
+        budget = call_context.cost_budget if call_context else None
+        if budget is None:
+            return None
+        if (
+            request_kwargs.get("audio") is not None
+            or request_kwargs.get("modalities") not in (None, ["text"])
+            or "web_search_options" in request_kwargs
+            or has_unbounded_search_cost(
+                self.model,
+                canonical_model=self.model_canonical_name,
+                model_info=self._model_info,
+            )
+        ):
+            raise self._budget_bound_error(
+                "non-token audio/search request costs are unsupported"
+            )
+        if any(
+            not isinstance(tool, Mapping) or tool.get("type") != "function"
+            for tool in request_kwargs.get("tools") or ()
+        ) or request_kwargs.get("functions"):
+            # LiteLLM's legacy functions parameter also accepts native tools.
+            raise self._budget_bound_error("native/legacy server tools are unsupported")
+        if request_kwargs.get("cached_content") is not None:
+            # Provider-stored caches may contain hosted tools that are not
+            # visible in this prepared request, in addition to hidden tokens.
+            raise self._budget_bound_error("opaque provider caches are unsupported")
+        if litellm.num_retries or litellm.model_fallbacks or litellm.drop_params:
+            raise self._budget_bound_error(
+                "global LiteLLM retries/fallbacks/parameter dropping are unsupported"
+            )
+        if any(
+            request_kwargs.get(key)
+            for key in (
+                "retry_policy",
+                "additional_drop_params",
+                "context_window_fallback_dict",
+            )
+        ):
+            raise self._budget_bound_error("unsupported transport retry/drop override")
+        if request_kwargs.get("extra_body") or any(
+            key in request_kwargs
+            for key in (
+                "model",
+                "api_base",
+                "base_url",
+                "custom_llm_provider",
+                "client",
+                "fallbacks",
+                "model_list",
+            )
+        ):
+            raise self._budget_bound_error("unsupported request route/body override")
+        for key in ("n", "best_of"):
+            value = request_kwargs.get(key)
+            if value is not None and self._budget_token_bound(value, "output") != 1:
+                raise self._budget_bound_error("multiple completions are unsupported")
+        output_bounds = [
+            self._budget_token_bound(request_kwargs[key], "output")
+            for key in ("max_tokens", "max_completion_tokens", "max_output_tokens")
+            if key in request_kwargs
+        ]
+        if not output_bounds:
+            raise self._budget_bound_error("unknown output token bound")
+        # Token counters estimate formatted prompts. A hard pre-call bound
+        # instead uses the published provider input ceiling for every API.
+        # max_input_tokens is only a context-management hint and cannot lower
+        # this reservation because it does not constrain the outgoing request.
+        provider_cap = (self._model_info or {}).get("max_input_tokens")
+        metadata = cached_metadata(
+            self._runtime_metadata, self._runtime_metadata_fetched_at
+        )
+        if metadata is not None and metadata.confidence == "exact":
+            provider_cap = metadata.max_input_tokens
+        input_bound = self._budget_token_bound(provider_cap, "input")
+        worst_case = self.worst_case_cost(
+            input_tokens=input_bound, max_output_tokens=max(output_bounds)
+        )
+        reservation = budget.try_reserve(worst_case)
+        if reservation is None:
+            raise LLMBudgetExceededError(budget.denial_detail(worst_case))
+        return reservation
+
+    def _budget_guarded_attempt(
+        self,
+        call_context: LLMCallContext | None,
+        request_kwargs: dict[str, Any],
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """Reserve inside SDK retry, before each bounded transport attempt.
+
+        Failed/cancelled attempts retain their bound because the provider may
+        have processed work without returning complete usage. Successful calls
+        settle to recorded positive cost when its pricing is complete; absent
+        or endpoint-premium-unaware telemetry retains the bound too. This ledger
+        is budget usage, not a provider billing record. Unbudgeted calls keep
+        their existing transport options and behavior.
+        """
+
+        def decorate(attempt: Callable[..., Any]) -> Callable[..., Any]:
+            if inspect.iscoroutinefunction(attempt):
+
+                @wraps(attempt)
+                async def _reserved_async(*args: Any, **kwargs: Any) -> Any:
+                    reservation = self._reserve_budget(
+                        call_context, {**request_kwargs, **kwargs}
+                    )
+                    if reservation is None:
+                        return await attempt(*args, **kwargs)
+                    cost_before = self.metrics.accumulated_cost
+                    # Keep retries in the SDK guard and never drop the cap as
+                    # an unsupported parameter inside LiteLLM.
+                    kwargs = {
+                        **kwargs,
+                        "drop_params": False,
+                        "max_retries": 0,
+                        "num_retries": 0,
+                    }
+                    try:
+                        result = await attempt(*args, **kwargs)
+                    except BaseException:
+                        reservation.budget.settle(
+                            reservation,
+                            max(reservation.amount, self._cost_delta(cost_before)),
+                        )
+                        raise
+                    cost = self._cost_delta(cost_before)
+                    reservation.budget.settle(
+                        reservation, self._budget_success_cost(reservation, cost)
+                    )
+                    return result
+
+                return _reserved_async
+
+            @wraps(attempt)
+            def _reserved_sync(*args: Any, **kwargs: Any) -> Any:
+                reservation = self._reserve_budget(
+                    call_context, {**request_kwargs, **kwargs}
+                )
+                if reservation is None:
+                    return attempt(*args, **kwargs)
+                cost_before = self.metrics.accumulated_cost
+                kwargs = {
+                    **kwargs,
+                    "drop_params": False,
+                    "max_retries": 0,
+                    "num_retries": 0,
+                }
+                try:
+                    result = attempt(*args, **kwargs)
+                except BaseException:
+                    reservation.budget.settle(
+                        reservation,
+                        max(reservation.amount, self._cost_delta(cost_before)),
+                    )
+                    raise
+                cost = self._cost_delta(cost_before)
+                reservation.budget.settle(
+                    reservation, self._budget_success_cost(reservation, cost)
+                )
+                return result
+
+            return _reserved_sync
+
+        return decorate
+
+    def _cost_delta(self, cost_before: float) -> float:
+        """Cost added to this LLM's own metrics by the call just completed."""
+        return max(0.0, self.metrics.accumulated_cost - cost_before)
+
+    def _budget_success_cost(
+        self, reservation: BudgetReservation, cost: float
+    ) -> float:
+        """Keep the bound when recorded cost cannot establish complete pricing."""
+        uses_custom_prices = (
+            self.input_cost_per_token is not None
+            and self.output_cost_per_token is not None
+        )
+        # LiteLLM's calculated token cost does not establish that a known
+        # regional endpoint premium was included. Keep the inclusive bound
+        # without changing the lifetime metrics displayed to callers. Paired
+        # custom prices override the published rates in both paths.
+        unverified_endpoint_premium = not uses_custom_prices and any(
+            key.startswith("regional_endpoint_uplift_multiplier")
+            and value is not None
+            and self._budget_price(value) > 1
+            for key, value in (self._model_info or {}).items()
+        )
+        if cost <= 0 or unverified_endpoint_premium:
+            return max(reservation.amount, cost)
+        return cost
+
     def completion(
         self,
         messages: list[Message],
@@ -1785,6 +2091,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # no-op for providers without runtime metadata.
         self.resolve_runtime_metadata()
 
+        call_context = resolve_llm_call_context(call_context)
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming and on_token is None:
@@ -1814,6 +2121,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
 
         @self._make_retry_decorator()
+        @self._budget_guarded_attempt(call_context, call_kwargs)
         def _one_attempt(**retry_kwargs: Any) -> ModelResponse:
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
@@ -1850,6 +2158,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     tools,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 )
             # If the credential was rejected (401) and a refresh hook can supply
@@ -1904,6 +2213,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # calls are cheap.
         await self.aresolve_runtime_metadata()
 
+        call_context = resolve_llm_call_context(call_context)
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming and on_token is None:
@@ -1934,6 +2244,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         @self._make_retry_decorator()
         @self._async_hard_timeout_decorator()
+        @self._budget_guarded_attempt(call_context, call_kwargs)
         async def _one_attempt(**retry_kwargs: Any) -> ModelResponse:
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
@@ -1970,6 +2281,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     tools,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 )
             # If the credential was rejected (401) and a refresh hook can supply
@@ -2043,6 +2355,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # metadata.
         self.resolve_runtime_metadata()
 
+        call_context = resolve_llm_call_context(call_context)
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming and on_token is None and not self.requires_streaming:
@@ -2076,6 +2389,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
 
         @self._make_retry_decorator()
+        @self._budget_guarded_attempt(
+            call_context, {"tools": resp_tools, **call_kwargs}
+        )
         def _one_attempt(**retry_kwargs: Any) -> ResponsesAPIResponse:
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
@@ -2151,6 +2467,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     store,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 )
             # If the credential was rejected (401) and a refresh hook can supply
@@ -2208,6 +2525,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # limits. No blocking network I/O in-process.
         await self.aresolve_runtime_metadata()
 
+        call_context = resolve_llm_call_context(call_context)
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming and on_token is None and not self.requires_streaming:
@@ -2242,6 +2560,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         @self._make_retry_decorator()
         @self._async_hard_timeout_decorator()
+        @self._budget_guarded_attempt(
+            call_context, {"tools": resp_tools, **call_kwargs}
+        )
         async def _one_attempt(
             **retry_kwargs: Any,
         ) -> ResponsesAPIResponse:
@@ -2343,6 +2664,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     store,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 )
             # If the credential was rejected (401) and a refresh hook can supply

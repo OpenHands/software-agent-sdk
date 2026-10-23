@@ -789,6 +789,7 @@ class RemoteConversation(BaseConversation):
         observability_span_name: str = "conversation",
         observability_parent_span_context: str | None = None,
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
+        max_budget_per_run: float | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -894,6 +895,7 @@ class RemoteConversation(BaseConversation):
                 ),
                 "initial_message": None,
                 "max_iterations": max_iteration_per_run,
+                "max_budget_per_run": max_budget_per_run,
                 "stuck_detection": stuck_detection,
                 # We need to convert RemoteWorkspace to LocalWorkspace for the server
                 "workspace": LocalWorkspace(
@@ -968,6 +970,7 @@ class RemoteConversation(BaseConversation):
             callbacks=callbacks,
             token_callbacks=token_callbacks,
             max_iteration_per_run=max_iteration_per_run,
+            max_budget_per_run=max_budget_per_run,
             client_tools=[*(client_tools or []), *attached_client_tools],
             visualizer=visualizer,
         )
@@ -1087,6 +1090,7 @@ class RemoteConversation(BaseConversation):
             conversation_id=uuid.UUID(info["id"]),
             callbacks=callbacks,
             max_iteration_per_run=info["max_iterations"],
+            max_budget_per_run=info.get("max_budget_per_run"),
             client_tools=[
                 ClientToolSpec.model_validate(spec)
                 for spec in info.get("client_tools") or []
@@ -1107,6 +1111,7 @@ class RemoteConversation(BaseConversation):
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ),
+        max_budget_per_run: float | None = None,
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
     ) -> None:
         super().__init__()  # Initialize base class with span tracking
@@ -1115,6 +1120,7 @@ class RemoteConversation(BaseConversation):
         if token_callbacks:
             self._callbacks.append(_token_delta_callback(token_callbacks))
         self.max_iteration_per_run = max_iteration_per_run
+        self.max_budget_per_run = max_budget_per_run
         self.workspace = workspace
         self._client = workspace.client
         self._cleanup_initiated = False

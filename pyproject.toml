@@ -32,6 +32,9 @@ openhands-agent-server = { workspace = true }
 [dependency-groups]
 dev = [
     "pre-commit>=4.3.0",
+    # LiteLLM's bedrock_mantle provider imports botocore at module import, so the
+    # bedrock_mantle budget/feature tests need the optional extra in dev.
+    "boto3>=1.35.0",
     "packaging>=26.3",
     "pillow>=12.3.0",
     "psutil>=7.2.2",
