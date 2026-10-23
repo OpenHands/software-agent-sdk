@@ -11,11 +11,18 @@ See issue: LiteLLM proxy model_info lookup misses when proxy uses short
 aliases (claude-opus-4-8 vision still off).
 """
 
+import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
+from typing import Any
 from unittest.mock import patch
 
 import litellm
+import pytest
 from litellm import model_cost
 
+from openhands.sdk.llm import LLM
+from openhands.sdk.llm.options.chat_options import select_chat_options
 from openhands.sdk.llm.utils.model_info import (
     _get_model_info_from_litellm_proxy,
     _merge_raw_model_metadata,
@@ -70,7 +77,7 @@ def test_lookup_matches_by_model_name_alias():
             model="litellm_proxy/claude-opus-4-8",
             cache_key=1,
         )
-    assert info == {"supports_vision": True}
+    assert info == {"supports_vision": True, "_capability_source": "proxy"}
 
 
 def test_lookup_matches_by_litellm_params_model():
@@ -88,7 +95,7 @@ def test_lookup_matches_by_litellm_params_model():
             model="litellm_proxy/anthropic/claude-opus-4-8",
             cache_key=2,
         )
-    assert info == {"supports_vision": True}
+    assert info == {"supports_vision": True, "_capability_source": "proxy"}
 
 
 def test_lookup_returns_none_for_unknown_model():
@@ -311,3 +318,186 @@ def test_get_model_info_from_proxy_registers_alias_pricing():
         cost = None
     assert cost is not None and cost[0] > 0
     _pop(alias)
+
+
+@pytest.fixture
+def local_proxy():
+    payload = {"data": []}
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: Any) -> None:
+            pass
+
+        def do_GET(self):
+            assert self.path == "/v1/model/info"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload).encode())
+
+        def do_POST(self):
+            requests.append(
+                json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "id": "local-test",
+                        "object": "chat.completion",
+                        "created": 1,
+                        "model": "local-test",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": "ok"},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 1,
+                            "completion_tokens": 1,
+                            "total_tokens": 2,
+                        },
+                    }
+                ).encode()
+            )
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", payload, requests
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.parametrize(
+    "allowed",
+    [["reasoning_effort"], [], "reasoning_effort", ["reasoning_effort", 1], None],
+)
+def test_proxy_projects_only_string_list_allowance(local_proxy, allowed):
+    url, payload, _ = local_proxy
+    payload["data"] = [
+        {
+            "model_name": "bounded-local-test",
+            "litellm_params": {
+                "model": "openai/bounded-local-test",
+                "allowed_openai_params": allowed,
+                "api_key": "never-copy-this",
+                "api_base": "https://private.example",
+                "extra_headers": {"secret": "secret"},
+            },
+            "model_info": {
+                "supports_vision": False,
+                "supports_reasoning_effort": False,
+            },
+        }
+    ]
+    info = get_litellm_model_info("local-only", url, "litellm_proxy/bounded-local-test")
+    expected = {
+        "supports_vision": False,
+        "supports_reasoning_effort": False,
+        "_capability_source": "proxy",
+    }
+    if isinstance(allowed, list) and all(isinstance(item, str) for item in allowed):
+        expected["allowed_openai_params"] = allowed
+    assert info == expected
+
+
+def test_proxy_preserves_explicit_allowance(local_proxy):
+    url, payload, _ = local_proxy
+    payload["data"] = [
+        {
+            "model_name": "bounded-local-test",
+            "litellm_params": {"allowed_openai_params": ["reasoning_effort"]},
+            "model_info": {"allowed_openai_params": [], "supports_reasoning": False},
+        }
+    ]
+    info = get_litellm_model_info("local-only", url, "litellm_proxy/bounded-local-test")
+    assert info == {
+        "allowed_openai_params": [],
+        "supports_reasoning": False,
+        "_capability_source": "proxy",
+    }
+
+
+def test_litellm_metadata_source():
+    info = get_litellm_model_info(None, None, "gpt-4o")
+    assert info is not None
+    assert info["_capability_source"] == "litellm"
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"supports_reasoning_effort": True},
+        {"supported_openai_params": ["reasoning_effort"]},
+        {"allowed_openai_params": ["reasoning_effort"]},
+        {},
+    ],
+)
+def test_explicit_reasoning_reaches_local_http_endpoint(local_proxy, metadata):
+    url, payload, requests = local_proxy
+    payload["data"] = [{"model_name": "bounded-local-test", "model_info": metadata}]
+    llm = LLM(
+        model="litellm_proxy/bounded-local-test",
+        base_url=url,
+        api_key="local-only",
+        reasoning_effort="high",
+        capability_overrides={"supports_reasoning_effort": True}
+        if not metadata
+        else {},
+    )
+    user_allowed = ["user"]
+    options = select_chat_options(
+        llm, {"allowed_openai_params": user_allowed}, has_tools=False
+    )
+    assert options["allowed_openai_params"] == ["user", "reasoning_effort"]
+    assert user_allowed == ["user"]
+    litellm.completion(
+        model="openai/bounded-local-test",
+        api_base=url + "/v1",
+        api_key="local-only",
+        drop_params=True,
+        messages=[
+            {"role": "system", "content": "Test"},
+            {"role": "user", "content": "Hello"},
+        ],
+        **options,
+    )
+    assert requests[-1]["reasoning_effort"] == "high"
+    assert "allowed_openai_params" not in requests[-1]
+
+
+@pytest.mark.parametrize(
+    "reasoning_effort, overrides",
+    [
+        (None, {"supports_reasoning_effort": True}),
+        ("high", {"supports_reasoning_effort": False}),
+    ],
+)
+def test_no_reasoning_allowance_without_emitted_enabled_effort(
+    local_proxy, reasoning_effort, overrides
+):
+    url, payload, _ = local_proxy
+    payload["data"] = [
+        {
+            "model_name": "bounded-local-test",
+            "model_info": {"supports_reasoning_effort": True},
+        }
+    ]
+    llm = LLM(
+        model="litellm_proxy/bounded-local-test",
+        base_url=url,
+        api_key="local-only",
+        reasoning_effort=reasoning_effort,
+        capability_overrides=overrides,
+    )
+    options = select_chat_options(llm, {}, has_tools=False)
+    assert "allowed_openai_params" not in options

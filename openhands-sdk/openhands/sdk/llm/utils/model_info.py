@@ -21,8 +21,8 @@ def _merge_raw_model_metadata(model_info: Mapping[str, Any]) -> dict[str, Any]:
     key = model_info.get("key")
     raw = model_cost.get(key) if isinstance(key, str) else None
     if not isinstance(raw, dict):
-        return dict(model_info)
-    return {**raw, **model_info}
+        return {**model_info, "_capability_source": "litellm"}
+    return {**raw, **model_info, "_capability_source": "litellm"}
 
 
 # Pricing fields copied from the underlying model so a custom proxy alias
@@ -120,7 +120,20 @@ def _get_model_info_from_litellm_proxy(
             None,
         )
         if current:
-            model_info = current.get("model_info")
+            raw_model_info = current.get("model_info")
+            model_info = (
+                dict(raw_model_info) if isinstance(raw_model_info, Mapping) else {}
+            )
+            params = current.get("litellm_params", {})
+            allowed_params = params.get("allowed_openai_params")
+            if (
+                "allowed_openai_params" not in model_info
+                and isinstance(allowed_params, list)
+                and all(isinstance(param, str) for param in allowed_params)
+            ):
+                model_info["allowed_openai_params"] = list(allowed_params)
+            if model_info:
+                model_info["_capability_source"] = "proxy"
             logger.debug(f"Got model info from litellm proxy: {model_info}")
 
             # Make custom proxy aliases priceable so cost instrumentation does
@@ -140,7 +153,7 @@ def _get_model_info_from_litellm_proxy(
                 proxy_model_info=model_info,
             )
 
-            return model_info
+            return model_info or None
     except Exception as e:
         logger.debug(
             f"Error fetching model info from proxy: {e}",
