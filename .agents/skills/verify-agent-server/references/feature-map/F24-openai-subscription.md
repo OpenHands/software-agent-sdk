@@ -449,9 +449,8 @@ Preconditions:
     --check connected eq false --save F24.device-poll-outage/poll-online
   control-agent-server state ls --run "$OUTAGE" 'home/.openhands/auth/*' --expect-count 0
   ```
-  The poll during the outage fails (today a 500, `"exception": "All
-  connection attempts failed"`; `F24.device-start-offline` asserts the
-  gateway status it should be), and the router's `finally` puts the token
+  The poll during the outage fails (a 502 gateway error,
+  `F24.device-start-offline`), and the router's `finally` puts the token
   back: after the network returns, the same token is still pending (200
   `connected: false`, not 404). The sleep honors `interval_seconds` before
   the next real call to OpenAI.
@@ -477,13 +476,13 @@ Preconditions:
   ```
   Expected: 200 `connected: false` after a refresh attempt, the answer
   status gives when OpenAI rejects a refresh (`F24.status-refresh-rejected`),
-  and no traceback for the GET (the `device/start` control leaves its own
-  `Unhandled exception on POST`, `F24.device-start-offline`).
+  and no traceback for the GET (the `device/start` control is a 502,
+  `F24.device-start-offline`).
   `get_openai_subscription_status` treats an httpx transport error from
   `refresh_if_needed()` like a rejected refresh (`llm_router.py`); the
   stored file is left as it was, so status retries the refresh once the
   network returns.
-- **Start and poll a login offline (`F24.device-start-offline`), known bug.**
+- **Start and poll a login offline (`F24.device-start-offline`).**
   A second run behind `netgate`: start a login while online and see it
   pending (the controls), cut the network, then start another and poll the
   first.
@@ -497,23 +496,19 @@ Preconditions:
     --expect 200 --check connected eq false
   bash "$F24/netgate.sh" down "$GP"
   control-agent-server api POST /api/llm/subscription/openai/device/start --run "$OUTAGE" --expect 502,503,504 \
-    --save F24.device-start-offline/start  # bug: status eq 500 && response.body.exception contains 'All connection attempts failed'
+    --save F24.device-start-offline/start
   control-agent-server api POST /api/llm/subscription/openai/device/poll --run "$OUTAGE" --json "{\"device_code\": \"$DC4\"}" \
-    --expect 502,503,504 --save F24.device-start-offline/poll  # bug: status eq 500 && response.body.exception contains 'All connection attempts failed'
+    --expect 502,503,504 --save F24.device-start-offline/poll
   control-agent-server logs --run "$OUTAGE" --grep 'Unhandled exception' --expect-none
   ```
-  Expected: a gateway status (502, 503 or 504) that tells the client OpenAI
-  is unreachable, as `credential_binding.py` and `git_provider_service.py`
-  answer 502 or 504 for an unavailable upstream. Both marked calls encode
-  the bug, so the bullet stays a known bug until both routes are fixed.
-  Today the marked `device/start` is 500 `Internal Server Error` with
-  `exception: "All connection attempts failed"` and an `Unhandled exception`
-  traceback, and so is the poll (`F24.device-poll-outage`): neither
-  `start_openai_subscription_device_login` nor
-  `poll_openai_subscription_device_login` maps upstream errors, so
-  transport errors and OpenAI's non-2xx answers (`RuntimeError` from
-  `_request_device_code` and `_poll_device_code_once`) all surface as
-  generic 500s.
+  Expected: a gateway status that tells the client OpenAI is unavailable,
+  as `credential_binding.py` and `git_provider_service.py` answer for an
+  unavailable upstream, and no `Unhandled exception` traceback. Both routes
+  map upstream failures in `_openai_upstream_errors` (`llm_router.py`): a
+  timeout is 504 `OpenAI did not answer in time`, any other transport error
+  502 `OpenAI is unreachable` (what this recipe sees), and OpenAI's non-2xx
+  answers (`RuntimeError` from `_request_device_code` and
+  `_poll_device_code_once`) 502 `OpenAI device login failed: ...`.
 - **Complete a login (`F24.login-complete`), blocked.** Needs a ChatGPT
   Plus/Pro account and a human who opens `verification_uri`, signs in and
   enters `user_code` within 15 minutes; this machine has neither. The
@@ -548,7 +543,8 @@ Preconditions:
   HTTPS to it, `F24.device-start`, `F24.device-poll-pending`,
   `F24.logout-cancels-pending`, `F24.pending-lost-on-restart`,
   `F24.ts-client`, `F24.device-poll-outage` and
-  `F24.status-refresh-rejected` fail with the 500s of the offline bugs, and
+  `F24.status-refresh-rejected` fail with the gateway errors of the
+  offline cases, and
   `F24.device-start-offline` fails at its online `device/start` arrange step
   (a `fail`, not an `xfail`); `Needs: network` names that prerequisite.
   `netgate` relays to the shell's `HTTPS_PROXY` without credentials, so a
