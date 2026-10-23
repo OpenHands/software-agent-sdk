@@ -1,6 +1,7 @@
 import json
 import shutil
 import warnings
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -607,6 +608,93 @@ def test_validate_agent_settings_dispatches_current_acp_payload() -> None:
     assert settings.acp_command == ["npx", "-y", "claude-agent-acp"]
 
 
+def test_validate_agent_settings_v5_drops_persisted_runtime_datetime() -> None:
+    settings = validate_agent_settings(
+        {
+            "schema_version": 5,
+            "agent_kind": "openhands",
+            "llm": {"model": "test-model"},
+            "agent_context": {"current_datetime": "2024-03-15T14:30:00Z"},
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert settings.agent_context is not None
+    assert settings.agent_context.current_datetime is not None
+    assert isinstance(settings.agent_context.current_datetime, datetime)
+    assert settings.agent_context.current_datetime != datetime.fromisoformat(
+        "2024-03-15T14:30:00+00:00"
+    )
+    assert "current_datetime" not in settings.model_dump(mode="json")["agent_context"]
+
+
+def test_validate_agent_settings_v5_preserves_explicit_no_datetime() -> None:
+    settings = validate_agent_settings(
+        {
+            "schema_version": 5,
+            "agent_kind": "acp",
+            "acp_server": "codex",
+            "agent_context": {"current_datetime": None},
+        }
+    )
+
+    assert isinstance(settings, ACPAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert settings.agent_context is not None
+    assert settings.agent_context.current_datetime is None
+
+
+def test_validate_agent_settings_v8_drops_persisted_runtime_datetime() -> None:
+    settings = validate_agent_settings(
+        {
+            "schema_version": 8,
+            "agent_kind": "openhands",
+            "llm": {"model": "test-model"},
+            "agent_context": {"current_datetime": "2024-03-15T14:30:00Z"},
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert settings.agent_context is not None
+    assert settings.agent_context.current_datetime is not None
+    assert isinstance(settings.agent_context.current_datetime, datetime)
+    assert settings.agent_context.current_datetime != datetime.fromisoformat(
+        "2024-03-15T14:30:00+00:00"
+    )
+
+
+def test_validate_agent_settings_v8_preserves_explicit_no_datetime() -> None:
+    settings = validate_agent_settings(
+        {
+            "schema_version": 8,
+            "agent_kind": "acp",
+            "acp_server": "codex",
+            "agent_context": {"current_datetime": None},
+        }
+    )
+
+    assert isinstance(settings, ACPAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert settings.agent_context is not None
+    assert settings.agent_context.current_datetime is None
+
+
+def test_validate_agent_settings_request_preserves_explicit_datetime() -> None:
+    settings = validate_agent_settings(
+        {
+            "agent_kind": "openhands",
+            "llm": {"model": "test-model"},
+            "agent_context": {"current_datetime": "2024-03-15T14:30:00Z"},
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.agent_context is not None
+    assert settings.agent_context.current_datetime == "2024-03-15T14:30:00Z"
+
+
 def test_validate_agent_settings_canonicalizes_legacy_llm_kind() -> None:
     """v1 payloads with the deprecated ``agent_kind: 'llm'`` are migrated to
     the canonical ``'openhands'`` discriminator on read."""
@@ -1013,6 +1101,20 @@ def test_acp_agent_settings_from_persisted_returns_acp_subtype() -> None:
     assert settings.acp_command == ["echo", "test"]
 
 
+def test_acp_agent_settings_persisted_payload_preserves_no_datetime() -> None:
+    settings = ACPAgentSettings(
+        acp_server="codex",
+        agent_context=AgentContext(current_datetime=None),
+    )
+
+    payload = settings.model_dump(mode="json")
+    restored = ACPAgentSettings.from_persisted(payload)
+
+    assert payload["agent_context"]["current_datetime"] is None
+    assert restored.agent_context is not None
+    assert restored.agent_context.current_datetime is None
+
+
 def test_openhands_agent_settings_from_persisted_rejects_current_llm_kind() -> None:
     with pytest.raises(ValidationError):
         OpenHandsAgentSettings.from_persisted(
@@ -1030,9 +1132,15 @@ def test_agent_settings_from_persisted_current_payload_matches_model_validate() 
     )
     original_payload = json.loads(json.dumps(payload))
 
+    assert "current_datetime" not in payload["agent_context"]
+
     settings = OpenHandsAgentSettings.from_persisted(payload)
 
-    assert settings == OpenHandsAgentSettings.model_validate(payload)
+    # current_datetime is a runtime default and is intentionally omitted from
+    # the persisted payload, so compare the stable serialized settings shape.
+    assert settings.model_dump(mode="json") == OpenHandsAgentSettings.model_validate(
+        payload
+    ).model_dump(mode="json")
     assert payload == original_payload
 
 

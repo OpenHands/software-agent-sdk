@@ -16,6 +16,13 @@ from openhands.sdk.skills.types import InputMetadata
 from openhands.sdk.utils.cipher import Cipher
 
 
+def test_agent_context_serialization_schema_keeps_model_properties():
+    schema = AgentContext.model_json_schema(mode="serialization")
+
+    assert "current_datetime" in schema["properties"]
+    assert "secrets" in schema["properties"]
+
+
 def test_agent_context_serialization_roundtrip():
     """Ensure AgentContext round-trips through dict and JSON serialization."""
 
