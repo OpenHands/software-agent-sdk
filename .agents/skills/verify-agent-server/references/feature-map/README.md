@@ -10,7 +10,7 @@ recipe.
 
 Maintenance baseline: main@8ba966d1d3af49f08e04349c055009e1614b48d6 (2026-10-07). The first pass; the next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **936 sub-features**.
+The map has **937 sub-features**.
 
 ## Baseline preconditions
 
@@ -84,7 +84,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | F17 | [Workspace registry and parents](F17-workspaces-registry.md) | saved workspaces and parents: add, list, delete, validation, persistence, concurrent writers, corrupted files | `GET`/`POST`/`DELETE /api/workspaces`, `/api/workspaces/parents` | git, node | 24 |
 | F18 | [Server settings, settings schemas and the secrets store](F18-settings-and-secrets.md) | persisted settings with redacted, plaintext and encrypted exposure, sparse PATCH, settings schemas, the named secrets store, encryption at rest, cipher-key changes | `GET`/`PATCH /api/settings`, `/api/settings/agent-schema`, `/conversation-schema`, `/api/settings/secrets[/{name}]` | git, node | 30 |
 | F19 | [MCP server settings, connection test and OAuth](F19-mcp.md) | MCP server settings CRUD, connection tests (stdio and HTTP), install-time OAuth jobs and token refresh, a model-driven MCP tool call | `/api/settings/mcp/{key}`, `POST /api/mcp/test`, `/api/mcp/oauth/*` | llm; launch `--webhook-sink` | 28 |
-| F20 | [LLM profiles](F20-llm-profiles.md) | LLM profiles: save, read, validate against real and stubbed providers, activate, rename, delete, name rules, limits, store contention, restart | `/api/profiles[/{name}]`, `/validate`, `/activate`, `/rename` | llm, node | 35 |
+| F20 | [LLM profiles](F20-llm-profiles.md) | LLM profiles: save, read, validate against real and stubbed providers, activate, rename, delete, name rules, limits, store contention, restart | `/api/profiles[/{name}]`, `/validate`, `/activate`, `/rename` | llm, node | 36 |
 | F21 | [Agent profiles](F21-agent-profiles.md) | agent profiles (OpenHands and ACP kinds): CRUD, default seed, activation, rename, delete, materialize, conversations started from a profile, store contention | `/api/agent-profiles[/{name}]`, `/rename`, `/{id}/activate`, `/materialize` | llm | 32 |
 | F22 | [Meta-profiles (model router)](F22-meta-profiles.md) | meta-profiles (model router): save, read, activate, delete, settings reflection, routing in a conversation | `/api/meta-profiles[/{name}]`, `/activate` | llm, node | 24 |
 | F23 | [LLM catalog and provider connections](F23-llm-catalog-and-connections.md) | provider and model catalogs, verified models, provider connections (create, rotate, delete, references from profiles), ACP discovery errors | `GET /api/llm/providers`, `/api/llm/models[/verified]`, `/api/llm/provider-connections[/{id}]`, `POST /api/acp/models` | llm, node, network | 27 |

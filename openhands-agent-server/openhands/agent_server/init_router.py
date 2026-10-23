@@ -300,6 +300,7 @@ class InitService:
             # instance built from the merged config.
             from openhands.agent_server import conversation_service as cs_mod
 
+            await asyncio.to_thread(reencrypt_stale_stores, new_config)
             service = ConversationService.get_instance(new_config)
             cs_mod._conversation_service = service
             conversation_registry = create_conversation_registry(new_config)
