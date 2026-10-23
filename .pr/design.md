@@ -71,7 +71,13 @@ a version compare would reject a working endpoint.
   (`api.py` registers a `ConversationBusyError` handler that maps it to 409, so
   every entry point that can admit a run — `/run`, `/goal`, and `/events` with
   `run=true` — answers 409 rather than letting a `RuntimeError` surface as a
-  500), and a second direct call is 409. The flag is released on success, on a
+  500), and a second direct call is 409. The call also draws on the server-wide
+  run budget: it acquires the same `RunSlot` permit a run does before submitting
+  to the executor, so direct work counts against `max_concurrent_runs` instead
+  of queueing unboundedly in the process default executor. A full server answers
+  429 with the same detail a run gets. The permit is held until the call
+  settles, and on cancellation until the abandoned worker *and* its offloaded
+  interrupt have finished, for the same reason the in-flight guard is. The flag is released on success, on a
   validation failure, and, for a cancelled request whose synchronous worker
   already started, only when that worker actually exits — and, because the
   offloaded interrupt outlives the worker, only once that interrupt has also
@@ -151,16 +157,20 @@ i.e. pre-existing drift, not from this change.
 
 ## Evidence
 
-- `control-agent-server map check` -> ok, 34 files, 947 ids.
+- `control-agent-server map check` -> ok, 34 files, 949 ids.
 - Live server (`control-agent-server exec` / `pytest tests/cross/...live_server.py
   -k execute_tool`) -> 6 passed: an `export` from one `execute_tool` is visible to
   the next in the same conversation (real `TerminalObservation`), a completed call
   is admitted again, a `GrepAction` with `tool_name="terminal"` is 422, an action
   without `kind` is 422, an unknown tool is 422 naming it, an unknown id is 404, an
-  unauthenticated call is 401, a registered secret is masked, and a dropped request
-  does not stall `/alive`.
+  unauthenticated call is 401, a registered secret is masked, a dropped request
+  does not stall `/alive`, and a direct call while another conversation holds the
+  only server run permit is 429 but is admitted once the holder finishes.
+- Admission unit tests: `tests/agent_server/test_run_admission.py` holds two of
+  four conversations' direct calls and a direct-vs-run competition on a shared
+  blocking event; each fails if the `RunSlot.acquire` line is removed.
 - `uv run pytest tests/agent_server tests/sdk/conversation tests/tools/terminal`
-  -> passes (see CI).
+  -> passes locally (378 agent-server, 107 sdk/terminal) and in CI.
 - `npm run check:agent-server-api` -> clean; `ruff check` / `ruff format --check`
   -> clean; OpenAPI export is byte-identical across two runs and passes the
   type-quality gate (64 allowlisted weak locations).
