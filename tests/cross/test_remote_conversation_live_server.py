@@ -1078,6 +1078,13 @@ def test_openai_chat_completions_gateway_over_real_server(
                     "role": "assistant",
                     "content": "Hello from patched LLM",
                 }
+                # A continued turn reports only its own model call, not the
+                # conversation's running total (7/5 per call, two calls so far).
+                assert reused_response.json()["usage"] == {
+                    "prompt_tokens": 7,
+                    "completion_tokens": 5,
+                    "total_tokens": 12,
+                }
 
                 from openai import BadRequestError, OpenAI
 
@@ -1086,6 +1093,21 @@ def test_openai_chat_completions_gateway_over_real_server(
                     base_url=f"{env['host']}/v1",
                     timeout=10,
                 )
+                reused_stream = openai_client.chat.completions.create(
+                    model="openhands_smoke",
+                    messages=[{"role": "user", "content": "Say hello a third time."}],
+                    stream=True,
+                    stream_options={"include_usage": True},
+                    extra_headers={
+                        "X-OpenHands-ServerConversation-ID": conversation_id
+                    },
+                )
+                reused_usage = [chunk.usage for chunk in reused_stream if chunk.usage]
+                assert len(reused_usage) == 1
+                assert reused_usage[0].prompt_tokens == 7
+                assert reused_usage[0].completion_tokens == 5
+                assert reused_usage[0].total_tokens == 12
+
                 stream = openai_client.chat.completions.create(
                     model="openhands_smoke",
                     messages=[
