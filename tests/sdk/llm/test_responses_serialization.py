@@ -220,3 +220,22 @@ def test_assistant_includes_reasoning_passthrough():
     assert [c["text"] for c in r.get("content", [])] == ["c1"]
     assert r.get("encrypted_content") == "enc"
     assert r.get("status") == "completed"
+
+
+def test_tool_to_responses_combines_multiple_text_parts_into_one_output():
+    # Multiple text parts of one tool result must serialize as a single
+    # function_call_output; duplicate outputs for one call_id break some backends.
+    m = Message(
+        role="tool",
+        tool_call_id="call_xyz789",
+        name="foo",
+        content=[TextContent(text="part one"), TextContent(text="part two")],
+    )
+    out = m.to_responses_dict(vision_enabled=False)
+    text_outputs = [
+        item for item in out
+        if item["type"] == "function_call_output" and isinstance(item["output"], str)
+    ]
+    assert len(text_outputs) == 1
+    assert text_outputs[0]["output"] == "part one\npart two"
+    assert all(item["call_id"] == "call_xyz789" for item in out)
