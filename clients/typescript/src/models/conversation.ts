@@ -261,3 +261,26 @@ export interface AgentResponseResult {
 
 export type ConversationEvent = Event;
 export type ConversationEventPage = EventPage;
+
+/** Server-side wait; requires an Agent Server exposing children/wait. */
+export interface WaitForChildrenRequest {
+  conversation_ids: string[];
+  /** 0–300 seconds; defaults to 60. */
+  timeout_seconds?: number;
+  delete_on_finish?: boolean;
+  on_timeout?: 'retain' | 'stop' | 'delete';
+}
+
+export interface ChildConversationWaitResult {
+  conversation_id: string;
+  /** State before optional cleanup. */
+  execution_status: ConversationExecutionStatus;
+  settled: boolean;
+  deleted: boolean;
+}
+
+export interface WaitForChildrenResponse {
+  children: ChildConversationWaitResult[];
+  timed_out: boolean;
+  interrupted: boolean;
+}

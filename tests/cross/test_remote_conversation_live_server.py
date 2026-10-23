@@ -4,15 +4,18 @@ This validates RemoteConversation against actual REST + WebSocket endpoints,
 while keeping the LLM deterministic via monkeypatching.
 """
 
+import asyncio
 import json
 import os
 import shutil
+import socket
 import sys
 import tempfile
 import textwrap
 import threading
 import time
 from collections.abc import Generator
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -31,8 +34,10 @@ from websockets.sync.client import connect
 
 from openhands.agent_server.__main__ import preload_modules
 from openhands.agent_server.config import load_config
+from openhands.agent_server.event_service import EventService
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
 from openhands.sdk.conversation import RemoteConversation
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -3053,3 +3058,103 @@ def test_interrupt_endpoint_cancels_running_conversation(
         assert events_resp.status_code == 200
         items = events_resp.json()["items"]
         assert len(items) >= 1, f"Expected at least one InterruptEvent, got: {items}"
+
+
+def test_child_wait_real_http_and_disconnect(tmp_path, monkeypatch):
+    """Real sockets, server lifecycles and cancellation, with no WebSocket."""
+    entered = threading.Event()
+    waiting = threading.Event()
+    detached = threading.Event()
+    release: Future[None] = Future()
+    child_id: str | None = None
+    original_scope = EventService.child_wait_scope
+
+    @contextmanager
+    def observed_scope(self):
+        with original_scope(self) as signal:
+            is_child = str(self.stored.id) == child_id
+            if is_child:
+                waiting.set()
+            try:
+                yield signal
+            finally:
+                if is_child:
+                    detached.set()
+
+    async def step(self, conversation, **kwargs):
+        if str(conversation.id) == child_id:
+            async with conversation._released_state_lock_during_io():
+                entered.set()
+                await asyncio.wrap_future(release)
+        conversation.state.execution_status = ConversationExecutionStatus.FINISHED
+
+    monkeypatch.setattr(Agent, "astep", step)
+    monkeypatch.setattr(EventService, "child_wait_scope", observed_scope)
+    with live_server_env(tmp_path, monkeypatch, session_api_keys=["wait-test"]) as env:
+        host = env["host"]
+        headers = {"X-Session-API-Key": "wait-test"}
+        with httpx.Client(base_url=host, headers=headers, timeout=10) as client:
+            payload = {
+                "agent": {"llm": {"model": "gpt-4o-mini"}, "tools": []},
+                "workspace": {"working_dir": str(tmp_path / "workspace")},
+            }
+            response = client.post("/api/conversations", json=payload)
+            assert response.status_code == 201, response.text
+            parent_id = response.json()["id"]
+            response = client.post(
+                "/api/conversations",
+                json={
+                    **payload,
+                    "parent_conversation_id": parent_id,
+                },
+            )
+            assert response.status_code == 201, response.text
+            child_id = response.json()["id"]
+            url = f"/api/conversations/{parent_id}/children/wait"
+            body = {"conversation_ids": [child_id], "timeout_seconds": 5}
+            assert httpx.post(host + url, json=body).status_code == 401
+
+            # A disconnected HTTP caller must release both runtime pins.
+            target = httpx.URL(host)
+            assert target.port is not None
+            encoded = json.dumps(body).encode()
+            with socket.create_connection((target.host, target.port)) as connection:
+                connection.sendall(
+                    (
+                        f"POST {url} HTTP/1.1\r\nHost: {target.host}\r\n"
+                        "X-Session-API-Key: wait-test\r\n"
+                        "Content-Type: application/json\r\n"
+                        f"Content-Length: {len(encoded)}\r\n\r\n"
+                    ).encode()
+                    + encoded
+                )
+                assert waiting.wait(5)
+            assert detached.wait(5), "HTTP disconnect left child wait running"
+            waiting.clear()
+            detached.clear()
+
+            assert client.post(f"/api/conversations/{child_id}/run").status_code == 200
+            assert entered.wait(5)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pending = pool.submit(client.post, url, json=body)
+                assert waiting.wait(5)
+                assert client.get("/ready").status_code == 200
+                assert (
+                    client.post(f"/api/conversations/{parent_id}/run").status_code
+                    == 200
+                )
+                release.set_result(None)
+                response = pending.result(timeout=10)
+            assert response.status_code == 200, response.text
+            assert response.json() == {
+                "children": [
+                    {
+                        "conversation_id": child_id,
+                        "execution_status": "finished",
+                        "settled": True,
+                        "deleted": False,
+                    }
+                ],
+                "timed_out": False,
+                "interrupted": False,
+            }

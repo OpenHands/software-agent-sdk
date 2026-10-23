@@ -3,7 +3,7 @@ import time
 import traceback
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
@@ -249,6 +249,14 @@ class EventService:
         default_factory=lambda: PubSub[StreamProgress](max_subscribers=50), init=False
     )
     _run_task: asyncio.Task | None = field(default=None, init=False)
+    _execution_status: ConversationExecutionStatus = field(
+        default=ConversationExecutionStatus.IDLE, init=False
+    )
+    _execution_changed: asyncio.Event = field(default_factory=asyncio.Event, init=False)
+    _run_completion: asyncio.Future[ConversationExecutionStatus] | None = field(
+        default=None, init=False
+    )
+    _interrupted: asyncio.Event = field(default_factory=asyncio.Event, init=False)
     # Set when a send_message(run=True) is rejected because a run is still
     # wrapping up; consumed by _run_and_publish to re-run the stranded message.
     _rerun_requested: bool = field(default=False, init=False)
@@ -261,6 +269,8 @@ class EventService:
     # so a later Stop/Pause cannot be overwritten by an automatic restart.
     _explicit_interrupt_generation: int = field(default=0, init=False)
     _closing: bool = field(default=False, init=False)
+    _active_child_waits: int = field(default=0, init=False)
+    _run_generation: int = field(default=0, init=False)
     _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
     _lease: ConversationLease | None = field(default=None, init=False)
@@ -1156,8 +1166,8 @@ class EventService:
         self._last_stream_activity_signal = now
         update_last_execution_time()
 
-    @staticmethod
     def _state_change_callback(
+        self,
         conversation: LocalConversation,
     ) -> ConversationCallbackType:
         """Publish state changes, re-wiring the managed-key hook on a new agent.
@@ -1167,7 +1177,17 @@ class EventService:
         ``start()`` registered (#5890).
         """
 
+        loop = asyncio.get_running_loop()
+
         def callback(event: Event) -> None:
+            if (
+                isinstance(event, ConversationStateUpdateEvent)
+                and event.key == "execution_status"
+            ):
+                loop.call_soon_threadsafe(
+                    self._observe_execution_status,
+                    ConversationExecutionStatus(event.value),
+                )
             if isinstance(event, ConversationStateUpdateEvent) and event.key == "agent":
                 register_managed_llm_key_refresh(conversation._state.agent)
             conversation._on_event(event)
@@ -1471,6 +1491,7 @@ class EventService:
             None, self._reconcile_stale_goal_status
         )
 
+        self._observe_execution_status(state.execution_status)
         # Publish initial state update
         await self._publish_state_update()
 
@@ -1615,6 +1636,12 @@ class EventService:
                 self._maybe_end_run_session()
 
             run_generation = self._explicit_interrupt_generation
+            completion: asyncio.Future[ConversationExecutionStatus] = (
+                loop.create_future()
+            )
+            self._run_completion = completion
+            self._run_generation += 1
+            self._observe_execution_status(ConversationExecutionStatus.RUNNING)
 
             async def _run_and_publish():
                 nonlocal worker
@@ -1687,6 +1714,14 @@ class EventService:
                             None, self._callback_wrapper.wait_for_pending, 30.0
                         )
 
+                    # Capture this run before a new message or successor run can
+                    # replace its outcome. FINISHED events inside a step are
+                    # provisional until stop hooks and run cleanup have finished.
+                    final_status = await self._get_execution_status()
+                    self._observe_execution_status(final_status)
+                    if not completion.done():
+                        completion.set_result(final_status)
+
                     # Clear task reference and publish state update
                     self._run_task = None
                     await self._publish_state_update()
@@ -1758,6 +1793,80 @@ class EventService:
             # Finally, release even if the task is cancelled before its
             # coroutine enters its own try/finally.
             self._run_task.add_done_callback(settle)
+
+    def _observe_execution_status(self, status: ConversationExecutionStatus) -> None:
+        self._execution_status = status
+        changed = self._execution_changed
+        self._execution_changed = asyncio.Event()
+        changed.set()
+
+    @property
+    def execution_status(self) -> ConversationExecutionStatus:
+        """Latest lifecycle status, readable without acquiring ConversationState."""
+        return self._execution_status
+
+    @property
+    def execution_generation(self) -> int:
+        return self._run_generation
+
+    def _signal_interruption(self) -> None:
+        self._interrupted.set()
+        self._interrupted = asyncio.Event()
+
+    @contextmanager
+    def child_wait_scope(self):
+        """Pin this runtime against idle eviction without holding a lock."""
+        self._active_child_waits += 1
+        try:
+            if self._closing:
+                self._interrupted.set()
+            yield self._interrupted
+        finally:
+            self._active_child_waits -= 1
+
+    async def wait_for_terminal(self) -> tuple[ConversationExecutionStatus, int]:
+        """Await a settled run, including an explicit pause or service close.
+
+        The caller owns the deadline. Cancelling this waiter never cancels the
+        run. An already active run is pinned to its own immutable outcome even
+        if another run starts before the waiter resumes.
+        """
+        with self.child_wait_scope():
+            while True:
+                changed = self._execution_changed
+                generation = self._run_generation
+                if self._closing:
+                    return ConversationExecutionStatus.DELETING, generation
+                completion = self._run_completion
+                if completion is not None and not completion.done():
+                    result = await asyncio.shield(completion)
+                    if result.is_terminal() or result in (
+                        ConversationExecutionStatus.PAUSED,
+                        ConversationExecutionStatus.DELETING,
+                    ):
+                        return result, generation
+                elif self._execution_status.is_terminal() or self._execution_status == (
+                    ConversationExecutionStatus.PAUSED
+                ):
+                    return self._execution_status, generation
+                await changed.wait()
+
+    def prepare_delete(
+        self, expected_run_generation: int, *, allow_active: bool = False
+    ) -> bool:
+        """Fence new runs before teardown; conditional cleanup preserves a restart."""
+        if self._run_generation != expected_run_generation:
+            return False
+        if not allow_active and (
+            (self._run_task is not None and not self._run_task.done())
+            or not (
+                self._execution_status.is_terminal()
+                or self._execution_status == ConversationExecutionStatus.PAUSED
+            )
+        ):
+            return False
+        self._closing = True
+        return True
 
     async def wait_for_run_completion(
         self, timeout: float | None = None
@@ -2103,6 +2212,7 @@ class EventService:
         )
 
     async def pause(self):
+        self._signal_interruption()
         if self._conversation:
             self._explicit_interrupt_generation += 1
             self._rerun_requested = False
@@ -2112,19 +2222,36 @@ class EventService:
             # Publish state update after pause to ensure stats are updated
             await self._publish_state_update()
 
-    async def interrupt(self, *, internal_acp_rerun: bool = False):
+    async def interrupt(
+        self,
+        *,
+        internal_acp_rerun: bool = False,
+        expected_run_generation: int | None = None,
+    ):
         """Immediately cancel an in-flight async LLM call.
 
         Delegates to :meth:`LocalConversation.interrupt` which cancels the
         ``arun()`` task.  If no async run is in progress the call falls
         back to :meth:`pause`.
         """
-        if self._conversation:
+        async with (
+            self._run_lock if expected_run_generation is not None else nullcontext()
+        ):
+            if (
+                expected_run_generation is not None
+                and self._run_generation != expected_run_generation
+            ):
+                return
             if not internal_acp_rerun:
-                self._explicit_interrupt_generation += 1
-                self._rerun_requested = False
-                self._acp_internal_rerun_requested = False
-            self._conversation.interrupt()
+                self._signal_interruption()
+            if self._conversation:
+                if not internal_acp_rerun:
+                    self._explicit_interrupt_generation += 1
+                    self._rerun_requested = False
+                    self._acp_internal_rerun_requested = False
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self._conversation.interrupt)
+        if self._conversation:
             # Wait for the run task to finish so we can publish the final
             # state update (PAUSED + InterruptEvent) cleanly. The shield keeps
             # the 5s timeout from force-cancelling a cleanup that still needs
@@ -2207,9 +2334,13 @@ class EventService:
         await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
 
     async def close(self):
+        self._closing = True
+        self._signal_interruption()
+        self._observe_execution_status(ConversationExecutionStatus.DELETING)
+        if self._run_completion is not None and not self._run_completion.done():
+            self._run_completion.set_result(ConversationExecutionStatus.DELETING)
         if self.bash_event_service is not None:
             await self.bash_event_service.close()
-        self._closing = True
         self._explicit_interrupt_generation += 1
         self._rerun_requested = False
         self._acp_internal_rerun_requested = False
@@ -2460,6 +2591,7 @@ class EventService:
             or goal_active
             or self._rerun_requested
             or self._acp_internal_rerun_requested
+            or self._active_child_waits > 0
             or self.has_external_subscribers()
         ):
             return False

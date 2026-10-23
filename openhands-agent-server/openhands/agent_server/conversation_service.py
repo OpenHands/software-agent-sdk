@@ -37,6 +37,7 @@ from openhands.agent_server.local_storage import (
     remove_conversation_worktree,
 )
 from openhands.agent_server.models import (
+    ChildConversationWaitResult,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
@@ -46,6 +47,8 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     StoredConversation,
     UpdateConversationRequest,
+    WaitForChildrenRequest,
+    WaitForChildrenResponse,
 )
 from openhands.agent_server.persistence import FileSecretsStore
 from openhands.agent_server.pub_sub import Subscriber
@@ -292,6 +295,10 @@ def _create_conversation_worktree(plan: _WorktreePlan) -> LocalWorkspace:
 
 
 logger = logging.getLogger(__name__)
+
+
+class ChildConversationNotFound(ValueError):
+    """The wait's parent or a requested direct child is unavailable."""
 
 
 class InvalidParentConversation(ValueError):
@@ -1806,7 +1813,13 @@ class ConversationService:
             self.conversation_worktree_root, stored.workspace.working_dir
         )
 
-    async def delete_conversation(self, conversation_id: UUID) -> bool:
+    async def delete_conversation(
+        self,
+        conversation_id: UUID,
+        *,
+        expected_run_generation: int | None = None,
+        allow_active: bool = False,
+    ) -> bool:
         event_services = self._event_services
         if event_services is None:
             raise ValueError("inactive_service")
@@ -1821,6 +1834,10 @@ class ConversationService:
                 require_runtime_bindings=False,
             )
             if event_service is None:
+                return False
+            if expected_run_generation is not None and not event_service.prepare_delete(
+                expected_run_generation, allow_active=allow_active
+            ):
                 return False
 
             # Notify conversation webhooks about the stopped conversation before closing
@@ -2078,6 +2095,116 @@ class ConversationService:
         return _compose_conversation_info(
             fork_event_service.stored, state, self._children_of(fork_conv_id)
         )
+
+    async def wait_for_children(
+        self, parent_id: UUID, request: WaitForChildrenRequest
+    ) -> WaitForChildrenResponse:
+        """Wait without holding catalog, lifecycle, or conversation-state locks.
+
+        Only state and lifecycle outcomes are returned. Finish-result delivery
+        belongs to the mailbox (#6127), which is not implemented here.
+        """
+        records = self._conversation_records
+        if parent_id not in records:
+            raise ChildConversationNotFound("Parent conversation not found")
+        for child_id in request.conversation_ids:
+            record = records.get(child_id)
+            if record is None or record.stored.parent_conversation_id != parent_id:
+                raise ChildConversationNotFound("Child conversation not found")
+
+        parent = await self._get_or_load_event_service(parent_id)
+        if parent is None:
+            raise ChildConversationNotFound("Parent conversation not found")
+        children: list[EventService] = []
+        tasks: list[asyncio.Task[tuple[ConversationExecutionStatus, int]]] = []
+        interrupt_task: asyncio.Task[bool] | None = None
+        with parent.child_wait_scope() as interruption:
+            try:
+                for child_id in request.conversation_ids:
+                    child = await self._get_or_load_event_service(child_id)
+                    if (
+                        child is None
+                        or child.stored.parent_conversation_id != parent_id
+                    ):
+                        raise ChildConversationNotFound("Child conversation not found")
+                    children.append(child)
+                    tasks.append(asyncio.create_task(child.wait_for_terminal()))
+                interrupt_task = asyncio.create_task(interruption.wait())
+                pending = set(tasks)
+                deadline = asyncio.get_running_loop().time() + request.timeout_seconds
+                while pending and not interruption.is_set():
+                    done, _ = await asyncio.wait(
+                        pending | {interrupt_task},
+                        timeout=max(0, deadline - asyncio.get_running_loop().time()),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    pending.difference_update(done)
+                    if not done:
+                        break
+                interrupted = interruption.is_set()
+                generations = [
+                    task.result()[1] if task.done() else child.execution_generation
+                    for child, task in zip(children, tasks, strict=True)
+                ]
+                results = [
+                    ChildConversationWaitResult(
+                        conversation_id=child.stored.id,
+                        execution_status=task.result()[0]
+                        if task.done()
+                        else (child.execution_status),
+                        settled=task.done(),
+                    )
+                    for child, task in zip(children, tasks, strict=True)
+                ]
+            finally:
+                owned_tasks: list[asyncio.Task] = [*tasks]
+                if interrupt_task is not None:
+                    owned_tasks.append(interrupt_task)
+                for task in owned_tasks:
+                    task.cancel()
+                await asyncio.gather(*owned_tasks, return_exceptions=True)
+
+            async def cleanup() -> None:
+                for child, generation, result in zip(
+                    children, generations, results, strict=True
+                ):
+                    if interruption.is_set():
+                        return
+                    if result.settled and request.delete_on_finish:
+                        result.deleted = await self.delete_conversation(
+                            result.conversation_id,
+                            expected_run_generation=generation,
+                        )
+                    elif not result.settled:
+                        if request.on_timeout == "delete":
+                            result.deleted = await self.delete_conversation(
+                                result.conversation_id,
+                                expected_run_generation=generation,
+                                allow_active=True,
+                            )
+                        elif request.on_timeout == "stop":
+                            await child.interrupt(expected_run_generation=generation)
+
+            if not interrupted and (
+                request.delete_on_finish or request.on_timeout != "retain"
+            ):
+                # Once destructive cleanup starts it must finish even if its
+                # HTTP caller disconnects, rather than leave a fenced runtime.
+                cleanup_task = asyncio.create_task(cleanup())
+                cancelled = False
+                while not cleanup_task.done():
+                    try:
+                        await asyncio.shield(cleanup_task)
+                    except asyncio.CancelledError:
+                        cancelled = True
+                cleanup_task.result()
+                if cancelled:
+                    raise asyncio.CancelledError
+            return WaitForChildrenResponse(
+                children=results,
+                timed_out=bool(pending) and not interrupted,
+                interrupted=interrupted,
+            )
 
     async def start_child_conversation(
         self,

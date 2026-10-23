@@ -20,6 +20,8 @@ import type {
   StartGoalRequest,
   UpdateConversationRequest,
   UpdateSecretsRequest,
+  WaitForChildrenRequest,
+  WaitForChildrenResponse,
 } from '../models/conversation';
 import type { ConfirmationPolicyBase } from '../types/base';
 
@@ -143,6 +145,23 @@ export class ConversationClient {
     conversationId: string
   ): Promise<TConversation> {
     const response = await this.client.get<TConversation>(`/api/conversations/${conversationId}`);
+    return response.data;
+  }
+
+  /** Wait once on the server, without status polling or a WebSocket. */
+  async waitForChildren(
+    conversationId: string,
+    request: WaitForChildrenRequest,
+    options: { signal?: AbortSignal; timeout?: number } = {}
+  ): Promise<WaitForChildrenResponse> {
+    const response = await this.client.post<WaitForChildrenResponse>(
+      `/api/conversations/${conversationId}/children/wait`,
+      request,
+      {
+        ...options,
+        timeout: options.timeout ?? ((request.timeout_seconds ?? 60) + 30) * 1000,
+      }
+    );
     return response.data;
   }
 

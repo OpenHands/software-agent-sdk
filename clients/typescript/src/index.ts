@@ -592,3 +592,9 @@ export default {
   mergeHookConfigs,
   hookConfigToJSON,
 };
+
+export type {
+  WaitForChildrenRequest,
+  WaitForChildrenResponse,
+  ChildConversationWaitResult,
+} from './models/conversation';
