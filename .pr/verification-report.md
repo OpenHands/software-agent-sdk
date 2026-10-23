@@ -1,6 +1,6 @@
 # Agent Server verification — 2026-10-23
 
-Outcome: **changed, with explicit coverage limits**. This maintenance pass exercised all 34 feature families using `control-agent-server`, reviewed their source and the intervening PR intent, corrected stale recipes, and reported four newly confirmed defects in the fork. Product fixes are separate PRs. The accepted maintenance baseline remains unchanged because some capability-dependent paths could not be completed.
+Outcome: **changed, with explicit coverage limits**. This maintenance pass exercised all 34 feature families using `control-agent-server`, reviewed their source and the intervening PR intent, corrected stale recipes, and reported four newly confirmed defects in the fork. Product fixes are separate PRs, documented in the [follow-up fix report](fix-report.md). The accepted maintenance baseline remains unchanged because successful ChatGPT authorization requires human account approval.
 
 ## Scope and provenance
 
