@@ -142,7 +142,7 @@ def _set_active_meta_profile_if_matches(
 
 
 @meta_profiles_router.get("", response_model=MetaProfileListResponse)
-async def list_meta_profiles(request: Request) -> MetaProfileListResponse:
+def list_meta_profiles(request: Request) -> MetaProfileListResponse:
     """List all saved meta-profiles and the currently active one."""
     config = get_config(request)
     settings_store = get_settings_store(config)
@@ -159,7 +159,7 @@ async def list_meta_profiles(request: Request) -> MetaProfileListResponse:
 
 
 @meta_profiles_router.get("/{name}", response_model=MetaProfileDetailResponse)
-async def get_meta_profile(name: MetaProfileName) -> MetaProfileDetailResponse:
+def get_meta_profile(name: MetaProfileName) -> MetaProfileDetailResponse:
     """Get a meta-profile's full configuration."""
     store = _get_meta_profile_store()
     try:
@@ -179,7 +179,7 @@ async def get_meta_profile(name: MetaProfileName) -> MetaProfileDetailResponse:
     response_model=MetaProfileMutationResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def save_meta_profile(
+def save_meta_profile(
     name: MetaProfileName,
     body: RoutableMetaProfile,
 ) -> MetaProfileMutationResponse:
@@ -208,7 +208,7 @@ async def save_meta_profile(
 
 
 @meta_profiles_router.delete("/{name}", response_model=MetaProfileMutationResponse)
-async def delete_meta_profile(
+def delete_meta_profile(
     request: Request, name: MetaProfileName
 ) -> MetaProfileMutationResponse:
     """Delete a meta-profile (idempotent).
@@ -230,7 +230,7 @@ async def delete_meta_profile(
 @meta_profiles_router.post(
     "/{name}/activate", response_model=ActivateMetaProfileResponse
 )
-async def activate_meta_profile(
+def activate_meta_profile(
     request: Request, name: MetaProfileName
 ) -> ActivateMetaProfileResponse:
     """Activate a meta-profile by recording it as ``active_meta_profile``.
