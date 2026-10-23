@@ -203,6 +203,10 @@ def test_acp_conformance_probe(
     provider_key: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     provider = ACP_PROVIDERS[provider_key]
+    if provider_key not in ACP_INSTALL_CATALOG:
+        # Standalone-binary providers (devin) have no npm pin to install or
+        # assert — nothing to probe here.
+        pytest.skip(f"{provider_key} is not an npm-installed ACP provider")
     _skip_if_node_below_floor(provider_key)
     _isolate_env(monkeypatch, tmp_path)
 
