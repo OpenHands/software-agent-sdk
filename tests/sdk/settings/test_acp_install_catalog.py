@@ -138,7 +138,7 @@ class TestACPInstallCatalogMatchesACPProviders:
             assert info.binary_name == ACP_INSTALL_CATALOG[key].binary_name
 
     def test_pinned_versions_unchanged(self):
-        assert CLAUDE_AGENT_ACP_VERSION == "0.63.0"
+        assert CLAUDE_AGENT_ACP_VERSION == "0.89.1"
         assert CODEX_ACP_VERSION == "1.10.0"
         assert GEMINI_CLI_VERSION == "0.46.0"
 
