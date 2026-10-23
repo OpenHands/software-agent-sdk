@@ -21,6 +21,8 @@ Each record captures the static properties that are known at configuration time
 - ``available_models``      deprecated curated model list; ask the server with
                             :func:`~openhands.sdk.agent.acp_model_discovery.discover_acp_models`
 - ``default_model``         deprecated curated default model (or ``None``)
+- ``effort_config_id``      config option that sets reasoning effort (or ``None``)
+- ``effort_levels``         effort suffixes split off a ``<model>/<effort>`` id
 - ``file_secrets``          reserved "file-content" credential secrets the
                             provider authenticates from (Codex ``auth.json``,
                             Gemini Vertex SA JSON); see :class:`ACPFileSecretSpec`
@@ -350,6 +352,31 @@ class ACPProviderInfo:
     them — see :class:`ACPEnvConflictSpec`.
     """
 
+    effort_config_id: str | None = field(default=None, compare=False)
+    """Session config option that sets reasoning effort, or ``None``.
+
+    When set, an ``acp_model`` of the form ``<model>/<effort>`` (with ``effort``
+    in :attr:`effort_levels`) is split into a ``model`` selection plus this
+    config option — e.g. codex-acp ``reasoning_effort``, claude-agent-acp
+    ``effort``. See :meth:`split_model_effort`.
+    """
+
+    effort_levels: tuple[str, ...] = field(default=(), compare=False)
+    """Effort values accepted as a ``/<effort>`` model-id suffix."""
+
+    def split_model_effort(self, model: str) -> tuple[str, str | None]:
+        """Split ``<model>/<effort>`` into ``(model, effort)``.
+
+        Ids without a known effort suffix, or providers without an
+        :attr:`effort_config_id`, are returned unchanged with ``None``.
+        """
+        if self.effort_config_id is None:
+            return model, None
+        base_model, sep, effort = model.rpartition("/")
+        if sep and base_model and effort in self.effort_levels:
+            return base_model, effort
+        return model, None
+
     def __getattribute__(self, name: str) -> Any:
         if name == "available_models":
             warn_deprecated(
@@ -570,6 +597,8 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             supports_set_session_model=True,
             supports_runtime_model_switch=True,
             session_meta_key="claudeCode",
+            effort_config_id="effort",
+            effort_levels=("low", "medium", "high", "xhigh", "max"),
             available_models=_CLAUDE_MODELS,
             # The CLI's own default (model configOptions ``currentValue``).
             default_model="opus[1m]",
@@ -598,6 +627,8 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             supports_set_session_model=True,
             supports_runtime_model_switch=True,
             session_meta_key=None,
+            effort_config_id="reasoning_effort",
+            effort_levels=("low", "medium", "high", "xhigh"),
             available_models=_CODEX_MODELS,
             default_model="gpt-5.5",
             file_secrets=_CODEX_FILE_SECRETS,
@@ -835,4 +866,8 @@ def build_session_model_meta(agent_name: str, acp_model: str | None) -> dict[str
     provider = detect_acp_provider_by_agent_name(agent_name)
     if provider is None or provider.session_meta_key is None:
         return {}
-    return {provider.session_meta_key: {"options": {"model": acp_model}}}
+    model, effort = provider.split_model_effort(acp_model)
+    options: dict[str, str] = {"model": model}
+    if effort is not None and provider.effort_config_id is not None:
+        options[provider.effort_config_id] = effort
+    return {provider.session_meta_key: {"options": options}}
