@@ -46,7 +46,7 @@ Routes: `GET /api/file/home`, `GET /api/file/search_subdirs`,
 - `F14.archive-git-delta`: the default `git-delta` format with `base_ref=HEAD` is a `text/x-patch` of the uncommitted and untracked changes that applies to a clone of HEAD, carries `X-Archive-Base-Commit`, `X-Archive-Base-Ref`, `X-Archive-Branch` and `X-Archive-Head-Commit`, and leaves the repository's index untouched; without `base_ref` on a remote-less repo the patch is against the empty tree and has no base headers; a subdirectory of a repository yields only that subtree's delta.
 - `F14.archive-auto-base`: without `base_ref`, a clone with an `origin` remote is diffed against `origin/<branch>` (the patch holds the local commit and the uncommitted edit, applies to a clone of the origin tip, and carries `X-Archive-Base-Ref: auto`, `X-Archive-Base-Commit` = the origin tip and `X-Archive-Repo-Remote`); a detached HEAD is diffed against HEAD itself.
 - `F14.archive-nested-repo`: archiving a non-repo directory that holds exactly one git repository archives that repository; with two repositories `git-delta` is 400 and `tar.gz` archives the directory itself.
-- `F14.archive-format-doc`: the OpenAPI description of `format` matches what a non-repository directory holding one repository archives; today it promises a tarball of "the entire directory" while only the nested repository is packed.
+- `F14.archive-format-doc`: the OpenAPI description of `format` matches what a non-repository directory holding one repository archives: it does not promise "the entire directory" and says only the nested repository is packed.
 - `F14.archive-errors`: a relative path is 400, a missing directory 404, a file 400, a `base_ref` starting with `-` 400, an unknown `base_ref` 400, an unknown `format` 422, and `git-delta` of a non-repo directory 400.
 - `F14.trajectory`: `GET /api/file/download-trajectory/{id}` returns `<hex>.zip` with `meta.json`, `base_state.json` and one file per event, the LLM `api_key` redacted to `**********` and no Fernet ciphertext, for dashed and hex ids, and leaves no temp zip behind.
 - `F14.trajectory-errors`: an unknown conversation id is 404 `Conversation not found`, a malformed id 422.
@@ -575,7 +575,7 @@ Preconditions:
   `proj.patch` / `proj.tar.gz`, rooted at `proj/`) and the parent's own
   `top.txt` is not in the tar. With two, the server refuses to guess:
   `git-delta` is 400 and `tar.gz` archives the parent as given.
-- **What `format` promises (`F14.archive-format-doc`), known bug.** The
+- **What `format` promises (`F14.archive-format-doc`).** The
   OpenAPI description of the `format` parameter, against a `tar.gz` of a
   non-repository directory that holds one repository and a file of its own.
   ```sh
@@ -591,15 +591,14 @@ Preconditions:
   tar tzf "$F/doc-parent.tgz" > "$F/doc-parent.list"
   grep -q 'proj/notes.txt$' "$F/doc-parent.list"
   jq -n --arg doc "$DOC_FORMAT" --rawfile list "$F/doc-parent.list" '{doc_entire_directory: ($doc | contains("entire directory")), tar_has_top: ($list | contains("top.txt"))} | .agree = (.tar_has_top or (.doc_entire_directory | not))' \
-    | control-agent-server assert --check agree eq true  # bug: value.doc_entire_directory eq true && value.tar_has_top eq false
+    | control-agent-server assert --check agree eq true
   ```
-  Expected: the description and the archive agree, either by documenting
-  that a directory holding exactly one repository archives only that
-  repository, or by packing the whole directory. Actual: the description
-  says `'tar.gz' for a full gzip tarball of the entire directory (works on
-  non-git directories too)`, while the tar holds only `proj/` and not
-  `top.txt` (the resolution to the nested repository is deliberate, see
-  `archive_directory`, so the description is what drifted).
+  The description and the archive agree: the tar holds only `proj/` and not
+  `top.txt`, and the `format` (and `path`) description says that a
+  non-repository path holding exactly one git repository (up to three levels
+  down) is archived as that repository, so files beside it are not included,
+  instead of promising "the entire directory". The resolution to the nested
+  repository is deliberate (see `archive_directory`).
 - **Archive validation (`F14.archive-errors`).**
 
   Requires: `F14.subdirs`
@@ -828,7 +827,7 @@ Preconditions:
   as many events as before) are all served after the restart, the restored
   conversation still binds its scope (the guard still refuses `WS` through
   `CID2`), and `doctor` is ok.
-- **Init-time conversations path (`F14.trajectory-init-path`), known bug.**
+- **Init-time conversations path (`F14.trajectory-init-path`).**
   A second server starts dormant;
   `POST /api/init` (`--auth init` sends that run's secret key in
   `X-Init-API-Key`) moves its conversations to a fixture directory. The trap
@@ -845,16 +844,14 @@ Preconditions:
   BCID=$(control-agent-server conversation start --run "$B" --tools file_editor --no-autotitle --print-id)
   test -d "$BP/$(printf '%s' "$BCID" | tr -d -)"
   control-agent-server api GET "/api/conversations/$BCID" --run "$B" --expect 200 --check id eq "$BCID"
-  control-agent-server api GET "/api/file/download-trajectory/$BCID" --run "$B" --expect 200 --save F14.trajectory-init-path/global  # bug: status eq 404 && response.body.detail eq 'Conversation not found'
+  control-agent-server api GET "/api/file/download-trajectory/$BCID" --run "$B" --expect 200 --save F14.trajectory-init-path/global
   control-agent-server api GET "/api/conversations/$BCID/file/download-trajectory/$BCID" --run "$B" --expect 200 \
-    --save F14.trajectory-init-path/scoped  # bug: status eq 404 && response.body.detail eq 'Conversation not found'
+    --save F14.trajectory-init-path/scoped
   ```
   The conversation is persisted under the init-time path and `GET` finds it.
-  Expected: both trajectory routes return the zip (each alone encodes the
-  bug). Actual: both answer `404 Conversation not found`:
-  `download_trajectory` reads `get_default_config().conversations_path` (the
-  launch-time default) instead of the config `POST /api/init` installed on
-  `app.state`.
+  Both trajectory routes return its zip: `download_trajectory` reads
+  `conversations_path` from the config `POST /api/init` installed on
+  `app.state`, not the launch-time default.
 
 ## Gotchas
 
@@ -884,8 +881,8 @@ Preconditions:
 - `archive` resolves the repository to archive: if `path` is not a repository
   but holds exactly one up to three levels down (skipping hidden and vendored
   directories), both formats archive only that repository, so files beside it
-  are not in the `tar.gz` even though the `format` description says "the
-  entire directory" (`F14.archive-format-doc`). Callers that need everything
+  are not in the `tar.gz`; the `format` and `path` descriptions say so
+  (`F14.archive-format-doc`). Callers that need everything
   must pass a path with zero or several repositories, or the repository
   itself.
 - `git-delta` honors the repo's `.gitignore` (`git add -A` on a scratch index);
@@ -924,7 +921,8 @@ Preconditions:
   not that the conversation is loaded; it includes lease files and every
   event file, skips a top-level `acp/` directory, and redacts JSON/JSONL
   credential fields plus any Fernet token. It writes a fixed temp name
-  (`F14.trajectory-concurrent`) and ignores an init-time `conversations_path`
+  (`F14.trajectory-concurrent`) and reads `conversations_path` from the live
+  `app.state.config`, so it follows an init-time path
   (`F14.trajectory-init-path`).
 - No file route emits conversation events or WebSocket frames; their second
   views are downloads, listings, archives and the disk.

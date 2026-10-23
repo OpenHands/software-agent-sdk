@@ -376,7 +376,7 @@ Preconditions:
   cp -p "$S" "$S.qa-f20-bak"
   printf '{"agent_settings": ' > "$S"
   control-agent-server api POST /api/profiles/qa-nokey/activate --expect 409 \
-    --check detail eq 'Settings file is corrupted or encrypted with a different key' --save F20.corrupt-files/corrupt-settings
+    --check detail contains 'Settings file is corrupted or encrypted with a different key' --save F20.corrupt-files/corrupt-settings
   test "$(cat "$S")" = '{"agent_settings": '
   mv "$S.qa-f20-bak" "$S"
   control-agent-server api GET /api/profiles --check active_profile eq deepseek-flash --check profiles len-eq 4

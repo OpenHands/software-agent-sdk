@@ -530,7 +530,10 @@ def uninstall_skill_endpoint(skill_name: SkillNamePath) -> UninstallSkillRespons
 @skills_router.post(
     "/installed/{skill_name}/refresh",
     response_model=UpdateSkillResponse,
-    responses={404: {"description": "Skill not installed"}},
+    responses={
+        400: {"description": "Failed to fetch the skill's recorded source"},
+        404: {"description": "Skill not installed"},
+    },
 )
 def refresh_skill_endpoint(skill_name: SkillNamePath) -> UpdateSkillResponse:
     """Refresh an installed skill to the latest version.
@@ -544,9 +547,29 @@ def refresh_skill_endpoint(skill_name: SkillNamePath) -> UpdateSkillResponse:
         UpdateSkillResponse with updated skill information.
 
     Raises:
+        HTTPException 400: If the recorded source cannot be fetched.
         HTTPException 404: If the skill is not installed.
+        HTTPException 422: If the source no longer holds a valid skill.
+        A failed refresh leaves the installed copy unchanged.
     """
-    info = service_update_skill(name=skill_name)
+    try:
+        info = service_update_skill(name=skill_name)
+    except (SkillFetchError, ExtensionFetchError):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Failed to fetch the source of skill '{skill_name}'. "
+                "The installed copy was kept."
+            ),
+        )
+    except SkillValidationError:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"The source of skill '{skill_name}' no longer holds a valid "
+                "skill. The installed copy was kept."
+            ),
+        )
     if info is None:
         raise HTTPException(
             status_code=404,

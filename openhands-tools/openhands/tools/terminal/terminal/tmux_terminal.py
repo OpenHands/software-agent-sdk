@@ -2,6 +2,7 @@
 
 import logging
 import os
+import shlex
 import sys
 import time
 import uuid
@@ -29,6 +30,9 @@ from openhands.tools.terminal.env import (
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal import TerminalInterface
 from openhands.tools.terminal.terminal.interface import parse_ctrl_key
+from openhands.tools.terminal.terminal.process_priority import (
+    process_priority_prefix,
+)
 
 
 logger = get_logger(__name__)
@@ -145,7 +149,6 @@ def _new_owned_session(
         server = libtmux.Server(
             socket_name=None if fallback else socket_name,
             socket_path=str(socket_dir / socket_name) if fallback else None,
-            environment=dict(env),
         )
         session = server.new_session(
             session_name=session_name,
@@ -155,7 +158,11 @@ def _new_owned_session(
             y=y,
         )
         mark_socket_owner(server)
-        return server, session
+    # A tmux server starts with this process's environment rather than *env*,
+    # and new windows inherit it, so unset what sanitization removed.
+    for key in os.environ.keys() - env.keys():
+        server.unset_environment(key)
+    return server, session
 
 
 # Map normalized special key names to tmux key names.
@@ -212,12 +219,12 @@ class TmuxTerminal(TerminalInterface):
         # auto-launch `less` on a TTY don't capture the pane and wedge the session.
         env.setdefault("GIT_PAGER", "cat")
         env.setdefault("PAGER", "cat")
-        _shell_command = "/bin/bash"
+        shell_command = ["/bin/bash"]
         if self.username in ["root", "openhands"]:
             # This starts a non-login (new) shell for the given user
-            _shell_command = f"su {self.username} -"
+            shell_command = ["su", self.username, "-"]
 
-        window_command = _shell_command
+        window_command = shlex.join([*process_priority_prefix(env), *shell_command])
 
         logger.debug(f"Initializing tmux terminal with command: {window_command}")
         # Never reuse a socket: tmux numeric IDs restart at zero after server exit.

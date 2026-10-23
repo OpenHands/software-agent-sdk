@@ -65,11 +65,13 @@ FERNET_TOKEN = re.compile(r"gAAAAA[A-Za-z0-9_\-]{40,}={0,2}")
 # Environment forwarded from the caller into a launched server. Everything
 # else (LLM keys, OH_* overrides, cloud tokens) stays out unless passed with
 # --env or --pass-env, so a run never inherits a developer's configuration.
+# PLAYWRIGHT_BROWSERS_PATH stays out too: the server's browser probe reads it,
+# and the browser recipes decide where the server finds Chromium.
 FORWARDED_ENV = re.compile(
     r"^(PATH|LANG|LC_[A-Z]+|TZ|TERM|SHELL|USER|LOGNAME|TMPDIR"
     r"|(HTTP|HTTPS|NO|ALL)_PROXY|(http|https|no|all)_proxy"
     r"|SSL_CERT_FILE|SSL_CERT_DIR|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE"
-    r"|NODE_EXTRA_CA_CERTS|PLAYWRIGHT_BROWSERS_PATH|DOCKER_HOST|UV_[A-Z_]+)$"
+    r"|NODE_EXTRA_CA_CERTS|DOCKER_HOST|UV_[A-Z_]+)$"
 )
 
 
@@ -536,6 +538,9 @@ def server_env(
     secret_file = run.private / "secret_key"
     if secret_file.exists():
         env["OH_SECRET_KEY"] = secret_file.read_text().strip()
+    previous_secret = run.private / "previous_secret_key"
+    if run.data.get("keep_previous_secret_key") and previous_secret.exists():
+        env["OH_PREVIOUS_SECRET_KEYS_0"] = previous_secret.read_text().strip()
     env.update(extra)
     return env
 
@@ -887,6 +892,13 @@ def cmd_restart(args: argparse.Namespace) -> dict[str, Any]:
         (run.private / "previous_secret_key").write_text(old_secret)
         (run.private / "secret_key").write_text(secrets.token_urlsafe(32))
         run.register_secrets()
+    if (
+        args.keep_previous_secret_key
+        and not (run.private / "previous_secret_key").exists()
+    ):
+        usage_error("--keep-previous-secret-key needs an earlier --rotate-secret-key")
+    # Per restart: a later restart without the flag drops the previous key.
+    run.data["keep_previous_secret_key"] = bool(args.keep_previous_secret_key)
     if args.reset_config:
         run.data["config_overrides"] = {}
         run.data["extra_env"] = {}
@@ -907,6 +919,7 @@ def cmd_restart(args: argparse.Namespace) -> dict[str, Any]:
         "rotated_key": bool(args.rotate_key),
         "hard": bool(args.hard),
         "rotated_secret_key": bool(args.rotate_secret_key),
+        "kept_previous_secret_key": bool(args.keep_previous_secret_key),
         **readiness,
     }
 
@@ -5423,6 +5436,7 @@ secret key all private to the run. Without --new, an already-live run
   {CLI} restart --rotate-key       # the old session key must now be rejected
   {CLI} restart --hard             # SIGKILL: running conversations come back as error
   {CLI} restart --rotate-secret-key  # new cipher key: are stored secrets still readable?
+  {CLI} restart --rotate-secret-key --keep-previous-secret-key  # supported rotation
   {CLI} restart --env OH_MAX_CONCURRENT_RUNS=1""",
         cmd_restart,
     )
@@ -5441,6 +5455,15 @@ secret key all private to the run. Without --new, an already-live run
         "--rotate-secret-key",
         action="store_true",
         help="new OH_SECRET_KEY (cipher): what happens to secrets stored under the old one",
+    )
+    p.add_argument(
+        "--keep-previous-secret-key",
+        action="store_true",
+        help=(
+            "pass the key the last --rotate-secret-key replaced as "
+            "OH_PREVIOUS_SECRET_KEYS_0 for this start (a supported rotation); "
+            "a restart without it drops that key again"
+        ),
     )
     p.add_argument(
         "--hard",
