@@ -18,6 +18,7 @@ from openhands.agent_server.config import ACPSkillSourcing, Config
 from openhands.sdk import LLM, Agent, Conversation
 from openhands.sdk.agent import ACPAgent, AgentBase
 from openhands.sdk.context import AgentContext
+from openhands.sdk.conversation.request import AgentLaunchAdditions
 from openhands.sdk.launch import LaunchRuntime, finalize
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.settings.model import validate_agent_settings
@@ -173,3 +174,21 @@ def test_native_sourcing_leaves_a_non_acp_agent_alone() -> None:
 def test_native_sourcing_is_a_no_op_without_skills() -> None:
     agent = _acp_agent(current_datetime=None)
     assert _apply_acp_skill_sourcing(agent, "native") is agent
+
+
+@pytest.mark.parametrize("sourcing", ["native", "openhands_managed"])
+def test_launch_supplied_skills_reach_the_acp_agent(
+    tmp_path: Path, sourcing: ACPSkillSourcing
+) -> None:
+    project = _workspace(tmp_path)
+    launch_skill = Skill(name="launch-skill", content="launch content")
+    agent = finalize(
+        _acp_agent(skills=[_managed_skill()]),
+        LaunchRuntime(acp_skill_sourcing=sourcing),
+        additions=AgentLaunchAdditions(skills=[launch_skill]),
+    ).agent
+    assert agent.agent_context is not None
+    names = {s.name for s in agent.agent_context.skills}
+    assert "launch-skill" in names
+    assert (MANAGED_SKILL in names) == (sourcing == "openhands_managed")
+    assert "launch content" in _installed_suffix(agent, project)
