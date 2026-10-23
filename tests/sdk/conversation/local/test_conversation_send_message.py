@@ -20,6 +20,7 @@ from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationTokenCallbackType,
 )
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.skills import KeywordTrigger, Skill
@@ -1007,3 +1008,37 @@ def test_send_message_user_message_suffix_without_skill_match():
         "Always cite your sources."
     ]
     assert conversation.state.activated_knowledge_skills == []
+
+
+def test_user_message_reaches_callbacks_before_its_state_update(tmp_path):
+    """Callbacks see a user message before the last_user_message_id update.
+
+    The agent server wires on_state_change to the conversation's own callback
+    chain, so the update is appended (and published) as an event too. Callbacks
+    must observe events in the order they were persisted.
+    """
+    seen: list = []
+    conversation = LocalConversation(
+        agent=SendMessageDummyAgent(),
+        workspace=str(tmp_path),
+        persistence_dir=str(tmp_path / "conv"),
+        callbacks=[seen.append],
+        visualizer=None,
+    )
+    conversation._state.set_on_state_change(conversation._on_event)
+    seen.clear()
+
+    conversation.send_message("hello")
+
+    persisted_ids = [e.id for e in conversation.state.events]
+    seen_ids = [e.id for e in seen]
+    assert seen_ids == persisted_ids[-len(seen_ids) :]
+    kinds = [
+        (type(e).__name__, getattr(e, "key", None))
+        for e in seen
+        if isinstance(e, (MessageEvent, ConversationStateUpdateEvent))
+    ]
+    assert kinds[:2] == [
+        ("MessageEvent", None),
+        ("ConversationStateUpdateEvent", "last_user_message_id"),
+    ]

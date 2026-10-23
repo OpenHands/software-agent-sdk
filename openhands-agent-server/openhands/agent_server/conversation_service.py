@@ -65,6 +65,7 @@ from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.persistence_const import BASE_STATE
+from openhands.sdk.conversation.request import ConversationWorktreeOptions
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -110,7 +111,12 @@ def _build_worktree_guidance(
     worktree_root: Path,
     workspace_dir: Path,
     branch: str,
+    options: ConversationWorktreeOptions,
 ) -> str:
+    base_ref = {
+        "head": "the original workspace's current HEAD",
+        "ref": f"`{options.ref}`",
+    }.get(options.base, "the main/master branch")
     return (
         "This conversation uses a dedicated git worktree.\n"
         f"- Original workspace: {source_workspace}\n"
@@ -118,7 +124,7 @@ def _build_worktree_guidance(
         f"- Active workspace: {workspace_dir}\n"
         f"- Branch: {branch}\n"
         "Do all file and git work inside this worktree. Do your work on a new, "
-        "appropriately-named branch, based off the main/master branch, "
+        f"appropriately-named branch, based off {base_ref}, "
         "and do not switch back to the original workspace."
     )
 
@@ -142,6 +148,20 @@ def _local_branch_exists(repo_root: Path, branch: str) -> bool:
     return True
 
 
+def _fetch_origin(repo_root: Path) -> None:
+    """Refresh ``origin``'s refs for a worktree start point; keep cached ones on
+    failure."""
+    try:
+        run_git_command(["git", "fetch", "origin"], repo_root, timeout=60)
+    except GitCommandError as exc:
+        logger.warning(
+            "git fetch origin failed while choosing worktree start point "
+            "for %s; using cached refs. Error: %s",
+            repo_root,
+            exc,
+        )
+
+
 def _get_worktree_start_point(repo_root: Path) -> str:
     """Resolve the base ref a new conversation worktree should be created from.
 
@@ -158,15 +178,7 @@ def _get_worktree_start_point(repo_root: Path) -> str:
          creation still succeeds on freshly initialized repos.
     """
     if _has_git_remote(repo_root):
-        try:
-            run_git_command(["git", "fetch", "origin"], repo_root, timeout=60)
-        except GitCommandError as exc:
-            logger.warning(
-                "git fetch origin failed while choosing worktree start point "
-                "for %s; using cached refs. Error: %s",
-                repo_root,
-                exc,
-            )
+        _fetch_origin(repo_root)
         try:
             ref = run_git_command(
                 ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
@@ -192,6 +204,7 @@ class _WorktreePlan:
     worktree_root: Path
     workspace_dir: Path
     branch: str
+    options: ConversationWorktreeOptions
 
     @property
     def guidance(self) -> str:
@@ -200,6 +213,7 @@ class _WorktreePlan:
             worktree_root=self.worktree_root,
             workspace_dir=self.workspace_dir,
             branch=self.branch,
+            options=self.options,
         )
 
 
@@ -207,7 +221,9 @@ def _plan_conversation_worktree(
     workspace: LocalWorkspace,
     conversation_id: UUID,
     conversation_worktree_root: Path,
+    options: ConversationWorktreeOptions | None,
 ) -> _WorktreePlan | None:
+    options = options or ConversationWorktreeOptions()
     source_workspace = Path(workspace.working_dir).resolve()
     try:
         validate_git_repository(source_workspace)
@@ -226,8 +242,19 @@ def _plan_conversation_worktree(
         source_workspace=source_workspace,
         worktree_root=worktree_root,
         workspace_dir=worktree_root / source_workspace.relative_to(repo_root),
-        branch=f"openhands/{conversation_id}",
+        branch=f"{options.branch_prefix}{conversation_id}",
+        options=options,
     )
+
+
+def _worktree_start_point(plan: _WorktreePlan) -> str:
+    if plan.options.base == "head":
+        return "HEAD"
+    if plan.options.base == "ref" and plan.options.ref:
+        if _has_git_remote(plan.repo_root):
+            _fetch_origin(plan.repo_root)
+        return plan.options.ref
+    return _get_worktree_start_point(plan.repo_root)
 
 
 def _create_conversation_worktree(plan: _WorktreePlan) -> LocalWorkspace:
@@ -256,7 +283,7 @@ def _create_conversation_worktree(plan: _WorktreePlan) -> LocalWorkspace:
             "-b",
             plan.branch,
             str(plan.worktree_root),
-            _get_worktree_start_point(repo_root),
+            _worktree_start_point(plan),
         ],
         repo_root,
     )
@@ -753,6 +780,11 @@ class ConversationService:
             for name, binding in self._credential_bindings.pop(stored.id, {}).items()
             if self._profile_allows_secret(stored, name)
         }
+        if not isinstance(agent, ACPAgent):
+            # Only ACP agents use file credential bindings; the live path
+            # refuses them for any other agent (CredentialBindingActivationTooLate).
+            # Drop a pending binding so a regular conversation never requires one.
+            return {}
         if (
             self._profile_allows_secret(stored, CODEX_AUTH_SECRET_NAME)
             and CODEX_AUTH_SECRET_NAME not in bindings
@@ -1567,7 +1599,10 @@ class ConversationService:
 
         worktree = (
             _plan_conversation_worktree(
-                request.workspace, conversation_id, self.conversation_worktree_root
+                request.workspace,
+                conversation_id,
+                self.conversation_worktree_root,
+                request.worktree_options,
             )
             if request.worktree
             else None
@@ -2106,7 +2141,10 @@ class ConversationService:
             # shares it.
             worktree = (
                 _plan_conversation_worktree(
-                    parent_stored.workspace, child_id, self.conversation_worktree_root
+                    parent_stored.workspace,
+                    child_id,
+                    self.conversation_worktree_root,
+                    None,
                 )
                 if request.isolation == "worktree"
                 else None
@@ -2639,12 +2677,18 @@ def _generate_title_traced(
     llm: LLM | None,
     max_length: int,
     on_error: Callable[[Exception], None] | None = None,
+    prompt: str | None = None,
 ) -> str:
     call_context = (
         conversation.get_llm_call_context() if conversation else LLMCallContext()
     )
     return generate_title_from_message(
-        message, llm, max_length, call_context=call_context, on_error=on_error
+        message,
+        llm,
+        max_length,
+        call_context=call_context,
+        on_error=on_error,
+        prompt=prompt,
     )
 
 
@@ -2691,6 +2735,7 @@ class AutoTitleSubscriber(Subscriber):
                     title_llm,
                     50,
                     _on_title_error,
+                    self.service.stored.prompt,
                 )
                 if title and self.service.stored.title is None:
                     await self.service.save_meta(

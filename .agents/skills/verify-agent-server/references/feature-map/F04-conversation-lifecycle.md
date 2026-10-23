@@ -35,7 +35,7 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - `F04.create-observability-precedence`: body `observability_span_name`, `observability_tags` and `observability_parent_span_context` win over their headers, header metadata merges under the body's (body keys win), the parent-span header applies when the body has none, and an over-long or malformed span-name header, non-scalar header metadata and an empty body tag are 422.
 - `F04.create-secrets`: start-time `StaticSecret` values appear masked in the create response and are encrypted at rest.
 - `F04.create-secrets-get`: a start-time secret is listed by `GET /api/conversations/{id}` right after the create.
-- `F04.create-secrets-plain`: a plain-string secret value in the create body is accepted or rejected with 422, never a 500.
+- `F04.create-secrets-plain`: a plain-string secret value in the create body is rejected with 422, never a 500.
 - `F04.run-real`: an initial message runs on DeepSeek flash to `finished`; the events socket replays the run, the final response is non-empty and autotitle names the conversation.
 - `F04.final-response`: `agent_final_response` is empty before the agent answers, carries the exact `finish` message afterwards, and is 404 for an unknown id.
 - `F04.title-llm-profile`: with `title_llm_profile` naming a saved LLM profile, autotitle calls that profile and not the agent's LLM; an unknown profile name falls back to the agent's LLM and never fails the create.
@@ -404,17 +404,17 @@ EOF
   live state in place without an autosave, and GET reads the
   `base_state.json` snapshot. The secret appears after the next state save (a
   tags PATCH, a message), so the runtime itself still has it.
-- **Plain-string secret value (`F04.create-secrets-plain`), known bug.**
-  `POST .../secrets` accepts `{"NAME": "value"}`; the create body should either
-  accept it too or refuse it with 422.
+- **Plain-string secret value (`F04.create-secrets-plain`).**
+  `POST .../secrets` accepts `{"NAME": "value"}`, but the create body takes
+  only secret objects, so a plain string there is refused with 422.
   ```sh
   control-agent-server api POST /api/conversations \
     --json "{\"workspace\": {\"working_dir\": \"$W\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false, \"secrets\": {\"QA_F04_PLAIN\": \"qa-f04-plain-value\"}}" \
-    --expect 201,422 --save F04.create-secrets-plain/start  # bug: status eq 500 && response.body.exception contains "'str' object has no attribute 'pop'"
+    --expect 422 --check detail.0.type eq model_attributes_type --check detail.0.loc.2 eq QA_F04_PLAIN \
+    --save F04.create-secrets-plain/start
   ```
-  Today the server answers 500 `"exception": "'str' object has no attribute
-  'pop'"`: `DiscriminatedUnionMixin` calls `.pop("kind")` on the string, an
-  `AttributeError` that escapes request validation.
+  The answer is a standard 422 validation error on
+  `secrets.QA_F04_PLAIN` (`model_attributes_type`), never a 500.
 - **A real run (`F04.run-real`).** DeepSeek flash answers a one-line prompt;
   autotitle is on.
   ```sh
@@ -616,17 +616,16 @@ EOF
   A whitespace-only title is rejected with 422 (like an empty title) and the
   stored title is kept; without that, the service would store
   `title.strip()`, `""`, which also stops autotitle.
-- **PATCH on an unknown id (`F04.patch-unknown-id`), known bug.** The OpenAPI
+- **PATCH on an unknown id (`F04.patch-unknown-id`).** The OpenAPI
   document declares 404 for this route; the same id is 404 on GET.
   ```sh
   control-agent-server api GET /openapi.json --check 'paths./api/conversations/{conversation_id}.patch.responses.404' exists --quiet
   control-agent-server api GET "/api/conversations/$NOPE" --expect 404
-  control-agent-server api PATCH "/api/conversations/$NOPE" --json '{"title": "QA nobody"}' --expect 404 --save F04.patch-unknown-id/unknown  # bug: status eq 200 && response.body.success eq false
+  control-agent-server api PATCH "/api/conversations/$NOPE" --json '{"title": "QA nobody"}' --expect 404 --save F04.patch-unknown-id/unknown
   ```
-  Expected: 404, as declared. Today it is 200 `{"success": false}`: the
-  handler turns a `False` from `update_conversation` into a successful
-  response body (the router test `test_update_conversation_failure` locks
-  it), so a client that checks only the status believes the rename worked.
+  404 `{"detail": "Not Found"}`, as declared: the handler raises 404 when
+  `update_conversation` finds no conversation, so a rename of a missing
+  conversation never looks successful.
 - **Delete (`F04.delete`).** A running conversation (the hanging stub) with a
   child and a file in its workspace, plus the worktree conversation.
 
@@ -664,7 +663,7 @@ EOF
   `parent_conversation_id`) remain. The worktree conversation's worktree is
   removed (directory and `git worktree` entry) while its branch stays. A repeated
   delete and an unknown id are `F04.delete-unknown-id`.
-- **DELETE on an unknown id (`F04.delete-unknown-id`), known bug.** The
+- **DELETE on an unknown id (`F04.delete-unknown-id`).** The
   OpenAPI document declares 404 for this route; the deleted `$DEL` and the
   never-created `$NOPE` are both 404 on GET.
 
@@ -673,14 +672,13 @@ EOF
   control-agent-server api GET /openapi.json --check 'paths./api/conversations/{conversation_id}.delete.responses.404' exists --quiet
   control-agent-server api GET "/api/conversations/$DEL" --expect 404
   control-agent-server api GET "/api/conversations/$NOPE" --expect 404
-  control-agent-server api DELETE "/api/conversations/$NOPE" --expect 404 --save F04.delete-unknown-id/unknown  # bug: status eq 400 && response.body.detail eq 'Bad Request'
-  control-agent-server api DELETE "/api/conversations/$DEL" --expect 404 --save F04.delete-unknown-id/repeat  # bug: status eq 400 && response.body.detail eq 'Bad Request'
+  control-agent-server api DELETE "/api/conversations/$NOPE" --expect 404 --save F04.delete-unknown-id/unknown
+  control-agent-server api DELETE "/api/conversations/$DEL" --expect 404 --save F04.delete-unknown-id/repeat
   ```
-  Expected: 404 for both, as declared. Today both are 400 with
-  `{"detail": "Bad Request"}`: the handler maps every `False` from
-  `delete_conversation` to 400 (the router tests lock it), so a client cannot
-  tell "already gone" from a malformed request. `/pause` and `/interrupt`
-  share the pattern (run family).
+  404 `{"detail": "Not Found"}` for both, as declared: the handler raises
+  404 when `delete_conversation` finds no conversation, so "already gone" is
+  distinct from a malformed request (422). `/pause` and `/interrupt` answer
+  the same way (run family).
 - **Restart (`F04.restart-persist`).** A graceful restart of the same run.
 
   Requires: `F04.create-settings`, `F04.create-idempotent`, `F04.create-parent`, `F04.run-real`, `F04.final-response`, `F04.delete`
@@ -740,11 +738,8 @@ EOF
   `base_state.json` is missing, so the two can differ on a damaged store.
 - `agent.agent_context.skills` is trimmed to `[]` on every route unless
   `include_skills=true`; the stored agent keeps them.
-- Unknown ids: GET and `agent_final_response` are 404, PATCH is 200
-  `{"success": false}` and DELETE is 400, although the OpenAPI document lists
-  404 for PATCH and DELETE (the router tests lock the current codes; known
-  bugs `F04.patch-unknown-id` and `F04.delete-unknown-id`). Check `success`
-  on a PATCH, not only the status.
+- Unknown ids: GET, PATCH, DELETE and `agent_final_response` are 404, as
+  the OpenAPI document lists; a repeated DELETE is 404 too.
 - `GET /api/conversations` takes at most 99 ids; more are a 422 (see
   `F04.batch-get-limit`). Repeat `--query ids=...` once per id.
 - PATCH `tags` replaces the whole map; PATCH `title` alone leaves tags alone.
