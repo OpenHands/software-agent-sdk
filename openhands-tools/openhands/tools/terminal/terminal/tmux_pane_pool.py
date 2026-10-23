@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import shlex
 import threading
-import time
 import uuid
 from collections import deque
 from collections.abc import Iterator, Mapping
@@ -186,12 +185,6 @@ class TmuxPanePool:
         active_pane = window.active_pane
         assert active_pane is not None
 
-        # Kill the default window now that a real window exists.
-        if self._initial_window is not None:
-            with suppress(Exception):
-                self._initial_window.kill()
-            self._initial_window = None
-
         # Use PooledTmuxTerminal which overrides close() to only kill
         # this terminal's window instead of the entire shared tmux session.
         terminal = PooledTmuxTerminal(
@@ -204,14 +197,17 @@ class TmuxPanePool:
         terminal.window = window
         terminal.pane = active_pane
 
-        # Configure PS1 (same as TmuxTerminal.initialize)
-        ps1 = terminal.PS1
-        active_pane.send_keys(
-            f'set +H; export PROMPT_COMMAND=\'export PS1="{ps1}"\'; export PS2=""'
-        )
-        time.sleep(0.1)
+        try:
+            terminal._initialize_shell()
+        except Exception:
+            window.kill()
+            raise
         terminal._initialized = True
-        terminal.clear_screen()
+
+        if self._initial_window is not None:
+            with suppress(Exception):
+                self._initial_window.kill()
+            self._initial_window = None
 
         logger.debug(f"Created pooled pane #{len(self._all_panes)}: {active_pane}")
         return terminal
@@ -239,17 +235,21 @@ class TmuxPanePool:
                 f"No pane available within {timeout}s (pool size {self.max_panes})"
             )
 
-        with self._lock:
-            if self._available:
-                terminal = self._available.popleft()
-                logger.debug(f"Checked out existing pane: {terminal.pane}")
-                return terminal
+        try:
+            with self._lock:
+                if self._available:
+                    terminal = self._available.popleft()
+                    logger.debug(f"Checked out existing pane: {terminal.pane}")
+                    return terminal
 
-            # Create a new pane (still under max_panes thanks to semaphore)
-            terminal = self._create_pane()
-            self._all_panes.append(terminal)
-            logger.debug(f"Checked out new pane: {terminal.pane}")
-            return terminal
+                # Create a new pane (still under max_panes thanks to semaphore)
+                terminal = self._create_pane()
+                self._all_panes.append(terminal)
+                logger.debug(f"Checked out new pane: {terminal.pane}")
+                return terminal
+        except Exception:
+            self._semaphore.release()
+            raise
 
     def checkin(self, terminal: PooledTmuxTerminal) -> None:
         """Return a pane to the pool."""
