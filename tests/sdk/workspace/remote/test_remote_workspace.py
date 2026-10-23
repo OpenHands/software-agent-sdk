@@ -1403,14 +1403,22 @@ def test_send_completion_callback_on_failure(monkeypatch):
         mock_client.__exit__ = MagicMock(return_value=False)
         MockClient.return_value = mock_client
 
-        exc = RuntimeError("script crashed")
-        workspace._send_completion_callback(RuntimeError, exc)
+        try:
+            raise RuntimeError("script crashed /tmp/secret sk-ant-CALLBACK")
+        except RuntimeError as exc:
+            workspace._send_completion_callback(RuntimeError, exc)
 
         payload = mock_client.post.call_args.kwargs["json"]
         assert payload["status"] == "FAILED"
         assert payload["run_id"] == "run-99"
-        assert payload["error"]["detail"] == "script crashed"
+        assert payload["error"]["detail"] == (
+            "script crashed /tmp/secret sk-ant-CALLBACK"
+        )
         assert payload["error"]["code"] == "RuntimeError"
+        assert payload["error"]["origin"]
+        assert "sk-ant-CALLBACK" not in payload["error"]["origin"]
+        assert "/tmp/secret" not in payload["error"]["origin"]
+        assert "sk-ant-CALLBACK" not in (payload["error"]["grouping_key"] or "")
 
 
 def test_send_completion_callback_no_op_without_url(monkeypatch):
