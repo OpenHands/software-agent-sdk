@@ -107,6 +107,34 @@ def _make_pre_session_acp_conversation(tmp_path) -> tuple[LocalConversation, ACP
     return conv, agent
 
 
+def test_switch_llm_rejects_acp_agent(tmp_path):
+    """switch_llm is refused on an ACP conversation (#4158).
+
+    The ACP subprocess owns its model, so swapping OpenHands' LLM would only
+    overwrite the ``acp-managed`` placeholder without changing what runs.
+    """
+    conv, _ = _make_pre_session_acp_conversation(tmp_path)
+    base_before = conv.state._fs.read(BASE_STATE)
+
+    with pytest.raises(ValueError, match="switch_acp_model"):
+        conv.switch_llm(_make_llm("other-model", "other"))
+
+    assert conv.agent.llm.usage_id == "acp-managed"
+    assert conv.state.agent.llm.usage_id == "acp-managed"
+    assert conv.state._fs.read(BASE_STATE) == base_before
+
+
+def test_switch_profile_rejects_acp_agent(tmp_path, profile_store):
+    """switch_profile is refused on an ACP conversation, as switch_llm is."""
+    conv, _ = _make_pre_session_acp_conversation(tmp_path)
+
+    with pytest.raises(ValueError, match="switch_acp_model"):
+        conv.switch_profile("fast")
+
+    assert conv.agent.llm.usage_id == "acp-managed"
+    assert conv.state.agent.llm.usage_id == "acp-managed"
+
+
 def test_switch_acp_model_before_session_defers_and_persists(tmp_path):
     """A pre-``run()`` switch persists the new model without raising.
 
