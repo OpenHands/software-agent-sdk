@@ -457,6 +457,12 @@ async def test_start_child_conversation_uses_remote_default_with_unborn_head(tmp
     assert run_git_command(
         ["git", "rev-parse", "HEAD"], child_workspace
     ) == run_git_command(["git", "rev-parse", "HEAD"], remote_dir)
+    assert (
+        run_git_command(
+            ["git", "rev-parse", "--abbrev-ref", "@{upstream}"], child_workspace
+        )
+        == "origin/main"
+    )
     with pytest.raises(GitCommandError):
         run_git_command(["git", "rev-parse", "--verify", "HEAD"], repo_dir)
 
