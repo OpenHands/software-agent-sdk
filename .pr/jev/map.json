@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "run": "/tmp/jev-sdk-verification/jev-map-live",
+  "revision": "9d0f25928a99d8e8309ff6f417085d82f0388c7e",
+  "with_llm": false,
+  "bullets": {
+    "pass": 1
+  },
+  "results": [
+    {
+      "family": "S13-security-confirmation.md",
+      "bullet": 10,
+      "ids": [
+        "S13.jev"
+      ],
+      "result": "pass",
+      "proof": [
+        "scripted"
+      ],
+      "note": "",
+      "transcript": "/tmp/jev-sdk-verification/jev-map-live/transcripts/S13-security-confirmation-10.log"
+    }
+  ]
+}
