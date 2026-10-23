@@ -151,6 +151,14 @@ describe('ACP provider credential descriptors', () => {
       );
       expect(forwarded).toEqual(settings);
     });
+
+    it('keeps the strict model-selection flag when filtering a settings payload', () => {
+      const settings = { acp_model: 'x', acp_strict_model: true };
+      const forwarded = Object.fromEntries(
+        Object.entries(settings).filter(([key]) => ACP_SETTINGS_KEYS.includes(key))
+      );
+      expect(forwarded).toEqual(settings);
+    });
   });
 
   describe('getAcpProvider', () => {

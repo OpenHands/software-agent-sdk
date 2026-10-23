@@ -90,6 +90,8 @@ export interface ACPAgentProfile extends AgentProfileBase {
   /** ACP provider key, or `'custom'` for a user-supplied command. */
   acp_server: ACPServerKind;
   acp_model: string | null;
+  /** Fail session start when the server rejects `acp_model`; needs `profile_acp_strict_model_v1`. */
+  acp_strict_model?: boolean;
   acp_session_mode: string | null;
   acp_prompt_timeout: number;
   /** Timeout (seconds) for ACP server startup. */
