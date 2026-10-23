@@ -199,6 +199,45 @@ export interface AskAgentResponse {
   response: string;
 }
 
+/**
+ * An action to run through a specific tool's own executor.
+ *
+ * The `kind` discriminator selects the action model; the remaining fields are
+ * that model's. The server validates the payload against the selected tool and
+ * rejects a mismatch with 422.
+ */
+export interface ToolAction {
+  kind: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Payload for `RemoteConversation.executeTool`.
+ *
+ * Mirrors the agent-server's `ExecuteToolRequest`. Intended for pre-run setup:
+ * the tool runs through the conversation's own executor, so state such as the
+ * terminal session is shared with the agent's later calls.
+ */
+export interface ExecuteToolRequest {
+  /**
+   * Name of the tool to execute. The agent-server only accepts tools it can
+   * run directly (currently `terminal`); anything else is a 422.
+   */
+  tool_name: string;
+  /** The action to pass to the tool executor, discriminated by its `kind`. */
+  action: ToolAction;
+}
+
+/**
+ * Result of `RemoteConversation.executeTool`.
+ *
+ * `observation` keeps the tool's own fields (for example a terminal
+ * observation's `exit_code`) instead of flattening them into text.
+ */
+export interface ExecuteToolResponse {
+  observation: { kind: string; [key: string]: unknown };
+}
+
 export interface SetSecurityAnalyzerRequest {
   security_analyzer: unknown | null;
 }

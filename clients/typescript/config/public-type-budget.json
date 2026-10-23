@@ -6,16 +6,8 @@
       "reason": "Existing public domain boundary; tracked for incremental migration under OSS-6127.",
       "owner": "neubig",
       "entries": [
-        [
-          "agent/agent.d.ts::class:Agent/index-signature::unknown",
-          "unknown",
-          "unknown"
-        ],
-        [
-          "agent/agent.d.ts::interface:AgentOptions/index-signature::unknown",
-          "unknown",
-          "unknown"
-        ],
+        ["agent/agent.d.ts::class:Agent/index-signature::unknown", "unknown", "unknown"],
+        ["agent/agent.d.ts::interface:AgentOptions/index-signature::unknown", "unknown", "unknown"],
         [
           "client/agent-server-compatibility.d.ts::function:isAgentServerVersionError/parameter:error::unknown",
           "unknown",
@@ -181,11 +173,7 @@
           "unknown",
           "Record<string, unknown>"
         ],
-        [
-          "models/api.d.ts::type:SettingsValue::unknown",
-          "unknown",
-          "unknown"
-        ],
+        ["models/api.d.ts::type:SettingsValue::unknown", "unknown", "unknown"],
         [
           "models/conversation.d.ts::interface:ACPAgentConfig/index-signature::unknown",
           "unknown",
@@ -226,11 +214,7 @@
           "unknown",
           "unknown"
         ],
-        [
-          "models/workspace.d.ts::interface:GitDiff/index-signature::unknown",
-          "unknown",
-          "unknown"
-        ],
+        ["models/workspace.d.ts::interface:GitDiff/index-signature::unknown", "unknown", "unknown"],
         [
           "security/confirmation-policy.d.ts::function:createConfirmationPolicy/parameter:options::unknown",
           "unknown",
@@ -241,16 +225,8 @@
           "unknown",
           "unknown"
         ],
-        [
-          "types/base.d.ts::interface:AgentBase/index-signature::unknown",
-          "unknown",
-          "unknown"
-        ],
-        [
-          "types/base.d.ts::interface:AgentContext/index-signature::unknown",
-          "unknown",
-          "unknown"
-        ],
+        ["types/base.d.ts::interface:AgentBase/index-signature::unknown", "unknown", "unknown"],
+        ["types/base.d.ts::interface:AgentContext/index-signature::unknown", "unknown", "unknown"],
         [
           "types/base.d.ts::interface:AgentContext/property:skills::unknown",
           "unknown",
@@ -266,16 +242,8 @@
           "unknown",
           "unknown"
         ],
-        [
-          "types/base.d.ts::interface:LLM/index-signature::unknown",
-          "unknown",
-          "unknown"
-        ],
-        [
-          "types/base.d.ts::interface:ServerInfo/index-signature::unknown",
-          "unknown",
-          "unknown"
-        ],
+        ["types/base.d.ts::interface:LLM/index-signature::unknown", "unknown", "unknown"],
+        ["types/base.d.ts::interface:ServerInfo/index-signature::unknown", "unknown", "unknown"],
         [
           "events/types.d.ts::type:ActionEvent/property:action::unknown",
           "unknown",
@@ -283,6 +251,16 @@
         ],
         [
           "events/types.d.ts::type:ObservationEvent/property:observation::unknown",
+          "unknown",
+          "unknown"
+        ],
+        [
+          "models/conversation.d.ts::interface:ExecuteToolResponse/property:observation/index-signature::unknown",
+          "unknown",
+          "unknown"
+        ],
+        [
+          "models/conversation.d.ts::interface:ToolAction/index-signature::unknown",
           "unknown",
           "unknown"
         ]

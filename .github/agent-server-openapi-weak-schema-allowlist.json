@@ -120,6 +120,12 @@
     "owner": "OpenHands OSS"
   },
   {
+    "pointer": "/components/schemas/ExecuteToolRequest/properties/action/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "The execute_tool action is a JSON transport envelope: the server validates it against the selected tool's action_type, which cannot be expressed in the static OpenAPI schema.",
+    "owner": "OpenHands OSS"
+  },
+  {
     "pointer": "/components/schemas/HookExecutionEvent/properties/hook_input/anyOf/0/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",

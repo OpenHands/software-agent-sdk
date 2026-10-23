@@ -29,7 +29,11 @@ from openhands.agent_server.conversation_service import (
     UnavailableAgentTool,
 )
 from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.event_service import CondensationUnavailable
+from openhands.agent_server.event_service import (
+    CondensationUnavailable,
+    DirectToolNotAllowedError,
+    InvalidToolActionError,
+)
 from openhands.agent_server.launch import launch_http_exception
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
@@ -41,6 +45,8 @@ from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
     ConversationSortOrder,
+    ExecuteToolRequest,
+    ExecuteToolResponse,
     ForkConversationRequest,
     NavigateConversationRequest,
     SetConfirmationPolicyRequest,
@@ -769,6 +775,62 @@ async def ask_agent(
     if response is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return AskAgentResponse(response=response)
+
+
+@conversation_router.post(
+    "/{conversation_id}/execute_tool",
+    responses={
+        400: {"description": "Service is inactive"},
+        404: {"description": "Conversation not found"},
+        409: {"description": "A run or another direct call is already in flight"},
+        422: {"description": "Unknown or unsupported tool, or invalid action"},
+        429: {"description": "Server conversation run capacity is full"},
+    },
+)
+async def execute_tool(
+    conversation_id: UUID,
+    request: ExecuteToolRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ExecuteToolResponse:
+    """Execute one tool directly, bypassing the agent loop.
+
+    Intended for pre-run setup: the tool runs through the conversation's own
+    executor, so state such as the terminal session is shared with the agent's
+    later calls. Bypasses confirmation policy and the security analyzer, and
+    appends no event. On a conversation that has never run, the call first
+    initializes the agent, which emits a ``SystemPromptEvent``.
+
+    Only the tools in ``DIRECT_EXECUTION_TOOLS`` (currently ``terminal``) are
+    accepted, and the action is validated against that tool's own action type,
+    so an action belonging to a different tool is rejected with 422 instead of
+    reaching an executor that cannot handle it. Direct calls are serialized per
+    conversation and cannot overlap a run, and they consume the same
+    server-wide run budget (``max_concurrent_runs``) as a run, so a full server
+    answers 429 rather than queueing unbounded work.
+    """
+    try:
+        observation = await conversation_service.execute_tool(
+            conversation_id, request.tool_name, request.action
+        )
+    except KeyError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        ) from e
+    except InvalidToolActionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        ) from e
+    except DirectToolNotAllowedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        ) from e
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
+        ) from e
+    if observation is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    return ExecuteToolResponse(observation=observation)
 
 
 @conversation_router.post(

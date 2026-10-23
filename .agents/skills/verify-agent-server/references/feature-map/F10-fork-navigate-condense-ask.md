@@ -1,4 +1,4 @@
-# Fork, navigate, condense and ask_agent
+# Fork, navigate, condense, ask_agent and execute_tool
 
 How a consumer branches and inspects a conversation's history without
 starting over. `fork` deep-copies a conversation (its whole event log, or only
@@ -9,14 +9,19 @@ the next appended event starts a sibling branch. `condense` forces one
 condensation step now: the agent's summarizing condenser asks its model for a
 summary and records a `Condensation` event. `ask_agent` asks the agent's model
 a side question about the conversation and returns the answer without
-recording it or changing the status.
+recording it or changing the status. `execute_tool` runs one tool through the
+conversation's own executor, so state that lives there (the terminal session)
+is shared with the agent's later calls: a setup script's `export`/`source`
+survives into the agent's terminal. It bypasses the agent loop's confirmation
+policy and security analyzer, and appends no event.
 
-Source: `openhands-agent-server/openhands/agent_server/conversation_router.py`, `openhands-agent-server/openhands/agent_server/conversation_service.py`, `openhands-agent-server/openhands/agent_server/event_service.py`, `openhands-agent-server/openhands/agent_server/models.py`, `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py`, `openhands-sdk/openhands/sdk/conversation/state.py`, `openhands-sdk/openhands/sdk/context/condenser/`
+Source: `openhands-agent-server/openhands/agent_server/conversation_router.py`, `openhands-agent-server/openhands/agent_server/conversation_service.py`, `openhands-agent-server/openhands/agent_server/event_service.py`, `openhands-agent-server/openhands/agent_server/models.py`, `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py`, `openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py`, `openhands-sdk/openhands/sdk/conversation/state.py`, `openhands-sdk/openhands/sdk/context/condenser/`
 
-Needs: `llm`
+Needs: `llm`, `tmux`
 
 Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
 `POST /api/conversations/{conversation_id}/condense`,
+`POST /api/conversations/{conversation_id}/execute_tool`,
 `POST /api/conversations/{conversation_id}/fork`,
 `POST /api/conversations/{conversation_id}/navigate`
 
@@ -45,6 +50,18 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
 - `F10.ask-agent-errors`: a missing `question` is 422, a missing key 401, and an unreachable model 500 with an `error_id`.
 - `F10.ask-agent-running`: while a run waits on its model, `ask_agent` answers at once (it does not wait for the step), records nothing and leaves the status `running`.
 - `F10.ask-agent-unknown`: an unknown conversation id is 404, as the route documents.
+- `F10.execute-tool-terminal`: `POST /execute_tool` with `{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": ...}}` runs the command through the conversation's own terminal session and answers 200 with the tool's `TerminalObservation` (`command`, `exit_code`, `content`), recording no event; a second call in the same conversation sees an `export` from the first (`F10.execute-tool-persistent`).
+- `F10.execute-tool-persistent`: sourcing a `.openhands/setup.sh` that exports a variable through `execute_tool`, then running a second `terminal` action in the same conversation, prints the exported value: the environment change survives into the agent's terminal (the V0→V1 parity this endpoint exists for).
+- `F10.execute-tool-observation-shape`: the response's `observation` carries the tool's own fields (for `terminal`, `command`, `exit_code`, `is_error`, `content`), not a flattened text summary, and `RemoteConversation.execute_tool()` returns the matching `TerminalObservation` rather than raising.
+- `F10.execute-tool-errors`: an unknown tool name is 4xx naming the missing tool (not 500), an action that fails the tool's schema is 422 at request validation, an unknown conversation id is 404, a malformed id is 422 and a missing key is 401; none of them executes a tool or appends an event.
+- `F10.execute-tool-auth-masking`: the route requires the same session-key auth as the rest of `/api/conversations/...` (unauthenticated → 401, nothing runs), and a registered secret echoed by the executed command comes back masked as `<secret-hidden>`.
+- `F10.execute-tool-nonblocking`: a long-running `terminal` action does not stall the server's event loop: `GET /alive` still answers while it runs, and cancelling the request does not stall it either — the interrupt that stops the abandoned command runs on a worker thread (the PowerShell backend's interrupt performs blocking child-process scans), so `/alive` answers while the interrupt is still in flight.
+- `F10.execute-tool-tool-scoped`: only the `terminal` tool may run directly, and the action is validated against that tool's own action type: a `GrepAction` with `tool_name="terminal"` is 422, not a 500 from `TerminalExecutor`, and the generic-route hazards (a `ClientTool` reporting a dispatch with no `ActionEvent` to deliver it, skipped tool hooks and audit events) cannot be reached.
+- `F10.execute-tool-direct-serialized`: direct calls are serialized per conversation under the per-conversation lifecycle, and cannot overlap a run in either direction: a run admitted while a direct call is in flight is 409 at every entry point that can start one (`/run`, `/goal`, and `/events` with `run=true`, via the registered `ConversationBusyError` handler rather than a 500), a second direct call while one is in flight is 409, and a call that finishes (or whose action is rejected) releases the conversation, so the next call is admitted rather than refused.
+- `F10.execute-tool-pane-pinned`: the shell state a setup script establishes (exports, functions, the working directory) is local to the one tmux pane it ran on, so the direct call pins the pane pool to that pane: a later parallel `terminal` command waits for it instead of landing on a fresh pane and missing the state.
+- `F10.execute-tool-teardown-owner`: a direct call whose request is cancelled does not leave an orphaned command: the worker is interrupted (the interrupt runs on a worker thread, so the cancel path never blocks the event loop on the PowerShell child-process scans), the service keeps ownership of both the worker and the offloaded interrupt, and closing or deleting the conversation joins both (bounded) before the terminal executor is torn down, so the command, the interrupt and teardown cannot overlap; cancellation itself returns promptly rather than blocking on the worker. The conversation stays busy — refusing a later direct call or run with 409 — until the interrupt as well as the worker has finished, so a lingering interrupt cannot signal (and kill) the next command's process.
+- `F10.execute-tool-shared-capacity`: a direct call draws on the same server-wide `max_concurrent_runs` budget as a run, so direct calls from many conversations cannot bypass the limit and queue unbounded work: with the budget exhausted, a further direct call (or a run in another conversation) is 429, not admitted, and a direct call that finishes returns its permit so the next caller is admitted.
+- `F10.execute-tool-capability`: `/server_info` advertises `direct_tool_execution_v1`, so a client gates `execute_tool` on that capability rather than a package-version floor (the route ships in the same version as servers that predate it, so a version compare would reject a working server).
 - `F10.restart-persist`: after a restart, forks keep their lineage, title, tags, HEAD and events, a fork id that names a persisted but not yet loaded conversation is still 409, and a navigated empty HEAD stays empty (the next message is still a new root).
 - `F10.restart-cold-calls`: after a restart, condense and ask_agent work on a conversation whose agent has not been initialized yet, and ask_agent still sees the history (the codename).
 
@@ -62,6 +79,20 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
   condenser that handles requests), 500.
 - REST: `POST /api/conversations/{conversation_id}/ask_agent` (body
   `{"question": "..."}`), 200 `{"response": "..."}`; 404, 422, 500.
+- REST: `POST /api/conversations/{conversation_id}/execute_tool` (body
+  `ExecuteToolRequest` `{"tool_name": "terminal", "action": {"kind": "<ActionKind>", ...}}`),
+  200 `ExecuteToolResponse` `{"observation": {...}}`; 400 (inactive service),
+  404 (unknown conversation), 409 (a run or another direct call is in flight),
+  422 (unknown tool, a tool that cannot run directly, or an action that is not
+  valid for the named tool). Only `terminal` is accepted, and the action is
+  validated against that tool's own action type. It needs a `terminal` tool on
+  the agent and a `tmux`-capable host. The route bypasses the agent loop's
+  confirmation policy and security analyzer and appends no event, so a caller
+  that owns a repo convention (app-server, Agent Canvas) runs the bootstrap
+  script through it. Direct calls are serialized per conversation: a call while
+  a run is in flight is 409, and so is a second direct call while one is in
+  flight. The action must carry a discriminator: a bare `{"command": ...}`
+  without `kind` is 422.
 - Second views used here: `GET /api/conversations/{conversation_id}`,
   `.../events/search`, `.../events/count`, `.../events/{event_id}`,
   `.../agent_final_response` (other families), the conversation's
@@ -74,7 +105,9 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
   fork (passing `agent=` raises `NotImplementedError`);
   `RemoteConversation.navigate_to(event_id | None)` posts and then refreshes
   the cached state (HEAD is not broadcast); `RemoteConversation.condense()`;
-  `RemoteConversation.ask_agent(question)`
+  `RemoteConversation.ask_agent(question)`;
+  `RemoteConversation.execute_tool(tool_name, action)` posts the action and
+  returns the deserialized `Observation`
   (`openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py`).
   Example: `examples/02_remote_agent_server/11_conversation_fork.py`.
 - TypeScript client: `ConversationClient.forkConversation`,
@@ -548,9 +581,246 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   A second `Condensation` is recorded and ask_agent still names the codename
   from the reloaded history (the condenser keeps the first two events, the
   system prompt and the user's message); `A` stays `finished`.
+- **Execute one tool (`F10.execute-tool-terminal`, `F10.execute-tool-observation-shape`).** `ET` is a conversation with the `terminal` tool that never runs (a placeholder model, so no `llm` call).
+  Requires: tmux
+  ```sh
+  F="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f10"
+  ET=$(control-agent-server conversation start --placeholder-agent --tools terminal --no-autotitle --no-run --prompt QA_F10_EXEC --print-id)
+  N_ET=$(control-agent-server api GET "/api/conversations/$ET/events/count" --field .)
+  control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "echo qa-f10-exec-tool"}}' \
+    --expect 200 --check observation.exit_code eq 0 --check observation.command eq 'echo qa-f10-exec-tool' \
+    --check observation.content.0.text contains qa-f10-exec-tool --save F10.execute-tool-terminal/run
+  control-agent-server api GET "/api/conversations/$ET/events/count" --check . eq "$N_ET"
+  ```
+  The observation carries the tool's own fields (`command`, `exit_code`,
+  `content`), not a text summary, and the conversation gains no event.
+- **A setup script's environment survives (`F10.execute-tool-persistent`).**
+  Write a `.openhands/setup.sh` that exports a marker, source it through
+  `execute_tool`, then read the marker back with a second `terminal` action in
+  the same conversation.
+  Requires: tmux, `F10.execute-tool-terminal`
+  ```sh
+  mkdir -p "$F/ws/.openhands"
+  printf 'export QA_F10_EXEC_MARKER=qa-f10-marker\n' > "$F/ws/.openhands/setup.sh"
+  PERSIST=$(control-agent-server conversation start --placeholder-agent --tools terminal --no-autotitle --no-run --workspace "$F/ws" --prompt QA_F10_PERSIST --print-id)
+  control-agent-server api POST "/api/conversations/$PERSIST/execute_tool" \
+    --json "{\"tool_name\": \"terminal\", \"action\": {\"kind\": \"TerminalAction\", \"command\": \"source $F/ws/.openhands/setup.sh\"}}" \
+    --expect 200 --check observation.exit_code eq 0 --save F10.execute-tool-persistent/source
+  control-agent-server api POST "/api/conversations/$PERSIST/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "printf %s \"$QA_F10_EXEC_MARKER\""}}' \
+    --expect 200 --check observation.content.0.text contains qa-f10-marker --save F10.execute-tool-persistent/check
+  ```
+  The second call prints the exported value: the environment change reached
+  the conversation's persistent terminal, which is the whole point of the
+  endpoint (a plain `execute_command` shell would have lost it).
+- **Bad input, unknown ids and no key (`F10.execute-tool-errors`).** None of
+  these executes a tool or appends an event.
+  Requires: tmux, `F10.execute-tool-terminal`
+  ```sh
+  control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "not_a_tool", "action": {"kind": "TerminalAction", "command": "echo hi"}}' \
+    --expect 4xx --check detail contains not_a_tool --save F10.execute-tool-errors/unknown-tool
+  control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction"}}' --expect 422 --save F10.execute-tool-errors/bad-action
+  control-agent-server api POST "/api/conversations/$NOPE/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "echo hi"}}' \
+    --expect 404 --check detail eq 'Conversation not found' --save F10.execute-tool-errors/unknown
+  control-agent-server api POST /api/conversations/not-a-uuid/execute_tool \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "echo hi"}}' \
+    --expect 422 --check detail.0.loc.1 eq conversation_id
+  control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "echo hi"}}' --auth none --expect 401
+  control-agent-server api GET "/api/conversations/$ET/events/count" --check . eq "$N_ET"
+  ```
+  An unknown tool name is a 4xx naming the tool (`Tool 'not_a_tool' not found.
+  Available tools: [...]`), a `TerminalAction` without `command` is 422 at
+  request validation, an unknown id is 404 `Conversation not found`, a
+  malformed id is 422 and no key is 401; the event count is unchanged.
+- **Auth and secret masking (`F10.execute-tool-auth-masking`).** A registered
+  secret echoed by the executed command comes back masked.
+  Requires: tmux
+  ```sh
+  SECRET_ET=$(control-agent-server conversation start --placeholder-agent --tools terminal --no-autotitle --no-run --prompt QA_F10_EXEC_SECRET --print-id)
+  control-agent-server api POST "/api/conversations/$SECRET_ET/secrets" \
+    --json '{"secrets": {"QA_F10_EXEC_TOKEN": "qa-f10-exec-token-value"}}' --expect 200 --quiet
+  control-agent-server api POST "/api/conversations/$SECRET_ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "printf %s \"$QA_F10_EXEC_TOKEN\""}}' \
+    --expect 200 --check observation.content.0.text contains '<secret-hidden>' --save F10.execute-tool-auth-masking/masked
+  control-agent-server api POST "/api/conversations/$SECRET_ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "echo hi"}}' --auth none --expect 401
+  ```
+  The command received the value as an environment variable (like
+  `F08.secrets-terminal`), but the observation the endpoint returns reads
+  `<secret-hidden>`; an unauthenticated call is 401 and runs nothing.
+- **A long tool call does not stall the server (`F10.execute-tool-nonblocking`).**
+  Start a slow `terminal` action in the background, then prove `/alive` still
+  answers while it runs.
+  Requires: tmux, `F10.execute-tool-terminal`
+  ```sh
+  control-agent-server helper start --name qa-f10-exec-slow --log "$F/exec-slow.log" -- \
+    control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "sleep 15", "timeout": 60}}' --expect 200
+  sleep 2
+  control-agent-server api GET /alive --expect 200 --expect-max-ms 5000 --save F10.execute-tool-nonblocking/alive
+  control-agent-server helper stop qa-f10-exec-slow
+  ```
+  `/alive` answers in well under the sleep's duration: `EventService.execute_tool`
+  runs `LocalConversation.execute_tool` in an executor, so the tool does not
+  hold the event loop. The same holds on the cancel path: a client that drops
+  the request while the command runs does not stall `/alive` either, because the
+  interrupt that stops the abandoned command is itself offloaded to a worker
+  thread (the PowerShell backend's `interrupt()` performs blocking child-process
+  scans, up to five seconds each), and `close()`/`DELETE` drains that interrupt
+  before tearing the executor down.
+- **An action for another tool is refused (`F10.execute-tool-tool-scoped`).**
+  A `GrepAction` payload with `tool_name="terminal"` must be a client error, not
+  a 500 from the terminal executor.
+  Requires: tmux, `F10.execute-tool-terminal`
+  ```sh
+  control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "GrepAction", "pattern": "x", "path": "."}}' \
+    --expect 422 --save F10.execute-tool-tool-scoped/foreign-action
+  control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"command": "echo no-kind"}}' \
+    --expect 422 --save F10.execute-tool-tool-scoped/missing-kind
+  ```
+  The action is validated against `terminal`'s own `action_type`
+  (`TerminalAction`), so the mismatch is 422 and never reaches the executor; an
+  unlisted tool such as `file_editor` is likewise 422, and a body that omits the
+  `kind` discriminator is 422 rather than being accepted as a `TerminalAction`.
+- **Direct calls are serialized (`F10.execute-tool-direct-serialized`).** Prove
+  overlap is refused in both directions and that a completed call releases the
+  conversation.
+  Requires: tmux, `F10.execute-tool-terminal`
+  ```sh
+  control-agent-server helper start --name qa-f10-exec-busy --log "$F/exec-busy.log" -- \
+    control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "sleep 10", "timeout": 60}}' --expect 200
+  sleep 2
+  control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "echo second"}}' \
+    --expect 409 --save F10.execute-tool-direct-serialized/overlap
+  control-agent-server helper stop qa-f10-exec-busy
+  control-agent-server api POST "/api/conversations/$ET/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "echo released"}}' \
+    --expect 200 --check observation.exit_code eq 0 --save F10.execute-tool-direct-serialized/released
+  ```
+  The concurrent call is 409 while the first is in flight, and the call after
+  it finishes is admitted (200): a completed or rejected direct call frees the
+  conversation instead of leaving it stuck busy.
+- **Setup state stays on one pane (`F10.execute-tool-pane-pinned`).** The shell
+  state a bootstrap script establishes is local to its pane, so a later
+  parallel `terminal` command still sees it.
+  Requires: tmux, `F10.execute-tool-terminal`, `F10.execute-tool-persistent`
+  ```sh
+  PIN=$(control-agent-server conversation start --placeholder-agent --tools terminal --no-autotitle --no-run --prompt QA_F10_PIN --print-id)
+  control-agent-server api POST "/api/conversations/$PIN/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "export QA_F10_PIN_MARKER=qa-pin"}}' \
+    --expect 200 --save F10.execute-tool-pane-pinned/export
+  control-agent-server api POST "/api/conversations/$PIN/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "printf %s \"$QA_F10_PIN_MARKER\""}}' \
+    --expect 200 --check observation.content.0.text contains qa-pin --save F10.execute-tool-pane-pinned/read
+  ```
+  The direct call pins the conversation's pane pool to the pane that ran it, so
+  the later call reads the export back instead of getting a fresh pane.
+- **A cancelled call leaves no orphaned command (`F10.execute-tool-teardown-owner`).**
+  Start a slow command, let the request time out, then prove the conversation
+  closes cleanly and the command is gone.
+  Requires: tmux, `F10.execute-tool-terminal`
+  ```sh
+  TEAR=$(control-agent-server conversation start --placeholder-agent --tools terminal --no-autotitle --no-run --prompt QA_F10_TEAR --print-id)
+  control-agent-server helper start --name qa-f10-exec-tear --log "$F/exec-tear.log" -- \
+    control-agent-server api POST "/api/conversations/$TEAR/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "sleep 30", "timeout": 120}}' --expect 200
+  sleep 2
+  control-agent-server api DELETE "/api/conversations/$TEAR" --expect 200 --save F10.execute-tool-teardown-owner/delete
+  control-agent-server helper stop qa-f10-exec-tear
+  ```
+  The delete interrupts and joins the synchronous worker (bounded) before the
+  terminal executor is torn down, so the command and teardown do not overlap;
+  the request that is still awaiting the slow call is abandoned, not left
+  holding the executor. The interrupt itself is offloaded to a worker thread and
+  joined too, so teardown cannot close an executor an interrupt is still using
+  and the delete never blocks the event loop on the PowerShell scans. Until the
+  interrupt as well as the worker has finished the conversation stays busy: a
+  direct call made while the interrupt still runs is 409 (see
+  `test_delayed_interrupt_keeps_the_conversation_busy`), not admitted under a
+  scan that could signal the new command's process.
+- **A client gates on the capability, not the version (`F10.execute-tool-capability`).**
+  The server advertises the route as a capability so a client does not reject a
+  working server on a package-version floor.
+  ```sh
+  control-agent-server api GET /server_info \
+    --check capabilities contains direct_tool_execution_v1 --save F10.execute-tool-capability/advertised
+  ```
+  `direct_tool_execution_v1` is in `/server_info`'s `capabilities`; the route
+  ships in the same package version as servers that predate it, so a version
+  compare cannot tell them apart and the capability is authoritative.
+- **Direct calls share the server run budget (`F10.execute-tool-shared-capacity`).**
+  Last bullet: it restarts the run with a single run slot and holds that slot
+  on a slow direct call, then shows a second conversation is refused on both
+  the direct route and `/run`.
+  Requires: tmux, `F10.execute-tool-terminal`
+  ```sh
+  control-agent-server restart --config-json '{"max_concurrent_runs": 1}'
+  CAP_A=$(control-agent-server conversation start --placeholder-agent --tools terminal --no-autotitle --no-run --prompt QA_F10_CAP_A --print-id)
+  CAP_B=$(control-agent-server conversation start --placeholder-agent --tools terminal --no-autotitle --no-run --prompt QA_F10_CAP_B --print-id)
+  control-agent-server helper start --name qa-f10-cap --log "$F/cap.log" -- \
+    control-agent-server api POST "/api/conversations/$CAP_A/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "sleep 10", "timeout": 60}}' --expect 200
+  sleep 2
+  control-agent-server api POST "/api/conversations/$CAP_B/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "echo blocked"}}' \
+    --expect 429 --check detail eq 'Conversation run limit reached. Retry the request later.' --save F10.execute-tool-shared-capacity/refused
+  control-agent-server api POST "/api/conversations/$CAP_B/run" --expect 429 --save F10.execute-tool-shared-capacity/run-refused
+  control-agent-server helper stop qa-f10-cap
+  control-agent-server api POST "/api/conversations/$CAP_B/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "echo admitted"}}' \
+    --expect 200 --until-ok 60 --check observation.exit_code eq 0 --save F10.execute-tool-shared-capacity/admitted
+  ```
+  While the one permit is held by `CAP_A`'s direct call, a direct call from
+  `CAP_B` and a `/run` on `CAP_B` are both 429 `Conversation run limit
+  reached. Retry the request later.` (the same refusal a run gets, from the
+  same server-wide budget), so direct calls cannot bypass `max_concurrent_runs`
+  and queue unbounded work. Once the holder finishes the permit is returned and
+  the same direct call on `CAP_B` is admitted (200) — the positive control that
+  proves the 429s were capacity, not a permanent refusal.
 
 ## Gotchas
 
+- `execute_tool` runs a tool on the conversation's own executor, so it shares
+  the terminal session the agent uses later: an `export`/`source` there is
+  visible to the agent's next `terminal` call (`F10.execute-tool-persistent`),
+  which a `POST /api/bash/execute_bash_command` shell (fresh subprocess) and a
+  `session_start` hook (`subprocess.run`) cannot do. It bypasses confirmation
+  policy and the security analyzer and appends no event, so it is a pre-run
+  setup mechanism, not a way to drive the agent.
+- Only `terminal` may run directly (`F10.execute-tool-tool-scoped`): a generic
+  route would let a caller dispatch `ClientTool`, which only reports that it was
+  dispatched because there is no `ActionEvent` to deliver, and would skip the
+  tool hooks and audit events the agent loop records. The action is validated
+  against the named tool's action type, so a `GrepAction` with
+  `tool_name="terminal"` is 422 rather than a 500 out of `TerminalExecutor`.
+  The action must be a real tool action (`TerminalAction`, etc.) and must carry
+  the `kind` discriminator naming that action; a body that omits `kind` is 422
+  rather than being accepted as the named tool's action.
+- Direct calls are serialized per conversation and cannot overlap a run in
+  either direction (`F10.execute-tool-direct-serialized`): a run started while a
+  direct call is in flight is 409, and so is a direct call while a run is in
+  flight. A completed call releases the conversation; a cancelled one keeps it
+  busy until the synchronous worker has actually exited.
+- A direct call also draws on the server-wide run budget
+  (`F10.execute-tool-shared-capacity`): it holds one `max_concurrent_runs`
+  permit, so a full server answers 429 (the same detail a run gets) instead of
+  queueing the call in the process executor, and the permit is returned when the
+  call finishes. Per-conversation serialization alone would let every
+  conversation submit a direct call at once.
+- The shell state a setup script establishes is local to the one tmux pane it
+  ran on, so a direct call pins the pane pool to that pane
+  (`F10.execute-tool-pane-pinned`): a later parallel `terminal` command waits
+  for the pinned pane instead of landing on a fresh one and silently missing
+  the exports. Concurrency on that conversation drops to one pane.
 - `fork` copies events with their original ids, so the same event id exists
   in the source and every fork; always scope event lookups by conversation.
 - A fork shares the source's working directory (`workspace.working_dir`):

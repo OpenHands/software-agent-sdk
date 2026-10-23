@@ -39,6 +39,7 @@ from openhands.sdk.security.confirmation_policy import (
     NeverConfirm,
 )
 from openhands.sdk.tool.client_tool import ClientToolSpec
+from openhands.sdk.tool.schema import Observation
 from openhands.sdk.utils import OpenHandsUUID, utc_now
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
@@ -601,6 +602,43 @@ class AskAgentResponse(BaseModel):
     """Response containing the agent's answer."""
 
     response: str = Field(description="The agent's response to the question")
+
+
+class ExecuteToolRequest(BaseModel):
+    """Payload to execute one tool directly on a conversation.
+
+    ``action`` is the tool's action as a plain JSON object, *not* the SDK's
+    ``Action`` union. The server resolves ``tool_name`` and validates the
+    payload against **that tool's** ``action_type``, so an action belonging to
+    another tool is rejected with 422 instead of reaching an executor that
+    cannot handle it. Typing the field as the union would accept any registered
+    action for any tool, and would also make FastAPI split every action schema
+    into ``-Input``/``-Output`` twins in the public contract.
+    """
+
+    tool_name: str = Field(
+        description=(
+            "Name of the tool to execute. Only 'terminal' is accepted: this "
+            "route runs a pre-run setup command through the conversation's "
+            "persistent terminal session."
+        )
+    )
+    action: dict[str, Any] = Field(
+        description="The tool's action as JSON, discriminated by its 'kind'"
+    )
+
+
+class ExecuteToolResponse(BaseModel):
+    """Observation produced by a direct tool execution.
+
+    The observation is returned as its own model so tool-specific fields (for
+    example a terminal observation's ``exit_code``) survive the round trip
+    instead of being flattened into text.
+    """
+
+    observation: Observation = Field(
+        description="The observation returned by the tool execution"
+    )
 
 
 class StartGoalRequest(BaseModel):
