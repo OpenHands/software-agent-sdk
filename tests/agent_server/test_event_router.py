@@ -7,10 +7,13 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from openhands.agent_server.dependencies import get_event_service
+from openhands.agent_server.dependencies import (
+    get_event_service,
+    get_read_event_service,
+)
 from openhands.agent_server.event_router import (
     event_router,
     normalize_datetime_to_server_timezone,
@@ -365,7 +368,9 @@ class TestSearchEventsEndpoint:
     ):
         """Test search events with naive datetime (no timezone)."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        client.app.dependency_overrides[get_read_event_service] = (
+            lambda: mock_event_service
+        )
 
         try:
             # Mock the search_events method to return a sample result
@@ -402,7 +407,9 @@ class TestSearchEventsEndpoint:
     ):
         """Test search events with timezone-aware datetime."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        client.app.dependency_overrides[get_read_event_service] = (
+            lambda: mock_event_service
+        )
 
         try:
             # Mock the search_events method to return a sample result
@@ -439,7 +446,9 @@ class TestSearchEventsEndpoint:
         """Test search events with both timestamp filters using
         timezone-aware datetimes."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        client.app.dependency_overrides[get_read_event_service] = (
+            lambda: mock_event_service
+        )
 
         try:
             # Mock the search_events method to return a sample result
@@ -476,7 +485,9 @@ class TestSearchEventsEndpoint:
     ):
         """Test count events with timezone-aware datetime."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        client.app.dependency_overrides[get_read_event_service] = (
+            lambda: mock_event_service
+        )
 
         try:
             # Mock the count_events method to return a sample result
@@ -509,7 +520,9 @@ class TestSearchEventsEndpoint:
     ):
         """Test count events with source filter."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        client.app.dependency_overrides[get_read_event_service] = (
+            lambda: mock_event_service
+        )
 
         try:
             # Mock the count_events method to return a sample result
@@ -543,7 +556,9 @@ class TestSearchEventsEndpoint:
         """Test that different timezone representations of the same moment
         normalize consistently."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        client.app.dependency_overrides[get_read_event_service] = (
+            lambda: mock_event_service
+        )
 
         try:
             # Mock the search_events method to return a sample result
@@ -598,7 +613,9 @@ class TestSearchEventsEndpoint:
     ):
         """Test search events with source filter."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        client.app.dependency_overrides[get_read_event_service] = (
+            lambda: mock_event_service
+        )
 
         try:
             # Mock the search_events method to return a sample result
@@ -633,7 +650,9 @@ class TestSearchEventsEndpoint:
     ):
         """Test search events with multiple filters including source."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        client.app.dependency_overrides[get_read_event_service] = (
+            lambda: mock_event_service
+        )
 
         try:
             # Mock the search_events method to return a sample result
@@ -719,7 +738,7 @@ class TestSearchEventsEndpoint:
         conversation._state = state
         event_service._conversation = conversation
 
-        client.app.dependency_overrides[get_event_service] = lambda: event_service
+        client.app.dependency_overrides[get_read_event_service] = lambda: event_service
 
         try:
             # Test filtering by source="user" - should return 2 events
@@ -792,7 +811,7 @@ class TestSearchEventsEndpoint:
         conversation._state = state
         event_service._conversation = conversation
 
-        client.app.dependency_overrides[get_event_service] = lambda: event_service
+        client.app.dependency_overrides[get_read_event_service] = lambda: event_service
 
         try:
             # Test filtering by body="hello" (case-insensitive) - should return 2 events
@@ -812,6 +831,59 @@ class TestSearchEventsEndpoint:
             client.app.dependency_overrides.clear()
 
 
+class TestReadEventServiceSeam:
+    """The read seam must serve archived history without handing out a runtime.
+
+    ``get_event_service`` 404s an archived conversation because archiving
+    releases its runtime; ``get_read_event_service`` falls back to the persisted
+    event log so history stays readable, mirroring the Docker runtime's
+    ``serves_persisted_event_reads`` behaviour.
+    """
+
+    @pytest.mark.asyncio
+    async def test_archived_conversation_reads_from_persisted_log(self):
+        conversation_id = uuid4()
+        persisted = MagicMock(spec=EventService)
+        service = AsyncMock()
+        service.get_event_service.return_value = None
+        service.is_conversation_archived.return_value = True
+        service.get_persisted_event_service.return_value = persisted
+        request = MagicMock()
+        request.app.state = MagicMock(spec=[])
+
+        resolved = await get_read_event_service(conversation_id, request, service)
+
+        assert resolved is persisted
+        service.get_persisted_event_service.assert_awaited_once_with(conversation_id)
+
+    @pytest.mark.asyncio
+    async def test_live_conversation_reads_from_runtime(self):
+        conversation_id = uuid4()
+        live = MagicMock(spec=EventService)
+        service = AsyncMock()
+        service.get_event_service.return_value = live
+        request = MagicMock()
+        request.app.state = MagicMock(spec=[])
+
+        resolved = await get_read_event_service(conversation_id, request, service)
+
+        assert resolved is live
+        service.get_persisted_event_service.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unknown_conversation_still_404s(self):
+        service = AsyncMock()
+        service.get_event_service.return_value = None
+        service.is_conversation_archived.return_value = False
+        request = MagicMock()
+        request.app.state = MagicMock(spec=[])
+
+        with pytest.raises(HTTPException) as exc_info:
+            await get_read_event_service(uuid4(), request, service)
+
+        assert exc_info.value.status_code == 404
+
+
 def test_unknown_event_id_is_404_and_null_in_batch(client, sample_conversation_id):
     """An unknown id is a 404 from get-one and null in its batch-get slot."""
     event_log = EventLog(InMemoryFileStore())
@@ -825,7 +897,7 @@ def test_unknown_event_id_is_404_and_null_in_batch(client, sample_conversation_i
     conversation = MagicMock()
     conversation._state.events = event_log
     event_service._conversation = conversation
-    client.app.dependency_overrides[get_event_service] = lambda: event_service
+    client.app.dependency_overrides[get_read_event_service] = lambda: event_service
     url = f"/api/conversations/{sample_conversation_id}/events"
 
     try:

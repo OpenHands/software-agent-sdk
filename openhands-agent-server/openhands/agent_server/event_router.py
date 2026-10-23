@@ -15,7 +15,10 @@ from fastapi import (
 )
 from starlette.responses import JSONResponse
 
-from openhands.agent_server.dependencies import get_event_service
+from openhands.agent_server.dependencies import (
+    get_event_service,
+    get_read_event_service,
+)
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
@@ -103,7 +106,7 @@ async def search_conversation_events(
         datetime | None,
         Query(title="Filter: event timestamp < this datetime"),
     ] = None,
-    event_service: EventService = Depends(get_event_service),
+    event_service: EventService = Depends(get_read_event_service),
 ) -> JSONResponse:
     """Search / List local events"""
 
@@ -165,7 +168,7 @@ async def count_conversation_events(
         datetime | None,
         Query(title="Filter: event timestamp < this datetime"),
     ] = None,
-    event_service: EventService = Depends(get_event_service),
+    event_service: EventService = Depends(get_read_event_service),
 ) -> int:
     """Count local events matching the given filters"""
     # Normalize timezone-aware datetimes to server timezone
@@ -190,7 +193,7 @@ async def count_conversation_events(
 )
 async def get_conversation_event(
     event_id: str,
-    event_service: EventService = Depends(get_event_service),
+    event_service: EventService = Depends(get_read_event_service),
 ) -> Event:
     """Get a local event given an id"""
     event = await event_service.get_event(event_id)
@@ -202,7 +205,7 @@ async def get_conversation_event(
 @event_read_router.get("")
 async def batch_get_conversation_events(
     event_ids: list[str],
-    event_service: EventService = Depends(get_event_service),
+    event_service: EventService = Depends(get_read_event_service),
 ) -> list[Event | None]:
     """Get a batch of local events given their ids, returning null for any
     missing item."""

@@ -243,20 +243,23 @@ async def test_wedged_connection_drops_instead_of_blocking_the_publisher():
     sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
     sub.go_live(None)
 
-    # Publish far past the budget, and time the publisher.
-    started = asyncio.get_running_loop().time()
-    for i in range(500):
-        event = _msg(f"m{i}" * 50)
-        log.add(event)
-        await sub(event)
-    elapsed = asyncio.get_running_loop().time() - started
+    yielded = asyncio.Event()
 
-    assert elapsed < 0.5, "publisher blocked on a wedged consumer"
-    assert writer.closed, "over-budget connection should be dropped"
-    assert writer.drop_reason == "slow_consumer"
+    async def publish():
+        asyncio.get_running_loop().call_soon(yielded.set)
+        for i in range(500):
+            event = _msg(f"m{i}" * 50)
+            log.add(event)
+            await sub(event)
+        assert not yielded.is_set(), "publisher yielded to a wedged consumer"
 
-    ws.gate.set()
-    await writer.aclose()
+    try:
+        await asyncio.wait_for(publish(), timeout=5)
+        assert writer.closed, "over-budget connection should be dropped"
+        assert writer.drop_reason == "slow_consumer"
+    finally:
+        ws.gate.set()
+        await writer.aclose()
 
 
 @pytest.mark.asyncio

@@ -38,10 +38,10 @@ class FakeStorage:
     async def idle(self, conversation_id: UUID) -> AsyncIterator[bool]:
         yield conversation_id not in self.busy
 
-    def archive(self, conversation_id: UUID) -> list[Path]:
+    def expire(self, conversation_id: UUID) -> list[Path]:
         return []
 
-    async def on_archived(self, conversation_id: UUID) -> None:
+    async def on_expired(self, conversation_id: UUID) -> None:
         pass
 
 

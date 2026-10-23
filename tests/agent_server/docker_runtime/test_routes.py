@@ -1,7 +1,9 @@
 import asyncio
 import json
+import os
+import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 from uuid import uuid4
 
 import httpx
@@ -15,6 +17,11 @@ from starlette.routing import Match
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_router import (
+    conversation_catalog_router,
+    get_conversation,
+)
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
 from openhands.agent_server.docker_runtime.registry import (
     ConversationContainer,
@@ -26,10 +33,19 @@ from openhands.agent_server.docker_runtime.routers import (
     proxy_conversation,
 )
 from openhands.agent_server.event_router import event_read_router
-from openhands.agent_server.models import UpdateSecretsRequest
+from openhands.agent_server.models import (
+    ConversationInfo,
+    StoredConversation,
+    UpdateSecretsRequest,
+)
+from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.request import ConversationContainerOptions
+from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.secret import LookupSecret
+from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.utils import utc_now
+from openhands.sdk.workspace import LocalWorkspace
 
 
 def test_docker_mode_replaces_local_conversation_execution_routes(tmp_path):
@@ -264,6 +280,147 @@ def test_runtime_info_marks_legacy_local_conversation_non_resumable(
         "can_resume": True,
         "runtime_error": None,
     }
+
+
+def test_archive_stops_runtime_and_unarchive_stays_cold(tmp_path, monkeypatch):
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("outer-key"),
+    )
+    conversation_id = uuid4()
+    registry = DockerConversationRegistry(config)
+    registry.provisioning.create(conversation_id)
+    transitions = []
+    registry.stop = AsyncMock(side_effect=lambda _: transitions.append("stop"))
+    archived_at = utc_now()
+    conversation = ConversationInfo(
+        id=conversation_id,
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent=Agent(llm=LLM(model="test-model"), tools=[]),
+    )
+    service = AsyncMock()
+
+    async def set_archived(_, *, archived):
+        transitions.append("archive" if archived else "unarchive")
+        return (
+            conversation.model_copy(update={"archived_at": archived_at})
+            if archived
+            else conversation
+        )
+
+    service.set_conversation_archived.side_effect = set_archived
+
+    app = FastAPI()
+    app.state.conversation_registry = registry
+    app.state.conversation_service = service
+    app.include_router(docker_conversation_router, prefix="/api")
+    with TestClient(app) as client:
+        archived = client.post(f"/api/conversations/{conversation_id}/archive")
+        unarchived = client.post(f"/api/conversations/{conversation_id}/unarchive")
+
+    assert archived.status_code == 200
+    assert archived.json()["archived_at"] == archived_at.isoformat().replace(
+        "+00:00", "Z"
+    )
+    assert unarchived.status_code == 200
+    assert unarchived.json()["archived_at"] is None
+    registry.stop.assert_awaited_once_with(conversation_id)
+    service.set_conversation_archived.assert_has_awaits(
+        [
+            call(conversation_id, archived=True),
+            call(conversation_id, archived=False),
+        ]
+    )
+    assert transitions == ["stop", "archive", "unarchive"]
+
+
+@pytest.mark.asyncio
+async def test_archive_keeps_metadata_written_by_stopping_runtime(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("outer-key"),
+    )
+    conversation_id = uuid4()
+    registry = DockerConversationRegistry(config)
+    registry.provisioning.create(conversation_id)
+    directory = registry.conversation_dir(conversation_id)
+    directory.mkdir(parents=True)
+    stored = StoredConversation(
+        id=conversation_id,
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        confirmation_policy=NeverConfirm(),
+    )
+    (directory / "meta.json").write_text(stored.model_dump_json())
+    (directory / "base_state.json").write_text(
+        ConversationState(
+            id=conversation_id,
+            agent=Agent(llm=LLM(model="test-model"), tools=[]),
+            workspace=stored.workspace,
+            confirmation_policy=stored.confirmation_policy,
+        ).model_dump_json()
+    )
+
+    async def inner_runtime_shutdown(_):
+        runtime_stored = stored.model_copy(update={"title": "Title set by runtime"})
+        (directory / "meta.json").write_text(runtime_stored.model_dump_json())
+
+    registry.stop = AsyncMock(side_effect=inner_runtime_shutdown)
+
+    app = FastAPI()
+    app.state.conversation_registry = registry
+    app.include_router(docker_conversation_router, prefix="/api")
+    async with ConversationService(
+        conversations_dir=config.conversations_path
+    ) as service:
+        app.state.conversation_service = service
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/api/conversations/{conversation_id}/archive"
+            )
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "Title set by runtime"
+    persisted = json.loads((directory / "meta.json").read_text())
+    assert persisted["title"] == "Title set by runtime"
+    assert persisted["archived_at"] is not None
+
+
+def test_archived_conversation_cannot_start_a_runtime(tmp_path, monkeypatch):
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("outer-key"),
+    )
+    conversation_id = uuid4()
+    registry = DockerConversationRegistry(config)
+    registry.provisioning.create(conversation_id)
+    directory = registry.conversation_dir(conversation_id)
+    directory.mkdir(parents=True)
+    (directory / "meta.json").write_text('{"archived_at":"2026-08-14T00:00:00+00:00"}')
+
+    app = FastAPI()
+    app.state.conversation_registry = registry
+    app.state.conversation_service = AsyncMock()
+    app.include_router(docker_conversation_router, prefix="/api")
+    with TestClient(app) as client:
+        start = client.post(
+            "/api/conversations", json={"conversation_id": str(conversation_id)}
+        )
+        reprovision = client.post(
+            f"/api/conversations/{conversation_id}/runtime/reprovision"
+        )
+        proxy = client.get(f"/api/conversations/{conversation_id}/run")
+
+    assert start.status_code == 409
+    assert reprovision.status_code == 409
+    assert proxy.status_code == 409
+    assert registry.get(conversation_id) is None
 
 
 def test_docker_event_history_reads_persistence_without_starting_a_container(
@@ -594,3 +751,101 @@ def test_invalid_container_options_are_rejected(tmp_path, monkeypatch):
 
     assert response.status_code == 422
     assert registry.provisioning.load_optional(conversation_id) is None
+
+
+@pytest.mark.asyncio
+async def test_expiration_is_independent_of_archive_and_unarchive(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        workspace_path=tmp_path / "workspaces",
+        secret_key=SecretStr("outer-key"),
+        conversation_storage_retention_days=1,
+    )
+    registry = DockerConversationRegistry(config)
+    conversation_id = uuid4()
+    identity = registry.provisioning.create(conversation_id)
+    workspace = identity.workspace_path
+    (workspace / "main.py").write_text("print('retained until expiry')")
+    directory = registry.conversation_dir(conversation_id)
+    directory.mkdir(parents=True)
+    stored = StoredConversation(
+        id=conversation_id,
+        workspace=LocalWorkspace(working_dir=str(workspace)),
+        confirmation_policy=NeverConfirm(),
+    )
+    (directory / "meta.json").write_text(stored.model_dump_json())
+    state = directory / "base_state.json"
+    state.write_text(
+        ConversationState(
+            id=conversation_id,
+            agent=Agent(llm=LLM(model="test-model"), tools=[]),
+            workspace=stored.workspace,
+            confirmation_policy=stored.confirmation_policy,
+        ).model_dump_json()
+    )
+    old = time.time() - 2 * 86400
+    os.utime(state, (old, old))
+
+    def reject_container_start(_):
+        pytest.fail("expired runtime must never start a container")
+
+    monkeypatch.setattr(registry, "_build_container", reject_container_start)
+    app = FastAPI()
+    app.state.conversation_registry = registry
+    app.include_router(conversation_catalog_router, prefix="/api")
+    app.add_api_route("/api/conversations/{conversation_id}", get_conversation)
+    app.include_router(event_read_router, prefix="/api")
+    app.include_router(docker_conversation_router, prefix="/api")
+    service = ConversationService(conversations_dir=config.conversations_path)
+    registry.configure_service(service)
+    async with service:
+        app.state.conversation_service = service
+        await registry.reclaimer.run_pass()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            info = (await client.get(f"/api/conversations/{conversation_id}")).json()
+            assert info["archived_at"] is None
+            assert info["runtime_info"]["can_resume"] is False
+            assert info["runtime_info"]["runtime_error"]["code"] == "runtime_expired"
+            assert not workspace.exists()
+            active = (await client.get("/api/conversations/search")).json()["items"]
+            assert [item["id"] for item in active] == [str(conversation_id)]
+
+            archived = await client.post(
+                f"/api/conversations/{conversation_id}/archive"
+            )
+            assert archived.status_code == 200
+            assert archived.json()["archived_at"] is not None
+            assert (await client.get("/api/conversations/search")).json()["items"] == []
+            archived_items = (
+                await client.get("/api/conversations/search", params={"archived": True})
+            ).json()["items"]
+            assert [item["id"] for item in archived_items] == [str(conversation_id)]
+
+            restored = await client.post(
+                f"/api/conversations/{conversation_id}/unarchive"
+            )
+            assert restored.status_code == 200
+            assert restored.json()["archived_at"] is None
+            assert restored.json()["runtime_info"] == info["runtime_info"]
+            for path in ("runtime/resume", "runtime/reprovision"):
+                response = await client.post(
+                    f"/api/conversations/{conversation_id}/{path}"
+                )
+                assert response.status_code == 410
+                assert "expired" in response.json()["detail"].lower()
+            history = await client.get(
+                f"/api/conversations/{conversation_id}/events/search"
+            )
+            assert history.status_code == 200
+            assert not workspace.exists()
+            assert (
+                await client.delete(f"/api/conversations/{conversation_id}")
+            ).status_code == 200
+            assert (
+                await client.get(f"/api/conversations/{conversation_id}")
+            ).status_code == 404

@@ -22,6 +22,7 @@ from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioni
 from openhands.agent_server.docker_runtime.storage import DockerRuntimeStorage
 from openhands.agent_server.launch import container_browser_enabled
 from openhands.agent_server.models import (
+    ConversationRuntimeError,
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
 )
@@ -75,7 +76,7 @@ _OBSERVABILITY_ENV_VARS: Final[tuple[str, ...]] = (
 )
 
 
-class RuntimeArchivedError(RuntimeError):
+class RuntimeExpiredError(RuntimeError):
     """Retention deleted the runtime; the conversation is read-only."""
 
 
@@ -141,17 +142,30 @@ class DockerConversationRegistry(ConversationRegistry):
         identity = self.provisioning.load_optional(conversation_id)
         return identity.cipher if identity is not None else self.provisioning.cipher
 
-    def archived_marker(self, conversation_id: UUID) -> Path:
-        # Beside the manifest, not in it: the manifest must stay loadable by
-        # older builds, and it holds the key to the conversation's history.
+    def expired_marker(self, conversation_id: UUID) -> Path:
+        # Keep the legacy filename so older builds also refuse to revive
+        # an expired runtime with an empty workspace.
         return self.provisioning.control_root / f"{conversation_id.hex}.archived.json"
 
-    def is_archived(self, conversation_id: UUID) -> bool:
-        return self.archived_marker(conversation_id).exists()
+    def is_expired(self, conversation_id: UUID) -> bool:
+        return self.expired_marker(conversation_id).exists()
 
     def runtime_info(self, conversation_id: UUID) -> ConversationRuntimeInfo:
         identity = self.provisioning.load_optional(conversation_id)
-        if identity is None or self.is_archived(conversation_id):
+        if self.is_expired(conversation_id):
+            return ConversationRuntimeInfo(
+                runtime_status=ConversationRuntimeStatus.MISSING,
+                can_resume=False,
+                runtime_error=ConversationRuntimeError(
+                    code="runtime_expired",
+                    message=(
+                        "Runtime retention expired; this runtime cannot be resumed. "
+                        "Unarchiving does not restore deleted workspace files; "
+                        "conversation history remains readable."
+                    ),
+                ),
+            )
+        if identity is None:
             return ConversationRuntimeInfo(
                 runtime_status=ConversationRuntimeStatus.MISSING,
                 can_resume=False,
@@ -281,8 +295,8 @@ class DockerConversationRegistry(ConversationRegistry):
         async with self._lock:
             if conversation_id in self._deleting:
                 raise RuntimeError("Conversation is being deleted")
-            if self.is_archived(conversation_id):
-                raise RuntimeArchivedError("Conversation runtime was archived")
+            if self.is_expired(conversation_id):
+                raise RuntimeExpiredError("Conversation runtime expired")
             self._last_access[conversation_id] = time.monotonic()
             container = self._containers.get(conversation_id)
 
