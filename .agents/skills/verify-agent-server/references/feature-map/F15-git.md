@@ -1,4 +1,4 @@
-# Git changes, diffs, commits and repository search
+# Git changes, diffs, commits, repository search and provider validation
 
 Read-only git views of a directory on the agent server's host, for the
 Changes and Commits tabs that show what an agent did. `changes` lists the
@@ -18,13 +18,14 @@ server's secrets can access (`missing_token` when there is none).
 
 Source: `openhands-agent-server/openhands/agent_server/git_router.py`, `openhands-agent-server/openhands/agent_server/git_provider_service.py`, `openhands-agent-server/openhands/agent_server/runtime_router.py`, `openhands-sdk/openhands/sdk/git/`, `openhands-sdk/openhands/sdk/workspace/remote/remote_workspace_mixin.py`, `clients/typescript/src/workspace/remote-workspace.ts`, `clients/typescript/src/client/git-client.ts`
 
-Needs: `llm`, `git`, `node`
+Needs: `llm`, `git`, `node`, `network`
 
 Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 `GET /api/conversations/{runtime_conversation_id}/git/diff`,
 `GET /api/conversations/{runtime_conversation_id}/git/commits`,
 `GET /api/conversations/{runtime_conversation_id}/git/commits/{sha}/changes`,
-`GET /api/git/repositories/search`, `GET /api/git/changes`,
+`POST /api/git/validate-repository`, `GET /api/git/repositories/search`,
+`GET /api/git/changes`,
 `GET /api/git/diff`, `GET /api/git/commits`, `GET /api/git/commits/{sha}/changes`
 
 ## Sub-features
@@ -57,6 +58,7 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 - `F15.repo-search-unreachable`: when GitHub cannot be reached the search is 502 with the generic masked body and no token in it.
 - `F15.repo-search-timeout`: when GitHub does not answer within 15 s the search is 504 with the masked body `GitHub repository search timed out` and no token in it.
 - `F15.repo-search-github`: with a real GitHub token, search lists the token's repositories with a `page:offset` cursor and a case-insensitive `query` filter, and an invalid token is passed through as 401.
+- `F15.repository-validation`: provider access checks return a sanitized verdict, classify a missing GitHub ref as `not_found`, and do not expose provider response details.
 
 ## How to get to it (agent POV)
 
@@ -92,6 +94,9 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 - Agent Canvas (context only): the Changes tab (changes and diff), the
   Commits tab (commits, commit changes, diff with `commit`) and the
   repository picker (search).
+- Agent Canvas automation preflight: the repository access step calls
+  `POST /api/git/validate-repository` with provider, repository, ref, and
+  credential names; secret values never enter the request.
 
 ## Driving it with control-agent-server
 
@@ -699,6 +704,22 @@ Preconditions:
   ```
   `gitlab` and `bitbucket` are known providers without discovery (400); an
   unknown or missing provider and `limit` 0 or 101 are 422.
+- **Repository access validation (`F15.repository-validation`).** Check a
+  public repository and a missing ref through the provider API, then verify
+  that the response is reduced to the documented verdict and contains no
+  provider body.
+  ```sh
+  control-agent-server api POST /api/git/validate-repository \
+    --json '{"provider":"github","repository":"github/.github","ref":"main"}' \
+    --expect 200 --check status eq accessible --save F15.repository-validation/accessible
+  control-agent-server api POST /api/git/validate-repository \
+    --json '{"provider":"github","repository":"github/.github","ref":"qa-no-such-ref-16565"}' \
+    --expect 200 --check status eq not_found --check . not-contains 'No commit found' \
+    --save F15.repository-validation/missing-ref
+  ```
+  The first request proves the endpoint can reach the allowlisted GitHub API;
+  the second treats GitHub's ref-specific 422 as `not_found` without returning
+  the provider response body.
 - **GitHub unreachable (`F15.repo-search-unreachable`).** Store a token, then
   restart the server with its HTTPS proxy pointed at a closed port, so the
   call to `api.github.com` fails on any machine; restore afterwards.
