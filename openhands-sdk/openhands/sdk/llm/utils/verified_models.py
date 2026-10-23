@@ -157,6 +157,12 @@ VERIFIED_DIGITALOCEAN_MODELS = [
     "qwen3.8-max",
 ]
 
+# Coral Bricks Inference ids (``GET https://inference.coralbricks.ai/v1/models``).
+VERIFIED_CORALBRICKS_MODELS = [
+    "glm-5.3-fast",
+    "deepseek-v4.1-flash-fast",
+]
+
 # What the ``openhands/`` provider serves. Same rule; every entry must also be in
 # a provider list above, except OpenHands-only models.
 VERIFIED_OPENHANDS_MODELS = [
@@ -226,4 +232,5 @@ VERIFIED_MODELS = {
     "qwen": VERIFIED_QWEN_MODELS,
     "openrouter": VERIFIED_OPENROUTER_MODELS,
     "digitalocean": VERIFIED_DIGITALOCEAN_MODELS,
+    "coralbricks": VERIFIED_CORALBRICKS_MODELS,
 }
