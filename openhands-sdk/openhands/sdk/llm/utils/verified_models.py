@@ -81,11 +81,13 @@ VERIFIED_MINIMAX_MODELS = [
 VERIFIED_GLM_MODELS = [
     "glm-5.3",
     "glm-5.3-flash",
+    "glm-5.3-flashx",
     "glm-5.2",
 ]
 
 # Nemotron 3.5 and 3.
 VERIFIED_NVIDIA_MODELS = [
+    "nemotron-3.5-super-vl-120b-a12b",
     "nemotron-3.5-lightning-30b-a3b",
     "nemotron-3-nano",
     "nemotron-3-nano-omni-30b-a3b-reasoning",
@@ -93,13 +95,15 @@ VERIFIED_NVIDIA_MODELS = [
     "nemotron-3-ultra-550b-a55b",
 ]
 
-# Plus: 3.7 and 3.6. Max: 3.8 and 3.7. Flash: 3.8 and 3.7. Coder: unversioned.
+# Plus: 3.7 and 3.6. Max: 3.8 and 3.7. Flash: 3.8, omni-flash, and 3.7.
+# Coder: unversioned.
 VERIFIED_QWEN_MODELS = [
     "qwen3.7-plus",
     "qwen3.6-plus",
     "qwen3.8-max",
     "qwen3.7-max",
     "qwen3.8-flash",
+    "qwen3.8-omni-flash",
     "qwen3.7-flash",
     "qwen3-coder-480b",
     "qwen3-coder-next",
@@ -193,7 +197,9 @@ VERIFIED_OPENHANDS_MODELS = [
     "devstral-medium-2512",
     "glm-5.3",
     "glm-5.3-flash",
+    "glm-5.3-flashx",
     "glm-5.2",
+    "nemotron-3.5-super-vl-120b-a12b",
     "nemotron-3.5-lightning-30b-a3b",
     "nemotron-3-nano",
     "nemotron-3-super-120b-a12b",
@@ -203,6 +209,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "qwen3.8-max",
     "qwen3.7-max",
     "qwen3.8-flash",
+    "qwen3.8-omni-flash",
     "qwen3.7-flash",
     "qwen3-coder-480b",
     "qwen3-coder-next",
