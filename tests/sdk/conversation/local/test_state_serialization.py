@@ -1337,6 +1337,50 @@ def test_agent_verify_fails_when_builtin_tool_removed():
         runtime_agent.verify(persisted_agent)
 
 
+def test_persisted_conversation_with_think_tool_resumes_after_default_removal(
+    tmp_path: Path,
+):
+    """A conversation persisted with the old default set still resumes.
+
+    ``ThinkTool`` is no longer a default, so the persisted agent carries a
+    built-in the runtime no longer selects. The resume path keeps the persisted
+    agent rather than re-verifying a runtime one, so the conversation stays
+    resumable and keeps the tool it was created with.
+    """
+    conversation_id = uuid.uuid4()
+    persistence_root = tmp_path / "persist"
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+
+    # Persist a conversation whose agent has the pre-change default set.
+    legacy_agent = Agent(
+        llm=llm,
+        tools=[],
+        include_default_tools=["FinishTool", "ThinkTool"],
+    )
+    legacy_conversation = LocalConversation(
+        agent=legacy_agent,
+        workspace=tmp_path,
+        persistence_dir=persistence_root,
+        conversation_id=conversation_id,
+        visualizer=None,
+    )
+    legacy_conversation.send_message(
+        Message(role="user", content=[TextContent(text="hello")])
+    )
+    del legacy_conversation
+
+    # Resume without supplying an agent, as the agent-server does.
+    resumed = LocalConversation(
+        agent=None,
+        workspace=tmp_path,
+        persistence_dir=persistence_root,
+        conversation_id=conversation_id,
+        visualizer=None,
+    )
+
+    assert resumed.agent.include_default_tools == ["FinishTool", "ThinkTool"]
+
+
 def test_v1_11_5_cli_default_conversation_resumes_when_runtime_adds_delegate(
     tmp_path: Path,
 ):

@@ -312,7 +312,10 @@ def test_security_risk_param_ignored_when_no_analyzer():
     )
     # Set llm_security_analyzer=False in system_prompt_kwargs
     agent = Agent(
-        llm=llm, tools=[], system_prompt_kwargs={"llm_security_analyzer": False}
+        llm=llm,
+        tools=[],
+        include_default_tools=["FinishTool", "ThinkTool"],
+        system_prompt_kwargs={"llm_security_analyzer": False},
     )
 
     events = []
