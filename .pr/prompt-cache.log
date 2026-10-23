@@ -1,0 +1,7 @@
+PASS tool, text='Tool response', blank='': HTTP 200; cache_control={'type': 'ephemeral'}
+PASS tool, text='Tool response', blank=' \t\n': HTTP 200; cache_control={'type': 'ephemeral'}
+PASS tool, text=None, blank='': HTTP 200; cache_control={'type': 'ephemeral'}
+PASS tool, text=None, blank=' \t\n': HTTP 200; cache_control={'type': 'ephemeral'}
+PASS user, text='Question', blank='': HTTP 200; cache_control={'type': 'ephemeral'}
+PASS user, text='Question', blank=' \t\n': HTTP 200; cache_control={'type': 'ephemeral'}
+6/6 cache markers retained; loopback HTTP only
