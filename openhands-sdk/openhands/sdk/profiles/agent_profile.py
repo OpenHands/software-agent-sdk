@@ -27,6 +27,7 @@ from pydantic import (
 
 from openhands.sdk.settings.model import (
     ACPServerKind,
+    AgentKind,
     CondenserSettingsConfig,
     CriticMode,
     LLMSummarizingCondenserSettings,
@@ -35,14 +36,13 @@ from openhands.sdk.settings.model import (
 from openhands.sdk.tool import Tool
 from openhands.sdk.tool.defaults import (
     drop_retired_tool_switches,
-    fold_deprecated_tool_switches,
     fold_retired_tool_switches,
     merge_duplicate_tools,
     reject_builtin_params,
 )
 
 
-AGENT_PROFILE_SCHEMA_VERSION = 3
+AGENT_PROFILE_SCHEMA_VERSION = 4
 
 
 class ProfileVerificationSettings(BaseModel):
@@ -83,6 +83,24 @@ def build_profile_verification(
     )
 
 
+class AgentProfileInfo(BaseModel):
+    """Summary projection of a stored profile (no secret instantiation)."""
+
+    id: str | None = None
+    name: str
+    agent_kind: str = "openhands"
+    revision: int | None = None
+    llm_profile_ref: str | None = None
+    mcp_server_refs: list[str] | None = None
+
+
+class AgentProfileListResponse(BaseModel):
+    """Response body returned by ``GET /api/agent-profiles``."""
+
+    profiles: list[AgentProfileInfo]
+    active_agent_profile_id: str | None = None
+
+
 class AgentProfileBase(BaseModel):
     """Shared identity + provenance fields for every ``AgentProfile`` variant.
 
@@ -95,6 +113,10 @@ class AgentProfileBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: int = Field(default=AGENT_PROFILE_SCHEMA_VERSION, ge=1)
+    agent_kind: AgentKind = Field(
+        default="openhands",
+        description="Discriminator for the agent profile union.",
+    )
     id: UUID = Field(
         default_factory=uuid4,
         description=(
@@ -152,7 +174,7 @@ class OpenHandsAgentProfile(AgentProfileBase):
     :attr:`~AgentProfileBase.mcp_server_refs`.
     """
 
-    agent_kind: Literal["openhands"] = Field(
+    agent_kind: Literal["openhands"] = Field(  # type: ignore[reportIncompatibleVariableOverride]
         default="openhands",
         description=(
             "Discriminator for the ``AgentProfile`` union. ``'openhands'`` "
@@ -209,6 +231,15 @@ class OpenHandsAgentProfile(AgentProfileBase):
             "exclusion is the only selection model that can't dangle."
         ),
     )
+    public_skills: list[str] | None = Field(
+        default=None,
+        description=(
+            "Which public-catalog skills to load. null = all; [] = none; a list "
+            "= only the named skills, ignoring names the catalog lacks. User and "
+            "project skills are not affected, and `disabled_skills` still "
+            "applies to every skill."
+        ),
+    )
     condenser: CondenserSettingsConfig = Field(
         default_factory=LLMSummarizingCondenserSettings,
         description="Condenser settings for the agent.",
@@ -246,12 +277,14 @@ class OpenHandsAgentProfile(AgentProfileBase):
 
     @model_validator(mode="before")
     @classmethod
-    def _fold_retired_tool_switches(cls, data: Any) -> Any:
-        # A profile is launched by a serving layer, which drops a browser the
-        # runtime can't run.
-        return fold_deprecated_tool_switches(
-            data, owner="OpenHandsAgentProfile", enable_browser=True
-        )
+    def _reject_removed_tool_switches(cls, data: Any) -> Any:
+        if isinstance(data, Mapping) and (
+            "enable_sub_agents" in data or "enable_switch_llm_tool" in data
+        ):
+            raise ValueError(
+                "Retired tool switches were removed; select tools instead."
+            )
+        return data
 
     @field_validator("tools")
     @classmethod
@@ -272,7 +305,7 @@ class ACPAgentProfile(AgentProfileBase):
     value rides the conversation secrets channel, never the profile.
     """
 
-    agent_kind: Literal["acp"] = Field(
+    agent_kind: Literal["acp"] = Field(  # type: ignore[reportIncompatibleVariableOverride]
         default="acp",
         description=(
             "Discriminator for the ``AgentProfile`` union. ``'acp'`` selects an "
@@ -355,6 +388,13 @@ class LaunchedAgentProfile(BaseModel):
             "null preserves unrestricted behavior for older conversations."
         ),
     )
+    llm_profile_ref: str | None = Field(
+        default=None,
+        description=(
+            "Per-launch LLM profile override from `agent_launch_additions`. "
+            "null means the profile's own `llm_profile_ref` was used."
+        ),
+    )
 
     def allows_secret(self, name: str) -> bool:
         return self.secret_refs is None or name in self.secret_refs
@@ -367,8 +407,8 @@ def _agent_profile_discriminator(value: Any) -> str:
     OpenHands variant, mirroring
     :func:`~openhands.sdk.settings.model._agent_settings_discriminator`.
     """
-    if isinstance(value, BaseModel):
-        return getattr(value, "agent_kind", "openhands")
+    if isinstance(value, AgentProfileBase):
+        return value.agent_kind
     if isinstance(value, Mapping):
         return value.get("agent_kind", "openhands")
     return "openhands"
@@ -417,9 +457,17 @@ def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
+def _migrate_v3_to_v4(payload: dict[str, Any]) -> dict[str, Any]:
+    """Discard retired switch inputs saved by v3."""
+    migrated = drop_retired_tool_switches(payload)
+    migrated["schema_version"] = 4
+    return migrated
+
+
 _AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
+    3: _migrate_v3_to_v4,
 }
 
 

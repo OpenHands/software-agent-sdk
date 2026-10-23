@@ -139,3 +139,26 @@ class TestTmuxPoolRecovery:
         assert reset_obs.exit_code == 0
         assert "Terminal session has been reset" in reset_obs.text
         assert pool_executor.working_dir in reset_obs.text
+
+
+class TestPoolClose:
+    def test_closing_the_executor_releases_a_call_waiting_on_a_command(
+        self, pool_executor
+    ):
+        observations: list[TerminalObservation] = []
+        action = TerminalAction(command="sleep 30", timeout=60)
+        caller = threading.Thread(
+            target=lambda: observations.append(pool_executor(action))
+        )
+        caller.start()
+        time.sleep(2)
+
+        closed_at = time.monotonic()
+        pool_executor.close()
+        caller.join(timeout=10)
+
+        assert not caller.is_alive(), "the call kept waiting after close()"
+        assert time.monotonic() - closed_at < 10
+        (obs,) = observations
+        assert obs.is_error
+        assert "terminal was closed" in obs.text

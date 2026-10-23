@@ -8,7 +8,7 @@ ARG USERNAME=openhands
 ARG UID=10001
 ARG GID=10001
 ARG PORT=8000
-ARG NPM_VERSION=11.19.1
+ARG NPM_VERSION=11.21.0
 # Opt-in build flag for the Vertex AI extra (`openhands-sdk[vertex]`). Off by
 # default to keep the published image lean. Pass `--build-arg ENABLE_VERTEX=1`
 # to bundle google-cloud-aiplatform so the resulting binary supports
@@ -26,6 +26,7 @@ ARG INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli
 # join this list later (see OpenHands/software-agent-sdk#4645) — the parsing
 # below is written so that's a one-case addition, not a signature change.
 ARG INSTALL_CAPABILITIES=vscode,browser,docker
+ARG ENABLE_VSCODE=true
 
 ####################################################################################
 # Canonical Python + Node runtime
@@ -38,9 +39,40 @@ ARG INSTALL_CAPABILITIES=vscode,browser,docker
 ####################################################################################
 FROM python:3.13.15-slim-trixie AS python-runtime
 FROM node:24.21.0-trixie-slim AS node-runtime
+
+# pip 26.2.2 vendors urllib3 2.7.0 (CVE-2026-97689) and msgpack 1.1.2
+# (GHSA-6v7p-g79w-8964), and no pip release vendors the fixed versions yet.
+# Its pkg_resources (setuptools 70.3.0: CVE-2025-47273, CVE-2026-59890) is
+# removed, as setuptools dropped it in 82.0.0 but fixed CVE-2026-59890 in 83.0.0.
+# pip imports it only for _PIP_USE_IMPORTLIB_METADATA=0, which raises ImportError.
+# Re-vendor with pip's own tooling so its import rewrites, patches, and
+# bom.cdx.json stay consistent; the source archive is used because the sdist
+# omits tools/vendoring/patches. Drop this stage once pip ships the fixes;
+# tests/agent_server/docker_runtime/test_pip_revendoring_retirement.py flags it.
+FROM python:3.13.15-trixie AS pip-revendored
+ADD --checksum=sha256:b505949bb27827b32f54c9f1f5ca660a6fae3fde61cbe0a971975a3ed34a7ee1 \
+    https://github.com/pypa/pip/archive/refs/tags/26.2.2.tar.gz /tmp/pip.tar.gz
+RUN set -eux; \
+    mkdir /tmp/pip; \
+    tar -xzf /tmp/pip.tar.gz -C /tmp/pip --strip-components=1; \
+    cd /tmp/pip; \
+    sed -i -E \
+        -e 's/^( +)urllib3==2\.7\.0$/\1urllib3==2.8.0/' \
+        -e 's/^msgpack==1\.1\.2$/msgpack==1.2.1/' \
+        -e '/^setuptools==70\.3\.0$/d' \
+        src/pip/_vendor/vendor.txt; \
+    grep -qx '    urllib3==2.8.0' src/pip/_vendor/vendor.txt; \
+    grep -qx 'msgpack==1.2.1' src/pip/_vendor/vendor.txt; \
+    if grep -q '^setuptools==' src/pip/_vendor/vendor.txt; then exit 1; fi; \
+    rm tools/vendoring/patches/pkg_resources.patch; \
+    python -m venv /tmp/vendoring; \
+    /tmp/vendoring/bin/pip install --no-cache-dir vendoring==1.4.0; \
+    /tmp/vendoring/bin/vendoring sync; \
+    python -m pip wheel --no-deps --no-cache-dir --wheel-dir /dist .
+
 FROM debian:trixie-slim AS python-node-runtime
 ARG NPM_VERSION
-ARG DEBIAN_SNAPSHOT=20260920T000000Z
+ARG DEBIAN_SNAPSHOT=20261019T000000Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
@@ -93,6 +125,14 @@ RUN set -eux; \
     node --version; \
     npm --version
 
+RUN --mount=type=bind,from=pip-revendored,source=/dist,target=/tmp/pip-dist \
+    set -eux; \
+    # Install the single re-vendored wheel, whatever its version: it replaces
+    # the pip bundled with the base image, whose version need not match it.
+    python3 -m pip install --no-deps --no-index --no-cache-dir --force-reinstall \
+        --disable-pip-version-check --root-user-action=ignore \
+        /tmp/pip-dist/pip-*-py3-none-any.whl
+
 ####################################################################################
 # Builder (source mode)
 # We copy source + build a venv here for local dev and debugging.
@@ -115,9 +155,9 @@ ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
 ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 
 # uv 0.11.5+ embeds python-build-standalone 20260408 metadata, which is the
-# first release with the PT_GNU_STACK fix. Pin to 0.12.15 (latest eligible at time of
+# first release with the PT_GNU_STACK fix. Pin to 0.13.5 (latest eligible at time of
 # writing) rather than :latest so builds are reproducible.
-COPY --from=ghcr.io/astral-sh/uv:0.12.15 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
 
 RUN groupadd -g ${GID} ${USERNAME} \
  && useradd -m -u ${UID} -g ${GID} -s /usr/sbin/nologin ${USERNAME} \
@@ -206,13 +246,13 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     ARCH=$(uname -m); \
     case "$ARCH" in \
-      x86_64|amd64) NARCH=x64; NODE_SHA256=d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307;; \
-      aarch64|arm64) NARCH=arm64; NODE_SHA256=fff4078c5def658577f92c88db7db3bc0072924bfb93fe52c1e744a54e94abb8;; \
+      x86_64|amd64) NARCH=x64; NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6;; \
+      aarch64|arm64) NARCH=arm64; NODE_SHA256=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2;; \
       *) echo "Unsupported architecture for ACP providers: '$ARCH'" >&2; exit 1;; \
     esac; \
-    NODE_TARBALL="/tmp/node-v22.23.2-linux-${NARCH}.tar.xz"; \
+    NODE_TARBALL="/tmp/node-v24.21.0-linux-${NARCH}.tar.xz"; \
     curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused \
-        "https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
+        "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
     echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
     tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL"; \
     rm -f "$NODE_TARBALL"; \
@@ -241,8 +281,8 @@ RUN set -eux; \
 # and Git APIs. Development tools and optional capabilities live in base-image.
 ####################################################################################
 FROM ${BASE_IMAGE} AS base-image-minimal
-ARG USERNAME UID GID PORT
-
+ARG USERNAME UID GID PORT ENABLE_VSCODE
+ENV OH_ENABLE_VSCODE=${ENABLE_VSCODE}
 
 ARG OPENHANDS_BUILD_GIT_SHA=unknown
 ARG OPENHANDS_BUILD_GIT_REF=unknown
@@ -305,12 +345,12 @@ RUN set -eux; \
     chown -R "${USERNAME}:${USERNAME}" /workspace
 
 # Install the ACP servers selected by INSTALL_ACP_PROVIDERS (see the stage above).
-# The payload itself (Node.js 22 + the ACP npm packages, under $ACP_NODE_DIR) is
+# The payload itself (Node.js 24 + the ACP npm packages, under $ACP_NODE_DIR) is
 # built once in the acp-providers stage above, independent of BASE_IMAGE, and
 # copied in here so the layer is byte-identical across every base image it lands
 # on. Only the compatibility probe below runs against the real BASE_IMAGE.
 #
-# Node.js 22 lives at a dedicated prefix so ACP packages get a modern runtime
+# Node.js 24 lives at a dedicated prefix so ACP packages get a modern runtime
 # WITHOUT overwriting the repo-specific Node.js that test suites depend on.
 # SWE-bench images ship NVM/apt-managed Node 8-14 which cannot run ACP packages.
 ENV ACP_NODE_DIR=/acp-node
@@ -318,7 +358,7 @@ COPY --from=acp-providers /acp-node /acp-node
 COPY --from=acp-providers /opt/acp-wrappers/. /usr/local/bin/
 
 # This probe is best-effort: SWE-Bench Pro base images come from many distros
-# and some have an old glibc (or use musl) that cannot run the upstream Node 22
+# and some have an old glibc (or use musl) that cannot run the upstream Node 24
 # glibc build. The payload above was built and sha256-verified against a fixed,
 # glibc-modern stage, so a failure here means "incompatible with this specific
 # BASE_IMAGE", not "the ACP install failed". When that happens we remove the
@@ -327,7 +367,7 @@ COPY --from=acp-providers /opt/acp-wrappers/. /usr/local/bin/
 # wrapper names come from the manifest the acp-providers stage wrote, so this
 # tracks INSTALL_ACP_PROVIDERS instead of a list that goes stale per provider.
 RUN if ! "$ACP_NODE_DIR/bin/node" --version >/dev/null 2>&1; then \
-      echo "Warning: ACP Node 22 runtime is not compatible with this base image (likely older glibc or musl libc); ACP agents will not be available" >&2; \
+      echo "Warning: ACP Node 24 runtime is not compatible with this base image (likely older glibc or musl libc); ACP agents will not be available" >&2; \
       if [ -f "$ACP_NODE_DIR/acp-wrappers.txt" ]; then \
         while read -r bin; do rm -f "/usr/local/bin/$bin"; done \
           < "$ACP_NODE_DIR/acp-wrappers.txt"; \
@@ -400,7 +440,7 @@ RUN set -eux; \
     echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Keep uv as part of the full development environment, but not binary-minimal.
-COPY --from=ghcr.io/astral-sh/uv:0.12.15 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
 
 # Fail fast on a typo'd capability name before spending any time on the
 # installs below (each block only checks for ITS OWN keyword's presence, so

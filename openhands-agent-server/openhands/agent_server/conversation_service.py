@@ -32,11 +32,17 @@ from openhands.agent_server.launch import (
     scoped_secrets,
     server_launch_stores,
 )
+from openhands.agent_server.local_storage import (
+    conversation_worktree_dir,
+    remove_conversation_worktree,
+)
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
     LaunchedAgentProfile,
+    StartChildConversationRequest,
+    StartChildConversationResponse,
     StartConversationRequest,
     StoredConversation,
     UpdateConversationRequest,
@@ -53,12 +59,13 @@ from openhands.agent_server.telemetry import (
 )
 from openhands.agent_server.telemetry.sanitizer import model_family, safe_token
 from openhands.agent_server.utils import safe_rmtree, utc_now
-from openhands.sdk import LLM, Event, Message
+from openhands.sdk import LLM, Event, Message, TextContent
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.persistence_const import BASE_STATE
+from openhands.sdk.conversation.request import ConversationWorktreeOptions
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -81,7 +88,7 @@ from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
 from openhands.sdk.tool.client_tool import register_client_tools
-from openhands.sdk.tool.registry import get_tool_module_qualnames
+from openhands.sdk.tool.registry import get_tool_module_qualnames, is_tool_available
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -103,7 +110,12 @@ def _build_worktree_guidance(
     worktree_root: Path,
     workspace_dir: Path,
     branch: str,
+    options: ConversationWorktreeOptions,
 ) -> str:
+    base_ref = {
+        "head": "the original workspace's current HEAD",
+        "ref": f"`{options.ref}`",
+    }.get(options.base, "the main/master branch")
     return (
         "This conversation uses a dedicated git worktree.\n"
         f"- Original workspace: {source_workspace}\n"
@@ -111,7 +123,7 @@ def _build_worktree_guidance(
         f"- Active workspace: {workspace_dir}\n"
         f"- Branch: {branch}\n"
         "Do all file and git work inside this worktree. Do your work on a new, "
-        "appropriately-named branch, based off the main/master branch, "
+        f"appropriately-named branch, based off {base_ref}, "
         "and do not switch back to the original workspace."
     )
 
@@ -135,6 +147,20 @@ def _local_branch_exists(repo_root: Path, branch: str) -> bool:
     return True
 
 
+def _fetch_origin(repo_root: Path) -> None:
+    """Refresh ``origin``'s refs for a worktree start point; keep cached ones on
+    failure."""
+    try:
+        run_git_command(["git", "fetch", "origin"], repo_root, timeout=60)
+    except GitCommandError as exc:
+        logger.warning(
+            "git fetch origin failed while choosing worktree start point "
+            "for %s; using cached refs. Error: %s",
+            repo_root,
+            exc,
+        )
+
+
 def _get_worktree_start_point(repo_root: Path) -> str:
     """Resolve the base ref a new conversation worktree should be created from.
 
@@ -151,15 +177,7 @@ def _get_worktree_start_point(repo_root: Path) -> str:
          creation still succeeds on freshly initialized repos.
     """
     if _has_git_remote(repo_root):
-        try:
-            run_git_command(["git", "fetch", "origin"], repo_root, timeout=60)
-        except GitCommandError as exc:
-            logger.warning(
-                "git fetch origin failed while choosing worktree start point "
-                "for %s; using cached refs. Error: %s",
-                repo_root,
-                exc,
-            )
+        _fetch_origin(repo_root)
         try:
             ref = run_git_command(
                 ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
@@ -185,6 +203,7 @@ class _WorktreePlan:
     worktree_root: Path
     workspace_dir: Path
     branch: str
+    options: ConversationWorktreeOptions
 
     @property
     def guidance(self) -> str:
@@ -193,6 +212,7 @@ class _WorktreePlan:
             worktree_root=self.worktree_root,
             workspace_dir=self.workspace_dir,
             branch=self.branch,
+            options=self.options,
         )
 
 
@@ -200,7 +220,9 @@ def _plan_conversation_worktree(
     workspace: LocalWorkspace,
     conversation_id: UUID,
     conversation_worktree_root: Path,
+    options: ConversationWorktreeOptions | None,
 ) -> _WorktreePlan | None:
+    options = options or ConversationWorktreeOptions()
     source_workspace = Path(workspace.working_dir).resolve()
     try:
         validate_git_repository(source_workspace)
@@ -219,8 +241,19 @@ def _plan_conversation_worktree(
         source_workspace=source_workspace,
         worktree_root=worktree_root,
         workspace_dir=worktree_root / source_workspace.relative_to(repo_root),
-        branch=f"openhands/{conversation_id}",
+        branch=f"{options.branch_prefix}{conversation_id}",
+        options=options,
     )
+
+
+def _worktree_start_point(plan: _WorktreePlan) -> str:
+    if plan.options.base == "head":
+        return "HEAD"
+    if plan.options.base == "ref" and plan.options.ref:
+        if _has_git_remote(plan.repo_root):
+            _fetch_origin(plan.repo_root)
+        return plan.options.ref
+    return _get_worktree_start_point(plan.repo_root)
 
 
 def _create_conversation_worktree(plan: _WorktreePlan) -> LocalWorkspace:
@@ -249,7 +282,7 @@ def _create_conversation_worktree(plan: _WorktreePlan) -> LocalWorkspace:
             "-b",
             plan.branch,
             str(plan.worktree_root),
-            _get_worktree_start_point(repo_root),
+            _worktree_start_point(plan),
         ],
         repo_root,
     )
@@ -264,6 +297,11 @@ logger = logging.getLogger(__name__)
 class InvalidParentConversation(ValueError):
     """``parent_conversation_id`` is unknown, self-referential, or in
     a different workspace."""
+
+
+class UnavailableAgentTool(ValueError):
+    """The agent names a tool whose ``tool_module_qualnames`` module the server
+    cannot import, so the agent could never be built."""
 
 
 def _same_workspace(a: LocalWorkspace, b: LocalWorkspace) -> bool:
@@ -741,6 +779,11 @@ class ConversationService:
             for name, binding in self._credential_bindings.pop(stored.id, {}).items()
             if self._profile_allows_secret(stored, name)
         }
+        if not isinstance(agent, ACPAgent):
+            # Only ACP agents use file credential bindings; the live path
+            # refuses them for any other agent (CredentialBindingActivationTooLate).
+            # Drop a pending binding so a regular conversation never requires one.
+            return {}
         if (
             self._profile_allows_secret(stored, CODEX_AUTH_SECRET_NAME)
             and CODEX_AUTH_SECRET_NAME not in bindings
@@ -1521,6 +1564,7 @@ class ConversationService:
             secrets.pop(CODEX_AUTH_SECRET_NAME, None)
 
         # Dynamically register tools from client's registry
+        unimportable_tools: dict[str, str] = {}
         if request.tool_module_qualnames:
             for tool_name, module_qualname in request.tool_module_qualnames.items():
                 try:
@@ -1534,9 +1578,10 @@ class ConversationService:
                         f"Failed to import module '{module_qualname}' for tool "
                         f"'{tool_name}': {e}. Tool will not be available."
                     )
-                    # Continue even if some tools fail to register
-                    # The agent will fail gracefully if it tries to use unregistered
-                    # tools
+                    # The client registry lists every tool it knows, not only
+                    # the agent's: a module is fatal only if the agent uses its
+                    # tool (checked once the agent is launched below).
+                    unimportable_tools[tool_name] = f"{module_qualname}: {e}"
             logger.info(
                 "Dynamically registered %d tools for conversation %s",
                 len(request.tool_module_qualnames),
@@ -1553,7 +1598,10 @@ class ConversationService:
 
         worktree = (
             _plan_conversation_worktree(
-                request.workspace, conversation_id, self.conversation_worktree_root
+                request.workspace,
+                conversation_id,
+                self.conversation_worktree_root,
+                request.worktree_options,
             )
             if request.worktree
             else None
@@ -1573,6 +1621,19 @@ class ConversationService:
                 ),
             )
         )
+        # Building the agent would raise KeyError on the first message, so
+        # reject the create while the caller can still act on it.
+        missing_tools = [
+            f"'{tool.name}' ({unimportable_tools[tool.name]})"
+            for tool in launched.agent.tools
+            if tool.name in unimportable_tools
+            and not is_tool_available(tool.name, check_usable=False)
+        ]
+        if missing_tools:
+            raise UnavailableAgentTool(
+                "The agent uses tools whose modules the agent server cannot "
+                f"import: {', '.join(missing_tools)}"
+            )
         workspace = (
             _create_conversation_worktree(worktree)
             if worktree is not None
@@ -1642,29 +1703,60 @@ class ConversationService:
                 launched_agent_profile=launched_agent_profile,
                 **request_data,
             )
-        async with self._conversation_lifecycle(conversation_id):
-            # Re-check under the lock. Preparing ``stored`` above awaits, so a
+        initial_message = request.initial_message
+        return await self._launch_prepared_conversation(
+            stored,
+            launched,
+            run_slot=run_slot,
+            initial_message=(
+                Message(role=initial_message.role, content=initial_message.content)
+                if initial_message
+                else None
+            ),
+            reuse_request=request,
+        )
+
+    async def _launch_prepared_conversation(
+        self,
+        stored: StoredConversation,
+        launched: LaunchedAgent,
+        *,
+        run_slot: RunSlot,
+        initial_message: Message | None,
+        reuse_request: StartConversationRequest | None = None,
+    ) -> tuple[ConversationInfo, bool]:
+        """Persist a prepared conversation, deliver its first message and notify.
+
+        The tail of a launch shared by a normal start and a child launch:
+        everything after the agent and ``stored`` configuration are prepared.
+        The caller acquires ``run_slot`` before preparing anything, so a full
+        server refuses the launch before a worktree or a persistence directory
+        exists; the slot is handed to the first run.
+
+        If the id already exists once the lifecycle lock is held (a client-chosen
+        id raced with a concurrent create), the existing conversation is reused
+        for ``reuse_request`` as ``start_conversation`` does; without a request
+        the collision is an error.
+        """
+        async with self._conversation_lifecycle(stored.id):
+            # Re-check under the lock. Preparing ``stored`` awaits, so a
             # concurrent create for this same id can have committed since the
-            # check at the top of this method. Without this the loser would
-            # start a second EventService for an id that already exists,
-            # re-running its initial message.
-            if self._has_conversation(conversation_id):
+            # caller's check. Without this the loser would start a second
+            # EventService for an id that already exists, re-running its
+            # initial message.
+            if self._has_conversation(stored.id):
+                if reuse_request is None:
+                    raise ValueError(f"Conversation with id {stored.id} already exists")
                 return await self._reuse_existing_conversation_locked(
-                    conversation_id, request
+                    stored.id, reuse_request
                 )
             # New conversation: the agent is written to base_state.json (its
             # single source of truth), not to meta.json. Pass it explicitly.
-            # ``new_agent`` is ``request.agent`` (decrypted when the request was
-            # secrets_encrypted).
             event_service = await self._start_event_service(
                 stored, is_new_conversation=True, launched=launched
             )
-        initial_message = request.initial_message
-        if initial_message:
-            message = Message(
-                role=initial_message.role, content=initial_message.content
-            )
-            await event_service.send_message(message, False)
+        if initial_message is not None:
+            await event_service.send_message(initial_message, False)
             await event_service.run(run_slot=run_slot)
 
         state = await event_service.get_state()
@@ -1708,6 +1800,11 @@ class ConversationService:
 
     async def resume_conversation(self, conversation_id: UUID) -> bool:
         return bool(await self._get_or_load_event_service(conversation_id))
+
+    def _worktree_dir(self, stored: StoredConversation) -> Path | None:
+        return conversation_worktree_dir(
+            self.conversation_worktree_root, stored.workspace.working_dir
+        )
 
     async def delete_conversation(self, conversation_id: UUID) -> bool:
         event_services = self._event_services
@@ -1764,6 +1861,13 @@ class ConversationService:
                 event_service.conversation_dir,
                 f"conversation directory for {conversation_id}",
             )
+            worktree_dir = self._worktree_dir(event_service.stored)
+            # Forks share their source's worktree; the last one deleted removes it.
+            if worktree_dir is not None and not any(
+                self._worktree_dir(record.stored) == worktree_dir
+                for record in self._conversation_records.values()
+            ):
+                await asyncio.to_thread(remove_conversation_worktree, worktree_dir)
 
             logger.info(f"Successfully deleted conversation {conversation_id}")
             return True
@@ -1786,22 +1890,24 @@ class ConversationService:
 
         loop = asyncio.get_running_loop()
         state = await event_service.get_state()
+        update: dict[str, Any] = {"updated_at": utc_now()}
         if request.title is not None:
-            event_service.stored.title = request.title.strip()
+            update["title"] = request.title.strip()
         if request.tags is not None:
-            event_service.stored.tags = request.tags
+            update["tags"] = request.tags
+        # Persist first: a refused write (e.g. lost lease ownership) must leave
+        # the in-memory metadata and state untouched.
+        await event_service.save_meta(event_service.stored.model_copy(update=update))
+        if request.tags is not None:
             # Keep the persisted ConversationState update under the state lock so
             # autosave and state-change callbacks observe a consistent mutation.
             state = await loop.run_in_executor(
                 None, _update_state_tags_sync, state, request.tags
             )
-        event_service.stored.updated_at = utc_now()
         record = self._conversation_records.get(conversation_id)
         if record is not None:
             record.stored = event_service.stored
             record.cached_info = None
-        # Save the updated metadata to disk
-        await event_service.save_meta()
 
         # Notify conversation webhooks about the updated conversation. Compose the
         # full-state snapshot under the state lock, but do the synchronous wait in a
@@ -1923,7 +2029,6 @@ class ConversationService:
             fork_conv = await asyncio.to_thread(
                 source_conversation.fork,
                 conversation_id=fork_conv_id,
-                title=title,
                 tags=tags,
                 reset_metrics=reset_metrics,
                 from_event_id=from_event_id,
@@ -1950,6 +2055,7 @@ class ConversationService:
                 "id": fork_conv_id,
                 "workspace": fork_workspace,
                 "title": title,
+                "tags": tags or {},
                 "created_at": utc_now(),
                 "updated_at": utc_now(),
                 "forked_from_conversation_id": source_id,
@@ -1957,8 +2063,6 @@ class ConversationService:
             }
             if reset_metrics:
                 fork_overrides["metrics"] = None
-            if tags is not None:
-                fork_overrides["tags"] = tags
             fork_stored = source_service.stored.model_copy(update=fork_overrides)
             try:
                 # If the service fails to start, clean up the orphaned
@@ -1973,6 +2077,103 @@ class ConversationService:
         state = await fork_event_service.get_state()
         return _compose_conversation_info(
             fork_event_service.stored, state, self._children_of(fork_conv_id)
+        )
+
+    async def start_child_conversation(
+        self,
+        parent_id: UUID,
+        request: StartChildConversationRequest,
+    ) -> StartChildConversationResponse | None:
+        """Start a child conversation on this server, derived from *parent_id*.
+
+        Like :meth:`fork_conversation`, the child inherits the parent's stored
+        configuration (secrets, client tools, plugins, hooks, tags, ...) and its
+        resolved agent, but it starts with a fresh event history: ``task`` is
+        delivered as the child's first user message. With
+        ``isolation="worktree"`` the child runs in a git worktree carved from
+        the parent's workspace when that workspace is a git repository;
+        otherwise (or with ``isolation="shared"``) it shares the parent's
+        directory. The link is recorded via ``parent_conversation_id``.
+
+        Returns ``None`` when *parent_id* does not exist.
+
+        Raises:
+            ConversationRunLimitExceeded: If all server run slots are occupied.
+                Nothing is persisted in that case.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+
+        parent_service = await self._get_or_load_event_service(parent_id)
+        if parent_service is None:
+            return None
+
+        # Admission first, as in a normal start: a full server refuses the
+        # launch before a worktree or the child's persistence directory exists.
+        with await RunSlot.acquire(self._run_semaphore) as run_slot:
+            parent_stored = parent_service.stored
+            parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
+            child_id = uuid4()
+
+            # Reuse the worktree machinery of a regular start: a worktree is
+            # planned (and its guidance appended to the child's agent) only when
+            # the parent workspace is a git repository; otherwise the child
+            # shares it.
+            worktree = (
+                _plan_conversation_worktree(
+                    parent_stored.workspace,
+                    child_id,
+                    self.conversation_worktree_root,
+                    None,
+                )
+                if request.isolation == "worktree"
+                else None
+            )
+            launched = await asyncio.to_thread(
+                lambda: finalize(
+                    parent_agent,
+                    live_launch_runtime(
+                        self.acp_skill_sourcing, enable_browser=self.enable_browser
+                    ),
+                    extra_suffixes=[worktree.guidance] if worktree else (),
+                )
+            )
+            workspace = (
+                _create_conversation_worktree(worktree)
+                if worktree is not None
+                else parent_stored.workspace
+            )
+            now = utc_now()
+            child_stored = parent_stored.model_copy(
+                update={
+                    "id": child_id,
+                    "workspace": workspace,
+                    "worktree": request.isolation == "worktree",
+                    "title": request.title,
+                    "metrics": None,
+                    "created_at": now,
+                    "updated_at": now,
+                    "parent_conversation_id": parent_id,
+                    "forked_from_conversation_id": None,
+                    "forked_from_event_id": None,
+                }
+            )
+            info, _ = await self._launch_prepared_conversation(
+                child_stored,
+                launched,
+                run_slot=run_slot,
+                initial_message=Message(
+                    role="user", content=[TextContent(text=request.task)]
+                ),
+            )
+
+        return StartChildConversationResponse(
+            conversation_id=child_id,
+            parent_conversation_id=parent_id,
+            status=info.execution_status.value,
+            title=info.title,
+            workspace=str(workspace.working_dir),
+            isolation="worktree" if worktree is not None else "shared",
         )
 
     async def navigate_conversation(
@@ -2456,12 +2657,18 @@ def _generate_title_traced(
     llm: LLM | None,
     max_length: int,
     on_error: Callable[[Exception], None] | None = None,
+    prompt: str | None = None,
 ) -> str:
     call_context = (
         conversation.get_llm_call_context() if conversation else LLMCallContext()
     )
     return generate_title_from_message(
-        message, llm, max_length, call_context=call_context, on_error=on_error
+        message,
+        llm,
+        max_length,
+        call_context=call_context,
+        on_error=on_error,
+        prompt=prompt,
     )
 
 
@@ -2508,11 +2715,14 @@ class AutoTitleSubscriber(Subscriber):
                     title_llm,
                     50,
                     _on_title_error,
+                    self.service.stored.prompt,
                 )
                 if title and self.service.stored.title is None:
-                    self.service.stored.title = title
-                    self.service.stored.updated_at = utc_now()
-                    await self.service.save_meta()
+                    await self.service.save_meta(
+                        self.service.stored.model_copy(
+                            update={"title": title, "updated_at": utc_now()}
+                        )
+                    )
             except Exception:
                 logger.warning(
                     f"Auto-title generation failed for "
@@ -2569,15 +2779,20 @@ class WebhookSubscriber(Subscriber):
         default_factory=lambda: asyncio.sleep, init=False
     )
 
+    def _buffer_full(self) -> bool:
+        return (
+            len(self.queue) >= self.spec.event_buffer_size
+            or self._queue_bytes >= self.spec.max_batch_bytes
+        )
+
     async def __call__(self, event: Event):
         """Add event to queue and post to webhook when buffer size is reached."""
         self._enqueue(event)
 
-        if (
-            len(self.queue) >= self.spec.event_buffer_size
-            or self._queue_bytes >= self.spec.max_batch_bytes
-        ):
+        if self._buffer_full():
             if self._post_lock.locked():
+                # The in-flight _post_events re-checks the buffer when it is
+                # done and re-arms the timer if a post fails.
                 self._start_flush_timer()
                 return
             # Cancel timer since we're flushing due to buffer size
@@ -2605,8 +2820,17 @@ class WebhookSubscriber(Subscriber):
                 events_to_post, event_data = self._take_batch(events_remaining)
                 if not await self._post_batch(event_data):
                     self._requeue(events_to_post)
+                    # A timer that fired during the POST saw an empty queue
+                    # and exited, so arm one for the requeued events.
+                    self._start_flush_timer()
                     return
                 events_remaining -= len(events_to_post)
+                if not events_remaining and self._buffer_full():
+                    # Events published during the POST filled the buffer again.
+                    events_remaining = len(self.queue)
+            # A timer started during the POST has nothing left to flush.
+            if not self.queue and self._flush_timer is not asyncio.current_task():
+                self._cancel_flush_timer()
 
     async def _post_batch(self, event_data: list[dict[str, Any]]) -> bool:
         """Post one serialized batch with retry logic."""

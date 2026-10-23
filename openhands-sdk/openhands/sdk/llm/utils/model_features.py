@@ -210,6 +210,7 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-opus-4-6",
     "claude-opus-4-7",
     "claude-opus-4-8",
+    "claude-haiku-5-5",
     # https://platform.claude.com/docs/en/build-with-claude/prompt-caching
     "claude-opus-5",
     # Claude Sonnet 5 supports prompt caching but is not covered by any
@@ -258,6 +259,8 @@ SUPPORTS_STOP_WORDS_FALSE_MODELS: list[str] = [
     "grok-code-fast-1",
     # DeepSeek R1 family
     "deepseek-r1-0528",
+    # OpenAI models on Bedrock (gpt-oss, gpt-5.x, gpt-6) reject stopSequences
+    "openai.gpt-",
 ]
 
 # Models that should use the OpenAI Responses API path by default
@@ -280,7 +283,10 @@ RESPONSES_API_MODELS: list[str] = [
 # NOTE: model_matches uses case-insensitive substring matching, not globbing.
 #       Keep these entries as bare substrings without wildcards.
 FORCE_STRING_SERIALIZER_MODELS: list[str] = [
-    "deepseek",  # e.g., DeepSeek-V3.2-Exp
+    # Only the legacy DeepSeek v3.2 family needs string-only content. Newer
+    # v4/v4.1 ids accept structured list content, and matching a bare
+    # "deepseek" substring would string-serialize them and drop image parts.
+    "deepseek-v3.2",  # e.g., DeepSeek-V3.2-Exp, deepseek-v3.2-reasoner
     "glm",  # e.g., GLM-4.5 / GLM-4.6
     # Kimi K2-Instruct requires string serialization only on Groq
     "groq/kimi-k2-instruct",  # explicit provider-prefixed IDs

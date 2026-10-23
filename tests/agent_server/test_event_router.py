@@ -18,7 +18,9 @@ from openhands.agent_server.event_router import (
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import SendMessageRequest
 from openhands.sdk import Message
+from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.event.llm_convertible.message import MessageEvent
+from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm.message import ImageContent, TextContent
 
 
@@ -808,3 +810,35 @@ class TestSearchEventsEndpoint:
 
         finally:
             client.app.dependency_overrides.clear()
+
+
+def test_unknown_event_id_is_404_and_null_in_batch(client, sample_conversation_id):
+    """An unknown id is a 404 from get-one and null in its batch-get slot."""
+    event_log = EventLog(InMemoryFileStore())
+    known = MessageEvent(
+        id="00000000-0000-0000-0000-000000000001",
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text="hi")]),
+    )
+    event_log.append(known)
+    event_service = EventService(stored=MagicMock(), conversations_dir=Path("x"))
+    conversation = MagicMock()
+    conversation._state.events = event_log
+    event_service._conversation = conversation
+    client.app.dependency_overrides[get_event_service] = lambda: event_service
+    url = f"/api/conversations/{sample_conversation_id}/events"
+
+    try:
+        assert client.get(f"{url}/{known.id}").json()["id"] == known.id
+        assert client.get(f"{url}/qa-missing-event").status_code == 404
+
+        response = client.request(
+            "GET", url, json=["qa-missing-event", known.id, "qa-missing-2"]
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body) == 3
+        assert body[0] is None and body[2] is None
+        assert body[1]["id"] == known.id
+    finally:
+        client.app.dependency_overrides.clear()
