@@ -8797,6 +8797,29 @@ class TestMcpConfigToAcpServers:
             ("Authorization", "Bearer oauth-access-token")
         ]
 
+    def test_oauth_token_encrypted_at_rest_is_forwarded_decrypted(self):
+        from openhands.sdk.mcp.config import MCPServer
+
+        cipher = Cipher(secret_key="test-secret-key-0123456789")
+        stored = MCPServer.model_validate(
+            {
+                "url": "https://mcp.linear.app/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "state": {"tokens": {"access_token": "oauth-access-token"}},
+                },
+            }
+        ).model_dump(mode="json", context={"cipher": cipher})
+        assert stored["auth"]["state"]["tokens"]["access_token"] != (
+            "oauth-access-token"
+        )
+        server = MCPServer.model_validate(stored, context={"cipher": cipher})
+
+        out = _mcp_config_to_acp_servers(
+            {"linear": server}, self._caps(http=True, sse=False)
+        )
+        assert [h.value for h in out[0].headers] == ["Bearer oauth-access-token"]
+
     def test_oauth_access_token_keeps_static_headers(self):
         cfg = {
             "mcpServers": {
