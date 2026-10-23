@@ -67,6 +67,8 @@ export interface ConversationInfo {
   title?: string;
   created_at?: string;
   updated_at?: string;
+  last_read_at?: string | null;
+  unread?: boolean;
   tags?: Record<string, string>;
   /**
    * HEAD of the conversation tree: the parent of the next appended event.
@@ -137,6 +139,7 @@ export interface CreateACPConversationRequest {
 export interface UpdateConversationRequest {
   title?: string;
   tags?: Record<string, string>;
+  unread?: boolean;
 }
 
 export interface StaticSecret {

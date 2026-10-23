@@ -512,7 +512,8 @@ async def test_stale_owner_cannot_append_after_lease_takeover(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_stale_owner_refused_update_leaves_no_trace(tmp_path):
+@pytest.mark.parametrize("unread", [False, True])
+async def test_stale_owner_refused_update_leaves_no_trace(tmp_path, unread):
     """A metadata update refused for lost ownership changes nothing visible."""
     conversations_dir = tmp_path / "conversations"
     workspace_dir = tmp_path / "workspace"
@@ -529,8 +530,11 @@ async def test_stale_owner_refused_update_leaves_no_trace(tmp_path):
         conversation_info, _ = await primary.start_conversation(request)
         conversation_id = conversation_info.id
         await primary.update_conversation(
-            conversation_id, UpdateConversationRequest(title="Original")
+            conversation_id,
+            UpdateConversationRequest(title="Original", unread=not unread),
         )
+        original = await primary.get_conversation(conversation_id)
+        assert original is not None
         _expire_conversation_lease(conversations_dir, conversation_id)
         meta_file = conversations_dir / conversation_id.hex / "meta.json"
 
@@ -546,7 +550,7 @@ async def test_stale_owner_refused_update_leaves_no_trace(tmp_path):
                 await primary.update_conversation(
                     conversation_id,
                     UpdateConversationRequest(
-                        title="Stale owner", tags={"env": "stale"}
+                        title="Stale owner", tags={"env": "stale"}, unread=unread
                     ),
                 )
 
@@ -555,6 +559,7 @@ async def test_stale_owner_refused_update_leaves_no_trace(tmp_path):
             assert info is not None
             assert info.title == "Original"
             assert info.tags == {"env": "old"}
+            assert info.last_read_at == original.last_read_at
             assert primary._event_services is not None
             state = await primary._event_services[conversation_id].get_state()
             assert state.tags == {"env": "old"}
@@ -2988,15 +2993,10 @@ class TestConversationServiceUpdateConversation:
         assert mock_service.save_meta.call_count == 3
 
     @pytest.mark.asyncio
-    async def test_update_conversation_sets_updated_at(
+    async def test_metadata_update_preserves_activity_timestamp(
         self, conversation_service, sample_stored_conversation
     ):
-        """Test that update_conversation advances updated_at.
-
-        Renaming a conversation is a meaningful change; the timestamp must
-        reflect when it happened rather than staying at the value set at
-        conversation creation time.
-        """
+        """Renaming must not make an already-read conversation unread."""
         mock_service = AsyncMock(spec=EventService)
         mock_service.stored = sample_stored_conversation
         _adopt_saved_meta(mock_service)
@@ -3017,7 +3017,43 @@ class TestConversationServiceUpdateConversation:
         request = UpdateConversationRequest(title="New Title")
         await conversation_service.update_conversation(conversation_id, request)
 
-        assert mock_service.stored.updated_at > original_updated_at
+        assert mock_service.stored.updated_at == original_updated_at
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("unread", [False, True])
+    async def test_update_conversation_sets_read_state(
+        self, conversation_service, sample_stored_conversation, unread
+    ):
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = sample_stored_conversation
+        _adopt_saved_meta(mock_service)
+        mock_state = ConversationState(
+            id=sample_stored_conversation.id,
+            agent=_sample_agent(),
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.FINISHED,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        mock_service.get_state.return_value = mock_state
+        conversation_id = sample_stored_conversation.id
+        conversation_service._event_services[conversation_id] = mock_service
+
+        mock_service.stored.last_read_at = mock_service.stored.updated_at
+        original_updated_at = mock_service.stored.updated_at
+        with patch.object(
+            conversation_service, "_notify_conversation_webhooks", new=AsyncMock()
+        ) as notify:
+            assert await conversation_service.update_conversation(
+                conversation_id, UpdateConversationRequest(unread=unread)
+            )
+
+        mock_service.save_meta.assert_awaited_once()
+        assert (mock_service.stored.last_read_at is None) is unread
+        assert mock_service.stored.updated_at == original_updated_at
+        notify.assert_awaited_once()
+        info = notify.call_args.args[0]
+        assert info.unread is unread
+        assert info.last_read_at == mock_service.stored.last_read_at
 
 
 class TestConversationServiceDeleteConversation:
@@ -3486,6 +3522,7 @@ class TestAutoTitle:
     async def test_autotitle_sets_title_on_first_user_message(self):
         """Title is generated and saved when the first user message arrives."""
         service = self._make_service()
+        original_updated_at = service.stored.updated_at
 
         with patch(self._GENERATE_TITLE_PATH, return_value="✨ Generated Title"):
             subscriber = AutoTitleSubscriber(service=service)
@@ -3493,6 +3530,7 @@ class TestAutoTitle:
             await self._drain_title_task(lambda: service.stored.title is not None)
 
         assert service.stored.title == "✨ Generated Title"
+        assert service.stored.updated_at == original_updated_at
         service.save_meta.assert_called_once()
 
     @pytest.mark.asyncio
@@ -4223,6 +4261,27 @@ class TestConversationTreeForkAndNavigate:
             assert reloaded_fork is not None
             assert reloaded_fork.forked_from_conversation_id == src_id
             assert reloaded_fork.forked_from_event_id == branch_point
+
+    @pytest.mark.asyncio
+    async def test_read_state_persists_across_restart(self, tmp_path):
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            info, _, _ = await self._start_with_events(svc, workspace_dir, ["first"])
+            await svc.update_conversation(
+                info.id, UpdateConversationRequest(unread=False)
+            )
+            marked = await svc.get_conversation(info.id)
+            assert marked is not None
+            read_at = marked.last_read_at
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc2:
+            reloaded = await svc2.get_conversation(info.id)
+
+            assert reloaded is not None
+            assert reloaded.last_read_at == read_at
 
 
 class TestConversationSearchScaling:

@@ -2479,6 +2479,7 @@ describe('Auxiliary API clients', () => {
     await client.updateConversation('c1', { title: 'New title' });
     await client.getRuntime('c1');
     await client.reprovisionRuntime('c1');
+    await client.updateConversation('c1', { unread: false });
 
     expect(global.fetch).toHaveBeenNthCalledWith(
       1,
@@ -2522,6 +2523,16 @@ describe('Auxiliary API clients', () => {
       11,
       'http://example.com/api/conversations/c1/runtime/reprovision',
       expect.objectContaining({ method: 'POST', body: JSON.stringify({}) })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      12,
+      'http://example.com/api/conversations/c1',
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ unread: false }) })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      13,
+      'http://example.com/api/conversations/c1',
+      expect.objectContaining({ method: 'GET' })
     );
   });
 
