@@ -100,6 +100,25 @@ def test_cache_write_survives_absent_prompt_tokens_details():
     assert snapshot.cache_write_tokens == 42
 
 
+def test_normalize_usage_cache_write_null_does_not_raise():
+    """litellm deletes None optional fields from the instance but keeps them in
+    ``model_fields_set`` (e.g. minimax-m3 reports ``cache_creation_tokens: null``).
+    """
+    usage = Usage(
+        prompt_tokens=100,
+        completion_tokens=5,
+        prompt_tokens_details={
+            "cached_tokens": 3,
+            "cache_creation_tokens": None,
+        },
+    )
+    snapshot = normalize_usage(usage)
+
+    assert snapshot is not None
+    assert snapshot.cache_write_tokens == 0
+    assert snapshot.cache_read_tokens == 3
+
+
 def test_span_closed_on_error(exporter):
     t = Telemetry(model_name="m", metrics=Metrics())
     t.on_request(telemetry_ctx={})

@@ -119,11 +119,18 @@ a = Analysis(
         *collect_data_files("mcp"),
         *collect_data_files("fakeredis"),  # Required for commands.json used by fakeredis ACL
         *get_fakeredis_data(),  # Ensure fakeredis/model/ directory structure exists
+        # binaryornot >=0.5 loads binary_formats.csv / binary_extensions.csv /
+        # encodings.csv from binaryornot.data via importlib.resources. Without
+        # these, importing openhands.tools.file_editor raises
+        # ModuleNotFoundError: No module named 'binaryornot.data' in frozen builds.
+        *collect_data_files("binaryornot"),
 
         # OpenHands SDK prompt templates (adjusted for shallow namespace layout)
-        *collect_data_files("openhands.sdk.agent", includes=["prompts/*.j2"]),
         *collect_data_files("openhands.sdk.context.condenser", includes=["prompts/*.j2"]),
         *collect_data_files("openhands.sdk.context.prompts", includes=["templates/*.j2"]),
+
+        # Plugin / MCP format schemas, read from disk next to the module
+        *collect_data_files("openhands.sdk.plugin.format", includes=["schemas/*.json"]),
 
         # OpenHands Tools templates
         *collect_data_files("openhands.tools.delegate", includes=["templates/*.j2"]),

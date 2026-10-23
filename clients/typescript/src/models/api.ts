@@ -399,6 +399,8 @@ export interface MetaProfileMutationResponse {
 export interface ActivateMetaProfileResponse {
   name: string;
   message: string;
+  /** False when the agent settings cannot route (e.g. ACP), so nothing was activated. */
+  applied?: boolean;
 }
 
 export type ExposeSecretsMode = 'encrypted' | 'plaintext';
@@ -440,6 +442,22 @@ export interface UpsertSecretResponse {
 
 export interface DeleteSecretResponse {
   deleted: boolean;
+}
+
+export interface GitProviderRepository {
+  id: string;
+  full_name: string;
+  git_provider: string;
+  is_public: boolean;
+  stargazers_count?: number | null;
+  pushed_at?: string | null;
+  main_branch?: string | null;
+}
+
+export interface GitProviderRepositoryPage {
+  items: GitProviderRepository[];
+  next_page_id: string | null;
+  missing_token: boolean;
 }
 
 export type SecretValueResponse = string;

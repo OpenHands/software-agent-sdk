@@ -184,6 +184,9 @@ def test_seed_skips_ghost_llm_profile_for_bare_defaults(
     materialized = client.post("/api/agent-profiles/default/materialize").json()
     assert materialized["valid"] is False
     assert materialized["llm_profile_resolved"] is False
+    assert "LLM profile 'default' not found" in materialized["errors"]
+    # Only the launch's 422 detail names the ref in this field (#5871).
+    assert "dangling_llm_profile_ref" not in materialized
 
 
 def test_seed_does_not_clobber_existing_default_llm_profile(
@@ -317,29 +320,84 @@ def test_llm_has_real_config(llm, expected):
     assert router_module._llm_has_real_config(llm) is expected
 
 
-def test_no_seed_when_store_nonempty(client, store):
-    """A non-empty store is never seeded."""
+def _ids(body: dict) -> dict[str, str]:
+    return {p["name"]: p["id"] for p in body["profiles"]}
+
+
+def test_without_an_active_profile_a_seeded_default_is_activated(client, store):
     store.save(OpenHandsAgentProfile(name="mine", llm_profile_ref="x"))
 
     body = client.get("/api/agent-profiles").json()
-    names = {p["name"] for p in body["profiles"]}
-    assert names == {"mine"}
-    assert body["active_agent_profile_id"] is None
+
+    assert set(_ids(body)) == {"mine", "default"}
+    assert body["active_agent_profile_id"] == _ids(body)["default"]
 
 
-def test_no_seed_when_pointer_set_but_store_empty(client):
-    """An empty store with a non-null pointer is left as-is (no seed, no error).
-
-    A stale pointer (e.g. after a failed delete) reflects user state, so the
-    seed condition deliberately requires both an empty store *and* a null
-    pointer.
-    """
-    stale = "12345678-1234-1234-1234-1234567890ab"
-    client.patch("/api/settings", json={"active_agent_profile_id": stale})
+def test_an_existing_default_is_activated_rather_than_reseeded(client, store):
+    store.save(OpenHandsAgentProfile(name="default", llm_profile_ref="kept"))
+    store.save(OpenHandsAgentProfile(name="mine", llm_profile_ref="x"))
 
     body = client.get("/api/agent-profiles").json()
-    assert body["profiles"] == []
-    assert body["active_agent_profile_id"] == stale
+
+    assert set(_ids(body)) == {"mine", "default"}
+    assert body["active_agent_profile_id"] == _ids(body)["default"]
+    assert store.load("default").llm_profile_ref == "kept"
+
+
+def test_a_full_store_without_default_activates_an_existing_profile(
+    client, store, monkeypatch
+):
+    monkeypatch.setattr(router_module, "MAX_AGENT_PROFILES", 2)
+    store.save(OpenHandsAgentProfile(name="beta", llm_profile_ref="x"))
+    store.save(OpenHandsAgentProfile(name="alpha", llm_profile_ref="x"))
+
+    response = client.get("/api/agent-profiles")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(_ids(body)) == {"alpha", "beta"}
+    assert body["active_agent_profile_id"] == _ids(body)["alpha"]
+
+
+def test_a_corrupt_default_is_kept_and_another_profile_activated(
+    client, store, temp_agent_profiles_dir
+):
+    corrupt = temp_agent_profiles_dir / "default.json"
+    corrupt.write_text("{ not valid json")
+    store.save(OpenHandsAgentProfile(name="mine", llm_profile_ref="x"))
+
+    response = client.get("/api/agent-profiles")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["active_agent_profile_id"] == _ids(body)["mine"]
+    assert corrupt.read_text() == "{ not valid json"
+
+
+def test_a_corrupt_default_alone_leaves_no_profile_active(
+    client, temp_agent_profiles_dir
+):
+    (temp_agent_profiles_dir / "default.json").write_text("{ not valid json")
+
+    response = client.get("/api/agent-profiles")
+
+    assert response.status_code == 200
+    assert response.json() == {"profiles": [], "active_agent_profile_id": None}
+
+
+def test_a_dangling_pointer_moves_to_a_seeded_default(client, store):
+    # PATCH /api/settings refuses unknown ids (#5847), so activate a real
+    # profile and then remove its file out of band.
+    profile = OpenHandsAgentProfile(name="gone", llm_profile_ref="x")
+    store.save(profile)
+    stale = str(profile.id)
+    assert client.post(f"/api/agent-profiles/{stale}/activate").status_code == 200
+    (store.base_dir / "gone.json").unlink()
+
+    body = client.get("/api/agent-profiles").json()
+
+    assert set(_ids(body)) == {"default"}
+    assert body["active_agent_profile_id"] == _ids(body)["default"]
 
 
 def test_concurrent_first_list_seeds_once(client, store):
@@ -590,8 +648,39 @@ def test_delete_idempotent(client):
     assert response.status_code == 200
 
 
-def test_delete_clears_active_pointer(client, store):
-    """Deleting the active profile clears active_agent_profile_id."""
+def test_json_suffix_name_keeps_identity_and_delete_moves_pointer(client, store):
+    """A ``.json``-suffixed name is the bare name (#5873).
+
+    The store strips ``.json`` from the file name, so ``x.json`` and ``x`` are
+    the same profile: an overwrite keeps the id and bumps the revision, and
+    deleting it while active moves the pointer off it (to ``default``).
+    """
+    assert (
+        client.post(
+            "/api/agent-profiles/suffixed.json", json={"llm_profile_ref": "a"}
+        ).status_code
+        == 201
+    )
+    first = client.get("/api/agent-profiles/suffixed.json").json()["profile"]
+    assert first["name"] == "suffixed"
+    assert first["revision"] == 0
+    client.post(f"/api/agent-profiles/{first['id']}/activate")
+
+    client.post("/api/agent-profiles/suffixed.json", json={"llm_profile_ref": "b"})
+    second = client.get("/api/agent-profiles/suffixed").json()["profile"]
+    assert second["id"] == first["id"]
+    assert second["revision"] == 1
+    assert second["llm_profile_ref"] == "b"
+    assert [
+        p["name"] for p in client.get("/api/agent-profiles").json()["profiles"]
+    ] == ["suffixed"]
+
+    assert client.delete("/api/agent-profiles/suffixed.json").status_code == 200
+    default_id = client.get("/api/agent-profiles/default").json()["profile"]["id"]
+    assert client.get("/api/settings").json()["active_agent_profile_id"] == default_id
+
+
+def test_deleting_the_active_profile_activates_default(client, store):
     store.save(OpenHandsAgentProfile(name="active-one", llm_profile_ref="x"))
     profile_id = client.get("/api/agent-profiles/active-one").json()["profile"]["id"]
     client.post(f"/api/agent-profiles/{profile_id}/activate")
@@ -599,7 +688,19 @@ def test_delete_clears_active_pointer(client, store):
 
     client.delete("/api/agent-profiles/active-one")
 
-    assert client.get("/api/settings").json()["active_agent_profile_id"] is None
+    default_id = client.get("/api/agent-profiles/default").json()["profile"]["id"]
+    assert client.get("/api/settings").json()["active_agent_profile_id"] == default_id
+
+
+def test_deleting_an_active_default_reseeds_it(client):
+    seeded = client.get("/api/agent-profiles").json()
+    old_id = seeded["active_agent_profile_id"]
+
+    client.delete("/api/agent-profiles/default")
+
+    body = client.get("/api/agent-profiles").json()
+    assert set(_ids(body)) == {"default"}
+    assert body["active_agent_profile_id"] == _ids(body)["default"] != old_id
 
 
 def test_delete_active_acp_profile_resets_agent_settings(client, store):
@@ -648,7 +749,7 @@ def test_delete_active_acp_profile_resets_agent_settings(client, store):
 
     # Verify the fix: agent_settings is reset to default (agent_kind="openhands")
     settings_after = client.get("/api/settings").json()
-    assert settings_after["active_agent_profile_id"] is None
+    assert settings_after["active_agent_profile_id"] not in (None, profile_id)
     assert settings_after["agent_settings"]["agent_kind"] == "openhands"
     # Verify ACP-specific fields are cleared
     assert settings_after["agent_settings"].get("acp_server") is None
@@ -679,7 +780,7 @@ def test_delete_active_openhands_profile_does_not_reset_agent_settings(client, s
 
     # Verify pointer is cleared but agent_settings unchanged (still openhands)
     settings_after = client.get("/api/settings").json()
-    assert settings_after["active_agent_profile_id"] is None
+    assert settings_after["active_agent_profile_id"] not in (None, profile_id)
     assert settings_after["agent_settings"] == agent_settings_before
 
 
@@ -890,8 +991,7 @@ def test_seed_preserves_openhands_fields(client):
         "/api/settings",
         json={
             "agent_settings_diff": {
-                "enable_sub_agents": True,
-                "enable_switch_llm_tool": False,
+                "tools": [{"name": "terminal"}, {"name": "task_tool_set"}],
                 "tool_concurrency_limit": 3,
                 "agent_context": {"system_message_suffix": "be terse"},
                 "verification": {
@@ -904,8 +1004,9 @@ def test_seed_preserves_openhands_fields(client):
     client.get("/api/agent-profiles")  # triggers the seed
 
     prof = client.get("/api/agent-profiles/default").json()["profile"]
-    assert prof["enable_sub_agents"] is True
-    assert prof["enable_switch_llm_tool"] is False
+    assert [tool["name"] for tool in prof["tools"]] == ["terminal", "task_tool_set"]
+    assert "enable_sub_agents" not in prof
+    assert "enable_switch_llm_tool" not in prof
     assert prof["tool_concurrency_limit"] == 3
     assert prof["system_message_suffix"] == "be terse"
     # The seed disables nothing — the default profile launches with all
@@ -970,10 +1071,10 @@ def test_seed_preserves_acp_fields(client):
 
 
 def test_list_timeout_returns_503(client, monkeypatch):
-    def boom(self):
+    def boom(self, timeout=0):
         raise TimeoutError("locked")
 
-    monkeypatch.setattr(AgentProfileStore, "list", boom)
+    monkeypatch.setattr(AgentProfileStore, "lock", boom)
     response = client.get("/api/agent-profiles")
     assert response.status_code == 503
 
@@ -1016,15 +1117,24 @@ def client_with_llm_store(
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
     config = Config(static_files_path=None, session_api_keys=[], secret_key=None)
     app = create_app(config)
+
+    def agent_profiles() -> AgentProfileStore:
+        return AgentProfileStore(base_dir=temp_agent_profiles_dir)
+
+    def llm_profiles() -> LLMProfileStore:
+        return LLMProfileStore(base_dir=temp_llm_profiles_dir)
+
     with (
         patch(
             "openhands.agent_server.agent_profiles_router.get_agent_profile_store",
-            lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
+            agent_profiles,
         ),
         patch(
             "openhands.agent_server.agent_profiles_router.get_llm_profile_store",
-            lambda: LLMProfileStore(base_dir=temp_llm_profiles_dir),
+            llm_profiles,
         ),
+        patch("openhands.agent_server.launch.get_agent_profile_store", agent_profiles),
+        patch("openhands.agent_server.launch.get_llm_profile_store", llm_profiles),
     ):
         yield TestClient(app)
     reset_stores()
@@ -1051,6 +1161,17 @@ def test_materialize_valid_openhands_profile(client_with_llm_store, store, llm_s
     assert body["errors"] == []
     assert body["resolved_settings"] is not None
     assert body["dangling_mcp_server_refs"] == []
+
+
+def test_materialize_rejects_an_unwrapped_draft(client_with_llm_store, store):
+    store.save(OpenHandsAgentProfile(name="p", llm_profile_ref="base-llm"))
+
+    response = client_with_llm_store.post(
+        "/api/agent-profiles/p/materialize",
+        json={"llm_profile_ref": "other", "tools": []},
+    )
+
+    assert response.status_code == 422
 
 
 def test_materialize_valid_acp_profile(client_with_llm_store, store):
@@ -1120,7 +1241,7 @@ def test_materialize_reports_disabled_and_resolved_skills(
     )
 
     with patch(
-        "openhands.agent_server.agent_profiles_router.discover_profile_skills",
+        "openhands.agent_server.launch.discover_profile_skills",
         return_value=[
             Skill(name="alpha", content="x"),
             Skill(name="beta", content="y"),
@@ -1134,6 +1255,99 @@ def test_materialize_reports_disabled_and_resolved_skills(
     assert body["disabled_skills"] == ["beta", "not-in-catalog"]
     assert body["resolved_skills"] == ["alpha"]
     assert body["resolved_settings"] is not None
+
+
+_BROWSER_PROBE = "openhands.agent_server.launch.is_tool_usable"
+_DISCOVER = "openhands.agent_server.launch.discover_profile_skills"
+
+
+def test_materialize_reports_the_tools_a_launch_would_build(
+    client_with_llm_store, store, llm_store
+):
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    store.save(OpenHandsAgentProfile(name="p", llm_profile_ref="base-llm"))
+
+    with (
+        patch(_BROWSER_PROBE, return_value=True),
+        patch(_DISCOVER, return_value=[]),
+    ):
+        body = client_with_llm_store.post("/api/agent-profiles/p/materialize").json()
+
+    assert [t["name"] for t in body["resolved_settings"]["tools"]] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "browser_tool_set",
+        "switch_llm",
+    ]
+
+
+def test_materialize_evaluates_a_draft_without_saving_it(
+    client_with_llm_store, store, llm_store
+):
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    draft = {
+        "name": "ignored",
+        "agent_kind": "openhands",
+        "llm_profile_ref": "base-llm",
+        "tools": [{"name": "glob"}],
+    }
+
+    with (
+        patch(_BROWSER_PROBE, return_value=True),
+        patch(_DISCOVER, return_value=[]),
+    ):
+        response = client_with_llm_store.post(
+            "/api/agent-profiles/draft/materialize", json={"profile": draft}
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert [t["name"] for t in body["resolved_settings"]["tools"]] == ["glob"]
+    assert store.list() == []
+
+
+def test_materialize_draft_takes_precedence_over_the_stored_profile(
+    client_with_llm_store, store, llm_store
+):
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    store.save(OpenHandsAgentProfile(name="p", llm_profile_ref="base-llm"))
+
+    with (
+        patch(_DISCOVER, return_value=[]),
+        patch(_BROWSER_PROBE, return_value=False),
+    ):
+        drafted = client_with_llm_store.post(
+            "/api/agent-profiles/p/materialize",
+            json={"profile": {"name": "p", "llm_profile_ref": "base-llm", "tools": []}},
+        ).json()
+        stored = client_with_llm_store.post(
+            "/api/agent-profiles/p/materialize", json={}
+        ).json()
+
+    assert drafted["resolved_settings"]["tools"] == []
+    assert [t["name"] for t in stored["resolved_settings"]["tools"]] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "switch_llm",
+    ]
+
+
+def test_materialize_invalid_draft_returns_422(client_with_llm_store):
+    response = client_with_llm_store.post(
+        "/api/agent-profiles/p/materialize",
+        json={
+            "profile": {
+                "name": "p",
+                "llm_profile_ref": "base-llm",
+                "tools": "terminal",
+            }
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_materialize_unknown_name_returns_404(client_with_llm_store):
@@ -1163,3 +1377,140 @@ def test_materialize_no_raw_secrets_in_resolved_settings(
     body = response.json()
     assert body["valid"] is True
     assert raw_key not in response.text
+
+
+def test_materialize_migrates_an_old_draft_like_save(
+    client_with_llm_store, store, llm_store
+):
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    draft = {
+        "schema_version": 2,
+        "agent_kind": "openhands",
+        "llm_profile_ref": "base-llm",
+        "enable_sub_agents": True,
+    }
+
+    with (
+        patch(_BROWSER_PROBE, return_value=False),
+        patch(_DISCOVER, return_value=[]),
+    ):
+        previewed = client_with_llm_store.post(
+            "/api/agent-profiles/p/materialize", json={"profile": draft}
+        )
+        saved = client_with_llm_store.post("/api/agent-profiles/p", json=draft)
+
+    assert previewed.status_code == 200
+    assert saved.status_code == 201
+    tools = [t["name"] for t in previewed.json()["resolved_settings"]["tools"]]
+    assert "task_tool_set" in tools
+
+
+def test_materialize_rejects_a_draft_newer_than_save_accepts(client_with_llm_store):
+    draft = {
+        "name": "p",
+        "schema_version": 99,
+        "agent_kind": "openhands",
+        "llm_profile_ref": "x",
+    }
+
+    previewed = client_with_llm_store.post(
+        "/api/agent-profiles/p/materialize", json={"profile": draft}
+    )
+    saved = client_with_llm_store.post("/api/agent-profiles/p", json=draft)
+
+    assert previewed.status_code == 422
+    assert saved.status_code == 422
+
+
+def test_save_migrates_a_v2_profile_carrying_retired_switches(client):
+    response = client.post(
+        "/api/agent-profiles/v2-profile",
+        json={
+            "schema_version": 2,
+            "agent_kind": "openhands",
+            "llm_profile_ref": "default",
+            "enable_sub_agents": False,
+            "enable_switch_llm_tool": True,
+        },
+    )
+
+    assert response.status_code == 201
+    prof = client.get("/api/agent-profiles/v2-profile").json()["profile"]
+    assert prof["tools"] is None
+    assert "enable_sub_agents" not in prof
+    assert "enable_switch_llm_tool" not in prof
+
+
+def test_save_rejects_removed_tool_switches(client):
+    response = client.post(
+        "/api/agent-profiles/p",
+        json={"llm_profile_ref": "default", "enable_switch_llm_tool": False},
+    )
+
+    assert response.status_code == 422
+
+
+def test_save_rejects_params_on_a_parameterless_builtin(client):
+    response = client.post(
+        "/api/agent-profiles/p",
+        json={
+            "llm_profile_ref": "default",
+            "tools": [{"name": "switch_llm", "params": {"a": 1}}],
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def _tool_names(client, name: str) -> list[str]:
+    prof = client.get(f"/api/agent-profiles/{name}").json()["profile"]
+    return [tool["name"] for tool in prof["tools"] or []]
+
+
+def test_saving_a_copy_under_a_new_name_keeps_its_tools(client):
+    client.post("/api/agent-profiles/p", json={"llm_profile_ref": "default"})
+    stored = client.get("/api/agent-profiles/p").json()["profile"]
+
+    client.post(
+        "/api/agent-profiles/copy",
+        json={**stored, "tools": [{"name": "terminal"}, {"name": "glob"}]},
+    )
+
+    assert _tool_names(client, "copy") == ["terminal", "glob"]
+
+
+def test_new_client_spreading_stale_switches_keeps_its_tools_edit(client):
+    client.post(
+        "/api/agent-profiles/p",
+        json={
+            "llm_profile_ref": "default",
+            "tools": [{"name": "terminal"}, {"name": "switch_llm"}],
+        },
+    )
+    stored = client.get("/api/agent-profiles/p").json()["profile"]
+
+    client.post(
+        "/api/agent-profiles/p",
+        json={**stored, "tools": [{"name": "terminal"}, {"name": "task_tool_set"}]},
+    )
+
+    assert _tool_names(client, "p") == ["terminal", "task_tool_set"]
+
+
+@pytest.mark.parametrize(
+    ("tools", "valid"),
+    [([{"name": "terminal"}], True), ([{"name": "not_a_registered_tool"}], False)],
+)
+def test_materialize_is_invalid_when_a_selected_tool_cannot_run(
+    client_with_llm_store, llm_store, tools, valid
+):
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    draft = {"agent_kind": "openhands", "llm_profile_ref": "base-llm", "tools": tools}
+
+    with patch(_DISCOVER, return_value=[]):
+        response = client_with_llm_store.post(
+            "/api/agent-profiles/p/materialize", json={"profile": draft}
+        )
+
+    assert response.status_code == 200
+    assert response.json()["valid"] is valid

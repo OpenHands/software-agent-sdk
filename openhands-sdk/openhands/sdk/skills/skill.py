@@ -850,6 +850,7 @@ def load_skills_from_dir(
     strict: bool = True,
     recursive: bool = True,
     root: Path | None = None,
+    exclude_dirs: set[Path] | None = None,
 ) -> tuple[dict[str, Skill], dict[str, Skill], dict[str, Skill]]:
     """Load all skills from the given directory.
 
@@ -868,6 +869,8 @@ def load_skills_from_dir(
             children of skill_dir.
         root: If given, skill paths that resolve outside it (e.g. through a
             symlink) are skipped. Plugins pass their root here.
+        exclude_dirs: Directories whose regular .md files are not loaded as
+            skills (e.g. managed installed packages inside a user skills dir).
 
     Returns:
         Tuple of (repo_skills, knowledge_skills, agent_skills) dictionaries.
@@ -889,7 +892,17 @@ def load_skills_from_dir(
     # doesn't exist.
     skill_md_files = find_skill_md_directories(skill_dir, root)
     skill_md_dirs = {skill_md.parent for skill_md in skill_md_files}
-    regular_md_files = find_regular_md_files(skill_dir, skill_md_dirs, recursive, root)
+    # Rebase exclusions onto skill_dir so they still match when skill_dir is
+    # reached through a symlink (e.g. ~/.agents/skills -> ~/.openhands/skills).
+    real_skill_dir = skill_dir.resolve()
+    rebased_exclude_dirs = {
+        skill_dir / real.relative_to(real_skill_dir)
+        for d in exclude_dirs or ()
+        if (real := d.resolve()).is_relative_to(real_skill_dir)
+    }
+    regular_md_files = find_regular_md_files(
+        skill_dir, skill_md_dirs | rebased_exclude_dirs, recursive, root
+    )
 
     # Load SKILL.md files (auto-detected and validated in Skill.load)
     # Wrap each load in try/except to ensure one bad skill doesn't break all loading
@@ -956,10 +969,18 @@ def load_user_skills() -> list[Skill]:
         List of Skill objects loaded from user directories.
         Returns empty list if no skills found or loading fails.
     """
+    from openhands.sdk.skills.installed import get_installed_skills_dir
+
     all_skills: list[Skill] = []
     seen_names: set[str] = set()
 
-    _load_and_merge_from_dirs(USER_SKILLS_DIRS, seen_names, all_skills, "user skills")
+    _load_and_merge_from_dirs(
+        USER_SKILLS_DIRS,
+        seen_names,
+        all_skills,
+        "user skills",
+        exclude_dirs={get_installed_skills_dir()},
+    )
 
     # Load enabled installed skills (lower precedence than user skills)
     try:
@@ -1013,6 +1034,7 @@ def _load_and_merge_from_dirs(
     seen_names: set[str],
     all_skills: list[Skill],
     source_label: str,
+    exclude_dirs: set[Path] | None = None,
 ) -> None:
     """Load skills from multiple directories, merging with deduplication.
 
@@ -1025,6 +1047,7 @@ def _load_and_merge_from_dirs(
         seen_names: Set of already-seen skill names (mutated in place).
         all_skills: Accumulator list of skills (mutated in place).
         source_label: Human-readable label for log messages (e.g. "user skills").
+        exclude_dirs: Passed through to load_skills_from_dir().
     """
     for skills_dir in dirs:
         if not skills_dir.exists():
@@ -1034,7 +1057,7 @@ def _load_and_merge_from_dirs(
         try:
             logger.debug(f"Loading {source_label} from {skills_dir}")
             repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(
-                skills_dir
+                skills_dir, exclude_dirs=exclude_dirs
             )
             _merge_loaded_skills(
                 source_dir=skills_dir,
@@ -1145,6 +1168,8 @@ PUBLIC_SKILLS_REPO = "https://github.com/OpenHands/extensions"
 # Accepts a branch name, tag (e.g. "v1.0.0"), or full 40-char commit SHA.
 PUBLIC_SKILLS_REF = os.environ.get("EXTENSIONS_REF", "main")
 DEFAULT_MARKETPLACE_PATH = "marketplaces/default.json"
+# A local checkout or package of the public repo, read instead of a git clone.
+PUBLIC_SKILLS_PATH_ENV = "EXTENSIONS_PATH"
 
 # Process-level cache for load_public_skills. Conversation creation re-validates
 # AgentContext several times and each validation re-runs load_public_skills
@@ -1154,7 +1179,7 @@ DEFAULT_MARKETPLACE_PATH = "marketplaces/default.json"
 # Cache value: (timestamp, skills)
 # For mutable refs (branches), timestamp is time.monotonic() at write time and
 # the entry expires after _PUBLIC_SKILLS_CACHE_TTL_SECONDS.
-# For immutable refs (tags, commit SHAs), timestamp is float("inf") so the
+# For pinned refs (tags and commit SHAs), timestamp is float("inf") so the
 # TTL check is never satisfied and the entry lives for the process lifetime.
 _PUBLIC_SKILLS_CACHE: dict[
     tuple[str, str, str | None], tuple[float, list["Skill"]]
@@ -1223,6 +1248,13 @@ def load_marketplace_skill_names(
         return None
 
 
+def _local_public_skills_path(repo_url: str) -> Path | None:
+    path = os.environ.get(PUBLIC_SKILLS_PATH_ENV)
+    if not path or repo_url != PUBLIC_SKILLS_REPO:
+        return None
+    return Path(path).expanduser()
+
+
 def load_public_skills(
     repo_url: str = PUBLIC_SKILLS_REPO,
     ref: str = PUBLIC_SKILLS_REF,
@@ -1234,8 +1266,12 @@ def load_public_skills(
     https://github.com/OpenHands/extensions. On first run, it clones the repository
     to ~/.openhands/skills-cache/. On subsequent runs within the same process, it
     returns cached results. For branch refs it re-fetches after the cache TTL; for
-    tags and commit SHAs (immutable refs) the cache never expires so no further
-    network calls are made.
+    pinned tags and commit SHAs the cache never expires. The loader makes no
+    further network calls for those refs.
+
+    When ``EXTENSIONS_PATH`` names a local copy of the default repository, such
+    as an installed ``@openhands/extensions`` package, skills are read from it
+    and nothing is cloned.
 
     By default, only skills listed in the default marketplace
     (marketplaces/default.json) are loaded. Pass a different relative
@@ -1251,8 +1287,8 @@ def load_public_skills(
             OpenHands skills repository.
         ref: Branch name, tag (e.g. ``"v1.0.0"``), or full 40-character commit
             SHA to load skills from. Defaults to ``'main'``. Tags and commit
-            SHAs are treated as immutable: once loaded, the result is cached
-            for the lifetime of the process without further remote polling.
+            SHAs are pinned after loading. The result stays cached for the
+            lifetime of the process without further remote polling.
         marketplace_path: Relative path to the marketplace JSON file within the
             repository. Pass None to load all public skills without filtering.
 
@@ -1270,7 +1306,8 @@ def load_public_skills(
         >>> # Use with AgentContext
         >>> context = AgentContext(skills=public_skills)
     """
-    cache_key = (repo_url, ref, marketplace_path)
+    local_path = _local_public_skills_path(repo_url)
+    cache_key = (str(local_path or repo_url), ref, marketplace_path)
     with _PUBLIC_SKILLS_CACHE_LOCK:
         cached = _PUBLIC_SKILLS_CACHE.get(cache_key)
         if (
@@ -1283,17 +1320,18 @@ def load_public_skills(
     is_pinned = False
 
     try:
-        # Get or update the local repository
-        cache_dir = get_skills_cache_dir()
-        repo_path = update_skills_repository(repo_url, ref, cache_dir)
+        if local_path is not None:
+            repo_path = local_path
+        else:
+            # Get or update the local repository
+            cache_dir = get_skills_cache_dir()
+            repo_path = update_skills_repository(repo_url, ref, cache_dir)
 
-        if repo_path is None:
-            logger.warning("Failed to access public skills repository")
-            return all_skills
+            if repo_path is None:
+                logger.warning("Failed to access public skills repository")
+                return all_skills
 
-        # Detect whether the ref is immutable (tag or commit SHA in detached HEAD).
-        # Pinned repos are cached indefinitely — no re-fetching needed.
-        is_pinned = is_skills_repo_pinned(repo_path)
+            is_pinned = is_skills_repo_pinned(repo_path, ref)
 
         # Load skills from the local repository
         skills_dir = repo_path / "skills"

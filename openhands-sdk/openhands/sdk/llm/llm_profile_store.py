@@ -34,6 +34,12 @@ _LOCK_TIMEOUT_SECONDS: Final[float] = 30.0
 PROFILE_NAME_PATTERN: Final[str] = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
 PROFILE_NAME_REGEX: Final[re.Pattern[str]] = re.compile(PROFILE_NAME_PATTERN)
 
+
+def canonical_profile_name(name: str) -> str:
+    """Return the store key ``name`` addresses: ``foo.json`` is profile ``foo``."""
+    return name.removesuffix(".json")
+
+
 logger = get_logger(__name__)
 
 
@@ -163,7 +169,7 @@ class LLMProfileStore:
         Raises:
             ValueError: If name does not match the allowed pattern.
         """
-        clean_name = name.removesuffix(".json")
+        clean_name = canonical_profile_name(name)
         if not PROFILE_NAME_REGEX.match(clean_name):
             raise ValueError(
                 f"Invalid profile name: {name!r}. "
@@ -308,8 +314,25 @@ class LLMProfileStore:
             )
         return llm_instance
 
+    def resolve_provider_connection(
+        self, llm: LLM, *, cipher: Cipher | None = None
+    ) -> LLM:
+        """Apply a referenced provider connection's credentials to ``llm``.
+
+        Shared entry point for the read-at-use resolution that :meth:`load`
+        applies at profile-load time. Callers that install a caller-supplied
+        LLM (e.g. the ``/switch_llm`` endpoint, which receives a profile config
+        forwarded by the frontend) use this so a profile linked to a provider
+        connection runs with the connection's ``api_key`` / ``base_url`` instead
+        of a keyless config. ``profile_name`` is unknown here, so error messages
+        reference the connection id directly.
+
+        See :meth:`_resolve_provider_connection` for the resolution rules.
+        """
+        return self._resolve_provider_connection(None, llm, cipher=cipher)
+
     def _resolve_provider_connection(
-        self, profile_name: str, llm: LLM, *, cipher: Cipher | None
+        self, profile_name: str | None, llm: LLM, *, cipher: Cipher | None
     ) -> LLM:
         """Apply a referenced provider connection's credentials to ``llm``.
 
@@ -345,8 +368,13 @@ class LLMProfileStore:
                     connection_id,
                 )
                 return llm
+            owner = (
+                f"Profile {profile_name!r}"
+                if profile_name is not None
+                else "LLM config"
+            )
             raise ProviderConnectionNotFound(
-                f"Profile {profile_name!r} references provider connection "
+                f"{owner} references provider connection "
                 f"{connection_id!r}, which does not exist. Update the profile or "
                 "recreate the connection."
             )

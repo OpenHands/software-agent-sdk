@@ -27,6 +27,7 @@ from pydantic import SecretStr
 from openhands.sdk import LLM, Conversation, OpenHandsAgentSettings
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileClass
+from openhands.tools.preset.default import register_default_tools
 
 
 DEFAULT_BASE_URL = "https://llm-proxy.app.all-hands.dev"
@@ -85,6 +86,11 @@ try:
     )
 
     # ── 3. Build the agent via OpenHandsAgentSettings ─────────────────────
+    # ``create_agent()`` defaults to the standard exec tools (terminal,
+    # file_editor, task_tracker) by name; their implementations live in
+    # ``openhands-tools`` and must be registered before the agent initializes.
+    register_default_tools(enable_browser=False)
+
     # Enabling the tool + setting the active meta-profile name is all it takes
     # to wire route_task_to_model into the agent. The agent starts on the
     # default profile and switches only when it calls the tool.

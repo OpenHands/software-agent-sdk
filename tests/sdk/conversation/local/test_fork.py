@@ -221,13 +221,15 @@ def test_fork_with_tags():
         assert fork.state.tags.get("env") == "test"
 
 
-def test_fork_with_title_sets_tag():
-    """Title is stored as a 'title' tag."""
+@pytest.mark.parametrize("tags", [{}, {"purpose": "debugging"}, {"title": "user tag"}])
+def test_fork_with_title_is_deprecated(tags: dict[str, str]):
+    """Passing title is accepted for compat but warns and does not pollute tags."""
     with tempfile.TemporaryDirectory() as tmpdir:
         src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
-        fork = src.fork(title="My Fork")
+        with pytest.warns(DeprecationWarning, match="title parameter is deprecated"):
+            fork = src.fork(title="My Fork", tags=tags)
 
-        assert fork.state.tags.get("title") == "My Fork"
+        assert dict(fork.state.tags) == tags
 
 
 def test_fork_shares_workspace():
@@ -320,34 +322,30 @@ def test_fork_default_does_not_clobber_source_cache_key():
     """Default fork() must leave the source's prompt_cache_key intact (#2917)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
-        src_key_before = src.agent.llm._call_context.prompt_cache_key
+        src_key_before = src.get_llm_call_context().prompt_cache_key
 
         fork = src.fork()
 
         assert (
-            src.agent.llm._call_context.prompt_cache_key
-            == src_key_before
-            == str(src.id)
+            src.get_llm_call_context().prompt_cache_key == src_key_before == str(src.id)
         )
-        assert fork.agent.llm._call_context.prompt_cache_key == str(fork.id)
+        assert fork.get_llm_call_context().prompt_cache_key == str(fork.id)
         assert (
-            fork.agent.llm._call_context.prompt_cache_key
-            != src.agent.llm._call_context.prompt_cache_key
+            fork.get_llm_call_context().prompt_cache_key
+            != src.get_llm_call_context().prompt_cache_key
         )
 
 
 def test_fork_with_aliased_agent_does_not_clobber_source_cache_key():
-    """fork(agent=source.agent) must not repin the source LLM's cache key (#2917)."""
+    """fork(agent=source.agent) must preserve source cache identity (#2917)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
-        src_key_before = src.agent.llm._call_context.prompt_cache_key
+        src_key_before = src.get_llm_call_context().prompt_cache_key
 
         fork = src.fork(agent=src.agent)
 
         assert (
-            src.agent.llm._call_context.prompt_cache_key
-            == src_key_before
-            == str(src.id)
+            src.get_llm_call_context().prompt_cache_key == src_key_before == str(src.id)
         )
-        assert fork.agent.llm._call_context.prompt_cache_key == str(fork.id)
+        assert fork.get_llm_call_context().prompt_cache_key == str(fork.id)
         assert fork.agent.llm is not src.agent.llm

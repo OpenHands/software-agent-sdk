@@ -7,10 +7,11 @@ import hashlib
 import os
 import subprocess
 import time
-from contextlib import suppress
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 from urllib.error import URLError
 from urllib.request import urlopen
 from uuid import UUID, uuid4
@@ -18,11 +19,15 @@ from uuid import UUID, uuid4
 from openhands.agent_server.config import V1_SESSION_API_KEY_ENV, Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
+from openhands.agent_server.docker_runtime.storage import DockerRuntimeStorage
+from openhands.agent_server.launch import container_browser_enabled
 from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
 )
 from openhands.agent_server.persistence.store import _get_persistence_dir
+from openhands.agent_server.storage import Reclaimer
+from openhands.sdk.conversation.request import ConversationContainerOptions
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.cipher import Cipher
@@ -37,10 +42,41 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-_CONVERSATIONS_DIR = "/var/openhands/conversations"
-_PERSISTENCE_DIR = "/var/openhands/.openhands"
-_WORKSPACE_DIR = "/workspace"
-_OWNER_LABEL = "ai.openhands.runtime-owner"
+_CONVERSATIONS_DIR: Final[str] = "/var/openhands/conversations"
+_PERSISTENCE_DIR: Final[str] = "/var/openhands/.openhands"
+_WORKSPACE_DIR: Final[str] = "/workspace"
+_OWNER_LABEL: Final[str] = "ai.openhands.runtime-owner"
+
+# Environment variables read by openhands.sdk.observability (Laminar / OTEL
+# tracing). Only those actually set on the host are forwarded into the
+# conversation container, so an unconfigured host injects nothing.
+_OBSERVABILITY_ENV_VARS: Final[tuple[str, ...]] = (
+    "LMNR_PROJECT_API_KEY",
+    "LMNR_BASE_URL",
+    "LMNR_HTTP_PORT",
+    "LMNR_GRPC_PORT",
+    "LMNR_FORCE_HTTP",
+    "LMNR_INSTRUMENTS",
+    "LMNR_SPAN_CONTEXT",
+    "OTEL_ENDPOINT",
+    "OTEL_EXPORTER",
+    "OTEL_HEADERS",
+    "OTEL_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_HEADERS",
+    "OTEL_EXPORTER_OTLP_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+    "OPENHANDS_OBSERVABILITY_METADATA",
+    "OPENHANDS_OBSERVABILITY_TAGS",
+    "OPENHANDS_OBSERVABILITY_SPAN_NAME",
+    "OPENHANDS_OBSERVABILITY_PARENT_SPAN_CONTEXT",
+)
+
+
+class RuntimeArchivedError(RuntimeError):
+    """Retention deleted the runtime; the conversation is read-only."""
 
 
 @dataclass(slots=True)
@@ -80,10 +116,20 @@ class DockerConversationRegistry(ConversationRegistry):
         self._last_access: dict[UUID, float] = {}
         self._sessions: dict[UUID, int] = {}
         self._eviction_task: asyncio.Task[None] | None = None
+        self.reclaimer = Reclaimer(
+            DockerRuntimeStorage(self),
+            disk_budget=config.conversation_storage_disk_budget,
+            retention_days=config.conversation_storage_retention_days,
+        )
 
     def configure_service(self, service: ConversationService) -> None:
         self._service = service
         service.runtime_cipher_resolver = self.resolve_persisted_cipher
+
+    async def refresh_conversation(self, conversation_id: UUID) -> None:
+        """Re-read the conversation from disk after its runtime changed."""
+        if self._service is not None:
+            await self._service.refresh_persisted_conversation(conversation_id)
 
     def resolve_persisted_cipher(self, conversation_id: UUID) -> Cipher:
         """Resolve persisted state without weakening per-runtime isolation.
@@ -95,9 +141,17 @@ class DockerConversationRegistry(ConversationRegistry):
         identity = self.provisioning.load_optional(conversation_id)
         return identity.cipher if identity is not None else self.provisioning.cipher
 
+    def archived_marker(self, conversation_id: UUID) -> Path:
+        # Beside the manifest, not in it: the manifest must stay loadable by
+        # older builds, and it holds the key to the conversation's history.
+        return self.provisioning.control_root / f"{conversation_id.hex}.archived.json"
+
+    def is_archived(self, conversation_id: UUID) -> bool:
+        return self.archived_marker(conversation_id).exists()
+
     def runtime_info(self, conversation_id: UUID) -> ConversationRuntimeInfo:
         identity = self.provisioning.load_optional(conversation_id)
-        if identity is None:
+        if identity is None or self.is_archived(conversation_id):
             return ConversationRuntimeInfo(
                 runtime_status=ConversationRuntimeStatus.MISSING,
                 can_resume=False,
@@ -113,12 +167,13 @@ class DockerConversationRegistry(ConversationRegistry):
             can_resume=True,
         )
 
-    @property
-    def serves_persisted_event_reads(self) -> bool:
+    def serves_persisted_event_reads(self, _conversation_id: UUID) -> bool:
         return True
 
     async def start(self) -> None:
         await asyncio.to_thread(self.cleanup_stale_containers)
+        # After the cleanup: with no container left, every runtime is reclaimable.
+        await self.reclaimer.start()
         if self.config.conversation_idle_ttl_seconds:
             self._eviction_task = asyncio.create_task(self._evict_idle_runtimes_loop())
 
@@ -173,6 +228,21 @@ class DockerConversationRegistry(ConversationRegistry):
     def is_starting(self, conversation_id: UUID) -> bool:
         return conversation_id in self._starts
 
+    @asynccontextmanager
+    async def runtime_idle(self, conversation_id: UUID) -> AsyncIterator[bool]:
+        """Hold the lifecycle lock; True if no container runs or starts for the
+        runtime and it is not being deleted.
+
+        Nothing can start a container until the block exits, so files moved
+        inside it are not in use.
+        """
+        async with self._lock:
+            yield not (
+                self.get(conversation_id)
+                or self.is_starting(conversation_id)
+                or conversation_id in self._deleting
+            )
+
     def attach_session(self, conversation_id: UUID) -> None:
         """Record an outer proxied session attached to this runtime.
 
@@ -211,6 +281,8 @@ class DockerConversationRegistry(ConversationRegistry):
         async with self._lock:
             if conversation_id in self._deleting:
                 raise RuntimeError("Conversation is being deleted")
+            if self.is_archived(conversation_id):
+                raise RuntimeArchivedError("Conversation runtime was archived")
             self._last_access[conversation_id] = time.monotonic()
             container = self._containers.get(conversation_id)
 
@@ -279,6 +351,7 @@ class DockerConversationRegistry(ConversationRegistry):
             container = container or started
         if container is not None:
             await asyncio.to_thread(container.stop)
+        await self.reclaimer.on_stop(conversation_id)
 
     async def shutdown(self) -> None:
         if self._eviction_task is not None:
@@ -288,6 +361,8 @@ class DockerConversationRegistry(ConversationRegistry):
             self._eviction_task = None
         ids = set(self._containers) | set(self._starts)
         await asyncio.gather(*(self.stop(cid) for cid in ids), return_exceptions=True)
+        # Last, so it also covers the stops above; the next start sweeps them.
+        await self.reclaimer.shutdown()
 
     async def _evict_idle_runtimes_loop(self) -> None:
         ttl = self.config.conversation_idle_ttl_seconds
@@ -348,9 +423,12 @@ class DockerConversationRegistry(ConversationRegistry):
                     conversation_id,
                     ttl_seconds,
                 )
+                await service.refresh_persisted_conversation(conversation_id)
+                await self.reclaimer.on_stop(conversation_id)
 
     def _build_container(self, conversation_id: UUID) -> ConversationContainer:
         identity = self.provisioning.load(conversation_id)
+        options = identity.container or ConversationContainerOptions()
         runtime_dir = self.provisioning.runtime_dir(conversation_id)
         persistence_dir = self.provisioning.direct_child(runtime_dir, "persistence")
         conversation_dir = self.conversation_dir(conversation_id)
@@ -365,6 +443,11 @@ class DockerConversationRegistry(ConversationRegistry):
                 "OH_CONVERSATIONS_PATH": _CONVERSATIONS_DIR,
                 "OH_PERSISTENCE_DIR": _PERSISTENCE_DIR,
                 "OH_CONVERSATION_RUNTIME": "local",
+                "OH_ENABLE_BROWSER": (
+                    "1"
+                    if container_browser_enabled(self.config) and options.browser
+                    else "0"
+                ),
                 "OH_SECRET_KEY": identity.encryption_key.get_secret_value(),
                 V1_SESSION_API_KEY_ENV: identity.api_key.get_secret_value(),
                 "OH_RUNTIME_LAUNCHED_PROFILE": (
@@ -377,17 +460,31 @@ class DockerConversationRegistry(ConversationRegistry):
         if "DEBUG" in os.environ:
             env["DEBUG"] = os.environ["DEBUG"]
 
+        # Forward host observability configuration so the in-container agent
+        # server initializes tracing with the same Laminar/OTEL backend.
+        for name in _OBSERVABILITY_ENV_VARS:
+            value = os.environ.get(name)
+            if value:
+                env[name] = value
+            else:
+                env.pop(name, None)
+
         flags: list[str] = []
-        for name in (
+        forwarded_env_names: list[str] = [
             "HOME",
             "OH_CONVERSATIONS_PATH",
             "OH_PERSISTENCE_DIR",
             "OH_CONVERSATION_RUNTIME",
+            "OH_ENABLE_BROWSER",
             "OH_SECRET_KEY",
             V1_SESSION_API_KEY_ENV,
             "OH_RUNTIME_LAUNCHED_PROFILE",
             "DEBUG",
-        ):
+        ]
+        forwarded_env_names.extend(
+            name for name in _OBSERVABILITY_ENV_VARS if name in env
+        )
+        for name in forwarded_env_names:
             if name in env:
                 flags.extend(("-e", name))
         for host, target in (
@@ -396,10 +493,16 @@ class DockerConversationRegistry(ConversationRegistry):
             (workspace_dir, _WORKSPACE_DIR),
         ):
             flags.extend(("-v", f"{host}:{target}"))
-        if self.config.conversation_container_memory:
-            flags.extend(("--memory", self.config.conversation_container_memory))
-        if self.config.conversation_container_cpus is not None:
-            flags.extend(("--cpus", str(self.config.conversation_container_cpus)))
+        memory = options.memory or self.config.conversation_container_memory
+        if memory:
+            flags.extend(("--memory", memory))
+        cpus = (
+            options.cpus
+            if options.cpus is not None
+            else self.config.conversation_container_cpus
+        )
+        if cpus is not None:
+            flags.extend(("--cpus", str(cpus)))
         if self.config.conversation_container_pids_limit is not None:
             flags.extend(
                 ("--pids-limit", str(self.config.conversation_container_pids_limit))
@@ -416,6 +519,9 @@ class DockerConversationRegistry(ConversationRegistry):
             "ALL",
             "--security-opt",
             "no-new-privileges",
+            # Core dumps land in the bind-mounted workspace at 1-2 GB each.
+            "--ulimit",
+            "core=0",
             "--add-host",
             "host.docker.internal:host-gateway",
             "--label",

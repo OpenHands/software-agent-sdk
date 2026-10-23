@@ -1,0 +1,921 @@
+import asyncio
+import gzip
+import hashlib
+import io
+import json
+import os
+import signal
+import sys
+import tarfile
+import threading
+import time
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from openhands.agent_server.canvas_extensions.backend import (
+    CanvasExtensionBackendManager,
+    _Runtime,
+)
+from openhands.agent_server.canvas_extensions.installed import (
+    disable_canvas_extension,
+    install_canvas_extension,
+    uninstall_canvas_extension,
+)
+from openhands.agent_server.canvas_extensions.manifest import MANIFEST_FILENAME
+from openhands.agent_server.canvas_extensions_router import canvas_extensions_router
+
+from .conftest import write_extension
+
+
+_SERVER = """#!/usr/bin/python3
+import http.server
+import json
+import os
+import subprocess
+import sys
+
+port = int(sys.argv[1])
+data_dir = sys.argv[2]
+artifact_dir = sys.argv[3]
+os.makedirs(data_dir, exist_ok=True)
+child = subprocess.Popen([\"/bin/sleep\", \"300\"])
+with open(os.path.join(data_dir, \"runtime.json\"), \"w\") as stream:
+    json.dump({
+        \"artifact_dir\": artifact_dir,
+        \"child_pid\": child.pid,
+        \"cwd\": os.getcwd(),
+        \"environment\": dict(os.environ),
+        \"port\": port,
+    }, stream)
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        if self.path == "/exit":
+            self.wfile.flush()
+            os._exit(0)
+
+    def log_message(self, format, *args):
+        pass
+
+print(\"backend-ready\", flush=True)
+http.server.HTTPServer((\"127.0.0.1\", port), Handler).serve_forever()
+"""
+
+
+def _write_backend_extension(directory: Path, *, timeout: float = 3) -> Path:
+    write_extension(directory)
+    archive = directory / "backend-linux-amd64.tar.gz"
+    script = _SERVER.encode()
+    with tarfile.open(archive, "w:gz") as tar:
+        info = tarfile.TarInfo("server.py")
+        info.mode = 0o755
+        info.size = len(script)
+        tar.addfile(info, io.BytesIO(script))
+    checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+    manifest_path = directory / MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text())
+    manifest["backend"] = {
+        "schema_version": 1,
+        "artifacts": {
+            "linux-amd64": {"path": archive.name, "sha256": checksum},
+            "linux-arm64": {"path": archive.name, "sha256": checksum},
+        },
+        "argv": [
+            "{artifact_dir}/server.py",
+            "{port}",
+            "{data_dir}",
+            "{artifact_dir}",
+        ],
+        "health": {
+            "path": "/health",
+            "timeout_seconds": timeout,
+            "interval_seconds": 0.05,
+        },
+    }
+    manifest_path.write_text(json.dumps(manifest))
+    return directory
+
+
+class _ArtifactHandler(BaseHTTPRequestHandler):
+    archive: bytes = b""
+    requests = 0
+
+    def do_GET(self):
+        type(self).requests += 1
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(self.archive)))
+        self.end_headers()
+        self.wfile.write(self.archive)
+
+    def log_message(self, format, *args):
+        pass
+
+
+requires_linux_backend = pytest.mark.skipif(
+    CanvasExtensionBackendManager.current_platform() is None,
+    reason="backend artifact fixture only supports Linux amd64/arm64",
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    CanvasExtensionBackendManager.current_platform() is not None,
+    reason="backend artifacts are supported on this platform",
+)
+async def test_backend_is_unsupported_on_non_linux_platform(tmp_path: Path):
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    installed_dir = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+    revision = manager.revision("my-extension")
+    assert revision is not None
+
+    status = await manager.status("my-extension")
+    assert status.state == "unsupported"
+    assert "platform" in (status.detail or "")
+    assert (await manager.prepare("my-extension", revision)).state == "unsupported"
+    assert (await manager.start("my-extension", revision)).state == "unsupported"
+    assert not manager.artifacts_dir.exists()
+
+
+@requires_linux_backend
+@pytest.mark.asyncio
+async def test_prepare_start_logs_stop_and_preserve_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    installed_dir = tmp_path / "installed"
+    state_dir = tmp_path / "state"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    manager = CanvasExtensionBackendManager(installed_dir, state_dir)
+    revision = manager.revision("my-extension")
+    assert revision is not None
+
+    assert (await manager.status("my-extension")).state == "stopped"
+    prepared = await manager.prepare("my-extension", revision)
+    assert prepared.prepared_revision == revision
+    [artifact_dir] = list((manager.artifacts_dir / "my-extension").iterdir())
+    assert artifact_dir.is_dir()
+    assert not bool(artifact_dir.stat().st_mode & 0o222)
+
+    monkeypatch.setenv("OH_SECRET_KEY", "must-not-leak")
+    first, second = await asyncio.gather(
+        manager.start("my-extension", revision),
+        manager.start("my-extension", revision),
+    )
+    assert first.state == second.state == "ready"
+    assert first.pid == second.pid
+    assert manager.ready_endpoint("my-extension") == ("127.0.0.1", first.port)
+
+    runtime_file = manager.data_dir / "my-extension" / "runtime.json"
+    runtime = json.loads(runtime_file.read_text())
+    assert runtime["cwd"] == str((installed_dir / "my-extension").resolve())
+    assert runtime["artifact_dir"] == str(artifact_dir)
+    assert runtime["environment"]["HOME"] == str(
+        manager.data_dir / "my-extension" / "home"
+    )
+    assert "OH_SECRET_KEY" not in runtime["environment"]
+    child_pid = runtime["child_pid"]
+
+    logs = await manager.logs("my-extension", 4096)
+    assert "backend-ready" in logs.logs
+    stopped = await manager.stop("my-extension")
+    assert stopped.state == "stopped"
+    with pytest.raises(ProcessLookupError):
+        os.kill(child_pid, 0)
+    assert runtime_file.is_file()
+
+    restarted = await manager.start("my-extension", revision)
+    assert restarted.state == "ready"
+    await manager.shutdown()
+    assert (await manager.status("my-extension")).state == "stopped"
+
+    assert disable_canvas_extension("my-extension", installed_dir=installed_dir)
+    assert uninstall_canvas_extension("my-extension", installed_dir=installed_dir)
+    assert runtime_file.is_file()
+
+
+@requires_linux_backend
+@pytest.mark.asyncio
+async def test_ready_endpoint_closes_when_ready_backend_exits(tmp_path: Path):
+    """A crashed backend is not dialed before anyone polls its status (#5912)."""
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    installed_dir = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+    revision = manager.revision("my-extension")
+    assert revision is not None
+    await manager.prepare("my-extension", revision)
+    try:
+        ready = await manager.start("my-extension", revision)
+        assert ready.state == "ready"
+        assert manager.ready_endpoint("my-extension") == ("127.0.0.1", ready.port)
+
+        await asyncio.to_thread(
+            urllib.request.urlopen, f"http://127.0.0.1:{ready.port}/exit", timeout=3
+        )
+        process = manager._runtimes["my-extension"].process
+        assert process is not None
+        deadline = time.monotonic() + 5
+        while process.returncode is None and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        assert process.returncode is not None
+
+        # No status poll yet: the stored state is stale, the bridge is closed.
+        assert manager._runtimes["my-extension"].state == "ready"
+        assert manager.ready_endpoint("my-extension") is None
+
+        crashed = await manager.status("my-extension")
+        assert crashed.state == "unhealthy"
+        assert crashed.detail == "Backend exited with code 0"
+        assert manager.ready_endpoint("my-extension") is None
+
+        restarted = await manager.start("my-extension", revision)
+        assert restarted.state == "ready"
+        assert manager.ready_endpoint("my-extension") == (
+            "127.0.0.1",
+            restarted.port,
+        )
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_remote_artifact_download_strip_cache_and_home(tmp_path: Path):
+    archive = tmp_path / "remote.tar.gz"
+    script = _SERVER.encode()
+    with tarfile.open(archive, "w:gz") as tar:
+        directory = tarfile.TarInfo("upstream")
+        directory.type = tarfile.DIRTYPE
+        directory.mode = 0o755
+        tar.addfile(directory)
+        info = tarfile.TarInfo("upstream/server.py")
+        info.mode = 0o755
+        info.size = len(script)
+        tar.addfile(info, io.BytesIO(script))
+
+    _ArtifactHandler.archive = archive.read_bytes()
+    _ArtifactHandler.requests = 0
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _ArtifactHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/tool.tar.gz"
+        manager = CanvasExtensionBackendManager(
+            state_dir=tmp_path / "state",
+            allow_insecure_artifact_urls=True,
+        )
+        checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+        first = await asyncio.to_thread(manager._download_archive, url, checksum)
+        second = await asyncio.to_thread(manager._download_archive, url, checksum)
+        assert first == second
+        assert _ArtifactHandler.requests == 1
+
+        artifact_dir = tmp_path / "extracted"
+        artifact_dir.mkdir()
+        await asyncio.to_thread(manager._extract_archive, first, artifact_dir, 1)
+        assert (artifact_dir / "server.py").is_file()
+        assert not (artifact_dir / "upstream").exists()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@requires_linux_backend
+@pytest.mark.asyncio
+async def test_prepare_rejects_revision_checksum_and_unsafe_archive(tmp_path: Path):
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    installed_dir = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+    revision = manager.revision("my-extension")
+    assert revision is not None
+
+    with pytest.raises(ValueError, match="revision"):
+        await manager.prepare("my-extension", "wrong-revision")
+
+    archive = installed_dir / "my-extension" / "backend-linux-amd64.tar.gz"
+    archive.write_bytes(archive.read_bytes() + b"tampered")
+    with pytest.raises(ValueError, match="checksum"):
+        await manager.prepare("my-extension", revision)
+
+    source = _write_backend_extension(tmp_path / "source-unsafe" / "my-extension")
+    archive = source / "backend-linux-amd64.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        payload = b"escape"
+        info = tarfile.TarInfo("../escape")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    manifest_path = source / MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text())
+    checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+    for artifact in manifest["backend"]["artifacts"].values():
+        artifact["sha256"] = checksum
+    manifest_path.write_text(json.dumps(manifest))
+    unsafe_installed = tmp_path / "unsafe-installed"
+    install_canvas_extension(str(source), installed_dir=unsafe_installed)
+    unsafe_manager = CanvasExtensionBackendManager(
+        unsafe_installed, tmp_path / "unsafe-state"
+    )
+    unsafe_revision = unsafe_manager.revision("my-extension")
+    assert unsafe_revision is not None
+    with pytest.raises(ValueError, match="unsafe archive"):
+        await unsafe_manager.prepare("my-extension", unsafe_revision)
+    assert not (tmp_path / "escape").exists()
+
+
+def _install_with_artifact_bytes(
+    tmp_path: Path, payload: bytes
+) -> tuple[CanvasExtensionBackendManager, str]:
+    """Install a backend app whose artifact is ``payload``, with a matching sha256."""
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    (source / "backend-linux-amd64.tar.gz").write_bytes(payload)
+    manifest_path = source / MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text())
+    checksum = hashlib.sha256(payload).hexdigest()
+    for artifact in manifest["backend"]["artifacts"].values():
+        artifact["sha256"] = checksum
+    manifest_path.write_text(json.dumps(manifest))
+    installed_dir = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+    revision = manager.revision("my-extension")
+    assert revision is not None
+    return manager, revision
+
+
+def _truncated_gzip_tarball() -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        data = os.urandom(200_000)
+        info = tarfile.TarInfo("server.py")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()[:-1000]
+
+
+@requires_linux_backend
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(b"not a tarball\n", id="not-gzip"),
+        pytest.param(gzip.compress(b"not a tarball\n"), id="gzip-not-tar"),
+        pytest.param(_truncated_gzip_tarball(), id="truncated-gzip"),
+    ],
+)
+async def test_prepare_rejects_artifact_that_is_not_a_gzip_tarball(
+    tmp_path: Path, payload: bytes
+):
+    manager, revision = _install_with_artifact_bytes(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="not a valid gzip tar archive"):
+        await manager.prepare("my-extension", revision)
+
+    status = await manager.status("my-extension")
+    assert status.prepared_revision is None
+    assert list((manager.artifacts_dir / "my-extension").iterdir()) == []
+
+
+@requires_linux_backend
+def test_prepare_endpoint_refuses_non_gzip_artifact_with_409(tmp_path: Path):
+    manager, revision = _install_with_artifact_bytes(tmp_path, b"not a tarball\n")
+    app = FastAPI()
+    app.state.canvas_extension_backend_manager = manager
+    app.include_router(canvas_extensions_router)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/canvas-extensions/installed/my-extension/backend/prepare",
+            json={"revision": revision},
+        )
+
+    assert response.status_code == 409
+    assert "not a valid gzip tar archive" in response.json()["detail"]
+
+
+@requires_linux_backend
+@pytest.mark.asyncio
+async def test_start_rejects_executable_that_resolves_outside_artifact(tmp_path: Path):
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    manifest_path = source / MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text())
+    manifest["backend"]["argv"][0] = "{artifact_dir}/../outside"
+    manifest_path.write_text(json.dumps(manifest))
+    installed_dir = tmp_path / "installed-escape"
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state-escape")
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    revision = manager.revision("my-extension")
+    assert revision is not None
+    await manager.prepare("my-extension", revision)
+    outside = manager.artifacts_dir / "my-extension" / "outside"
+    outside.write_text("#!/bin/sh\nexit 0\n")
+    outside.chmod(0o755)
+
+    status = await manager.start("my-extension", revision)
+
+    assert status.state == "unhealthy"
+    assert status.pid is None
+    assert "inside the prepared artifact" in (status.detail or "")
+
+
+@requires_linux_backend
+@pytest.mark.asyncio
+async def test_failed_start_cleanup_and_unsupported_states(tmp_path: Path):
+    source = _write_backend_extension(tmp_path / "source" / "my-extension", timeout=0.2)
+    installed_dir = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    installed_script_archive = (
+        installed_dir / "my-extension" / "backend-linux-amd64.tar.gz"
+    )
+    payload = b"#!/usr/bin/python3\nimport time\ntime.sleep(300)\n"
+    with tarfile.open(installed_script_archive, "w:gz") as tar:
+        info = tarfile.TarInfo("server.py")
+        info.mode = 0o755
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    manifest_path = installed_dir / "my-extension" / MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text())
+    checksum = hashlib.sha256(installed_script_archive.read_bytes()).hexdigest()
+    for artifact in manifest["backend"]["artifacts"].values():
+        artifact["sha256"] = checksum
+    manifest_path.write_text(json.dumps(manifest))
+
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+    revision = manager.revision("my-extension")
+    assert revision is not None
+    await manager.prepare("my-extension", revision)
+    failed = await manager.start("my-extension", revision)
+    assert failed.state == "unhealthy"
+    assert failed.pid is None
+    assert failed.port is None
+    assert "timed out" in (failed.detail or "")
+
+    browser_source = write_extension(
+        tmp_path / "browser" / "browser-only", name="browser-only"
+    )
+    install_canvas_extension(str(browser_source), installed_dir=installed_dir)
+    assert (await manager.status("my-extension-missing")).state == "missing"
+    assert (await manager.status("my-extension")).state == "unhealthy"
+    assert (await manager.status("browser-only")).state == "unsupported"
+    await manager.shutdown()
+
+
+@requires_linux_backend
+@pytest.mark.asyncio
+async def test_status_reports_starting_and_stop_abandons_hung_backend(
+    tmp_path: Path,
+):
+    """`starting` must be observable, and a hung start must be stoppable."""
+    source = _write_backend_extension(tmp_path / "source" / "my-extension", timeout=30)
+    installed_dir = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    # Replace the artifact with a backend that listens on nothing, so the
+    # health probe never succeeds and `start()` would otherwise block for the
+    # whole 30s timeout while holding the name lock.
+    archive = installed_dir / "my-extension" / "backend-linux-amd64.tar.gz"
+    payload = b"#!/usr/bin/python3\nimport time\ntime.sleep(300)\n"
+    with tarfile.open(archive, "w:gz") as tar:
+        info = tarfile.TarInfo("server.py")
+        info.mode = 0o755
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    manifest_path = installed_dir / "my-extension" / MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text())
+    checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+    for artifact in manifest["backend"]["artifacts"].values():
+        artifact["sha256"] = checksum
+    manifest_path.write_text(json.dumps(manifest))
+
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+    revision = manager.revision("my-extension")
+    assert revision is not None
+    await manager.prepare("my-extension", revision)
+
+    starting = asyncio.create_task(manager.start("my-extension", revision))
+    saw_starting = False
+    for _ in range(200):
+        await asyncio.sleep(0.05)
+        if (await manager.status("my-extension")).state == "starting":
+            saw_starting = True
+            break
+    assert saw_starting, "`starting` was never observable"
+
+    started = time.monotonic()
+    stopped = await asyncio.wait_for(manager.stop("my-extension"), timeout=15)
+    elapsed = time.monotonic() - started
+    assert stopped.state == "stopped"
+    # The health timeout is 30s; stopping must not wait for it.
+    assert elapsed < 10, f"stop() waited {elapsed:.1f}s on a hung backend"
+
+    # `start()` returns the post-stop status rather than raising, because the
+    # health wait is cancelled by `stop()`.
+    started_status = (await asyncio.gather(starting, return_exceptions=True))[0]
+    assert not isinstance(started_status, BaseException)
+    assert started_status.state == "stopped"
+    assert (await manager.status("my-extension")).state == "stopped"
+    assert (await manager.delete_data("my-extension")).state == "stopped"
+
+
+_SLOW_HEALTH_SERVER = """#!/usr/bin/python3
+import http.server
+import sys
+import time
+
+slow = False
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        global slow
+        slow = {"/slow": True, "/fast": False}.get(self.path, slow)
+        if self.path == "/health" and slow:
+            time.sleep(2)
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        pass
+
+server = http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler)
+server.serve_forever()
+"""
+
+
+@requires_linux_backend
+@pytest.mark.asyncio
+async def test_status_recovers_after_one_slow_health_probe(tmp_path: Path):
+    """A missed probe must not latch a live backend `unhealthy` (#5646)."""
+    source = _write_backend_extension(tmp_path / "source" / "my-extension", timeout=10)
+    installed_dir = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    archive = installed_dir / "my-extension" / "backend-linux-amd64.tar.gz"
+    payload = _SLOW_HEALTH_SERVER.encode()
+    with tarfile.open(archive, "w:gz") as tar:
+        info = tarfile.TarInfo("server.py")
+        info.mode = 0o755
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    manifest_path = installed_dir / "my-extension" / MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text())
+    checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+    for artifact in manifest["backend"]["artifacts"].values():
+        artifact["sha256"] = checksum
+    manifest_path.write_text(json.dumps(manifest))
+
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+    revision = manager.revision("my-extension")
+    assert revision is not None
+    await manager.prepare("my-extension", revision)
+    try:
+        ready = await manager.start("my-extension", revision)
+        assert ready.state == "ready"
+        base = f"http://127.0.0.1:{ready.port}"
+
+        await asyncio.to_thread(urllib.request.urlopen, f"{base}/slow", timeout=3)
+        slow = await manager.status("my-extension")
+        assert slow.state == "unhealthy"
+        assert slow.pid == ready.pid
+        # Still slow: the backend stays unhealthy and the bridge stays closed.
+        assert (await manager.status("my-extension")).state == "unhealthy"
+        assert manager.ready_endpoint("my-extension") is None
+
+        await asyncio.to_thread(urllib.request.urlopen, f"{base}/fast", timeout=3)
+        recovered = await manager.status("my-extension")
+        assert recovered.state == "ready"
+        assert recovered.detail is None
+        assert recovered.pid == ready.pid
+        assert manager.ready_endpoint("my-extension") == ("127.0.0.1", ready.port)
+
+        # `start` with the same revision re-probes instead of echoing a stale
+        # `unhealthy`, and keeps the same process.
+        await asyncio.to_thread(urllib.request.urlopen, f"{base}/slow", timeout=3)
+        assert (await manager.status("my-extension")).state == "unhealthy"
+        await asyncio.to_thread(urllib.request.urlopen, f"{base}/fast", timeout=3)
+        restarted = await manager.start("my-extension", revision)
+        assert restarted.state == "ready"
+        assert restarted.pid == ready.pid
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.parametrize("recovery", ["status", "stop", "restart"])
+@requires_linux_backend
+@pytest.mark.asyncio
+async def test_exited_leader_descendant_does_not_block_recovery(
+    tmp_path: Path,
+    recovery: str,
+):
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    installed_dir = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+    revision = manager.revision("my-extension")
+    assert revision is not None
+    await manager.prepare("my-extension", revision)
+    started = await manager.start("my-extension", revision)
+    assert started.state == "ready"
+    assert started.port is not None
+
+    runtime_file = manager.data_dir / "my-extension" / "runtime.json"
+    child_pid = int(json.loads(runtime_file.read_text())["child_pid"])
+    runtime = manager._runtimes["my-extension"]
+    assert runtime.process is not None
+
+    try:
+        response = await asyncio.to_thread(
+            urllib.request.urlopen,
+            f"http://127.0.0.1:{started.port}/exit",
+            timeout=1,
+        )
+        with response:
+            assert response.status == 200
+        for _ in range(200):
+            if runtime.process.returncode is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert runtime.process.returncode == 0
+        assert manager.has_running_backends()
+        with pytest.raises(RuntimeError, match="stop the backend"):
+            await asyncio.wait_for(manager.delete_data("my-extension"), timeout=1)
+
+        if recovery == "status":
+            status = await asyncio.wait_for(manager.status("my-extension"), timeout=1)
+            assert status.state == "unhealthy"
+            assert status.detail == "Backend exited with code 0"
+            assert status.pid is None
+            assert status.port is None
+            assert runtime.process is None
+            assert not manager.has_running_backends()
+            prepared = await asyncio.wait_for(
+                manager.prepare("my-extension", revision), timeout=1
+            )
+            assert prepared.state == "unhealthy"
+            assert (
+                "backend-ready"
+                in (
+                    await asyncio.wait_for(
+                        manager.logs("my-extension", 4096), timeout=1
+                    )
+                ).logs
+            )
+            deleted = await asyncio.wait_for(
+                manager.delete_data("my-extension"), timeout=1
+            )
+            assert deleted.state == "unhealthy"
+            stopped = await asyncio.wait_for(manager.stop("my-extension"), timeout=15)
+            assert stopped.state == "stopped"
+            assert not manager.has_running_backends()
+        elif recovery == "stop":
+            stopped = await asyncio.wait_for(manager.stop("my-extension"), timeout=15)
+            assert stopped.state == "stopped"
+            assert not manager.has_running_backends()
+        else:
+            restarted = await asyncio.wait_for(
+                manager.start("my-extension", revision), timeout=15
+            )
+            assert restarted.state == "ready"
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.parametrize("leader_exited", [False, True])
+@requires_linux_backend
+@pytest.mark.asyncio
+async def test_cleanup_kills_sigterm_ignoring_descendant(
+    tmp_path: Path,
+    leader_exited: bool,
+):
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    installed_dir = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    # A backend whose descendant survives SIGTERM: the leader exits promptly,
+    # so escalating only on the leader's exit code would leak the descendant.
+    archive = installed_dir / "my-extension" / "backend-linux-amd64.tar.gz"
+    payload = (
+        b"#!/usr/bin/python3\n"
+        b"import http.server, os, signal, subprocess, sys\n"
+        b"port = int(sys.argv[1])\n"
+        b"data_dir = sys.argv[2]\n"
+        b"os.makedirs(data_dir, exist_ok=True)\n"
+        b"child = subprocess.Popen(['/bin/sleep', '300'], "
+        b"preexec_fn=lambda: signal.signal(signal.SIGTERM, signal.SIG_IGN))\n"
+        b"with open(os.path.join(data_dir, 'child'), 'w') as stream:\n"
+        b"    stream.write(str(child.pid))\n"
+        b"class Handler(http.server.BaseHTTPRequestHandler):\n"
+        b"    def do_GET(self):\n"
+        b"        self.send_response(200)\n"
+        b"        self.end_headers()\n"
+        b"    def log_message(self, *args):\n"
+        b"        pass\n"
+        b"http.server.HTTPServer(('127.0.0.1', port), Handler).serve_forever()\n"
+    )
+    with tarfile.open(archive, "w:gz") as tar:
+        info = tarfile.TarInfo("server.py")
+        info.mode = 0o755
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    manifest_path = installed_dir / "my-extension" / MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text())
+    checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+    for artifact in manifest["backend"]["artifacts"].values():
+        artifact["sha256"] = checksum
+    manifest_path.write_text(json.dumps(manifest))
+
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+    revision = manager.revision("my-extension")
+    assert revision is not None
+    await manager.prepare("my-extension", revision)
+    assert (await manager.start("my-extension", revision)).state == "ready"
+    child_pid = int((manager.data_dir / "my-extension" / "child").read_text())
+    runtime = manager._runtimes["my-extension"]
+    assert runtime.process is not None
+    try:
+        if leader_exited:
+            os.kill(runtime.process.pid, signal.SIGTERM)
+            for _ in range(200):
+                if runtime.process.returncode is not None:
+                    break
+                await asyncio.sleep(0.01)
+            assert runtime.process.returncode == -signal.SIGTERM
+            status = await asyncio.wait_for(manager.status("my-extension"), timeout=2)
+            assert status.state == "unhealthy"
+        else:
+            assert (await manager.stop("my-extension")).state == "stopped"
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)
+    finally:
+        await manager.shutdown()
+
+
+_CRASHING_SERVER = """
+import asyncio, sys
+from pathlib import Path
+from openhands.agent_server.canvas_extensions.backend import (
+    CanvasExtensionBackendManager,
+)
+
+async def main():
+    manager = CanvasExtensionBackendManager(Path(sys.argv[1]), Path(sys.argv[2]))
+    revision = manager.revision("my-extension")
+    await manager.prepare("my-extension", revision)
+    status = await manager.start("my-extension", revision)
+    print(status.model_dump_json(), flush=True)
+    await asyncio.sleep(300)
+
+asyncio.run(main())
+"""
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    # A zombie child of this test process is dead too.
+    return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+
+
+@requires_linux_backend
+@pytest.mark.asyncio
+async def test_restart_after_server_crash_reaps_orphaned_backend(tmp_path: Path):
+    """A SIGKILLed server's backend must not survive the next server (#5637)."""
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    installed_dir = tmp_path / "installed"
+    state_dir = tmp_path / "state"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    crashed = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        _CRASHING_SERVER,
+        str(installed_dir),
+        str(state_dir),
+        stdout=asyncio.subprocess.PIPE,
+    )
+    assert crashed.stdout is not None
+    line = await asyncio.wait_for(crashed.stdout.readline(), timeout=60)
+    started = json.loads(line)
+    assert started["state"] == "ready"
+    backend_pid = started["pid"]
+    runtime_file = state_dir / "data" / "my-extension" / "runtime.json"
+    child_pid = json.loads(runtime_file.read_text())["child_pid"]
+    crashed.kill()
+    await crashed.wait()
+    assert _alive(backend_pid) and _alive(child_pid)
+
+    # An unrelated process named in a forged record of the dead server is
+    # never signalled: its command line is outside the app's artifacts.
+    [record_path] = list((state_dir / "run").glob("*.json"))
+    record = json.loads(record_path.read_text())
+    bystander = await asyncio.create_subprocess_exec(
+        "/bin/sleep", "300", start_new_session=True
+    )
+    forged = state_dir / "run" / f"{bystander.pid}.json"
+    stat = Path(f"/proc/{bystander.pid}/stat").read_text()
+    record.update(
+        pgid=bystander.pid, start_time=int(stat.rsplit(")", 1)[1].split()[19])
+    )
+    forged.write_text(json.dumps(record))
+
+    manager = CanvasExtensionBackendManager(installed_dir, state_dir)
+    try:
+        await manager.reap_orphans()
+        assert not _alive(backend_pid)
+        assert not _alive(child_pid)
+        assert bystander.returncode is None and _alive(bystander.pid)
+        assert list((state_dir / "run").iterdir()) == []
+        assert (await manager.status("my-extension")).state == "stopped"
+        await manager.delete_data("my-extension")
+    finally:
+        bystander.kill()
+        await bystander.wait()
+        await manager.shutdown()
+
+
+def test_status_degrades_when_manifest_is_corrupted(tmp_path: Path):
+    """A tampered live manifest must not surface as an AssertionError."""
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    installed_dir = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+
+    runtime = _Runtime()
+    runtime.state = "ready"
+    runtime.port = 1
+    manager._runtimes["my-extension"] = runtime
+    (installed_dir / "my-extension" / MANIFEST_FILENAME).write_text("{ not json")
+
+    status = asyncio.run(manager.status("my-extension"))
+    assert status.state == "missing"
+    assert status.detail
+
+
+@requires_linux_backend
+def test_backend_http_lifecycle_and_data_deletion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    installed_dir = tmp_path / "installed"
+    monkeypatch.setattr(
+        "openhands.agent_server.canvas_extensions.installed."
+        "get_installed_canvas_extensions_dir",
+        lambda: installed_dir,
+    )
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+    app = FastAPI()
+    app.state.canvas_extension_backend_manager = manager
+    app.include_router(canvas_extensions_router)
+
+    with TestClient(app) as client:
+        installed = client.post(
+            "/canvas-extensions/install", json={"source": str(source)}
+        )
+        assert installed.status_code == 200
+        status = client.get("/canvas-extensions/installed/my-extension/backend").json()
+        revision = status["revision"]
+        assert status["state"] == "stopped"
+
+        unprepared = client.post(
+            "/canvas-extensions/installed/my-extension/backend/start",
+            json={"revision": revision},
+        )
+        assert unprepared.status_code == 409
+        prepared = client.post(
+            "/canvas-extensions/installed/my-extension/backend/prepare",
+            json={"revision": revision},
+        )
+        assert prepared.status_code == 200
+        started = client.post(
+            "/canvas-extensions/installed/my-extension/backend/start",
+            json={"revision": revision},
+        )
+        assert started.json()["state"] == "ready"
+        assert (
+            client.get(
+                "/canvas-extensions/installed/my-extension/backend/logs",
+                params={"limit_bytes": 4096},
+            ).status_code
+            == 200
+        )
+        running_delete = client.delete(
+            "/canvas-extensions/installed/my-extension/backend/data"
+        )
+        assert running_delete.status_code == 409
+        assert (
+            client.post(
+                "/canvas-extensions/installed/my-extension/backend/stop"
+            ).json()["state"]
+            == "stopped"
+        )
+        deleted = client.delete(
+            "/canvas-extensions/installed/my-extension/backend/data"
+        )
+        assert deleted.status_code == 200
+        assert not (manager.data_dir / "my-extension").exists()

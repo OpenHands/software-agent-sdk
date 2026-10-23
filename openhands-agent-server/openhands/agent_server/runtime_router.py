@@ -20,7 +20,7 @@ from openhands.agent_server.dependencies import (
     get_event_service,
 )
 from openhands.agent_server.file_router import file_router
-from openhands.agent_server.git_router import git_router
+from openhands.agent_server.git_router import runtime_git_router
 from openhands.agent_server.vscode_router import (
     VSCodeUrlResponse,
     get_vscode_url,
@@ -83,7 +83,7 @@ def create_runtime_router(route_class: type[APIRoute] = APIRoute) -> APIRouter:
     for source in (
         bash_router,
         file_router,
-        git_router,
+        runtime_git_router,
     ):
         router.include_router(source)
     router.add_api_route("/vscode/url", get_runtime_vscode_url, methods=["GET"])
