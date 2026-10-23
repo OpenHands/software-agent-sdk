@@ -60,6 +60,7 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
 - `F10.execute-tool-direct-serialized`: direct calls are serialized per conversation under the per-conversation lifecycle, and cannot overlap a run in either direction: a run admitted while a direct call is in flight is 409 at every entry point that can start one (`/run`, `/goal`, and `/events` with `run=true`, via the registered `ConversationBusyError` handler rather than a 500), a second direct call while one is in flight is 409, and a call that finishes (or whose action is rejected) releases the conversation, so the next call is admitted rather than refused.
 - `F10.execute-tool-pane-pinned`: the shell state a setup script establishes (exports, functions, the working directory) is local to the one tmux pane it ran on, so the direct call pins the pane pool to that pane: a later parallel `terminal` command waits for it instead of landing on a fresh pane and missing the state.
 - `F10.execute-tool-teardown-owner`: a direct call whose request is cancelled does not leave an orphaned command: the worker is interrupted (the interrupt runs on a worker thread, so the cancel path never blocks the event loop on the PowerShell child-process scans), the service keeps ownership of both the worker and the offloaded interrupt, and closing or deleting the conversation joins both (bounded) before the terminal executor is torn down, so the command, the interrupt and teardown cannot overlap; cancellation itself returns promptly rather than blocking on the worker. The conversation stays busy — refusing a later direct call or run with 409 — until the interrupt as well as the worker has finished, so a lingering interrupt cannot signal (and kill) the next command's process.
+- `F10.execute-tool-shared-capacity`: a direct call draws on the same server-wide `max_concurrent_runs` budget as a run, so direct calls from many conversations cannot bypass the limit and queue unbounded work: with the budget exhausted, a further direct call (or a run in another conversation) is 429, not admitted, and a direct call that finishes returns its permit so the next caller is admitted.
 - `F10.execute-tool-capability`: `/server_info` advertises `direct_tool_execution_v1`, so a client gates `execute_tool` on that capability rather than a package-version floor (the route ships in the same version as servers that predate it, so a version compare would reject a working server).
 - `F10.restart-persist`: after a restart, forks keep their lineage, title, tags, HEAD and events, a fork id that names a persisted but not yet loaded conversation is still 409, and a navigated empty HEAD stays empty (the next message is still a new root).
 - `F10.restart-cold-calls`: after a restart, condense and ask_agent work on a conversation whose agent has not been initialized yet, and ask_agent still sees the history (the codename).
@@ -756,6 +757,35 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   `direct_tool_execution_v1` is in `/server_info`'s `capabilities`; the route
   ships in the same package version as servers that predate it, so a version
   compare cannot tell them apart and the capability is authoritative.
+- **Direct calls share the server run budget (`F10.execute-tool-shared-capacity`).**
+  Last bullet: it restarts the run with a single run slot and holds that slot
+  on a slow direct call, then shows a second conversation is refused on both
+  the direct route and `/run`.
+  Requires: tmux, `F10.execute-tool-terminal`
+  ```sh
+  control-agent-server restart --config-json '{"max_concurrent_runs": 1}'
+  CAP_A=$(control-agent-server conversation start --placeholder-agent --tools terminal --no-autotitle --no-run --prompt QA_F10_CAP_A --print-id)
+  CAP_B=$(control-agent-server conversation start --placeholder-agent --tools terminal --no-autotitle --no-run --prompt QA_F10_CAP_B --print-id)
+  control-agent-server helper start --name qa-f10-cap --log "$F/cap.log" -- \
+    control-agent-server api POST "/api/conversations/$CAP_A/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "sleep 10", "timeout": 60}}' --expect 200
+  sleep 2
+  control-agent-server api POST "/api/conversations/$CAP_B/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "echo blocked"}}' \
+    --expect 429 --check detail eq 'Conversation run limit reached. Retry the request later.' --save F10.execute-tool-shared-capacity/refused
+  control-agent-server api POST "/api/conversations/$CAP_B/run" --expect 429 --save F10.execute-tool-shared-capacity/run-refused
+  control-agent-server helper stop qa-f10-cap
+  control-agent-server api POST "/api/conversations/$CAP_B/execute_tool" \
+    --json '{"tool_name": "terminal", "action": {"kind": "TerminalAction", "command": "echo admitted"}}' \
+    --expect 200 --until-ok 60 --check observation.exit_code eq 0 --save F10.execute-tool-shared-capacity/admitted
+  ```
+  While the one permit is held by `CAP_A`'s direct call, a direct call from
+  `CAP_B` and a `/run` on `CAP_B` are both 429 `Conversation run limit
+  reached. Retry the request later.` (the same refusal a run gets, from the
+  same server-wide budget), so direct calls cannot bypass `max_concurrent_runs`
+  and queue unbounded work. Once the holder finishes the permit is returned and
+  the same direct call on `CAP_B` is admitted (200) — the positive control that
+  proves the 429s were capacity, not a permanent refusal.
 
 ## Gotchas
 
@@ -780,6 +810,12 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   direct call is in flight is 409, and so is a direct call while a run is in
   flight. A completed call releases the conversation; a cancelled one keeps it
   busy until the synchronous worker has actually exited.
+- A direct call also draws on the server-wide run budget
+  (`F10.execute-tool-shared-capacity`): it holds one `max_concurrent_runs`
+  permit, so a full server answers 429 (the same detail a run gets) instead of
+  queueing the call in the process executor, and the permit is returned when the
+  call finishes. Per-conversation serialization alone would let every
+  conversation submit a direct call at once.
 - The shell state a setup script establishes is local to the one tmux pane it
   ran on, so a direct call pins the pane pool to that pane
   (`F10.execute-tool-pane-pinned`): a later parallel `terminal` command waits

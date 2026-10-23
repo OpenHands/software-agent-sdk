@@ -16,7 +16,9 @@ from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.testing import TestLLM
+from openhands.sdk.tool import Tool
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.terminal import TerminalObservation
 from tests.agent_server.stress.scripts import start_conversation_with_test_llm
 
 
@@ -446,3 +448,133 @@ async def test_terminal_status_implies_released_permit(tmp_path, monkeypatch):
             await service.wait_for_run_completion(10)
             == ConversationExecutionStatus.FINISHED
         )
+
+
+@asynccontextmanager
+async def _direct_capacity(tmp_path, monkeypatch, max_concurrent_runs):
+    """Conversations whose direct tool call and run both block on one event.
+
+    Both admission paths draw on the shared ``_run_semaphore``, so the same
+    release event lets a test hold capacity on either side and observe what the
+    other side is refused.
+    """
+    state = SimpleNamespace(active=0, peak=0, entered=0)
+    lock = threading.Lock()
+    release = threading.Event()
+    services = []
+
+    def enter():
+        with lock:
+            state.active += 1
+            state.entered += 1
+            state.peak = max(state.peak, state.active)
+
+    def leave():
+        with lock:
+            state.active -= 1
+
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations",
+        max_concurrent_runs=max_concurrent_runs,
+    ) as owner:
+
+        async def create():
+            info, _ = await owner.start_conversation(
+                StartConversationRequest(
+                    agent=Agent(
+                        llm=LLM(model="gpt-4o", usage_id="test"),
+                        tools=[Tool(name="terminal")],
+                    ),
+                    workspace=LocalWorkspace(working_dir=str(tmp_path)),
+                    autotitle=False,
+                )
+            )
+            service = await owner.get_event_service(info.id)
+            assert service is not None and service._conversation is not None
+            conversation = service._conversation
+
+            def execute_tool(tool_name, action):
+                enter()
+                try:
+                    assert release.wait(timeout=30)
+                    return TerminalObservation.from_text("done", command="x")
+                finally:
+                    leave()
+
+            async def arun():
+                enter()
+                try:
+                    while not release.is_set():
+                        await asyncio.sleep(0.01)
+                finally:
+                    leave()
+
+            conversation.execute_tool = execute_tool  # type: ignore[method-assign]
+            monkeypatch.setattr(conversation, "arun", arun)
+            services.append(service)
+            return service
+
+        try:
+            yield SimpleNamespace(create=create, state=state, release=release)
+        finally:
+            release.set()
+            await asyncio.gather(
+                *(s.wait_for_run_completion(5) for s in services if s.is_open())
+            )
+
+
+async def test_direct_tool_calls_share_the_server_run_limit(tmp_path, monkeypatch):
+    """Direct calls from many conversations count against one server budget.
+
+    Each conversation serializes its own direct calls, but nothing bounds the
+    total across conversations: without a shared permit, every conversation can
+    submit a direct call at once and queue unbounded work in the process
+    default executor, bypassing ``max_concurrent_runs``.
+    """
+    async with _direct_capacity(tmp_path, monkeypatch, 2) as capacity:
+        services = [await capacity.create() for _ in range(4)]
+        tasks = [
+            asyncio.create_task(
+                service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "x"}
+                )
+            )
+            for service in services
+        ]
+        # The two admitted calls stay blocked in the tool; the other two must be
+        # refused rather than queueing in the executor.
+        await wait_until(
+            lambda: sum(t.done() for t in tasks) == 2 and capacity.state.active == 2
+        )
+        refused = [t for t in tasks if t.done()]
+        assert all(
+            isinstance(t.exception(), ConversationRunLimitExceeded) for t in refused
+        )
+        capacity.release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        assert capacity.state.peak == 2
+
+
+async def test_direct_tool_call_competes_with_a_run_for_capacity(tmp_path, monkeypatch):
+    """A direct call and a run draw on the same server-wide budget.
+
+    Holding the only permit on a direct call must refuse a run in another
+    conversation (429), and releasing the direct call must free the permit for
+    that run.
+    """
+    async with _direct_capacity(tmp_path, monkeypatch, 1) as capacity:
+        holder = await capacity.create()
+        other = await capacity.create()
+
+        direct = asyncio.create_task(
+            holder.execute_tool("terminal", {"kind": "TerminalAction", "command": "x"})
+        )
+        await wait_until(lambda: capacity.state.active == 1)
+
+        with pytest.raises(ConversationRunLimitExceeded):
+            await other.run()
+
+        capacity.release.set()
+        await direct
+        await other.run()
+        await wait_until(lambda: capacity.state.entered == 2)

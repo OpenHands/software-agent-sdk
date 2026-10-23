@@ -1637,6 +1637,100 @@ def test_execute_tool_live_server_cancellation_does_not_stall_the_server(
         conversation.close()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="The terminal tool depends on the Unix tmux backend.",
+)
+def test_execute_tool_live_server_shares_the_run_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A direct call consumes the server-wide run budget, so a full server is 429.
+
+    Regression: direct calls bypassed ``max_concurrent_runs`` entirely, so
+    every conversation could submit one at once and queue unbounded work.
+    """
+    with live_server_env(
+        tmp_path, monkeypatch, config_overrides={"max_concurrent_runs": 1}
+    ) as server_env:
+        llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+        agent = Agent(llm=llm, tools=[Tool(name="terminal")])
+        holder: RemoteConversation = Conversation(
+            agent=agent,
+            workspace=RemoteWorkspace(
+                host=server_env["host"],
+                working_dir=str(server_env["workspace_path"]),
+            ),
+        )
+        waiter: RemoteConversation = Conversation(
+            agent=agent,
+            workspace=RemoteWorkspace(
+                host=server_env["host"],
+                working_dir=str(server_env["workspace_path"]),
+            ),
+        )
+
+        try:
+            # Warm both conversations first: a conversation is created lazily on
+            # its first call, and a create itself reserves a run slot, so
+            # creating one while the other holds the only permit would refuse
+            # the create rather than the direct call under test.
+            for conversation in (holder, waiter):
+                warmup = conversation.execute_tool(
+                    "terminal", TerminalAction(command="echo warmup", timeout=30.0)
+                )
+                assert isinstance(warmup, TerminalObservation)
+                assert warmup.exit_code == 0
+
+            with httpx.Client(base_url=server_env["host"]) as client:
+                # Hold the only permit on a slow direct call in one thread.
+                holder_thread = threading.Thread(
+                    target=holder.execute_tool,
+                    args=(
+                        "terminal",
+                        TerminalAction(command="sleep 5", timeout=60.0),
+                    ),
+                )
+                holder_thread.start()
+                try:
+                    deadline = time.monotonic() + 30
+                    response: httpx.Response | None = None
+                    while time.monotonic() < deadline:
+                        response = client.post(
+                            f"/api/conversations/{waiter.id}/execute_tool",
+                            json={
+                                "tool_name": "terminal",
+                                "action": {
+                                    "kind": "TerminalAction",
+                                    "command": "echo blocked",
+                                },
+                            },
+                            timeout=10.0,
+                        )
+                        if response.status_code == 429:
+                            break
+                        time.sleep(0.2)
+                    assert response is not None and response.status_code == 429, (
+                        "a direct call was admitted while the only run permit "
+                        "was held; direct calls bypass max_concurrent_runs"
+                    )
+                    assert response.json()["detail"] == (
+                        "Conversation run limit reached. Retry the request later."
+                    )
+                finally:
+                    holder_thread.join(timeout=60)
+
+                # The permit is returned once the holder finishes, so the same
+                # call is admitted now: the 429 was capacity, not a refusal.
+                observation = waiter.execute_tool(
+                    "terminal", TerminalAction(command="echo admitted", timeout=30.0)
+                )
+                assert isinstance(observation, TerminalObservation)
+                assert observation.exit_code == 0
+        finally:
+            waiter.close()
+            holder.close()
+
+
 def test_execute_tool_live_server_requires_auth_and_masks_secrets(
     authenticated_server_env, tmp_path: Path
 ):

@@ -322,6 +322,11 @@ class EventService:
     _direct_tool_interrupt_tasks: list[asyncio.Future[Any]] = field(
         default_factory=list, init=False
     )
+    # Server-wide capacity permit held by an in-flight direct call. A direct
+    # call consumes the same ``max_concurrent_runs`` budget as a run, so it
+    # cannot bypass the server limit and queue unboundedly in the process
+    # default executor.
+    _direct_tool_slot: RunSlot | None = field(default=None, init=False)
     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
     _lease: ConversationLease | None = field(default=None, init=False)
     _lease_generation: int | None = field(default=None, init=False)
@@ -2295,6 +2300,7 @@ class EventService:
         # and lets a blocked admission through.
         self._direct_tool_abandon += 1
         self._direct_tool_in_flight = False
+        self._release_direct_tool_slot()
         # A worker that has already entered the tool executor cannot be stopped
         # by the bump, so interrupt the command (Ctrl+C for the terminal) and
         # wait for the thread to return before the teardown below closes that
@@ -2516,6 +2522,15 @@ class EventService:
         """
         if generation == self._direct_tool_abandon:
             self._direct_tool_in_flight = False
+            self._release_direct_tool_slot()
+
+    def _release_direct_tool_slot(self) -> None:
+        """Return the server-wide capacity permit a direct call was admitted on."""
+        slot = self._direct_tool_slot
+        if slot is None:
+            return
+        self._direct_tool_slot = None
+        slot.release()
 
     def _release_direct_tool_if_settled(self) -> None:
         """Clear the in-flight guard once the worker *and* its interrupts are done.
@@ -2534,6 +2549,7 @@ class EventService:
         if any(not task.done() for task in self._direct_tool_interrupt_tasks):
             return
         self._direct_tool_in_flight = False
+        self._release_direct_tool_slot()
 
     def _direct_tool_worker_done(self, worker: Any) -> None:
         """Release the conversation once a direct tool worker has really exited.
@@ -2651,6 +2667,8 @@ class EventService:
             KeyError: If the agent has no tool by that name.
             ConversationBusyError: If a run or another direct call is already
                 using this conversation.
+            ConversationRunLimitExceeded: If the server-wide run budget is
+                full, so a direct call cannot bypass ``max_concurrent_runs``.
             InvalidToolActionError: If the payload is not valid for the tool.
         """
         conversation = self._conversation
@@ -2679,6 +2697,12 @@ class EventService:
                 )
             if self._closing or self._conversation is not conversation:
                 raise ValueError("inactive_service")
+            # A direct call is real work on the server, so it consumes the same
+            # server-wide run budget as a run. Without this, direct calls from
+            # many conversations bypass ``max_concurrent_runs`` and queue
+            # unboundedly in the process-wide default executor. Acquisition is
+            # non-blocking and does not suspend, so it is safe under the lock.
+            self._direct_tool_slot = await RunSlot.acquire(self._run_semaphore)
             self._direct_tool_in_flight = True
             generation = self._direct_tool_abandon
 

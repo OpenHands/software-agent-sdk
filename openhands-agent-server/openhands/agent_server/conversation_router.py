@@ -784,6 +784,7 @@ async def ask_agent(
         404: {"description": "Conversation not found"},
         409: {"description": "A run or another direct call is already in flight"},
         422: {"description": "Unknown or unsupported tool, or invalid action"},
+        429: {"description": "Server conversation run capacity is full"},
     },
 )
 async def execute_tool(
@@ -803,7 +804,9 @@ async def execute_tool(
     accepted, and the action is validated against that tool's own action type,
     so an action belonging to a different tool is rejected with 422 instead of
     reaching an executor that cannot handle it. Direct calls are serialized per
-    conversation and cannot overlap a run.
+    conversation and cannot overlap a run, and they consume the same
+    server-wide run budget (``max_concurrent_runs``) as a run, so a full server
+    answers 429 rather than queueing unbounded work.
     """
     try:
         observation = await conversation_service.execute_tool(

@@ -18,6 +18,7 @@ from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_service import (
     CondensationUnavailable,
     ConversationBusyError,
+    ConversationRunLimitExceeded,
     DirectToolNotAllowedError,
     EventService,
     InvalidToolActionError,
@@ -3311,6 +3312,37 @@ def test_execute_tool_busy_returns_409(
         )
 
         assert response.status_code == 409
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_execute_tool_capacity_exhausted_returns_429(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """A full server run budget is a 429, not a 500.
+
+    Direct calls draw on ``max_concurrent_runs``, so an exhausted server must
+    surface the shared capacity error as 429 like ``POST /run`` does.
+    """
+    mock_conversation_service.execute_tool.side_effect = ConversationRunLimitExceeded(
+        "Conversation run limit reached. Retry the request later."
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/execute_tool",
+            json={
+                "tool_name": "terminal",
+                "action": {"kind": "TerminalAction", "command": "echo hi"},
+            },
+        )
+
+        assert response.status_code == 429
+        assert "run limit" in response.json()["detail"]
     finally:
         client.app.dependency_overrides.clear()
 
