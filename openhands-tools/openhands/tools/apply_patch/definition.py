@@ -17,6 +17,7 @@ from openhands.sdk.tool import (
     register_tool,
 )
 from openhands.sdk.tool.tool import FunctionToolParam
+from openhands.tools.utils.path_containment import is_within_roots
 
 from .core import Commit, DiffError, process_patch
 
@@ -77,7 +78,7 @@ class ApplyPatchExecutor(ToolExecutor[ApplyPatchAction, ApplyPatchObservation]):
             if not p.startswith("/")
             else Path(p).resolve()
         )
-        if not pth.is_relative_to(self.workspace_root):
+        if not is_within_roots(pth, [self.workspace_root]):
             raise DiffError("Absolute or escaping paths are not allowed")
         return pth
 
