@@ -2565,8 +2565,8 @@ class ACPAgent(AgentBase):
         across pause/resume; see #1018/#1019). Falls back to a per-conversation
         directory under the workspace when the conversation is not persisted
         (e.g. in-memory tests) — still seed-if-absent, still no
-        ``TemporaryDirectory``. Returned absolute so the subprocess (which
-        inherits the agent-server's cwd) resolves it unambiguously.
+        ``TemporaryDirectory``. Returned absolute so the subprocess resolves it
+        unambiguously when launched in the conversation workspace.
         """
         if state.persistence_dir:
             root = Path(state.persistence_dir) / "acp" / subdir
@@ -3101,6 +3101,7 @@ class ACPAgent(AgentBase):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                cwd=working_dir,
                 limit=_STREAM_READER_LIMIT,
             )
             assert process.stdin is not None
