@@ -273,7 +273,7 @@ class InstallationManager[T: ExtensionProtocol]:
         """Disable an installed extension by name."""
         return self._set_enabled(name, False)
 
-    def list_installed(self) -> list[InstallationInfo]:
+    def list_installed(self, *, strict: bool = False) -> list[InstallationInfo]:
         """List all installed extensions.
 
         Self-healing: the metadata file is updated to remove entries whose
@@ -286,10 +286,14 @@ class InstallationManager[T: ExtensionProtocol]:
         if not self.installation_dir.exists():
             return []
 
-        with self.metadata_session as session:
-            return session.sync()
+        with InstallationMetadata.open(
+            self.installation_dir,
+            interface=self.installation_interface,
+            strict=strict,
+        ) as session:
+            return session.sync(strict=strict)
 
-    def load_installed(self) -> list[T]:
+    def load_installed(self, *, strict: bool = False) -> list[T]:
         """Load all enabled extensions as ``T`` objects.
 
         Calls ``list_installed()`` first (which syncs metadata), then loads
@@ -304,7 +308,7 @@ class InstallationManager[T: ExtensionProtocol]:
 
         extensions: list[T] = []
 
-        for info in self.list_installed():
+        for info in self.list_installed(strict=strict):
             if not info.enabled:
                 continue
 

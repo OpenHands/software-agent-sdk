@@ -3,7 +3,9 @@
 import json
 import logging
 import shutil
+import uuid
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
@@ -20,7 +22,9 @@ from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.plugin import (
     PluginSource,
+    disable_plugin,
     discovery,
+    enable_plugin,
     install_plugin,
     installed,
 )
@@ -1725,6 +1729,255 @@ class TestAmbientPluginAutoLoad:
 
         assert "LEAKME" not in caplog.text
         conversation.close()
+
+
+class TestAmbientPluginResume:
+    """Ambient plugin contributions follow the current enabled/on-disk state when
+    a persisted conversation resumes in a new process (issue #5628)."""
+
+    def _setup(self, tmp_path: Path, monkeypatch) -> tuple[Path, Path, Path]:
+        install_store = tmp_path / "installed-store"
+        install_store.mkdir()
+        user_dir = tmp_path / ".agents" / "plugins"
+        monkeypatch.setattr(discovery, "USER_PLUGINS_DIRS", [user_dir])
+        monkeypatch.setattr(installed, "DEFAULT_INSTALLED_PLUGINS_DIR", install_store)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        return install_store, user_dir, workspace
+
+    def _make_plugin(self, plugin_dir: Path, name: str) -> Path:
+        create_test_plugin(
+            plugin_dir,
+            name=name,
+            skills=[{"name": f"{name}-skill", "content": "Plugin skill"}],
+            mcp_config={"mcpServers": {f"{name}-server": {"command": "plugin-cmd"}}},
+        )
+        commands_dir = plugin_dir / "commands"
+        commands_dir.mkdir()
+        (commands_dir / "hello.md").write_text("---\ndescription: Hi\n---\nSay hi.")
+        return plugin_dir
+
+    def _caller_agent(self, mock_llm) -> Agent:
+        return Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                skills=[Skill(name="caller-skill", content="Caller")],
+            ),
+            mcp_config={"caller-server": MCPServer(command="caller-cmd")},
+        )
+
+    def _load(
+        self, tmp_path: Path, workspace: Path, conversation_id, agent=None
+    ) -> tuple[set[str], set[str]]:
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=workspace,
+            persistence_dir=tmp_path / "conversations",
+            conversation_id=conversation_id,
+            visualizer=None,
+            delete_on_close=False,
+        )
+        conversation._ensure_plugins_loaded()
+        context = conversation.state.agent.agent_context
+        skills = {s.name for s in context.skills} if context else set()
+        servers = set(conversation.state.agent.mcp_config)
+        conversation.close()
+        return skills, servers
+
+    def test_disabled_installed_plugin_is_dropped_on_resume(
+        self, tmp_path: Path, mock_llm, monkeypatch
+    ):
+        install_store, _, workspace = self._setup(tmp_path, monkeypatch)
+        source = self._make_plugin(tmp_path / "src", "amb")
+        install_plugin(str(source), installed_dir=install_store)
+        cid = uuid.uuid4()
+        plugin_skills = {"amb-skill", "amb:hello"}
+
+        skills, servers = self._load(
+            tmp_path, workspace, cid, agent=self._caller_agent(mock_llm)
+        )
+        assert plugin_skills | {"caller-skill"} <= skills
+        assert {"amb-server", "caller-server"} <= servers
+
+        disable_plugin("amb", installed_dir=install_store)
+        skills, servers = self._load(tmp_path, workspace, cid)
+        assert not plugin_skills & skills
+        assert "amb-server" not in servers
+        assert "caller-skill" in skills
+        assert "caller-server" in servers
+
+        enable_plugin("amb", installed_dir=install_store)
+        skills, servers = self._load(tmp_path, workspace, cid)
+        assert plugin_skills | {"caller-skill"} <= skills
+        assert {"amb-server", "caller-server"} <= servers
+
+    def test_removed_local_plugin_is_dropped_on_resume(
+        self, tmp_path: Path, mock_llm, monkeypatch
+    ):
+        _, user_dir, workspace = self._setup(tmp_path, monkeypatch)
+        self._make_plugin(user_dir / "loc", "loc")
+        cid = uuid.uuid4()
+
+        skills, servers = self._load(
+            tmp_path, workspace, cid, agent=self._caller_agent(mock_llm)
+        )
+        assert {"loc-skill", "loc:hello"} <= skills
+        assert "loc-server" in servers
+
+        shutil.rmtree(user_dir / "loc")
+        skills, servers = self._load(tmp_path, workspace, cid)
+        assert not {"loc-skill", "loc:hello"} & skills
+        assert "loc-server" not in servers
+        assert "caller-skill" in skills
+        assert "caller-server" in servers
+
+    def test_explicit_plugin_survives_resume(
+        self, tmp_path: Path, basic_agent, monkeypatch
+    ):
+        _, _, workspace = self._setup(tmp_path, monkeypatch)
+        explicit_src = self._make_plugin(tmp_path / "explicit", "exp")
+        cid = uuid.uuid4()
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            plugins=[PluginSource(source=str(explicit_src))],
+            persistence_dir=tmp_path / "conversations",
+            conversation_id=cid,
+            visualizer=None,
+            delete_on_close=False,
+        )
+        conversation._ensure_plugins_loaded()
+        conversation.close()
+
+        skills, servers = self._load(tmp_path, workspace, cid)
+        assert {"exp-skill", "exp:hello"} <= skills
+        assert "exp-server" in servers
+
+    @pytest.mark.parametrize(
+        "failure",
+        ["installed_manifest", "metadata", "local_manifest", "untracked_manifest"],
+    )
+    def test_failed_discovery_keeps_ambient_contributions_on_resume(
+        self, tmp_path: Path, mock_llm, monkeypatch, failure
+    ):
+        install_store, user_dir, workspace = self._setup(tmp_path, monkeypatch)
+        source = self._make_plugin(tmp_path / "src", "amb")
+        install_plugin(str(source), installed_dir=install_store)
+        if failure == "local_manifest":
+            broken_dir = self._make_plugin(user_dir / "bbb", "bbb")
+        else:
+            other = self._make_plugin(tmp_path / "other", "bbb")
+            install_plugin(str(other), installed_dir=install_store)
+            broken_dir = install_store / "bbb"
+        cid = uuid.uuid4()
+        self._load(tmp_path, workspace, cid, agent=self._caller_agent(mock_llm))
+
+        damaged = (
+            install_store / ".installed.json"
+            if failure == "metadata"
+            else broken_dir / ".plugin" / "plugin.json"
+        )
+        if failure == "untracked_manifest":
+            metadata_path = install_store / ".installed.json"
+            metadata = json.loads(metadata_path.read_text())
+            del metadata["extensions"]["bbb"]
+            metadata_path.write_text(json.dumps(metadata))
+        original = damaged.read_text()
+        damaged.write_text("{invalid json")
+        skills, servers = self._load(tmp_path, workspace, cid)
+        assert {"amb-skill", "amb:hello", "bbb-skill", "caller-skill"} <= skills
+        assert {"amb-server", "bbb-server", "caller-server"} <= servers
+        assert damaged.read_text() == "{invalid json"
+
+        damaged.write_text(original)
+        disable_plugin("amb", installed_dir=install_store)
+        skills, servers = self._load(tmp_path, workspace, cid)
+        assert not {"amb-skill", "amb:hello"} & skills
+        assert "amb-server" not in servers
+        assert {"bbb-skill", "caller-skill"} <= skills
+
+    @pytest.mark.parametrize("operation", ["resume", "fork"])
+    def test_explicit_agent_keeps_same_named_caller_contributions(
+        self, tmp_path: Path, mock_llm, monkeypatch, operation
+    ):
+        install_store, _, workspace = self._setup(tmp_path, monkeypatch)
+        source = self._make_plugin(tmp_path / "src", "amb")
+        install_plugin(str(source), installed_dir=install_store)
+        cid = uuid.uuid4()
+        self._load(tmp_path, workspace, cid, agent=self._caller_agent(mock_llm))
+        disable_plugin("amb", installed_dir=install_store)
+        custom = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                skills=[Skill(name="amb-skill", content="Caller")],
+            ),
+            mcp_config={"amb-server": MCPServer(command="caller-cmd")},
+        )
+        if operation == "fork":
+            with closing(
+                LocalConversation(
+                    agent=None,
+                    workspace=workspace,
+                    persistence_dir=tmp_path / "conversations",
+                    conversation_id=cid,
+                    visualizer=None,
+                )
+            ) as original:
+                with closing(original.fork(agent=custom)) as fork:
+                    fork._ensure_plugins_loaded()
+                    cid = fork.id
+            custom = None
+        skills, servers = self._load(tmp_path, workspace, cid, agent=custom)
+        assert "amb-skill" in skills
+        assert "amb-server" in servers
+
+    def test_inherited_agent_fork_drops_disabled_plugin(
+        self, tmp_path: Path, mock_llm, monkeypatch
+    ):
+        install_store, _, workspace = self._setup(tmp_path, monkeypatch)
+        source = self._make_plugin(tmp_path / "src", "amb")
+        install_plugin(str(source), installed_dir=install_store)
+        cid = uuid.uuid4()
+        self._load(tmp_path, workspace, cid, agent=self._caller_agent(mock_llm))
+        disable_plugin("amb", installed_dir=install_store)
+        with closing(
+            LocalConversation(
+                agent=None,
+                workspace=workspace,
+                persistence_dir=tmp_path / "conversations",
+                conversation_id=cid,
+                visualizer=None,
+            )
+        ) as original:
+            with closing(original.fork()) as fork:
+                fork._ensure_plugins_loaded()
+                fork_id = fork.id
+        skills, servers = self._load(tmp_path, workspace, fork_id)
+        assert "amb-skill" not in skills
+        assert "amb-server" not in servers
+        assert "caller-skill" in skills
+
+    def test_legacy_state_keeps_caller_content_matching_disabled_plugin(
+        self, tmp_path: Path, mock_llm, monkeypatch
+    ):
+        install_store, _, workspace = self._setup(tmp_path, monkeypatch)
+        source = self._make_plugin(tmp_path / "src", "caller")
+        install_plugin(str(source), installed_dir=install_store)
+        disable_plugin("caller", installed_dir=install_store)
+        cid = uuid.uuid4()
+        self._load(tmp_path, workspace, cid, agent=self._caller_agent(mock_llm))
+
+        base_state = tmp_path / "conversations" / cid.hex / "base_state.json"
+        data = json.loads(base_state.read_text())
+        data.pop("ambient_plugin_skills", None)
+        data.pop("ambient_plugin_mcp_servers", None)
+        base_state.write_text(json.dumps(data))
+
+        skills, servers = self._load(tmp_path, workspace, cid)
+        assert "caller-skill" in skills
+        assert "caller-server" in servers
 
 
 class TestAgentPluginsMCPExpansion:

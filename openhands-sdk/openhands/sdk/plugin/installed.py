@@ -121,9 +121,11 @@ def list_installed_plugins(
 
 def load_installed_plugins(
     installed_dir: Path | None = None,
+    *,
+    strict: bool = False,
 ) -> list[Plugin]:
     """Load all enabled installed plugins as ``Plugin`` objects."""
-    return _manager(_resolve_installed_dir(installed_dir)).load_installed()
+    return _manager(_resolve_installed_dir(installed_dir)).load_installed(strict=strict)
 
 
 def get_installed_plugin(
