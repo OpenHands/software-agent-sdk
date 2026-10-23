@@ -1111,7 +1111,7 @@ class RemoteConversation(BaseConversation):
     ) -> None:
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
-        self._callbacks = callbacks or []
+        self._callbacks = list(callbacks) if callbacks else []
         if token_callbacks:
             self._callbacks.append(_token_delta_callback(token_callbacks))
         self.max_iteration_per_run = max_iteration_per_run
