@@ -193,7 +193,15 @@ class FileEditor:
             encoding: The encoding to use (auto-detected by decorator)
         """
         self.validate_file(path)
-        new_str = new_str or ""
+        if new_str is None:
+            new_str = ""
+        if old_str == new_str:
+            # A no-op replacement must not be reported as a success: agents that
+            # receive the generic "has been edited" message repeat the same call.
+            raise ToolError(
+                "No replacement was performed. `new_str` and `old_str` must be "
+                "different."
+            )
 
         # Read the entire file first to handle both single-line and multi-line
         # replacements
