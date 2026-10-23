@@ -296,22 +296,19 @@ Preconditions:
   ```
   Every body is 422 (the settings routes take `transport`, not the test
   route's legacy `type`) and `qa-bad` never appears.
-- **Server with neither command nor url (`F19.settings-empty-server`), known bug.**
-  `MCPServer` only requires `command` or `url` once `transport` is set,
-  so `{}` is stored as `{"enabled": true}` with 201. While it exists, every new
-  conversation's MCP configuration fails validation as a whole and the agent
-  gets no MCP tools at all, only a `MCP server startup failed ... continuing
-  without its tools` warning in the log (reproduced with a valid stdio server
-  next to it). The correct behavior asserted is 422; on failure the same line
-  removes the stored entry before failing, so later bullets are unaffected.
+- **Server with neither command nor url (`F19.settings-empty-server`).**
+  `MCPServer` requires `command` or `url` whatever the `transport`, so `{}`
+  is rejected with 422 and nothing is stored (a stored server like that once
+  cost every new conversation all of its MCP tools). If the POST is not
+  rejected, the same line removes the stored entry before failing, so later
+  bullets are unaffected.
   ```sh
   control-agent-server api GET /api/settings --check agent_settings.mcp_config.qa-empty missing
-  control-agent-server api POST /api/settings/mcp/qa-empty --json '{}' --expect 422 --save F19.settings-empty-server/create || { control-agent-server api DELETE /api/settings/mcp/qa-empty --expect 200,404 >/dev/null; false; }  # bug: request.method eq DELETE && status eq 200
+  control-agent-server api POST /api/settings/mcp/qa-empty --json '{}' --expect 422 --check detail.0.msg contains "require 'command' or 'url'" --save F19.settings-empty-server/create || { control-agent-server api DELETE /api/settings/mcp/qa-empty --expect 200,404 >/dev/null; false; }
   control-agent-server api GET /api/settings --check agent_settings.mcp_config.qa-empty missing
   ```
-  Today the POST answers 201 with `qa-empty: {"enabled": true}` in the
-  returned settings, the entry is deleted again and the bullet reports
-  `xfail` at the `# bug` line.
+  The POST answers 422 with `MCP servers require 'command' or 'url'` and
+  `qa-empty` never appears.
 - **Sparse patch (`F19.settings-patch`).** Toggle, edit one header, restore
   the default, then the error cases.
   ```sh
@@ -827,11 +824,12 @@ Preconditions:
 - With two or more enabled servers, conversation tool names carry the server
   key as a prefix (`qa-f19_qa_echo`); with one server they are bare
   (`qa_echo`). Prompts and `--contains` checks should not depend on which.
-- An unreachable server costs a conversation only its own tools, but a
-  configuration that fails validation as a whole (the empty server of
-  `F19.settings-empty-server`) drops every MCP tool with only a log warning
-  (`MCP server startup failed for <every key>; continuing without its tools`,
-  wrapped over several log lines, so grep for `MCP server startup`).
+- An unreachable server costs a conversation only its own tools, and so does
+  a server that fails validation: it is skipped with `Skipping invalid MCP
+  server <key>; continuing without its tools` (wrapped over several log lines,
+  so grep for `Skipping invalid MCP server`). `MCP server startup failed for
+  <keys>` still names every enabled key when MCP startup fails as a whole,
+  for example when no server is valid.
 - The settings routes use `transport` (`extra="forbid"`, so the test route's
   legacy `type` is 422 there). A trailing slash on the key path redirects
   (307) and an empty key is 404.

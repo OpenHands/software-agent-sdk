@@ -1,0 +1,36 @@
+{
+  "__expected__": {
+    "schema_version": 7,
+    "active_profile": "fixture-v6-profile",
+    "agent_settings.schema_version": 10,
+    "agent_settings.agent_kind": "openhands",
+    "agent_settings.llm.model": "fixture-v6-persisted-llm",
+    "agent_settings.mcp_config.fetch.command": "uvx",
+    "conversation_settings.max_iterations": 240,
+    "misc_settings.theme": "dark"
+  },
+  "schema_version": 7,
+  "agent_settings": {
+    "schema_version": 10,
+    "agent_kind": "openhands",
+    "llm": {
+      "model": "fixture-v6-persisted-llm"
+    },
+    "mcp_config": {
+      "fetch": {
+        "command": "uvx",
+        "args": [
+          "mcp-server-fetch"
+        ]
+      }
+    }
+  },
+  "conversation_settings": {
+    "schema_version": 1,
+    "max_iterations": 240
+  },
+  "active_profile": "fixture-v6-profile",
+  "misc_settings": {
+    "theme": "dark"
+  }
+}
