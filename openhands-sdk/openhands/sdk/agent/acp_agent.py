@@ -694,7 +694,11 @@ def _oauth_bearer_header(auth: MCPOAuthAuthCredential, name: str) -> dict[str, s
             name,
         )
         return {}
-    if state.token_expires_at is not None and state.token_expires_at <= time.time():
+    if (
+        state is not None
+        and state.token_expires_at is not None
+        and state.token_expires_at <= time.time()
+    ):
         logger.warning(
             "ACP MCP server %r has an expired OAuth2 access token; the ACP path "
             "cannot refresh it, forwarding it as-is",
