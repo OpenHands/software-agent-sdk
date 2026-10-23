@@ -1,5 +1,6 @@
 """Tests for Conversation.fork() primitive."""
 
+import json
 import tempfile
 import threading
 import uuid
@@ -12,10 +13,14 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation, LocalConversation
-from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.tool import Action, Observation, ToolDefinition, ToolExecutor
+from openhands.sdk.utils.cipher import Cipher
 
 
 def _agent() -> Agent:
@@ -349,3 +354,55 @@ def test_fork_with_aliased_agent_does_not_clobber_source_cache_key():
         )
         assert fork.get_llm_call_context().prompt_cache_key == str(fork.id)
         assert fork.agent.llm is not src.agent.llm
+
+
+def _persisted_base_state(conv: LocalConversation) -> dict:
+    persistence_dir = conv.state.persistence_dir
+    assert persistence_dir is not None
+    return json.loads((Path(persistence_dir) / "base_state.json").read_text())
+
+
+def test_fork_keeps_source_cipher_for_persisted_secrets(tmp_path):
+    """A fork of a cipher-backed conversation stores its secrets encrypted (#5465).
+
+    The agent-server resumes a fork from its ``base_state.json``, so a key
+    persisted redacted there makes the fork's first LLM call fail.
+    """
+    cipher = Cipher("test-secret-key")
+    src = LocalConversation(
+        agent=_agent(),
+        workspace=str(tmp_path / "workspace"),
+        persistence_dir=str(tmp_path / "conversations"),
+        cipher=cipher,
+        secrets={"GITHUB_TOKEN": "ghp-test"},
+    )
+    fork = src.fork()
+
+    state = _persisted_base_state(fork)
+    api_key = cipher.decrypt(state["agent"]["llm"]["api_key"])
+    assert api_key is not None
+    assert api_key.get_secret_value() == "test-key"
+
+    # Conversation secrets survive the fork too, under the same cipher.
+    sources = state["secret_registry"]["secret_sources"]
+    token = cipher.decrypt(sources["GITHUB_TOKEN"]["value"])
+    assert token is not None
+    assert token.get_secret_value() == "ghp-test"
+
+    # Resuming the fork from disk (the agent-server path) restores the key.
+    resumed = ConversationState.model_validate(state, context={"cipher": cipher})
+    resumed_key = resumed.agent.llm.api_key
+    assert isinstance(resumed_key, SecretStr)
+    assert resumed_key.get_secret_value() == "test-key"
+
+
+def test_fork_without_cipher_still_redacts_secrets(tmp_path):
+    """Forks of cipher-less conversations keep redacting persisted secrets."""
+    src = LocalConversation(
+        agent=_agent(),
+        workspace=str(tmp_path / "workspace"),
+        persistence_dir=str(tmp_path / "conversations"),
+    )
+    fork = src.fork()
+
+    assert set(_persisted_base_state(fork)["agent"]["llm"]["api_key"]) == {"*"}

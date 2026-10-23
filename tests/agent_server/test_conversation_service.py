@@ -4149,6 +4149,50 @@ class TestConversationTreeForkAndNavigate:
             assert {p.name for p in conversations_dir.iterdir()} == before
 
     @pytest.mark.asyncio
+    async def test_cipher_backed_fork_resumes_with_credentials(self, tmp_path):
+        """A cipher-backed fork survives a restart with its secrets (#5465)."""
+        conversations_dir = tmp_path / "conversations"
+        cipher = Cipher("fork-resume-test-key")
+        request = StartConversationRequest(
+            agent=Agent(
+                llm=LLM(
+                    model="gpt-4o",
+                    api_key=SecretStr("sk-fork-test"),
+                    usage_id="test-llm",
+                ),
+                tools=[],
+            ),
+            workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+        )
+
+        async with ConversationService(
+            conversations_dir=conversations_dir, cipher=cipher
+        ) as svc:
+            info, _ = await svc.start_conversation(request)
+            source_service = await svc.get_event_service(info.id)
+            assert source_service is not None
+            source_service.get_conversation().update_secrets({"MY_TOKEN": "tok-123"})
+
+            fork_info = await svc.fork_conversation(info.id)
+            assert fork_info is not None
+
+        async with ConversationService(
+            conversations_dir=conversations_dir, cipher=cipher
+        ) as restarted:
+            # Resume path: the restarted server loads the fork from its
+            # persisted base_state.json with agent=None.
+            fork_service = await restarted.get_event_service(fork_info.id)
+            assert fork_service is not None
+            fork_conversation = fork_service.get_conversation()
+            api_key = fork_conversation.agent.llm.api_key
+            assert isinstance(api_key, SecretStr)
+            assert api_key.get_secret_value() == "sk-fork-test"
+            assert (
+                fork_conversation.state.secret_registry.get_secret_value("MY_TOKEN")
+                == "tok-123"
+            )
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "navigate_to_none", [False, True], ids=["to_event", "to_empty_tree"]
     )
