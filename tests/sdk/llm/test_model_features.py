@@ -704,6 +704,9 @@ def test_prompt_cache_retention_support(model, expected_retention):
 @pytest.mark.parametrize(
     "model,expected_send_reasoning",
     [
+        ("gpt-oss-120b", True),
+        ("openai/gpt-oss-120b", True),
+        ("openrouter/openai/gpt-oss-120b", True),
         ("kimi-k2-thinking", True),
         ("kimi-k2-thinking-0905", True),
         ("Kimi-K2-Thinking", True),  # Case insensitive

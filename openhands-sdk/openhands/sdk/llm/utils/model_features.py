@@ -298,6 +298,7 @@ FORCE_STRING_SERIALIZER_MODELS: list[str] = [
 # Models that we should send full reasoning content
 # in the message input
 SEND_REASONING_CONTENT_MODELS: list[str] = [
+    "gpt-oss",
     "kimi-k3",
     "kimi-k2-thinking",
     "kimi-k2.5",
