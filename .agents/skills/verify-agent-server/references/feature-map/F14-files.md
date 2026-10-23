@@ -644,11 +644,11 @@ Preconditions:
   control-agent-server api GET /api/file/download-trajectory/qa-f14-not-a-uuid --expect 422
   ```
   404 for an unknown id, 422 for a malformed one.
-- **Concurrent trajectory downloads (`F14.trajectory-concurrent`), known bug.**
+- **Concurrent trajectory downloads (`F14.trajectory-concurrent`).**
   Up to five rounds of six parallel downloads of the same conversation (two
   browser tabs or a retry are enough in practice). The burst stops after the
-  first round with a broken download, so the bug reproduces almost surely
-  and passing needs 30 clean concurrent downloads.
+  first round with a broken download, so a regression reproduces almost
+  surely and passing needs 30 clean concurrent downloads.
   ```sh
   CC="$F/concurrent"
   mkdir -p "$CC"
@@ -672,18 +672,14 @@ Preconditions:
   control-agent-server exec --env CID="$CID" --env CC="$CC" --save F14.trajectory-concurrent/burst -- sh "$CC/burst.sh"
   test -s "$CC/1-6.status"
   BROKEN=$(for s in "$CC"/[1-5]-[1-6].status; do n=$(basename "$s" .status); z="${s%.status}.zip"; c=$(cat "$s"); if [ "$c" != 200 ]; then echo "$n:$c"; elif ! test -s "$z"; then echo "$n:200-empty"; elif ! python3 -m zipfile -t "$z" > /dev/null 2>&1; then echo "$n:200-badzip"; fi; done)
-  control-agent-server assert --value="$BROKEN" --check . eq ''  # bug: value matches ':(500|200-empty|200-badzip)'
+  control-agent-server assert --value="$BROKEN" --check . eq ''
   ```
-  A single download is a valid zip. Expected: every concurrent download is
-  200 with a valid zip, in all five rounds. Actual: every handler writes the
-  same temp file `<conversations_path>/<hex>.zip` and unlinks it after
-  sending, so some requests get 500 (`File at path ... does not exist`, or
-  the unlink's `FileNotFoundError`) and some 200 responses are truncated,
-  sometimes to no body at all, so curl writes no file (`curl: (18) transfer
-  closed with ... bytes remaining`, `Response content longer than
-  Content-Length` in the log). Usually the first round already has a broken
-  download; the burst's output names it, and each `<round>-<n>.err` holds
-  curl's error.
+  A single download is a valid zip, and every concurrent download is 200
+  with a valid zip, in all five rounds: each request builds its own temp zip
+  (`<conversations_path>/.<hex>-<random>.zip`) and removes only that one
+  after sending, while the download is still named `<hex>.zip`. A shared
+  temp path shows up here as a 500 or a truncated 200. If a download breaks,
+  the burst's output names it, and each `<round>-<n>.err` holds curl's error.
 - **Conversation-scoped transfer (`F14.scoped-transfer`).** Read the file the
   agent wrote, then upload, download and create a directory inside the
   workspace.
@@ -920,9 +916,9 @@ Preconditions:
 - `download-trajectory` only checks that `<conversations_path>/<hex>/` exists,
   not that the conversation is loaded; it includes lease files and every
   event file, skips a top-level `acp/` directory, and redacts JSON/JSONL
-  credential fields plus any Fernet token. It writes a fixed temp name
-  (`F14.trajectory-concurrent`) and reads `conversations_path` from the live
-  `app.state.config`, so it follows an init-time path
+  credential fields plus any Fernet token. Each request builds its own temp
+  zip (`F14.trajectory-concurrent`) and reads `conversations_path` from the
+  live `app.state.config`, so it follows an init-time path
   (`F14.trajectory-init-path`).
 - No file route emits conversation events or WebSocket frames; their second
   views are downloads, listings, archives and the disk.
