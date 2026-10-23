@@ -970,6 +970,50 @@ class TestLocalConversationPlugins:
 
         conversation.close()
 
+    def test_load_plugin_twice_keeps_one_copy_of_its_hooks(
+        self, tmp_path: Path, mock_llm
+    ):
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {
+                    "name": "hook-plugin",
+                    "hooks": {
+                        "hooks": {
+                            "UserPromptSubmit": [
+                                {"hooks": [{"command": "echo plugin-hook"}]}
+                            ]
+                        }
+                    },
+                }
+            ],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(name="manual", source=str(marketplace_dir))
+                ]
+            ),
+        )
+        conversation = LocalConversation(
+            agent=agent, workspace=workspace, visualizer=None
+        )
+
+        conversation.load_plugin("hook-plugin")
+        conversation.load_plugin("hook-plugin@manual")
+
+        assert conversation.state.hook_config is not None
+        assert [
+            [hook.command for hook in matcher.hooks]
+            for matcher in conversation.state.hook_config.user_prompt_submit
+        ] == [["echo plugin-hook"]]
+
+        conversation.close()
+
     def test_load_plugin_requires_registered_marketplaces(
         self, tmp_path: Path, basic_agent
     ):
