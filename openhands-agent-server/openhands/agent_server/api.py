@@ -18,6 +18,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
+from starlette.types import ASGIApp
 
 from openhands.agent_server.acp_router import acp_router
 from openhands.agent_server.agent_profiles_router import agent_profiles_router
@@ -518,13 +519,25 @@ def _get_root_path(config: Config) -> str:
     return root_path
 
 
+class AgentServerApp(FastAPI):
+    def build_middleware_stack(self) -> ASGIApp:
+        # ServerErrorMiddleware creates unhandled 500 responses outside user
+        # middleware, so CORS must wrap the complete stack to decorate them.
+        config = self.state.config
+        return CORSDispatcher(
+            super().build_middleware_stack(),
+            allow_origins=config.allow_cors_origins,
+            allow_origin_regex=config.allow_cors_origin_regex,
+        )
+
+
 def _create_fastapi_instance(config: Config) -> FastAPI:
     """Create the basic FastAPI application instance.
 
     Returns:
         Basic FastAPI application with title, description, and lifespan.
     """
-    return FastAPI(
+    return AgentServerApp(
         title="OpenHands Agent Server",
         version=version("openhands-agent-server"),
         description=(
@@ -898,11 +911,9 @@ def create_app(config: Config | None = None) -> FastAPI:
         )
 
         app.add_middleware(RuntimeDispatchMiddleware)
-    app.add_middleware(
-        CORSDispatcher,
-        allow_origins=config.allow_cors_origins,
-        allow_origin_regex=config.allow_cors_origin_regex,
-    )
+    # CORS is not added as user middleware here: AgentServerApp wraps the
+    # complete stack (including ServerErrorMiddleware) in CORSDispatcher so
+    # unhandled 500 responses also carry CORS headers.
     _add_exception_handlers(app)
 
     return app
