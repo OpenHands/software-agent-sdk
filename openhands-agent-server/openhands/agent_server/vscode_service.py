@@ -2,7 +2,10 @@
 
 import asyncio
 import os
+import shlex
+import shutil
 import signal
+import tempfile
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -35,6 +38,8 @@ class VSCodeService:
         self.connection_token: str | None = connection_token
         self.server_base_path: str | None = server_base_path
         self.process: asyncio.subprocess.Process | None = None
+        # Private directory holding the token file of the current launch.
+        self._token_dir: Path | None = None
         self.openvscode_server_root: Path = Path("/openhands/.openvscode-server")
         self.extensions_dir: Path = self.openvscode_server_root / "extensions"
 
@@ -71,6 +76,7 @@ class VSCodeService:
 
         except Exception as e:
             logger.error(f"Failed to start VSCode server: {e}")
+            self._remove_token_file()
             return False
 
     async def stop(self) -> None:
@@ -88,6 +94,7 @@ class VSCodeService:
                 logger.error(f"Error stopping VSCode server: {e}")
             finally:
                 self.process = None
+        self._remove_token_file()
 
     async def set_connection_token(self, connection_token: str) -> None:
         """Restart a running server with a new connection token.
@@ -201,8 +208,33 @@ class VSCodeService:
         while not await self._is_port_available():
             await asyncio.sleep(0.1)
 
+    def _write_token_file(self) -> Path:
+        """Write the connection token to a file only this user can read.
+
+        The token is the session API key in keyed deployments. On the command
+        line it would be readable by every local user through
+        ``/proc/<pid>/cmdline``, so openvscode-server reads it from this file
+        (``--connection-token-file``) instead. ``mkdtemp`` creates the
+        directory with mode 0700 and the file is created with mode 0600.
+        """
+        assert self.connection_token is not None
+        self._remove_token_file()
+        self._token_dir = Path(tempfile.mkdtemp(prefix="openhands-vscode-"))
+        token_file = self._token_dir / "connection-token"
+        fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(self.connection_token)
+        return token_file
+
+    def _remove_token_file(self) -> None:
+        """Delete the token file of the last launch, if any."""
+        if self._token_dir is not None:
+            shutil.rmtree(self._token_dir, ignore_errors=True)
+            self._token_dir = None
+
     async def _start_vscode_process(self) -> None:
         """Start the VSCode server process."""
+        token_file = self._write_token_file()
         extensions_arg = (
             f"--extensions-dir {self.extensions_dir} "
             if self.extensions_dir.exists()
@@ -216,7 +248,7 @@ class VSCodeService:
         cmd = (
             f"exec {self.openvscode_server_root}/bin/openvscode-server "
             f"--host 0.0.0.0 "
-            f"--connection-token {self.connection_token} "
+            f"--connection-token-file {shlex.quote(str(token_file))} "
             f"--port {self.port} "
             f"{extensions_arg}"
             f"{base_path_arg}"
