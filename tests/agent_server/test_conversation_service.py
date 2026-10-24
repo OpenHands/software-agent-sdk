@@ -51,6 +51,7 @@ from openhands.sdk.critic.impl.api import APIBasedCritic
 from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.mcp.config import dump_mcp_config
@@ -2227,6 +2228,33 @@ class TestConversationServiceStartConversation:
         assert tip("HEAD", Path(workspace.working_dir)) == tip(expected_ref, repo_dir)
         assert plan.branch == f"{options.branch_prefix}{conversation_id}"
         assert guidance in plan.guidance
+
+    @pytest.mark.asyncio
+    async def test_start_conversation_rejects_missing_worktree_ref(
+        self, conversation_service, tmp_path
+    ):
+        repo_dir = tmp_path / "repo"
+        _init_git_repo(repo_dir)
+        conversation_id = uuid4()
+        request = StartConversationRequest(
+            conversation_id=conversation_id,
+            agent=_sample_agent(),
+            workspace=LocalWorkspace(working_dir=repo_dir),
+            worktree=True,
+            worktree_options=ConversationWorktreeOptions(
+                base="ref", ref="missing-branch"
+            ),
+        )
+
+        with pytest.raises(GitCommandError, match="missing-branch"):
+            await conversation_service.start_conversation(request)
+
+        assert not (
+            conversation_service.conversation_worktree_root / str(conversation_id)
+        ).exists()
+        assert not (
+            conversation_service.conversations_dir / conversation_id.hex
+        ).exists()
 
     def test_get_worktree_start_point_tolerates_fetch_failure(self, tmp_path):
         """If ``git fetch origin`` fails, fall back to cached refs.
