@@ -15,6 +15,7 @@ from litellm.exceptions import (
     PermissionDeniedError,
     RateLimitError,
 )
+from openai import APIStatusError
 
 from .types import (
     LLMContextWindowExceedError,
@@ -165,6 +166,10 @@ def looks_like_auth_error(exception: Exception) -> bool:
         return True
     if not isinstance(exception, (BadRequestError, OpenAIError)):
         return False
+    # LiteLLM raises some providers' 401 (e.g. DeepSeek's invalid key) as
+    # BadRequestError but keeps the provider's HTTP status on the exception.
+    if isinstance(exception, APIStatusError) and exception.status_code in (401, 403):
+        return True
     s = str(exception).lower()
     if any(p in s for p in AUTH_PATTERNS):
         return True
