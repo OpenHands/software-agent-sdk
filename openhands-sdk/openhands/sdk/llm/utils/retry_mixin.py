@@ -102,11 +102,33 @@ class RetryMixin:
             else retry_exceptions
         )
 
+        def diagnosed_retry(retry_state: RetryCallState) -> bool:
+            eligible = retry_condition(retry_state)
+            exc = (
+                retry_state.outcome.exception()
+                if retry_state.outcome is not None
+                else None
+            )
+            if exc is not None:
+                status = getattr(exc, "status_code", None)
+                logger.warning(
+                    "LLM request failed: exception_type=%s.%s status_code=%s "
+                    "attempt=%d max_attempts=%d retry_eligible=%s will_retry=%s",
+                    type(exc).__module__,
+                    type(exc).__qualname__,
+                    status if isinstance(status, int) else None,
+                    retry_state.attempt_number,
+                    num_retries,
+                    eligible,
+                    eligible and retry_state.attempt_number < num_retries,
+                )
+            return eligible
+
         retry_decorator: Callable[[Callable[..., Any]], Callable[..., Any]] = retry(
             before_sleep=before_sleep,
             stop=stop_after_attempt(num_retries),
             reraise=True,
-            retry=retry_condition,
+            retry=diagnosed_retry,
             wait=wait_exponential(
                 multiplier=retry_multiplier,
                 min=retry_min_wait,
@@ -150,9 +172,3 @@ class RetryMixin:
         setattr(cast(Any, exc), "retry_attempt", retry_state.attempt_number)
         if max_attempts is not None:
             setattr(cast(Any, exc), "max_retries", max_attempts)
-
-        logger.error(
-            "%s. Attempt #%d | You can customize retry values in the configuration.",
-            exc,
-            retry_state.attempt_number,
-        )
