@@ -55,6 +55,7 @@ class EventLog(EventsListBase):
         self._dir = dir_path
         self._id_to_idx: dict[EventID, int] = {}
         self._idx_to_id: dict[int, EventID] = {}
+        self._paths: dict[int, str] = {}
         self._event_cache: dict[int, Event] = {}
         self._lock_path = f"{dir_path}/{LOCK_FILE_NAME}"
         self._write_guard = None
@@ -114,8 +115,11 @@ class EventLog(EventsListBase):
 
         ``leaf_id=None`` yields ``[]``. ``limit`` keeps only the last ``limit``
         events (walking back from the leaf), so callers wanting a recent window
-        stay O(limit) instead of O(branch). Raises ValueError on a cycle, KeyError
-        if ``leaf_id`` or an ancestor is missing.
+        stay O(limit) instead of O(branch). Raises ValueError on a cycle. A
+        ``leaf_id`` or ancestor missing from the log (a damaged log whose event
+        file is gone) ends the walk: the surviving part of the branch is
+        returned root-first instead of failing every consumer with
+        "Unknown event_id" (#6174).
         """
         chain: list[Event] = []
         seen: set[EventID] = set()
@@ -124,7 +128,15 @@ class EventLog(EventsListBase):
             if cur_id in seen:
                 raise ValueError(f"Cycle in event tree at {cur_id}")
             seen.add(cur_id)
-            idx = self.get_index(cur_id)
+            try:
+                idx = self.get_index(cur_id)
+            except KeyError:
+                logger.warning(
+                    "Event '%s' is missing from the log; "
+                    "returning the partial branch below it.",
+                    cur_id,
+                )
+                break
             chain.append(evt := self[idx])
             cur_id = self._effective_parent_id(idx, evt)
         return chain[::-1]
@@ -230,6 +242,7 @@ class EventLog(EventsListBase):
                 with write_guard:
                     target_path = self._path(idx, event_id=evt_id)
                     self._fs.write(target_path, payload)
+                self._paths[idx] = target_path
                 self._idx_to_id[idx] = evt_id
                 self._id_to_idx[evt_id] = idx
                 self._event_cache[idx] = event
@@ -311,6 +324,12 @@ class EventLog(EventsListBase):
         return self._length
 
     def _path(self, idx: int, *, event_id: EventID | None = None) -> str:
+        if event_id is None:
+            # A scanned log remembers the actual file per index: after a gap
+            # the on-disk numbering no longer matches the dense index.
+            remembered = self._paths.get(idx)
+            if remembered is not None:
+                return remembered
         return f"{self._dir}/{
             EVENT_FILE_PATTERN.format(
                 idx=idx, event_id=event_id or self._idx_to_id[idx]
@@ -323,52 +342,59 @@ class EventLog(EventsListBase):
         except Exception:
             self._id_to_idx.clear()
             self._idx_to_id.clear()
+            self._paths.clear()
             self._event_cache.clear()
             return 0
 
-        by_idx: dict[int, EventID] = {}
+        found: list[tuple[int, EventID, str]] = []
         for p in paths:
             name = posix_path_name(p)
             m = EVENT_NAME_RE.match(name)
             if m:
-                idx = int(m.group("idx"))
-                evt_id = m.group("event_id")
-                by_idx[idx] = evt_id
+                found.append((int(m.group("idx")), m.group("event_id"), p))
             elif name.startswith("."):
                 # Our own sidecars (lock file, count marker), not event files.
                 continue
             else:
                 logger.warning(f"Unrecognized event file name: {name}")
 
-        if not by_idx:
-            self._id_to_idx.clear()
-            self._idx_to_id.clear()
-            self._event_cache.clear()
-            return 0
-
-        n = 0
-        while True:
-            if n not in by_idx:
-                if any(i > n for i in by_idx.keys()):
-                    logger.warning(
-                        "Event index gap detected: "
-                        f"expect next index {n} but got {sorted(by_idx.keys())}"
-                    )
-                break
-            n += 1
-
         self._id_to_idx.clear()
         self._idx_to_id.clear()
+        self._paths.clear()
         self._event_cache.clear()
-        for i in range(n):
-            evt_id = by_idx[i]
-            self._idx_to_id[i] = evt_id
+        if not found:
+            return 0
+
+        # Index every event file instead of stopping at the first missing
+        # index: one lost file must not make every later event unknown (#6174).
+        # Surviving events are renumbered densely in on-disk order, and reads
+        # go through the remembered file paths, whose numbering no longer
+        # matches the dense index after a gap.
+        found.sort(key=lambda t: (t[0], t[1]))
+        missing: list[int] = []
+        prev_disk_idx: int | None = None
+        n = 0
+        for disk_idx, evt_id, path in found:
+            if prev_disk_idx is not None and disk_idx > prev_disk_idx + 1:
+                missing.extend(range(prev_disk_idx + 1, disk_idx))
+            prev_disk_idx = disk_idx
             if evt_id in self._id_to_idx:
                 logger.warning(
                     f"Duplicate event ID '{evt_id}' found during scan. "
                     f"Keeping first occurrence at index {self._id_to_idx[evt_id]}, "
-                    f"ignoring duplicate at index {i}"
+                    f"ignoring duplicate file {posix_path_name(path)}"
                 )
-            else:
-                self._id_to_idx[evt_id] = i
+                continue
+            self._idx_to_id[n] = evt_id
+            self._id_to_idx[evt_id] = n
+            self._paths[n] = path
+            n += 1
+        if missing:
+            logger.warning(
+                "Event index gap detected: no file for event index(es) %s; "
+                "renumbered the %d surviving events densely so the "
+                "conversation stays loadable.",
+                missing,
+                n,
+            )
         return n

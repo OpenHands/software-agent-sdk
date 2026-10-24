@@ -227,39 +227,24 @@ def test_event_log_clear_functionality():
 
 
 def test_event_log_index_gaps_detection():
-    """Test detection and handling of index gaps."""
+    """A gap must not discard every later event: survivors are reindexed (#6174)."""
     fs = InMemoryFileStore()
-
-    # Create files with gaps (missing event-00001)
-    event0 = {
-        "id": "event-0",
-        "llm_message": {
-            "role": "user",
-            "content": [{"type": "text", "text": "Event 0"}],
-        },
-        "source": "user",
-        "kind": "openhands.sdk.event.llm_convertible.MessageEvent",
-    }
-    fs.write("events/event-00000-event-0.json", json.dumps(event0))
-
-    event2 = {
-        "id": "event-2",
-        "llm_message": {
-            "role": "user",
-            "content": [{"type": "text", "text": "Event 2"}],
-        },
-        "source": "user",
-        "kind": "openhands.sdk.event.llm_convertible.MessageEvent",
-    }
-    fs.write("events/event-00002-event-2.json", json.dumps(event2))
-
-    # Should only load up to the gap
     log = EventLog(fs)
+    log.append(create_test_event("aaaaaaaa-0000", "Event 0"))
+    log.append(create_test_event("bbbbbbbb-0000", "Event 1"))
+    log.append(create_test_event("cccccccc-0000", "Event 2"))
 
-    # The current scanning logic is very strict about gaps
-    # If there's a gap at any index, it stops loading events entirely
-    # This is the current behavior, though it could be improved
-    assert len(log) == 0  # No events loaded due to gap detection
+    # Create a gap (missing event-00001) and rescan from disk.
+    fs.delete(log._path(1, event_id="bbbbbbbb-0000"))
+    reloaded = EventLog(fs)
+
+    # Every surviving event file is indexed, densely renumbered in file order,
+    # so one lost file no longer makes the rest of the log unknown.
+    assert len(reloaded) == 2
+    assert reloaded[0].id == "aaaaaaaa-0000"
+    assert reloaded[1].id == "cccccccc-0000"
+    assert reloaded.get_index("cccccccc-0000") == 1
+    assert reloaded.get_id(1) == "cccccccc-0000"
 
 
 def test_event_log_file_store_exceptions():
@@ -315,9 +300,10 @@ def test_event_log_iteration_backfills_missing_mappings():
     assert len(log) == 1
     assert log[0].id == "manual-event"
 
-    # Clear mappings and cache to simulate missing data
+    # Clear mappings, remembered paths and cache to simulate missing data
     log._idx_to_id.clear()
     log._id_to_idx.clear()
+    log._paths.clear()
     log._event_cache.clear()
 
     # But keep the length so iteration can work
@@ -634,3 +620,96 @@ def test_scan_does_not_warn_about_sidecar_files(caplog):
         EventLog(fs)
 
     assert "Unrecognized event file name" not in caplog.text
+
+
+def test_log_survives_missing_middle_file():
+    """Deleting one event file must not make the rest of the log unknown (#6174)."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("aaaaaaaa-0000", "First"))
+    log.append(create_test_event("bbbbbbbb-0000", "Second"))
+    log.append(create_test_event("cccccccc-0000", "Third"))
+
+    fs.delete(log._path(1, event_id="bbbbbbbb-0000"))
+
+    reloaded = EventLog(fs)
+    assert len(reloaded) == 2
+    assert [e.id for e in reloaded] == ["aaaaaaaa-0000", "cccccccc-0000"]
+    # The surviving event behind the gap is readable through its remembered path
+    assert reloaded.get_index("cccccccc-0000") == 1
+    assert reloaded[1].llm_message.content[0].text == "Third"
+
+    # Appends continue from the dense length under unique file names
+    reloaded.append(create_test_event("dddddddd-0000", "Fourth"))
+    assert len(reloaded) == 3
+    assert reloaded[2].id == "dddddddd-0000"
+
+    # A fresh scan of the appended log is stable
+    rescanned = EventLog(fs)
+    assert [e.id for e in rescanned] == [
+        "aaaaaaaa-0000",
+        "cccccccc-0000",
+        "dddddddd-0000",
+    ]
+
+
+def test_path_to_root_survives_missing_ancestor():
+    """A branch walking into a lost event stays readable instead of raising (#6174)."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("aaaaaaaa-0000", "First"))
+
+    # Explicit parent chain (what stamped real events carry)
+    e2 = create_test_event("bbbbbbbb-0000", "Second").model_copy(
+        update={"parent_id": "aaaaaaaa-0000"}
+    )
+    e3 = create_test_event("cccccccc-0000", "Third").model_copy(
+        update={"parent_id": "bbbbbbbb-0000"}
+    )
+    log.append(e2)
+    log.append(e3)
+
+    fs.delete(log._path(1, event_id="bbbbbbbb-0000"))
+
+    reloaded = EventLog(fs)
+    # The walk from the last event hits the missing parent and returns the
+    # partial branch instead of raising KeyError.
+    assert [e.id for e in reloaded.path_to_root("cccccccc-0000")] == ["cccccccc-0000"]
+    # A fully unknown id yields an empty branch, not a KeyError
+    assert reloaded.path_to_root("dddddddd-0000") == []
+
+
+def test_path_to_root_legacy_chain_spans_a_gap():
+    """Legacy events without parent_id chain to their dense neighbour, so the
+    branch spans the hole left by a lost file."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("aaaaaaaa-0000", "First"))
+    log.append(create_test_event("bbbbbbbb-0000", "Second"))
+    log.append(create_test_event("cccccccc-0000", "Third"))
+
+    fs.delete(log._path(1, event_id="bbbbbbbb-0000"))
+
+    reloaded = EventLog(fs)
+    # parent_id=None falls back to the previous indexed event: aaaaaaaa -> cccccc
+    assert [e.id for e in reloaded.path_to_root("cccccccc-0000")] == [
+        "aaaaaaaa-0000",
+        "cccccccc-0000",
+    ]
+
+
+def test_iteration_survives_mapping_loss_via_remembered_paths():
+    """After a scan, reads go through remembered file paths: a wiped in-memory
+    index self-heals on iteration instead of failing (#6174)."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("aaaaaaaa-0000", "First"))
+    log.append(create_test_event("bbbbbbbb-0000", "Second"))
+
+    log._idx_to_id.clear()
+    log._id_to_idx.clear()
+    log._event_cache.clear()
+    log._length = 2
+
+    assert [e.id for e in log] == ["aaaaaaaa-0000", "bbbbbbbb-0000"]
+    assert log.get_index("bbbbbbbb-0000") == 1

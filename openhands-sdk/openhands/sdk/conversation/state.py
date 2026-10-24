@@ -263,10 +263,11 @@ class ConversationState(OpenHandsModel):
     def _resolve_active_leaf(self) -> EventID | None:
         """The effective HEAD, resolving a ``None`` ``leaf_event_id`` by lineage.
 
-        A set leaf is returned as-is. ``head_is_empty`` marks a deliberate empty
-        HEAD (``navigate_to(None)``) -> no active branch. Otherwise a ``None`` leaf
-        (pre-feature conversation) falls back to the last *real* event, so legacy
-        history loads unbranched.
+        A set leaf is returned as-is — unless its file is gone from a damaged
+        event log, in which case it falls back to the lineage below, like a
+        ``None`` leaf (pre-feature conversation) does: the last *real* event
+        becomes HEAD so history stays loadable (#6174). ``head_is_empty`` marks
+        a deliberate empty HEAD (``navigate_to(None)``) -> no active branch.
 
         Trailing non-tree artifacts -- a ``ConversationStateUpdateEvent`` or
         ``ConversationErrorEvent`` a newer server may have written onto a legacy
@@ -276,7 +277,16 @@ class ConversationState(OpenHandsModel):
         cut the legacy linear fallback and strand all prior history (#4057).
         """
         if self.leaf_event_id is not None:
-            return self.leaf_event_id
+            if self.leaf_event_id in self._events or len(self._events) == 0:
+                return self.leaf_event_id
+            # The persisted leaf's file is gone (damaged event log): resolve
+            # HEAD from the surviving events instead of failing every event
+            # read with "Unknown event_id" (#6174).
+            logger.warning(
+                "Persisted leaf event '%s' is missing from the event log; "
+                "resolving HEAD from the surviving events instead.",
+                self.leaf_event_id,
+            )
         if self.head_is_empty:
             return None
         if len(self._events) == 0:
