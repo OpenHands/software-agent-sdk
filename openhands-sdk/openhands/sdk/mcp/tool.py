@@ -387,6 +387,7 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         cls,
         mcp_tool: mcp.types.Tool,
         mcp_client: MCPClient,
+        prompt_guidance: str | None = None,
     ) -> Sequence["MCPToolDefinition"]:
         try:
             annotations = (
@@ -404,6 +405,7 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
                 annotations=annotations,
                 meta=mcp_tool.meta,
                 executor=MCPToolExecutor(tool_name=mcp_tool.name, client=mcp_client),
+                prompt_guidance=prompt_guidance,
                 # pass-through fields (enabled by **extra in Tool.create)
                 mcp_tool=mcp_tool,
             )
