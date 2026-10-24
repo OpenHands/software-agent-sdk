@@ -248,6 +248,12 @@ class FileEditor:
             file_content[:idx] + new_str + file_content[idx + len(matched_text) :]
         )
 
+        if new_file_content == file_content:
+            raise ToolError(
+                "No replacement was performed. `new_str` produces identical file "
+                "content. Please provide a replacement that changes the file."
+            )
+
         # Write the new content to the file
         self.write_file(path, new_file_content)
 
