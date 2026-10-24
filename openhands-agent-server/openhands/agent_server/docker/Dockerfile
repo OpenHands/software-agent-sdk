@@ -40,7 +40,7 @@ ARG ENABLE_VSCODE=true
 FROM python:3.13.15-slim-trixie AS python-runtime
 FROM node:24.21.0-trixie-slim AS node-runtime
 
-# pip 26.2.1 vendors urllib3 2.7.0 (CVE-2026-97689) and msgpack 1.1.2
+# pip 26.2.2 vendors urllib3 2.7.0 (CVE-2026-97689) and msgpack 1.1.2
 # (GHSA-6v7p-g79w-8964), and no pip release vendors the fixed versions yet.
 # Its pkg_resources (setuptools 70.3.0: CVE-2025-47273, CVE-2026-59890) is
 # removed, as setuptools dropped it in 82.0.0 but fixed CVE-2026-59890 in 83.0.0.
@@ -49,9 +49,13 @@ FROM node:24.21.0-trixie-slim AS node-runtime
 # bom.cdx.json stay consistent; the source archive is used because the sdist
 # omits tools/vendoring/patches. Drop this stage once pip ships the fixes;
 # tests/agent_server/docker_runtime/test_pip_revendoring_retirement.py flags it.
-FROM python:3.13.15-trixie AS pip-revendored
-ADD --checksum=sha256:65cac79de403d368cc8333f3d9981f293248dc336662338749693ff99659d5e3 \
-    https://github.com/pypa/pip/archive/refs/tags/26.2.1.tar.gz /tmp/pip.tar.gz
+# 3.13.17 bundles pip 26.2.2, whose vendored certifi already distrusts the
+# compromised eMudhra roots. 3.13.15 bundles pip 26.2.1, which still trusts
+# emSign ECC Root CA - G3, and this stage's `venv` + `pip install vendoring`
+# fetches from PyPI before the re-vendored wheel exists (GHSA-6q48-6c7w-9gw2).
+FROM python:3.13.17-trixie AS pip-revendored
+ADD --checksum=sha256:b505949bb27827b32f54c9f1f5ca660a6fae3fde61cbe0a971975a3ed34a7ee1 \
+    https://github.com/pypa/pip/archive/refs/tags/26.2.2.tar.gz /tmp/pip.tar.gz
 RUN set -eux; \
     mkdir /tmp/pip; \
     tar -xzf /tmp/pip.tar.gz -C /tmp/pip --strip-components=1; \
@@ -72,7 +76,10 @@ RUN set -eux; \
 
 FROM debian:trixie-slim AS python-node-runtime
 ARG NPM_VERSION
-ARG DEBIAN_SNAPSHOT=20261004T000000Z
+# 20261021 is the oldest snapshot whose ca-certificates (20250419+deb13u1,
+# trixie-security) drops emSign ECC Root CA - G3; 20261019 still ships
+# 20250419, which trusts the compromised root (GHSA-6q48-6c7w-9gw2).
+ARG DEBIAN_SNAPSHOT=20261021T000000Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
@@ -127,10 +134,11 @@ RUN set -eux; \
 
 RUN --mount=type=bind,from=pip-revendored,source=/dist,target=/tmp/pip-dist \
     set -eux; \
-    pip_version="$(python3 -m pip --version | cut -d' ' -f2)"; \
+    # Install the single re-vendored wheel, whatever its version: it replaces
+    # the pip bundled with the base image, whose version need not match it.
     python3 -m pip install --no-deps --no-index --no-cache-dir --force-reinstall \
         --disable-pip-version-check --root-user-action=ignore \
-        "/tmp/pip-dist/pip-${pip_version}-py3-none-any.whl"
+        /tmp/pip-dist/pip-*-py3-none-any.whl
 
 ####################################################################################
 # Builder (source mode)
@@ -154,9 +162,9 @@ ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
 ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 
 # uv 0.11.5+ embeds python-build-standalone 20260408 metadata, which is the
-# first release with the PT_GNU_STACK fix. Pin to 0.12.15 (latest eligible at time of
+# first release with the PT_GNU_STACK fix. Pin to 0.13.5 (latest eligible at time of
 # writing) rather than :latest so builds are reproducible.
-COPY --from=ghcr.io/astral-sh/uv:0.12.15 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
 
 RUN groupadd -g ${GID} ${USERNAME} \
  && useradd -m -u ${UID} -g ${GID} -s /usr/sbin/nologin ${USERNAME} \
@@ -439,7 +447,7 @@ RUN set -eux; \
     echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Keep uv as part of the full development environment, but not binary-minimal.
-COPY --from=ghcr.io/astral-sh/uv:0.12.15 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
 
 # Fail fast on a typo'd capability name before spending any time on the
 # installs below (each block only checks for ITS OWN keyword's presence, so

@@ -385,9 +385,14 @@ def test_a_corrupt_default_alone_leaves_no_profile_active(
     assert response.json() == {"profiles": [], "active_agent_profile_id": None}
 
 
-def test_a_dangling_pointer_moves_to_a_seeded_default(client):
-    stale = "12345678-1234-1234-1234-1234567890ab"
-    client.patch("/api/settings", json={"active_agent_profile_id": stale})
+def test_a_dangling_pointer_moves_to_a_seeded_default(client, store):
+    # PATCH /api/settings refuses unknown ids (#5847), so activate a real
+    # profile and then remove its file out of band.
+    profile = OpenHandsAgentProfile(name="gone", llm_profile_ref="x")
+    store.save(profile)
+    stale = str(profile.id)
+    assert client.post(f"/api/agent-profiles/{stale}/activate").status_code == 200
+    (store.base_dir / "gone.json").unlink()
 
     body = client.get("/api/agent-profiles").json()
 
@@ -641,6 +646,38 @@ def test_delete_removes_existing(client, store):
 def test_delete_idempotent(client):
     response = client.delete("/api/agent-profiles/nonexistent")
     assert response.status_code == 200
+
+
+def test_json_suffix_name_keeps_identity_and_delete_moves_pointer(client, store):
+    """A ``.json``-suffixed name is the bare name (#5873).
+
+    The store strips ``.json`` from the file name, so ``x.json`` and ``x`` are
+    the same profile: an overwrite keeps the id and bumps the revision, and
+    deleting it while active moves the pointer off it (to ``default``).
+    """
+    assert (
+        client.post(
+            "/api/agent-profiles/suffixed.json", json={"llm_profile_ref": "a"}
+        ).status_code
+        == 201
+    )
+    first = client.get("/api/agent-profiles/suffixed.json").json()["profile"]
+    assert first["name"] == "suffixed"
+    assert first["revision"] == 0
+    client.post(f"/api/agent-profiles/{first['id']}/activate")
+
+    client.post("/api/agent-profiles/suffixed.json", json={"llm_profile_ref": "b"})
+    second = client.get("/api/agent-profiles/suffixed").json()["profile"]
+    assert second["id"] == first["id"]
+    assert second["revision"] == 1
+    assert second["llm_profile_ref"] == "b"
+    assert [
+        p["name"] for p in client.get("/api/agent-profiles").json()["profiles"]
+    ] == ["suffixed"]
+
+    assert client.delete("/api/agent-profiles/suffixed.json").status_code == 200
+    default_id = client.get("/api/agent-profiles/default").json()["profile"]["id"]
+    assert client.get("/api/settings").json()["active_agent_profile_id"] == default_id
 
 
 def test_deleting_the_active_profile_activates_default(client, store):

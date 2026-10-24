@@ -779,6 +779,11 @@ class ConversationService:
             for name, binding in self._credential_bindings.pop(stored.id, {}).items()
             if self._profile_allows_secret(stored, name)
         }
+        if not isinstance(agent, ACPAgent):
+            # Only ACP agents use file credential bindings; the live path
+            # refuses them for any other agent (CredentialBindingActivationTooLate).
+            # Drop a pending binding so a regular conversation never requires one.
+            return {}
         if (
             self._profile_allows_secret(stored, CODEX_AUTH_SECRET_NAME)
             and CODEX_AUTH_SECRET_NAME not in bindings

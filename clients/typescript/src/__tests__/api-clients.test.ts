@@ -1737,19 +1737,22 @@ describe('Auxiliary API clients', () => {
   });
 
   it('MetaProfilesClient.activateMetaProfile POSTs to the activate endpoint', async () => {
-    global.fetch = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(
-          JSON.stringify({ name: 'balanced', message: "Meta-profile 'balanced' activated" }),
-          { status: 200, headers: { 'content-type': 'application/json' } }
-        )
-      ) as typeof fetch;
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          name: 'balanced',
+          message: "Meta-profile 'balanced' activated",
+          applied: true,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    ) as typeof fetch;
 
     const client = new MetaProfilesClient({ host: 'http://example.com' });
     const result = await client.activateMetaProfile('balanced');
 
     expect(result.name).toBe('balanced');
+    expect(result.applied).toBe(true);
     expect(global.fetch).toHaveBeenCalledWith(
       'http://example.com/api/meta-profiles/balanced/activate',
       expect.objectContaining({ method: 'POST', body: '{}' })

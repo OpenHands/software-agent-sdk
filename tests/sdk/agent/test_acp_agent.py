@@ -2829,7 +2829,10 @@ class TestACPAgentAstep:
                     autospec=True,
                     side_effect=lambda _agent: threading.Event().wait(0.05),
                 ),
-                patch.object(acp_agent_module, "_ACP_CANCEL_DRAIN_TIMEOUT", 0.01),
+                # Must exceed the 0.05s credential-sync delay above: with
+                # 0.01s the drain window expires before the released prompt
+                # can complete on loaded runners, flaking to `idle`.
+                patch.object(acp_agent_module, "_ACP_CANCEL_DRAIN_TIMEOUT", 5.0),
             ):
                 task = asyncio.create_task(
                     agent.astep(conversation, on_event=emitted.append)
@@ -8766,6 +8769,118 @@ class TestMcpConfigToAcpServers:
         assert isinstance(out[0], HttpMcpServer)
         assert [(h.name, h.value) for h in out[0].headers] == [
             ("Authorization", "Bearer token-y")
+        ]
+
+    def test_oauth_access_token_maps_to_bearer_header(self):
+        from acp.schema import HttpMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "linear": {
+                    "url": "https://mcp.linear.app/mcp",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {
+                            "tokens": {"access_token": "oauth-access-token"},
+                            "token_expires_at": 4102444800.0,
+                        },
+                    },
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
+        assert len(out) == 1
+        assert isinstance(out[0], HttpMcpServer)
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("Authorization", "Bearer oauth-access-token")
+        ]
+
+    def test_oauth_token_encrypted_at_rest_is_forwarded_decrypted(self):
+        from openhands.sdk.mcp.config import MCPServer
+
+        cipher = Cipher(secret_key="test-secret-key-0123456789")
+        stored = MCPServer.model_validate(
+            {
+                "url": "https://mcp.linear.app/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "state": {"tokens": {"access_token": "oauth-access-token"}},
+                },
+            }
+        ).model_dump(mode="json", context={"cipher": cipher})
+        assert stored["auth"]["state"]["tokens"]["access_token"] != (
+            "oauth-access-token"
+        )
+        server = MCPServer.model_validate(stored, context={"cipher": cipher})
+
+        out = _mcp_config_to_acp_servers(
+            {"linear": server}, self._caps(http=True, sse=False)
+        )
+        assert [h.value for h in out[0].headers] == ["Bearer oauth-access-token"]
+
+    def test_oauth_access_token_keeps_static_headers(self):
+        cfg = {
+            "mcpServers": {
+                "linear": {
+                    "url": "https://mcp.linear.app/mcp",
+                    "headers": {"X-Client": "canvas"},
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {"tokens": {"access_token": "oauth-access-token"}},
+                    },
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("X-Client", "canvas"),
+            ("Authorization", "Bearer oauth-access-token"),
+        ]
+
+    def test_oauth_without_stored_token_omits_authorization_header(self):
+        from acp.schema import HttpMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "granola": {
+                    "url": "https://mcp.granola.ai/mcp",
+                    "auth": {"strategy": "oauth2"},
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
+        assert len(out) == 1
+        assert isinstance(out[0], HttpMcpServer)
+        assert out[0].headers == []
+
+    def test_oauth_access_token_maps_to_bearer_header_for_sse(self):
+        from acp.schema import SseMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "linear": {
+                    "url": "https://mcp.linear.app/sse",
+                    "transport": "sse",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {"tokens": {"access_token": "oauth-access-token"}},
+                    },
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=True)
+        )
+        assert len(out) == 1
+        assert isinstance(out[0], SseMcpServer)
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("Authorization", "Bearer oauth-access-token")
         ]
 
     def test_http_header_auth_forwards_authorization_header(self):
