@@ -977,7 +977,7 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   OpenHands profiles and materialize reports and in the generated contract,
   but absent from both exported types. The generated positive control still
   passes; the exported types fail with TS2353 naming `public_skills`
-  ([enyst/agent-sdk#41](https://github.com/enyst/agent-sdk/issues/41)).
+  ([OpenHands/software-agent-sdk#6183](https://github.com/OpenHands/software-agent-sdk/issues/6183)).
 - **`.json` names keep their identity (`F21.json-suffix-identity`).**
   The store strips a trailing `.json` from the file name and from the
   profile's `name`, so `x.json` and `x` are one profile.

@@ -584,7 +584,7 @@ Preconditions:
   Today the real HTTP error is reduced to its human-readable message before
   `is_quota_exhaustion_error` checks for `insufficient_quota`. The structured
   code is lost, so this response incorrectly returns `valid: true` and no
-  error ([enyst/agent-sdk#40](https://github.com/enyst/agent-sdk/issues/40)).
+  error ([OpenHands/software-agent-sdk#6185](https://github.com/OpenHands/software-agent-sdk/issues/6185)).
   The existing unit test embeds the JSON code directly in a mocked
   exception string and does not exercise that provider-to-SDK mapping.
 - **Subscription without a login (`F20.validate-subscription-login`).**

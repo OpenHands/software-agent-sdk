@@ -817,7 +817,7 @@ EOF
   control succeeds, but the default launch returns 500: worktree planning
   accepts the unborn repository and `git worktree add ... HEAD` fails because
   `HEAD` does not resolve to a commit
-  ([enyst/agent-sdk#42](https://github.com/enyst/agent-sdk/issues/42)).
+  ([OpenHands/software-agent-sdk#6186](https://github.com/OpenHands/software-agent-sdk/issues/6186)).
 - **Child launch errors (`F04.child-errors`).** Invalid input and an unknown
   parent create no child; authentication is required.
   ```sh
