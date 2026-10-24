@@ -10,6 +10,11 @@ from pydantic import BaseModel, Field, field_validator
 
 from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.conversation.child_wait import (
+    ChildConversationWaitResult as ChildConversationWaitResult,
+    WaitForChildrenRequest as WaitForChildrenRequest,
+    WaitForChildrenResponse as WaitForChildrenResponse,
+)
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.request import (  # re-export for backward compat
     ACPEnabledAgent as ACPEnabledAgent,

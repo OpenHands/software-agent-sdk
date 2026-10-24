@@ -59,7 +59,9 @@ export type ErrorClassification = AgentServerErrorClassification;
 export type HookExecutionEvent = AgentServerHookExecutionEvent;
 export type HookExecutionEventType = NonNullable<HookExecutionEvent['hook_event_type']>;
 export type LLMCompletionLogEvent = AgentServerLlmCompletionLogEvent;
-export type MessageEvent = AgentServerMessageEvent;
+export type MessageEvent = AgentServerMessageEvent & {
+  mailbox?: import('../models/conversation').MailboxMessage | null;
+};
 export type MessageToolCall = AgentServerMessageToolCall;
 /** Local conversations expose tool observations as opaque JSON values. */
 export type ObservationEvent = Omit<AgentServerObservationEvent, 'observation'> & {

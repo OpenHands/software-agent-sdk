@@ -180,3 +180,12 @@ export type {
   DeviceTokenResponse,
   PollDeviceTokenOptions,
 } from './client/device-flow-client';
+
+export type {
+  WaitForChildrenRequest,
+  WaitForChildrenResponse,
+  ChildConversationWaitResult,
+  MailboxSendRequest,
+  MailboxMessage,
+  MailboxSendResponse,
+} from './models/conversation';

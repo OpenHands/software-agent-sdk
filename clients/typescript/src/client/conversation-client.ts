@@ -14,12 +14,16 @@ import type {
   ConversationSearchRequest,
   ConversationSearchResponse,
   ForkConversationRequest,
+  MailboxSendRequest,
+  MailboxSendResponse,
   NavigateConversationRequest,
   SetConfirmationPolicyRequest,
   SetSecurityAnalyzerRequest,
   StartGoalRequest,
   UpdateConversationRequest,
   UpdateSecretsRequest,
+  WaitForChildrenRequest,
+  WaitForChildrenResponse,
 } from '../models/conversation';
 import type { ConfirmationPolicyBase } from '../types/base';
 
@@ -146,9 +150,40 @@ export class ConversationClient {
     return response.data;
   }
 
+  /** Wait once on the server, without status polling or a WebSocket. */
+  async waitForChildren(
+    conversationId: string,
+    request: WaitForChildrenRequest,
+    options: { signal?: AbortSignal; timeout?: number } = {}
+  ): Promise<WaitForChildrenResponse> {
+    const response = await this.client.post<WaitForChildrenResponse>(
+      `/api/conversations/${conversationId}/children/wait`,
+      request,
+      {
+        ...options,
+        timeout: options.timeout ?? ((request.timeout_seconds ?? 60) + 30) * 1000,
+      }
+    );
+    return response.data;
+  }
+
   async getRuntime(conversationId: string): Promise<ConversationRuntimeInfo> {
     const response = await this.client.get<ConversationRuntimeInfo>(
       `/api/conversations/${conversationId}/runtime`
+    );
+    return response.data;
+  }
+
+  /** Persist one agent-attributed message; a retry reuses its idempotency key. */
+  async sendMailboxMessage(
+    senderId: string,
+    request: MailboxSendRequest,
+    options: { signal?: AbortSignal; timeout?: number } = {}
+  ): Promise<MailboxSendResponse> {
+    const response = await this.client.post<MailboxSendResponse>(
+      `/api/conversations/${senderId}/mailbox`,
+      request,
+      options
     );
     return response.data;
   }
