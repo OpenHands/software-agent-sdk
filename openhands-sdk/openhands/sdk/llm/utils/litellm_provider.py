@@ -33,25 +33,48 @@ class LLMProvider:
 
     @classmethod
     def from_model(cls, *, model: str, api_base: str | None) -> LLMProvider:
-        """Parse a model string using LiteLLM's provider inference logic."""
-        try:
-            get_llm_provider = cast(Any, litellm).get_llm_provider
-            parsed_model, provider_name, _dynamic_key, _resolved_api_base = (
-                get_llm_provider(
-                    model=model,
-                    custom_llm_provider=None,
-                    api_base=api_base,
-                    api_key=None,
+        """Parse a model string using LiteLLM's provider inference logic.
+
+        LiteLLM infers the provider from the model string's first ``/``
+        segment. When ``api_base`` points at a custom endpoint (a
+        self-hosted server such as LM Studio, or a third-party router) and
+        that segment isn't a LiteLLM-recognized provider name, inference
+        raises instead of falling back to the custom base — so a model id
+        like ``auto/coding`` configured against a personal OpenAI-compatible
+        router fails with "LLM Provider NOT provided" deep inside the actual
+        completion call, not here. Retry once with
+        ``custom_llm_provider="openai"`` in that case: a caller-supplied
+        ``api_base`` already implies an OpenAI-compatible endpoint, and
+        LiteLLM only strips a *recognized* provider prefix, so an
+        unrecognized one like ``auto/`` reaches the endpoint unchanged.
+        """
+        get_llm_provider = cast(Any, litellm).get_llm_provider
+        custom_llm_providers: tuple[str | None, ...] = (
+            (None,) if api_base is None else (None, "openai")
+        )
+
+        parsed_model, provider_name = model, None
+        for custom_llm_provider in custom_llm_providers:
+            try:
+                parsed_model, provider_name, _dynamic_key, _resolved_api_base = (
+                    get_llm_provider(
+                        model=model,
+                        custom_llm_provider=custom_llm_provider,
+                        api_base=api_base,
+                        api_key=None,
+                    )
                 )
-            )
-        except Exception as exc:
-            logger.debug(
-                "Failed to parse LiteLLM provider for model=%s: %s",
-                model,
-                exc,
-            )
-            parsed_model = model
-            provider_name = None
+            except Exception as exc:
+                logger.debug(
+                    "Failed to parse LiteLLM provider for model=%s "
+                    "(custom_llm_provider=%s): %s",
+                    model,
+                    custom_llm_provider,
+                    exc,
+                )
+                parsed_model, provider_name = model, None
+            if provider_name is not None:
+                break
 
         return cls(
             model=parsed_model,
