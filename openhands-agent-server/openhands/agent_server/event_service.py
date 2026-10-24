@@ -78,6 +78,7 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.event.mailbox import MailboxMessage, MailboxSendResponse
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.io import LocalFileStore
@@ -98,6 +99,14 @@ INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
 
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class ChildRunOutcome:
+    status: ConversationExecutionStatus
+    generation: int
+    result: str
+    completion_id: str
 
 
 class ConversationRunLimitExceeded(RuntimeError):
@@ -253,7 +262,7 @@ class EventService:
         default=ConversationExecutionStatus.IDLE, init=False
     )
     _execution_changed: asyncio.Event = field(default_factory=asyncio.Event, init=False)
-    _run_completion: asyncio.Future[ConversationExecutionStatus] | None = field(
+    _run_completion: asyncio.Future[ChildRunOutcome] | None = field(
         default=None, init=False
     )
     _interrupted: asyncio.Event = field(default_factory=asyncio.Event, init=False)
@@ -980,6 +989,44 @@ class EventService:
                     ):
                         self._rerun_requested = True
 
+    async def receive_mailbox_message(
+        self, message: MailboxMessage
+    ) -> MailboxSendResponse:
+        """Append agent input without superseding an active goal or agent step."""
+        if self._conversation is None or self._closing:
+            raise ValueError("inactive_service")
+        with self.child_wait_scope():
+            run_task = self._run_task
+            response = await asyncio.to_thread(
+                self._conversation.receive_mailbox_message, message
+            )
+            if not response.duplicate and run_task is not None and not run_task.done():
+                self._rerun_requested = True
+            if not response.duplicate and message.delivery == "interrupt":
+                # The typed persisted message carries the sender and reason;
+                # stop_goal_loop persists its ordinary interrupted goal status.
+                await self.stop_goal_loop()
+                await self.interrupt()
+            return response
+
+    def _event_count_sync(self) -> int:
+        if self._conversation is None:
+            raise ValueError("inactive_service")
+        with self._conversation._state as state:
+            return len(state.events)
+
+    def _child_outcome_sync(self, generation: int, since: int = 0) -> ChildRunOutcome:
+        if self._conversation is None:
+            raise ValueError("inactive_service")
+        with self._conversation._state as state:
+            events = state.events[since:]
+            return ChildRunOutcome(
+                state.execution_status,
+                generation,
+                get_agent_final_response(events),
+                events[-1].id if events else f"{self.stored.id}:{generation}",
+            )
+
     def _mark_running_acp_prompt_superseded_sync(self) -> tuple[bool, bool]:
         """Mark the currently running ACP prompt superseded if needed.
 
@@ -1585,6 +1632,7 @@ class EventService:
                 raise ValueError("conversation_already_running")
             if self._closing:
                 raise ValueError("inactive_service")
+            outcome_start = await asyncio.to_thread(self._event_count_sync)
             # Re-check: the status read above can yield to a late stop too.
             if (
                 acp_internal_rerun_generation is not None
@@ -1636,11 +1684,10 @@ class EventService:
                 self._maybe_end_run_session()
 
             run_generation = self._explicit_interrupt_generation
-            completion: asyncio.Future[ConversationExecutionStatus] = (
-                loop.create_future()
-            )
+            completion: asyncio.Future[ChildRunOutcome] = loop.create_future()
             self._run_completion = completion
             self._run_generation += 1
+            outcome_generation = self._run_generation
             self._observe_execution_status(ConversationExecutionStatus.RUNNING)
 
             async def _run_and_publish():
@@ -1717,10 +1764,13 @@ class EventService:
                     # Capture this run before a new message or successor run can
                     # replace its outcome. FINISHED events inside a step are
                     # provisional until stop hooks and run cleanup have finished.
-                    final_status = await self._get_execution_status()
+                    outcome = await asyncio.to_thread(
+                        self._child_outcome_sync, outcome_generation, outcome_start
+                    )
+                    final_status = outcome.status
                     self._observe_execution_status(final_status)
                     if not completion.done():
-                        completion.set_result(final_status)
+                        completion.set_result(outcome)
 
                     # Clear task reference and publish state update
                     self._run_task = None
@@ -1825,6 +1875,10 @@ class EventService:
             self._active_child_waits -= 1
 
     async def wait_for_terminal(self) -> tuple[ConversationExecutionStatus, int]:
+        outcome = await self.wait_for_child_outcome()
+        return outcome.status, outcome.generation
+
+    async def wait_for_child_outcome(self) -> ChildRunOutcome:
         """Await a settled run, including an explicit pause or service close.
 
         The caller owns the deadline. Cancelling this waiter never cancels the
@@ -1836,19 +1890,23 @@ class EventService:
                 changed = self._execution_changed
                 generation = self._run_generation
                 if self._closing:
-                    return ConversationExecutionStatus.DELETING, generation
+                    return ChildRunOutcome(
+                        ConversationExecutionStatus.DELETING, generation, "", "deleted"
+                    )
                 completion = self._run_completion
                 if completion is not None and not completion.done():
                     result = await asyncio.shield(completion)
-                    if result.is_terminal() or result in (
+                    if result.status.is_terminal() or result.status in (
                         ConversationExecutionStatus.PAUSED,
                         ConversationExecutionStatus.DELETING,
                     ):
-                        return result, generation
+                        return result
                 elif self._execution_status.is_terminal() or self._execution_status == (
                     ConversationExecutionStatus.PAUSED
                 ):
-                    return self._execution_status, generation
+                    if completion is not None and completion.done():
+                        return completion.result()
+                    return await asyncio.to_thread(self._child_outcome_sync, generation)
                 await changed.wait()
 
     def prepare_delete(
@@ -2338,7 +2396,14 @@ class EventService:
         self._signal_interruption()
         self._observe_execution_status(ConversationExecutionStatus.DELETING)
         if self._run_completion is not None and not self._run_completion.done():
-            self._run_completion.set_result(ConversationExecutionStatus.DELETING)
+            self._run_completion.set_result(
+                ChildRunOutcome(
+                    ConversationExecutionStatus.DELETING,
+                    self._run_generation,
+                    "",
+                    "deleted",
+                )
+            )
         if self.bash_event_service is not None:
             await self.bash_event_service.close()
         self._explicit_interrupt_generation += 1

@@ -277,10 +277,32 @@ export interface ChildConversationWaitResult {
   execution_status: ConversationExecutionStatus;
   settled: boolean;
   deleted: boolean;
+  /** Persisted result delivered through the parent's mailbox before cleanup. */
+  mailbox_message_id?: string | null;
 }
 
 export interface WaitForChildrenResponse {
   children: ChildConversationWaitResult[];
   timed_out: boolean;
   interrupted: boolean;
+}
+
+export interface MailboxSendRequest {
+  recipient_id: string;
+  idempotency_key: string;
+  kind: 'question' | 'proposal' | 'review-request' | 'blocker' | 'decision';
+  body: string;
+  /** Required for proposals, review requests and blockers. */
+  evidence?: string[];
+  delivery?: 'steer' | 'interrupt';
+}
+
+export interface MailboxMessage extends MailboxSendRequest {
+  message_id: string;
+  sender_id: string;
+}
+
+export interface MailboxSendResponse {
+  message_id: string;
+  duplicate: boolean;
 }

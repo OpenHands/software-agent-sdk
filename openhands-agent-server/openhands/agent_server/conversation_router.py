@@ -66,6 +66,11 @@ from openhands.sdk.conversation.types import (
     ConversationObservabilitySpanName,
     ConversationObservabilityTags,
 )
+from openhands.sdk.event.mailbox import (
+    MailboxConflict,
+    MailboxSendRequest,
+    MailboxSendResponse,
+)
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
 from openhands.sdk.marketplace.registry import (
     MarketplaceNotFoundError,
@@ -901,8 +906,8 @@ async def wait_for_child_conversations(
     applying timeout cleanup. Cancellation during the wait leaves children running;
     already-started cleanup is drained before the request exits. Loading and
     stop/delete cleanup follow the existing lifecycle and are outside the wait
-    deadline. Statuses describe the outcome before cleanup. Finish-result delivery
-    through the mailbox (#6127) and an agent tool are separate integration work.
+    deadline. Statuses describe the outcome before cleanup. Settled child results
+    are persisted to the parent's canonical mailbox before a child is deleted.
     """
 
     async def disconnected() -> None:
@@ -927,6 +932,32 @@ async def wait_for_child_conversations(
         operation.cancel()
         disconnect.cancel()
         await asyncio.gather(operation, disconnect, return_exceptions=True)
+
+
+@conversation_router.post(
+    "/{conversation_id}/mailbox",
+    responses={
+        404: {"description": "Sender or in-tree recipient not found"},
+        409: {"description": "Idempotency key reused for a different message"},
+    },
+)
+async def send_mailbox_message(
+    conversation_id: UUID,
+    body: Annotated[MailboxSendRequest, Body()],
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> MailboxSendResponse:
+    """Persist and deliver typed agent input without a browser or a new run.
+
+    Steer preserves in-flight work and the active goal. Explicit interrupt stops
+    the active goal and run; its typed event records the sender and reason.
+    Retrying an identical idempotency key does not append or interrupt twice.
+    """
+    try:
+        return await conversation_service.send_mailbox_message(conversation_id, body)
+    except ChildConversationNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except MailboxConflict as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
 
 @conversation_router.post(

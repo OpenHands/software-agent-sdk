@@ -21,6 +21,7 @@ from pydantic import SecretStr
 from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import (
+    ChildRunOutcome,
     CondensationUnavailable,
     EventService,
     RunSlot,
@@ -3351,6 +3352,14 @@ class TestEventServiceClose:
         # Bypass guards that access internal _state (not part of the
         # abstract interface) so we only test the dispatch logic.
         with (
+            patch.object(type(event_service), "_event_count_sync", return_value=0),
+            patch.object(
+                type(event_service),
+                "_child_outcome_sync",
+                return_value=ChildRunOutcome(
+                    ConversationExecutionStatus.PAUSED, 1, "", "sync-dispatch"
+                ),
+            ),
             patch.object(
                 type(event_service),
                 "_get_execution_status",
@@ -3411,6 +3420,14 @@ class TestEventServiceClose:
         assert type(conv.agent).astep is AgentBase.astep
 
         with (
+            patch.object(type(event_service), "_event_count_sync", return_value=0),
+            patch.object(
+                type(event_service),
+                "_child_outcome_sync",
+                return_value=ChildRunOutcome(
+                    ConversationExecutionStatus.PAUSED, 1, "", "sync-agent-dispatch"
+                ),
+            ),
             patch.object(
                 type(event_service),
                 "_get_execution_status",

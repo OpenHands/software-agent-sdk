@@ -1,173 +1,110 @@
-# Validation and maintainer-style self-review
+# Completion validation — 2026-10-24
 
-Date: 2026-10-23. Base: `60192ed54db73ac658ac1a07462916126c32d3a0` (main, v1.58.1).
-Branch: `feat/6129-server-side-child-wait`.
+Tested on Windows, Python 3.13.14, Node 24.19.0; uv's frozen development
+environment and npm's lockfile. No dependency, lockfile or package version changes.
+Original PR parent: `56c12b0e08a219c7a8e8596b7924f6d764df46c7`.
 
-## Scope and readiness
+## Implemented behavior
 
-This is a **partial backend foundation**, not a completed fix for #6129. Use `Refs #6129`.
-It provides a server-owned lifecycle wait, canonical REST operation, and typed TypeScript access.
-It intentionally does not return/inject finish text through a second delivery channel.
-Mailbox #6127 is open, has no comments or assignee, and no implementing mailbox PR was found.
-A lock-releasing SDK agent tool remains integration work: normal native tools run under the
-parent's state lock, so copying the synchronous child-launch executor would violate this issue.
-The proposed PR must remain **draft** until the human template section is supplied, the
-outstanding integration/feature-map decisions are reviewed, and upstream CI runs.
-No PR or external human review was completed in this environment.
+- Canonical bounded direct-child wait, typed mailbox result delivery before
+  cleanup, generation guards, caller cancellation and owned-task drainage.
+- Registered SDK wait and mailbox tools using canonical REST. Both sync and async
+  agent execution release the parent state lock for isolated coordination I/O.
+- Persisted, agent-attributed mailbox events, typed validation, same-tree scope,
+  stable idempotency keys, restart recovery and sender/recipient secret redaction.
+  Default steer preserves active work and goals; explicit interrupt records its
+  sender, mode and reason and persists interrupted goal status.
+- TypeScript methods, typed requests/responses/events, local OpenAPI generation,
+  maintained feature-map ownership, and companion documentation in docs PR #992.
 
-## Preflight
+## Python regressions
 
-- Cloned upstream; fetched latest main before edits and again after validation. SHA unchanged.
-- Read root AGENTS.md, CONTRIBUTING.md, DEVELOPMENT.md, custom review guide, Agent Server,
-  Tools, SDK and TypeScript instructions, plus verify-agent-server guidance.
-- Read #6129 fully, including AI triage, all acceptance criteria, labels and comments (none).
-  Open, no assignee. Checked #6127, #4829, #5634, #4781 and #5126, including comments.
-- Searched all-state PRs for 6129, child/wait, mailbox/6127 and server-side wait titles.
-  No equivalent active wait PR found. #5126 supplies the launcher and existing relationship.
-- Confirmed upstream has run-completion waiting internally, but no parent-scoped child wait
-  REST operation. Reused EventService lifecycle machinery and catalog parent links.
+Final related suite: **596 passed, 4 skipped, 4 deselected, 7 warnings in 227.13s (0:03:47)**.
 
-## Final verified checks
-
-### Python: 475 passed, 5 warnings, 70.61 seconds
-
-```bash
-uv run pytest tests/agent_server/child_wait \
-  tests/agent_server/test_event_service.py \
-  tests/agent_server/test_parent_child_conversations.py \
-  tests/agent_server/test_run_admission.py \
-  tests/agent_server/test_conversation_service.py \
-  tests/agent_server/test_conversation_router.py \
-  tests/agent_server/test_openapi_contract.py \
-  tests/agent_server/test_api_authentication.py -q --disable-warnings
+```sh
+python -m pytest tests/agent_server/test_conversation_service.py \
+  tests/agent_server/test_event_service.py tests/agent_server/test_conversation_lease.py \
+  tests/agent_server/test_goal_loop.py tests/agent_server/test_parent_child_conversations.py \
+  tests/agent_server/test_run_admission.py tests/agent_server/test_conversation_router.py \
+  tests/agent_server/test_openapi_contract.py tests/agent_server/test_api_authentication.py \
+  tests/agent_server/child_wait tests/tools/child_conversation \
+  tests/sdk/agent/test_parallel_executor.py \
+  tests/sdk/agent/test_parallel_execution_integration.py \
+  tests/sdk/agent/test_astep_releases_state_lock.py \
+  tests/sdk/agent/test_parallel_executor_locking.py \
+  tests/cross/test_remote_conversation_live_server.py \
+  -k 'not test_restart_resumes_conversations_after_non_graceful_shutdown and not test_claim_takes_over_when_previous_owner_pid_is_dead and not test_deferred_websocket_initialization_lifecycle and not test_openai_chat_completions_gateway_over_real_server'
 ```
 
-24 new deterministic cases cover completion before/after subscription, idle children starting
-later, multiple children and parent progress, normal timeout snapshots, finish/timeout cleanup,
-ERROR/STUCK/PAUSED, parent cancel/interrupt/delete, ID rejection and unrelated children,
-provisional FINISHED, no leftover tasks, idle-eviction pins, a state lock held by another thread,
-completed and pending children mixed at timeout, restart races for all cleanup policies,
-cleanup cancellation, and external child deletion. Synchronization uses explicit events.
+Windows environment: `PYTHONUTF8=1`, `NO_PROXY=*`, Git `core.longpaths=true`,
+and a short absolute pytest basetemp under the authorized workspace. The first
+broad run exposed fixture omissions in old dispatch-only mocks; those mocks now
+isolate the added result-snapshot helpers as they already isolate state reads.
+The event-service + wait/mailbox + coordination-tool subset also passed **167 tests**.
 
-### Real HTTP: 1 passed, 34 deselected, 4.13 seconds
+Four tests are explicitly excluded above. All four also fail on the original PR
+commit in a separate worktree, with verified imports from that worktree:
 
-```bash
-uv run pytest tests/cross/test_remote_conversation_live_server.py \
-  -k child_wait_real_http_and_disconnect -q
-```
+- Orphaned conversation restart and dead-PID lease takeover: Windows dead-PID
+  detection does not reclaim the synthetic orphan used by these existing tests.
+- Deferred WebSocket lifecycle: the existing shell command returns exit 1 on this host.
+- OpenAI-compatible gateway smoke: existing local environment/provider setup fails
+  before the coordination feature is exercised.
 
-Real uvicorn listener and sockets; normal service and LocalConversation lifecycles; an
-explicitly controlled Agent.astep replaces model work. Verifies session-key rejection,
-HTTP disconnect draining wait scopes, /ready and parent run responsiveness, and the exact
-completion response without opening a WebSocket. This is deterministic integration evidence,
-not a paid/live-model evaluation and not a packaged/Docker smoke test.
+No claim is made that the unfiltered suite is green. The final filtered run and
+baseline failures are recorded in the delivery evidence. Four additional existing
+platform-dependent tests skip normally.
 
-### TypeScript: 395 passed across 28 files
+The added real-socket tests exercise an actual Agent and registered wait tool,
+parent state reads and mailbox writes while waiting, child progress, interruption,
+HTTP client disposal and runtime-pin drainage, with no WebSocket attached. The
+sync Agent regression separately proves lock release using the real agent loop.
+Scripted TestLLM responses make these deterministic; they are not live-model evals.
 
-```bash
-cd clients/typescript
-npm ci
-npm run lint
-npm run build
-npm test
-npm run format:check
-npm run check:agent-server-api
-```
+## Other checks
 
-Lint: zero errors, five warnings in pre-existing files. Build, all tests, formatting and pinned
-contract drift check passed. The new test verifies one authenticated request and cancellation
-signal forwarding. Earlier focused TS run: 94 passed across child-wait and API-client tests.
+- TypeScript unit suite: **396 passed, 28 files**. Build passed; changed-file
+  ESLint and Prettier checks passed; public weak-type budget unchanged at 103.
+  Full-repository lint has three pre-existing unused-variable errors in unchanged
+  integration tests; whole-tree formatting flags existing checkout files. Those
+  unrelated files were not rewritten.
+- Local upcoming OpenAPI generated through the documented TypeScript generator.
+  The checked-in generated schema and published v1.58.1 image pin stay unchanged.
+- OpenAPI quality passed: 63 existing allowlisted weak locations.
+- Official oasdiff 1.19.1, SHA-256 checked against its release checksums, compared
+  the normalized public schema against the official v1.58.1 release artifact.
+  Six new tool/action/observation union additions are allowed by the repository's
+  compatibility classifier; zero other changes and zero removed operations or
+  properties. Raw oasdiff exits 1 for those additive unions; they are not hidden.
+- Applicable pre-commit hooks passed: Ruff format/lint, pycodestyle, Pyright,
+  forbidden dynamic attributes, import boundaries, tool registration. YAML skipped.
+- Feature-map check passed: 35 families, 938 IDs. Both added routes have owners
+  and executable recipes. Coverage still reports three unrelated pre-existing
+  unowned routes: child launch, skills catalog and plugin fetch.
+- `git diff --check` passed.
 
-### Repository hooks
+## Assembled-server verification
 
-`uv run pre-commit run --files <all modified Python/TypeScript files plus new tests>` passed.
-Applicable hooks: Ruff format/lint, pycodestyle, Pyright, forbidden dynamic attributes, import
-rules and tool registration. YAML hook skipped because no YAML changed. `git diff --check` passed.
-The final source tree is the one used for the 475-test run and real HTTP test.
+The repository's Unix-process-group `launch` fails on Windows (`os.getpgid`),
+so an owned Windows server used the supported, unmodified `attach` path instead.
+The original `doctor` passed before and after the probes. The original control
+CLI drove parent/child creation, normal timeout, mailbox send/retry/conflict,
+missing-evidence rejection, non-child rejection, timeout deletion and subsequent
+404. All probes passed; the attached run and owned server were stopped.
+This is live credential-free REST proof, not a substituted mock. F35 records the
+same API recipe; its shell runner itself was not executed on this Windows host.
 
-### OpenAPI and compatibility
+No DeepSeek key was available. Live-model behavior, full stress runs and
+Docker/PyInstaller validation remain unrun and must not be reported as passes.
+GitHub CI needs the upstream maintainer's fork-workflow approval. The tool change
+also needs the upstream `integration-test` label, which this account cannot set.
+The HUMAN PR section remains reserved for the human author.
 
-```bash
-OPENHANDS_SUPPRESS_BANNER=1 uv run python \
-  .github/scripts/export_agent_server_openapi.py --output .pr/openapi.json
-uv run python .github/scripts/check_agent_server_openapi_quality.py \
-  --schema .pr/openapi.json
-PATH=/tmp/tmp.NUwyWOPiO4:$PATH uv run python \
-  .github/scripts/check_agent_server_rest_api_breakage.py
-```
+## Scope and review
 
-Quality: passed, 63 existing allowlisted weak locations. The compatibility run used the real
-`oasdiff 1.19.1` executable and reported `No breaking changes detected`. An earlier invocation
-without oasdiff warned that the binary was missing; that earlier result is not counted as proof.
-The downloaded installer failed while restoring tar ownership in this container; the verified
-extracted executable was then used directly for the successful check.
-
-The documented TS generator was also run against the local upcoming schema:
-
-```bash
-AGENT_SERVER_OPENAPI_PATH=../../.pr/openapi.json \
-AGENT_SERVER_GENERATED_OUTPUT=../../.pr/upcoming-agent-server-schema.ts \
-AGENT_SERVER_SCHEMA_SOURCE=local-6129 npm run generate:agent-server-api
-```
-
-Generation succeeded. The temporary schema and generated output were moved into the delivery
-package's `evidence/` directory after verification, rather than adding 28k generated lines to
-this PR. The normal checked-in generated contract stays at the documented v1.58.1 release pin;
-its ordinary regeneration/drift check passed unchanged. The additive client uses handwritten
-typed models until the release pin advances. Generated aliases remain a release follow-up.
-
-## Self-review findings corrected
-
-This was a separate maintainer-style review pass by the implementing agent, **not** an
-independent human or second-agent review.
-
-1. Per-field FINISHED is provisional before stop hooks. Wait on a per-run future captured after
-   run completion, not the first terminal event. Added controlled provisional-FINISHED coverage.
-2. Old waits must not delete or interrupt a successor run. Capture run generation; check it at
-   cleanup, fence conditional deletion, serialize a conditional interrupt's dispatch with run
-   admission. Added restart races for finish-delete, timeout-stop and timeout-delete.
-3. Idle eviction could close a valid waiter. Pin both parent and child runtimes with scoped
-   counters; release them on completion, timeout, cancellation and disconnect.
-4. Cancellation during destructive cleanup could leave a fenced runtime. Shield and drain the
-   owned cleanup task; apply no cleanup when the pending wait itself is interrupted.
-5. An SDK synchronous interrupt can acquire a state lock. Dispatch interrupt to a worker so
-   this path cannot block the shared server event loop.
-6. Broad ValueError-to-404 mapping could hide internal failures. Added a specific
-   ChildConversationNotFound error and catch only that at the new route.
-7. The first provisional-status test observed the state before its controlled step advanced.
-   Replaced that test timing with an explicit synchronization event (initial run: 16 passed,
-   1 failed; corrected and expanded suite: 24 passed within the final 475-test run).
-8. Pyright caught a nullable URL port in the live test. Added a type-narrowing assertion and
-   reran the complete changed-file hooks successfully.
-
-## Remaining limitations and checks not run
-
-- No mailbox delivery (#6127), finish-result payload, SDK agent tool or Canvas implementation.
-  Canvas belongs downstream. No second delivery system or spawning registry was introduced.
-- The timeout bounds waiting after validation/runtime loading. Existing stop/delete cleanup is
-  drained outside that deadline. Legacy sync workers remain cooperatively interruptible; this
-  change does not claim forced termination of arbitrary Python worker threads.
-- Same server instance only. No cross-instance/container orchestration or durable wait recovery.
-- TypeScript's pinned generated aliases must follow the release; handwritten models and the
-  local generation were validated, but this is not a pin/version bump PR.
-- Full stress suite, live-model behavior/benchmark tests, Windows, Docker/PyInstaller runtime
-  checks and GitHub CI were not run. They are not claimed to pass.
-- `control-agent-server launch --new --name child-wait-6129 --print-run` failed its ownership/
-  readiness check after 180s despite server log GET /ready responses being 200. `doctor` then
-  saw connection refused; `stop` hit `psutil.NoSuchProcess: process PID not found (pid=2)`.
-  This environment's process-namespace inspection blocks the separate CLI map audit. No live
-  map recipe was marked passed. The real-socket pytest integration is separately verified.
-- The new route still needs its maintained feature-map recipe proven before readiness; a
-  proposed recipe is in `.pr/FEATURE_MAP_DRAFT.md`, not silently marked as verified.
-- Companion OpenHands/docs guide and nav change are committed locally; JSON parse, target
-  existence, source inspection and `git diff --check` passed. Mintlify preview/link checks
-  and a docs PR were not run/created.
-
-## Submission blocker
-
-Authenticated connector identity: `karurukaruru`. Upstream permissions are read-only. No existing
-software-agent-sdk fork was found on that account. The connector exposes no fork-create tool.
-Terminal Git has no credential/helper/token, and push reports:
-`fatal: could not read Username for 'https://github.com': No such device or address`.
-The fallback browser visibly shows Sign in and a sign-in-required Fork control.
-No authenticated submission route is available. No PR URL is claimed.
+The wait now has the missing mailbox delivery and lock-releasing SDK integration.
+The mailbox is a distinct canonical operation and independent tool, with its own
+tests; it is included here as the #6127 dependency that is absent on main. This
+does not implement Canvas UI, queue delivery, a scheduler or a second child registry.
+Maintainers can split the mailbox dependency into a separate PR if preferred.
+The implementing agent performed its own review; no independent human review is claimed.

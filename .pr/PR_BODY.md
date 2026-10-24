@@ -18,49 +18,56 @@ AGENT:
 
 ## Why
 
-Parents of separate child conversations need a server-owned bounded wait that works with no
-browser attached. Repeated status requests or agent turns add coordination cost and latency.
+Parents need to await separate child conversations and receive their results
+without polling or keeping a browser open. This completes the original wait
+foundation with its missing SDK tool and canonical mailbox delivery.
 
 ## Summary
 
-- Add a parent-scoped REST wait for existing direct children, using lifecycle notifications and
-  immutable per-run completion futures with no ConversationState lock held while waiting.
-- Add deadlines, parent interruption / HTTP disconnect cleanup, retain/stop/delete policies,
-  runtime eviction pins and generation guards that preserve successor runs.
-- Add typed TypeScript client access and deterministic plus real HTTP regressions.
+- Add bounded direct-child waiting with retain/stop/delete policies and immutable
+  per-run outcomes. Persist results in the parent's mailbox before deleting a child.
+- Register wait and mailbox agent tools. Sync and async execution release the
+  parent state lock, isolate ordinary mutating tools, and drain cancelled HTTP workers.
+- Add durable typed mailbox events with agent attribution, evidence validation,
+  same-tree scope, idempotent replay, restart recovery and secret redaction.
+  Steer preserves work and goals; explicit interrupt records its reason.
+- Add typed TypeScript access and event metadata, OpenAPI verification, F35 map
+  recipes and [companion documentation](https://github.com/OpenHands/docs/pull/992).
 
 ## Issue Number
 
-Refs #6129. This is an independently useful backend foundation, not the complete accepted scope.
-Mailbox finish-result delivery (#6127) and a lock-releasing SDK agent tool are not implemented.
+Closes #6129. Refs #6127. The canonical mailbox dependency is included because
+main does not implement it yet; it remains an independently callable operation
+and tool. Maintainers may split that dependency if preferred. Canvas rendering
+belongs downstream; no queue mode, scheduler or parallel child registry is added.
 
 ## How to Test
 
-See `.pr/VALIDATION.md` for exact commands, scope and limitations.
+See `.pr/VALIDATION.md` for exact commands and limits.
 
-- Python related server suite: **475 passed**, 5 warnings.
-- Real HTTP auth/disconnect/concurrency/completion test: **1 passed**, 34 deselected.
-- TypeScript complete unit suite: **395 passed**, 28 files; lint/build/format passed.
-- All applicable changed-file pre-commit hooks, including Pyright: passed.
-- OpenAPI type quality: passed (63 existing allowlisted locations).
-- REST compatibility with actual oasdiff 1.19.1: no breaking changes.
-- Normal pinned TypeScript contract regeneration: unchanged and current. Upcoming local-schema
-  generation also succeeded, without advancing the release pin.
+- Related Python suite: **596 passed, 4 skipped, 4 deselected, 7 warnings in 227.13s (0:03:47)**. The four exclusions also fail on the
+  original PR head in a separate baseline worktree; the unfiltered suite is not green.
+- Event-service / coordination subset: **167 passed**. Real HTTP tests cover
+  actual Agent tool execution, parent lock release, child progress and cancellation.
+- TypeScript: **396 tests passed**, build, changed-file lint/format and public
+  type budget passed. Global lint has three existing errors in untouched tests.
+- All applicable pre-commit hooks passed, including Pyright and registration checks.
+- OpenAPI quality passed; official oasdiff reports only six repository-allowlisted
+  additive event-union changes, no other breaks. Published schema pin unchanged.
+- Original control CLI attach/doctor/API probes passed against a real server.
+  Map check passed; both added routes are owned and driven by F35 recipes.
 
-The implementing agent performed a separate maintainer-style self-review and corrected
-provisional terminal notifications, cleanup/restart races, eviction pins, cleanup cancellation,
-blocking interrupt dispatch and overly broad error mapping. No human review is claimed.
+No live-model eval, stress, Docker/PyInstaller or GitHub CI pass is claimed.
+Maintainer action: approve pending fork workflows and apply `integration-test`.
 
 ## Video/Screenshots
 
-No UI changes. The real uvicorn HTTP regression exercises sockets and authentication without
-attaching any browser or WebSocket, and verifies the exact response. Model work is controlled
-in that test; it is not a live-model evaluation.
+No UI change. Real HTTP regression and assembled-server probe evidence cover the
+browser-independent behavior; deterministic model scripts are identified above.
 
 ## Design Doc
 
-`.pr/design.html` is self-contained. Before submission, link it with htmlpreview to the actual
-verified fork/head branch. No fork or PR exists yet in the implementation environment.
+[Design](https://htmlpreview.github.io/?https://github.com/karurukaruru/software-agent-sdk/blob/feat/6129-server-side-child-wait/.pr/design.html).
 
 ## Type
 
@@ -72,21 +79,10 @@ verified fork/head branch. No fork or PR exists yet in the implementation enviro
 
 ## Notes
 
-- Additive API; existing REST contracts, persisted settings and serialized event unions stay
-  unchanged. No package version bump.
-- No finish text is returned/injected. #6127 remains the sole owner of mailbox result delivery.
-  Retain children when their history/result is still needed.
-- Native synchronous tools hold the parent state lock. An ordinary synchronous HTTP tool
-  wrapper would violate #6129; tool integration needs a cancellable lock-release seam.
-- The deadline bounds waiting after loading, not stop/delete lifecycle cleanup. Synchronous
-  worker termination remains cooperative. This is same-instance waiting, not durable workflow
-  orchestration. These limits must not be described as completed acceptance criteria.
-- The checked-in generated TypeScript schema follows the published v1.58.1 pin; new client
-  models are typed and additive until a release advances the generated contract.
-- Feature-map CLI verification is blocked by process-namespace/psutil failures in this
-  environment. The proposed recipe is in `.pr/FEATURE_MAP_DRAFT.md` and is not a verified map entry.
-- No full stress, live-model behavior, Windows, Docker/PyInstaller or GitHub CI result is claimed.
-- A companion docs change is committed locally; create its PR and cross-link once authenticated.
-- Keep this PR draft. The HUMAN section remains exactly the template placeholder; the human
-  author must supply their own note before readiness. Integration and outstanding checks also
-  require maintainer review.
+- The wait deadline starts after validation/runtime loading; lifecycle cleanup
+  may extend total duration. Existing arbitrary sync workers remain cooperative.
+- Same-backend coordination only; no durable wait recovery or cross-server orchestration.
+- The TypeScript generated schema stays at its release pin. Upcoming schema
+  generation was validated separately without changing package versions.
+- HUMAN remains the original placeholder. The author must personally fill it
+  before this draft can be marked ready. No human review is claimed.

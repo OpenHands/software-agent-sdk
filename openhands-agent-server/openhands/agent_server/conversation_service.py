@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from weakref import WeakValueDictionary
 
 import httpx
@@ -22,6 +22,7 @@ from openhands.agent_server.conversation_lease import (
 )
 from openhands.agent_server.event_service import (
     LEASE_RENEW_INTERVAL_SECONDS,
+    ChildRunOutcome,
     EventService,
     RunSlot,
 )
@@ -84,6 +85,11 @@ from openhands.sdk.credential import (
 )
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.event.mailbox import (
+    MailboxMessage,
+    MailboxSendRequest,
+    MailboxSendResponse,
+)
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.launch import LaunchedAgent, finalize
@@ -2101,8 +2107,8 @@ class ConversationService:
     ) -> WaitForChildrenResponse:
         """Wait without holding catalog, lifecycle, or conversation-state locks.
 
-        Only state and lifecycle outcomes are returned. Finish-result delivery
-        belongs to the mailbox (#6127), which is not implemented here.
+        Results are delivered through the canonical mailbox before cleanup;
+        the response contains only status, lifecycle outcomes and message IDs.
         """
         records = self._conversation_records
         if parent_id not in records:
@@ -2116,7 +2122,7 @@ class ConversationService:
         if parent is None:
             raise ChildConversationNotFound("Parent conversation not found")
         children: list[EventService] = []
-        tasks: list[asyncio.Task[tuple[ConversationExecutionStatus, int]]] = []
+        tasks: list[asyncio.Task[ChildRunOutcome]] = []
         interrupt_task: asyncio.Task[bool] | None = None
         with parent.child_wait_scope() as interruption:
             try:
@@ -2128,7 +2134,7 @@ class ConversationService:
                     ):
                         raise ChildConversationNotFound("Child conversation not found")
                     children.append(child)
-                    tasks.append(asyncio.create_task(child.wait_for_terminal()))
+                    tasks.append(asyncio.create_task(child.wait_for_child_outcome()))
                 interrupt_task = asyncio.create_task(interruption.wait())
                 pending = set(tasks)
                 deadline = asyncio.get_running_loop().time() + request.timeout_seconds
@@ -2143,13 +2149,15 @@ class ConversationService:
                         break
                 interrupted = interruption.is_set()
                 generations = [
-                    task.result()[1] if task.done() else child.execution_generation
+                    task.result().generation
+                    if task.done()
+                    else child.execution_generation
                     for child, task in zip(children, tasks, strict=True)
                 ]
                 results = [
                     ChildConversationWaitResult(
                         conversation_id=child.stored.id,
-                        execution_status=task.result()[0]
+                        execution_status=task.result().status
                         if task.done()
                         else (child.execution_status),
                         settled=task.done(),
@@ -2163,6 +2171,32 @@ class ConversationService:
                 for task in owned_tasks:
                     task.cancel()
                 await asyncio.gather(*owned_tasks, return_exceptions=True)
+
+            if not interrupted:
+                for child, task, result in zip(children, tasks, results, strict=True):
+                    if (
+                        not result.settled
+                        or result.execution_status
+                        == ConversationExecutionStatus.DELETING
+                    ):
+                        continue
+                    outcome = task.result()
+                    delivered = await self.send_mailbox_message(
+                        child.stored.id,
+                        MailboxSendRequest(
+                            recipient_id=parent_id,
+                            idempotency_key=f"child-wait:{outcome.completion_id}",
+                            kind="decision",
+                            body=json.dumps(
+                                {
+                                    "conversation_id": str(child.stored.id),
+                                    "execution_status": outcome.status.value,
+                                    "result": outcome.result,
+                                }
+                            ),
+                        ),
+                    )
+                    result.mailbox_message_id = delivered.message_id
 
             async def cleanup() -> None:
                 for child, generation, result in zip(
@@ -2205,6 +2239,51 @@ class ConversationService:
                 timed_out=bool(pending) and not interrupted,
                 interrupted=interrupted,
             )
+
+    async def send_mailbox_message(
+        self, sender_id: UUID, request: MailboxSendRequest
+    ) -> MailboxSendResponse:
+        """Deliver one agent-attributed message within the existing parent tree."""
+
+        def root_of(conversation_id: UUID) -> UUID:
+            seen: set[UUID] = set()
+            current = conversation_id
+            while current not in seen:
+                seen.add(current)
+                record = self._conversation_records.get(current)
+                if record is None:
+                    raise ChildConversationNotFound("Mailbox conversation not found")
+                parent = record.stored.parent_conversation_id
+                if parent is None:
+                    return current
+                current = parent
+            raise ChildConversationNotFound("Mailbox conversation tree is invalid")
+
+        if sender_id == request.recipient_id or root_of(sender_id) != root_of(
+            request.recipient_id
+        ):
+            raise ChildConversationNotFound(
+                "Mailbox recipient is outside the sender's tree"
+            )
+        sender = await self._get_or_load_event_service(sender_id)
+        recipient = await self._get_or_load_event_service(request.recipient_id)
+        if sender is None or recipient is None:
+            raise ChildConversationNotFound("Mailbox conversation not found")
+        message_id = uuid5(
+            NAMESPACE_URL,
+            f"openhands:mailbox:{sender_id}:{request.recipient_id}:{request.idempotency_key}",
+        ).hex
+        message = MailboxMessage(
+            **request.model_dump(), message_id=message_id, sender_id=sender_id
+        )
+
+        def redact_sender() -> MailboxMessage:
+            with sender.get_conversation().state as state:
+                return state.secret_registry.mask_secrets_in_model(message)
+
+        with sender.child_wait_scope():
+            redacted = await asyncio.to_thread(redact_sender)
+            return await recipient.receive_mailbox_message(redacted)
 
     async def start_child_conversation(
         self,

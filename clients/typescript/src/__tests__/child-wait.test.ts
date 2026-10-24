@@ -8,6 +8,30 @@ afterEach(() => {
   global.fetch = originalFetch;
 });
 
+it('sends typed agent input with authentication and a stable retry identity', async () => {
+  const result = { message_id: 'stable-id', duplicate: true };
+  const fetch = vi.fn().mockResolvedValue(
+    new Response(JSON.stringify(result), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  );
+  global.fetch = fetch;
+  const client = new ConversationClient({ host: 'http://test', apiKey: 'secret' });
+  const message = {
+    recipient_id: 'sibling',
+    idempotency_key: 'review-1',
+    kind: 'review-request' as const,
+    body: 'Review this commit',
+    evidence: ['commit abc'],
+  };
+  expect(await client.sendMailboxMessage('sender', message)).toEqual(result);
+  const [url, options] = fetch.mock.calls[0];
+  expect(url).toBe('http://test/api/conversations/sender/mailbox');
+  expect(options.headers['X-Session-API-Key']).toBe('secret');
+  expect(JSON.parse(options.body)).toEqual(message);
+});
+
 it('waits with one authenticated request and forwards caller cancellation', async () => {
   const result: WaitForChildrenResponse = {
     children: [

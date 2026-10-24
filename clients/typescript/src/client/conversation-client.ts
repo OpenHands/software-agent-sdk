@@ -14,6 +14,8 @@ import type {
   ConversationSearchRequest,
   ConversationSearchResponse,
   ForkConversationRequest,
+  MailboxSendRequest,
+  MailboxSendResponse,
   NavigateConversationRequest,
   SetConfirmationPolicyRequest,
   SetSecurityAnalyzerRequest,
@@ -168,6 +170,20 @@ export class ConversationClient {
   async getRuntime(conversationId: string): Promise<ConversationRuntimeInfo> {
     const response = await this.client.get<ConversationRuntimeInfo>(
       `/api/conversations/${conversationId}/runtime`
+    );
+    return response.data;
+  }
+
+  /** Persist one agent-attributed message; a retry reuses its idempotency key. */
+  async sendMailboxMessage(
+    senderId: string,
+    request: MailboxSendRequest,
+    options: { signal?: AbortSignal; timeout?: number } = {}
+  ): Promise<MailboxSendResponse> {
+    const response = await this.client.post<MailboxSendResponse>(
+      `/api/conversations/${senderId}/mailbox`,
+      request,
+      options
     );
     return response.data;
   }

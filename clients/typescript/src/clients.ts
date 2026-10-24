@@ -185,4 +185,7 @@ export type {
   WaitForChildrenRequest,
   WaitForChildrenResponse,
   ChildConversationWaitResult,
+  MailboxSendRequest,
+  MailboxMessage,
+  MailboxSendResponse,
 } from './models/conversation';

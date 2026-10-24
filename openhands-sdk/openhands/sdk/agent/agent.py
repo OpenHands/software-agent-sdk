@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager, AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -239,6 +240,25 @@ class _ActionBatch:
     results_by_id: dict[str, list[Event]] = field(default_factory=dict)
 
     @staticmethod
+    def _execution_groups(
+        actions: list[ActionEvent], tools: dict[str, ToolDefinition] | None
+    ) -> list[tuple[list[ActionEvent], bool]]:
+        groups: list[tuple[list[ActionEvent], bool]] = []
+        pending: list[ActionEvent] = []
+        for action in actions:
+            tool = tools.get(action.tool_name) if tools else None
+            if tool is not None and tool.releases_state_lock:
+                if pending:
+                    groups.append((pending, False))
+                    pending = []
+                groups.append(([action], True))
+            else:
+                pending.append(action)
+        if pending:
+            groups.append((pending, False))
+        return groups
+
+    @staticmethod
     def _truncate_at_finish(
         action_events: list[ActionEvent],
     ) -> tuple[list[ActionEvent], bool]:
@@ -276,6 +296,7 @@ class _ActionBatch:
         tools: dict[str, ToolDefinition] | None = None,
         cancel_token: CancellationToken | None = None,
         span_owner: object | None = None,
+        release_state_lock: Callable[[], AbstractContextManager[None]] | None = None,
     ) -> _ActionBatch:
         """Truncate, partition blocked actions, execute the rest, return the batch."""
         action_events, has_finish = cls._truncate_at_finish(action_events)
@@ -289,13 +310,18 @@ class _ActionBatch:
             else:
                 executable.append(ae)
 
-        executed_results = executor.execute_batch(
-            executable,
-            tool_runner,
-            tools,
-            cancel_token,
-            span_owner=span_owner,
-        )
+        executed_results: list[list[Event]] = []
+        for group, release in cls._execution_groups(executable, tools):
+            with (
+                release_state_lock()
+                if release and release_state_lock
+                else nullcontext()
+            ):
+                executed_results.extend(
+                    executor.execute_batch(
+                        group, tool_runner, tools, cancel_token, span_owner=span_owner
+                    )
+                )
         results_by_id = dict(zip([ae.id for ae in executable], executed_results))
 
         return cls(
@@ -315,6 +341,8 @@ class _ActionBatch:
         tools: dict[str, ToolDefinition] | None = None,
         cancel_token: CancellationToken | None = None,
         span_owner: object | None = None,
+        release_state_lock: Callable[[], AbstractAsyncContextManager[None]]
+        | None = None,
     ) -> _ActionBatch:
         """Async variant of :meth:`prepare`.
 
@@ -333,13 +361,18 @@ class _ActionBatch:
             else:
                 executable.append(ae)
 
-        executed_results = await executor.aexecute_batch(
-            executable,
-            tool_runner,
-            tools,
-            cancel_token,
-            span_owner=span_owner,
-        )
+        executed_results: list[list[Event]] = []
+        for group, release in cls._execution_groups(executable, tools):
+            async with (
+                release_state_lock()
+                if release and release_state_lock
+                else nullcontext()
+            ):
+                executed_results.extend(
+                    await executor.aexecute_batch(
+                        group, tool_runner, tools, cancel_token, span_owner=span_owner
+                    )
+                )
         results_by_id = dict(zip([ae.id for ae in executable], executed_results))
 
         return cls(
@@ -645,6 +678,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             tools=self.tools_map,
             cancel_token=conversation.cancel_token,
             span_owner=conversation,
+            release_state_lock=conversation._released_state_lock,
         )
         batch.emit(conversation, on_event)
         batch.finalize(
@@ -676,6 +710,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             tools=self.tools_map,
             cancel_token=conversation.cancel_token,
             span_owner=conversation,
+            release_state_lock=conversation._released_state_lock_during_io,
         )
         batch.emit(conversation, on_event)
         batch.finalize(

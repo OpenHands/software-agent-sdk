@@ -236,7 +236,11 @@ class ParallelToolExecutor:
 
         fut = loop.run_in_executor(executor, run_in_caller_context)
         try:
-            return await fut
+            return (
+                await asyncio.shield(fut)
+                if tool is not None and tool.releases_state_lock
+                else await fut
+            )
         except asyncio.CancelledError:
             # The asyncio task was cancelled (interrupt), but the
             # thread-pool worker is still running.  Signal the tool
@@ -250,6 +254,16 @@ class ParallelToolExecutor:
                         action.tool_name,
                         exc_info=True,
                     )
+            if tool is not None and tool.releases_state_lock:
+                # Keep its parent lock released until the cancelled HTTP worker
+                # has closed its client and the server has observed disconnect.
+                while not fut.done():
+                    try:
+                        await asyncio.shield(fut)
+                    except asyncio.CancelledError:
+                        continue
+                if not fut.cancelled():
+                    fut.exception()
             raise
 
     @staticmethod

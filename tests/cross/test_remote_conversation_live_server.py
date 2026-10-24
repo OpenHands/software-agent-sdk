@@ -3146,6 +3146,8 @@ def test_child_wait_real_http_and_disconnect(tmp_path, monkeypatch):
                 release.set_result(None)
                 response = pending.result(timeout=10)
             assert response.status_code == 200, response.text
+            message_id = response.json()["children"][0]["mailbox_message_id"]
+            assert message_id
             assert response.json() == {
                 "children": [
                     {
@@ -3153,8 +3155,184 @@ def test_child_wait_real_http_and_disconnect(tmp_path, monkeypatch):
                         "execution_status": "finished",
                         "settled": True,
                         "deleted": False,
+                        "mailbox_message_id": message_id,
                     }
                 ],
                 "timed_out": False,
                 "interrupted": False,
             }
+
+
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_agent_child_wait_tool_releases_lock_and_cancels_http(
+    tmp_path, monkeypatch, interrupt
+):
+    """A real agent tool waits over HTTP while its parent remains writable."""
+    from openhands.sdk.llm import MessageToolCall
+    from openhands.sdk.testing import TestLLM
+    from openhands.tools.child_conversation import WaitForChildrenTool
+    from openhands.tools.child_conversation.wait import WaitForChildrenExecutor
+
+    waiting = threading.Event()
+    detached = threading.Event()
+    original_scope = EventService.child_wait_scope
+    child_id = None
+
+    @contextmanager
+    def observed_scope(self):
+        with original_scope(self) as signal:
+            is_child = str(self.stored.id) == child_id
+            if is_child:
+                waiting.set()
+            try:
+                yield signal
+            finally:
+                if is_child:
+                    detached.set()
+
+    monkeypatch.setattr(EventService, "child_wait_scope", observed_scope)
+    with live_server_env(tmp_path, monkeypatch, session_api_keys=["tool-test"]) as env:
+        monkeypatch.setenv("OH_INTERNAL_SERVER_URL", env["host"])
+        monkeypatch.setenv("OH_SESSION_API_KEYS_0", "tool-test")
+        with httpx.Client(
+            base_url=env["host"], headers={"X-Session-API-Key": "tool-test"}, timeout=5
+        ) as client:
+            payload = {
+                "agent": {
+                    "llm": {"model": "gpt-4o-mini"},
+                    "tools": [{"name": WaitForChildrenTool.name}],
+                },
+                "workspace": {"working_dir": str(env["workspace_path"])},
+            }
+            response = client.post("/api/conversations", json=payload)
+            assert response.status_code == 201, response.text
+            parent_id = response.json()["id"]
+            response = client.post(
+                "/api/conversations",
+                json=payload | {"parent_conversation_id": parent_id},
+            )
+            assert response.status_code == 201, response.text
+            child_id = response.json()["id"]
+            for cid in (parent_id, child_id):
+                assert (
+                    client.patch(
+                        f"/api/conversations/{cid}", json={"title": "Tool wait test"}
+                    ).status_code
+                    == 200
+                )
+            services = env["conversation_service"]._event_services
+            parent = services[UUID(parent_id)]
+            child = services[UUID(child_id)]
+            parent_llm = TestLLM.from_messages(
+                [
+                    Message(
+                        role="assistant",
+                        tool_calls=[
+                            MessageToolCall(
+                                id="wait-once",
+                                name=WaitForChildrenTool.name,
+                                arguments=json.dumps(
+                                    {
+                                        "conversation_ids": [child_id],
+                                        "timeout_seconds": 30,
+                                    }
+                                ),
+                                origin="completion",
+                            )
+                        ],
+                    ),
+                    Message(role="assistant", content=[TextContent(text="Done")]),
+                ],
+                usage_id="wait-parent",
+            )
+            parent.get_conversation().switch_llm(parent_llm)
+            child.get_conversation().switch_llm(
+                TestLLM.from_messages(
+                    [
+                        Message(
+                            role="assistant", content=[TextContent(text="Child result")]
+                        )
+                    ],
+                    usage_id="wait-child",
+                )
+            )
+            assert (
+                client.post(
+                    f"/api/conversations/{parent_id}/events",
+                    json={
+                        "role": "user",
+                        "run": False,
+                        "content": [{"type": "text", "text": "Wait"}],
+                    },
+                ).status_code
+                == 200
+            )
+            assert client.post(f"/api/conversations/{parent_id}/run").status_code == 200
+            try:
+                assert waiting.wait(5), "Agent did not enter its HTTP wait tool"
+                # Reading state and persisting sibling input both need the parent lock.
+                assert client.get(f"/api/conversations/{parent_id}").status_code == 200
+                assert client.get("/ready").status_code == 200
+                response = client.post(
+                    f"/api/conversations/{child_id}/mailbox",
+                    json={
+                        "recipient_id": parent_id,
+                        "idempotency_key": "during-wait",
+                        "kind": "decision",
+                        "body": "Parent remains responsive",
+                    },
+                )
+                assert response.status_code == 200, response.text
+                if interrupt:
+                    assert (
+                        client.post(
+                            f"/api/conversations/{parent_id}/interrupt"
+                        ).status_code
+                        == 200
+                    )
+                else:
+                    assert (
+                        client.post(
+                            f"/api/conversations/{child_id}/events",
+                            json={
+                                "role": "user",
+                                "run": False,
+                                "content": [{"type": "text", "text": "Work"}],
+                            },
+                        ).status_code
+                        == 200
+                    )
+                    assert (
+                        client.post(f"/api/conversations/{child_id}/run").status_code
+                        == 200
+                    )
+                assert detached.wait(5), "Wait HTTP connection or server pin leaked"
+                deadline = time.monotonic() + 5
+                while parent._run_task is not None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert parent._run_task is None
+                assert parent.execution_status == (
+                    ConversationExecutionStatus.PAUSED
+                    if interrupt
+                    else ConversationExecutionStatus.FINISHED
+                )
+                executor = (
+                    parent.get_conversation()
+                    .agent.tools_map[WaitForChildrenTool.name]
+                    .executor
+                )
+                assert isinstance(executor, WaitForChildrenExecutor)
+                assert not executor._tasks
+                assert not child._active_child_waits
+                if not interrupt:
+                    mail = [
+                        e
+                        for e in parent.get_conversation().state.events
+                        if isinstance(e, MessageEvent) and e.mailbox is not None
+                    ]
+                    assert any(
+                        e.mailbox is not None and "Child result" in e.mailbox.body
+                        for e in mail
+                    )
+            finally:
+                client.post(f"/api/conversations/{parent_id}/interrupt")
