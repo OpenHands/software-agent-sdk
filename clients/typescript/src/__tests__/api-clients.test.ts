@@ -2337,6 +2337,28 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it.each(['content-type', 'CONTENT-TYPE', 'Content-Type'])(
+    'HttpClient preserves multipart boundaries with a %s header',
+    async (headerName) => {
+      global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        const submitted = await request.formData();
+        return new Response(JSON.stringify({ payload: submitted.get('payload') }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+      const client = new HttpClient({ baseUrl: 'http://example.com' });
+      const data = new FormData();
+      data.set('payload', 'upload content');
+
+      const response = await client.post('/upload', data, {
+        headers: { [headerName]: 'multipart/form-data' },
+      });
+
+      expect(response.data).toEqual({ payload: 'upload content' });
+    }
+  );
+
   it('FileClient wraps file browsing and download endpoints', async () => {
     const binary = new TextEncoder().encode('hello').buffer;
     global.fetch = vi

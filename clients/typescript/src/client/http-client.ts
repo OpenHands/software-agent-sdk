@@ -243,7 +243,9 @@ export class HttpClient {
 
     if (options.data && options.method !== 'GET') {
       if (options.data instanceof FormData) {
-        delete headers['Content-Type'];
+        for (const header of Object.keys(headers)) {
+          if (header.toLowerCase() === 'content-type') delete headers[header];
+        }
         requestInit.body = options.data;
       } else {
         requestInit.body = JSON.stringify(options.data);
