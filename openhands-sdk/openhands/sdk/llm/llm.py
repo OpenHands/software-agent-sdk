@@ -3367,7 +3367,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Returns:
             An LLM instance constructed from the JSON configuration.
         """
-        with open(json_path) as f:
+        with open(json_path, encoding="utf-8") as f:
             data = json.load(f)
         return cls.from_persisted(data, context=context)
 
