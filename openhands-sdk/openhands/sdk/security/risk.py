@@ -145,3 +145,32 @@ class SecurityRisk(str, Enum):
         if other_ord is None:
             return NotImplemented
         return _RISK_ORDER[self.value] >= other_ord
+
+
+CLI_TIERS: str = (
+    "- **LOW**: Safe, read-only actions.\n"
+    "  - Viewing/summarizing content, reading project files, simple in-memory calculations.\n"  # noqa: E501
+    "- **MEDIUM**: Project-scoped edits or execution.\n"
+    "  - Modify user project files, run project scripts/tests, install project-local packages.\n"  # noqa: E501
+    "- **HIGH**: System-level or untrusted operations.\n"
+    "  - Changing system settings, global installs, elevated (`sudo`) commands, deleting critical files, downloading & executing untrusted code, or sending local secrets/data out."  # noqa: E501
+)
+
+SANDBOX_TIERS: str = (
+    "- **LOW**: Read-only actions inside sandbox.\n"
+    "  - Inspecting container files, calculations, viewing docs.\n"
+    "- **MEDIUM**: Container-scoped edits and installs.\n"
+    "  - Modify workspace files, install packages system-wide inside container, run user code.\n"  # noqa: E501
+    "- **HIGH**: Data exfiltration or privilege breaks.\n"
+    "  - Sending secrets/local data out, connecting to host filesystem, privileged container ops, running unverified binaries with network access."  # noqa: E501
+)
+
+DEFAULT_SECURITY_RISK_DESCRIPTION: str = (
+    "The LLM's assessment of the safety risk of this action."
+)
+
+
+def get_security_risk_description(cli_mode: bool = True) -> str:
+    """Return the concise LOW/MEDIUM/HIGH risk tier definitions for tool schemas."""
+    tiers = CLI_TIERS if cli_mode else SANDBOX_TIERS
+    return f"{DEFAULT_SECURITY_RISK_DESCRIPTION}\n\n{tiers}"
