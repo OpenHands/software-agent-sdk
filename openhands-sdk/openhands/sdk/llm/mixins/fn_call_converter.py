@@ -582,22 +582,67 @@ def _extract_and_validate_params(
     return params
 
 
+# Kimi K3 can emit a `<tool_call>` wrapper with the tool name on its own line
+# instead of the prompted `<function=NAME>` opener (see issue #4540):
+#     <tool_call>file_editor
+#     <parameter=command>view</parameter>
+#     </tool_call>
+# Zero-argument calls use the same wrapper with no parameter lines:
+#     <tool_call>list_skills
+#     </tool_call>
+_TOOL_CALL_WRAPPER_PATTERN = re.compile(
+    r"<tool_call>\s*(?P<name>[A-Za-z_][\w.-]*)\s*"
+    r"(?:(?P<body>(?:<parameter=[^>]+>(?:(?!</parameter>).)*</parameter>\s*)+)"
+    r"(?:</tool_call>)?"
+    r"|(?P<closer></tool_call>))",
+    re.DOTALL,
+)
+
+
+def _rewrite_tool_call_wrapper(content: str) -> str:
+    """Rewrite a lone `<tool_call>` wrapper into the canonical call dialect.
+
+    Only a single wrapper is rewritten; several are passed through unchanged.
+    Openers quoted inside a parameter value belong to the enclosing wrapper.
+    """
+    matches = list(_TOOL_CALL_WRAPPER_PATTERN.finditer(content))
+    if len(matches) != 1:
+        return content
+    match = matches[0]
+    body = match.group("body") or ""
+    rewritten = f"<function={match.group('name')}>\n{body}</function>"
+    return content[: match.start()] + rewritten + content[match.end() :]
+
+
+def _is_tool_call_wrapper_only(content: Content) -> bool:
+    """True when content carries a bare wrapper and no canonical call text."""
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = " ".join(
+            item.get("text", "") for item in content if item.get("type") == "text"
+        )
+    else:
+        return False
+    return "<tool_call>" in text and "<function=" not in text
+
+
 def _preprocess_model_output(content: str) -> str:
     """Clean up model-specific formatting before parsing function calls.
 
-    Removes wrapper tags that some models (like Nemotron) emit around function calls:
-    - </think> before the function call
-    - <tool_call>...</tool_call> around the function call
-
-    Only strips tags at boundaries, not inside parameter values.
+    Rewrites a lone `<tool_call>NAME` wrapper into the canonical
+    `<function=NAME>...</function>` dialect, then removes the tags some models
+    (like Nemotron) emit around canonical calls:
+    - `</think>` before the call
+    - `<tool_call>` / `</tool_call>` around the call
     """
-    # Strip </think> when it appears before <function= (Nemotron reasoning end)
+    content = _normalize_parameter_tags(content)
+    if "<function=" not in content:
+        content = _rewrite_tool_call_wrapper(content)
+    # Runs after the rewrite so wrapper-shaped responses lose these too.
     content = re.sub(r"</think>\s*(?=<function=)", "", content)
-    # Strip <tool_call> when it appears right before <function=
     content = re.sub(r"<tool_call>\s*(?=<function=)", "", content)
-    # Strip </tool_call> when it appears right after </function>
-    content = re.sub(r"(?<=</function>)\s*</tool_call>", "", content)
-    return content
+    return re.sub(r"(?<=</function>)\s*</tool_call>", "", content)
 
 
 def _fix_stopword(content: str) -> str:
@@ -898,9 +943,18 @@ def convert_non_fncall_messages_to_fncall_messages(
             # Note: tool_call_counter not incremented here since tool results
             # reference the previous counter value
         elif role == "assistant":
-            converted_msg, tool_call_counter = _convert_assistant_to_fncall(
-                message, content, tools, tool_call_counter
-            )
+            wrapper_only = _is_tool_call_wrapper_only(content)
+            original_content = copy.deepcopy(content) if wrapper_only else None
+            try:
+                converted_msg, tool_call_counter = _convert_assistant_to_fncall(
+                    message, content, tools, tool_call_counter
+                )
+            except (FunctionCallConversionError, FunctionCallValidationError):
+                # Wrapper text before the last message is kept as-is; only the
+                # last message may surface a conversion failure.
+                if not wrapper_only or message is messages[-1]:
+                    raise
+                converted_msg = {**message, "content": original_content}
             converted_messages.append(converted_msg)
         else:
             raise FunctionCallConversionError(
