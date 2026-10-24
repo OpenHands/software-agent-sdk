@@ -133,6 +133,22 @@ describe('Hooks Config', () => {
       expect(matcherMatches(matcher, 'other')).toBe(false);
     });
 
+    it.each(['read_file|write_file', '/read_file|write_file/'])(
+      'selects hooks only for complete alternatives in %s',
+      (matcher) => {
+        const config = createEmptyHookConfig();
+        const hook = { command: 'check-file' };
+        config.pre_tool_use = [{ matcher, hooks: [hook] }];
+
+        expect(getHooksForEvent(config, HookEventType.PRE_TOOL_USE, 'read_file')).toEqual([hook]);
+        expect(getHooksForEvent(config, HookEventType.PRE_TOOL_USE, 'write_file')).toEqual([hook]);
+        expect(getHooksForEvent(config, HookEventType.PRE_TOOL_USE, 'read_file_extra')).toEqual([]);
+        expect(getHooksForEvent(config, HookEventType.PRE_TOOL_USE, 'prefix_write_file')).toEqual(
+          []
+        );
+      }
+    );
+
     it('should handle invalid regex gracefully', () => {
       const matcher: HookMatcher = { matcher: '/[invalid/', hooks: [] };
       expect(matcherMatches(matcher, 'anything')).toBe(false);
