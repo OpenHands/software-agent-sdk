@@ -74,6 +74,23 @@ class FileStore(ABC):
             The absolute path on the filesystem.
         """
 
+    def flush(self) -> None:
+        """Block until any deferred durability work completes.
+
+        Stores with deferred durability (e.g. LocalFileStore with
+        ``deferred_durability=True``) queue fsync work on a background
+        writer; ``flush()`` drains it and re-raises the first failure.
+        The default is a no-op: synchronous stores are durable on write.
+        """
+        return None
+
+    def close(self) -> None:
+        """Flush deferred durability and release background resources.
+
+        The default is a no-op for stores without background workers.
+        """
+        return None
+
     @abstractmethod
     @contextmanager
     def lock(self, path: str, timeout: float = 30.0) -> Iterator[None]:

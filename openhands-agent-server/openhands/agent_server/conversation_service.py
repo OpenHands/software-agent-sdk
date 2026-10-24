@@ -294,6 +294,27 @@ def _create_conversation_worktree(plan: _WorktreePlan) -> LocalWorkspace:
 logger = logging.getLogger(__name__)
 
 
+async def _settle_owned_task[Result](task: asyncio.Task[Result]) -> Result:
+    """Wait for owned work to finish even if its caller is cancelled again."""
+    cancelled: asyncio.CancelledError | None = None
+    while True:
+        try:
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            if task.cancelled():
+                raise
+            cancelled = error
+        except Exception:
+            if cancelled is None:
+                raise
+            logger.exception("Owned work failed after caller cancellation")
+            raise cancelled
+        else:
+            if cancelled is not None:
+                raise cancelled
+            return result
+
+
 class InvalidParentConversation(ValueError):
     """``parent_conversation_id`` is unknown, self-referential, or in
     a different workspace."""
@@ -408,6 +429,7 @@ def _update_state_tags_sync(
 ) -> ConversationState:
     with state:
         state.tags = tags
+    state.flush()
     return state
 
 
@@ -1901,8 +1923,10 @@ class ConversationService:
         if request.tags is not None:
             # Keep the persisted ConversationState update under the state lock so
             # autosave and state-change callbacks observe a consistent mutation.
-            state = await loop.run_in_executor(
-                None, _update_state_tags_sync, state, request.tags
+            state = await _settle_owned_task(
+                asyncio.create_task(
+                    asyncio.to_thread(_update_state_tags_sync, state, request.tags)
+                )
             )
         record = self._conversation_records.get(conversation_id)
         if record is not None:
@@ -2025,53 +2049,55 @@ class ConversationService:
             if self._has_conversation(fork_conv_id):
                 raise ValueError(f"Conversation with id {fork_id} already exists")
 
-            # fork() deep-copies events and state into ``fork_dir``.
-            fork_conv = await asyncio.to_thread(
-                source_conversation.fork,
-                conversation_id=fork_conv_id,
-                tags=tags,
-                reset_metrics=reset_metrics,
-                from_event_id=from_event_id,
-            )
-            # Extract the persisted data, then discard the temporary conversation.
-            fork_agent = cast(AgentBase, fork_conv.agent)
-            fork_workspace = fork_conv.workspace
-            fork_conv.delete_on_close = False
-            fork_conv.close()
-
-            # _start_event_service will resume from the persisted fork directory.
-            # Copy the source's stored metadata so request-level configuration
-            # (client_tools, tool_module_qualnames, agent_definitions, plugins,
-            # secrets, ...) is preserved on the fork, then override only the
-            # fork-specific fields. Without this, e.g. a fork of a client-tool
-            # conversation would lose ``client_tools`` in meta.json and be unable
-            # to re-register its tools after a server restart.
-            # Note: the agent is NOT stored in meta.json (StoredConversation) — the
-            # fork's agent is already persisted to the fork's base_state.json by
-            # ``source_conversation.fork`` above. It is passed to
-            # ``_start_event_service`` via ``agent=`` for the new-conversation
-            # path.
-            fork_overrides: dict[str, Any] = {
-                "id": fork_conv_id,
-                "workspace": fork_workspace,
-                "title": title,
-                "tags": tags or {},
-                "created_at": utc_now(),
-                "updated_at": utc_now(),
-                "forked_from_conversation_id": source_id,
-                "forked_from_event_id": from_event_id,
-            }
-            if reset_metrics:
-                fork_overrides["metrics"] = None
-            fork_stored = source_service.stored.model_copy(update=fork_overrides)
             try:
-                # If the service fails to start, clean up the orphaned
-                # persistence directory so we don't leave stale state on disk.
+                fork_dir.mkdir(exist_ok=False)
+            except FileExistsError as error:
+                raise ValueError(
+                    f"Fork directory already exists: {fork_dir}"
+                ) from error
+
+            def copy_and_close() -> tuple[AgentBase, LocalWorkspace]:
+                fork_conv = source_conversation.fork(
+                    conversation_id=fork_conv_id,
+                    tags=tags,
+                    reset_metrics=reset_metrics,
+                    from_event_id=from_event_id,
+                )
+                try:
+                    return cast(AgentBase, fork_conv.agent), cast(
+                        LocalWorkspace, fork_conv.workspace
+                    )
+                finally:
+                    fork_conv.delete_on_close = False
+                    fork_conv.close()
+
+            try:
+                copy_task = asyncio.create_task(asyncio.to_thread(copy_and_close))
+                fork_agent, fork_workspace = await _settle_owned_task(copy_task)
+
+                # _start_event_service will resume from the persisted fork directory.
+                # Preserve source metadata such as plugins and client tools.
+                fork_overrides: dict[str, Any] = {
+                    "id": fork_conv_id,
+                    "workspace": fork_workspace,
+                    "title": title,
+                    "tags": tags or {},
+                    "created_at": utc_now(),
+                    "updated_at": utc_now(),
+                    "forked_from_conversation_id": source_id,
+                    "forked_from_event_id": from_event_id,
+                }
+                if reset_metrics:
+                    fork_overrides["metrics"] = None
+                fork_stored = source_service.stored.model_copy(update=fork_overrides)
                 fork_event_service = await self._start_event_service(
                     fork_stored, is_new_conversation=True, persisted_agent=fork_agent
                 )
-            except Exception:
-                safe_rmtree(fork_dir)
+            except BaseException:
+                try:
+                    safe_rmtree(fork_dir)
+                except Exception:
+                    logger.exception("Failed to remove incomplete fork %s", fork_dir)
                 raise
 
         state = await fork_event_service.get_state()
@@ -2505,10 +2531,17 @@ class ConversationService:
             await event_service.save_meta()
             if self._event_services is not event_services:
                 raise ValueError("inactive_service")
-        except Exception:
+            state = await event_service.get_state()
+            event_services[stored.id] = event_service
+            self._conversation_records[stored.id] = _ConversationRecord(
+                stored=event_service.stored,
+                execution_status=state.execution_status,
+            )
+        except BaseException:
             try:
-                await event_service.close()
-            except Exception as close_error:
+                close_task = asyncio.create_task(event_service.close())
+                await _settle_owned_task(close_task)
+            except BaseException as close_error:
                 logger.warning(
                     "Failed to close conversation %s after startup failure: %s",
                     stored.id,
@@ -2520,12 +2553,6 @@ class ConversationService:
                     pending.setdefault(secret_name, binding)
             raise
 
-        event_services[stored.id] = event_service
-        state = await event_service.get_state()
-        self._conversation_records[stored.id] = _ConversationRecord(
-            stored=event_service.stored,
-            execution_status=state.execution_status,
-        )
         return event_service
 
     async def _maybe_subscribe_telemetry(
