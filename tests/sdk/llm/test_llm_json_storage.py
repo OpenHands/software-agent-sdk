@@ -69,3 +69,45 @@ def test_llm_store_and_load_json():
             loaded_llm.aws_secret_access_key.get_secret_value()
             == original_llm.aws_secret_access_key.get_secret_value()
         )
+
+
+def test_llm_load_from_json_decodes_utf8_regardless_of_locale(tmp_path, monkeypatch):
+    """``LLM.load_from_json`` reads its file as UTF-8 on every host.
+
+    The file is written by ``LLMProfileStore`` (and by callers), and the store's
+    own listings already decode as UTF-8; ``load_from_json`` opened it without
+    an encoding, so on a host whose default text encoding is a legacy codepage
+    (e.g. Windows cp1252/cp936) a valid profile whose ``base_url`` contains
+    non-ASCII text raised ``UnicodeDecodeError`` -- taking
+    ``LLMProfileStore.load`` down with it, since the store delegates to this
+    reader.
+
+    ``open`` resolves a missing encoding in C, out of reach of the
+    ``io.text_encoding`` patch used elsewhere, so the default is forced to
+    ASCII by wrapping ``builtins.open``: the bare ``open(json_path)`` decodes
+    as ASCII and raises on the ``é`` bytes, while an explicit
+    ``encoding="utf-8"`` passes through untouched. That keeps the test red
+    against the pre-fix code even on a UTF-8 host.
+    """
+    import builtins
+
+    real_open = builtins.open
+
+    def _ascii_default_open(file, mode="r", *args, **kwargs):
+        if "r" in mode and kwargs.get("encoding") is None and len(args) < 3:
+            kwargs["encoding"] = "ascii"
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", _ascii_default_open)
+
+    profile = tmp_path / "cafe.json"
+    profile.write_bytes(
+        json.dumps(
+            {"model": "gpt-4o-mini", "base_url": "https://café.example.com/v1"},
+            ensure_ascii=False,
+        ).encode("utf-8")
+    )
+
+    loaded_llm = LLM.load_from_json(str(profile))
+
+    assert loaded_llm.base_url == "https://café.example.com/v1"

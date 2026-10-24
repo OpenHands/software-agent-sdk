@@ -1,6 +1,7 @@
 """Persistence/resume behavior for client-defined tools on LocalConversation."""
 
 import gc
+import json
 import uuid
 from pathlib import Path
 
@@ -128,60 +129,63 @@ def test_recover_persisted_client_tools_no_state(tmp_path: Path) -> None:
 
 def test_recover_persisted_client_tools_decodes_base_state_as_utf8(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Every persisted-state read in the SDK passes an explicit encoding.
+    """``_recover_persisted_client_tools`` reads base_state as UTF-8.
 
-    These files are written as UTF-8 (``atomic_write_text`` hardcodes it), but
-    several SDK readers called a bare ``Path.read_text()``. On a host whose
-    default text encoding is a legacy codepage, state holding non-ASCII text
-    raised ``UnicodeDecodeError``: for ``_recover_persisted_client_tools`` there
-    is no catch, so a resume with an agent failed outright.
+    base_state.json is written through ``atomic_write_text`` (which hardcodes
+    ``encoding="utf-8"``), but this reader called a bare ``Path.read_text()``.
+    On a host whose default text encoding is a legacy codepage (e.g. Windows
+    cp936/cp1252), persisted state holding non-ASCII text raised
+    ``UnicodeDecodeError``; the except clause only covers a missing or invalid
+    JSON file, so a resume that recovers client tools failed outright.
 
-    The check runs in a child process under ``PYTHONUTF8=0`` with
-    ``ensure_ascii=False`` content, so the file really holds non-ASCII bytes.
-    Under this repo's ``uv run`` the parent has ``sys.flags.utf8_mode == 1``,
-    where ``Path.read_text`` resolves UTF-8 no matter what is patched in
-    Python, so an in-process version would be green on the broken code too.
+    The default encoding is forced to ASCII in-process so the test is red
+    against the bare read even on a UTF-8 host: ``Path.read_text`` resolves its
+    encoding through ``io.text_encoding(None)``, which we patch here. A
+    locale-only trick (``PYTHONUTF8=0`` in a child process) would not work --
+    that flag does not turn a UTF-8 locale into a legacy codepage -- and under
+    this repo's ``uv run`` the parent has ``sys.flags.utf8_mode == 1``, where
+    ``io.text_encoding`` returns ``"utf-8"`` regardless of the locale.
     """
-    import os
-    import subprocess
-    import sys
+    import io
 
-    script = """
-import json
-import pathlib
-import tempfile
+    real_text_encoding = io.text_encoding
 
-target = pathlib.Path(tempfile.mkdtemp()) / "base_state.json"
-target.write_bytes(
-    json.dumps({"agent": {"note": "中文"}}, ensure_ascii=False).encode("utf-8")
-)
+    def _forced_ascii(encoding=None, stacklevel=1):
+        if encoding is None:
+            return "ascii"
+        return real_text_encoding(encoding, stacklevel)
 
-# A bare read is what the recover path used to do.
-try:
-    json.loads(target.read_text())
-except UnicodeDecodeError:
-    print("BARE_RAISED", flush=True)
-else:
-    print("BARE_OK", flush=True)
+    monkeypatch.setattr(io, "text_encoding", _forced_ascii, raising=True)
 
-# The fixed expression must work.
-note = json.loads(target.read_text(encoding="utf-8"))["agent"]["note"]
-print("EXPLICIT_OK", note, flush=True)
-"""
-
-    env = {**os.environ, "PYTHONUTF8": "0"}
-    proc = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        env=env,
-        cwd=str(Path(__file__).resolve().parents[4]),
+    # The persisted state only needs to be valid JSON with non-ASCII text;
+    # the reader under test decodes it before looking at any tool specs. The
+    # conversation object carries a different ID so constructing it does not
+    # try to resume the seeded state itself.
+    cid = uuid.uuid4()
+    state_dir = tmp_path / "persist" / cid.hex
+    state_dir.mkdir(parents=True)
+    (state_dir / "base_state.json").write_bytes(
+        json.dumps({"agent": {"note": "中文", "tools": []}}, ensure_ascii=False).encode(
+            "utf-8"
+        )
     )
 
-    assert proc.returncode == 0, proc.stderr[-400:]
-    assert "BARE_RAISED" in proc.stdout, (
-        "the legacy-codepage reproduction did not trigger; the test proves "
-        f"nothing: {proc.stdout}"
+    convo = Conversation(
+        agent=_make_agent(),
+        workspace=str(tmp_path / "ws"),
+        persistence_dir=str(tmp_path / "persist-other"),
+        conversation_id=uuid.uuid4(),
+        delete_on_close=False,
     )
-    assert "EXPLICIT_OK 中文" in proc.stdout
+    try:
+        # On the bare read this raises UnicodeDecodeError (uncaught here, so
+        # the resume path would fail); the explicit UTF-8 read recovers the
+        # empty client-tool list from the non-ASCII state.
+        recovered = convo._recover_persisted_client_tools(
+            str(tmp_path / "persist"), cid
+        )
+        assert recovered == []
+    finally:
+        convo.close()
