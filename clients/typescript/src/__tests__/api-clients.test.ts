@@ -1999,6 +1999,19 @@ describe('Auxiliary API clients', () => {
     expect(response.data).toBeInstanceOf(Blob);
     expect(await response.data.text()).toBe('zip-data');
   });
+
+  it.each([undefined, 'reload'] as const)(
+    'HttpClient forwards cache=%s without changing the default',
+    async (cache) => {
+      global.fetch = vi.fn().mockResolvedValue(new Response('file contents')) as typeof fetch;
+      const client = new HttpClient({ baseUrl: 'http://example.com' });
+
+      const response = await client.get('/download.txt', { cache });
+
+      expect(response.data).toBe('file contents');
+      expect((global.fetch as Mock).mock.calls[0][1].cache).toBe(cache);
+    }
+  );
   it('SettingsClient manages LLM profiles', async () => {
     const responses = [
       { profiles: [{ name: 'fast', model: 'openai/gpt-4o', base_url: null, api_key_set: true }] },
@@ -2389,13 +2402,16 @@ describe('Auxiliary API clients', () => {
     expect(global.fetch).toHaveBeenNthCalledWith(
       4,
       'http://example.com/api/file/download?path=%2Fworkspace%2FREADME.md',
-      expect.objectContaining({ method: 'GET' })
+      expect.objectContaining({ method: 'GET', cache: 'no-store' })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       5,
       'http://example.com/api/file/download-trajectory/conv%201',
       expect.objectContaining({ method: 'GET' })
     );
+    for (const index of [0, 1, 2, 4]) {
+      expect((global.fetch as Mock).mock.calls[index][1].cache).toBeUndefined();
+    }
   });
 
   it('FileClient forwards includeHidden to the home and search_subdirs endpoints', async () => {

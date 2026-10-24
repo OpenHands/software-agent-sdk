@@ -55,6 +55,7 @@ export class FileClient {
     const response = await this.runtimeClient.get<ArrayBuffer>('/api/file/download', {
       params: { path },
       responseType: 'arrayBuffer',
+      cache: 'no-store',
     });
     return response.data;
   }
