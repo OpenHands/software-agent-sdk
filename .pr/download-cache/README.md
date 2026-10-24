@@ -11,13 +11,14 @@ requests, response parsing, and Agent Server response headers unchanged.
 ## Revisions and environment
 
 - Base: `acd96e6fa424c02432304395b9208f99be24b54d`.
-- Tested fix: `be042f557997575f6ba046666adbe043fef45e72`.
+- Cache implementation: `be042f557997575f6ba046666adbe043fef45e72`.
+- Tested fix with the dependency refresh: `0eef7e6352dd39179035384eaa5e953138bd171a`.
 - Client and source Agent Server: version 1.58.1; Python 3.13.13, frozen `uv.lock`.
 - macOS arm64, Google Chrome 155.0.8059.85, Node.js 26.0.0.
 - Browser driver: Playwright 1.64.1; browser bundler: esbuild 0.28.2.
 
 The base client was built before the source changes. The fixed client was rebuilt
-from the implementation commit. The JSON files record the source commit, bundled
+from the tested commit. The JSON files record the source commit, bundled
 client SHA-256, browser version, response cache metadata, and content hashes.
 Subsequent evidence-only commits do not change the tested client code.
 
@@ -100,6 +101,31 @@ npm run check:agent-server-api
 - Per-file repository pre-commit checks and `git diff --check` passed.
 - Regression tests cover host-level, conversation-scoped and legacy `cid`
   requests, explicit cache options, and unchanged defaults on unrelated requests.
+
+## Production dependency audit
+
+The initial remote CI security check failed on Zod 4.3.6 due to
+[GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5).
+The base and initial PR dependency files were byte-identical, and auditing the
+base lockfile reproduced the same finding. The separate dependency commit
+`0eef7e63` updates only Zod's lockfile version, tarball URL and integrity to
+4.6.7, within OpenRouter's existing `^3.25.0 || ^4.0.0` range. The package manifest,
+project version and all other locked packages are unchanged.
+
+After a clean `npm ci`, both CI audit commands passed with zero production
+vulnerabilities:
+
+```sh
+npm audit --audit-level=moderate --omit=dev
+npm audit --audit-level=high --production
+```
+
+The full 400-test suite, lint, build/public type budget, format check and pre-commit
+checks passed again. All four real Chrome download scenarios also passed after
+the refresh; `fixed.json` and `fixed.png` now record this run. Development-only
+dependency advisories remain outside the CI production gate. This lockfile
+refresh fixes this repository's installation; downstream applications with their
+own older lockfiles still need to update their resolution.
 
 ## Limits and scope
 
