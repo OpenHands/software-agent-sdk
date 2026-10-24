@@ -12,7 +12,26 @@ from openhands.sdk.mcp.config import (
     MCPServer,
     to_fastmcp_mcp_config,
 )
-from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
+from openhands.sdk.mcp.exceptions import (
+    MCPCapabilityNotSupportedError,
+    MCPError,
+    MCPTimeoutError,
+)
+from openhands.sdk.mcp.resources_prompts import (
+    MCPPromptArgumentInfo,
+    MCPPromptContent,
+    MCPPromptInfo,
+    MCPPromptMessage,
+    MCPRenderedPrompt,
+    MCPResourceContent,
+    MCPResourceInfo,
+    MCPResourceListing,
+    MCPResourceTemplateInfo,
+    list_mcp_prompts,
+    list_mcp_resources,
+    read_mcp_resource,
+    render_mcp_prompt,
+)
 
 
 if TYPE_CHECKING:
@@ -55,6 +74,20 @@ __all__ = [
     "MCPToolProvider",
     "create_mcp_tools",
     "to_fastmcp_mcp_config",
+    "MCPResourceInfo",
+    "MCPResourceTemplateInfo",
+    "MCPResourceListing",
+    "MCPResourceContent",
+    "MCPPromptArgumentInfo",
+    "MCPPromptInfo",
+    "MCPPromptContent",
+    "MCPPromptMessage",
+    "MCPRenderedPrompt",
+    "list_mcp_resources",
+    "read_mcp_resource",
+    "list_mcp_prompts",
+    "render_mcp_prompt",
     "MCPError",
     "MCPTimeoutError",
+    "MCPCapabilityNotSupportedError",
 ]
