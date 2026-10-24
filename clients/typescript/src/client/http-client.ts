@@ -440,6 +440,10 @@ export class HttpClient {
   }
 
   private async parseResponse<T>(response: Response, responseType: ResponseType): Promise<T> {
+    if (response.status === 204 && (responseType === 'auto' || responseType === 'json')) {
+      return undefined as T;
+    }
+
     if (responseType === 'json') {
       return (await response.json()) as T;
     }
