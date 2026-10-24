@@ -22,7 +22,7 @@ from openhands.sdk.tool import (
     ToolExecutor,
     register_tool,
 )
-from openhands.sdk.utils import maybe_truncate
+from openhands.sdk.utils.supercompress import prepare_command_output
 from openhands.tools.terminal.constants import (
     MAX_CMD_OUTPUT_SIZE,
     NO_CHANGE_TIMEOUT_SECONDS,
@@ -189,9 +189,9 @@ class TerminalObservation(Observation):
         if self.metadata.exit_code != -1:
             ret += f"\n[Command finished with exit code {self.metadata.exit_code}]"
 
-        # Use enhanced truncation with file saving if working directory is available
-        truncated_text = maybe_truncate(
-            content=ret,
+        # Head/tail cut. An optional key can replace that preview first.
+        truncated_text = prepare_command_output(
+            ret,
             truncate_after=MAX_CMD_OUTPUT_SIZE,
             save_dir=self.full_output_save_dir,
             tool_prefix="terminal",
