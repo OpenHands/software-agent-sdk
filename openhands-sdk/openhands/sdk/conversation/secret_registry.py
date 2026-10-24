@@ -1,5 +1,6 @@
 """Secrets manager for handling sensitive data in conversations."""
 
+import json
 import re
 import time
 from collections.abc import Callable, Collection, Mapping
@@ -19,6 +20,50 @@ logger = get_logger(__name__)
 
 # Back-off before retrying a failed source; a failed lookup masks nothing anyway.
 FAILED_LOOKUP_RETRY_SECONDS: Final[float] = 60.0
+
+# What a masked secret reads as in text. Serialized secret fields use
+# ``REDACTED_SECRET_VALUE`` instead.
+SECRET_MASK: Final[str] = "<secret-hidden>"
+
+
+def _char_pattern(ch: str) -> tuple[str, int]:
+    """Regex for ``ch`` in the forms text can echo it, and its longest form.
+
+    A value can come back literally, JSON-escaped (a logged payload) or
+    percent-encoded (httpx encodes each URL component with its own safe
+    characters, so ``user:p%40ss`` mixes the two).
+    """
+    literal = {ch, json.dumps(ch)[1:-1]}
+    if ch == " ":
+        literal.add("+")
+    encoded = "".join(f"%{byte:02X}" for byte in ch.encode())
+    forms = sorted(re.escape(form) for form in literal) + [f"(?i:{encoded})"]
+    longest = max(len(encoded), *(len(form) for form in literal))
+    return "(?:" + "|".join(forms) + ")", longest
+
+
+class SecretMask:
+    """Masks the given values wherever text echoes them, in any encoding."""
+
+    def __init__(self, values: Collection[str]) -> None:
+        # Longest first so an overlapping shorter value cannot mask half of a
+        # longer one and leave the rest in cleartext.
+        ordered = sorted({value for value in values if value}, key=len, reverse=True)
+        self.pattern: re.Pattern[str] | None = None
+        self.longest = 0
+        if not ordered:
+            return
+        alternatives: list[str] = []
+        for value in ordered:
+            chars = [_char_pattern(ch) for ch in value]
+            alternatives.append("".join(regex for regex, _ in chars))
+            self.longest = max(self.longest, sum(length for _, length in chars))
+        self.pattern = re.compile("|".join(alternatives))
+
+    def mask(self, text: str) -> str:
+        if self.pattern is None or not text:
+            return text
+        return self.pattern.sub(SECRET_MASK, text)
 
 
 def _mask_value(
@@ -152,7 +197,7 @@ class StreamOutputMask:
             if match.start() >= cut:
                 break
             out.append(self._held[pos : match.start()])
-            out.append("<secret-hidden>")
+            out.append(SECRET_MASK)
             pos = match.end()
             end = max(end, match.end())
         out.append(self._held[pos:end])
@@ -311,14 +356,9 @@ class SecretRegistry(OpenHandsModel):
             if not self.get_secret_value(key):
                 self._failed_lookups[key] = now
 
-        masked_text = text
         with self._exported_values_lock:
             exported_values = tuple(self._exported_values.values())
-        for value in exported_values:
-            if value:
-                masked_text = masked_text.replace(value, "<secret-hidden>")
-
-        return masked_text
+        return SecretMask(exported_values).mask(text)
 
     def compile_stream_mask(self) -> StreamOutputMask:
         """Return a streaming masker over the values resolved *so far*.
@@ -329,15 +369,8 @@ class SecretRegistry(OpenHandsModel):
         less in exchange: use it for progress, not for the durable record.
         """
         with self._exported_values_lock:
-            values = {value for value in self._exported_values.values() if value}
-        if not values:
-            return StreamOutputMask(None, 0)
-        # Longest first so an overlapping shorter value cannot mask half of a
-        # longer one and leave the rest in cleartext.
-        pattern = re.compile(
-            "|".join(re.escape(v) for v in sorted(values, key=len, reverse=True))
-        )
-        return StreamOutputMask(pattern, max(len(v) for v in values))
+            mask = SecretMask(tuple(self._exported_values.values()))
+        return StreamOutputMask(mask.pattern, mask.longest)
 
     def mask_secrets_in_model[ModelT: BaseModel](self, model: ModelT) -> ModelT:
         """Return ``model`` with secret values masked in every nested string.

@@ -508,3 +508,30 @@ def test_compile_stream_mask_releases_text_when_nothing_is_registered():
 
     assert masker.feed("nothing held back") == "nothing held back"
     assert masker.flush() == ""
+
+
+def test_mask_secrets_in_output_masks_encoded_echoes():
+    """A value a URL echoes percent-encoded, or a logged payload JSON-escaped,
+    is still the secret."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"TOKEN": 'p w"d'})
+    secret_registry.get_secrets_as_env_vars("echo $TOKEN")
+    output = 'url?t=p%20w%22d json: "p w\\"d" form: p+w"d'
+
+    masked = secret_registry.mask_secrets_in_output(output)
+
+    assert masked == (
+        'url?t=<secret-hidden> json: "<secret-hidden>" form: <secret-hidden>'
+    )
+
+
+def test_compile_stream_mask_masks_an_encoded_value_split_across_chunks():
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"TOKEN": "abc def"})
+    secret_registry.get_secrets_as_env_vars("echo $TOKEN")
+
+    masker = secret_registry.compile_stream_mask()
+    released = [masker.feed(piece) for piece in ("url?t=abc%2", "0def done")]
+    released.append(masker.flush())
+
+    assert "".join(released) == "url?t=<secret-hidden> done"

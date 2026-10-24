@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
 import time
 from collections.abc import Generator
-from types import SimpleNamespace
+from urllib.parse import unquote
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -24,8 +26,11 @@ from openhands.agent_server.mcp_router import (
     _oauth_probe_jobs_lock,
     _register_oauth_job,
 )
-from openhands.agent_server.persistence import reset_stores
-from openhands.sdk.mcp.config import MCPServer, to_fastmcp_mcp_config
+from openhands.agent_server.persistence import get_secrets_store, reset_stores
+from openhands.agent_server.persistence.store import FileSecretsStore
+from openhands.sdk.conversation.secret_registry import SECRET_MASK
+from openhands.sdk.mcp.config import to_fastmcp_mcp_config
+from tests.agent_server.conftest import FakeMCPTools
 
 # Reuse the real FastMCP-based test-server helper from the SDK tests; spinning
 # up a real subprocess MCP server inside a unit test is unreliable across CI
@@ -300,37 +305,12 @@ def test_mcp_test_decrypts_encrypted_env_values_before_spawn():
 
 
 def test_mcp_test_decrypts_encrypted_remote_auth_before_connect(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_mcp_tools: FakeMCPTools,
 ):
     config = Config(session_api_keys=[], secret_key=SecretStr("test-secret-key"))
     cipher = config.cipher
     assert cipher is not None
     client = TestClient(create_app(config), raise_server_exceptions=False)
-    seen_configs: list[dict[str, MCPServer]] = []
-
-    class FakeClient:
-        def __init__(self):
-            self.tools: list[object] = []
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return None
-
-    def fake_create_mcp_tools(
-        config: dict[str, MCPServer],
-        timeout=30.0,
-        *,
-        mcp_oauth_token_storage=None,
-    ):
-        seen_configs.append(config)
-        return FakeClient()
-
-    monkeypatch.setattr(
-        "openhands.agent_server.mcp_router.create_mcp_tools",
-        fake_create_mcp_tools,
-    )
 
     response = client.post(
         "/api/mcp/test",
@@ -350,7 +330,7 @@ def test_mcp_test_decrypts_encrypted_remote_auth_before_connect(
 
     assert response.status_code == 200, response.text
     assert response.json()["ok"] is True
-    assert [to_fastmcp_mcp_config(config) for config in seen_configs] == [
+    assert [to_fastmcp_mcp_config(config) for config in fake_mcp_tools.configs] == [
         {
             "mcpServers": {
                 "linear": {
@@ -361,6 +341,454 @@ def test_mcp_test_decrypts_encrypted_remote_auth_before_connect(
             }
         }
     ]
+
+
+# ---------------------------------------------------------------------------
+# ${NAME} secret references
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_test_expands_remote_secret_reference_from_saved_secrets(
+    fake_mcp_tools: FakeMCPTools,
+):
+    """A remote server saved with ``Bearer ${NAME}`` connects with the saved
+    secret, as a conversation would, instead of sending the placeholder."""
+    config = Config(session_api_keys=[])
+    get_secrets_store(config).set_secret("SONAR_TOKEN", "sonar-saved-token")
+    client = TestClient(create_app(config), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "name": "sonar",
+            "server": {
+                "transport": "http",
+                "url": "https://sonar.example/mcp",
+                "auth": {"strategy": "bearer", "value": "${SONAR_TOKEN}"},
+            },
+            "timeout": 10.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is True
+    [seen] = fake_mcp_tools.configs
+    assert to_fastmcp_mcp_config(seen)["mcpServers"]["sonar"]["auth"] == (
+        "sonar-saved-token"
+    )
+
+
+def test_mcp_test_expands_references_like_a_conversation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Saved secrets, then the environment, then ``:-`` defaults; as in a
+    conversation, only saved secrets are masked in the returned tool output."""
+    config = Config(session_api_keys=[])
+    get_secrets_store(config).set_secret("HF_BOT_TOKEN", "xoxb-saved-secret")
+    monkeypatch.setenv("HF_TEAM_ID", "T0123")
+    monkeypatch.delenv("HF_CHANNEL", raising=False)
+    client = TestClient(create_app(config), raise_server_exceptions=False)
+    script = (
+        "import json, os\n"
+        "from fastmcp import FastMCP\n"
+        "mcp = FastMCP('env-echo')\n"
+        "@mcp.tool()\n"
+        "def read_env() -> str:\n"
+        "    token = os.environ.get('SLACK_BOT_TOKEN')\n"
+        "    return json.dumps({\n"
+        "        'bot_token': token,\n"
+        "        'bot_token_ok': token == 'xoxb-saved-secret',\n"
+        "        'team_id': os.environ.get('SLACK_TEAM_ID'),\n"
+        "        'channel': os.environ.get('SLACK_CHANNEL'),\n"
+        "    })\n"
+        "mcp.run()\n"
+    )
+
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "name": "env-echo",
+            "server": {
+                "transport": "stdio",
+                "command": sys.executable,
+                "args": ["-c", script],
+                "env": {
+                    "SLACK_BOT_TOKEN": "${HF_BOT_TOKEN}",
+                    "SLACK_TEAM_ID": "${HF_TEAM_ID}",
+                    "SLACK_CHANNEL": "${HF_CHANNEL:-general}",
+                },
+            },
+            "timeout": 20.0,
+            "tool_call": {"name": "read_env"},
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is True, body
+    assert json.loads(body["tool_result"]["text"]) == {
+        "bot_token": SECRET_MASK,
+        "bot_token_ok": True,
+        "team_id": "T0123",
+        "channel": "general",
+    }
+
+
+def _fail_with_expanded_url(fake_mcp_tools: FakeMCPTools) -> None:
+    """Make the probe fail the way httpx does: echoing the (encoded) URL."""
+
+    def fail(config, kwargs):
+        [server] = config.values()
+        raise RuntimeError(f"401 Unauthorized for url '{httpx.URL(server.url)}'")
+
+    fake_mcp_tools.on_create = fail
+
+
+@pytest.mark.parametrize(
+    "secret, url",
+    [
+        ("super-secret-value-12345", "https://mcp.example/mcp?token=${URL_TOKEN}"),
+        ("abc def", "https://mcp.example/mcp?token=${URL_TOKEN}"),
+        # httpx keeps ``:`` but encodes ``@`` in userinfo: a partial encoding.
+        ("user:Tr0ub4dor@3", "https://${URL_TOKEN}@mcp.example/mcp"),
+    ],
+    ids=["plain", "encoded", "userinfo"],
+)
+def test_mcp_test_masks_substituted_secrets_in_errors_and_logs(
+    fake_mcp_tools: FakeMCPTools,
+    caplog: pytest.LogCaptureFixture,
+    secret: str,
+    url: str,
+):
+    config = Config(session_api_keys=[])
+    get_secrets_store(config).set_secret("URL_TOKEN", secret)
+    client = TestClient(create_app(config), raise_server_exceptions=False)
+    _fail_with_expanded_url(fake_mcp_tools)
+
+    with caplog.at_level(logging.INFO, logger="openhands.agent_server.mcp_router"):
+        response = client.post(
+            "/api/mcp/test",
+            json={"server": {"transport": "http", "url": url}, "timeout": 5.0},
+        )
+
+    error = response.json()["error"]
+    # Decoding exposes the secret in any (partial) percent-encoding.
+    assert secret not in unquote(error)
+    assert secret not in unquote(caplog.text)
+    # The rest of the message stays readable.
+    assert "401 Unauthorized for url 'https://" in error
+    assert "mcp.example/mcp" in error
+    [record] = [r for r in caplog.records if "failed unexpectedly" in r.getMessage()]
+    # A traceback that needs masking can only be logged as text.
+    assert record.exc_info is None
+
+
+def test_mcp_test_logs_a_clean_unexpected_failure_with_exc_info(
+    client: TestClient,
+    fake_mcp_tools: FakeMCPTools,
+    caplog: pytest.LogCaptureFixture,
+):
+    def fail(config, kwargs):
+        raise RuntimeError("boom")
+
+    fake_mcp_tools.on_create = fail
+
+    with caplog.at_level(logging.WARNING, logger="openhands.agent_server.mcp_router"):
+        response = client.post(
+            "/api/mcp/test",
+            json={
+                "server": {"transport": "http", "url": "https://mcp.example/mcp"},
+                "timeout": 5.0,
+            },
+        )
+
+    assert response.json() == {
+        "ok": False,
+        "error": "RuntimeError: boom",
+        "error_kind": "unknown",
+    }
+    [record] = [r for r in caplog.records if "failed unexpectedly" in r.getMessage()]
+    assert record.exc_info is not None and record.exc_info[0] is RuntimeError
+
+
+def test_mcp_test_redacts_a_token_typed_into_the_url(
+    client: TestClient,
+    fake_mcp_tools: FakeMCPTools,
+    caplog: pytest.LogCaptureFixture,
+):
+    """Not a reference, so nothing was substituted; the shared text redaction
+    still keeps a credential-shaped query value out of the error and log."""
+    _fail_with_expanded_url(fake_mcp_tools)
+
+    with caplog.at_level(logging.WARNING, logger="openhands.agent_server.mcp_router"):
+        response = client.post(
+            "/api/mcp/test",
+            json={
+                "server": {
+                    "transport": "http",
+                    "url": "https://mcp.example/mcp?api_key=typed-key-123",
+                },
+                "timeout": 5.0,
+            },
+        )
+
+    assert "typed-key-123" not in response.text
+    assert "typed-key-123" not in caplog.text
+    assert "mcp.example/mcp?api_key=<redacted>" in response.json()["error"]
+
+
+def test_mcp_test_keeps_brace_text_that_expansion_leaves_literal(
+    monkeypatch: pytest.MonkeyPatch, fake_mcp_tools: FakeMCPTools
+):
+    """``${...}`` text from a secret's value or a default is not a reference
+    the user wrote: like a conversation, pass it on instead of failing."""
+    config = Config(session_api_keys=[])
+    store = get_secrets_store(config)
+    store.set_secret("PASSWORD", "a-${OTHER}-b")
+    store.set_secret("ENDPOINT", "https://h/${path}/mcp")
+    store.set_secret("B", "set")
+    monkeypatch.delenv("A", raising=False)
+    client = TestClient(create_app(config), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "name": "braces",
+            "server": {
+                "transport": "http",
+                "url": "https://mcp.example/mcp",
+                "headers": {
+                    "X-Password": "${PASSWORD}",
+                    "X-Endpoint": "${ENDPOINT}",
+                    "X-Nested": "${A:-${B}}",
+                },
+            },
+            "timeout": 5.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is True, response.json()
+    [seen] = fake_mcp_tools.configs
+    headers = to_fastmcp_mcp_config(seen)["mcpServers"]["braces"]["headers"]
+    assert headers == {
+        "X-Password": "a-${OTHER}-b",
+        "X-Endpoint": "https://h/${path}/mcp",
+        "X-Nested": "${B}",
+    }
+
+
+def test_mcp_test_names_an_unset_secret_reference(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.delenv("HF_MISSING_TOKEN", raising=False)
+
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "transport": "http",
+                "url": "http://127.0.0.1:9/mcp",
+                "headers": {"Authorization": "Bearer ${HF_MISSING_TOKEN}"},
+            },
+            "timeout": 5.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is False
+    assert "HF_MISSING_TOKEN" in body["error"]
+    # Settings UIs mask the typed credential, i.e. the reference itself.
+    assert "${HF_MISSING_TOKEN}" not in body["error"]
+
+
+def test_mcp_test_expands_an_oauth_server_but_sends_its_auth_as_written(
+    fake_mcp_tools: FakeMCPTools,
+):
+    """The OAuth client copies a configured client secret into the state the
+    caller saves, so ``auth`` goes out as written while the rest expands."""
+    config = Config(session_api_keys=[])
+    store = get_secrets_store(config)
+    store.set_secret("HF_TEAM", "team-42")
+    store.set_secret("HF_CLIENT_SECRET", "oauth-client-secret")
+    client = TestClient(create_app(config), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "name": "notion",
+            "server": {
+                "transport": "http",
+                "url": "https://mcp.example/mcp",
+                "headers": {"X-Team": "${HF_TEAM}"},
+                "auth": {
+                    "strategy": "oauth2",
+                    "authentication": {
+                        "type": "oauth",
+                        "client_auth_method": "client_secret_post",
+                        "client_id": "notion-client",
+                        "client_secret": "${HF_CLIENT_SECRET}",
+                    },
+                },
+            },
+            "timeout": 5.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is True, response.json()
+    [seen] = fake_mcp_tools.configs
+    server = seen["notion"]
+    assert server.headers is not None
+    assert server.headers["X-Team"].get_secret_value() == "team-42"
+    oauth_auth = server.oauth_auth
+    assert oauth_auth is not None and oauth_auth.authentication is not None
+    client_secret = oauth_auth.authentication.client_secret
+    assert client_secret is not None
+    assert client_secret.get_secret_value() == "${HF_CLIENT_SECRET}"
+
+
+@pytest.mark.parametrize(
+    "url, environment",
+    [("${HF_BASE_URL}", {"HF_BASE_URL": ""}), ("${HF_BASE_URL:-}", {})],
+    ids=["empty-value", "empty-default"],
+)
+def test_mcp_test_reports_a_config_that_is_invalid_once_expanded(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    url: str,
+    environment: dict[str, str],
+):
+    monkeypatch.delenv("HF_BASE_URL", raising=False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+
+    response = client.post(
+        "/api/mcp/test",
+        json={"server": {"transport": "http", "url": url}, "timeout": 5.0},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error_kind"] == "unknown"
+    assert "url" in body["error"]
+
+
+def test_mcp_test_names_a_reference_after_a_malformed_default(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """``${X:-oops`` is not a reference; the ``${HF_REQ}`` after it still is."""
+    monkeypatch.delenv("HF_REQ", raising=False)
+
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "transport": "http",
+                "url": "https://mcp.example/mcp",
+                "headers": {"A": "${X:-oops", "B": "${HF_REQ}"},
+            },
+            "timeout": 5.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is False
+    assert "HF_REQ" in body["error"]
+
+
+def test_mcp_test_keeps_the_secret_out_of_a_post_expansion_validation_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """A substituted header name of ``Authorization`` next to ``auth`` fails
+    validation; pydantic's own message would echo the expanded config."""
+    config = Config(session_api_keys=[])
+    get_secrets_store(config).set_secret("HF_TOKEN", "REAL-SECRET-VALUE-123")
+    monkeypatch.setenv("HF_HEADER", "Authorization")
+    client = TestClient(create_app(config), raise_server_exceptions=False)
+
+    with caplog.at_level(logging.INFO, logger="openhands.agent_server.mcp_router"):
+        response = client.post(
+            "/api/mcp/test",
+            json={
+                "server": {
+                    "transport": "http",
+                    "url": "https://mcp.example/mcp",
+                    "headers": {"${HF_HEADER}": "x"},
+                    "auth": {"strategy": "bearer", "value": "${HF_TOKEN}"},
+                },
+                "timeout": 5.0,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is False
+    assert "Authorization" in body["error"]
+    assert "REAL-SECRET-VALUE-123" not in response.text
+    assert "REAL-SECRET-VALUE-123" not in caplog.text
+
+
+def test_mcp_test_reports_an_unreadable_secrets_file(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    def deny(self, *, strict=False):
+        raise PermissionError(13, "Permission denied", "secrets.json")
+
+    monkeypatch.setattr(FileSecretsStore, "load", deny)
+
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "transport": "http",
+                "url": "https://mcp.example/mcp",
+                "auth": {"strategy": "bearer", "value": "${HF_TOKEN}"},
+            },
+            "timeout": 5.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"].startswith("Could not read the saved secrets")
+
+
+def test_mcp_test_reads_the_secrets_file_once_per_name(
+    monkeypatch: pytest.MonkeyPatch, fake_mcp_tools: FakeMCPTools
+):
+    config = Config(session_api_keys=[])
+    get_secrets_store(config).set_secret("HF_TOKEN", "tok-value")
+    client = TestClient(create_app(config), raise_server_exceptions=False)
+    loads: list[str] = []
+    real_load = FileSecretsStore.load
+
+    def counting_load(self, *, strict=False):
+        loads.append("load")
+        return real_load(self, strict=strict)
+
+    monkeypatch.setattr(FileSecretsStore, "load", counting_load)
+
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "transport": "http",
+                "url": "https://mcp.example/mcp",
+                "headers": {"X-A": "${HF_TOKEN}", "X-B": "${HF_TOKEN}"},
+                "auth": {"strategy": "bearer", "value": "${HF_TOKEN}"},
+            },
+            "timeout": 5.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is True, response.json()
+    assert len(loads) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -566,29 +994,13 @@ def test_mcp_test_accepts_explicit_oauth_authentication(
 
 
 def test_mcp_test_returns_encrypted_oauth_state_from_probe(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_mcp_tools: FakeMCPTools,
 ):
     config = Config(session_api_keys=[], secret_key=SecretStr("test-secret-key"))
     client = TestClient(create_app(config), raise_server_exceptions=False)
-    calls: list[object | None] = []
 
-    class FakeClient:
-        def __init__(self):
-            self.tools: list[object] = []
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return None
-
-    def fake_create_mcp_tools(
-        config,
-        timeout=30.0,
-        *,
-        mcp_oauth_token_storage=None,
-    ):
-        calls.append(mcp_oauth_token_storage)
+    def store_tokens(config, kwargs):
+        mcp_oauth_token_storage = kwargs["mcp_oauth_token_storage"]
         assert mcp_oauth_token_storage is not None
         asyncio.run(
             mcp_oauth_token_storage.put(
@@ -618,12 +1030,8 @@ def test_mcp_test_returns_encrypted_oauth_state_from_probe(
                 collection="mcp-oauth-token-expiry",
             )
         )
-        return FakeClient()
 
-    monkeypatch.setattr(
-        "openhands.agent_server.mcp_router.create_mcp_tools",
-        fake_create_mcp_tools,
-    )
+    fake_mcp_tools.on_create = store_tokens
 
     response = client.post(
         "/api/mcp/test",
@@ -646,7 +1054,7 @@ def test_mcp_test_returns_encrypted_oauth_state_from_probe(
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["ok"] is True
-    assert len(calls) == 1
+    assert len(fake_mcp_tools.calls) == 1
     assert "server" not in body
     oauth_state = body["oauth_state"]
     oauth_value = oauth_state["tokens"]
@@ -659,7 +1067,7 @@ def test_mcp_test_returns_encrypted_oauth_state_from_probe(
 
 
 def test_mcp_oauth_start_returns_authorization_url_and_final_state(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, fake_mcp_tools: FakeMCPTools
 ):
     config = Config(session_api_keys=[], secret_key=SecretStr("test-secret-key"))
     client = TestClient(create_app(config), raise_server_exceptions=False)
@@ -676,23 +1084,9 @@ def test_mcp_oauth_start_returns_authorization_url_and_final_state(
         assert authentication.client_secret.get_secret_value() == "notion-secret"
         return FakeOAuth(job)
 
-    class FakeClient:
-        def __init__(self):
-            self.tools = [SimpleNamespace(name="notion_lookup")]
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return None
-
-    def fake_create_mcp_tools(
-        config,
-        timeout=30.0,
-        *,
-        mcp_oauth_token_storage=None,
-        mcp_oauth_factory=None,
-    ):
+    def run_oauth(config, kwargs):
+        mcp_oauth_token_storage = kwargs["mcp_oauth_token_storage"]
+        mcp_oauth_factory = kwargs["mcp_oauth_factory"]
         assert mcp_oauth_token_storage is not None
         assert mcp_oauth_factory is not None
         server_name, server = next(iter(config.items()))
@@ -714,16 +1108,13 @@ def test_mcp_oauth_start_returns_authorization_url_and_final_state(
                 collection="mcp-oauth-token",
             )
         )
-        return FakeClient()
 
     monkeypatch.setattr(
         "openhands.agent_server.mcp_router._oauth_auth_from_authentication",
         fake_oauth_from_authentication,
     )
-    monkeypatch.setattr(
-        "openhands.agent_server.mcp_router.create_mcp_tools",
-        fake_create_mcp_tools,
-    )
+    fake_mcp_tools.tools = ["notion_lookup"]
+    fake_mcp_tools.on_create = run_oauth
 
     response = client.post(
         "/api/mcp/oauth/start",
@@ -769,27 +1160,13 @@ def test_mcp_oauth_start_returns_authorization_url_and_final_state(
 
 
 def test_mcp_oauth_start_succeeds_without_consent_when_stored_tokens_work(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_mcp_tools: FakeMCPTools,
 ):
     # Arrange: the probe connects with the stored tokens; FastMCP never
     # publishes an authorization URL.
     config = Config(session_api_keys=[], secret_key=SecretStr("test-secret-key"))
     client = TestClient(create_app(config), raise_server_exceptions=False)
-
-    class FakeClient:
-        def __init__(self):
-            self.tools = [SimpleNamespace(name="notion_lookup")]
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return None
-
-    monkeypatch.setattr(
-        "openhands.agent_server.mcp_router.create_mcp_tools",
-        lambda *args, **kwargs: FakeClient(),
-    )
+    fake_mcp_tools.tools = ["notion_lookup"]
 
     # Act
     started = time.monotonic()
