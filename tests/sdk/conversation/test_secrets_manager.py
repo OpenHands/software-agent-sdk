@@ -508,3 +508,14 @@ def test_compile_stream_mask_releases_text_when_nothing_is_registered():
 
     assert masker.feed("nothing held back") == "nothing held back"
     assert masker.flush() == ""
+
+
+def test_mask_secrets_in_output_prefers_the_longest_overlapping_value():
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"SHORT": "abc", "LONG": "abc123"})
+    secret_registry.get_secrets_as_env_vars("echo $SHORT $LONG")
+
+    assert (
+        secret_registry.mask_secrets_in_output("leak: abc123")
+        == "leak: <secret-hidden>"
+    )

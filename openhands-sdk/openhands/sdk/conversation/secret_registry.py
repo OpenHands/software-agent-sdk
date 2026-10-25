@@ -314,7 +314,9 @@ class SecretRegistry(OpenHandsModel):
         masked_text = text
         with self._exported_values_lock:
             exported_values = tuple(self._exported_values.values())
-        for value in exported_values:
+        # Longest first so an overlapping shorter value cannot mask half of a
+        # longer one and leave the rest in cleartext (same as the stream path).
+        for value in sorted(exported_values, key=len, reverse=True):
             if value:
                 masked_text = masked_text.replace(value, "<secret-hidden>")
 
