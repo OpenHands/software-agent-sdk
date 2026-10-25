@@ -31,7 +31,7 @@ from openhands.agent_server.persistence import (
     FileSecretsStore,
     Secrets,
 )
-from openhands.sdk import AgentContext
+from openhands.sdk import LLM, Agent, AgentContext
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.credential import (
     CredentialConflict,
@@ -399,6 +399,53 @@ async def test_direct_start_strips_reserved_conversation_secret(tmp_path) -> Non
         assert "CODEX_AUTH_JSON" not in event_service.stored.secrets
         assert "CODEX_AUTH_JSON" in event_service.credential_bindings
         assert not event_service.stored.required_runtime_credential_bindings
+
+
+@pytest.mark.asyncio
+async def test_pending_binding_is_ignored_for_regular_agent(tmp_path) -> None:
+    """A binding sent while a regular (non-ACP) conversation is not loaded is
+    discarded on load, so it never makes the conversation require a binding."""
+    conversation_id = uuid4()
+    request = StartConversationRequest(
+        conversation_id=conversation_id,
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+        secrets={"CODEX_AUTH_JSON": StaticSecret(value=SecretStr("own-copy"))},
+    )
+    conversations_dir = tmp_path / "conversations"
+    meta_file = conversations_dir / conversation_id.hex / "meta.json"
+
+    def binding() -> HttpVersionedCredentialBinding:
+        return HttpVersionedCredentialBinding(
+            "https://app.test/api/credential",
+            {"Authorization": "Bearer initial"},
+        )
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        # Pending binding consumed by the create path.
+        await service.activate_credential_binding(
+            conversation_id, "CODEX_AUTH_JSON", binding()
+        )
+        await service.start_conversation(request)
+        event_service = await service.get_event_service(conversation_id)
+        assert event_service is not None
+        assert event_service.credential_bindings == {}
+        assert "CODEX_AUTH_JSON" in event_service.stored.secrets
+
+        # Pending binding consumed when the unloaded conversation loads again.
+        await service.prepare_for_sandbox_pause()
+        await service.activate_credential_binding(
+            conversation_id, "CODEX_AUTH_JSON", binding()
+        )
+        event_service = await service.get_event_service(conversation_id)
+        assert event_service is not None
+        assert event_service.credential_bindings == {}
+        await service.prepare_for_sandbox_pause()
+
+        meta = json.loads(meta_file.read_text())
+        assert meta["required_runtime_credential_bindings"] == []
+        assert "CODEX_AUTH_JSON" in meta["secrets"]
+        assert await service.get_event_service(conversation_id) is not None
 
 
 @pytest.mark.asyncio

@@ -49,7 +49,7 @@ Routes: `GET /api/tools/`, `GET /api/tools/catalog`, `POST /api/sub-agents`,
 - `F27.custom-tool-modules`: with `OH_EXTRA_PYTHON_PATH` naming a directory, `tool_module_qualnames` imports a module from it at create, the agent runs its tool, the conversation reports the mapping and `GET /api/tools/` lists the tool (the sealed catalog does not); after a restart the tool is gone until the conversation is loaded again, and a new message runs it again; an unimportable module is a logged warning and the create still succeeds.
 - `F27.import-modules`: a server started with `--import-modules` (and `OH_EXTRA_PYTHON_PATH`) lists the module's tool in `GET /api/tools/` and offers it in the catalog before any conversation exists; a module that cannot be imported stops the server before it binds its port.
 - `F27.custom-tool-missing-on-resume`: when a conversation's tool module can no longer be imported after a restart, the server should drop the tool with its warning and keep the conversation readable; today its event search and a new message are 500 (`Unknown kind`).
-- `F27.browser-playwright-path`: the browser probe should find a Playwright Chromium in `$PLAYWRIGHT_BROWSERS_PATH`; today it only looks in standard paths, `~/.cache/ms-playwright` and `PATH`, and reports `browser_tool_set` unusable.
+- `F27.browser-playwright-path`: the browser probe finds a Playwright Chromium in `$PLAYWRIGHT_BROWSERS_PATH` as well as in standard paths, `~/.cache/ms-playwright` and `PATH`, and reports `browser_tool_set` usable.
 - `F27.browser-probe`: without a Chromium the server can find, the catalog reports `browser_tool_set` unusable and `/server_info` `usable_tools` leaves it out; with a Playwright Chromium in the server's `~/.cache/ms-playwright` and a restart, the catalog reports it usable and `usable_tools` lists it.
 - `F27.browser-disabled-launch`: a conversation started from the saved settings (default tools) gets `browser_tool_set` while the server finds Chromium, and leaves it out after a restart with `enable_browser: false`; a conversation created before keeps its stored tools.
 - `F27.browser-disabled`: with `enable_browser: false` the catalog reports `browser_tool_set` unusable although Chromium is present, while `GET /api/tools/` still lists it.
@@ -678,8 +678,8 @@ Preconditions:
   conversation reports the mapping, and the registry lists the tool from
   then on for every caller, while the catalog, sealed at startup, does not
   offer it. An unimportable module is only a warning: the create is `201`
-  and keeps the mapping (the agent would fail later only if it names that
-  tool). After a restart the registry no longer has the tool; loading the
+  and keeps the mapping (a create whose agent names that tool is a 422,
+  `F33.custom-tool-module-unimportable`). After a restart the registry no longer has the tool; loading the
   conversation for the next message imports the module again and the tool
   runs.
 - **Startup imports (`F27.import-modules`).** `--import-modules` is a
@@ -748,7 +748,7 @@ Preconditions:
   'QaF27EchoObservation'`. Only `GET /api/conversations/{id}`, which reads
   the metadata without loading, still answers. A deployment that drops or
   renames a custom tool module loses every conversation that used it.
-- **Playwright browsers directory (`F27.browser-playwright-path`), known bug.**
+- **Playwright browsers directory (`F27.browser-playwright-path`).**
   Point the server at the run-owned Playwright directory through
   `PLAYWRIGHT_BROWSERS_PATH` only.
   ```sh
@@ -756,14 +756,15 @@ Preconditions:
     --check tools contains '{"name": "browser_tool_set", "user_selectable": true, "usable": false'
   control-agent-server restart --env PLAYWRIGHT_BROWSERS_PATH="$PW"
   control-agent-server api GET /api/tools/catalog --expect 200 --quiet --check tools contains '{"name": "terminal", "user_selectable": true, "usable": true'
-  control-agent-server api GET /api/tools/catalog --expect 200 --check tools contains '{"name": "browser_tool_set", "user_selectable": true, "usable": true' --save F27.browser-playwright-path/catalog  # bug: status eq 200 && response.body.tools contains '{"name": "browser_tool_set", "user_selectable": true, "usable": false'
+  control-agent-server api GET /api/tools/catalog --expect 200 --check tools contains '{"name": "browser_tool_set", "user_selectable": true, "usable": true' --save F27.browser-playwright-path/catalog
   ```
   The first check shows this server finds no Chromium on its own (no
   standard path, nothing in its private `~/.cache/ms-playwright`). Playwright
   installs browsers into `$PLAYWRIGHT_BROWSERS_PATH` when it is set, so the
-  probe should look there. Today `check_chromium_available()` ignores the
-  variable and the catalog keeps `usable: false`, and the browser tool cannot
-  start on such a machine even though Playwright could launch the binary.
+  probe looks there too (before the default cache): after the restart the
+  catalog reports `usable: true` and the browser tool can start with that
+  binary. Playwright's special value `0` (browsers inside the installed
+  package) is not a directory and is not probed.
 - **Browser probe (`F27.browser-probe`).** Restart without the earlier
   overrides and see the browser unusable, then put the same Chromium where
   the probe looks (the server's `HOME`) and restart again.
@@ -909,10 +910,11 @@ Preconditions:
 - Browser usability depends on the machine: a Chromium at a standard path
   (`/usr/bin/chromium`, `/usr/bin/google-chrome`, ...) or on the server's
   `PATH` is always found. On such a machine the negative control of
-  `F27.browser-probe` fails, and the first check of
-  `F27.browser-playwright-path` fails so that bullet stays an expected
-  failure without proving the bug; run the family where Chromium lives only
-  in a Playwright directory (`capabilities` names it). The probe is cached
+  `F27.browser-probe` fails, and so does the first check of
+  `F27.browser-playwright-path`; run the family where Chromium lives only
+  in a Playwright directory (`capabilities` names it). `launch` does not
+  pass `$PLAYWRIGHT_BROWSERS_PATH` on to the server, so the server sees only
+  what a recipe gives it with `--env`. The probe is cached
   per process (`functools.cache`), so restart after changing what is
   installed. With `conversation_runtime: docker` nothing is probed and every
   tool is reported usable except as the image settings say.

@@ -37,13 +37,13 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 - `F15.changes-nested-repo`: changes inside a repository nested one level below the requested repository are listed with the nested directory as prefix, the nested directory itself is not listed, and `diff` of such an entry reads the nested repository.
 - `F15.changes-repo-below-path`: a non-repository directory that holds one repository (the layout of a repository-backed conversation) lists that repository's changes with its directory as prefix.
 - `F15.changes-special-names`: a modified tracked file whose name has a space or a non-ASCII character is listed under its real name; today a space fails the whole list with 400 and a non-ASCII name comes back as a mangled git-quoted string.
-- `F15.changes-subdir-paths`: `changes` for a subdirectory of a repository returns paths on one base; today tracked paths are repository-relative (and include files outside the subdirectory) while untracked paths are subdirectory-relative.
+- `F15.changes-subdir-paths`: `changes` for a subdirectory of a repository lists only the changes under it, tracked and untracked alike, as paths relative to the requested directory.
 - `F15.non-repo`: on a plain directory, a missing directory and a non-repository file every operation answers 200 with an empty result (`[]`, `{"original": null, "modified": null}`, `{"commits": [], "has_more": false}`); a repository without commits lists its files as `ADDED` and has no commits.
 - `F15.diff`: `diff` for a modified file returns the base text as `original` and the disk text as `modified` (final newline dropped on both sides), an untracked file has `original` `""`, and an explicit `ref` moves the base.
 - `F15.diff-commit`: `commit=<sha>` returns the file as that commit changed it, read from git objects: `original` from the first parent (empty for the root commit or an added file), `modified` from the commit (empty for a file it deleted), also for files no longer on disk and for abbreviated SHAs.
 - `F15.diff-errors`: `ref` together with `commit` is 400, a non-hex `commit` 422, an unknown commit or ref 400, a missing file 400, a file over 1 MiB 400, and no `path` 422.
 - `F15.diff-whitespace`: an unchanged file with leading indentation or trailing blank lines diffs to identical `original` and `modified`, so a file that `changes` does not list shows no diff.
-- `F15.diff-deleted-file`: the working-tree diff of a file that `changes` lists as `DELETED` returns its base text as `original` and `""` as `modified`; today it is 400 `File does not exist`.
+- `F15.diff-deleted-file`: the working-tree diff of a file that `changes` lists as `DELETED` returns its base text as `original` and `""` as `modified`; a path missing both on disk and at the base is still 400 `File does not exist`.
 - `F15.commits`: `commits` lists the history newest first with `sha`, `short_sha`, `subject`, `author` and an ISO 8601 `timestamp`, `has_more` tells whether `limit` cut it, and `limit` outside 1..200 is 422.
 - `F15.commit-changes`: `commits/{sha}/changes` lists one commit's files against its first parent (the root commit as all `ADDED`, a rename as `DELETED` plus `ADDED`), accepts abbreviated SHAs, answers 400 for an unknown SHA and 422 for a non-hex or shorter-than-4 SHA.
 - `F15.scoped`: the four conversation-scoped routes on a conversation whose workspace is the fixture repository return exactly what the global routes return.
@@ -293,7 +293,7 @@ Preconditions:
   (`core.quotePath`), with quotes kept and backslashes turned into slashes by
   the POSIX path serializer. Untracked names with a space are fine; untracked
   non-ASCII names are mangled the same way.
-- **Subdirectory of a repository (`F15.changes-subdir-paths`), known bug.**
+- **Subdirectory of a repository (`F15.changes-subdir-paths`).**
   `path` is `src/` of a copy with a modified `src/app.py` and an untracked
   `src/new.py`.
   ```sh
@@ -304,7 +304,7 @@ Preconditions:
     --check 0.path eq README.md --check 1.path eq notes.txt --check 2.path eq src/app.py --check 3.path eq src/new.py
   control-agent-server api GET /api/git/changes --query path="$F/subdir/src" --expect 200 \
     --raw-out "$F/subdir.json" --save F15.changes-subdir-paths/src
-  python3 - "$F/subdir.json" "$F/subdir/src" "$F/subdir" <<'PY' | control-agent-server assert --check paths len-ge 1 --check bases len-ge 1  # bug: value.paths eq '["README.md", "new.py", "src/app.py"]' && value.bases len-eq 0
+  python3 - "$F/subdir.json" "$F/subdir/src" "$F/subdir" <<'PY' | control-agent-server assert --check paths eq '["app.py", "new.py"]' --check bases len-eq 1 --check 'bases.0' eq "$F/subdir/src"
   import json, os, sys
   changes = json.load(open(sys.argv[1]))
   paths = sorted(c["path"] for c in changes if c["status"] != "DELETED")
@@ -313,14 +313,12 @@ Preconditions:
   PY
   ```
   The repository root lists all four changes on one base (positive
-  control). Expected: every returned path for `src/` resolves against one
-  base (the requested directory or the repository root). Actual:
-  `[UPDATED README.md, ADDED new.py, UPDATED src/app.py]`: tracked paths come
-  from `git diff --name-status` (repository-relative, whole repository, so
-  `README.md` outside `src/` is listed) and untracked ones from
-  `git ls-files --others` run in `src/` (subdirectory-relative, so the root's
-  `notes.txt` is missing). Joined to `path`, `README.md` and `src/app.py`
-  name files that do not exist.
+  control). For `src/` the list is `[UPDATED app.py, ADDED new.py]`: only the
+  changes under `src/` (the root's `README.md` and `notes.txt` are left out),
+  every path relative to the requested directory, so each one joined to
+  `path` names a file that exists. `get_changes_in_repo` runs
+  `git diff --name-status --relative`, which is scoped and relative the same
+  way as `git ls-files --others` for untracked files.
 - **Not a repository, or no commits yet (`F15.non-repo`).**
   ```sh
   mkdir -p "$F/plain"
@@ -432,24 +430,21 @@ Preconditions:
   `modified`, `"\n".join(text.splitlines())`. The commit-mode diff
   strips both sides alike, so it shows no phantom change but loses the
   whitespace.
-- **Diff of a deleted file (`F15.diff-deleted-file`), known bug.** `changes`
-  lists a deleted file; the diff the Changes tab opens for it fails.
+- **Diff of a deleted file (`F15.diff-deleted-file`).** `changes` lists a
+  deleted file; the diff the Changes tab opens for it shows the deletion.
   ```sh
   cp -r "$REPO" "$F/deleted"
   rm "$F/deleted/src/util.py"
   control-agent-server api GET /api/git/changes --query path="$F/deleted" --expect 200 \
     --check 2.status eq DELETED --check 2.path eq src/util.py
   control-agent-server api GET /api/git/diff --query path="$F/deleted/src/util.py" --expect 200 \
-    --check original eq "$(git -C "$REPO" show HEAD:src/util.py)" --check modified eq '' --save F15.diff-deleted-file/diff  # bug: status eq 400 && response.body.detail contains 'File does not exist'
+    --check original eq "$(git -C "$REPO" show HEAD:src/util.py)" --check modified eq '' --save F15.diff-deleted-file/diff
   ```
   Expected: the base text as `original` and `""` as `modified`, as the
-  commit-mode diff already does for deleted files. Actual:
-  `400 {"detail": "File does not exist: .../src/util.py"}`: `get_git_diff`
-  checks the disk before it looks at git. The old side of a working-tree
-  rename fails the same way. No route returns a working-tree-deleted file's
-  base text, so the Changes tab lists a deletion it cannot show. The SDK
-  unit test `test_get_git_diff_deleted_file` currently pins the
-  `GitPathError`, so a fix updates it too.
+  commit-mode diff does for deleted files; the old side of a working-tree
+  rename diffs the same way. `get_git_diff` reads a path missing from disk
+  from the base ref and answers `File does not exist` only when the base has
+  no file there either (`F15.diff-errors/missing`).
 - **Commit history (`F15.commits`).**
   ```sh
   control-agent-server api GET /api/git/commits --query path="$REPO" --expect 200 --check commits len-eq 2 \

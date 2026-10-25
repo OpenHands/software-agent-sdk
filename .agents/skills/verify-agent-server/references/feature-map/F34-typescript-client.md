@@ -764,13 +764,12 @@ Preconditions:
   events; the user filter returns the one message, the fully-qualified kind
   only actions, the body filter is case-insensitive, pages do not overlap,
   and the lookups by id return the stored events.
-- **Unknown event id (`F34.events-unknown-id`), known bug.** The same server
-  bug as `F06.unknown-event`, reached through the client: `getEventById`
-  expects the documented 404 and `getEventsById` maps it to `null`
-  (`clients/typescript/src/events/remote-events-list.ts:110`), but the
-  server answers 500 (`Unknown event_id`). Runs on `SCID`, whose first
-  event is read back by id first (positive control); the program records
-  how each call settled.
+- **Unknown event id (`F34.events-unknown-id`).** `F06.unknown-event`
+  reached through the client: `getEventById` expects the documented 404 and
+  `getEventsById` maps it to `null`
+  (`clients/typescript/src/events/remote-events-list.ts:110`). Runs on
+  `SCID`, whose first event is read back by id first (positive control); the
+  program records how each call settled.
   ```sh
   cat > "$F34/unknown-event.mjs" <<'JS'
   import { writeFileSync } from 'node:fs';
@@ -787,23 +786,18 @@ Preconditions:
   JS
   control-agent-server exec --timeout 60 --expect-output QA_F34_UNKNOWN_EVENT_READ --save F34.events-unknown-id/program -- node "$F34/unknown-event.mjs" "$SCID"
   cat "$F34/unknown-event.json"
-  control-agent-server assert --json "$F34/unknown-event.json" --check single.http_error eq true --check single.status eq 404  # bug: value.single.status eq 500 && value.single.response.exception contains 'Unknown event_id'
+  control-agent-server assert --json "$F34/unknown-event.json" --check single.http_error eq true --check single.status eq 404
   control-agent-server assert --json "$F34/unknown-event.json" --check batch.value len-eq 2 --check batch.value.0 eq "$(jq -r .first "$F34/unknown-event.json")" \
-    --check batch.value.1 missing  # bug: value.batch.status eq 500 && value.batch.response.exception contains 'Unknown event_id'
+    --check batch.value.1 missing
   ```
-  Expected: a 404 `HttpError`, and `[<event>, null]`. Today both calls
-  reject with a 500 `HttpError` whose `response.exception` is
-  `'Unknown event_id: 00000000-0000-0000-0000-000000000000'`, so one missing
-  id fails the whole `getEventsById`.
-- **Short event kinds (`F34.events-search-kind`), known bug.** The same
-  server bug as `F06.search-kind-short`, reached through the client: the
-  service compares `kind` with `<module>.<ClassName>`
-  (`openhands-agent-server/openhands/agent_server/event_service.py:555`)
-  while the route and `EventSearchOptions.kind`
-  (`clients/typescript/src/events/remote-events-list.ts:23`) document
-  `ActionEvent, MessageEvent`. Runs on `SCID`'s queued user message; the
-  fully-qualified kind finds it first (positive control); the bug is the
-  same for every kind (`F06.search-kind-short` shows it on the REST route).
+  `getEventById` rejects with a 404 `HttpError`, and `getEventsById`
+  resolves to `[<event>, null]`, so one missing id does not fail the batch.
+- **Short event kinds (`F34.events-search-kind`).** `F06.search-kind-short`
+  reached through the client: the route and `EventSearchOptions.kind`
+  (`clients/typescript/src/events/remote-events-list.ts`) document
+  `ActionEvent, MessageEvent`, and the server accepts that bare class name as
+  well as `<module>.<ClassName>`. Runs on `SCID`'s queued user message; the
+  fully-qualified kind finds it first (positive control).
   ```sh
   cat > "$F34/kind.mjs" <<'JS'
   import { writeFileSync } from 'node:fs';
@@ -820,10 +814,9 @@ Preconditions:
   JS
   control-agent-server exec --timeout 60 --expect-output QA_F34_KIND_READ --save F34.events-search-kind/program -- node "$F34/kind.mjs" "$SCID"
   cat "$F34/kind.json"
-  control-agent-server assert --json "$F34/kind.json" --check short len-eq 1 --check short.0 eq "$(jq -r '.full[0]' "$F34/kind.json")" --check short_count eq 1  # bug: value.short len-eq 0 && value.short_count eq 0
+  control-agent-server assert --json "$F34/kind.json" --check short len-eq 1 --check short.0 eq "$(jq -r '.full[0]' "$F34/kind.json")" --check short_count eq 1
   ```
-  Expected: the short name finds the same message. Today it returns no items
-  and a count of 0.
+  The short name finds the same message and counts `1`.
 - **Event stream on Node's WebSocket (`F34.event-stream`).** Replay, a turn
   sent over the socket, and a wrong key.
 
@@ -999,14 +992,12 @@ Preconditions:
   ```
   Expected: the stored title and a `ConversationInfo` with the conversation's
   `id` and new title.
-- **Create options (`F34.manager-create-options`), known bug.**
-  `ConversationManager.createConversation` hands `maxIterations` and
-  `stuckDetection` to the `RemoteConversation` constructor, which ignores
-  them, and calls `start()` without them, so the server always gets
-  `max_iterations` 500 and `stuck_detection: true`
-  (`clients/typescript/src/conversation/conversation-manager.ts:221`).
-  `RemoteConversation.start({maxIterations, stuckDetection})` does forward
-  both, as the program shows first (positive control). It records what the
+- **Create options (`F34.manager-create-options`).**
+  `ConversationManager.createConversation` forwards `maxIterations` and
+  `stuckDetection` to `start()`, so the server stores the caller's
+  `max_iterations` and `stuck_detection`, the same as
+  `RemoteConversation.start({maxIterations, stuckDetection})`, which the
+  program checks first (positive control). It records what the
   server stored for the manager's conversation, deletes both conversations,
   and REST confirms they are gone.
   ```sh
@@ -1030,12 +1021,10 @@ Preconditions:
   control-agent-server exec --timeout 60 --expect-output QA_F34_CREATE_OPTIONS_READ --save F34.manager-create-options/program -- node "$F34/create-options.mjs"
   for ID in $(jq -r '.ids[]' "$F34/create-options.json"); do control-agent-server api GET "/api/conversations/$ID" --expect 404; done
   cat "$F34/create-options.json"
-  control-agent-server assert --json "$F34/create-options.json" --check max_iterations eq 7 --check stuck_detection eq false  # bug: value.max_iterations eq 500 && value.stuck_detection eq true
+  control-agent-server assert --json "$F34/create-options.json" --check max_iterations eq 7 --check stuck_detection eq false
   ```
   Expected: `max_iterations` 7 and `stuck_detection: false`, as the
-  direct `start()` gets. Today the manager's conversation has
-  `{"max_iterations":500,"stuck_detection":true}`. Both conversations are
-  deleted either way.
+  direct `start()` gets. Both conversations are deleted.
 - **ACP conversations (`F34.manager-acp`).** `ConversationManager.acp` with
   the inline ACP Codex agent F12 uses; the ACP subprocess only starts on
   the first run, so nothing runs and no Codex binary is needed.
@@ -1481,8 +1470,9 @@ Preconditions:
   (`F34.workspace-git-types`).
   `gitChanges` and `gitDiff` wrap every refusal in a plain `Error`, so read
   the status from `isHttpError(e.cause)`, not from `e`.
-- The `kind` filter of `RemoteEventsList.search` and `count` needs the
-  fully-qualified class path (`F34.events-search-kind`, `F06.search-kind-short`).
+- The `kind` filter of `RemoteEventsList.search` and `count` takes the bare
+  class name or the fully-qualified class path (`F34.events-search-kind`,
+  `F06.search-kind-short`).
 - A `RemoteWorkspace` with `conversationId` checks `/server_info` once per
   transport and only then picks the conversation-scoped routes; it refuses a
   path with a query string or `..` and a `cid` parameter client-side.

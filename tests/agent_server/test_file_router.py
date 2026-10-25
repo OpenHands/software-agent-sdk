@@ -62,7 +62,7 @@ def test_upload_file_query_param_success(client, tmp_path):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"success": True}
+    assert response.json() == {"success": True, "file_size": len(file_content)}
     assert target_path.exists()
     assert target_path.read_bytes() == file_content
 
@@ -325,6 +325,7 @@ def test_upload_large_file_chunked(client, tmp_path):
     )
 
     assert response.status_code == 200
+    assert response.json()["file_size"] == len(large_content)
     assert target_path.exists()
     assert target_path.read_bytes() == large_content
 
@@ -342,6 +343,7 @@ def test_upload_overwrites_existing_file(client, tmp_path):
     )
 
     assert response.status_code == 200
+    assert response.json()["file_size"] == len(new_content)
     assert target_path.read_bytes() == new_content
 
 
@@ -989,6 +991,45 @@ def test_search_subdirs_paginates_with_limit_and_page_id(client, tmp_path):
     assert third_body["next_page_id"] is None
 
 
+def test_search_subdirs_pages_past_case_only_twins(client, tmp_path):
+    """Following next_page_id reaches each of two names that differ by case."""
+    (tmp_path / "foo").mkdir()
+    if (tmp_path / "Foo").exists():
+        pytest.skip("filesystem does not distinguish case-only directory names")
+    for name in ["Foo", "bar"]:
+        (tmp_path / name).mkdir()
+
+    seen: list[str] = []
+    page_id: str | None = None
+    for _ in range(5):
+        params: dict[str, str | int] = {"path": str(tmp_path), "limit": 1}
+        if page_id is not None:
+            params["page_id"] = page_id
+        response = client.get("/api/file/search_subdirs", params=params)
+        assert response.status_code == 200
+        body = response.json()
+        seen.extend(e["name"] for e in body["items"])
+        page_id = body["next_page_id"]
+        if page_id is None:
+            break
+
+    assert seen == ["bar", "Foo", "foo"]
+    assert page_id is None
+
+
+def test_search_subdirs_accepts_lowercase_cursor(client, tmp_path):
+    """A lowercase cursor from an older server still resumes at its entry."""
+    for name in ["Alpha", "Bravo"]:
+        (tmp_path / name).mkdir()
+
+    response = client.get(
+        "/api/file/search_subdirs",
+        params={"path": str(tmp_path), "limit": 1, "page_id": "bravo"},
+    )
+    assert response.status_code == 200
+    assert [e["name"] for e in response.json()["items"]] == ["Bravo"]
+
+
 def test_search_subdirs_limit_too_low_returns_422(client, tmp_path):
     response = client.get(
         "/api/file/search_subdirs",
@@ -1536,6 +1577,40 @@ def test_archive_non_git_directory_has_no_repo_metadata_headers(client, workspac
     assert "x-archive-repo-remote" not in resp.headers
     assert "x-archive-branch" not in resp.headers
     assert "x-archive-head-commit" not in resp.headers
+
+
+def test_archive_format_description_matches_single_nested_repo(client, tmp_path):
+    # A non-repo directory holding exactly one repository is archived as that
+    # repository, so files beside it are left out; the public description of
+    # ``format`` must say so instead of promising "the entire directory".
+    parent = tmp_path / "parent"
+    repo = parent / "group" / "proj"
+    repo.mkdir(parents=True)
+    _git(["init", "-q"], repo)
+    (repo / "README.md").write_text("# proj\n", encoding="utf-8")
+    _git(["add", "-A"], repo)
+    _git(["commit", "-qm", "init"], repo)
+    (parent / "top.txt").write_text("top\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(parent), "format": "tar.gz"}
+    )
+    assert resp.status_code == 200, resp.text
+    with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
+        names = tar.getnames()
+    assert "proj/README.md" in names
+    assert not any(name.endswith("top.txt") for name in names)
+
+    paths = client.get("/openapi.json").json()["paths"]
+    for route in (
+        "/api/file/archive",
+        "/api/conversations/{runtime_conversation_id}/file/archive",
+    ):
+        params = paths[route]["get"]["parameters"]
+        descriptions = {p["name"]: p.get("description", "") for p in params}
+        assert "entire directory" not in descriptions["format"]
+        for name in ("format", "path"):
+            assert "exactly one git repository" in descriptions[name]
 
 
 def test_archive_remote_with_embedded_control_char_is_percent_encoded(client, tmp_path):

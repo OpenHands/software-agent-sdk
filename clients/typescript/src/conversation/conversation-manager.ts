@@ -226,6 +226,8 @@ export class ConversationManager {
 
     await conversation.start({
       initialMessage: options.initialMessage,
+      maxIterations: options.maxIterations,
+      stuckDetection: options.stuckDetection,
       userId: options.userId,
     });
 

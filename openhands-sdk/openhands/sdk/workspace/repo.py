@@ -40,6 +40,7 @@ class GitProvider(str, Enum):
     GITHUB = "github"
     GITLAB = "gitlab"
     BITBUCKET = "bitbucket"
+    AZURE_DEVOPS = "azure_devops"
 
 
 # Mapping of provider to secret name used in sandbox settings
@@ -47,6 +48,7 @@ PROVIDER_TOKEN_NAMES: dict[GitProvider, str] = {
     GitProvider.GITHUB: "github_token",
     GitProvider.GITLAB: "gitlab_token",
     GitProvider.BITBUCKET: "bitbucket_token",
+    GitProvider.AZURE_DEVOPS: "azure_devops_token",
 }
 
 # Mapping of URL patterns to providers for auto-detection
@@ -54,14 +56,41 @@ PROVIDER_URL_PATTERNS: dict[str, GitProvider] = {
     "github.com": GitProvider.GITHUB,
     "gitlab.com": GitProvider.GITLAB,
     "bitbucket.org": GitProvider.BITBUCKET,
+    "dev.azure.com": GitProvider.AZURE_DEVOPS,
 }
+
+# Host suffixes whose subdomains belong to a provider ({org}.visualstudio.com)
+PROVIDER_URL_SUFFIXES: dict[str, GitProvider] = {
+    ".visualstudio.com": GitProvider.AZURE_DEVOPS,
+}
+
+
+def _provider_for_host(hostname: str) -> GitProvider | None:
+    """Return the provider whose own host this is, if any."""
+    provider = PROVIDER_URL_PATTERNS.get(hostname)
+    if provider is None:
+        for suffix, suffix_provider in PROVIDER_URL_SUFFIXES.items():
+            if hostname.endswith(suffix):
+                return suffix_provider
+    return provider
+
+
+def _provider_hosts(provider: GitProvider) -> list[str]:
+    """Public hosts of a provider, without any leading dot."""
+    return [
+        host.lstrip(".")
+        for mapping in (PROVIDER_URL_PATTERNS, PROVIDER_URL_SUFFIXES)
+        for host, host_provider in mapping.items()
+        if host_provider == provider
+    ]
 
 
 def _detect_provider_from_url(url: str) -> GitProvider | None:
     """Detect git provider from URL patterns.
 
     Uses proper URL parsing to prevent false positives from malicious URLs
-    like 'https://github.com.evil.com/repo'.
+    like 'https://github.com.evil.com/repo'. User info is ignored, so the
+    'https://org@dev.azure.com/...' form Azure DevOps shows is recognized.
 
     Args:
         url: Repository URL or owner/repo format
@@ -71,13 +100,11 @@ def _detect_provider_from_url(url: str) -> GitProvider | None:
     """
     try:
         parsed = urllib.parse.urlparse(url)
-        hostname = parsed.netloc.lower()
+        hostname = (parsed.hostname or "").lower()
         # Handle git@ format: git@github.com:owner/repo
         if not hostname and url.startswith("git@"):
             hostname = url.split("@")[1].split(":")[0].lower()
-        for pattern, provider in PROVIDER_URL_PATTERNS.items():
-            if hostname == pattern:
-                return provider
+        return _provider_for_host(hostname)
     except Exception:
         pass
     return None
@@ -123,10 +150,10 @@ class RepoSource(BaseModel):
         default=None,
         description="Optional branch, tag, or commit SHA to checkout.",
     )
-    provider: Literal["github", "gitlab", "bitbucket"] | None = Field(
+    provider: Literal["github", "gitlab", "bitbucket", "azure_devops"] | None = Field(
         default=None,
         description=(
-            "Git hosting provider (github, gitlab, bitbucket). "
+            "Git hosting provider (github, gitlab, bitbucket, azure_devops). "
             "Required for short URL format (owner/repo). "
             "Auto-detected for full URLs."
         ),
@@ -170,6 +197,11 @@ class RepoSource(BaseModel):
             return self
 
         # Short format - check if provider is specified or detectable
+        if self.provider == GitProvider.AZURE_DEVOPS.value:
+            raise ValueError(
+                "Azure DevOps repositories need a full URL such as "
+                "https://dev.azure.com/org/project/_git/repo"
+            )
         detected = _detect_provider_from_url(self.url)
         if not detected and not self.provider:
             raise ValueError(
@@ -291,6 +323,8 @@ _PROVIDER_CONFIG: dict[GitProvider, tuple[str, str]] = {
     GitProvider.GITHUB: ("github.com", "{token}@"),
     GitProvider.GITLAB: ("gitlab.com", "oauth2:{token}@"),
     GitProvider.BITBUCKET: ("bitbucket.org", "x-token-auth:{token}@"),
+    # Azure DevOps ignores the user; PATs and Entra tokens both work as password.
+    GitProvider.AZURE_DEVOPS: ("dev.azure.com", "oauth2:{token}@"),
 }
 
 
@@ -323,13 +357,20 @@ def _build_clone_url(
 
     parsed = urllib.parse.urlparse(url)
     hostname = (parsed.hostname or "").lower()
-    if parsed.scheme != "https" or parsed.username or not hostname:
+    if parsed.scheme != "https" or parsed.password or not hostname:
         return url
-    if hostname != base_url:
+    if _provider_for_host(hostname) != provider:
         # An auto-detected provider is derived from the URL, so it cannot
-        # authorize another host - and never a lookalike of the public one.
-        if not explicit_provider or hostname.startswith(f"{base_url}."):
+        # authorize another host - and never a lookalike of its public ones.
+        lookalike = any(
+            f".{host}." in f".{hostname}" for host in _provider_hosts(provider)
+        )
+        if not explicit_provider or lookalike:
             return url
+    if parsed.username:
+        # Azure DevOps clone URLs name the organization as the user; keep it
+        # and supply the token as its password.
+        auth_prefix = f"{parsed.username}:{token}@"
 
     netloc = hostname if parsed.port is None else f"{hostname}:{parsed.port}"
     return urllib.parse.urlunparse(parsed._replace(netloc=f"{auth_prefix}{netloc}"))
