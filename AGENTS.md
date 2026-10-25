@@ -411,13 +411,6 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 - Security updates can bypass Dependabot cooldown. An urgent exception needs
   explicit maintainer approval recorded in the PR with the package, version,
   advisory/reason, and publication time. Agents must not grant themselves an
-  exception. Keep overrides narrow and remove temporary exceptions afterward.
-- Repository resolver settings do not protect downstream `pip install` or
-  `uv tool install` consumers, and do not retroactively validate existing locks.
-  Use the committed lock for reproducible installs; review newly resolved
+  exception.
+- Use the committed lock for reproducible installs; review newly resolved
   artifacts before committing a lock update.
-
-For manual npm dependency resolution, use npm >= 11.10 with
-`npm install --min-release-age=7` (days), or verify registry timestamps before
-committing the result. Older npm versions do not enforce this option. `npm ci`
-replays the lock and is not proof that newly locked versions meet the age rule.
