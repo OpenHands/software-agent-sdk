@@ -7,7 +7,7 @@
 <p class="eyebrow">Review guide · additive API</p><h1>Send budget information<br>to client applications.</h1>
 <p>Accept a conversation cost limit, retain it through server restart and fork, and return it alongside the existing cost statistics. Client applications can display both amounts without a second accounting system.</p>
 <div class="callout"><strong>★ Reuse the existing limiter.</strong> A call or step may overshoot. The option keeps its existing name, <code>max_budget_per_run</code>, and its existing accumulated-conversation-cost behavior. No budget reset or reservation is introduced.</div>
-<p class="sources">Limiter: <a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L742">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:742</a></p>
+<p class="sources">Limiter: <a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L742">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:742</a></p>
 <section id="api"><h2>One optional field on creation and response</h2><div class="pair"><div class="card"><h3>Before</h3><pre>POST /api/conversations
 { "max_iterations": 500, ... }
 
@@ -17,7 +17,7 @@ GET /api/conversations/{id}
 
 GET /api/conversations/{id}
 { "max_budget_per_run": 10.0,
-  "stats": { ... }, ... }</pre><p>A finite positive USD amount, or <code>null</code> for unbounded. Older stored metadata loads with no limit.</p></div></div><p class="sources"><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/request.py#L285">openhands-sdk/openhands/sdk/conversation/request.py:285</a> · <a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-agent-server/openhands/agent_server/models.py#L173">openhands-agent-server/openhands/agent_server/models.py:173</a> · <a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/tests/agent_server/test_conversation_budget.py#L24">tests/agent_server/test_conversation_budget.py:24</a></p></section>
+  "stats": { ... }, ... }</pre><p>A finite positive USD amount, or <code>null</code> for unbounded. Older stored metadata loads with no limit.</p></div></div><p class="sources"><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/request.py#L285">openhands-sdk/openhands/sdk/conversation/request.py:285</a> · <a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-agent-server/openhands/agent_server/models.py#L173">openhands-agent-server/openhands/agent_server/models.py:173</a> · <a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/tests/agent_server/test_conversation_budget.py#L24">tests/agent_server/test_conversation_budget.py:24</a></p></section>
 <section id="flow"><h2>Connect configuration to the existing run loop</h2>
 <figure><svg viewBox="0 0 860 250" role="img" aria-labelledby="flow-title flow-desc"><title id="flow-title">Before and after budget forwarding</title><desc id="flow-desc">Previously the request had no budget and LocalConversation was constructed without one. Now ConversationConfig persists a budget in meta.json, EventService forwards it to LocalConversation, and ConversationInfo returns it to clients.</desc>
 <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="var(--delta)"/></marker></defs>
@@ -29,12 +29,12 @@ GET /api/conversations/{id}
 <g><rect class="new" x="305" y="145" width="250" height="90" rx="7"/><text class="label" x="323" y="178">LocalConversation</text><text class="detail" x="323" y="204">After: receives stored cap</text></g>
 <path class="arrow" d="M555 190H595" marker-end="url(#arrow)"/>
 <g><rect class="new" x="600" y="145" width="250" height="90" rx="7"/><text class="label" x="618" y="178">ConversationInfo</text><text class="detail" x="618" y="204">After: cap + existing stats</text></g></svg><figcaption>Fig. 1 · Orange marks the new budget path. The existing stats stream continues unchanged.</figcaption></figure>
-<p class="sources"><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/request.py#L285">openhands-sdk/openhands/sdk/conversation/request.py:285</a> · <a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-agent-server/openhands/agent_server/event_service.py#L1361">openhands-agent-server/openhands/agent_server/event_service.py:1361</a> · <a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-agent-server/openhands/agent_server/conversation_service.py#L374">openhands-agent-server/openhands/agent_server/conversation_service.py:374</a></p>
-<div class="pair"><div class="card"><h3>Python entry points</h3><p><code>Conversation(...)</code> and <code>RemoteConversation(...)</code> accept and forward the option. A local fork now copies the limit alongside the existing iteration cap.</p><p class="sources"><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/conversation.py#L76">openhands-sdk/openhands/sdk/conversation/conversation.py:76</a> · <a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py#L793">openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py:793</a> · <a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L908">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:908</a></p></div><div class="card"><h3>TypeScript entry points</h3><p><code>maxBudgetPerRun</code> passes through normal and ACP creation. <code>ConversationInfo.max_budget_per_run</code> and typed <code>stats.usage_to_metrics</code> support the display.</p><p class="sources"><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/clients/typescript/src/types/base.ts#L135">clients/typescript/src/types/base.ts:135</a> · <a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/clients/typescript/src/conversation/remote-conversation.ts#L183">clients/typescript/src/conversation/remote-conversation.ts:183</a></p></div></div></section>
+<p class="sources"><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/request.py#L285">openhands-sdk/openhands/sdk/conversation/request.py:285</a> · <a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-agent-server/openhands/agent_server/event_service.py#L1361">openhands-agent-server/openhands/agent_server/event_service.py:1361</a> · <a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-agent-server/openhands/agent_server/conversation_service.py#L374">openhands-agent-server/openhands/agent_server/conversation_service.py:374</a></p>
+<div class="pair"><div class="card"><h3>Python entry points</h3><p><code>Conversation(...)</code> and <code>RemoteConversation(...)</code> accept and forward the option. A local fork now copies the limit alongside the existing iteration cap.</p><p class="sources"><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/conversation.py#L76">openhands-sdk/openhands/sdk/conversation/conversation.py:76</a> · <a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py#L793">openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py:793</a> · <a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L908">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:908</a></p></div><div class="card"><h3>TypeScript entry points</h3><p><code>maxBudgetPerRun</code> passes through normal and ACP creation. <code>ConversationInfo.max_budget_per_run</code> and typed <code>stats.usage_to_metrics</code> support the display.</p><p class="sources"><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/clients/typescript/src/types/base.ts#L135">clients/typescript/src/types/base.ts:135</a> · <a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/clients/typescript/src/conversation/remote-conversation.ts#L183">clients/typescript/src/conversation/remote-conversation.ts:183</a></p></div></div></section>
 <section id="semantics"><h2>The displayed spend matches enforcement</h2><pre>spent = sum(stats.usage_to_metrics[*].accumulated_cost)
-limit = conversation.max_budget_per_run</pre><p>Both amounts are USD. Spend includes earlier runs and all tracked conversation LLMs. The limit is checked after a step; an over-budget unfinished run emits <code>MaxBudgetReached</code>. A completed task keeps <code>finished</code> status.</p><p class="sources"><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L742">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:742</a></p><p>Fetch the static cap through create/GET, then refresh spend from WebSocket <code>stats</code> updates. A fork keeps the cap and follows its existing <code>reset_metrics</code> choice. Do not alias the legacy per-LLM <code>max_budget_per_task</code> into the UI.</p><p class="sources"><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L908">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:908</a> · <a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-agent-server/openhands/agent_server/models.py#L173">openhands-agent-server/openhands/agent_server/models.py:173</a> · <a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/tests/cross/test_remote_conversation_live_server.py#L1632">tests/cross/test_remote_conversation_live_server.py:1632</a></p></section>
-<section id="evidence"><h2>Test the contract through real server sockets</h2><table><thead><tr><th>Configured limit</th><th>Observed result</th></tr></thead><tbody><tr><td>Unbounded</td><td>$0.01 → $0.02 while running; finishes at $0.03</td></tr><tr><td>$0.015</td><td>Second call allowed; stops at $0.02 with MaxBudgetReached</td></tr><tr><td>$0.10</td><td>$0.01 → $0.02 while running; finishes at $0.03</td></tr></tbody></table><p class="sources"><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/tests/cross/test_remote_conversation_live_server.py#L1632">tests/cross/test_remote_conversation_live_server.py:1632</a> · <a href="budget-evidence.txt">Before/after evidence and commands</a></p><p>The baseline lacks the cap response, but its live REST, persisted-state, and WebSocket costs already work. The implementation therefore adds no stats publication mechanism. Tests use a real uvicorn server and persistence with deterministic provider responses priced at $0.01; they do not verify provider billing or Docker packaging.</p><p>Validation: 385 Python tests and 395 TypeScript tests passed, plus per-file hooks, TypeScript build and OpenAPI export. Full TypeScript lint has three existing errors in untouched integration tests. The release-pinned generated schema remains unchanged; regeneration follows the SDK release pin update.</p></section>
-<section id="files"><h2>Changed files</h2><p class="muted">Expand a file for its diff and a commit-pinned source link. Configuration and client plumbing are additive; tests cover the resulting behavior.</p><details><summary>clients/typescript/README.md <span class="muted">+22 / −0</span></summary><p><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/clients/typescript/README.md#L1">clients/typescript/README.md:1</a></p><pre>diff --git a/clients/typescript/README.md b/clients/typescript/README.md
+limit = conversation.max_budget_per_run</pre><p>Both amounts are USD. Spend includes earlier runs and all tracked conversation LLMs. The limit is checked after a step; an over-budget unfinished run emits <code>MaxBudgetReached</code>. A completed task keeps <code>finished</code> status.</p><p class="sources"><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L742">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:742</a></p><p>Fetch the static cap through create/GET, then refresh spend from WebSocket <code>stats</code> updates. A fork keeps the cap and follows its existing <code>reset_metrics</code> choice. Do not alias the legacy per-LLM <code>max_budget_per_task</code> into the UI.</p><p class="sources"><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L908">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:908</a> · <a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-agent-server/openhands/agent_server/models.py#L173">openhands-agent-server/openhands/agent_server/models.py:173</a> · <a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/tests/cross/test_remote_conversation_live_server.py#L1632">tests/cross/test_remote_conversation_live_server.py:1632</a></p></section>
+<section id="evidence"><h2>Test the contract through real server sockets</h2><table><thead><tr><th>Configured limit</th><th>Observed result</th></tr></thead><tbody><tr><td>Unbounded</td><td>$0.01 → $0.02 while running; finishes at $0.03</td></tr><tr><td>$0.015</td><td>Second call allowed; stops at $0.02 with MaxBudgetReached</td></tr><tr><td>$0.10</td><td>$0.01 → $0.02 while running; finishes at $0.03</td></tr></tbody></table><p class="sources"><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/tests/cross/test_remote_conversation_live_server.py#L1632">tests/cross/test_remote_conversation_live_server.py:1632</a> · <a href="budget-evidence.txt">Before/after evidence and commands</a></p><p>The baseline lacks the cap response, but its live REST, persisted-state, and WebSocket costs already work. The implementation therefore adds no stats publication mechanism. Tests use a real uvicorn server and persistence with deterministic provider responses priced at $0.01; they do not verify provider billing or Docker packaging.</p><p>Validation: 385 Python tests and 395 TypeScript tests passed, plus per-file hooks, TypeScript build and OpenAPI export. Full TypeScript lint has three existing errors in untouched integration tests. The release-pinned generated schema remains unchanged; regeneration follows the SDK release pin update.</p></section>
+<section id="files"><h2>Changed files</h2><p class="muted">Expand a file for its diff and a commit-pinned source link. Configuration and client plumbing are additive; tests cover the resulting behavior.</p><details><summary>clients/typescript/README.md <span class="muted">+22 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/clients/typescript/README.md#L1">clients/typescript/README.md:1</a></p><pre>diff --git a/clients/typescript/README.md b/clients/typescript/README.md
 index 5726143e6..29e817203 100644
 --- a/clients/typescript/README.md
 +++ b/clients/typescript/README.md
@@ -68,7 +68,7 @@ index 5726143e6..29e817203 100644
  
  ### Conversation
 </pre></details>
-<details><summary>clients/typescript/src/__tests__/conversation-create-options.test.ts <span class="muted">+33 / −6</span></summary><p><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/clients/typescript/src/__tests__/conversation-create-options.test.ts#L1">clients/typescript/src/__tests__/conversation-create-options.test.ts:1</a></p><pre>diff --git a/clients/typescript/src/__tests__/conversation-create-options.test.ts b/clients/typescript/src/__tests__/conversation-create-options.test.ts
+<details><summary>clients/typescript/src/__tests__/conversation-create-options.test.ts <span class="muted">+33 / −6</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/clients/typescript/src/__tests__/conversation-create-options.test.ts#L1">clients/typescript/src/__tests__/conversation-create-options.test.ts:1</a></p><pre>diff --git a/clients/typescript/src/__tests__/conversation-create-options.test.ts b/clients/typescript/src/__tests__/conversation-create-options.test.ts
 index a75a1e1b7..a76a18737 100644
 --- a/clients/typescript/src/__tests__/conversation-create-options.test.ts
 +++ b/clients/typescript/src/__tests__/conversation-create-options.test.ts
@@ -139,7 +139,7 @@ index a75a1e1b7..a76a18737 100644
    });
  });
 </pre></details>
-<details><summary>clients/typescript/src/client/conversation-client.ts <span class="muted">+2 / −0</span></summary><p><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/clients/typescript/src/client/conversation-client.ts#L1">clients/typescript/src/client/conversation-client.ts:1</a></p><pre>diff --git a/clients/typescript/src/client/conversation-client.ts b/clients/typescript/src/client/conversation-client.ts
+<details><summary>clients/typescript/src/client/conversation-client.ts <span class="muted">+2 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/clients/typescript/src/client/conversation-client.ts#L1">clients/typescript/src/client/conversation-client.ts:1</a></p><pre>diff --git a/clients/typescript/src/client/conversation-client.ts b/clients/typescript/src/client/conversation-client.ts
 index aaf5163f5..f56392751 100644
 --- a/clients/typescript/src/client/conversation-client.ts
 +++ b/clients/typescript/src/client/conversation-client.ts
@@ -153,7 +153,7 @@ index aaf5163f5..f56392751 100644
  }
  
 </pre></details>
-<details><summary>clients/typescript/src/conversation/conversation-manager.ts <span class="muted">+6 / −0</span></summary><p><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/clients/typescript/src/conversation/conversation-manager.ts#L1">clients/typescript/src/conversation/conversation-manager.ts:1</a></p><pre>diff --git a/clients/typescript/src/conversation/conversation-manager.ts b/clients/typescript/src/conversation/conversation-manager.ts
+<details><summary>clients/typescript/src/conversation/conversation-manager.ts <span class="muted">+6 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/clients/typescript/src/conversation/conversation-manager.ts#L1">clients/typescript/src/conversation/conversation-manager.ts:1</a></p><pre>diff --git a/clients/typescript/src/conversation/conversation-manager.ts b/clients/typescript/src/conversation/conversation-manager.ts
 index 8ac58e347..575cd5ba1 100644
 --- a/clients/typescript/src/conversation/conversation-manager.ts
 +++ b/clients/typescript/src/conversation/conversation-manager.ts
@@ -206,7 +206,7 @@ index 8ac58e347..575cd5ba1 100644
        workspace: { type: &#x27;local&#x27;, working_dir: options.workingDir || &#x27;/tmp&#x27; },
        user_id: options.userId ?? null,
 </pre></details>
-<details><summary>clients/typescript/src/conversation/remote-conversation.ts <span class="muted">+10 / −0</span></summary><p><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/clients/typescript/src/conversation/remote-conversation.ts#L1">clients/typescript/src/conversation/remote-conversation.ts:1</a></p><pre>diff --git a/clients/typescript/src/conversation/remote-conversation.ts b/clients/typescript/src/conversation/remote-conversation.ts
+<details><summary>clients/typescript/src/conversation/remote-conversation.ts <span class="muted">+10 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/clients/typescript/src/conversation/remote-conversation.ts#L1">clients/typescript/src/conversation/remote-conversation.ts:1</a></p><pre>diff --git a/clients/typescript/src/conversation/remote-conversation.ts b/clients/typescript/src/conversation/remote-conversation.ts
 index 04091d075..11620915d 100644
 --- a/clients/typescript/src/conversation/remote-conversation.ts
 +++ b/clients/typescript/src/conversation/remote-conversation.ts
@@ -256,7 +256,7 @@ index 04091d075..11620915d 100644
        workspace: { type: &#x27;local&#x27;, working_dir: this.workspace.workingDir },
        hook_config: hookConfig ?? null,
 </pre></details>
-<details><summary>clients/typescript/src/models/conversation.ts <span class="muted">+6 / −0</span></summary><p><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/clients/typescript/src/models/conversation.ts#L1">clients/typescript/src/models/conversation.ts:1</a></p><pre>diff --git a/clients/typescript/src/models/conversation.ts b/clients/typescript/src/models/conversation.ts
+<details><summary>clients/typescript/src/models/conversation.ts <span class="muted">+6 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/clients/typescript/src/models/conversation.ts#L1">clients/typescript/src/models/conversation.ts:1</a></p><pre>diff --git a/clients/typescript/src/models/conversation.ts b/clients/typescript/src/models/conversation.ts
 index bfd1b6eec..8c7210b4c 100644
 --- a/clients/typescript/src/models/conversation.ts
 +++ b/clients/typescript/src/models/conversation.ts
@@ -288,7 +288,7 @@ index bfd1b6eec..8c7210b4c 100644
    workspace: Record&lt;string, unknown&gt;;
    hook_config?: HookConfig | null;
 </pre></details>
-<details><summary>clients/typescript/src/types/base.ts <span class="muted">+4 / −0</span></summary><p><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/clients/typescript/src/types/base.ts#L1">clients/typescript/src/types/base.ts:1</a></p><pre>diff --git a/clients/typescript/src/types/base.ts b/clients/typescript/src/types/base.ts
+<details><summary>clients/typescript/src/types/base.ts <span class="muted">+4 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/clients/typescript/src/types/base.ts#L1">clients/typescript/src/types/base.ts:1</a></p><pre>diff --git a/clients/typescript/src/types/base.ts b/clients/typescript/src/types/base.ts
 index 9d18316cd..47d63f63a 100644
 --- a/clients/typescript/src/types/base.ts
 +++ b/clients/typescript/src/types/base.ts
@@ -311,7 +311,7 @@ index 9d18316cd..47d63f63a 100644
  }
  
 </pre></details>
-<details><summary>openhands-agent-server/openhands/agent_server/conversation_service.py <span class="muted">+1 / −0</span></summary><p><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-agent-server/openhands/agent_server/conversation_service.py#L1">openhands-agent-server/openhands/agent_server/conversation_service.py:1</a></p><pre>diff --git a/openhands-agent-server/openhands/agent_server/conversation_service.py b/openhands-agent-server/openhands/agent_server/conversation_service.py
+<details><summary>openhands-agent-server/openhands/agent_server/conversation_service.py <span class="muted">+1 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-agent-server/openhands/agent_server/conversation_service.py#L1">openhands-agent-server/openhands/agent_server/conversation_service.py:1</a></p><pre>diff --git a/openhands-agent-server/openhands/agent_server/conversation_service.py b/openhands-agent-server/openhands/agent_server/conversation_service.py
 index ceda02387..05781d065 100644
 --- a/openhands-agent-server/openhands/agent_server/conversation_service.py
 +++ b/openhands-agent-server/openhands/agent_server/conversation_service.py
@@ -324,7 +324,7 @@ index ceda02387..05781d065 100644
          metrics=stored.metrics,
          created_at=stored.created_at,
 </pre></details>
-<details><summary>openhands-agent-server/openhands/agent_server/event_service.py <span class="muted">+1 / −0</span></summary><p><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-agent-server/openhands/agent_server/event_service.py#L1">openhands-agent-server/openhands/agent_server/event_service.py:1</a></p><pre>diff --git a/openhands-agent-server/openhands/agent_server/event_service.py b/openhands-agent-server/openhands/agent_server/event_service.py
+<details><summary>openhands-agent-server/openhands/agent_server/event_service.py <span class="muted">+1 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-agent-server/openhands/agent_server/event_service.py#L1">openhands-agent-server/openhands/agent_server/event_service.py:1</a></p><pre>diff --git a/openhands-agent-server/openhands/agent_server/event_service.py b/openhands-agent-server/openhands/agent_server/event_service.py
 index f902d8040..ea327e12f 100644
 --- a/openhands-agent-server/openhands/agent_server/event_service.py
 +++ b/openhands-agent-server/openhands/agent_server/event_service.py
@@ -337,7 +337,7 @@ index f902d8040..ea327e12f 100644
              visualizer=None,
              secrets=self.stored.secrets,
 </pre></details>
-<details><summary>openhands-agent-server/openhands/agent_server/models.py <span class="muted">+9 / −0</span></summary><p><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-agent-server/openhands/agent_server/models.py#L1">openhands-agent-server/openhands/agent_server/models.py:1</a></p><pre>diff --git a/openhands-agent-server/openhands/agent_server/models.py b/openhands-agent-server/openhands/agent_server/models.py
+<details><summary>openhands-agent-server/openhands/agent_server/models.py <span class="muted">+9 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-agent-server/openhands/agent_server/models.py#L1">openhands-agent-server/openhands/agent_server/models.py:1</a></p><pre>diff --git a/openhands-agent-server/openhands/agent_server/models.py b/openhands-agent-server/openhands/agent_server/models.py
 index ea2d8d332..1453c7775 100644
 --- a/openhands-agent-server/openhands/agent_server/models.py
 +++ b/openhands-agent-server/openhands/agent_server/models.py
@@ -358,7 +358,7 @@ index ea2d8d332..1453c7775 100644
          default=True,
          description=&quot;Whether to enable stuck detection for the agent.&quot;,
 </pre></details>
-<details><summary>openhands-sdk/openhands/sdk/conversation/conversation.py <span class="muted">+5 / −0</span></summary><p><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/conversation.py#L1">openhands-sdk/openhands/sdk/conversation/conversation.py:1</a></p><pre>diff --git a/openhands-sdk/openhands/sdk/conversation/conversation.py b/openhands-sdk/openhands/sdk/conversation/conversation.py
+<details><summary>openhands-sdk/openhands/sdk/conversation/conversation.py <span class="muted">+5 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/conversation.py#L1">openhands-sdk/openhands/sdk/conversation/conversation.py:1</a></p><pre>diff --git a/openhands-sdk/openhands/sdk/conversation/conversation.py b/openhands-sdk/openhands/sdk/conversation/conversation.py
 index c508fef15..510ac4b9a 100644
 --- a/openhands-sdk/openhands/sdk/conversation/conversation.py
 +++ b/openhands-sdk/openhands/sdk/conversation/conversation.py
@@ -403,7 +403,7 @@ index c508fef15..510ac4b9a 100644
              stuck_detection_thresholds=stuck_detection_thresholds,
              visualizer=visualizer,
 </pre></details>
-<details><summary>openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py <span class="muted">+4 / −4</span></summary><p><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L1">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:1</a></p><pre>diff --git a/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py b/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
+<details><summary>openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py <span class="muted">+4 / −4</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L1">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:1</a></p><pre>diff --git a/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py b/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
 index 067674a68..f6dc29419 100644
 --- a/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
 +++ b/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
@@ -438,7 +438,7 @@ index 067674a68..f6dc29419 100644
                  visualizer=type(self._visualizer) if self._visualizer else None,
                  delete_on_close=self.delete_on_close,
 </pre></details>
-<details><summary>openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py <span class="muted">+11 / −0</span></summary><p><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py#L1">openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py:1</a></p><pre>diff --git a/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py b/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py
+<details><summary>openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py <span class="muted">+11 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py#L1">openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py:1</a></p><pre>diff --git a/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py b/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py
 index 7eadd78e2..f6445e15f 100644
 --- a/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py
 +++ b/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py
@@ -517,7 +517,7 @@ index 7eadd78e2..f6445e15f 100644
          self._client = workspace.client
          self._cleanup_initiated = False
 </pre></details>
-<details><summary>openhands-sdk/openhands/sdk/conversation/request.py <span class="muted">+11 / −0</span></summary><p><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/request.py#L1">openhands-sdk/openhands/sdk/conversation/request.py:1</a></p><pre>diff --git a/openhands-sdk/openhands/sdk/conversation/request.py b/openhands-sdk/openhands/sdk/conversation/request.py
+<details><summary>openhands-sdk/openhands/sdk/conversation/request.py <span class="muted">+11 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/openhands-sdk/openhands/sdk/conversation/request.py#L1">openhands-sdk/openhands/sdk/conversation/request.py:1</a></p><pre>diff --git a/openhands-sdk/openhands/sdk/conversation/request.py b/openhands-sdk/openhands/sdk/conversation/request.py
 index dea125f86..88a482c2a 100644
 --- a/openhands-sdk/openhands/sdk/conversation/request.py
 +++ b/openhands-sdk/openhands/sdk/conversation/request.py
@@ -540,7 +540,7 @@ index dea125f86..88a482c2a 100644
          default=True,
          description=&quot;If true, the conversation will use stuck detection to &quot;
 </pre></details>
-<details><summary>tests/agent_server/test_conversation_budget.py <span class="muted">+64 / −0</span></summary><p><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/tests/agent_server/test_conversation_budget.py#L1">tests/agent_server/test_conversation_budget.py:1</a></p><pre>diff --git a/tests/agent_server/test_conversation_budget.py b/tests/agent_server/test_conversation_budget.py
+<details><summary>tests/agent_server/test_conversation_budget.py <span class="muted">+64 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/tests/agent_server/test_conversation_budget.py#L1">tests/agent_server/test_conversation_budget.py:1</a></p><pre>diff --git a/tests/agent_server/test_conversation_budget.py b/tests/agent_server/test_conversation_budget.py
 new file mode 100644
 index 000000000..97d3e409f
 --- /dev/null
@@ -611,7 +611,7 @@ index 000000000..97d3e409f
 +            assert event_service is not None
 +            assert event_service.get_conversation().max_budget_per_run == budget
 </pre></details>
-<details><summary>tests/cross/test_remote_conversation_live_server.py <span class="muted">+137 / −1</span></summary><p><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/tests/cross/test_remote_conversation_live_server.py#L1">tests/cross/test_remote_conversation_live_server.py:1</a></p><pre>diff --git a/tests/cross/test_remote_conversation_live_server.py b/tests/cross/test_remote_conversation_live_server.py
+<details><summary>tests/cross/test_remote_conversation_live_server.py <span class="muted">+137 / −1</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/tests/cross/test_remote_conversation_live_server.py#L1">tests/cross/test_remote_conversation_live_server.py:1</a></p><pre>diff --git a/tests/cross/test_remote_conversation_live_server.py b/tests/cross/test_remote_conversation_live_server.py
 index b03557eee..03258391c 100644
 --- a/tests/cross/test_remote_conversation_live_server.py
 +++ b/tests/cross/test_remote_conversation_live_server.py
@@ -775,7 +775,7 @@ index b03557eee..03258391c 100644
      server_env, monkeypatch: pytest.MonkeyPatch
  ):
 </pre></details>
-<details><summary>tests/sdk/conversation/local/test_fork.py <span class="muted">+14 / −2</span></summary><p><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/tests/sdk/conversation/local/test_fork.py#L1">tests/sdk/conversation/local/test_fork.py:1</a></p><pre>diff --git a/tests/sdk/conversation/local/test_fork.py b/tests/sdk/conversation/local/test_fork.py
+<details><summary>tests/sdk/conversation/local/test_fork.py <span class="muted">+14 / −2</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/tests/sdk/conversation/local/test_fork.py#L1">tests/sdk/conversation/local/test_fork.py:1</a></p><pre>diff --git a/tests/sdk/conversation/local/test_fork.py b/tests/sdk/conversation/local/test_fork.py
 index b9b93141c..a82ec36c1 100644
 --- a/tests/sdk/conversation/local/test_fork.py
 +++ b/tests/sdk/conversation/local/test_fork.py
@@ -819,7 +819,7 @@ index b9b93141c..a82ec36c1 100644
          assert combined.accumulated_cost == pytest.approx(1.5)
  
 </pre></details>
-<details><summary>tests/sdk/conversation/remote/test_remote_conversation.py <span class="muted">+9 / −0</span></summary><p><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/tests/sdk/conversation/remote/test_remote_conversation.py#L1">tests/sdk/conversation/remote/test_remote_conversation.py:1</a></p><pre>diff --git a/tests/sdk/conversation/remote/test_remote_conversation.py b/tests/sdk/conversation/remote/test_remote_conversation.py
+<details><summary>tests/sdk/conversation/remote/test_remote_conversation.py <span class="muted">+9 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/tests/sdk/conversation/remote/test_remote_conversation.py#L1">tests/sdk/conversation/remote/test_remote_conversation.py:1</a></p><pre>diff --git a/tests/sdk/conversation/remote/test_remote_conversation.py b/tests/sdk/conversation/remote/test_remote_conversation.py
 index 2a7fb1c2e..e530e5d6f 100644
 --- a/tests/sdk/conversation/remote/test_remote_conversation.py
 +++ b/tests/sdk/conversation/remote/test_remote_conversation.py
@@ -896,7 +896,7 @@ index 2a7fb1c2e..e530e5d6f 100644
          # Verify GET was called to fetch events (RemoteEventsList initialization)
          # This happens in RemoteEventsList._do_full_sync() which is called
 </pre></details>
-<details><summary>tests/sdk/conversation/test_conversation_factory.py <span class="muted">+4 / −0</span></summary><p><a href="https://github.com/enyst/agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/tests/sdk/conversation/test_conversation_factory.py#L1">tests/sdk/conversation/test_conversation_factory.py:1</a></p><pre>diff --git a/tests/sdk/conversation/test_conversation_factory.py b/tests/sdk/conversation/test_conversation_factory.py
+<details><summary>tests/sdk/conversation/test_conversation_factory.py <span class="muted">+4 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/68a8fb458e9991697d8ec8fb2052e7fe6791e9fc/tests/sdk/conversation/test_conversation_factory.py#L1">tests/sdk/conversation/test_conversation_factory.py:1</a></p><pre>diff --git a/tests/sdk/conversation/test_conversation_factory.py b/tests/sdk/conversation/test_conversation_factory.py
 index ad6620efa..a6ce64a0f 100644
 --- a/tests/sdk/conversation/test_conversation_factory.py
 +++ b/tests/sdk/conversation/test_conversation_factory.py
