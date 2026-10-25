@@ -53,6 +53,10 @@ def test_conversation_state_uses_injected_file_store(tmp_path, caplog):
 
     assert resumed_state.id == conversation_id
     assert resumed_state._fs is file_store
+    # persistence_dir=None must survive the save/resume round-trip: it is
+    # metadata used for ACP credential dirs and observation paths, not just
+    # for choosing the FileStore.
+    assert resumed_state.persistence_dir is None
 
 
 def test_conversation_state_file_store_takes_precedence_over_persistence_dir(tmp_path):

@@ -443,7 +443,15 @@ class ConversationState(OpenHandsModel):
                 "redacted and lost on restore. Consider providing a cipher to "
                 "preserve secrets."
             )
-        payload = self.model_dump_json(exclude_none=True, context=context)
+        payload_dict = json.loads(
+            self.model_dump_json(exclude_none=True, context=context)
+        )
+        # exclude_none drops an explicitly-None persistence_dir, which would
+        # silently fall back to the class default on resume. Always persist it
+        # (json.dumps emits null for None); files written before this key was
+        # always written keep their existing missing-key behavior.
+        payload_dict["persistence_dir"] = self.persistence_dir
+        payload = json.dumps(payload_dict)
         if self._write_guard is None:
             fs.write(BASE_STATE, payload)
         else:
