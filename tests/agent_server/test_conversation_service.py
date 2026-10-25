@@ -51,6 +51,7 @@ from openhands.sdk.critic.impl.api import APIBasedCritic
 from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.mcp.config import dump_mcp_config
@@ -2256,6 +2257,80 @@ class TestConversationServiceStartConversation:
         )
 
         assert _get_worktree_start_point(repo_dir) == "origin/main"
+
+    def test_plan_worktree_falls_back_when_head_is_unborn(self, tmp_path):
+        """A repository initialized without any commit has no worktree base.
+
+        The default base must produce no plan so conversation creation falls
+        back to the shared workspace instead of failing worktree creation.
+        """
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        (repo_dir / "README.md").write_text("# fresh\n")
+        run_git_command(["git", "init", "-b", "main"], repo_dir)  # no commit
+
+        plan = _plan_conversation_worktree(
+            LocalWorkspace(working_dir=repo_dir), uuid4(), tmp_path / "worktrees", None
+        )
+
+        assert plan is None
+
+    def test_plan_worktree_uses_remote_default_with_unborn_local_head(self, tmp_path):
+        """A usable remote default keeps worktree isolation on an unborn repo."""
+        upstream = tmp_path / "upstream.git"
+        run_git_command(["git", "init", "--bare", "-b", "trunk", str(upstream)])
+        publisher = tmp_path / "publisher"
+        run_git_command(["git", "clone", str(upstream), str(publisher)])
+        (publisher / "remote.txt").write_text("remote\n")
+        run_git_command(["git", "add", "remote.txt"], publisher)
+        run_git_command(
+            [
+                "git",
+                "-c",
+                "user.name=OpenHands Test",
+                "-c",
+                "user.email=openhands@example.com",
+                "commit",
+                "-m",
+                "remote",
+            ],
+            publisher,
+        )
+        run_git_command(["git", "push", "origin", "trunk"], publisher)
+
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        run_git_command(["git", "init", "-b", "main"], repo_dir)  # unborn HEAD
+        run_git_command(["git", "remote", "add", "origin", str(upstream)], repo_dir)
+        run_git_command(["git", "fetch", "origin"], repo_dir)
+        run_git_command(["git", "remote", "set-head", "origin", "trunk"], repo_dir)
+
+        plan = _plan_conversation_worktree(
+            LocalWorkspace(working_dir=repo_dir), uuid4(), tmp_path / "worktrees", None
+        )
+
+        assert plan is not None
+        assert plan.start_point == "origin/trunk"
+
+    def test_plan_worktree_explicit_head_base_keeps_error_on_unborn_head(
+        self, tmp_path
+    ):
+        """Explicit base="head" keeps current semantics: no shared fallback,
+        worktree creation fails on the unborn HEAD."""
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        run_git_command(["git", "init", "-b", "main"], repo_dir)
+
+        plan = _plan_conversation_worktree(
+            LocalWorkspace(working_dir=repo_dir),
+            uuid4(),
+            tmp_path / "worktrees",
+            ConversationWorktreeOptions(base="head"),
+        )
+
+        assert plan is not None
+        with pytest.raises(GitCommandError):
+            _create_conversation_worktree(plan)
 
     @pytest.mark.asyncio
     async def test_start_conversation_with_custom_id(self, conversation_service):

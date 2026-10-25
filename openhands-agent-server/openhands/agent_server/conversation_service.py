@@ -173,8 +173,8 @@ def _get_worktree_start_point(repo_root: Path) -> str:
          exists locally.
       3. Local ``master`` if neither remote default nor local ``main`` is
          available.
-      4. Fall back to ``HEAD`` only when none of the above applies, so worktree
-         creation still succeeds on freshly initialized repos.
+      4. Fall back to ``HEAD`` only when none of the above applies. The planner
+         checks whether the selected ref resolves to a commit.
     """
     if _has_git_remote(repo_root):
         _fetch_origin(repo_root)
@@ -203,6 +203,7 @@ class _WorktreePlan:
     worktree_root: Path
     workspace_dir: Path
     branch: str
+    start_point: str
     options: ConversationWorktreeOptions
 
     @property
@@ -214,6 +215,39 @@ class _WorktreePlan:
             branch=self.branch,
             options=self.options,
         )
+
+
+def _resolve_worktree_start_point(
+    repo_root: Path, options: ConversationWorktreeOptions
+) -> str:
+    """The ref a new worktree branches from, honoring explicit ``options``."""
+    if options.base == "head":
+        return "HEAD"
+    if options.base == "ref" and options.ref:
+        if _has_git_remote(repo_root):
+            _fetch_origin(repo_root)
+        return options.ref
+    return _get_worktree_start_point(repo_root)
+
+
+def _worktree_base_resolves_to_commit(repo_root: Path, ref: str) -> bool:
+    """Whether ``ref`` resolves to a commit a worktree can branch from.
+
+    Exit code 1 means the ref does not resolve — an unborn ``HEAD`` on a
+    repository initialized without any commit. Any other git failure
+    propagates so it is not mistaken for an empty repository.
+    """
+    try:
+        run_git_command(
+            ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+            repo_root,
+            expected_failure=True,
+        )
+    except GitCommandError as exc:
+        if exc.exit_code == 1:
+            return False
+        raise
+    return True
 
 
 def _plan_conversation_worktree(
@@ -235,6 +269,16 @@ def _plan_conversation_worktree(
     except (GitCommandError, GitRepositoryError):
         return None
 
+    start_point = _resolve_worktree_start_point(repo_root, options)
+    if options.base == "default_branch" and not _worktree_base_resolves_to_commit(
+        repo_root, start_point
+    ):
+        # A repository initialized without any commit (unborn HEAD) has no
+        # base to branch a worktree from: fall back to the shared workspace
+        # instead of failing worktree creation. Explicit ``head``/``ref``
+        # bases keep their current error semantics.
+        return None
+
     worktree_root = conversation_worktree_root / str(conversation_id) / repo_root.name
     return _WorktreePlan(
         repo_root=repo_root,
@@ -242,18 +286,11 @@ def _plan_conversation_worktree(
         worktree_root=worktree_root,
         workspace_dir=worktree_root / source_workspace.relative_to(repo_root),
         branch=f"{options.branch_prefix}{conversation_id}",
+        # Keep the selected ref (not a resolved hash) so git preserves remote
+        # branch tracking configuration on the new worktree branch.
+        start_point=start_point,
         options=options,
     )
-
-
-def _worktree_start_point(plan: _WorktreePlan) -> str:
-    if plan.options.base == "head":
-        return "HEAD"
-    if plan.options.base == "ref" and plan.options.ref:
-        if _has_git_remote(plan.repo_root):
-            _fetch_origin(plan.repo_root)
-        return plan.options.ref
-    return _get_worktree_start_point(plan.repo_root)
 
 
 def _create_conversation_worktree(plan: _WorktreePlan) -> LocalWorkspace:
@@ -282,7 +319,7 @@ def _create_conversation_worktree(plan: _WorktreePlan) -> LocalWorkspace:
             "-b",
             plan.branch,
             str(plan.worktree_root),
-            _worktree_start_point(plan),
+            plan.start_point,
         ],
         repo_root,
     )
@@ -2091,9 +2128,10 @@ class ConversationService:
         resolved agent, but it starts with a fresh event history: ``task`` is
         delivered as the child's first user message. With
         ``isolation="worktree"`` the child runs in a git worktree carved from
-        the parent's workspace when that workspace is a git repository;
-        otherwise (or with ``isolation="shared"``) it shares the parent's
-        directory. The link is recorded via ``parent_conversation_id``.
+        the parent's workspace when that workspace is a git repository with
+        a usable base commit; otherwise (or with ``isolation="shared"``) it
+        shares the parent's directory. The link is recorded via
+        ``parent_conversation_id``.
 
         Returns ``None`` when *parent_id* does not exist.
 
@@ -2117,8 +2155,8 @@ class ConversationService:
 
             # Reuse the worktree machinery of a regular start: a worktree is
             # planned (and its guidance appended to the child's agent) only when
-            # the parent workspace is a git repository; otherwise the child
-            # shares it.
+            # the parent workspace has a usable git base commit; otherwise
+            # the child shares it.
             worktree = (
                 _plan_conversation_worktree(
                     parent_stored.workspace,

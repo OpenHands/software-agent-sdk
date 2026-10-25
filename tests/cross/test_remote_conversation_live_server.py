@@ -46,6 +46,8 @@ from openhands.sdk.event import (
     PauseEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.git.exceptions import GitCommandError
+from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.skills import Skill
 from openhands.sdk.subagent import AgentDefinition
@@ -3053,3 +3055,63 @@ def test_interrupt_endpoint_cancels_running_conversation(
         assert events_resp.status_code == 200
         items = events_resp.json()["items"]
         assert len(items) >= 1, f"Expected at least one InterruptEvent, got: {items}"
+
+
+def test_child_launch_in_fresh_workspace_preserves_unborn_repository(server_env):
+    """Default child launch falls back to shared on an unborn-HEAD workspace.
+
+    A fresh parent conversation git-initializes its workspace without
+    committing, so the default ``worktree`` isolation has no base commit to
+    branch from. The child launch must fall back to the shared workspace
+    (reporting ``isolation: shared``) instead of failing, without inventing
+    an initial commit or touching the parent's files.
+    """
+    fresh_workspace = server_env["workspace_path"] / "fresh"
+    fresh_workspace.mkdir()
+    (fresh_workspace / "keep.txt").write_text("untracked content\n")
+
+    agent = Agent(
+        llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        tools=[],
+    )
+    payload = {
+        "agent": agent.model_dump(mode="json", context={"expose_secrets": True}),
+        "workspace": {"working_dir": str(fresh_workspace)},
+    }
+    with httpx.Client(base_url=server_env["host"]) as client:
+        parent = client.post("/api/conversations", json=payload, timeout=30.0)
+        assert parent.status_code == 201
+        parent_id = parent.json()["id"]
+
+        # The server initializes the workspace as a git repository without
+        # committing, so HEAD is unborn.
+        assert (fresh_workspace / ".git").exists()
+        with pytest.raises(GitCommandError):
+            run_git_command(
+                ["git", "--no-pager", "rev-parse", "--verify", "HEAD"],
+                fresh_workspace,
+            )
+
+        child = client.post(
+            f"/api/conversations/{parent_id}/children",
+            json={"task": "Reply with ok."},
+            timeout=30.0,
+        )
+        assert child.status_code == 201
+        child_body = child.json()
+        assert child_body["isolation"] == "shared"
+        assert child_body["parent_conversation_id"] == parent_id
+
+        client.delete(
+            f"/api/conversations/{child_body['conversation_id']}", timeout=30.0
+        )
+        client.delete(f"/api/conversations/{parent_id}", timeout=30.0)
+
+    # No initial commit was invented; the file and the unborn repository
+    # survive the child launch and cleanup.
+    with pytest.raises(GitCommandError):
+        run_git_command(
+            ["git", "--no-pager", "rev-parse", "--verify", "HEAD"],
+            fresh_workspace,
+        )
+    assert (fresh_workspace / "keep.txt").read_text() == "untracked content\n"

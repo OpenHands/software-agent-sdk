@@ -36,7 +36,8 @@ class StartChildConversationAction(Action):
         default="worktree",
         description=(
             "'worktree' gives the child its own git worktree and branch when the "
-            "workspace is a git repository; 'shared' runs it in the same directory."
+            "workspace is a git repository with a usable base commit; 'shared' "
+            "runs it in the same directory."
         ),
     )
 
