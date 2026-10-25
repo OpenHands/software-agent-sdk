@@ -9,6 +9,8 @@ from openhands.sdk.conversation.stuck_detector import (
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
+    Condensation,
+    CondensationRequest,
     MessageEvent,
     ObservationEvent,
 )
@@ -621,4 +623,142 @@ def test_reset_after_user_message():
     state.events.append(observation)
 
     # Still not stuck with just one action after user message
+    assert stuck_detector.is_stuck() is False
+
+
+def _make_stuck_state() -> tuple[ConversationState, StuckDetector]:
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
+    state = ConversationState.create(
+        id=uuid.uuid4(),
+        agent=Agent(llm=llm),
+        workspace=LocalWorkspace(working_dir="/tmp"),
+    )
+    return state, StuckDetector(state)
+
+
+def _condensation_cycle(index: int) -> tuple[CondensationRequest, Condensation]:
+    """One rejected-call/condensation cycle, as the agent and condenser emit it."""
+    request = CondensationRequest()
+    condensation = Condensation(
+        forgotten_event_ids={f"event_{index}"},
+        summary=f"summary {index}",
+        summary_offset=0,
+        llm_response_id=f"response_{index}",
+    )
+    return request, condensation
+
+
+def test_context_window_error_loop_detected():
+    """A trailing run of rejected-call/condensation cycles is stuck."""
+    state, stuck_detector = _make_stuck_state()
+    state.events.append(
+        MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="continue")]),
+        )
+    )
+    for i in range(6):
+        request, condensation = _condensation_cycle(i)
+        state.events.append(request)
+        state.events.append(condensation)
+
+    assert stuck_detector.is_stuck() is True
+
+
+def test_context_window_error_loop_below_scenario_gate_not_detected():
+    """Fewer than 10 window events after the last user message never fires."""
+    state, stuck_detector = _make_stuck_state()
+    state.events.append(
+        MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="continue")]),
+        )
+    )
+    for i in range(4):  # 8 events < the 10-event scenario gate
+        request, condensation = _condensation_cycle(i)
+        state.events.append(request)
+        state.events.append(condensation)
+
+    assert stuck_detector.is_stuck() is False
+
+
+def test_proactive_condensations_without_rejected_call_not_stuck():
+    """Proactive condensation emits only Condensation, with no rejected call."""
+    state, stuck_detector = _make_stuck_state()
+    state.events.append(
+        MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="continue")]),
+        )
+    )
+    for i in range(12):
+        _, condensation = _condensation_cycle(i)
+        state.events.append(condensation)
+
+    assert stuck_detector.is_stuck() is False
+
+
+def test_context_window_loop_interrupted_by_progress_not_stuck():
+    """Agent progress after the last rejected call breaks the trailing run."""
+    state, stuck_detector = _make_stuck_state()
+    state.events.append(
+        MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="continue")]),
+        )
+    )
+    for i in range(3):
+        request, condensation = _condensation_cycle(i)
+        state.events.append(request)
+        state.events.append(condensation)
+    state.events.append(
+        ActionEvent(
+            source="agent",
+            thought=[TextContent(text="I'll try pwd command")],
+            action=TerminalAction(command="pwd"),
+            tool_name="terminal",
+            tool_call_id="call_progress",
+            tool_call=MessageToolCall(
+                id="call_progress",
+                name="terminal",
+                arguments='{"command": "pwd"}',
+                origin="completion",
+            ),
+            llm_response_id="response_progress",
+        )
+    )
+    for i in range(3, 6):
+        request, condensation = _condensation_cycle(i)
+        state.events.append(request)
+        state.events.append(condensation)
+
+    # Window has 13 events (past the 10-event gate) but the trailing run of
+    # cycles is interrupted by agent progress.
+    assert stuck_detector.is_stuck() is False
+
+
+def test_context_window_loop_reset_by_user_message():
+    """A user message after the cycles resets the scan window."""
+    state, stuck_detector = _make_stuck_state()
+    state.events.append(
+        MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="start")]),
+        )
+    )
+    for i in range(6):
+        request, condensation = _condensation_cycle(i)
+        state.events.append(request)
+        state.events.append(condensation)
+    state.events.append(
+        MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="continue")]),
+        )
+    )
+    for i in range(6, 9):
+        request, condensation = _condensation_cycle(i)
+        state.events.append(request)
+        state.events.append(condensation)
+
     assert stuck_detector.is_stuck() is False
