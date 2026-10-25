@@ -228,6 +228,8 @@ async def bridge_websocket(
         async with websockets.connect(
             upstream_url,
             additional_headers=upstream_headers or None,
+            # The inner server owns its frame limits; do not impose a lower one.
+            max_size=None,
         ) as upstream_ws:
             await _bridge_websocket_loop(client_ws, upstream_ws)
     except websockets.exceptions.InvalidStatus as exc:
