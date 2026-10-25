@@ -51,6 +51,11 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
+from openhands.sdk.event.mailbox import (
+    MailboxConflict,
+    MailboxMessage,
+    MailboxSendResponse,
+)
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
@@ -166,6 +171,8 @@ def _is_acp_prompt_message(event: Event) -> TypeGuard[MessageEvent]:
         return True
     if event.source != "environment" or event.llm_message.role != "user":
         return False
+    if event.mailbox is not None:
+        return True
     return any(
         part.startswith(ACP_STOP_HOOK_FEEDBACK_PREFIX)
         for part in content_to_str(event.llm_message.content)
@@ -332,6 +339,7 @@ class LocalConversation(BaseConversation):
         self._arun_task = None
         self._cancel_token = None
         self._step_holds_state_lock = False
+        self._mailbox_revision = 0
 
         # Store plugin specs for lazy loading (no IO in constructor)
         # Plugins will be loaded on first run() or send_message() call
@@ -1930,9 +1938,9 @@ class LocalConversation(BaseConversation):
         with self._state:
             self._on_event(event)
 
-    @contextlib.asynccontextmanager
-    async def _released_state_lock_during_io(self):
-        """Release the run loop's state lock across an awaited LLM network call.
+    @contextlib.contextmanager
+    def _released_state_lock(self):
+        """Release the run loop's state lock across isolated external I/O.
 
         ``arun()`` holds the state lock across the whole step; releasing it for
         just the network wait keeps ``send_message()`` and state snapshots
@@ -1954,6 +1962,62 @@ class LocalConversation(BaseConversation):
         finally:
             lock.reacquire(depth)
             self._step_holds_state_lock = held_flag
+
+    @contextlib.asynccontextmanager
+    async def _released_state_lock_during_io(self):
+        with self._released_state_lock():
+            yield
+
+    def receive_mailbox_message(self, message: MailboxMessage) -> MailboxSendResponse:
+        """Persist once, preserving agent attribution and the active run's work."""
+        if self._should_initialize_agent_on_send_message():
+            self._ensure_agent_ready()
+        with self._state as state:
+            message = state.secret_registry.mask_secrets_in_model(message)
+            events = state.events
+            if message.message_id in events:
+                existing = events[events.get_index(message.message_id)]
+                if (
+                    not isinstance(existing, MessageEvent)
+                    or existing.mailbox != message
+                ):
+                    raise MailboxConflict(
+                        "Idempotency key reused with a different message"
+                    )
+                return MailboxSendResponse(
+                    message_id=message.message_id, duplicate=True
+                )
+            event = MessageEvent(
+                id=message.message_id,
+                source="environment",
+                sender=str(message.sender_id),
+                mailbox=message,
+                llm_message=Message(
+                    role="user",
+                    content=[
+                        TextContent(
+                            text=(
+                                f"Agent mailbox from {message.sender_id} "
+                                f"({message.kind}):\n"
+                                + message.body
+                                + (
+                                    "\nEvidence:\n" + "\n".join(message.evidence)
+                                    if message.evidence
+                                    else ""
+                                )
+                            )
+                        )
+                    ],
+                ),
+            )
+            self._on_event(event)
+            self._mailbox_revision += 1
+            if state.execution_status in (
+                ConversationExecutionStatus.FINISHED,
+                ConversationExecutionStatus.STUCK,
+            ):
+                state.execution_status = ConversationExecutionStatus.IDLE
+            return MailboxSendResponse(message_id=message.message_id)
 
     @observe(name="conversation.run")
     def run(self) -> None:
@@ -2048,6 +2112,7 @@ class LocalConversation(BaseConversation):
                     # tools (e.g. switch_llm) running on worker threads skip
                     # re-acquiring it instead of deadlocking (#3485).
                     self._step_holds_state_lock = True
+                    mailbox_revision = self._mailbox_revision
                     try:
                         self.agent.step(
                             self, on_event=self._on_event, on_token=self._on_token
@@ -2055,6 +2120,15 @@ class LocalConversation(BaseConversation):
                     finally:
                         self._step_holds_state_lock = False
                     iteration += 1
+
+                    if (
+                        self._mailbox_revision != mailbox_revision
+                        and self._state.execution_status
+                        == ConversationExecutionStatus.FINISHED
+                    ):
+                        self._state.execution_status = (
+                            ConversationExecutionStatus.RUNNING
+                        )
 
                     # Check for non-finished terminal conditions
                     # Note: We intentionally do NOT check for FINISHED status here.
@@ -2325,6 +2399,7 @@ class LocalConversation(BaseConversation):
                         # deadlocking while this await holds it (#3485).
                         self._step_holds_state_lock = True
                         last_user_message_id = self._state.last_user_message_id
+                        mailbox_revision = self._mailbox_revision
                         try:
                             await self.agent.astep(
                                 self,
@@ -2353,6 +2428,7 @@ class LocalConversation(BaseConversation):
                         )
                         new_message_arrived = (
                             self._state.last_user_message_id != last_user_message_id
+                            or self._mailbox_revision != mailbox_revision
                         )
                         if new_message_arrived and (
                             step_finished or step_awaiting_confirmation

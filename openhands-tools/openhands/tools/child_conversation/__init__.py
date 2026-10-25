@@ -26,6 +26,14 @@ from openhands.tools.child_conversation.definition import (
     StartChildConversationTool,
 )
 from openhands.tools.child_conversation.impl import StartChildConversationExecutor
+from openhands.tools.child_conversation.wait import (
+    SendMailboxMessageAction,
+    SendMailboxMessageObservation,
+    SendMailboxMessageTool,
+    WaitForChildrenAction,
+    WaitForChildrenObservation,
+    WaitForChildrenTool,
+)
 
 
 __all__ = [
@@ -33,4 +41,10 @@ __all__ = [
     "StartChildConversationExecutor",
     "StartChildConversationObservation",
     "StartChildConversationTool",
+    "SendMailboxMessageAction",
+    "SendMailboxMessageObservation",
+    "SendMailboxMessageTool",
+    "WaitForChildrenAction",
+    "WaitForChildrenObservation",
+    "WaitForChildrenTool",
 ]

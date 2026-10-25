@@ -261,3 +261,48 @@ export interface AgentResponseResult {
 
 export type ConversationEvent = Event;
 export type ConversationEventPage = EventPage;
+
+/** Server-side wait; requires an Agent Server exposing children/wait. */
+export interface WaitForChildrenRequest {
+  conversation_ids: string[];
+  /** 0–300 seconds; defaults to 60. */
+  timeout_seconds?: number;
+  delete_on_finish?: boolean;
+  on_timeout?: 'retain' | 'stop' | 'delete';
+}
+
+export interface ChildConversationWaitResult {
+  conversation_id: string;
+  /** State before optional cleanup. */
+  execution_status: ConversationExecutionStatus;
+  settled: boolean;
+  deleted: boolean;
+  /** Persisted result delivered through the parent's mailbox before cleanup. */
+  mailbox_message_id?: string | null;
+}
+
+export interface WaitForChildrenResponse {
+  children: ChildConversationWaitResult[];
+  timed_out: boolean;
+  interrupted: boolean;
+}
+
+export interface MailboxSendRequest {
+  recipient_id: string;
+  idempotency_key: string;
+  kind: 'question' | 'proposal' | 'review-request' | 'blocker' | 'decision';
+  body: string;
+  /** Required for proposals, review requests and blockers. */
+  evidence?: string[];
+  delivery?: 'steer' | 'interrupt';
+}
+
+export interface MailboxMessage extends MailboxSendRequest {
+  message_id: string;
+  sender_id: string;
+}
+
+export interface MailboxSendResponse {
+  message_id: string;
+  duplicate: boolean;
+}

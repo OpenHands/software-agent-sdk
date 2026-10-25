@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Child waits and canonical mailbox — #6129</title>
+<style>
+:root{font:17px/1.6 system-ui,sans-serif;color:#172334;background:#f3f6fa}body{max-width:1040px;margin:3rem auto;padding:0 1.4rem}h1{font-size:2.3rem;line-height:1.15;letter-spacing:-.04em}h2{font-size:1.2rem;color:#345572;margin-top:0}section{background:white;border:1px solid #dae3ed;border-radius:12px;padding:1.5rem;margin:1rem 0}.flag{color:#8a4900;background:#fff0d6;padding:.6rem 1rem;border-radius:8px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.grid section{margin:0}pre{overflow:auto;background:#eff4f9;padding:1rem;border-radius:8px;font-size:.85rem}code{font-family:ui-monospace,monospace}table{border-collapse:collapse;width:100%;font-size:.9rem}td,th{text-align:left;border-bottom:1px solid #ddd;padding:.6rem}small{color:#567}@media(max-width:650px){.grid{display:block}.grid section{margin:1rem 0}}
+</style>
+<small>OpenHands/software-agent-sdk · additive APIs · #6129 / #6127</small>
+<h1>Wait once. Receive the child's result.</h1>
+<p>One server-owned wait coordinates existing direct children without a browser.
+Results use one durable typed mailbox; agent tools release their parent's state lock.</p>
+<section><h2>Data flow</h2><pre>Parent Agent → wait_for_children → canonical REST wait
+                         ↓ release parent state lock
+Child run + stop hooks → immutable run outcome
+                         ↓ canonical typed mailbox
+Parent persisted MessageEvent ← final result
+                         ↓ optional generation-guarded cleanup
+Parent tool observation ← status + mailbox_message_id</pre></section>
+<section><h2>Canonical operations</h2><pre>POST /api/conversations/{parent_id}/children/wait
+{ "conversation_ids": ["child UUID"], "timeout_seconds": 60,
+  "delete_on_finish": false, "on_timeout": "retain" }
+
+POST /api/conversations/{sender_id}/mailbox
+{ "recipient_id": "recipient UUID", "idempotency_key": "stable-key",
+  "kind": "review-request", "body": "Review commit abc",
+  "evidence": ["commit abc; passing test run"], "delivery": "steer" }</pre>
+<p>Waits accept 1–64 unique direct children and finite timeouts of 0–300 seconds.
+Timeout is a normal result. Policies retain, stop or delete pending children;
+settled results reach the mailbox before requested deletion.</p></section>
+<section><h2>Lock and cancellation ownership</h2><p>Each request owns its child
+waiters and parent-interruption waiter, pins runtimes and drains owned tasks.
+Per-run immutable snapshots prevent successor results and cleanup from being
+confused. HTTP disconnect releases waiters without cancelling the child.</p>
+<p>Coordination tools run in isolated groups outside the conversation state lock.
+Their executors own async HTTP clients; interruption cancels and drains those
+workers before the parent lock is reacquired. Ordinary tools keep their existing
+locking and parallel execution behavior.</p></section>
+<section><h2>One mailbox delivery path</h2><p>The existing persisted event log
+owns delivery and deduplication. Deterministic sender/recipient/key identities
+return the same ID on replay and reject conflicting payloads. Agent-origin
+metadata is explicit; it is never attributed to a human. The sender and recipient
+secret registries redact content before persistence.</p><p>Steer is consumed at
+step boundaries without killing work or active goals. Idle recipients pick up
+durable input on their next run after restart. Explicit interrupt records the
+sender, mode and reason and persists interrupted goal status. No queue mode,
+scheduler, second spawn registry or bespoke result event is introduced.</p></section>
+<section><h2>Compatibility and validation</h2><p>Existing request defaults and
+persisted events remain readable. APIs and optional event metadata are additive;
+no package version changes. TypeScript exposes typed methods and mailbox events
+while its generated release pin remains unchanged.</p><p>See
+<code>.pr/VALIDATION.md</code> for passing deterministic and real HTTP tests,
+original CLI doctor/API probes, baseline-reproduced environment failures,
+compatibility evidence and checks that remain unrun.</p></section>
+<section><h2>Practical limits</h2><p>The deadline covers waiting after loading;
+cleanup may extend total request duration. Arbitrary legacy synchronous workers
+remain cooperatively interruptible. Coordination is on one backend. Canvas UI,
+live-model evaluation and packaged runtime verification remain separate lanes.</p></section>
+</html>

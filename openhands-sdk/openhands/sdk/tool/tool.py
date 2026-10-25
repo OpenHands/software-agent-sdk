@@ -392,6 +392,9 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     conversation_local: ClassVar[bool] = False
     """Whether the tool only reads and writes its own conversation's state."""
 
+    releases_state_lock: ClassVar[bool] = False
+    """Run in isolation without the state lock; the executor must not mutate state."""
+
     def __init_subclass__(cls, **kwargs):
         """Automatically set name from class name when subclass is created."""
         super().__init_subclass__(**kwargs)

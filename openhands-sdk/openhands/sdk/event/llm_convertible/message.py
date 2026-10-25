@@ -11,6 +11,7 @@ from openhands.sdk.event.llm_convertible.reasoning_utils import (
     append_visible_responses_reasoning,
     has_visible_responses_reasoning,
 )
+from openhands.sdk.event.mailbox import MailboxMessage
 from openhands.sdk.event.types import SourceType
 from openhands.sdk.llm import (
     ImageContent,
@@ -56,6 +57,10 @@ class MessageEvent(LLMConvertibleEvent):
         ),
     )
 
+    mailbox: MailboxMessage | None = Field(
+        default=None, description="Typed, agent-authored mailbox message, if present."
+    )
+
     critic_result: CriticResult | None = Field(
         default=None,
         description="Optional critic evaluation of this message and preceding history.",
@@ -74,6 +79,12 @@ class MessageEvent(LLMConvertibleEvent):
     def visualize(self) -> Text:
         """Return Rich Text representation of this message event."""
         content = Text()
+
+        if self.mailbox is not None:
+            content.append(
+                f"Agent mailbox ({self.mailbox.kind}) from {self.mailbox.sender_id}\n",
+                style="bold cyan",
+            )
 
         # Message text content
         text_parts = content_to_str(self.llm_message.content)

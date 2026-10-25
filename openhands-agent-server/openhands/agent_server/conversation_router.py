@@ -1,5 +1,6 @@
 """Conversation router for OpenHands SDK."""
 
+import asyncio
 import json
 from typing import Annotated
 from uuid import UUID
@@ -24,6 +25,7 @@ from openhands.agent_server._secrets_exposure import (
 )
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import (
+    ChildConversationNotFound,
     ConversationService,
     InvalidParentConversation,
     UnavailableAgentTool,
@@ -52,6 +54,8 @@ from openhands.agent_server.models import (
     Success,
     UpdateConversationRequest,
     UpdateSecretsRequest,
+    WaitForChildrenRequest,
+    WaitForChildrenResponse,
     trim_conversation_response_skills,
 )
 from openhands.agent_server.persistence import get_llm_profile_store
@@ -61,6 +65,11 @@ from openhands.sdk.conversation.types import (
     ConversationObservabilityMetadata,
     ConversationObservabilitySpanName,
     ConversationObservabilityTags,
+)
+from openhands.sdk.event.mailbox import (
+    MailboxConflict,
+    MailboxSendRequest,
+    MailboxSendResponse,
 )
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
 from openhands.sdk.marketplace.registry import (
@@ -874,6 +883,81 @@ async def start_child_conversation(
             status.HTTP_404_NOT_FOUND, detail="Parent conversation not found"
         )
     return result
+
+
+@conversation_router.post(
+    "/{conversation_id}/children/wait",
+    responses={
+        404: {"description": "Parent or direct child conversation not found"},
+        499: {"description": "Waiting client disconnected"},
+    },
+)
+async def wait_for_child_conversations(
+    conversation_id: UUID,
+    body: Annotated[WaitForChildrenRequest, Body()],
+    request: Request,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> WaitForChildrenResponse:
+    """Wait for existing children without polling or a WebSocket connection.
+
+    The timeout bounds the wait after child validation and runtime loading.
+    Finished, failed, stuck, paused and deleted children settle the wait.
+    An explicit parent pause/interrupt/close returns interrupted=true without
+    applying timeout cleanup. Cancellation during the wait leaves children running;
+    already-started cleanup is drained before the request exits. Loading and
+    stop/delete cleanup follow the existing lifecycle and are outside the wait
+    deadline. Statuses describe the outcome before cleanup. Settled child results
+    are persisted to the parent's canonical mailbox before a child is deleted.
+    """
+
+    async def disconnected() -> None:
+        while (await request.receive())["type"] != "http.disconnect":
+            pass
+
+    operation = asyncio.create_task(
+        conversation_service.wait_for_children(conversation_id, body)
+    )
+    disconnect = asyncio.create_task(disconnected())
+    try:
+        done, _ = await asyncio.wait(
+            {operation, disconnect}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if operation in done:
+            try:
+                return operation.result()
+            except ChildConversationNotFound as exc:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        raise HTTPException(499, "Waiting client disconnected")
+    finally:
+        operation.cancel()
+        disconnect.cancel()
+        await asyncio.gather(operation, disconnect, return_exceptions=True)
+
+
+@conversation_router.post(
+    "/{conversation_id}/mailbox",
+    responses={
+        404: {"description": "Sender or in-tree recipient not found"},
+        409: {"description": "Idempotency key reused for a different message"},
+    },
+)
+async def send_mailbox_message(
+    conversation_id: UUID,
+    body: Annotated[MailboxSendRequest, Body()],
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> MailboxSendResponse:
+    """Persist and deliver typed agent input without a browser or a new run.
+
+    Steer preserves in-flight work and the active goal. Explicit interrupt stops
+    the active goal and run; its typed event records the sender and reason.
+    Retrying an identical idempotency key does not append or interrupt twice.
+    """
+    try:
+        return await conversation_service.send_mailbox_message(conversation_id, body)
+    except ChildConversationNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except MailboxConflict as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
 
 @conversation_router.post(
