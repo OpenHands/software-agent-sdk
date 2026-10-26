@@ -71,7 +71,10 @@ from openhands.agent_server.init_router import (
 )
 from openhands.agent_server.llm_router import llm_router
 from openhands.agent_server.local_secret_resolver import local_secret_resolution
-from openhands.agent_server.mcp_router import mcp_router
+from openhands.agent_server.mcp_router import (
+    mcp_router,
+    public_mcp_oauth_callback_router,
+)
 from openhands.agent_server.meta_profiles_router import meta_profiles_router
 from openhands.agent_server.middleware import CORSDispatcher
 from openhands.agent_server.openai.router import (
@@ -568,6 +571,7 @@ def _add_api_routes(app: FastAPI) -> None:
     init_api_router = APIRouter(prefix="/api")
     init_api_router.include_router(init_router)
     app.include_router(init_api_router)
+    app.include_router(public_mcp_oauth_callback_router)
 
     # Header-only auth: applied to every /api/* route EXCEPT the workspace
     # static-file routes (handled separately below). Cookies are NOT honored

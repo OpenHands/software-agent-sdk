@@ -20,17 +20,19 @@ persist it through the settings API under the tested server's ``auth.state``.
 from __future__ import annotations
 
 import asyncio
+import secrets
 import threading
 import time
 import uuid
 from typing import Annotated, Any, Literal
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 import mcp.types
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from fastmcp.client.auth.oauth import ClientNotFoundError, OAuth
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AnyHttpUrl, BaseModel, Field, model_validator
 
 from openhands.agent_server._secrets_exposure import get_cipher
 from openhands.agent_server.mcp_oauth_store import (
@@ -54,6 +56,7 @@ from openhands.sdk.utils.cipher import Cipher
 logger = get_logger(__name__)
 
 mcp_router = APIRouter(prefix="/mcp", tags=["MCP"])
+public_mcp_oauth_callback_router = APIRouter(prefix="/api/mcp/oauth", tags=["MCP"])
 
 
 # ---------------------------------------------------------------------------
@@ -313,19 +316,31 @@ class MCPOAuthCallbackRequest(BaseModel):
 
 
 class _MCPOAuthProbeJob:
-    def __init__(self, *, request: MCPTestRequest, cipher: Cipher | None):
+    def __init__(
+        self,
+        *,
+        request: MCPTestRequest,
+        cipher: Cipher | None,
+        public_callback_url: str | None = None,
+    ):
         self.id = uuid.uuid4().hex
         self.request = request
         self.cipher = cipher
+        self.public_callback_url = public_callback_url
         self.created_at = time.monotonic()
         self.authorization_url: str | None = None
         self.callback_url: str | None = None
+        self.expected_state: str | None = None
+        self.callback_code: str | None = None
+        self.callback_state: str | None = None
+        self.callback_error: str | None = None
         self.result: MCPTestResponse | None = None
         self.status: Literal["pending", "authorizing", "succeeded", "failed"] = (
             "pending"
         )
         self.authorization_ready = threading.Event()
         self.callback_ready = threading.Event()
+        self.callback_received = threading.Event()
         self.done = threading.Event()
         self.lock = threading.Lock()
 
@@ -339,6 +354,25 @@ class _MCPOAuthProbeJob:
         with self.lock:
             self.callback_url = callback_url
         self.callback_ready.set()
+
+    def set_expected_state(self, state: str) -> None:
+        with self.lock:
+            self.expected_state = state
+
+    def set_public_callback(
+        self,
+        *,
+        code: str | None = None,
+        state: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        with self.lock:
+            if self.callback_received.is_set():
+                return
+            self.callback_code = code
+            self.callback_state = state
+            self.callback_error = error
+        self.callback_received.set()
 
     def set_result(self, result: MCPTestResponse) -> None:
         with self.lock:
@@ -450,6 +484,11 @@ class _BrowserCoordinatedOAuth(MCPOAuth):
     def __init__(self, *, job: _MCPOAuthProbeJob, **kwargs: Any):
         super().__init__(**kwargs)
         self._job = job
+        if job.public_callback_url is not None:
+            redirect_uris = [AnyHttpUrl(job.public_callback_url)]
+            self.context.client_metadata.redirect_uris = redirect_uris
+            if self._static_client_info is not None:
+                self._static_client_info.redirect_uris = redirect_uris
 
     async def redirect_handler(self, authorization_url: str) -> None:
         """Capture the URL instead of opening a browser from the backend."""
@@ -465,6 +504,11 @@ class _BrowserCoordinatedOAuth(MCPOAuth):
                 )
 
         logger.info("MCP OAuth authorization URL captured for job %s", self._job.id)
+        if self._job.public_callback_url is not None:
+            state = parse_qs(urlparse(authorization_url).query).get("state", [None])[0]
+            if state is None:
+                raise RuntimeError("OAuth authorization URL did not include state")
+            self._job.set_expected_state(state)
         self._job.set_authorization_url(authorization_url)
 
     async def callback_handler(self):
@@ -474,6 +518,27 @@ class _BrowserCoordinatedOAuth(MCPOAuth):
         rejects -- it wants an ``AuthorizationCodeResult``. Only
         ``redirect_port`` is read: ``_callback_host`` is absent in fastmcp 3.2.0.
         """
+        callback_url = self._job.public_callback_url
+        if callback_url is not None:
+            self._job.set_callback_ready(callback_url)
+            logger.info(
+                "MCP OAuth public callback ready for job %s at %s",
+                self._job.id,
+                callback_url,
+            )
+            received = await asyncio.to_thread(self._job.callback_received.wait, 300.0)
+            if not received:
+                raise TimeoutError("OAuth callback timed out after 300.0 seconds")
+            with self._job.lock:
+                code = self._job.callback_code
+                state = self._job.callback_state
+                error = self._job.callback_error
+            if error is not None:
+                raise RuntimeError(error)
+            if code is None or state is None:
+                raise RuntimeError("OAuth callback did not include code and state")
+            return code, state
+
         callback_url = f"http://localhost:{self.redirect_port}/callback"
         self._job.set_callback_ready(callback_url)
         logger.info(
@@ -672,6 +737,12 @@ def _get_oauth_job(job_id: str) -> _MCPOAuthProbeJob:
     return job
 
 
+def _public_callback_url(web_url: str | None, job_id: str) -> str | None:
+    if web_url is None:
+        return None
+    return f"{web_url.rstrip('/')}/api/mcp/oauth/callback/{job_id}"
+
+
 @mcp_router.post(
     "/oauth/start",
     response_model=MCPOAuthStartResponse,
@@ -689,6 +760,9 @@ async def start_mcp_oauth(
         )
 
     job = _MCPOAuthProbeJob(request=request, cipher=get_cipher(http_request))
+    job.public_callback_url = _public_callback_url(
+        http_request.app.state.config.web_url, job.id
+    )
     _register_oauth_job(job)
     thread = threading.Thread(
         target=_run_oauth_probe_job,
@@ -741,6 +815,41 @@ async def start_mcp_oauth(
 )
 async def get_mcp_oauth_status(job_id: str) -> MCPOAuthStatusResponse:
     return _get_oauth_job(job_id).to_status_response()
+
+
+@public_mcp_oauth_callback_router.get(
+    "/callback/{job_id}",
+    include_in_schema=False,
+)
+async def receive_mcp_oauth_callback(job_id: str, request: Request) -> HTMLResponse:
+    """Receive an OAuth redirect at the agent server's public URL."""
+    job = _get_oauth_job(job_id)
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")
+    error = request.query_params.get("error")
+
+    with job.lock:
+        expected_state = job.expected_state
+
+    if not job.callback_ready.is_set() or expected_state is None:
+        raise HTTPException(status_code=409, detail="OAuth callback is not ready")
+    if state is None or not secrets.compare_digest(state, expected_state):
+        raise HTTPException(
+            status_code=400, detail="OAuth callback state did not match"
+        )
+    if error is not None:
+        job.set_public_callback(error="OAuth authorization failed")
+        return HTMLResponse(
+            "<h1>Authorization failed</h1><p>You can close this tab.</p>",
+            status_code=400,
+        )
+    if code is None:
+        raise HTTPException(
+            status_code=400, detail="OAuth callback did not include code"
+        )
+
+    job.set_public_callback(code=code, state=state)
+    return HTMLResponse("<h1>Authorization received</h1><p>You can close this tab.</p>")
 
 
 def _validate_callback_url(callback_url: str, job: _MCPOAuthProbeJob) -> None:

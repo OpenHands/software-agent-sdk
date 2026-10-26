@@ -24,6 +24,7 @@ from openhands.agent_server.mcp_router import (
     _MCPOAuthProbeJob,
     _oauth_probe_jobs,
     _oauth_probe_jobs_lock,
+    _public_callback_url,
     _register_oauth_job,
 )
 from openhands.agent_server.persistence import reset_stores
@@ -857,6 +858,109 @@ def test_browser_coordinated_oauth_callback_handler_delegates_to_fastmcp(
     assert result is sentinel
     assert seen == [True]
     assert job.callback_url == "http://localhost:64801/callback"
+
+
+def test_browser_coordinated_oauth_uses_public_callback_url():
+    job = _MCPOAuthProbeJob(
+        request=MCPTestRequest.model_validate(
+            {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}
+        ),
+        cipher=None,
+    )
+    public_callback_url = (
+        f"https://agent.example.com/openhands/api/mcp/oauth/callback/{job.id}"
+    )
+    job.public_callback_url = public_callback_url
+    job.set_public_callback(code="authorization-code", state="oauth-state")
+    oauth = _BrowserCoordinatedOAuth(
+        job=job,
+        mcp_url="https://mcp.example.com/mcp",
+        client_id="client-id",
+    )
+
+    assert str(oauth.context.client_metadata.redirect_uris[0]) == public_callback_url
+    asyncio.run(oauth._initialize())
+    assert oauth.context.client_info is not None
+    assert str(oauth.context.client_info.redirect_uris[0]) == public_callback_url
+    assert asyncio.run(oauth.callback_handler()) == (
+        "authorization-code",
+        "oauth-state",
+    )
+    assert job.callback_url == public_callback_url
+
+
+def test_public_callback_url_preserves_configured_path_prefix():
+    assert _public_callback_url("https://agent.example.com/openhands/", "job-123") == (
+        "https://agent.example.com/openhands/api/mcp/oauth/callback/job-123"
+    )
+    assert _public_callback_url(None, "job-123") is None
+
+
+def test_public_mcp_oauth_callback_requires_ready_matching_state_without_api_key():
+    reset_stores()
+    config = Config(
+        session_api_keys=[SecretStr("session-key")],
+        web_url="https://agent.example.com/openhands",
+    )
+    job = _MCPOAuthProbeJob(
+        request=MCPTestRequest.model_validate(
+            {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}
+        ),
+        cipher=None,
+    )
+    job.public_callback_url = (
+        f"https://agent.example.com/openhands/api/mcp/oauth/callback/{job.id}"
+    )
+    job.set_expected_state("expected-state")
+    _register_oauth_job(job)
+
+    try:
+        with TestClient(
+            create_app(config), raise_server_exceptions=False
+        ) as test_client:
+            callback_path = f"/api/mcp/oauth/callback/{job.id}"
+            before_ready = test_client.get(
+                f"{callback_path}?code=authorization-code&state=expected-state"
+            )
+            assert before_ready.status_code == 409
+
+            job.set_callback_ready(job.public_callback_url or "")
+            wrong_state = test_client.get(
+                f"{callback_path}?code=authorization-code&state=wrong-state"
+            )
+            assert wrong_state.status_code == 400
+            assert not job.callback_received.is_set()
+
+            success = test_client.get(
+                f"{callback_path}?code=authorization-code&state=expected-state"
+            )
+            assert success.status_code == 200
+            assert "Authorization received" in success.text
+            assert job.callback_received.is_set()
+    finally:
+        with _oauth_probe_jobs_lock:
+            _oauth_probe_jobs.clear()
+        reset_stores()
+
+
+def test_public_mcp_oauth_callback_rejects_expired_job(client: TestClient):
+    job = _MCPOAuthProbeJob(
+        request=MCPTestRequest.model_validate(
+            {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}
+        ),
+        cipher=None,
+    )
+    job.public_callback_url = (
+        f"https://agent.example.com/api/mcp/oauth/callback/{job.id}"
+    )
+    job.created_at -= _OAUTH_PROBE_JOB_TTL_SECONDS + 1
+    _register_oauth_job(job)
+
+    response = client.get(
+        f"/api/mcp/oauth/callback/{job.id}?code=authorization-code&state=expected"
+    )
+
+    assert response.status_code == 404
 
 
 def test_mcp_oauth_callback_rejects_unknown_job(client: TestClient):

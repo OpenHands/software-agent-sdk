@@ -381,7 +381,8 @@ class Config(BaseModel):
     web_url: str | None = Field(
         default_factory=_default_web_url,
         description=(
-            "The URL where this agent server instance is available externally"
+            "The externally reachable agent-server URL, including any path prefix. "
+            "It is used for root-path routing and OAuth MCP callback redirects."
         ),
     )
     app_backend_public_url: str | None = Field(

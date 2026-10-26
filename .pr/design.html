@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Public OAuth callbacks for hosted Agent Server</title>
+    <style>
+      body { background: #f6f8fa; color: #1f2328; font: 16px/1.5 system-ui, sans-serif; margin: 0; }
+      main { background: white; box-shadow: 0 1px 3px #0002; margin: 32px auto; max-width: 860px; padding: 32px; }
+      h1, h2 { line-height: 1.2; }
+      code { background: #f1f3f5; border-radius: 4px; padding: 2px 5px; }
+      pre { background: #0d1117; color: #e6edf3; overflow-x: auto; padding: 16px; }
+      .flow { display: grid; gap: 10px; grid-template-columns: repeat(5, 1fr); margin: 20px 0; }
+      .step { background: #ddf4ff; border: 1px solid #54aeff; border-radius: 8px; padding: 12px; text-align: center; }
+      .arrow { align-self: center; text-align: center; }
+      @media (max-width: 700px) { .flow { grid-template-columns: 1fr; } .arrow { display: none; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Public OAuth callbacks for hosted Agent Server</h1>
+      <p>
+        OAuth MCP installation currently registers a FastMCP loopback redirect such as
+        <code>http://localhost:&lt;port&gt;/callback</code>. That only works when the browser can
+        reach the agent process. A hosted agent needs its configured public origin instead.
+      </p>
+
+      <h2>Interface</h2>
+      <p>
+        When <code>OH_WEB_URL</code> is unset, the existing local callback and authenticated
+        <code>POST /api/mcp/oauth/callback/{job_id}</code> flow are unchanged. When it is set,
+        OAuth client registration uses:
+      </p>
+      <pre>GET {OH_WEB_URL}/api/mcp/oauth/callback/{job_id}?code=...&amp;state=...</pre>
+      <p>
+        The route is intentionally public: an authorization server redirect cannot carry the
+        agent session API key. Access is constrained by an unguessable probe job ID and the
+        state generated for that specific authorization request. This is an additive endpoint;
+        no existing request or response schema changes.
+      </p>
+
+      <h2>Flow</h2>
+      <div class="flow">
+        <div class="step">Start OAuth probe</div><div class="arrow">→</div>
+        <div class="step">Register public redirect URI</div><div class="arrow">→</div>
+        <div class="step">Browser authorizes and redirects</div>
+      </div>
+      <div class="flow">
+        <div class="step">Public route validates job + state</div><div class="arrow">→</div>
+        <div class="step">Waiting FastMCP client receives code</div><div class="arrow">→</div>
+        <div class="step">Existing token exchange and status flow</div>
+      </div>
+
+      <h2>Failure handling</h2>
+      <ul>
+        <li>Unknown or expired job: <code>404</code>.</li>
+        <li>Callback before the client is waiting: <code>409</code>.</li>
+        <li>Missing or mismatched OAuth state: <code>400</code>, without waking the job.</li>
+        <li>Provider error redirects wake the job with a generic failure; provider text is not reflected into HTML.</li>
+      </ul>
+
+      <h2>Compatibility and verification</h2>
+      <p>
+        The implementation changes FastMCP client metadata after its normal initialization rather
+        than copying its private binding implementation. Both dynamically registered and
+        pre-registered clients use the public callback URI. Tests cover the configured path prefix,
+        local-flow preservation, session-key-free public delivery, ready-state checks, state
+        isolation, and expiration.
+      </p>
+    </main>
+  </body>
+</html>
