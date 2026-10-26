@@ -131,7 +131,8 @@ def test_conversation_factory_forwards_remote_parameters(
 
     assert isinstance(conversation, RemoteConversation)
     assert conversation.max_iteration_per_run == 200
-    assert conversation.max_budget_per_run == 2.5
+    create_call = remote_workspace._client.request.call_args_list[0]
+    assert create_call.kwargs["json"]["max_budget_per_run"] == 2.5
 
 
 @patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")

@@ -420,14 +420,34 @@ class TestRemoteConversation:
             expected_method
         ]
 
+    @pytest.mark.parametrize(
+        "budget_response",
+        [
+            {},
+            {"max_budget_per_run": None},
+            {"max_budget_per_run": 2.5},
+            {"max_budget_per_run": 5.0},
+        ],
+    )
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
-    def test_remote_conversation_initialization_new_conversation(self, mock_ws_client):
+    def test_remote_conversation_initialization_new_conversation(
+        self, mock_ws_client, budget_response
+    ):
         """Test RemoteConversation initialization with new conversation."""
         # Set up mock client
         conversation_id = str(uuid.uuid4())
         mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+        original_request = mock_client_instance.request.side_effect
+
+        def respond(method, url, **kwargs):
+            response = original_request(method, url, **kwargs)
+            if method == "POST" and url == "/api/conversations":
+                response.json.return_value.update(budget_response)
+            return response
+
+        mock_client_instance.request.side_effect = respond
 
         # Mock WebSocket client
         mock_ws_instance = Mock()
@@ -450,7 +470,9 @@ class TestRemoteConversation:
         assert conversation.id == uuid.UUID(conversation_id)
         assert conversation.workspace.host == self.host
         assert conversation.max_iteration_per_run == 100
-        assert conversation.max_budget_per_run == 2.5
+        assert conversation.max_budget_per_run == budget_response.get(
+            "max_budget_per_run"
+        )
 
         # Verify POST was called to create the conversation
         post_calls = [

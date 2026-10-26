@@ -960,6 +960,7 @@ class RemoteConversation(BaseConversation):
                     "Invalid response from server: missing conversation id"
                 )
             conversation_id = uuid.UUID(cid)
+            max_budget_per_run = data.get("max_budget_per_run")
 
             workspace.register_conversation(str(conversation_id))
 
