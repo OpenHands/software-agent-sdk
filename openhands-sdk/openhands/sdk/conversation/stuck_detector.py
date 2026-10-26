@@ -15,7 +15,7 @@ from openhands.sdk.logger import get_logger
 logger = get_logger(__name__)
 
 
-# Maximum recent events to scan for stuck detection.
+# Minimum recent-event scan window for stuck detection.
 # This window should be large enough to capture repetitive patterns
 # (4 repeats × 2 events per cycle = 8 events minimum, plus buffer for user messages)
 MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION: int = 20
@@ -69,7 +69,17 @@ class StuckDetector:
         Windowed rather than full-history to avoid materializing large
         file-backed event logs.
         """
-        events = self.state.active_branch(limit=MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION)
+        # Each tool call adds an action and a result. Error detection also
+        # needs the pair after the corrective nudge; empty agent messages
+        # can each be followed by an environment nudge as well.
+        scan_limit = max(
+            MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION,
+            2 * self.action_observation_threshold,
+            2 * (self.action_error_threshold + 1) + 1,
+            2 * self.monologue_threshold,
+            2 * self.alternating_pattern_threshold,
+        )
+        events = self.state.active_branch(limit=scan_limit)
 
         last_user_msg_index = next(
             (
