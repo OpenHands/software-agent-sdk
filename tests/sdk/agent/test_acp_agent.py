@@ -6474,6 +6474,25 @@ class TestACPSessionIdPersistence:
         extra = conn.new_session.await_args.kwargs["additional_directories"]
         assert extra == ([str(agent._skills_root)] if with_skills else None)
 
+    def test_skills_directory_is_not_sent_when_the_server_lacks_the_capability(
+        self, tmp_path
+    ):
+        agent = _make_agent().model_copy(
+            update={
+                "agent_context": AgentContext(
+                    skills=[Skill(name="s", content="body", is_agentskills_format=True)]
+                )
+            }
+        )
+        state = _make_state(tmp_path)
+        agent._materialize_skills(state)
+        conn = self._make_conn()
+        conn.initialize.return_value.agent_capabilities.session_capabilities = None
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        assert conn.new_session.await_args.kwargs["additional_directories"] is None
+
     def test_cancel_drain_restart_keeps_retry_flag_when_init_fails(self, tmp_path):
         """A failed replacement session should leave the deferred restart armed."""
         agent = _make_agent()

@@ -1979,6 +1979,7 @@ class ACPAgent(AgentBase):
     # Skills written to disk and listed by path in the prompt, not inlined.
     _skill_locations: dict[str, Path] = PrivateAttr(default_factory=dict)
     _skills_root: Path | None = PrivateAttr(default=None)
+    _additional_directories_supported: bool = PrivateAttr(default=False)
     _restart_session_on_next_turn: bool = PrivateAttr(default=False)
     # Stream identity for the turn in flight; see stream_context.py. Held on
     # the agent rather than threaded through the finalizers because the ACP
@@ -2454,7 +2455,9 @@ class ACPAgent(AgentBase):
         )
 
     def _skill_directories(self) -> list[str] | None:
-        return [str(self._skills_root)] if self._skills_root else None
+        if self._skills_root and self._additional_directories_supported:
+            return [str(self._skills_root)]
+        return None
 
     def _materialize_skills(self, state: ConversationState) -> None:
         self._skill_locations = {}
@@ -3148,6 +3151,15 @@ class ACPAgent(AgentBase):
                 init_response.agent_capabilities.mcp_capabilities
                 if init_response.agent_capabilities is not None
                 else None
+            )
+            session_caps = (
+                init_response.agent_capabilities.session_capabilities
+                if init_response.agent_capabilities is not None
+                else None
+            )
+            self._additional_directories_supported = (
+                session_caps is not None
+                and session_caps.additional_directories is not None
             )
             acp_mcp_servers = _mcp_config_to_acp_servers(self.mcp_config, mcp_caps)
             if acp_mcp_servers:

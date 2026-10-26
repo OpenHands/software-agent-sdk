@@ -254,3 +254,21 @@ def test_skills_hidden_from_the_model_are_not_written_or_listed(tmp_path: Path) 
     assert (_skills_dir(project) / "shown" / "SKILL.md").exists()
     assert not (_skills_dir(project) / "hidden").exists()
     assert "<name>hidden</name>" not in suffix
+
+
+def test_skill_names_differing_only_by_case_get_separate_directories(
+    tmp_path: Path,
+) -> None:
+    project = _workspace(tmp_path)
+    agent = _acp_agent(
+        skills=[
+            Skill(name="Zebra", content="upper", is_agentskills_format=True),
+            Skill(name="zebra", content="lower", is_agentskills_format=True),
+        ]
+    )
+    _installed_suffix(agent, project)
+
+    bodies = [p.read_text() for p in _skills_dir(project).rglob("SKILL.md")]
+    assert len(bodies) == 2
+    assert any("upper" in body for body in bodies)
+    assert any("lower" in body for body in bodies)

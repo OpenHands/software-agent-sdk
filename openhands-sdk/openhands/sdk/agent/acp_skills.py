@@ -23,9 +23,9 @@ def _description(skill: Skill) -> str:
 def _directory_name(name: str, taken: set[str]) -> str:
     base = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip(".-") or "skill"
     candidate, suffix = base, 2
-    while candidate in taken:
+    while candidate.lower() in taken:
         candidate, suffix = f"{base}-{suffix}", suffix + 1
-    taken.add(candidate)
+    taken.add(candidate.lower())
     return candidate
 
 
