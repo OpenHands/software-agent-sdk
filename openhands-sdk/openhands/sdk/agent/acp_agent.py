@@ -126,7 +126,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.mcp.config import MCPOAuthAuthCredential, MCPServer
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.settings.acp_providers import (
     ACP_PROVIDERS,
@@ -672,20 +672,65 @@ def _extract_session_models(
 _ACPMcpServer = HttpMcpServer | SseMcpServer | McpServerStdio | AcpMcpServer
 
 
+def _oauth_bearer_header(auth: MCPOAuthAuthCredential, name: str) -> dict[str, str]:
+    """Forward a stored OAuth2 access token as an ``Authorization`` header.
+
+    The ACP subprocess owns its own MCP transport and has no access to the
+    FastMCP token store the native path uses, so the token persisted in the
+    connection's ``auth.state`` is the only credential available here. Without
+    this the server is forwarded as a bare URL and the ACP agent reports it is
+    not logged in (``codex mcp login ...``).
+
+    A missing or expired token still forwards what exists: a 401 from the
+    server is more actionable than an unauthenticated URL. Both cases are
+    logged so the drop is not silent.
+    """
+    state = auth.state
+    token = state.tokens.access_token if state is not None and state.tokens else None
+    if token is None:
+        logger.warning(
+            "ACP MCP server %r has an OAuth2 connection with no stored access "
+            "token; forwarding it unauthenticated",
+            name,
+        )
+        return {}
+    if (
+        state is not None
+        and state.token_expires_at is not None
+        and state.token_expires_at <= time.time()
+    ):
+        logger.warning(
+            "ACP MCP server %r has an expired OAuth2 access token; the ACP path "
+            "cannot refresh it, forwarding it as-is",
+            name,
+        )
+    return {"Authorization": f"Bearer {token.get_secret_value()}"}
+
+
 def _remote_mcp_headers(server: MCPServer, name: str) -> list[HttpHeader]:
-    """Convert remote MCP headers/auth into ACP's header-only representation."""
+    """Convert remote MCP headers/auth into ACP's header-only representation.
+
+    Header-compatible auth (api key / bearer / basic / explicit headers)
+    converts directly. OAuth2 does not -- ``to_http_headers()`` returns ``None``
+    because the native path materializes tokens through FastMCP's token store --
+    so its stored access token is forwarded explicitly instead.
+    """
     headers = [
         HttpHeader(name=name, value=value.get_secret_value())
         for name, value in (server.headers or {}).items()
     ]
 
-    auth_headers = server.auth.to_http_headers() if server.auth is not None else {}
+    auth = server.auth
+    if isinstance(auth, MCPOAuthAuthCredential):
+        auth_headers = _oauth_bearer_header(auth, name)
+    else:
+        auth_headers = auth.to_http_headers() if auth is not None else {}
     if auth_headers is None:
         logger.warning(
             "ACP MCP server %r uses unsupported remote MCP auth type %r; "
             "only header-compatible auth can be forwarded",
             name,
-            type(server.auth).__name__,
+            type(auth).__name__,
         )
         return headers
     headers.extend(
@@ -724,7 +769,8 @@ def _mcp_config_to_acp_servers(
     with a warning rather than failing init — one misconfigured server should
     not sink the whole conversation.  ``env`` / ``headers`` maps are converted
     to the protocol's ``[{name, value}]`` list form; header-compatible auth
-    credentials are also converted to headers.
+    credentials, and the stored access token of an OAuth2 connection, are also
+    converted to headers.
     """
     caps = normalize_mcp_capabilities(mcp_capabilities)
     http_ok = caps.http

@@ -21,6 +21,7 @@ from pydantic import SecretStr
 from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import (
+    CondensationUnavailable,
     EventService,
     RunSlot,
     _log_emit_failure,
@@ -35,6 +36,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import LLM, Agent, AgentBase, Conversation, Message
 from openhands.sdk.agent import ACPAgent
+from openhands.sdk.context.condenser import NoOpCondenser
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.fifo_lock import FIFOLock
@@ -3868,6 +3870,42 @@ def test_emit_event_from_thread_uses_captured_loop(event_service: EventService) 
     assert len(captured_calls) == 1, "run_in_executor should have been called once"
 
 
+async def test_emit_event_from_thread_stamps_event_when_persisted(
+    event_service: EventService,
+) -> None:
+    """An event emitted from a callback is timestamped when it is appended.
+
+    The stats update is built when the model answers, but it is appended only
+    once the step that holds the state lock has appended its action and
+    observation. Keeping the build-time timestamp put it out of timestamp
+    order, so ``timestamp__gte`` and ``resend_mode=since`` skipped it.
+    """
+    state_lock = FIFOLock()
+    appended: list[Event] = []
+    conversation = MagicMock()
+    conversation._state = state_lock
+    conversation._on_event.side_effect = appended.append
+    event_service._main_loop = asyncio.get_running_loop()
+    event_service._conversation = conversation  # type: ignore[assignment]
+
+    event = ConversationStateUpdateEvent(key="stats", value={})
+    with state_lock:
+        event_service._emit_event_from_thread(event)
+        await asyncio.sleep(0.01)
+        # Stands in for the step's action/observation appended under the lock.
+        step_end = datetime.now().isoformat()
+        await asyncio.sleep(0.01)
+
+    for _ in range(200):
+        if appended:
+            break
+        await asyncio.sleep(0.01)
+    assert len(appended) == 1
+    persisted = appended[0]
+    assert persisted.id == event.id
+    assert persisted.timestamp > step_end > event.timestamp
+
+
 def test_llm_log_callback_swallows_emit_failures(
     event_service: EventService, caplog
 ) -> None:
@@ -3950,6 +3988,30 @@ async def test_event_service_creates_lease_with_custom_ttl(tmp_path: Path) -> No
     assert service._lease is not None
     assert service._lease._ttl_seconds == 10.0
     assert (tmp_path / stored.id.hex / LEASE_FILE_NAME).exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("condenser", "message"),
+    [
+        (None, "No condenser configured"),
+        (NoOpCondenser(), "NoOpCondenser does not handle condensation requests"),
+    ],
+)
+async def test_condense_without_request_handling_condenser_is_refused(
+    event_service: EventService, condenser, message: str
+) -> None:
+    """A condenser that cannot serve a request is the caller's configuration,
+    so condense raises CondensationUnavailable (mapped to 409) instead of
+    letting LocalConversation's ValueError become a 500."""
+    conversation = MagicMock()
+    conversation.agent.condenser = condenser
+    event_service._conversation = conversation
+
+    with pytest.raises(CondensationUnavailable, match=message):
+        await event_service.condense()
+
+    conversation.condense.assert_not_called()
 
 
 class TestEmitEventFromThreadFailures:

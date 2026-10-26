@@ -24,6 +24,10 @@ from openhands.agent_server.persistence import (
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
 from openhands.agent_server.telemetry import notify_misc_settings_changed
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.meta_profile_store import (
+    MetaProfileStore,
+    default_meta_profile_dir,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.settings import (
@@ -210,8 +214,14 @@ async def update_settings(
 
     Uses file locking to prevent concurrent updates from overwriting each other.
 
+    A non-null ``active_agent_profile_id`` or ``active_meta_profile`` must
+    name a stored profile, as with their ``/activate`` routes; ``null``
+    clears the pointer.
+
     Raises:
-        HTTPException: 400 if the update payload contains invalid values.
+        HTTPException: 400 if the update payload contains invalid values;
+            404 if ``active_profile``, ``active_agent_profile_id`` or
+            ``active_meta_profile`` names a profile that does not exist.
     """
     update_data = payload.model_dump(exclude_none=True)
     # exclude_none drops an explicit null, so re-add nullable pointers when the
@@ -234,10 +244,39 @@ async def update_settings(
             ),
         )
 
+    _require_pointer_targets(update_data)
     return _apply_settings_update(
         request,
         cast(SettingsUpdatePayload, update_data),
     )
+
+
+def _require_pointer_targets(update_data: dict) -> None:
+    """Refuse agent-profile / meta-profile pointers that name nothing.
+
+    Mirrors ``POST /api/agent-profiles/{id}/activate`` and
+    ``POST /api/meta-profiles/{name}/activate`` (404). ``None`` clears.
+    """
+    profile_id = update_data.get("active_agent_profile_id")
+    if profile_id is not None:
+        with store_errors():
+            known = get_agent_profile_store().name_for_id(profile_id) is not None
+        if not known:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Agent profile with id '{profile_id}' not found",
+            )
+
+    meta_name = update_data.get("active_meta_profile")
+    if meta_name is not None:
+        try:
+            with store_errors():
+                MetaProfileStore(base_dir=default_meta_profile_dir()).load(meta_name)
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Meta-profile '{meta_name}' not found",
+            )
 
 
 def _load_active_profile_llm(

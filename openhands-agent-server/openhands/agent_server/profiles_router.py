@@ -342,6 +342,11 @@ async def validate_profile(
     """
     cipher = get_cipher(request)
     llm = decrypt_incoming_llm_secrets(body.llm, cipher) if cipher else body.llm
+    # Check a draft linked to a provider connection with the connection's
+    # credentials, as activation and ``switch_llm`` run it. No-op without
+    # ``provider_connection_id``; a dangling link is a 422 naming it.
+    with store_errors():
+        llm = get_llm_profile_store().resolve_provider_connection(llm, cipher=cipher)
 
     messages = [
         Message(
