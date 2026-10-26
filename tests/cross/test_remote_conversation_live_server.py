@@ -1746,16 +1746,30 @@ def test_execute_tool_live_server_shares_the_run_limit(
                 assert warmup.exit_code == 0
 
             with httpx.Client(base_url=server_env["host"]) as client:
-                # Hold the only permit on a slow direct call in one thread.
+                # Hold the only permit on a slow direct call in one thread. The
+                # command touches a marker once it is actually running, i.e.
+                # after the server admitted the call and took the only permit;
+                # waiting for it removes the race where the probe below wins the
+                # permit first, refuses the holder, and then is admitted itself.
+                marker = tmp_path / "holder_running"
                 holder_thread = threading.Thread(
                     target=holder.execute_tool,
                     args=(
                         "terminal",
-                        TerminalAction(command="sleep 5", timeout=60.0),
+                        TerminalAction(
+                            command=f"touch {marker} && sleep 5", timeout=60.0
+                        ),
                     ),
                 )
                 holder_thread.start()
                 try:
+                    marker_deadline = time.monotonic() + 30
+                    while time.monotonic() < marker_deadline and not marker.exists():
+                        time.sleep(0.05)
+                    assert marker.exists(), (
+                        "the holding direct call never started running"
+                    )
+
                     deadline = time.monotonic() + 30
                     response: httpx.Response | None = None
                     while time.monotonic() < deadline:

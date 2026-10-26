@@ -2327,7 +2327,15 @@ class EventService:
                     "continuing teardown"
                 )
             except asyncio.CancelledError:
-                pass  # Expected: the request that started it was cancelled.
+                if not direct_worker.done():
+                    # close() itself was cancelled before the worker settled.
+                    # Do not return the permit here: the worker's done callback
+                    # owns the release and returns it once the worker (and any
+                    # interrupt it offloaded) actually exits, so capacity is
+                    # neither over-allocated now nor leaked.
+                    raise
+                # The worker itself reported cancellation (its generation was
+                # stale): it has already exited, so teardown can continue.
             except Exception as exc:
                 logger.debug("Direct tool worker failed during close: %s", exc)
         await self._drain_direct_tool_interrupt()
@@ -2630,11 +2638,13 @@ class EventService:
 
         ``close()`` cannot close the executor while an offloaded
         ``executor.interrupt()`` still uses it, so this joins every interrupt
-        the same way ``close()`` joins the worker.
+        the same way ``close()`` joins the worker. The tracking list is not
+        cleared up front: if ``close()`` is itself cancelled mid-drain, the
+        still-running interrupts must stay tracked so their done callbacks
+        release the permit only once they really finish, rather than the
+        cancelled ``close()`` returning it under them.
         """
-        interrupt_tasks = self._direct_tool_interrupt_tasks
-        self._direct_tool_interrupt_tasks = []
-        for interrupt_task in interrupt_tasks:
+        for interrupt_task in list(self._direct_tool_interrupt_tasks):
             if interrupt_task.done():
                 with suppress(BaseException):
                     interrupt_task.exception()
@@ -2647,9 +2657,16 @@ class EventService:
                     "continuing teardown"
                 )
             except asyncio.CancelledError:
-                pass  # Expected: the request that started it was cancelled.
+                # close() itself was cancelled while an interrupt still uses the
+                # executor. Abort teardown rather than close the executor under
+                # it; the interrupt's done callback owns the permit and returns
+                # it once the interrupt actually finishes. The tasks stay
+                # tracked so ``_release_direct_tool_if_settled`` still waits on
+                # them.
+                raise
             except Exception as exc:
                 logger.debug("Direct tool interrupt failed during close: %s", exc)
+        self._direct_tool_interrupt_tasks = []
 
     async def execute_tool(self, tool_name: str, action: dict[str, Any]) -> Observation:
         """Execute one tool directly on the conversation, bypassing the agent loop.
@@ -2715,6 +2732,7 @@ class EventService:
 
         loop = asyncio.get_running_loop()
         worker: asyncio.Future[Observation] | None = None
+        resolve_future: asyncio.Future[Any] | None = None
         try:
             # Track the resolve stage too: it runs ``_ensure_agent_ready`` in a
             # thread, and close() must wait for that to finish before it closes
@@ -2743,8 +2761,17 @@ class EventService:
             return await asyncio.shield(worker)
         except asyncio.CancelledError:
             if worker is None:
-                # Cancelled while resolving the tool: no tool reached the
-                # executor, so the finally below releases the flag.
+                # Cancelled while resolving the tool. The resolve future is
+                # shielded, so ``_ensure_agent_ready`` keeps initializing
+                # plugins and tools on its thread even though the request is
+                # gone. That is live work that will use the executor, so the
+                # permit must outlive it exactly as it does for a cancelled
+                # worker: transfer the release to the resolve future's
+                # completion instead of letting the finally below return it
+                # while initialization still runs.
+                if resolve_future is not None and not resolve_future.done():
+                    self._direct_tool_abandon += 1
+                    resolve_future.add_done_callback(self._direct_tool_worker_done)
                 raise
             # Cancelling the request cannot stop the synchronous worker, so
             # abandon it: the generation bump makes a queued worker exit without

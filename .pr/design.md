@@ -77,13 +77,21 @@ a version compare would reject a working endpoint.
   of queueing unboundedly in the process default executor. A full server answers
   429 with the same detail a run gets. The permit is held until the call
   settles, and on cancellation until the abandoned worker *and* its offloaded
-  interrupt have finished, for the same reason the in-flight guard is. The flag is released on success, on a
+  interrupt have finished, for the same reason the in-flight guard is. A call
+  cancelled while still resolving the tool holds the permit too: the resolve
+  future is shielded, so `_ensure_agent_ready` keeps initializing plugins and
+  tools on its thread, and releasing the permit then would let another
+  conversation run alongside that live initialization. The flag is released on success, on a
   validation failure, and, for a cancelled request whose synchronous worker
   already started, only when that worker actually exits — and, because the
   offloaded interrupt outlives the worker, only once that interrupt has also
   finished. A lingering interrupt can otherwise still scan for (and signal) the
   terminal process after the worker returns, killing the next admitted command,
-  so the guard must cover the interrupt, not just the worker.
+  so the guard must cover the interrupt, not just the worker. `close()` returns
+  the permit only after it has waited out the worker and drained the interrupts;
+  if `close()` itself is cancelled mid-teardown, it aborts and leaves the
+  release to the worker/interrupt done callbacks so the permit is not returned
+  under still-live work.
 - **Cancellation returns promptly; teardown owns the worker and the
   interrupt.** Cancelling the request cannot stop the synchronous worker, and
   blocking the cancel on it would hold the request open for as long as the
@@ -157,22 +165,31 @@ i.e. pre-existing drift, not from this change.
 
 ## Evidence
 
-- `control-agent-server map check` -> ok, 34 files, 949 ids.
+- `control-agent-server map check` -> ok, 34 files, 963 ids.
 - Live server (`control-agent-server exec` / `pytest tests/cross/...live_server.py
-  -k execute_tool`) -> 6 passed: an `export` from one `execute_tool` is visible to
+  -k execute_tool`) -> 7 passed: an `export` from one `execute_tool` is visible to
   the next in the same conversation (real `TerminalObservation`), a completed call
   is admitted again, a `GrepAction` with `tool_name="terminal"` is 422, an action
   without `kind` is 422, an unknown tool is 422 naming it, an unknown id is 404, an
   unauthenticated call is 401, a registered secret is masked, a dropped request
   does not stall `/alive`, and a direct call while another conversation holds the
-  only server run permit is 429 but is admitted once the holder finishes.
+  only server run permit is 429 but is admitted once the holder finishes. The
+  run-limit case waits for the holder to actually start before probing, so it
+  cannot flake by the probe winning the single permit first (it did, ~4/10
+  before the fix; 10/10 after).
 - Admission unit tests: `tests/agent_server/test_run_admission.py` holds two of
   four conversations' direct calls and a direct-vs-run competition on a shared
   blocking event; each fails if the `RunSlot.acquire` line is removed. The same
   file's `test_direct_call_keeps_its_permit_until_close_drains_it` closes a
   conversation mid-call and asserts a competing call is still 429 while
   `close()` drains the worker, then admitted once it returns; it fails if
-  `close()` returns the permit before the drain.
+  `close()` returns the permit before the drain. Two further regressions cover
+  the cancellation windows: `test_cancelled_resolve_keeps_its_permit_until_initialization_finishes`
+  cancels a call while `_resolve_direct_tool` is still blocked and asserts a
+  competing call is 429 until initialization finishes, and
+  `test_cancelled_close_keeps_its_permit_until_the_worker_exits` cancels
+  `close()` while the worker is still running and asserts the permit is not
+  returned under it. Both fail on the pre-fix head.
 - `uv run pytest tests/agent_server tests/sdk/conversation tests/tools/terminal`
   -> passes locally (378 agent-server, 107 sdk/terminal) and in CI.
 - `npm run check:agent-server-api` -> clean; `ruff check` / `ruff format --check`
