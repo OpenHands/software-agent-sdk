@@ -7,7 +7,7 @@ from typing import Any
 from rich.text import Text
 
 from openhands.sdk.event.base import Event
-from openhands.sdk.event.types import SourceType
+from openhands.sdk.event.types import SourceType, ToolCallID
 
 
 _MAX_DISPLAY_CHARS = 500
@@ -55,7 +55,7 @@ class ACPToolCallEvent(Event):
     """
 
     source: SourceType = "agent"
-    tool_call_id: str
+    tool_call_id: ToolCallID
     title: str
     status: str | None = None
     tool_kind: str | None = None
