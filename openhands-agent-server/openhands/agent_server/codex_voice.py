@@ -184,6 +184,8 @@ class CodexRelay:
         self.closed = False
         self.closing = False
         self.last_poll = time.monotonic()
+        self.input_generation = 0
+        self.user_transcript_active = False
 
     async def initialize(self) -> None:
         command, env = _command(self.home)
@@ -277,7 +279,12 @@ class CodexRelay:
         return answer
 
     async def rpc(
-        self, method: str, params: dict[str, Any], timeout: float = 15
+        self,
+        method: str,
+        params: dict[str, Any],
+        timeout: float = 15,
+        *,
+        speech_generation: int | None = None,
     ) -> dict[str, Any]:
         if self.closed:
             raise RelayError("Codex voice call is closed")
@@ -288,17 +295,34 @@ class CodexRelay:
         )
         self.pending[request_id] = future
         try:
-            await self._write({"id": request_id, "method": method, "params": params})
+            written = await self._write(
+                {"id": request_id, "method": method, "params": params},
+                speech_generation=speech_generation,
+            )
+            if not written:
+                return {}
             return await asyncio.wait_for(future, timeout)
         finally:
             self.pending.pop(request_id, None)
 
-    async def _write(self, message: dict[str, Any]) -> None:
+    async def _write(
+        self, message: dict[str, Any], *, speech_generation: int | None = None
+    ) -> bool:
         if self.process is None or self.process.stdin is None:
             raise RelayError("Codex voice connection unavailable")
         async with self.write_lock:
+            # Input may arrive while this writer waits. Fence speech at the
+            # final local write boundary, not just before an awaited RPC.
+            if speech_generation is not None and (
+                speech_generation != self.input_generation
+                or self.closed
+                or self.closing
+                or self.status.status in ("closed", "error")
+            ):
+                return False
             self.process.stdin.write((json.dumps(message) + "\n").encode())
             await self.process.stdin.drain()
+            return True
 
     async def _read(self) -> None:
         assert self.process is not None and self.process.stdout is not None
@@ -392,6 +416,10 @@ class CodexRelay:
             self.status.status = "closed"
         elif method == "thread/realtime/transcript/done":
             role = params.get("role")
+            if role == "user" and str(params.get("text", "")).strip():
+                if not self.user_transcript_active:
+                    self.input_generation += 1
+                self.user_transcript_active = False
             if role in ("user", "assistant"):
                 self.status.transcripts.append(
                     VoiceTranscript(
@@ -404,6 +432,10 @@ class CodexRelay:
                 if role == "assistant" and self.status.status != "thinking":
                     self.status.status = "listening"
         elif method == "thread/realtime/transcript/delta":
+            if params.get("role") == "user" and str(params.get("delta", "")).strip():
+                if not self.user_transcript_active:
+                    self.input_generation += 1
+                    self.user_transcript_active = True
             if params.get("role") == "assistant" and self.status.status != "thinking":
                 self.status.status = "speaking"
 
@@ -454,8 +486,11 @@ class CodexRelay:
             self.handoff_results[handoff.handoff_id] = (handoff.input_transcript, text)
             self._reject_handoff(text)
             return
+        self.input_generation += 1
         self.status.status = "thinking"
-        self.handoff_task = self._start_handler(self._handoff(handoff))
+        self.handoff_task = self._start_handler(
+            self._handoff(handoff, self.input_generation)
+        )
 
     def _start_handler(
         self, operation: Coroutine[Any, Any, None]
@@ -472,7 +507,9 @@ class CodexRelay:
         else:
             self._fail(text, "request_not_sent")
 
-    async def _speak(self, text: str) -> None:
+    async def _speak(self, text: str, generation: int | None = None) -> None:
+        if generation is None:
+            generation = self.input_generation
         try:
             if (
                 not self.closed
@@ -485,11 +522,12 @@ class CodexRelay:
                         "threadId": self.thread_id,
                         "text": spoken_excerpt(text),
                     },
+                    speech_generation=generation,
                 )
         except (OSError, RelayError, TimeoutError):
             self._fail("Codex voice connection failed", "connection_failed")
 
-    async def _handoff(self, handoff: RelayHandoff) -> None:
+    async def _handoff(self, handoff: RelayHandoff, generation: int) -> None:
         logger.info("Codex Voice: handoff processing")
         try:
             text, error_code = await self._delegate(handoff.input_transcript)
@@ -500,7 +538,8 @@ class CodexRelay:
             )
             error_code = "relay_failed"
         self.handoff_results[handoff.handoff_id] = (handoff.input_transcript, text)
-        await self._speak(text)
+        if generation == self.input_generation and text:
+            await self._speak(text, generation)
         if error_code:
             self._fail(text, error_code)
         elif (
@@ -537,16 +576,30 @@ class CodexRelay:
         before = await asyncio.to_thread(snapshot)
         if self.closed or self.closing or self.status.status in ("closed", "error"):
             return "Voice call ended. Your request was not sent.", "request_not_sent"
-        submission = asyncio.create_task(
-            self.events.send_message(
-                Message(role="user", content=[TextContent(text=request)]), run=True
-            )
-        )
+        message = Message(role="user", content=[TextContent(text=request)])
+        submission = asyncio.create_task(self.events.send_message(message, run=True))
         self.submissions.add(submission)
         submission.add_done_callback(self._submission_done)
         # Ending speech must not split the accepted append-and-run operation.
         await asyncio.shield(submission)
         logger.info("Codex Voice: request saved to Cat")
+
+        def submitted_message_id() -> str | None:
+            with state:
+                submitted = [
+                    event
+                    for event in state.events
+                    if event.id not in before
+                    and isinstance(event, MessageEvent)
+                    and event.llm_message.role == "user"
+                ]
+                # Do not attribute a concurrently appended typed message to this
+                # handoff, even if it arrived before send_message returned.
+                if len(submitted) == 1 and submitted[0].llm_message == message:
+                    return submitted[0].id
+                return None
+
+        submitted_id = await asyncio.to_thread(submitted_message_id)
         try:
             status = await self.events.wait_for_run_completion(timeout=300)
         except TimeoutError:
@@ -564,6 +617,14 @@ class CodexRelay:
 
         def answer() -> str | None:
             with state:
+                if submitted_id is None or any(
+                    isinstance(event, MessageEvent)
+                    and event.llm_message.role == "user"
+                    and event.id not in before
+                    and event.id != submitted_id
+                    for event in state.events
+                ):
+                    return ""
                 for event in reversed(list(state.events)):
                     if event.id in before:
                         continue
@@ -583,6 +644,8 @@ class CodexRelay:
             return None
 
         result = await asyncio.to_thread(answer)
+        if result == "":
+            return "", None
         return (
             (result[:12000], None)
             if result
