@@ -907,6 +907,11 @@ class LocalConversation(BaseConversation):
                 conversation_id=fork_id,
                 max_iteration_per_run=self.max_iteration_per_run,
                 stuck_detection=self._stuck_detector is not None,
+                stuck_detection_thresholds=(
+                    self._stuck_detector.thresholds.model_copy(deep=True)
+                    if self._stuck_detector is not None
+                    else None
+                ),
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
                 tags=tags,
