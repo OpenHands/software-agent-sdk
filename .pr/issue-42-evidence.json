@@ -1,0 +1,210 @@
+{
+  "product_sha": "b2c0490647963cb877d1f0c20394311fa245d6d4",
+  "baseline_sha": "5966c781ed014efc96c028a99bddd4ff78426741",
+  "environment": {
+    "os": "Linux",
+    "python": "3.13.5",
+    "git": "2.52.0",
+    "model": "deepseek/deepseek-flash",
+    "process_supervisor": "docker-init -s"
+  },
+  "runs": [
+    {
+      "phase": "before",
+      "run": "20261023-060500-1c1a-map-f04",
+      "checkout_sha": "5966c781ed014efc96c028a99bddd4ff78426741",
+      "default_child_http_status": 500,
+      "exception": "Git command failed: git worktree add -b openhands/3db9740a-6514-4ad3-ae09-368bc743bd6b /tmp/agent-server-verify/20261023-060500-1c1a-map-f04/worktrees/3db9740a-6514-4ad3-ae09-368bc743bd6b/qa-child-unborn HEAD"
+    },
+    {
+      "phase": "before",
+      "run": "20261023-060518-691c-map-f04",
+      "checkout_sha": "5966c781ed014efc96c028a99bddd4ff78426741",
+      "default_child_http_status": 500,
+      "exception": "Git command failed: git worktree add -b openhands/63d3912a-56be-4ac1-8fc1-996950a6bb4c /tmp/agent-server-verify/20261023-060518-691c-map-f04/worktrees/63d3912a-56be-4ac1-8fc1-996950a6bb4c/qa-child-unborn HEAD"
+    },
+    {
+      "phase": "after",
+      "run": "20261023-071012-2856-map-f04",
+      "checkout_sha": "b2c0490647963cb877d1f0c20394311fa245d6d4",
+      "default_child_http_status": 201,
+      "actual_isolation": "shared",
+      "companion_controls": [
+        "real-model shared, committed-worktree and non-git fallback: pass",
+        "validation/authentication/unknown parent: pass",
+        "full capacity rejects before child/worktree creation: pass"
+      ]
+    },
+    {
+      "phase": "after",
+      "run": "20261023-071101-a644-map-f04",
+      "checkout_sha": "b2c0490647963cb877d1f0c20394311fa245d6d4",
+      "default_child_http_status": 201,
+      "actual_isolation": "shared",
+      "companion_controls": [
+        "real-model shared, committed-worktree and non-git fallback: pass",
+        "validation/authentication/unknown parent: pass",
+        "full capacity rejects before child/worktree creation: pass"
+      ]
+    }
+  ],
+  "map_summary": {
+    "ok": false,
+    "file": "F04-conversation-lifecycle.md",
+    "launch_flags": [
+      "--checkout",
+      "/workspace/agent-sdk-fix-42"
+    ],
+    "attempts": [
+      {
+        "run": "/tmp/agent-server-verify/20261023-071012-2856-map-f04",
+        "ok": false,
+        "summary": {
+          "pass": 4,
+          "fail": 0,
+          "xfail": 0,
+          "xpass": 1,
+          "blocked": 0,
+          "skipped": 0,
+          "no-commands": 0
+        },
+        "statuses": {
+          "Preconditions": "pass",
+          "Start a child (`F04.child-start`).": "pass",
+          "Default child in a fresh workspace (`F04.child-unborn`), known bug.": "xpass",
+          "Child launch errors (`F04.child-errors`).": "pass",
+          "Child launch at capacity (`F04.child-capacity`).": "pass"
+        }
+      },
+      {
+        "run": "/tmp/agent-server-verify/20261023-071101-a644-map-f04",
+        "ok": false,
+        "summary": {
+          "pass": 4,
+          "fail": 0,
+          "xfail": 0,
+          "xpass": 1,
+          "blocked": 0,
+          "skipped": 0,
+          "no-commands": 0
+        },
+        "statuses": {
+          "Preconditions": "pass",
+          "Start a child (`F04.child-start`).": "pass",
+          "Default child in a fresh workspace (`F04.child-unborn`), known bug.": "xpass",
+          "Child launch errors (`F04.child-errors`).": "pass",
+          "Child launch at capacity (`F04.child-capacity`).": "pass"
+        }
+      }
+    ]
+  },
+  "default_child_tool": {
+    "ok": true,
+    "run": "/tmp/agent-server-verify/20261023-071023-f9ef-fix42-default-child-tool",
+    "checkout": "/workspace/agent-sdk-fix-42",
+    "checkout_sha": "b2c0490647963cb877d1f0c20394311fa245d6d4",
+    "parent": "0e3ba36c-67fa-4566-b564-c67cbe382cbe",
+    "child": "b6f07375-3a4f-40ef-8341-25e3d82af552",
+    "actual_isolation": "shared",
+    "parent_head": "unborn",
+    "parent_file_preserved_after_delete": true
+  },
+  "automated_tests": {
+    "before": "New real HTTP regression failed with HTTP500 from git worktree add ... HEAD",
+    "after": "41 passed, 127 deselected",
+    "pre_commit": "All checks passed",
+    "remote_tracking_regression": "New upstream assertion failed on original patch with no upstream configured; passes after preserving the selected ref."
+  },
+  "earlier_revision": {
+    "product_sha": "46ba8bda118cdb35dd596f8f9f275a7fdfe7face",
+    "runs": [
+      {
+        "phase": "after",
+        "run": "20261023-065915-6ccd-map-f04",
+        "checkout_sha": "46ba8bda118cdb35dd596f8f9f275a7fdfe7face",
+        "default_child_http_status": 201,
+        "actual_isolation": "shared",
+        "companion_controls": [
+          "real-model shared, committed-worktree and non-git fallback: pass",
+          "validation/authentication/unknown parent: pass",
+          "full capacity rejects before child/worktree creation: pass"
+        ]
+      },
+      {
+        "phase": "after",
+        "run": "20261023-070005-f6ae-map-f04",
+        "checkout_sha": "46ba8bda118cdb35dd596f8f9f275a7fdfe7face",
+        "default_child_http_status": 201,
+        "actual_isolation": "shared",
+        "companion_controls": [
+          "real-model shared, committed-worktree and non-git fallback: pass",
+          "validation/authentication/unknown parent: pass",
+          "full capacity rejects before child/worktree creation: pass"
+        ]
+      }
+    ],
+    "map_summary": {
+      "ok": false,
+      "file": "F04-conversation-lifecycle.md",
+      "launch_flags": [
+        "--checkout",
+        "/workspace/agent-sdk-fix-42"
+      ],
+      "attempts": [
+        {
+          "run": "/tmp/agent-server-verify/20261023-065915-6ccd-map-f04",
+          "ok": false,
+          "summary": {
+            "pass": 4,
+            "fail": 0,
+            "xfail": 0,
+            "xpass": 1,
+            "blocked": 0,
+            "skipped": 0,
+            "no-commands": 0
+          },
+          "statuses": {
+            "Preconditions": "pass",
+            "Start a child (`F04.child-start`).": "pass",
+            "Default child in a fresh workspace (`F04.child-unborn`), known bug.": "xpass",
+            "Child launch errors (`F04.child-errors`).": "pass",
+            "Child launch at capacity (`F04.child-capacity`).": "pass"
+          }
+        },
+        {
+          "run": "/tmp/agent-server-verify/20261023-070005-f6ae-map-f04",
+          "ok": false,
+          "summary": {
+            "pass": 4,
+            "fail": 0,
+            "xfail": 0,
+            "xpass": 1,
+            "blocked": 0,
+            "skipped": 0,
+            "no-commands": 0
+          },
+          "statuses": {
+            "Preconditions": "pass",
+            "Start a child (`F04.child-start`).": "pass",
+            "Default child in a fresh workspace (`F04.child-unborn`), known bug.": "xpass",
+            "Child launch errors (`F04.child-errors`).": "pass",
+            "Child launch at capacity (`F04.child-capacity`).": "pass"
+          }
+        }
+      ]
+    },
+    "default_child_tool": {
+      "ok": true,
+      "run": "/tmp/agent-server-verify/20261023-070042-9bc3-fix42-default-child-tool",
+      "checkout": "/workspace/agent-sdk-fix-42",
+      "checkout_sha": "46ba8bda118cdb35dd596f8f9f275a7fdfe7face",
+      "parent": "488e61ae-5e93-433f-b814-a9f730ef8d7b",
+      "child": "0172605d-eace-4cb0-8b7a-5e9bc5a88a47",
+      "actual_isolation": "shared",
+      "parent_head": "unborn",
+      "parent_file_preserved_after_delete": true
+    },
+    "review_finding": "Child worktree created from resolved SHA lost remote upstream tracking. This revision is superseded by the final product SHA."
+  },
+  "independent_review": "One regression found and fixed: preserve selected ref after commit validation to retain Git upstream tracking. Final read-only review found no remaining material source findings."
+}

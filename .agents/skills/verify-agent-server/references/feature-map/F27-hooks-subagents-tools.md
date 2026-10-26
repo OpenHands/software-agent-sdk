@@ -14,9 +14,10 @@ what a client registers through the create request and the server's startup
 flags: hooks that block a tool call or a prompt, client-side tools
 (`client_tools`) whose calls the client executes, forwarded sub-agent
 definitions (`agent_definitions`), and custom Python tool modules
-(`tool_module_qualnames`, `OH_EXTRA_PYTHON_PATH`, `--import-modules`).
+(`tool_module_qualnames`, `OH_EXTRA_PYTHON_PATH`, `--import-modules`), and
+the internal `start_child_conversation` tool, when a host attaches it.
 
-Source: `openhands-agent-server/openhands/agent_server/tool_router.py`, `openhands-agent-server/openhands/agent_server/hooks_router.py`, `openhands-agent-server/openhands/agent_server/hooks_service.py`, `openhands-agent-server/openhands/agent_server/sub_agents_router.py`, `openhands-agent-server/openhands/agent_server/launch.py`, `openhands-agent-server/openhands/agent_server/__main__.py`, `openhands-sdk/openhands/sdk/tool/registry.py`, `openhands-sdk/openhands/sdk/tool/client_tool.py`, `openhands-sdk/openhands/sdk/hooks/`, `openhands-sdk/openhands/sdk/subagent/`, `openhands-tools/openhands/tools/preset/`, `openhands-tools/openhands/tools/task/`, `openhands-tools/openhands/tools/browser_use/`, `clients/typescript/src/client/tool-client.ts`, `clients/typescript/src/client/hooks-client.ts`, `clients/typescript/src/client/sub-agents-client.ts`
+Source: `openhands-agent-server/openhands/agent_server/tool_router.py`, `openhands-agent-server/openhands/agent_server/hooks_router.py`, `openhands-agent-server/openhands/agent_server/hooks_service.py`, `openhands-agent-server/openhands/agent_server/sub_agents_router.py`, `openhands-agent-server/openhands/agent_server/launch.py`, `openhands-agent-server/openhands/agent_server/__main__.py`, `openhands-sdk/openhands/sdk/tool/registry.py`, `openhands-sdk/openhands/sdk/tool/client_tool.py`, `openhands-sdk/openhands/sdk/hooks/`, `openhands-sdk/openhands/sdk/subagent/`, `openhands-tools/openhands/tools/preset/`, `openhands-tools/openhands/tools/task/`, `openhands-tools/openhands/tools/child_conversation/`, `openhands-tools/openhands/tools/browser_use/`, `clients/typescript/src/client/tool-client.ts`, `clients/typescript/src/client/hooks-client.ts`, `clients/typescript/src/client/sub-agents-client.ts`
 
 Needs: `llm`, `git`, `tmux`, `chromium`
 
@@ -30,6 +31,7 @@ Routes: `GET /api/tools/`, `GET /api/tools/catalog`, `POST /api/sub-agents`,
 - `F27.tools-list`: `GET /api/tools/` lists the registered tool names, including the default tools, `browser_tool_set`, the task and planning tools and registrations under a class name (`ClassifyAndSwitchLLMTool`).
 - `F27.tools-redirect`: `GET /api/tools` (no trailing slash) answers 307 to `/api/tools/`, and `/api/tools/catalog/` answers 307 to `/api/tools/catalog`; the CLI does not follow redirects.
 - `F27.catalog`: `GET /api/tools/catalog` describes each offered tool with `user_selectable`, `usable`, `description` and `in_default_set`: the default tools are selectable default-set entries, internal tools are not selectable, and built-ins appear under their tool names.
+- `F27.child-conversation-tool`: the registered internal tool is usable, non-selectable and outside the default set; explicitly attaching it lets a real model start a child whose observation, parent link and shared workspace agree.
 - `F27.hooks-project`: the project fixture's `hooks.json` (legacy `{"hooks": {...}}` wrapper with PascalCase keys) comes back as snake_case `HookConfig` with defaults filled in.
 - `F27.hooks-formats`: a snake_case `hooks.json` keeps its matcher, timeout and `async` flag, a PascalCase key next to it is normalized, a `prompt` hook keeps its prompt, and a matcher left out becomes `*`.
 - `F27.hooks-absent`: no `project_dir`, a misspelled field (`projectDir`), a missing directory, a directory without `.openhands/hooks.json`, a `hooks.json` only under `.agents/`, and an empty `{}` file all return 200 with `hook_config: null`.
@@ -49,7 +51,7 @@ Routes: `GET /api/tools/`, `GET /api/tools/catalog`, `POST /api/sub-agents`,
 - `F27.custom-tool-modules`: with `OH_EXTRA_PYTHON_PATH` naming a directory, `tool_module_qualnames` imports a module from it at create, the agent runs its tool, the conversation reports the mapping and `GET /api/tools/` lists the tool (the sealed catalog does not); after a restart the tool is gone until the conversation is loaded again, and a new message runs it again; an unimportable module is a logged warning and the create still succeeds.
 - `F27.import-modules`: a server started with `--import-modules` (and `OH_EXTRA_PYTHON_PATH`) lists the module's tool in `GET /api/tools/` and offers it in the catalog before any conversation exists; a module that cannot be imported stops the server before it binds its port.
 - `F27.custom-tool-missing-on-resume`: when a conversation's tool module can no longer be imported after a restart, the server should drop the tool with its warning and keep the conversation readable; today its event search and a new message are 500 (`Unknown kind`).
-- `F27.browser-playwright-path`: the browser probe should find a Playwright Chromium in `$PLAYWRIGHT_BROWSERS_PATH`; today it only looks in standard paths, `~/.cache/ms-playwright` and `PATH`, and reports `browser_tool_set` unusable.
+- `F27.browser-playwright-path`: the browser probe finds a Playwright Chromium in `$PLAYWRIGHT_BROWSERS_PATH` as well as in standard paths, `~/.cache/ms-playwright` and `PATH`, and reports `browser_tool_set` usable.
 - `F27.browser-probe`: without a Chromium the server can find, the catalog reports `browser_tool_set` unusable and `/server_info` `usable_tools` leaves it out; with a Playwright Chromium in the server's `~/.cache/ms-playwright` and a restart, the catalog reports it usable and `usable_tools` lists it.
 - `F27.browser-disabled-launch`: a conversation started from the saved settings (default tools) gets `browser_tool_set` while the server finds Chromium, and leaves it out after a restart with `enable_browser: false`; a conversation created before keeps its stored tools.
 - `F27.browser-disabled`: with `enable_browser: false` the catalog reports `browser_tool_set` unusable although Chromium is present, while `GET /api/tools/` still lists it.
@@ -96,6 +98,13 @@ Routes: `GET /api/tools/`, `GET /api/tools/catalog`, `POST /api/sub-agents`,
   names; `GET /api/tools/catalog` returns `{"tools": [ToolCatalogEntry]}`.
   `/server_info` `usable_tools` (owned by the server status family) is the
   older usability view; the tool bullets compare it with the catalog.
+- Agent tool: `start_child_conversation` accepts `task`, optional `title` and
+  `isolation` (`worktree` by default, or `shared`). The server registers it
+  but does not attach it to the default tool set: the host must include it
+  in the parent agent. Its internal authenticated launcher calls the child
+  REST route owned by F04 and returns `StartChildConversationObservation`
+  with the child id, parent id, status, workspace and isolation
+  (`F27.child-conversation-tool`).
 - WebSocket: `/sockets/events/{conversation_id}` delivers the
   `HookExecutionEvent` live and on replay (`resend_mode=all`); owned by the
   events family, replayed by `F27.hooks-conversation`. It is also how a
@@ -297,6 +306,40 @@ Preconditions:
   `planning_file_editor` and `route_task_to_model` (registered as
   `ClassifyAndSwitchLLMTool`) are internal. Every selectable entry has a
   description (internal entries have an empty one).
+- **Child conversation tool (`F27.child-conversation-tool`).** The server
+  registers the host-provided tool without adding it to the user-selectable
+  default set. Attach it explicitly and let a real model start one child.
+  ```sh
+  control-agent-server api GET /api/tools/ --expect 200 --check . contains start_child_conversation \
+    --save F27.child-conversation-tool/registry
+  control-agent-server api GET /api/tools/catalog --expect 200 \
+    --check tools matches '"name": "start_child_conversation", "user_selectable": false, "usable": true, "description": "[^"]*", "in_default_set": false' \
+    --save F27.child-conversation-tool/catalog
+  CPARENT=$(control-agent-server conversation start --workspace "$F/nohooks" --tools start_child_conversation \
+    --no-autotitle --max-iterations 5 \
+    --prompt 'Call start_child_conversation exactly once with these arguments: {"title": "QA_F27_CHILD", "isolation": "shared", "task": "Reply with the single word ok. Do not use tools or create any child conversations."}. After the call returns, finish without any more tool calls.' \
+    --wait --timeout 240 --print-id)
+  CHILD_OBSERVATIONS=$(control-agent-server api GET "/api/conversations/$CPARENT/events/search" \
+    --query kind=ObservationEvent --expect 200 --check items contains StartChildConversationObservation \
+    --save F27.child-conversation-tool/observation --field items)
+  CHILD=$(jq -er --arg parent "$CPARENT" '[.[] | select(.tool_name == "start_child_conversation")] |
+    select(length == 1) | .[0].observation |
+    select(.is_error == false and .parent_conversation_id == $parent and .isolation == "shared") |
+    .conversation_id' <<< "$CHILD_OBSERVATIONS")
+  control-agent-server conversation wait "$CHILD" --timeout 240
+  control-agent-server api GET "/api/conversations/$CHILD" --expect 200 \
+    --check parent_conversation_id eq "$CPARENT" --check title eq QA_F27_CHILD \
+    --check workspace.working_dir eq "$F/nohooks" --check execution_status eq finished \
+    --save F27.child-conversation-tool/child
+  control-agent-server api GET "/api/conversations/$CPARENT" --expect 200 \
+    --check sub_conversation_ids contains "$CHILD" --save F27.child-conversation-tool/parent
+  control-agent-server api DELETE "/api/conversations/$CHILD" --expect 200
+  control-agent-server api DELETE "/api/conversations/$CPARENT" --expect 200
+  ```
+  The tool's observation and the two conversation views agree on the child
+  id, parent link and shared workspace. F04 owns the child REST route's
+  worktree, validation and capacity cases; this bullet proves model-driven
+  dispatch through the server's internal authenticated launcher.
 - **Project hooks (`F27.hooks-project`).** Load the fixture project's hooks.
   ```sh
   control-agent-server api POST /api/hooks --json '{"project_dir": "'"$P"'"}' --expect 200 \
@@ -683,7 +726,7 @@ Preconditions:
   conversation for the next message imports the module again and the tool
   runs.
 - **Startup imports (`F27.import-modules`).** `--import-modules` is a
-  server argument that `launch` cannot pass (a harness gap), so the bullet
+  server argument passed by the owned shell-and-attach workflow: the bullet
   starts this checkout's server in plain shell with a private `HOME`, state
   directory and key, attaches to it, and stops it before the bullet ends; a
   second start with a missing module must fail.
@@ -748,7 +791,7 @@ Preconditions:
   'QaF27EchoObservation'`. Only `GET /api/conversations/{id}`, which reads
   the metadata without loading, still answers. A deployment that drops or
   renames a custom tool module loses every conversation that used it.
-- **Playwright browsers directory (`F27.browser-playwright-path`), known bug.**
+- **Playwright browsers directory (`F27.browser-playwright-path`).**
   Point the server at the run-owned Playwright directory through
   `PLAYWRIGHT_BROWSERS_PATH` only.
   ```sh
@@ -756,14 +799,15 @@ Preconditions:
     --check tools contains '{"name": "browser_tool_set", "user_selectable": true, "usable": false'
   control-agent-server restart --env PLAYWRIGHT_BROWSERS_PATH="$PW"
   control-agent-server api GET /api/tools/catalog --expect 200 --quiet --check tools contains '{"name": "terminal", "user_selectable": true, "usable": true'
-  control-agent-server api GET /api/tools/catalog --expect 200 --check tools contains '{"name": "browser_tool_set", "user_selectable": true, "usable": true' --save F27.browser-playwright-path/catalog  # bug: status eq 200 && response.body.tools contains '{"name": "browser_tool_set", "user_selectable": true, "usable": false'
+  control-agent-server api GET /api/tools/catalog --expect 200 --check tools contains '{"name": "browser_tool_set", "user_selectable": true, "usable": true' --save F27.browser-playwright-path/catalog
   ```
   The first check shows this server finds no Chromium on its own (no
   standard path, nothing in its private `~/.cache/ms-playwright`). Playwright
   installs browsers into `$PLAYWRIGHT_BROWSERS_PATH` when it is set, so the
-  probe should look there. Today `check_chromium_available()` ignores the
-  variable and the catalog keeps `usable: false`, and the browser tool cannot
-  start on such a machine even though Playwright could launch the binary.
+  probe looks there too (before the default cache): after the restart the
+  catalog reports `usable: true` and the browser tool can start with that
+  binary. Playwright's special value `0` (browsers inside the installed
+  package) is not a directory and is not probed.
 - **Browser probe (`F27.browser-probe`).** Restart without the earlier
   overrides and see the browser unusable, then put the same Chromium where
   the probe looks (the server's `HOME`) and restart again.
@@ -789,9 +833,13 @@ Preconditions:
   only after a restart.
 - **Default tools follow the browser setting (`F27.browser-disabled-launch`).**
   Start conversations from the saved settings (no `--tools`, so the server
-  picks the default tool set) on the server of the previous bullet, which
-  finds Chromium, and again after a restart with `enable_browser: false`.
+  picks the default tool set) with a run-owned Chromium link, then after a
+  restart with `enable_browser: false`. Set up the positive control locally
+  so this lane also works when the browser-negative precondition is absent.
   ```sh
+  mkdir -p "$H/.cache"
+  ln -sfn "$PW" "$H/.cache/ms-playwright"
+  control-agent-server restart --reset-config
   BON=$(control-agent-server conversation start --no-run --no-autotitle --print-id)
   control-agent-server api GET "/api/conversations/$BON" --expect 200 --check agent.tools contains browser_tool_set \
     --check agent.tools contains terminal --quiet --save F27.browser-disabled-launch/enabled
@@ -809,8 +857,11 @@ Preconditions:
   conversation keeps the browser in its stored agent. A materialized agent
   profile's resolved tools are the agent-profile family's view.
 - **Browser disabled by config (`F27.browser-disabled`).** Same machine,
-  `enable_browser: false`.
+  `enable_browser: false`; the run-owned Chromium link supplies the positive
+  probe prerequisite even when this bullet runs on its own.
   ```sh
+  mkdir -p "$H/.cache"
+  ln -sfn "$PW" "$H/.cache/ms-playwright"
   control-agent-server restart --config-json '{"enable_browser": false}'
   control-agent-server api GET /api/tools/catalog --expect 200 --quiet \
     --check tools contains '{"name": "browser_tool_set", "user_selectable": true, "usable": false' \
@@ -853,7 +904,7 @@ Preconditions:
   Chromium link and restart as an orchestrator whose conversations would run
   in containers; no container starts, so no Docker daemon is needed.
   ```sh
-  rm "$H/.cache/ms-playwright"
+  rm -f "$H/.cache/ms-playwright"
   control-agent-server restart --reset-config \
     --config-json '{"conversation_runtime": "docker", "conversation_image": "ghcr.io/openhands/agent-server:1.2.3-python-minimal"}'
   control-agent-server api GET /api/tools/catalog --expect 200 --quiet \
@@ -875,7 +926,7 @@ Preconditions:
   A `-minimal` tag of the stock image and `conversation_image_has_browser:
   false` make the browser unusable; the stock image (the default
   `conversation_image`) makes it usable although the server process has no
-  Chromium (`F27.browser-probe` showed it unusable without the link), and
+  Chromium when the documented browser-negative precondition holds, and
   `/server_info` `usable_tools` follows the catalog for the browser, so it
   lists `browser_tool_set` here too. Its other entries still come from the
   server process's own probes.
@@ -909,10 +960,11 @@ Preconditions:
 - Browser usability depends on the machine: a Chromium at a standard path
   (`/usr/bin/chromium`, `/usr/bin/google-chrome`, ...) or on the server's
   `PATH` is always found. On such a machine the negative control of
-  `F27.browser-probe` fails, and the first check of
-  `F27.browser-playwright-path` fails so that bullet stays an expected
-  failure without proving the bug; run the family where Chromium lives only
-  in a Playwright directory (`capabilities` names it). The probe is cached
+  `F27.browser-probe` fails, and so does the first check of
+  `F27.browser-playwright-path`; run the family where Chromium lives only
+  in a Playwright directory (`capabilities` names it). `launch` does not
+  pass `$PLAYWRIGHT_BROWSERS_PATH` on to the server, so the server sees only
+  what a recipe gives it with `--env`. The probe is cached
   per process (`functools.cache`), so restart after changing what is
   installed. With `conversation_runtime: docker` nothing is probed and every
   tool is reported usable except as the image settings say.

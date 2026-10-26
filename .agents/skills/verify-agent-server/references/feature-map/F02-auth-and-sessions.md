@@ -309,19 +309,23 @@ Preconditions:
   The clearing cookie has an empty value, `Max-Age=0` and the same path, so
   the jar drops it and the next file request is 401. Deleting still needs
   the header.
-- **A second key (`F02.multiple-keys`).** Add `OH_SESSION_API_KEYS_1` with a
-  restart and use both keys.
+- **A second key (`F02.multiple-keys`).** Add `OH_SESSION_API_KEYS_1` and an
+  empty third entry with a restart. Both real keys work; the empty entry
+  cannot authenticate.
 
   Needs: `tmux`
   ```sh
-  control-agent-server restart --env OH_SESSION_API_KEYS_1=qa-f02-second-key
+  control-agent-server restart --env OH_SESSION_API_KEYS_1=qa-f02-second-key --env OH_SESSION_API_KEYS_2=
   control-agent-server api GET /api/conversations/count --auth none --header 'X-Session-API-Key: qa-f02-second-key' --expect 200 --save F02.multiple-keys/second-key
   control-agent-server api GET /api/conversations/count --expect 200
   control-agent-server api GET /api/conversations/count --auth none --header 'X-Session-API-Key: qa-f02-third-key' --expect 401
+  control-agent-server api GET /api/conversations/count --auth none --header 'X-Session-API-Key:' --expect 401 --save F02.multiple-keys/empty-key
+  control-agent-server ws listen /sockets/bash-events --auth none --send '{"type":"auth","session_api_key":""}' --expect-close 4001 --duration 10 --save F02.multiple-keys/ws-empty-key
   control-agent-server ws listen /sockets/bash-events --auth none --send '{"type":"auth","session_api_key":"qa-f02-second-key"}' --send '{"command":"echo qa-f02-second"}' --until-kind BashOutput --duration 20 --save F02.multiple-keys/ws-second-key
   control-agent-server doctor
   ```
-  Both keys work on HTTP and on the socket; an unlisted key is 401.
+  Both keys work on HTTP and on the socket; an unlisted or empty key is
+  rejected. Empty configured entries are dropped, as fixed in PR #5659.
 - **Rotate the key (`F02.rotate-key`).** Mint a cookie with the current key,
   restart with a new one, and try the old key everywhere.
 

@@ -143,6 +143,51 @@ def test_terminal_tool_client_env_is_session_scoped_and_schema_hidden(monkeypatc
         tool.executor.close()
 
 
+@pytest.mark.skipif(
+    platform.system() == "Windows",
+    reason="This test uses POSIX shell environment variable syntax.",
+)
+def test_terminal_tool_does_not_expose_observability_credentials(monkeypatch):
+    credentials = (
+        "LMNR_PROJECT_API_KEY",
+        "OTEL_HEADERS",
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    )
+    for key in credentials:
+        monkeypatch.setenv(key, f"host-secret-{key}")
+    monkeypatch.setenv("OH_SECRET_KEY", "host-cipher-key")
+    monkeypatch.setenv("OTEL_ENDPOINT", "https://collector.example.test")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+        tool = TerminalTool.create(
+            conv_state,
+            terminal_type="subprocess",
+            env={"OTEL_HEADERS": "client-secret", "OH_SECRET_KEY": "client-key"},
+        )[0]
+        assert tool.executor is not None
+        try:
+            names = (*credentials, "OH_SECRET_KEY")
+            values = " ".join(f"${{{name}-unset}}" for name in names)
+            result = tool(TerminalAction(command=f'printf "%s\\n" {values}'))
+            assert isinstance(result, TerminalObservation)
+            assert result.text.count("unset") >= len(names)
+            assert (
+                "https://collector.example.test"
+                in tool(TerminalAction(command='printf "%s" "$OTEL_ENDPOINT"')).text
+            )
+            for secret in (
+                "host-secret-",
+                "host-cipher-key",
+                "client-secret",
+                "client-key",
+            ):
+                assert secret not in result.text
+        finally:
+            tool.executor.close()
+
+
 def test_terminal_tool_client_env_rejects_invalid_names():
     """Test that client env keys must be valid shell environment names."""
     with tempfile.TemporaryDirectory() as temp_dir:

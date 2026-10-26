@@ -522,6 +522,12 @@ jobs:
                   sed -i -E 's/"openhands-agent-server==[^"]*"/"openhands-agent-server=='"$VERSION"'"/' pyproject.toml
                   sed -i -E 's/"openhands-tools==[^"]*"/"openhands-tools=='"$VERSION"'"/' pyproject.toml
 
+                  # The dev stack's sandbox image default must match the SDK pins
+                  # (enterprise's own bump-sdk.yml updates it the same way).
+                  echo "📝 Updating dev compose agent-server image tag..."
+                  grep -qE 'AGENT_SERVER_IMAGE_TAG:-[^}]+' containers/dev/compose.yml || { echo "::error::No AGENT_SERVER_IMAGE_TAG default in containers/dev/compose.yml"; exit 1; }
+                  sed -i -E "s/AGENT_SERVER_IMAGE_TAG:-[^}]+/AGENT_SERVER_IMAGE_TAG:-$VERSION-python/" containers/dev/compose.yml
+
                   # --no-cache avoids stale index data from the just-published packages.
 
                   echo "📝 Regenerating uv.lock..."
@@ -536,9 +542,9 @@ jobs:
                   # Commit and push. Use a Conventional Commit `chore(deps):` subject so the
                   # target repo's release-please does not cut a release from these bumps
                   # (the manual bump this replaces, #484, used the same convention).
-                  git add pyproject.toml uv.lock
+                  git add pyproject.toml uv.lock containers/dev/compose.yml
                   git commit -m "chore(deps): bump SDK to $VERSION" \
-                    -m "Bump openhands-sdk, openhands-agent-server, openhands-tools to $VERSION (regenerated uv.lock)." \
+                    -m "Bump openhands-sdk, openhands-agent-server, openhands-tools to $VERSION (regenerated uv.lock) and point the dev compose agent-server image at $VERSION-python." \
                     -m "Automated version bump after PyPI release." \
                     -m "Co-authored-by: openhands <openhands@all-hands.dev>"
                   git push -u origin "$BRANCH"
@@ -559,6 +565,8 @@ jobs:
                   - \`openhands-sdk\`
                   - \`openhands-agent-server\`
                   - \`openhands-tools\`
+
+                  It also points the dev compose \`AGENT_SERVER_IMAGE_TAG\` default at \`$VERSION-python\`.
 
                   **Triggered by:** Release of [software-agent-sdk v$VERSION](https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION)
 

@@ -39,7 +39,8 @@ Routes: `GET /api/profiles`, `GET /api/profiles/{name}`,
 - `F20.validate-live`: `validate` with a working DeepSeek flash config answers `{valid: true, error: null}`, also when the key is the `gAAAAA` token from an `encrypted` read; the draft is not saved.
 - `F20.validate-rejects`: `validate` answers 200 `valid: false` with a typed error for a model the provider does not serve (`LLMBadRequestError`) and for an invalid DeepSeek key, without echoing the key.
 - `F20.validate-bad-key-type`: an invalid DeepSeek key (provider HTTP 401) is reported as `LLMAuthenticationError`, like any other provider's 401.
-- `F20.validate-provider-errors`: with retries off, a provider 401 is `valid: false` `LLMAuthenticationError`, a 500 or an unreachable `base_url` is `valid: false` `LLMServiceUnavailableError`, and a 429 or a per-attempt timeout is `valid: true` (transient; the timeout verdict arrives after one attempt of the posted `timeout`, long before the hung provider would answer); the provider receives a system message `Reply with one token.`, a user `ping` and `max_tokens: 1`.
+- `F20.validate-provider-errors`: with retries off, a provider 401 is `valid: false` `LLMAuthenticationError`, a 500 or an unreachable `base_url` is `valid: false` `LLMServiceUnavailableError`, and a transient 429 or a per-attempt timeout is `valid: true`; the timeout verdict arrives after one attempt of the posted `timeout`, long before the hung provider would answer; the provider receives a system message `Reply with one token.`, a user `ping` and `max_tokens: 1`.
+- `F20.validate-quota-exhausted`: a provider 429 whose JSON `error.type` and `error.code` are `insufficient_quota` fails validation with `LLMRateLimitError`, even when the human-readable message does not repeat the machine code; an ordinary 429 remains transient.
 - `F20.validate-subscription-login`: `validate` of an `auth_type: subscription` config on a server with no stored OpenAI subscription login answers 200 `valid: false` (`ValueError`, `OpenAI subscription login is required`) at once, not a 500.
 - `F20.validate-unreachable-bounded`: `validate` of a config whose `base_url` refuses connections answers `valid: false` within 30 seconds with the default retry policy.
 - `F20.validate-hang-bounded`: `validate` of a config whose provider never answers returns a verdict within 30 seconds with the default timeout and retry policy.
@@ -376,7 +377,7 @@ Preconditions:
   cp -p "$S" "$S.qa-f20-bak"
   printf '{"agent_settings": ' > "$S"
   control-agent-server api POST /api/profiles/qa-nokey/activate --expect 409 \
-    --check detail eq 'Settings file is corrupted or encrypted with a different key' --save F20.corrupt-files/corrupt-settings
+    --check detail contains 'Settings file is corrupted or encrypted with a different key' --save F20.corrupt-files/corrupt-settings
   test "$(cat "$S")" = '{"agent_settings": '
   mv "$S.qa-f20-bak" "$S"
   control-agent-server api GET /api/profiles --check active_profile eq deepseek-flash --check profiles len-eq 4
@@ -521,9 +522,10 @@ Preconditions:
   that text nor the `authentication_error` type, so clients cannot tell a bad
   key from a bad request.
 - **Provider failures (`F20.validate-provider-errors`).** Script an
-  `llm-stub` to answer 401, 500, 429 and to hang, and point a draft with
-  retries off at it and at a closed port.
+  `llm-stub` to answer 401, 500, a transient 429 and to hang, and point a
+  draft with retries off at it and at a closed port.
   ```sh
+  BEFORE_PROFILES=$(control-agent-server api GET /api/profiles --field profiles)
   STUB=$(control-agent-server fixture llm-stub --name qa-f20-stub --step status:401 --print-path)
   STUB_LLM="{\"model\": \"openai/qa-stub\", \"base_url\": \"$STUB/v1\", \"api_key\": \"qa-stub-key\", \"num_retries\": 0}"
   control-agent-server api POST /api/profiles/qa-stub/validate --json "{\"llm\": $STUB_LLM}" --timeout 60 --expect 200 \
@@ -546,18 +548,45 @@ Preconditions:
   control-agent-server api POST /api/profiles/qa-unreachable/validate --timeout 60 --expect 200 \
     --json '{"llm": {"model": "openai/qa-unreachable", "base_url": "http://127.0.0.1:9/v1", "api_key": "qa-key", "num_retries": 0}}' \
     --check valid eq false --check error.type eq LLMServiceUnavailableError --save F20.validate-provider-errors/unreachable
-  control-agent-server api GET /api/profiles --check profiles len-eq 4
+  control-agent-server api GET /api/profiles --check profiles eq "$BEFORE_PROFILES"
   ```
   The stub's first request carries the system message `Reply with one
   token.` directly before the user `ping` (the repository's system-first
   invariant), and `max_tokens: 1`; 401 maps to
   `LLMAuthenticationError`, 500 and the closed port to
-  `LLMServiceUnavailableError` (`valid: false`), while 429 and the 3-second
-  timeout are transient (`valid: true`). The timeout verdict arrives in about
+  `LLMServiceUnavailableError` (`valid: false`). A transient 429 and the
+  3-second timeout remain non-blocking (`valid: true`). The timeout verdict arrives in about
   3 seconds (under the 15-second bound) although the stub, which logged
   exactly one request on its `hang` step, would only answer after 30 s; a
   server that ignored the posted `timeout` would wait for that reply and
   fail the bound. Nothing is saved.
+- **Exhausted quota (`F20.validate-quota-exhausted`), known bug.** An
+  OpenAI-compatible provider distinguishes a transient 429 from exhausted
+  quota through the response's structured `error.type` and `error.code`.
+  ```sh
+  QUOTA_PROFILES=$(control-agent-server api GET /api/profiles --field profiles)
+  QUOTA_STUB=$(control-agent-server fixture llm-stub --name qa-f20-quota --step status:429 --print-path)
+  QUOTA_LLM="{\"model\":\"openai/qa-quota\",\"base_url\":\"$QUOTA_STUB/v1\",\"api_key\":\"qa-quota-key\",\"num_retries\":0}"
+  control-agent-server api POST /api/profiles/qa-quota/validate --json "{\"llm\":$QUOTA_LLM}" --timeout 60 --expect 200 \
+    --check valid eq true --check error missing --save F20.validate-quota-exhausted/transient-control
+  control-agent-server fixture llm-stub --name qa-f20-quota \
+    --step 'status:429:{"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota","code":"insufficient_quota"}}'
+  control-agent-server api POST /api/profiles/qa-quota/validate --json "{\"llm\":$QUOTA_LLM}" --timeout 60 --expect 200 \
+    --save F20.validate-quota-exhausted/quota-exhausted > "$F20/quota-result.json"
+  control-agent-server sink read --name qa-f20-quota --contains insufficient_quota --expect-min 1 --expect-max 1 \
+    --save F20.validate-quota-exhausted/provider-request
+  control-agent-server api GET /api/profiles --check profiles eq "$QUOTA_PROFILES"
+  control-agent-server assert --json "$F20/quota-result.json" --check response.body.valid eq false \
+    --check response.body.error.type eq LLMRateLimitError  # bug: value.status eq 200 && value.response.body.valid eq true && value.response.body.error missing
+  ```
+  Expected: exhausted quota blocks validation (#5768), with a typed error,
+  while the transient positive control succeeds and neither draft is saved.
+  Today the real HTTP error is reduced to its human-readable message before
+  `is_quota_exhaustion_error` checks for `insufficient_quota`. The structured
+  code is lost, so this response incorrectly returns `valid: true` and no
+  error ([OpenHands/software-agent-sdk#6185](https://github.com/OpenHands/software-agent-sdk/issues/6185)).
+  The existing unit test embeds the JSON code directly in a mocked
+  exception string and does not exercise that provider-to-SDK mapping.
 - **Subscription without a login (`F20.validate-subscription-login`).**
   Pre-flight a ChatGPT-subscription config (`auth_type: subscription`, the
   Agent Canvas subscription path) on this run, whose private home holds no
