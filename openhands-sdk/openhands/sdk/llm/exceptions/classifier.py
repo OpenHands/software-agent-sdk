@@ -186,6 +186,16 @@ def is_content_policy_violation(exception: Exception) -> bool:
 
 def is_transient_http_error(exception: BaseException) -> bool:
     """Match provider HTTP failures eligible for retry and model fallback."""
-    return isinstance(exception, APIError) and (
-        exception.status_code in (408, 409, 429) or 500 <= exception.status_code < 600
+    if not isinstance(exception, APIError):
+        return False
+    status = exception.status_code
+    if status in (408, 409, 429) or (isinstance(status, int) and 500 <= status < 600):
+        return True
+    # LiteLLM wraps invalid provider HTTP bodies as APIError even for HTTP 200.
+    message = str(exception)
+    return (
+        isinstance(status, int)
+        and 200 <= status < 300
+        and "Unable to get json response - " in message
+        and "Original Response:" in message
     )
