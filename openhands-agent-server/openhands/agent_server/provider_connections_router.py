@@ -164,7 +164,7 @@ def _raise_if_connection_is_referenced(config, connection_id: str) -> None:
 
 
 @provider_connections_router.get("", response_model=list[ProviderConnectionResponse])
-async def list_provider_connections(
+def list_provider_connections(
     request: Request,
 ) -> list[ProviderConnectionResponse]:
     cipher = get_cipher(request)
@@ -177,7 +177,7 @@ async def list_provider_connections(
 @provider_connections_router.post(
     "", response_model=ProviderConnectionResponse, status_code=status.HTTP_201_CREATED
 )
-async def create_provider_connection(
+def create_provider_connection(
     request: Request, body: ProviderConnectionCreateRequest
 ) -> ProviderConnectionResponse:
     cipher = get_cipher(request)
@@ -209,7 +209,7 @@ async def create_provider_connection(
 @provider_connections_router.patch(
     "/{connection_id}", response_model=ProviderConnectionResponse
 )
-async def update_provider_connection(
+def update_provider_connection(
     request: Request, connection_id: str, body: ProviderConnectionUpdateRequest
 ) -> ProviderConnectionResponse:
     fields = body.model_fields_set
@@ -266,7 +266,7 @@ async def update_provider_connection(
 @provider_connections_router.delete(
     "/{connection_id}", response_model=ProviderConnectionResponse
 )
-async def delete_provider_connection(
+def delete_provider_connection(
     request: Request, connection_id: str
 ) -> ProviderConnectionResponse:
     config = get_config(request)

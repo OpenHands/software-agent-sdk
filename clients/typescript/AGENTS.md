@@ -287,8 +287,7 @@ This client is tested and documented against a specific `software-agent-sdk`
 release, expressed as the agent-server image tag
 (`ghcr.io/openhands/agent-server:<version>-python`, where `<version>` equals the
 SDK release `vX.Y.Z`). The **source of truth** is `package.json` →
-`config.agentServerImage`; `AGENTS.md`, `README.md`, and the generated schema
-mirror the same version.
+`config.agentServerImage`; the README and generated schema should reflect that pin.
 
 After an SDK release, the root `.github/workflows/version-bump-prs.yml` workflow
 opens a `bump-typescript-agent-server-X.Y.Z` PR in this repository. It updates
@@ -359,9 +358,10 @@ export LLM_API_KEY="your-api-key"
 export LLM_MODEL="anthropic/claude-sonnet-4-5-20250929"
 
 # Start agent-server in Docker (matching the pinned image in package.json -> config.agentServerImage)
+IMAGE=$(node -p "require('./package.json').config.agentServerImage")
 docker run -d --name agent-server -p 127.0.0.1:8010:8000 \
   -v /tmp/agent-workspace:/workspace \
-  ghcr.io/openhands/agent-server:1.51.0-python --host 0.0.0.0
+  "$IMAGE" --host 0.0.0.0
 
 # Run integration tests
 npm run test:integration
@@ -391,7 +391,7 @@ Required GitHub secrets:
 
 ### CI Image Version
 
-- The pinned agent-server image for the TypeScript client is `package.json` → `config.agentServerImage` (currently `ghcr.io/openhands/agent-server:1.51.0-python`), which is the source of truth the generated schema and integration workflows use.
+- The pinned agent-server image for the TypeScript client is `package.json` → `config.agentServerImage` (read its current value rather than hard-coding a tag), which is the source of truth the generated schema and integration workflows use.
 - Keep the TypeScript client tests strict against that released server image rather than adding compatibility fallbacks for older prerelease builds.
 
 ## Agent Behavior Guidelines

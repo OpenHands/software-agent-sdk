@@ -3,8 +3,8 @@
 An OpenAI-shaped front door so OpenAI clients (the official SDKs, or anything
 else that takes a `base_url`) can talk to the agent server. It is not an LLM
 proxy. Every chat or responses call starts a full, persisted OpenHands agent
-conversation (or continues one), built from the saved settings with the LLM of
-the named profile. The agent runs in the server's workspace with its own
+conversation (or continues one), built from the active Agent Profile with
+the LLM of the named LLM profile and the saved conversation settings. The agent runs in the server's workspace with its own
 tools, the gateway waits for the run to finish, and it returns the agent's
 final answer as an OpenAI object. Model ids are `openhands_<llm-profile-name>`,
 one per saved profile. The session key works as `X-Session-API-Key` or as
@@ -12,7 +12,7 @@ one per saved profile. The session key works as `X-Session-API-Key` or as
 header names the conversation behind each answer, and sending it back on a
 chat completion continues that conversation.
 
-Source: `openhands-agent-server/openhands/agent_server/openai/`, `openhands-agent-server/openhands/agent_server/api.py`, `openhands-agent-server/openhands/agent_server/dependencies.py`, `openhands-sdk/openhands/sdk/llm/llm_profile_store.py`, `openhands-sdk/openhands/sdk/conversation/response_utils.py`, `examples/02_remote_agent_server/15_openai_compatible_gateway.py`
+Source: `openhands-agent-server/openhands/agent_server/openai/`, `openhands-agent-server/openhands/agent_server/api.py`, `openhands-agent-server/openhands/agent_server/agent_profiles_router.py`, `openhands-agent-server/openhands/agent_server/dependencies.py`, `openhands-sdk/openhands/sdk/llm/llm_profile_store.py`, `openhands-sdk/openhands/sdk/conversation/response_utils.py`, `examples/02_remote_agent_server/15_openai_compatible_gateway.py`
 
 Needs: `llm`, `tmux`
 
@@ -24,6 +24,7 @@ Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`
 - `F30.auth-bearer-or-header`: with session keys configured, all three routes accept the key as `Authorization: Bearer` or as `X-Session-API-Key`, and answer 401 `Unauthorized` to a missing or wrong key before the body is validated, while `/api/*` still refuses Bearer.
 - `F30.auth-open-without-keys`: a server with no session keys serves `/v1` without any credential and with any Bearer value.
 - `F30.chat-basic`: `POST /v1/chat/completions` on a real model returns a `chat.completion` whose single choice carries the agent's final answer with `finish_reason` `stop`, echoes the model, reports usage, and names a new finished conversation in `X-OpenHands-ServerConversation-ID`.
+- `F30.active-agent-profile`: new gateway conversations keep the active Agent Profile's identity, tools and system suffix, override its LLM only for the launch, append gateway instructions without changing the stored profile, reject oversized instructions with 400, and fall back to default after active-profile deletion.
 - `F30.chat-system-suffix`: `system` and `developer` messages become the new conversation's `agent_context.system_message_suffix` (in the system prompt) and never appear as user messages.
 - `F30.chat-latest-user-only`: a new conversation receives only the last user message of `messages[]`; earlier user and assistant turns are dropped and stored nowhere.
 - `F30.chat-stream`: `stream: true` answers `text/event-stream` with the conversation header and the frames role, whole content, `finish_reason` `stop`, usage (only with `stream_options.include_usage`) and `[DONE]`; a failing streaming request is a plain JSON error, not an SSE frame.
@@ -72,8 +73,10 @@ Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`
   server-only (`clients/typescript/endpoint-audit.config.json`).
 - Native second views (owned by other families): `GET /api/profiles`,
   `POST /api/profiles/{name}/rename` and `DELETE /api/profiles/{name}` (the
-  model list's source), `PATCH /api/settings` (agent and confirmation
-  settings every gateway conversation inherits), `GET /api/conversations/{id}`,
+  model list's source), `GET /api/agent-profiles` and profile activation
+  (the agent configuration every new gateway conversation inherits),
+  `PATCH /api/settings` (conversation settings, including confirmation policy
+  and iteration limits), `GET /api/conversations/{id}`,
   `/agent_final_response`, `/events/search`, `/sockets/events/{id}`.
 - Configuration: session keys (`OH_SESSION_API_KEYS_*`), `OH_PERSISTENCE_DIR`
   (profiles and settings), `OH_WORKSPACE_PATH` (where every gateway agent
@@ -211,6 +214,52 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   untitled (gateway conversations never autotitle), runs the profile's model
   and works in the server's workspace (`OH_WORKSPACE_PATH`). The answer is
   exactly the conversation's `agent_final_response`; never assert its words.
+- **Active Agent Profile (`F30.active-agent-profile`).** Select a profile
+  with no tools and its own system suffix, while the gateway request selects
+  a different LLM profile. The named model overrides only the LLM for this
+  launch; the stored Agent Profile stays unchanged.
+  ```sh
+  GATEWAY_SEED=$(control-agent-server api GET /api/agent-profiles --expect 200 --field active_agent_profile_id)
+  control-agent-server api POST /api/agent-profiles/qa-f30-gateway --expect 201 \
+    --json '{"llm_profile_ref": "deepseek-pro", "tools": [], "mcp_server_refs": [], "system_message_suffix": "QA_F30_PROFILE: answer briefly and do not use tools."}'
+  GATEWAY_PROFILE=$(control-agent-server api GET /api/agent-profiles/qa-f30-gateway --expect 200 --field profile.id)
+  control-agent-server api POST "/api/agent-profiles/$GATEWAY_PROFILE/activate" --expect 200
+  GCID=$(control-agent-server api POST /v1/chat/completions --auth bearer --timeout 180 --expect 200 \
+    --json '{"model": "openhands_deepseek-flash", "messages": [{"role": "system", "content": "QA_F30_GATEWAY: use plain text."}, {"role": "user", "content": "Say hello in one short sentence and use no tools."}]}' \
+    --check choices.0.message.content len-ge 1 --save F30.active-agent-profile/completion \
+    --print-header X-OpenHands-ServerConversation-ID)
+  control-agent-server api GET "/api/conversations/$GCID" --expect 200 --quiet \
+    --check execution_status eq finished --check launched_agent_profile.agent_profile_id eq "$GATEWAY_PROFILE" \
+    --check launched_agent_profile.revision eq 0 --check agent.llm.model eq deepseek/deepseek-flash \
+    --check agent.tools len-eq 0 \
+    --check agent.agent_context.system_message_suffix eq "$(printf 'QA_F30_PROFILE: answer briefly and do not use tools.\n\nQA_F30_GATEWAY: use plain text.')" \
+    --save F30.active-agent-profile/conversation
+  control-agent-server api GET /api/agent-profiles/qa-f30-gateway --expect 200 \
+    --check profile.revision eq 0 --check profile.llm_profile_ref eq deepseek-pro \
+    --check profile.system_message_suffix eq 'QA_F30_PROFILE: answer briefly and do not use tools.' \
+    --save F30.active-agent-profile/unchanged
+  GATEWAY_COUNT=$(control-agent-server api GET /api/conversations/count --field .)
+  LONG_SYSTEM=$(jq -cn '{model:"openhands_deepseek-flash",messages:[{role:"system",content:("x" * 32769)},{role:"user",content:"unused"}]}')
+  control-agent-server api POST /v1/chat/completions --auth bearer --json "$LONG_SYSTEM" --expect 400 \
+    --check detail eq 'System instructions are too long' --save F30.active-agent-profile/long-system
+  control-agent-server api GET /api/conversations/count --expect 200 --check . eq "$GATEWAY_COUNT"
+  control-agent-server api DELETE /api/agent-profiles/qa-f30-gateway --expect 200
+  GCID_FALLBACK=$(control-agent-server api POST /v1/chat/completions --auth bearer --timeout 180 --expect 200 \
+    --json '{"model": "openhands_deepseek-flash", "messages": [{"role": "user", "content": "Reply with one short word and use no tools."}]}' \
+    --save F30.active-agent-profile/default-fallback --print-header X-OpenHands-ServerConversation-ID)
+  control-agent-server api GET "/api/conversations/$GCID_FALLBACK" --expect 200 --quiet \
+    --check execution_status eq finished --check launched_agent_profile.agent_profile_id eq "$GATEWAY_SEED" \
+    --check agent.llm.model eq deepseek/deepseek-flash \
+    --check agent.agent_context.system_message_suffix not-contains QA_F30_PROFILE
+  control-agent-server api GET /api/settings --expect 200 --check active_agent_profile_id eq "$GATEWAY_SEED" --quiet
+  ```
+  The gateway records the active Agent Profile's identity and revision,
+  keeps its tools, appends the request's system text to its suffix, and runs
+  the model named in the gateway request. An oversized system addition is
+  400 and creates nothing. Deleting the active profile repairs the pointer
+  to `default`, and the next gateway launch records that profile, so a
+  normal deletion does not cause the gateway's no-active-profile 409. The
+  default Agent Profile is active again for the remaining recipes.
 - **System text goes to the system prompt (`F30.chat-system-suffix`).** Read
   back the chat-basic conversation.
 
@@ -883,17 +932,19 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
 
 ## Gotchas
 
-- It is an agent, not a proxy: every call runs the full OpenHands agent from
-  the saved settings (default tools including `terminal`, MCP servers,
-  condenser, confirmation policy and security analyzer, `max_iterations`) in
+- Every call runs the full agent from the active Agent Profile (tools, MCP
+  servers, condenser and system context), with saved conversation settings
+  (confirmation policy, security analyzer and iteration limit), in
   the one shared `workspace_path`, so concurrent gateway calls see each
   other's files. A vague prompt can make the agent run many tools for
   minutes; the client sees nothing until the run ends.
 - Model ids are `openhands_` plus an LLM profile name, case-sensitive. The
-  active profile is not a default and there is no alias. Profiles and
+  active LLM profile is not a gateway default and there is no model alias. Profiles and
   settings come from `OH_PERSISTENCE_DIR` (the run's `home/.openhands`), not
-  from the conversations directory. If the saved settings select an ACP
-  agent, the profile's LLM is ignored and only the system text is applied.
+  from the conversations directory. A missing or dangling active Agent
+  Profile pointer is repaired to `default` before launch; 409 means no valid
+  profile could be selected. If the active Agent Profile selects an ACP
+  agent, the named LLM profile is ignored and only the system text is applied.
 - Chat completions keep only the last user message plus all system and
   developer text; earlier turns in `messages[]` are dropped without an error.
   A client that replays history (the normal OpenAI pattern) gets an agent
