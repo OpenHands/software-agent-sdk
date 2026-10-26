@@ -283,6 +283,9 @@ class LocalConversation(BaseConversation):
             hook_config: Optional hook configuration to auto-wire session hooks.
                 If plugins are loaded, their hooks are combined with this config.
             max_iteration_per_run: Maximum number of iterations per run
+            max_budget_per_run: Accumulated LLM cost limit. On resume, None keeps
+                the persisted cap; a number replaces it. Assign None to the
+                conversation's max_budget_per_run property to clear a saved cap.
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
@@ -412,6 +415,7 @@ class LocalConversation(BaseConversation):
             else None,
             file_store=file_store,
             max_iterations=max_iteration_per_run,
+            max_budget_per_run=max_budget_per_run,
             stuck_detection=stuck_detection,
             cipher=cipher,
             tags=tags,
@@ -513,7 +517,6 @@ class LocalConversation(BaseConversation):
         )
 
         self.max_iteration_per_run = max_iteration_per_run
-        self.max_budget_per_run = max_budget_per_run
 
         # Initialize stuck detector
         if stuck_detection:
@@ -727,6 +730,17 @@ class LocalConversation(BaseConversation):
         return self._state
 
     @property
+    def max_budget_per_run(self) -> float | None:
+        """The persisted accumulated-cost limit; None means unbounded."""
+        with self._state:
+            return self._state.max_budget_per_run
+
+    @max_budget_per_run.setter
+    def max_budget_per_run(self, value: float | None) -> None:
+        with self._state:
+            self._state.max_budget_per_run = value
+
+    @property
     def conversation_stats(self):
         return self._state.stats
 
@@ -745,14 +759,15 @@ class LocalConversation(BaseConversation):
         Checked after each step across all tracked LLMs (agent, condenser, ...).
         A step may overshoot; resuming a run does not reset accumulated cost.
         """
-        if self.max_budget_per_run is None:
+        max_budget = self.max_budget_per_run
+        if max_budget is None:
             return None
         spent = self.conversation_stats.get_combined_metrics().accumulated_cost
-        if spent < self.max_budget_per_run:
+        if spent < max_budget:
             return None
         return (
             f"Agent reached maximum budget limit "
-            f"(${self.max_budget_per_run:.4f}); accumulated cost ${spent:.4f}."
+            f"(${max_budget:.4f}); accumulated cost ${spent:.4f}."
         )
 
     def _emit_run_limit_error(self, code: str, detail: str) -> None:
@@ -905,7 +920,7 @@ class LocalConversation(BaseConversation):
                 persistence_dir=fork_persistence,
                 conversation_id=fork_id,
                 max_iteration_per_run=self.max_iteration_per_run,
-                max_budget_per_run=self.max_budget_per_run,
+                max_budget_per_run=self._state.max_budget_per_run,
                 stuck_detection=self._stuck_detector is not None,
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,

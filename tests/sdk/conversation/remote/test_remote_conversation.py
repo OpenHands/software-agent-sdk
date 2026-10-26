@@ -501,6 +501,48 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    def test_budget_reads_existing_state_and_tracks_websocket_updates(
+        self, mock_ws_client
+    ):
+        client = self.setup_mock_client()
+        original = client.request.side_effect
+
+        def respond(method, url, **kwargs):
+            response = original(method, url, **kwargs)
+            if method == "POST" and url == "/api/conversations":
+                response.json.return_value.update(
+                    agent=self.agent.model_dump(mode="json"),
+                    execution_status="idle",
+                    max_budget_per_run=3.0,
+                )
+            return response
+
+        client.request.side_effect = respond
+        conversation = RemoteConversation(
+            agent=self.agent, workspace=self.workspace, visualizer=None
+        )
+        requests_before_reads = client.request.call_count
+        try:
+            assert conversation.max_budget_per_run == 3.0
+            assert conversation.state.agent.llm.model == self.agent.llm.model
+            assert conversation.state.execution_status.value == "idle"
+
+            on_event = mock_ws_client.call_args.kwargs["callback"]
+            for budget in (7.0, None):
+                on_event(
+                    ConversationStateUpdateEvent(key="max_budget_per_run", value=budget)
+                )
+                assert conversation.max_budget_per_run == budget
+                assert conversation.state.max_budget_per_run == budget
+                assert conversation.state.execution_status.value == "idle"
+
+            assert client.request.call_count == requests_before_reads
+        finally:
+            conversation.close()
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_remote_conversation_raises_when_websocket_never_ready(
         self, mock_ws_client
     ):
@@ -750,11 +792,15 @@ class TestRemoteConversation:
         ]
         assert len(get_events_calls) >= 1
 
+    @pytest.mark.parametrize(
+        "budget_response",
+        [{}, {"max_budget_per_run": None}, {"max_budget_per_run": 5.0}],
+    )
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
     def test_remote_conversation_initialization_existing_conversation(
-        self, mock_ws_client
+        self, mock_ws_client, budget_response
     ):
         """Test RemoteConversation initialization with existing conversation."""
         # Mock the workspace client directly
@@ -762,6 +808,15 @@ class TestRemoteConversation:
         mock_client_instance = self.setup_mock_client(
             conversation_id=str(conversation_id)
         )
+        original = mock_client_instance.request.side_effect
+
+        def respond(method, url, **kwargs):
+            response = original(method, url, **kwargs)
+            if method == "GET" and url == f"/api/conversations/{conversation_id}":
+                response.json.return_value.update(budget_response)
+            return response
+
+        mock_client_instance.request.side_effect = respond
 
         # Mock WebSocket client
         mock_ws_instance = Mock()
@@ -772,10 +827,14 @@ class TestRemoteConversation:
             agent=self.agent,
             workspace=self.workspace,
             conversation_id=conversation_id,
+            max_budget_per_run=2.5,
         )
 
         # Verify conversation ID is set correctly
         assert conversation.id == conversation_id
+        assert conversation.max_budget_per_run == budget_response.get(
+            "max_budget_per_run"
+        )
 
         # Verify no POST call was made to create a new conversation
         post_create_calls = [

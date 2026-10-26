@@ -1,5 +1,6 @@
 """Tests for Conversation.fork() primitive."""
 
+import json
 import tempfile
 import threading
 import uuid
@@ -160,9 +161,12 @@ def test_fork_resets_metrics_by_default():
             workspace=tmpdir,
             max_budget_per_run=2.0,
         )
+        src.max_budget_per_run = 3.0
         fork = src.fork()
 
-        assert fork.max_budget_per_run == 2.0
+        assert fork.max_budget_per_run == 3.0
+        saved = json.loads(Path(tmpdir, fork.id.hex, "base_state.json").read_text())
+        assert saved["max_budget_per_run"] == 3.0
         combined = fork.state.stats.get_combined_metrics()
         assert combined.accumulated_cost == 0
 

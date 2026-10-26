@@ -371,7 +371,6 @@ def _compose_conversation_info(
     )
     return ConversationInfo(
         **state.model_dump(mode="json"),
-        max_budget_per_run=stored.max_budget_per_run,
         title=stored.title,
         metrics=stored.metrics,
         created_at=stored.created_at,
@@ -1682,6 +1681,7 @@ class ConversationService:
                 "agent_settings",
                 "agent_profile_id",
                 "agent_launch_additions",
+                "max_budget_per_run",
             },
         )
         launched_agent_profile = launched.profile or runtime_launched_profile
@@ -1715,6 +1715,7 @@ class ConversationService:
                 else None
             ),
             reuse_request=request,
+            max_budget_per_run=request.max_budget_per_run,
         )
 
     async def _launch_prepared_conversation(
@@ -1725,6 +1726,7 @@ class ConversationService:
         run_slot: RunSlot,
         initial_message: Message | None,
         reuse_request: StartConversationRequest | None = None,
+        max_budget_per_run: float | None = None,
     ) -> tuple[ConversationInfo, bool]:
         """Persist a prepared conversation, deliver its first message and notify.
 
@@ -1754,7 +1756,10 @@ class ConversationService:
             # New conversation: the agent is written to base_state.json (its
             # single source of truth), not to meta.json. Pass it explicitly.
             event_service = await self._start_event_service(
-                stored, is_new_conversation=True, launched=launched
+                stored,
+                is_new_conversation=True,
+                launched=launched,
+                max_budget_per_run=max_budget_per_run,
             )
         if initial_message is not None:
             await event_service.send_message(initial_message, False)
@@ -2114,6 +2119,9 @@ class ConversationService:
         with await RunSlot.acquire(self._run_semaphore) as run_slot:
             parent_stored = parent_service.stored
             parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
+            max_budget_per_run = await asyncio.to_thread(
+                lambda: parent_service.get_conversation().max_budget_per_run
+            )
             child_id = uuid4()
 
             # Reuse the worktree machinery of a regular start: a worktree is
@@ -2163,6 +2171,7 @@ class ConversationService:
                 child_stored,
                 launched,
                 run_slot=run_slot,
+                max_budget_per_run=max_budget_per_run,
                 initial_message=Message(
                     role="user", content=[TextContent(text=request.task)]
                 ),
@@ -2443,6 +2452,7 @@ class ConversationService:
         is_new_conversation: bool = False,
         launched: LaunchedAgent | None = None,
         persisted_agent: AgentBase | None = None,
+        max_budget_per_run: float | None = None,
     ) -> EventService:
         event_services = self._event_services
         if event_services is None:
@@ -2459,6 +2469,7 @@ class ConversationService:
             stored=stored,
             conversations_dir=self.conversations_dir,
             agent=launched.agent if launched is not None else None,
+            initial_max_budget_per_run=max_budget_per_run,
             cipher=self._cipher_for(stored.id),
             mcp_tool_provider=self.mcp_tool_provider,
             credential_bindings=credential_bindings,

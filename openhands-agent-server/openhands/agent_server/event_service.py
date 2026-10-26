@@ -230,6 +230,7 @@ class EventService:
     # caller passes it here. On resume this is ``None`` and the agent is loaded
     # from base_state.json.
     agent: AgentBase | None = None
+    initial_max_budget_per_run: float | None = field(default=None, kw_only=True)
     cipher: Cipher | None = None
     mcp_tool_provider: MCPToolProvider | None = None
     credential_bindings: dict[str, VersionedCredentialBinding] = field(
@@ -1358,7 +1359,9 @@ class EventService:
             token_callbacks=([_token_streaming_callback] if streaming_enabled else []),
             stream_callbacks=[_publish_stream_progress],
             max_iteration_per_run=self.stored.max_iterations,
-            max_budget_per_run=self.stored.max_budget_per_run,
+            max_budget_per_run=(
+                None if base_state_exists else self.initial_max_budget_per_run
+            ),
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
             secrets=self.stored.secrets,

@@ -1699,9 +1699,14 @@ def test_budget_and_live_cost_with_live_server(
         socket_url = (
             f"{host.replace('http://', 'ws://')}/sockets/events/{conversation_id}"
         )
+        assert "max_budget_per_run" not in json.loads(
+            state_path.with_name("meta.json").read_text()
+        )
         try:
             with connect(socket_url) as socket:
-                socket.recv(timeout=5)
+                initial_state = json.loads(socket.recv(timeout=5))
+                assert initial_state["key"] == "full_state"
+                assert initial_state["value"].get("max_budget_per_run") == budget
                 sent = client.post(
                     f"{route}/events",
                     json={"content": [{"type": "text", "text": "Think twice"}]},
@@ -1717,6 +1722,7 @@ def test_budget_and_live_cost_with_live_server(
                     assert info["execution_status"] == "running"
                     assert info["max_budget_per_run"] == budget
                     for snapshot in (info, json.loads(state_path.read_text())):
+                        assert snapshot.get("max_budget_per_run") == budget
                         cost = sum(
                             metrics["accumulated_cost"]
                             for metrics in snapshot["stats"][
