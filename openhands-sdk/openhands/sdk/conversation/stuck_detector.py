@@ -170,7 +170,8 @@ class StuckDetector:
                 for action in last_actions[:threshold]
             )
             observations_equal = all(
-                self._event_eq(last_observations[0], observation)
+                isinstance(observation, ObservationEvent)
+                and self._event_eq(last_observations[0], observation)
                 for observation in last_observations[:threshold]
             )
             logger.debug(
