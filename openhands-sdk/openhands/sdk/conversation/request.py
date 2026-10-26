@@ -96,8 +96,9 @@ class StartChildConversationRequest(BaseModel):
         description=(
             "Workspace isolation for the child. 'worktree' runs it in a git "
             "worktree carved from the parent's workspace when that workspace is a "
-            "git repository; 'shared' runs it in the parent's directory. Backends "
-            "that manage workspaces themselves may ignore this."
+            "git repository with a usable base commit; otherwise it shares the "
+            "parent's directory. 'shared' always uses the parent's directory. "
+            "Backends that manage workspaces themselves may ignore this."
         ),
     )
 
