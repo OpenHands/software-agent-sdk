@@ -102,7 +102,7 @@ class ACPInstallSpec:
 # edit needed — ACP_PROVIDERS, the Dockerfile install stage, and the
 # TypeScript mirror (via check-acp-drift.py --write) all derive from
 # ACP_INSTALL_CATALOG below.
-CLAUDE_AGENT_ACP_VERSION = "0.63.0"
+CLAUDE_AGENT_ACP_VERSION = "0.89.1"
 CODEX_ACP_VERSION = "1.10.0"
 GEMINI_CLI_VERSION = "0.46.0"
 KIMI_CODE_VERSION = "0.38.0"

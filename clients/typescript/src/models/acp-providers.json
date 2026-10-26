@@ -14,6 +14,10 @@
         "label": "Claude Opus (1M)"
       },
       {
+        "id": "claude-opus-5-5",
+        "label": "Claude Opus 5.5"
+      },
+      {
         "id": "claude-opus-5",
         "label": "Claude Opus 5"
       },
@@ -33,7 +37,7 @@
       "npx",
       "-y",
       "--prefer-offline",
-      "@agentclientprotocol/claude-agent-acp@0.63.0"
+      "@agentclientprotocol/claude-agent-acp@0.89.1"
     ],
     "default_model": "opus[1m]",
     "default_session_mode": "bypassPermissions",
