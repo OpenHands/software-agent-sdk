@@ -43,9 +43,10 @@ sre_parse: Any = importlib.import_module("re._parser")
 REDOS_INPUT_CHARS = 50_000
 # Budget = this multiple of the slowest built-in pattern's worst search. 28 was
 # picked on one machine (Apple M4, Python 3.13.12) for ATR v4.1.5: the slowest
-# kept condition used about 0.7 of the budget and the fastest condition dropped
-# for time between about 1.05 and 1.7 across reruns, so a condition near either
-# edge can flip on other hardware. Revisit when regenerating from a newer
+# kept condition used about 0.57 to 0.84 of the budget across two HIGH-only
+# reruns (about 0.7 with the earlier HIGH and MEDIUM set) and the fastest
+# condition dropped for time used about 2.4 (1.05 to 1.7 before), so a condition
+# near either edge can flip on other hardware. Revisit when regenerating from a newer
 # release.
 REDOS_NATIVE_FACTOR = 28
 REDOS_WALL_SECONDS = 10.0

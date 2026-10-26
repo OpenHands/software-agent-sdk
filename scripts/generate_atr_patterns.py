@@ -10,7 +10,8 @@ dropped condition with the reason.
 
 Selection: ATR's enforce lane (``maturity: stable``, ``status`` not draft or
 deprecated, no embedding confirmation, plain OR-ed regex conditions), an
-injection category, and tagged both OWASP LLM01:2025 and ASI01:2026.
+injection category, tagged both OWASP LLM01:2025 and ASI01:2026, and
+severity ``critical``. Vendored conditions go to the HIGH injection bucket.
 
 Each condition on a text field must convert under ``atr_regex_checks``,
 stay within the ReDoS budget, and, after ``_normalize`` (the analyzer's own
@@ -83,10 +84,10 @@ TN_KEYS = (
     "tool_description",
     "tool_call",
 )
-# Only ``critical`` reaches HIGH. ATR's verdict denies critical matches
-# unconditionally, denies high only at confidence >= 0.8 (otherwise it asks)
-# and never denies medium (it asks at >= 0.6); a bare regex has no confidence.
-SEVERITY_BUCKET = {"critical": "high", "high": "medium", "medium": "medium"}
+# ATR's verdict denies critical matches unconditionally, denies high only at
+# confidence >= 0.8 (otherwise it asks) and never denies medium (it asks at
+# >= 0.6); a bare regex has no confidence, so only critical rules are vendored.
+REQUIRED_SEVERITY = "critical"
 # Benchmark scaffolding, not attack text: a task-template key, the HackAPrompt
 # canary phrase (plain, spaced and zero-width forms) and placeholder attacker
 # domains. Real attacks do not carry them, so a condition whose ATR source
@@ -141,10 +142,6 @@ ATR_RELEASE = "{ref}"
 ATR_INJECTION_HIGH_PATTERNS: tuple[tuple[str, str, str], ...] = (
 {high}
 )
-
-ATR_INJECTION_MEDIUM_PATTERNS: tuple[tuple[str, str, str], ...] = (
-{medium}
-)
 '''
 
 
@@ -160,7 +157,6 @@ class Condition:
 class Rule:
     rule_id: str
     title: str
-    bucket: str
     conditions: list[Condition]
     true_positives: list[str]
     true_negatives: list[str]
@@ -280,21 +276,24 @@ def select_rules(files: dict[str, bytes]) -> tuple[list[Rule], dict[str, str]]:
         maturity = str(raw.get("maturity") or "").strip()
         if raw.get("status") in ("draft", "deprecated") or maturity != "stable":
             continue
-        bucket = SEVERITY_BUCKET.get(str(raw.get("severity")))
+        severity = str(raw.get("severity"))
         reason = (
             _in_scope(raw, path.split("/")[1])
             or _lane_gap(raw)
-            or (None if bucket else f"severity {raw.get('severity')} is unmapped")
+            or (
+                None
+                if severity == REQUIRED_SEVERITY
+                else f"severity {severity} is not {REQUIRED_SEVERITY}"
+            )
         )
-        if reason is not None or bucket is None:
-            out_of_scope[raw["id"]] = reason or "unmapped"
+        if reason is not None:
+            out_of_scope[raw["id"]] = reason
             continue
         cases = raw.get("test_cases") or {}
         rules.append(
             Rule(
                 rule_id=raw["id"],
                 title=" ".join(str(raw["title"]).split()),
-                bucket=bucket,
                 conditions=[
                     _condition(i, c)
                     for i, c in enumerate(raw["detection"]["conditions"])
@@ -530,15 +529,13 @@ def _tuple_block(pattern: str, title: str, detector_id: str) -> list[str]:
 
 
 def render_module(rules: list[Rule], ref: str, commit: str, license_text: str) -> str:
-    blocks: dict[str, list[str]] = {"high": [], "medium": []}
+    block: list[str] = []
     for rule in rules:
         if rule.excluded:
             continue
         for cond in rule.conditions:
             if cond.pattern is not None:
-                blocks[rule.bucket] += _tuple_block(
-                    cond.pattern, rule.title, f"atr.{rule.rule_id}"
-                )
+                block += _tuple_block(cond.pattern, rule.title, f"atr.{rule.rule_id}")
     return MODULE_TEMPLATE.format(
         ref=ref,
         commit=commit,
@@ -546,8 +543,7 @@ def render_module(rules: list[Rule], ref: str, commit: str, license_text: str) -
         license="\n".join(
             ("# " + line).rstrip() for line in license_text.strip().splitlines()
         ),
-        high="\n".join(blocks["high"]),
-        medium="\n".join(blocks["medium"]),
+        high="\n".join(block),
     )
 
 
@@ -573,7 +569,7 @@ def render_report(
             "categories": list(INJECTION_CATEGORIES),
             "required_tags": [REQUIRED_OWASP_LLM, REQUIRED_OWASP_AGENTIC],
             "fields": list(TEXT_FIELDS),
-            "severity_to_bucket": SEVERITY_BUCKET,
+            "severity": REQUIRED_SEVERITY,
         },
         "checks": {
             "python": sys.version.split()[0],
@@ -592,7 +588,7 @@ def render_report(
             ],
         },
         "vendored": {
-            r.rule_id: {"bucket": r.bucket, "dropped_conditions": dropped(r)}
+            r.rule_id: {"dropped_conditions": dropped(r)}
             for r in rules
             if not r.excluded
         },
