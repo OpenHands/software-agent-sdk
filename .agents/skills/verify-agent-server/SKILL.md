@@ -5,7 +5,7 @@ description: >
   WebSocket API like an agent would", "drive the agent-server", "check an API
   change against a real server", "create or update the agent-server feature
   map", or "run the weekly API audit". Ships control-agent-server (launch,
-  doctor, api, ws, llm, conversations, fixtures, exec, evidence, map) and the
+  doctor, api, ws, llm, conversations, fixtures, exec, assert, evidence, map) and the
   maintained map of every agent-facing feature.
 triggers:
 - /verify-agent-server
@@ -49,6 +49,14 @@ CLI runs on the repository's `.venv` and needs nothing else. `git` is needed
 for fixtures, `tmux` for bash and terminal tools, and a DeepSeek key for
 model-backed recipes. Every command prints one JSON object; exit 0 ok,
 1 action failed, 2 usage, 3 environment.
+
+In a container whose PID 1 does not reap children, run the entire
+`map run --fresh` or test command under a subreaper such as `tini -s --`
+(Docker's `docker-init -s --` is also suitable). For manual runs, wrap the
+shell containing launch, drive and stop; wrapping launch alone exits the
+supervisor too early. Otherwise exited descendants can remain zombies, causing cleanup
+checks to mistake them for live work. Keep the original failure evidence and
+report this environment difference; do not weaken the cleanup assertions.
 
 If an agent-facing path cannot be driven with the CLI, that is a **harness
 gap**: extend `scripts/control_agent_server.py` (document the verb in its
@@ -127,6 +135,9 @@ control-agent-server stop                       # stops only this run; evidence 
   server's real LLM client. Use it only for provider behavior a real model
   cannot produce on demand (a 401, a 500, a hang, an exact tool call such as
   `finish` or a risky command); every happy path runs on a real model.
+  A status step can include a provider error body, for example
+  `--step 'status:429:{"error":{"message":"Quota exceeded","type":"insufficient_quota","code":"insufficient_quota"}}'`,
+  so quota exhaustion and transient rate limiting can be distinguished.
   A recipe-local process that later bullets use (an HTTP fixture server, a
   proxy) runs under `helper start --name NAME -- CMD`, not `CMD &`: `map run`
   ends each bullet's process group when the bullet ends.
@@ -164,6 +175,14 @@ delete conversations a recipe no longer needs. Without a key, run every
 credential-free recipe and record model-dependent ones as `blocked` with the
 missing prerequisite; never substitute a mock and call it a pass.
 
+For critic checks, use an available, authorized OpenHands (`openhands/…`) or
+compatible OpenHands LLM-proxy profile, regardless of the main profile used
+for the pass. The SDK reuses its LLM key when `verification.critic_api_key`
+is unset. Restore the previous profile afterwards. Do not declare the critic
+blocked merely because the main model uses another provider. This does not
+authorize new credentials, additional budget, or sending private test data
+to another service; require real scored events before recording a pass.
+
 ## Choose the job
 
 - **Verify a change or a PR**: map the changed paths to feature IDs with
@@ -178,7 +197,10 @@ missing prerequisite; never substitute a mock and call it a pass.
   with the same flags and fixtures:
   `control-agent-server map run --file Fnn --only Fnn.x --fresh --repeat 2 --checkout <base worktree>`
   must report the bullet `xfail` in both attempts, and the same command
-  without `--checkout` (the fix) `xpass` in both. Then drop the marker in the
+  without `--checkout` (the fix) `xpass` in both. `xfail` means the marked
+  command failed with the failure its `# bug: PREDICATE` documents (see
+  [the marker contract](references/mapping.md)); any other failure on the
+  baseline is a `fail`, so the proof cannot rest on an unrelated error. Then drop the marker in the
   same PR. Baseline not reproducing twice means "inconclusive", never
   "fixed". `--only` rejects unknown IDs and also runs each selected recipe's
   transitive `Requires:` prerequisites in family order.
@@ -188,10 +210,20 @@ missing prerequisite; never substitute a mock and call it a pass.
 - **Re-prove the map**: every family's recipes are fenced `sh` blocks whose
   commands assert their own expectations, so
   `control-agent-server map run --file Fnn --fresh --record` replays a family
-  on its own fresh run (with the family's `Launch:` flags) and writes ledger
+  on its own fresh run (with the family's `Launch:` flags), requires a
+  passing `doctor` before the first recipe, and writes ledger
   rows, and `control-agent-server map run --all --fresh --record` replays the
   whole map. Only failing bullets need judgment; `known bug` bullets report as
   expected failures until the bug is fixed.
+- **Run the daily pass**: follow [references/daily.md](references/daily.md):
+  static checks (`map check`, `map coverage`), the families changed since the
+  `Maintenance baseline` line of the map index (`map baseline`; `map owners`
+  with no arguments diffs from it), and nothing else: families nothing in
+  the range touched wait for the weekly pass, and a pass with no new commits
+  on `main` stops early. A pass that finished its changed families proposes
+  `TARGET` as the next baseline with `map baseline --set "$TARGET"` in its PR;
+  compare ledgers with `evidence report --baseline` when yesterday's is at
+  hand.
 - **Maintain the map (periodic or weekly)**: follow
   [references/maintenance.md](references/maintenance.md): a frozen BASE/TARGET,
   a route diff, a PR-intent ledger, a source wave, one live pass over every

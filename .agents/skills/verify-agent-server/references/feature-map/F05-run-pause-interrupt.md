@@ -69,8 +69,9 @@ Routes: `POST /api/conversations/{conversation_id}/run`,
   waiting for confirmation.
 - REST: `POST /api/conversations/{conversation_id}/pause` and
   `POST /api/conversations/{conversation_id}/interrupt` (no body), 200
-  `{"success": true}`. Pause flips `idle` or `running` to `paused` and appends
-  a `PauseEvent`; the current step finishes first. Interrupt cancels the
+  `{"success": true}`; 404 for an unknown id. Pause flips `idle` or
+  `running` to `paused` and appends a `PauseEvent`; the current step
+  finishes first. Interrupt cancels the
   in-flight async run (`InterruptEvent`, synthetic error observations for
   unfinished actions) and falls back to pause when nothing runs.
 - Second views (owned by other families, used here as proof):
@@ -309,11 +310,11 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   ```
   Both calls are accepted on the `finished` and the `error` conversation, and
   neither the status nor the event count moves.
-- **Responsive while a run fails (`F05.run-error-responsive`), known bug.**
+- **Responsive while a run fails (`F05.run-error-responsive`).**
   Re-run `E` and keep probing `/alive` and the error count, recording the
   slowest answer, until three rounds after the second
   `ConversationErrorEvent` lands (the failure is logged after the event is
-  stored). A probe before the run is the positive control; the single bug
+  stored). A probe before the run is the positive control; the final
   assertion is that no probe during the failure took over 1.5 s (normally
   about 100 ms).
   ```sh
@@ -336,23 +337,22 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   test "$AFTER" -ge 3
   control-agent-server api GET "/api/conversations/$E" --check execution_status eq error --quiet --save F05.run-error-responsive/after
   echo "slowest probe while the run failed: $SLOWEST ms"
-  test "$SLOWEST" -le 1500  # bug
+  control-agent-server assert --value "$SLOWEST" --check . le 1500
   ```
-  Expected: every probe answers in about 100 ms. Today one of them waits
-  about 5 s: `_run_and_publish` logs the run failure with `logger.exception`
-  on the event loop (`event_service.py`, "Error during conversation run"),
-  and the default console handler (`LOG_RICH_TRACEBACKS` defaults to true in
-  `openhands-sdk/openhands/sdk/logger/logger.py`) renders a rich traceback of
-  about 1,000 lines synchronously, blocking every request, socket and run on
-  the server meanwhile. After `restart --env LOG_RICH_TRACEBACKS=false` (or
-  with `LOG_JSON=true`, the Docker images' setting) the same probe answers in
-  under 200 ms.
+  Expected: every probe answers in about 100 ms, with the default console
+  logging as with `LOG_JSON=true` (the Docker images' setting).
+  `_run_and_publish` logs the failure ("Error during conversation run" in
+  `event_service.py`) with its traceback as plain text rather than
+  `exc_info`, because the default Rich console handler (`LOG_RICH_TRACEBACKS`
+  defaults to true in `openhands-sdk/openhands/sdk/logger/logger.py`) would
+  render a rich traceback of a chained LLM error synchronously on the event
+  loop, blocking every request, socket and run for about 5 s.
 - **Run an unknown id (`F05.unknown-id-run`).**
   ```sh
   control-agent-server api POST "/api/conversations/$NOPE/run" --expect 404 --check detail eq 'Not Found' --save F05.unknown-id-run/run
   ```
   404 `{"detail": "Not Found"}`.
-- **Pause or interrupt an unknown id (`F05.unknown-id-pause`), known bug.**
+- **Pause or interrupt an unknown id (`F05.unknown-id-pause`).**
   Both routes declare 404 "Item not found" (and no 400) in the OpenAPI
   document, like `/run` and `GET /api/conversations/{id}`.
   ```sh
@@ -360,14 +360,12 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
     --check 'paths./api/conversations/{conversation_id}/pause.post.responses.404' exists \
     --check 'paths./api/conversations/{conversation_id}/interrupt.post.responses.404' exists
   control-agent-server api GET "/api/conversations/$NOPE" --expect 404
-  control-agent-server api POST "/api/conversations/$NOPE/pause" --expect 404 --save F05.unknown-id-pause/pause  # bug
-  control-agent-server api POST "/api/conversations/$NOPE/interrupt" --expect 404 --save F05.unknown-id-pause/interrupt  # bug
+  control-agent-server api POST "/api/conversations/$NOPE/pause" --expect 404 --save F05.unknown-id-pause/pause
+  control-agent-server api POST "/api/conversations/$NOPE/interrupt" --expect 404 --save F05.unknown-id-pause/interrupt
   ```
   The OpenAPI document and a GET of the same id (404) are the controls.
-  Expected: 404 for both. Today both return 400 `{"detail": "Bad Request"}`
-  (the handlers raise 400 when the service finds no conversation), so a
-  consumer cannot tell a missing conversation from a bad request, and the
-  status differs from `/run` for the same id.
+  Both return 404 `{"detail": "Not Found"}`, like `/run` for the same id:
+  the handlers raise 404 when the service finds no conversation.
 - **Auth and malformed ids (`F05.control-errors`).** The target is `Q`, which
   is `idle`, so an accepted pause or interrupt would visibly flip it to
   `paused`.
@@ -424,8 +422,8 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   ```sh
   control-agent-server api GET /api/conversations/search --query status=paused --check items contains "$P"
   control-agent-server api POST "/api/conversations/$P/run" --expect 409
-  control-agent-server api GET "/api/conversations/$P" --check execution_status eq paused --quiet --save F05.pause-running-get/get  # bug
-  control-agent-server state cat "server/workspace/conversations/$(echo "$P" | tr -d -)/base_state.json" --check execution_status eq paused  # bug
+  control-agent-server api GET "/api/conversations/$P" --check execution_status eq paused --quiet --save F05.pause-running-get/get  # bug: status eq 200 && checks.0.actual eq running
+  control-agent-server state cat "server/workspace/conversations/$(echo "$P" | tr -d -)/base_state.json" --check execution_status eq paused  # bug: checks.0.actual eq running
   ```
   The status search (the live status says `paused`) and the 409 (the model
   call is still in flight) are the controls that the mid-call pause holds.
@@ -716,7 +714,7 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   control-agent-server api GET "/api/conversations/$K/events/count" --query kind=$PAUSE_KIND --check . eq 2
   control-agent-server restart --hard
   control-agent-server api GET "/api/conversations/$K/events/count" --query kind=$PAUSE_KIND --check . eq 2
-  control-agent-server api GET "/api/conversations/$K" --check execution_status eq paused --quiet --save F05.pause-running-crash/get  # bug
+  control-agent-server api GET "/api/conversations/$K" --check execution_status eq paused --quiet --save F05.pause-running-crash/get  # bug: status eq 200 && checks.0.actual eq error
   ```
   The stub's new request proves the model call was in flight when the pause
   landed, and the second `PauseEvent` is still in the event log after the
@@ -762,8 +760,8 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   `conversation wait`, the events socket or the event log. A provider failure
   is a 200 from `/run` followed by `error` and a `ConversationErrorEvent`.
 - `events/count` and `events/search` filter `kind` by the fully-qualified
-  class path (`openhands.sdk.event.user_action.PauseEvent`), not the short
-  `kind` value the events carry (F06).
+  class path (`openhands.sdk.event.user_action.PauseEvent`) or the short
+  `kind` value the events carry (`PauseEvent`, `F06.search-kind-short`).
 - Every state change is also persisted as a `ConversationStateUpdateEvent`,
   so count specific kinds instead of total events, except to prove that
   nothing happened (`F05.run-finished-noop`).
@@ -773,11 +771,11 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   tool call, if any. A lease held by a dead process on the same host is taken
   over immediately; a lease from another host must expire first
   (`OH_LEASE_TTL_SECONDS`, default 45), and until then `/run` answers 404.
-- The 5 s stall in `F05.run-error-responsive` depends on logging: it happens
-  with the default console logging (`launch` sets neither `LOG_JSON` nor
-  `LOG_RICH_TRACEBACKS`) and not with `LOG_JSON=true` or
-  `LOG_RICH_TRACEBACKS=false`. Every failed run also delays the socket's
-  error frames by the same amount, so wait for them with `ws read --wait`.
+- `F05.run-error-responsive` only means something with the default console
+  logging (`launch` sets neither `LOG_JSON` nor `LOG_RICH_TRACEBACKS`): a
+  rich traceback rendered on the event loop stalls the server only there, not
+  with `LOG_JSON=true` or `LOG_RICH_TRACEBACKS=false`. Any such stall also
+  delays the socket's error frames, so wait for them with `ws read --wait`.
 - A run's end is visible on the socket as a `full_state`
   `ConversationStateUpdateEvent`; the server also sends one on connect and
   after every pause and interrupt. Counting them (`--expect-min`) is how the

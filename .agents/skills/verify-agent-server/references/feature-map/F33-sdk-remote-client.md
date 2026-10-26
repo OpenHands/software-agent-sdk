@@ -31,7 +31,7 @@ Routes: none
 - `F33.workspace-settings`: `get_llm()` resolves the server's active LLM profile with a usable key, `get_llm(profile_name=...)` a named one (unknown names raise `FileNotFoundError`), `get_secrets()` returns `LookupSecret` references without values, and `get_mcp_config()` is empty on a fresh server.
 - `F33.async-workspace`: `AsyncRemoteWorkspace` runs a command, starts, reads and stops a background command, uploads and downloads a file, reads git changes, a git diff and server info, and closes its client on context exit.
 - `F33.workspace-runtime-scope`: a `RemoteWorkspace(runtime_conversation_id=...)` routes through `/api/conversations/{id}/...`: commands default to the conversation's workspace and land in its own bash history, paths outside that workspace are refused with 422, and an unknown conversation gives 404.
-- `F33.workspace-runtime-lifecycle`: `get_runtime_session_key()` and `release_runtime()` hand out a scoped worker key and stop a conversation's runtime on a server with a Docker conversation runtime.
+- `F33.workspace-runtime-lifecycle`: synchronous and asynchronous `get_runtime_session_key()` obtain a distinct worker key that authenticates a real child command; `release_runtime()` removes its container while conversation history stays readable, and reprovision permits the second SDK variant to repeat the lifecycle.
 - `F33.conversation-create`: `Conversation(agent, workspace=RemoteWorkspace)` returns a `RemoteConversation` that creates the server conversation with the agent, working directory, tags and `max_iteration_per_run`; `send_message` stores the message without running and the agent's key is not echoed back.
 - `F33.conversation-create-request`: `RemoteConversation.create(workspace, StartConversationRequest(...))` creates the conversation with the requested id from server-built `agent_settings`, tags and iteration limit, and runs its `initial_message`; repeating the same request returns the same conversation and adds no conversation or message.
 - `F33.conversation-create-profile`: `RemoteConversation.create(workspace, StartConversationRequest(agent_profile_id=...))` builds the agent from a saved agent profile (its LLM profile, tool selection and system message suffix), records the launched profile and runs the `initial_message` to `finished`; `get_secrets(agent_profile_id=...)` returns only the profile's `secret_refs`.
@@ -64,7 +64,7 @@ Routes: none
 - `F33.conversation-reconnect-callbacks`: an event the server records while a live `RemoteConversation`'s events socket is down reaches its callbacks once the socket is back, not only `state.events`.
 - `F33.conversation-restart`: after a restart a new program reattaches to a finished conversation, sees the same history, and continues it to `finished`.
 - `F33.custom-tool-module`: a tool registered in the client process is sent as `tool_module_qualnames`, imported by a server started with `OH_EXTRA_PYTHON_PATH`, and runs on the server when the agent calls it; a client-registered module the server cannot import is only a logged warning; reattaching from a process without the module raises `ImportError` naming the tool.
-- `F33.custom-tool-module-unimportable`: a conversation whose agent names a tool from a module the server cannot import fails with a client error (a 4xx, or a recorded conversation error), never with a 500.
+- `F33.custom-tool-module-unimportable`: a conversation whose agent names a tool from a module the server cannot import is rejected at create with a 422 naming the tool and the module, never a 500 on a later message.
 - `F33.conversation-close`: `close()` keeps the server conversation when `delete_on_close=False` and deletes it when the `Conversation(...)` factory's default `delete_on_close=True` applies.
 
 ## How to get to it (agent POV)
@@ -668,28 +668,96 @@ Preconditions:
   Without `cwd` the scoped command runs in the conversation's workspace; it
   is in the conversation's bash history and not in the host's; the upload and
   the `cwd` outside the workspace are 422, an unknown conversation 404.
-- **Runtime key and release (`F33.workspace-runtime-lifecycle`), blocked.**
-  Needs an Agent Server whose conversation runtime is Docker (`docker` is not
-  available on the machines this map was proven on).
+- **Runtime key and release (`F33.workspace-runtime-lifecycle`).**
+  Needs: `docker`
 
-  Requires: `F33.conversation-create`
+  Pull the selected image first. This uses an isolated Docker-runtime server,
+  the same pinned minimal image and optional `AGENT_SERVER_VERIFY_DOCKER_IMAGE`
+  override as F12. The outer server and SDK use this checkout; the child can
+  be a released image, so both its identity and version are recorded. The
+  placeholder LLM is never invoked.
   ```sh
-  control-agent-server exec --env PYTHONPATH="$F33" --env CID="$IDLE" --save F33.workspace-runtime-lifecycle/probe -- .venv/bin/python - <<'PY'
+  IMAGE=${AGENT_SERVER_VERIFY_DOCKER_IMAGE:-ghcr.io/openhands/agent-server:1.55.1-python-minimal}
+  docker image inspect "$IMAGE" >/dev/null
+  DK=$(control-agent-server launch --new --name f33-docker-lifecycle --print-run \
+    --config-json "$(jq -nc --arg image "$IMAGE" '{conversation_runtime:"docker",conversation_image:$image,enable_browser:false,conversation_container_memory:"1g"}')")
+  trap 'control-agent-server stop --run "$DK" >/dev/null 2>&1 || true' EXIT
+  control-agent-server doctor --run "$DK"
+  control-agent-server exec --run "$DK" --save F33.workspace-runtime-lifecycle/image -- \
+    docker image inspect --format '{{.Id}} {{json .RepoDigests}}' "$IMAGE"
+  RUNTIME_CID=$(control-agent-server api POST /api/conversations --run "$DK" --expect 201 --timeout 180 --field id \
+    --json '{"agent":{"llm":{"model":"openai/qa-no-call","api_key":"qa-placeholder"},"tools":[]},"autotitle":false}' \
+    --save F33.workspace-runtime-lifecycle/create)
+  control-agent-server api POST "/api/conversations/$RUNTIME_CID/events" --run "$DK" --expect 200 --check success eq true \
+    --json '{"role":"user","content":[{"type":"text","text":"QA_F33_RUNTIME_RETAINED"}],"run":false}'
+  RUNTIME_OWNER=$(python3 -c 'import hashlib,sys; r=sys.argv[1]; print(hashlib.sha256(f"{r}/server/workspace/conversations\0{r}/home/.openhands".encode()).hexdigest()[:24])' "$DK")
+  for MODE in sync async; do
+    if [ "$MODE" = async ]; then
+      control-agent-server api POST "/api/conversations/$RUNTIME_CID/runtime/reprovision" --run "$DK" \
+        --expect 200 --check runtime_status eq available --timeout 180 --save F33.workspace-runtime-lifecycle/reprovision
+    fi
+    CONTAINER=$(docker ps -q --filter "label=ai.openhands.runtime-owner=$RUNTIME_OWNER")
+    control-agent-server assert --value "$CONTAINER" --check . matches '^[0-9a-f]{12}$'
+    CHILD_URL="http://$(docker port "$CONTAINER" 8000/tcp)"
+    control-agent-server exec --run "$DK" --env CID="$RUNTIME_CID" --env CHILD_URL="$CHILD_URL" --env MODE="$MODE" \
+      --save "F33.workspace-runtime-lifecycle/$MODE-sdk" -- .venv/bin/python - <<'PY'
+  import asyncio
+  import json
   import os
   import uuid
-  import f33
+  from openhands.sdk.workspace import AsyncRemoteWorkspace, RemoteWorkspace
 
-  ws = f33.workspace("idle", runtime_conversation_id=uuid.UUID(os.environ["CID"]))
-  key = ws.get_runtime_session_key()
-  assert key and key != f33.KEY
-  ws.release_runtime()
-  f33.emit("lifecycle", released=True)
+  parent_key = os.environ["SESSION_API_KEY"]
+  args = dict(host=os.environ["AGENT_SERVER_URL"], api_key=parent_key,
+              working_dir="/workspace", runtime_conversation_id=uuid.UUID(os.environ["CID"]))
+
+  async def asynchronous():
+      async with AsyncRemoteWorkspace(**args) as ws:
+          key = await ws.get_runtime_session_key()
+          assert key and key != parent_key, "Expected a distinct child credential"
+          async with AsyncRemoteWorkspace(host=os.environ["CHILD_URL"], api_key=key,
+                                          working_dir="/workspace") as child:
+              info = await child.get_server_info()
+              result = await child.execute_command("printf qa-f33-runtime-key")
+              assert (result.exit_code, result.stdout) == (0, "qa-f33-runtime-key"), result
+          await ws.release_runtime()
+          return info
+
+  if os.environ["MODE"] == "async":
+      info = asyncio.run(asynchronous())
+  else:
+      with RemoteWorkspace(**args) as ws:
+          key = ws.get_runtime_session_key()
+          assert key and key != parent_key, "Expected a distinct child credential"
+          with RemoteWorkspace(host=os.environ["CHILD_URL"], api_key=key,
+                               working_dir="/workspace") as child:
+              info = child.get_server_info()
+              result = child.execute_command("printf qa-f33-runtime-key")
+              assert (result.exit_code, result.stdout) == (0, "qa-f33-runtime-key"), result
+          ws.release_runtime()
+  print(json.dumps(dict(mode=os.environ["MODE"], distinct_key=True, authenticated_command=True,
+                        released=True, child_info=info)))
   PY
-  control-agent-server api GET "/api/conversations/$IDLE" --expect 200
+    control-agent-server api GET "/api/conversations/$RUNTIME_CID/runtime" --run "$DK" --expect 200 \
+      --check runtime_status eq missing --check can_resume eq true --save "F33.workspace-runtime-lifecycle/$MODE-runtime-missing"
+    control-agent-server api GET "/api/conversations/$RUNTIME_CID" --run "$DK" --expect 200 --quiet \
+      --check id eq "$RUNTIME_CID" --save "F33.workspace-runtime-lifecycle/$MODE-catalog"
+    control-agent-server api GET "/api/conversations/$RUNTIME_CID/events/search" --run "$DK" --expect 200 \
+      --check items.1.llm_message.content.0.text eq QA_F33_RUNTIME_RETAINED --save "F33.workspace-runtime-lifecycle/$MODE-history"
+    control-agent-server api GET "/api/conversations/$RUNTIME_CID/runtime" --run "$DK" --expect 200 \
+      --check runtime_status eq missing --save "F33.workspace-runtime-lifecycle/$MODE-reads-did-not-resume"
+    control-agent-server assert --value "$(docker ps -aq --filter "label=ai.openhands.runtime-owner=$RUNTIME_OWNER")" --check . eq ''
+  done
+  control-agent-server api DELETE "/api/conversations/$RUNTIME_CID" --run "$DK" --expect 200 --save F33.workspace-runtime-lifecycle/delete
+  control-agent-server api GET "/api/conversations/$RUNTIME_CID" --run "$DK" --expect 404
+  control-agent-server stop --run "$DK"
   ```
-  On a Docker-runtime server the scoped key differs from the server key and
-  the release stops the container while the conversation stays readable. On
-  this local runtime the routes do not exist (see Gotchas).
+  Both SDK variants obtain a distinct worker key, authenticate an actual
+  command directly against the child, then release it. After each release
+  its running and stopped containers are absent, while catalog and retained
+  event reads succeed without reprovisioning. The key stays in process memory
+  and is never printed or saved. Local runtime servers lack these lifecycle
+  routes (see Gotchas).
 - **Send and run to completion (`F33.conversation-run`, `F33.conversation-callbacks`, `F33.conversation-stats`).**
   The agent writes a file; the probe counts the events its callback received.
   ```sh
@@ -846,7 +914,7 @@ Preconditions:
 - **Streamed tokens (`F33.conversation-streaming`).** An agent LLM with
   `stream=True`, a token callback, and an event callback that keeps
   `StreamingDeltaEvent` frames. The token and `state.events` outcomes are
-  recorded for the two known-bug bullets after this one.
+  recorded for the two bullets after this one.
   ```sh
   control-agent-server exec --env PYTHONPATH="$F33" --save F33.conversation-streaming/probe -- .venv/bin/python - <<'PY'
   import f33
@@ -874,33 +942,32 @@ Preconditions:
   (dozens for one sentence), and the server's stored events hold none: the
   deltas are transient frames, while the reply itself is stored as a
   `MessageEvent` (or `finish` action).
-- **Token callbacks on a remote conversation (`F33.conversation-token-callbacks`), known bug.**
+- **Token callbacks on a remote conversation (`F33.conversation-token-callbacks`).**
   The `Conversation(...)` factory forwards `token_callbacks` to
-  `RemoteConversation`, whose constructor swallows it in `**_`, so the
-  callbacks are never called although the server streamed the same tokens
-  to the socket. The correct behavior asserted here is that they receive the
-  run's deltas.
+  `RemoteConversation`, which hands each `StreamingDeltaEvent` frame from the
+  events socket to them as an `LLMStreamChunk` (the delta's `content` and
+  `reasoning_content` in `choices[0].delta`), so they receive the run's
+  deltas.
 
   Requires: `F33.conversation-streaming`
   ```sh
   test "$(jq .deltas "$F33/stream.json")" -gt 0
-  test "$(jq .tokens "$F33/stream.json")" -gt 0  # bug
+  control-agent-server assert --json "$F33/stream.json" --check tokens gt 0
   ```
-  The event callback got the deltas (control); today the token callback got
-  `0` calls.
-- **Deltas kept out of `state.events` (`F33.conversation-streaming-state`), known bug.**
-  `RemoteConversation`'s default callback adds every socket frame to
-  `state.events`, so the transient deltas become part of the client's
-  history although the server never stores them. The correct behavior
-  asserted here is that `state.events` keeps matching the server.
+  The event callback got the deltas (control), and the token callback got
+  them too.
+- **Deltas kept out of `state.events` (`F33.conversation-streaming-state`).**
+  `RemoteConversation`'s default callback skips the transient deltas the
+  server never stores, so they reach the callbacks only and `state.events`
+  keeps matching the server.
 
   Requires: `F33.conversation-streaming`
   ```sh
   test "$(jq '.local.MessageEvent // 0' "$F33/stream.json")" -eq "$(control-agent-server conversation events "$STREAM" --kinds MessageEvent | jq .matching)"
-  test "$(jq '.local.StreamingDeltaEvent // 0' "$F33/stream.json")" -eq 0  # bug
+  control-agent-server assert --json "$F33/stream.json" --check local.StreamingDeltaEvent missing
   ```
-  The stored kinds agree (control); today `state.events` also holds one
-  `StreamingDeltaEvent` per delta (the same count as the callback saw).
+  The stored kinds agree, and `state.events` holds no `StreamingDeltaEvent`
+  although the callback saw one per delta.
 - **Completion logs on the client (`F33.completion-logs`).** An agent LLM
   with `log_completions=True` and a relative `log_completions_folder`. The
   server replaces file logging with `LLMCompletionLogEvent`s; the client
@@ -1054,12 +1121,11 @@ Preconditions:
   stored event in the server's order plus the one full-state snapshot the
   socket sent on connect (never persisted), the 110 messages in order, and
   the first read of each state field equals the server's GET.
-- **Read the state twice (`F33.conversation-state-reread`), known bug.**
-  `RemoteState` validates its cached conversation info on every read, and
-  the discriminated-union validator pops `kind` from the dict it is given
-  (`openhands/sdk/utils/models.py`), so the first read of a polymorphic
-  field strips the cache. The correct behavior asserted here is that a
-  second read returns the same value.
+- **Read the state twice (`F33.conversation-state-reread`).**
+  `RemoteState` validates its cached conversation info on every read, so
+  validating a polymorphic field must not change the dict it is given: the
+  discriminated-union validator (`openhands/sdk/utils/models.py`) copies its
+  input before it removes `kind`, and a second read returns the same value.
 
   Requires: `F33.conversation-attach-large`
   ```sh
@@ -1088,14 +1154,13 @@ Preconditions:
   assert reads["agent"][0] == "Agent" and reads["is_confirmation_mode_active"][0] is True, reads
   f33.emit("reread", reads=reads, stable=all(first == second for first, second in reads.values()))
   PY
-  test "$(jq .stable "$F33/reread.json")" = true  # bug
+  control-agent-server assert --json "$F33/reread.json" --check stable eq true
   ```
   Each field is read on a freshly attached conversation, and every first
-  read is right (control). Today the second read of `confirmation_policy`
-  and `agent` raises `ValidationError` (`Unknown kind ''`), the second read
-  of `security_analyzer` returns `None`, and so the second
-  `is_confirmation_mode_active` is `False`. A full-state socket snapshot or
-  `state.refresh_from_server()` restores the cache until the next read.
+  read is right (control). The second reads return `AlwaysConfirm`,
+  `LLMSecurityAnalyzer` and `Agent` again, and `is_confirmation_mode_active`
+  stays `True`, without a socket snapshot or `state.refresh_from_server()`
+  in between.
 - **Ask, generate and set a title (`F33.conversation-ask-title`).**
 
   Requires: `F33.conversation-run`
@@ -1395,19 +1460,19 @@ Preconditions:
   `running`; the second `run()` posts `/run`, gets 409 (already running),
   keeps waiting and returns at `finished`; the file the 15 s command wrote
   exists and the conversation has its one user message.
-- **Join a run during a long tool call (`F33.conversation-run-join-long-tool`), known bug.**
-  The same join as above, but the agent's command runs 45 s. The server's
-  `/run` reads the status under the conversation's state lock, which the run
-  loop holds for the whole tool call (`event_service.py`
-  `_get_execution_status_sync`, see `F05.pause-tool-step`), and the SDK gives
-  the run trigger a 30 s HTTP timeout (`remote_conversation.py`, `run()`), so
-  today the second `run()` raises `ConversationRunError` wrapping
-  `ReadTimeout` after 30 s while the server run goes on and finishes. The
-  agent's model is `LONG_STUB`, which asks for exactly that `terminal` call
-  with a 90 s tool timeout: a real model chooses its own `timeout`, and
-  without one the terminal tool returns after 30 s of silence, which races
-  the SDK's own 30 s. The probe records how the second `run()` ended; the
-  correct behavior asserted here is that it waits and returns at `finished`.
+- **Join a run during a long tool call (`F33.conversation-run-join-long-tool`).**
+  The same join as above, but the agent's command runs 45 s. The run loop
+  holds the conversation's state lock for the whole tool call (see
+  `F05.pause-tool-step`), and the SDK gives the run trigger a 30 s HTTP
+  timeout (`remote_conversation.py`, `run()`). The server's `/run` checks its
+  live run task before reading the status under that lock, so it answers 409
+  at once and the second `run()` joins the run instead of raising
+  `ConversationRunError` wrapping `ReadTimeout`. The agent's model is
+  `LONG_STUB`, which asks for exactly that `terminal` call with a 90 s tool
+  timeout: a real model chooses its own `timeout`, and without one the
+  terminal tool returns after 30 s of silence, which races the SDK's own
+  30 s. The probe records how the second `run()` ended and asserts that it
+  waited and returned at `finished`.
   ```sh
   control-agent-server exec --env PYTHONPATH="$F33" --save F33.conversation-run-join-long-tool/probe -- .venv/bin/python - <<'PY'
   import os
@@ -1442,13 +1507,11 @@ Preconditions:
   test "$(cat "$F33/longtool/qa-f33-long.txt")" = late
   control-agent-server conversation events "$LONG" --kinds ActionEvent --contains '"timeout": 90.0' --expect-count 1
   control-agent-server api GET "/api/conversations/$LONG" --check execution_status eq finished --save F33.conversation-run-join-long-tool/get
-  test "$(jq .joined "$F33/longtool.json")" = true  # bug
+  control-agent-server assert --json "$F33/longtool.json" --check joined eq true
   ```
   `run(blocking=False)` returns at once; once the 45 s command is running,
-  the blocking `run()` should wait for it and return at `finished`. Today
-  the probe records `ReadTimeout('timed out')` after 30.0 s with the
-  conversation still `running`; the server run goes on, the file appears and
-  the conversation finishes.
+  the blocking `run()` waits for it (about 45 s, no error) and returns at
+  `finished`; the file appears and the conversation has finished.
 - **A stuck agent (`F33.conversation-stuck`).** The agent's model is
   `LOOP_STUB`, which repeats the same `think` call, so the server's stuck
   detector stops the run.
@@ -1670,11 +1733,11 @@ Preconditions:
   The same `RemoteConversation` object, created before the restart, runs the
   new message to `finished`; its socket delivered state updates again, and
   after `run()` its `state.events` matches the server kind by kind.
-- **Callbacks after a reconnect (`F33.conversation-reconnect-callbacks`), known bug.**
+- **Callbacks after a reconnect (`F33.conversation-reconnect-callbacks`).**
   The SDK's events socket retries on a backoff (1 s doubling to 30 s) and
-  resubscribes without `resend_mode`; on reconnect it only merges missed
-  events into `state.events` (`on_reconnect=reconcile`), so callbacks never
-  see what the server recorded in between. The probe talks to the server
+  resubscribes without `resend_mode`; on reconnect it reconciles
+  `state.events` over REST and passes the events the callbacks have not seen
+  to them, in order, once each. The probe talks to the server
   through `f33.Proxy()`, so the outage is exact instead of racing a
   restart's timing: a first message sent while connected reaches the
   callback (control); then the proxy drops the socket and refuses
@@ -1731,14 +1794,13 @@ Preconditions:
   GAP=$(jq -r .cid "$F33/gap.json")
   control-agent-server api GET "/api/conversations/$GAP/events/search" --query source=user --check items len-eq 2 \
     --check items.1.id eq "$(jq -r .message "$F33/gap.json")" --save F33.conversation-reconnect-callbacks/server-message
-  test "$(jq .callback_got_message "$F33/gap.json")" = true  # bug
+  control-agent-server assert --json "$F33/gap.json" --check callback_got_message eq true
   ```
   The server stored both messages and, after the reconnect, `state.events`
-  has both; the callback got the first one live, but today
-  `callback_got_message` is `false` for the second (reproduced on every
-  replay). A server restart opens the same gap: after one,
-  `F33.conversation-reconnect`'s client also reconnects through `reconcile`
-  only.
+  has both; the callback got the first one live and the second once the
+  socket was back (`callback_got_message` is `true`). A server restart opens
+  the same gap, and `F33.conversation-reconnect`'s client fills it the same
+  way.
 - **Reattach after a restart and continue (`F33.conversation-restart`).**
 
   Requires: `F33.conversation-run`
@@ -1899,15 +1961,13 @@ Preconditions:
   the server cannot import is only a logged `Failed to import module`
   warning while the agent does not use its tool: that conversation runs
   normally and the server's registry never lists `qa_f33_ghost`.
-- **An agent tool the server cannot import (`F33.custom-tool-module-unimportable`), known bug.**
-  The agent now names `qa_f33_ghost`. The create only logs the import
-  warning and answers 201 (`conversation_service.py`: "The agent will fail
-  gracefully if it tries to use unregistered tools"); the agent is built on
-  the first message, where `resolve_tool` raises `KeyError: "ToolDefinition
-  'qa_f33_ghost' is not registered"` and `POST .../events` answers an
-  unhandled 500, as does every later message. The correct behavior asserted
-  here is a client error that the caller can act on (a 4xx at create or on
-  the message, or a recorded conversation error), never a 500.
+- **An agent tool the server cannot import (`F33.custom-tool-module-unimportable`).**
+  The agent now names `qa_f33_ghost`. The create answers 422, with a
+  `detail` naming the tool and the module the server could not import, and
+  no conversation is created: the agent could never be built, since
+  `resolve_tool` would raise `KeyError: "ToolDefinition 'qa_f33_ghost' is
+  not registered"` on the first message. A client error the caller can act
+  on, never a 500.
 
   Requires: `F33.custom-tool-module`
   ```sh
@@ -1934,11 +1994,11 @@ Preconditions:
   f33.emit("ghost", cid=cid, statuses=statuses, server_errors=sum(s >= 500 for s in statuses.values()))
   PY
   control-agent-server api GET /api/tools/ --check . contains terminal --check . not-contains qa_f33_ghost
-  test "$(jq .server_errors "$F33/ghost.json")" -eq 0  # bug
+  control-agent-server assert --json "$F33/ghost.json" --check server_errors eq 0 --check statuses.create eq 422
   ```
-  The server's registry lacks `qa_f33_ghost` (control). Today the probe
-  records `{"create": 201, "message": 500}`; the server log has the
-  `KeyError` traceback for the message `POST`.
+  The server's registry lacks `qa_f33_ghost` (control). The probe records
+  `{"create": 422}`; the server log has only the `Failed to import module`
+  warning.
 - **Close keeps or deletes (`F33.conversation-close`).**
   ```sh
   control-agent-server exec --env PYTHONPATH="$F33" --save F33.conversation-close/probe -- .venv/bin/python - <<'PY'
@@ -1994,27 +2054,26 @@ Preconditions:
   sends on connect and after each run are never persisted, so
   `len(conversation.state.events)` is not the server's event count; compare
   kinds other than state updates, as the recipes do. Count kinds with
-  `conversation events --kinds`, not `events/count?kind=ActionEvent`: the
-  server only matches the full `<module>.<Class>` name there (the
-  `F06.search-kind-short` known bug), so a short name always counts `0`.
+  `conversation events --kinds` or `events/count?kind=ActionEvent` (the
+  server accepts the short name or the full `<module>.<Class>` name, see
+  `F06.search-kind-short`).
 - A live `RemoteConversation` reconnects its events socket with exponential
   backoff (1 s doubling to 30 s) after a server restart or a dropped
   connection; events emitted before it reconnects reach `state.events`
-  through REST reconciliation on reconnect and after `run()`, but registered
-  callbacks never see them (`F33.conversation-reconnect-callbacks`, known
-  bug; the server's `resend_mode=since` replay exists but the client does
-  not use it). Consumers that stream through callbacks should re-read
-  `state.events` after a reconnect. How much a run loses depends on the
-  backoff timing, so the reconnect bullet asserts only `state.events`, and
-  the known-bug bullet makes the outage exact with `f33.Proxy` instead of a
-  restart (a restart's window between "server ready" and the next retry
-  varies from under a second to many seconds).
+  through REST reconciliation on reconnect and after `run()`, and on
+  reconnect the client passes the ones its callbacks have not seen to them,
+  once each and in order (`F33.conversation-reconnect-callbacks`; the
+  client does not use the server's `resend_mode=since` replay). How many
+  events fall in the gap depends on the backoff timing, so the reconnect
+  bullet asserts only `state.events`, and the callbacks bullet makes the
+  outage exact with `f33.Proxy` instead of a restart (a restart's window
+  between "server ready" and the next retry varies from under a second to
+  many seconds).
 - `run()` posts `/run` with a 30 s timeout. While the agent's tool call is
-  executing, the server's `/run` (and `/pause`) wait for the conversation's
-  state lock, so `run()` on a conversation that is already running a command
-  longer than 30 s raises `ConversationRunError` (`ReadTimeout`) although
-  the run is healthy (`F33.conversation-run-join-long-tool`, known bug); a
-  shorter command is joined normally (`F33.conversation-run-timeout`).
+  executing, the run loop holds the conversation's state lock (`/pause`
+  waits for it); `/run` answers 409 from the live run task without taking
+  that lock, so `run()` joins a run whatever its current command's length
+  (`F33.conversation-run-join-long-tool`, `F33.conversation-run-timeout`).
 - `RemoteConversation.create(...)` with an `initial_message` starts a run on
   the server whatever `initial_message.run` says (see F04); repeating the
   request with the same `conversation_id` returns the existing conversation
@@ -2051,7 +2110,7 @@ Preconditions:
   them: a program that cannot import one of those modules cannot attach,
   even if the agent never used that tool (`ImportError` names the first
   missing one). A client-registered module the server cannot import is only
-  a warning, until an agent names its tool (then every message is a 500,
+  a warning, until an agent names its tool (then the create is a 422,
   `F33.custom-tool-module-unimportable`). `OH_EXTRA_PYTHON_PATH` only
   extends the server's `sys.path`; F27 drives the server side
   (`F27.custom-tool-modules`, and `F27.custom-tool-missing-on-resume` for a
@@ -2061,18 +2120,11 @@ Preconditions:
   without waiting for the client's handler. The client learns of the call
   only through callbacks, so a client tool called while the socket is down
   is missed by the handler (the reconnect gap above).
-- `RemoteState`'s polymorphic readers (`confirmation_policy`,
-  `security_analyzer`, `agent`) validate the cached conversation info in
-  place, so only the first read after a refresh is right
-  (`F33.conversation-state-reread`, known bug); call
-  `state.refresh_from_server()` before each read, or read once and keep the
-  value. `RemoteConversation.agent` (the attribute) is unaffected.
 - With a `stream=True` LLM the events socket also carries
   `StreamingDeltaEvent` frames: callbacks get them, the server stores none,
-  but `state.events` keeps them (`F33.conversation-streaming-state`, known
-  bug), so `len(state.events)` and kind counts include one entry per delta;
-  `token_callbacks` passed to `Conversation(...)` are ignored for a remote
-  workspace (`F33.conversation-token-callbacks`, known bug).
+  and they stay out of `state.events` (`F33.conversation-streaming-state`);
+  `token_callbacks` passed to `Conversation(...)` receive the same deltas
+  (`F33.conversation-token-callbacks`).
 - `log_completions=True` on a remote agent writes the log files on the
   client (relative folders resolve against the client's working directory),
   from `LLMCompletionLogEvent`s that the server also stores and serves like

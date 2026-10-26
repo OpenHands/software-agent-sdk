@@ -172,3 +172,36 @@ async def test_switch_llm_preserves_unrelated_state_across_reload(tmp_path):
             "kind": "regression",
         }
         assert isinstance(conversation.state.confirmation_policy, NeverConfirm)
+
+
+@pytest.mark.asyncio
+async def test_switch_llm_after_init_replaces_registered_usage_id(tmp_path):
+    """#5636: after the first message the agent's usage_id is registered.
+    Switching under that same usage_id must install the posted model, in the
+    live conversation, in base_state.json and in the service's read model.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        info, _ = await service.start_conversation(
+            _request(workspace_dir, "gpt-4o", "default")
+        )
+        conv_id = info.id
+        event_service = await service.get_event_service(conv_id)
+        assert event_service is not None
+        conversation = event_service.get_conversation()
+        conversation.send_message("hi")  # initializes the agent (run=False)
+        assert "default" in conversation.llm_registry.list_usage_ids()
+
+        await _switch_llm(
+            service, conv_id, LLM(model="gpt-5-codex", usage_id="default")
+        )
+
+        assert conversation.agent.llm.model == "gpt-5-codex"
+        base_state = _read_json(conversations_dir / conv_id.hex / "base_state.json")
+        assert base_state["agent"]["llm"]["model"] == "gpt-5-codex"
+        read_back = await service.get_conversation(conv_id)
+        assert read_back is not None
+        assert read_back.agent.llm.model == "gpt-5-codex"

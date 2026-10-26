@@ -1,11 +1,12 @@
 [project]
 name = "openhands-sdk"
-version = "1.54.0"
+version = "1.58.2"
 description = "OpenHands SDK - Core functionality for building AI agents"
 
 requires-python = ">=3.12"
 dependencies = [
     "agent-client-protocol>=0.12.1,<0.13.0",  # 0.11.0 reordered prompt() args, broke the client (#4830)
+    "certifi>=2026.10.19",  # eMudhra CA distrust: GHSA-6q48-6c7w-9gw2
     "deprecation>=2.1.0",
     "fakeredis[lua]>=2.32.1",  # Explicit dependency for docket/fastmcp background tasks
     # 3.2.0 reads back the stored absolute OAuth token expiry; 4.x requires
@@ -15,7 +16,7 @@ dependencies = [
     "httpx[socks]>=0.28.1",
     "jsonschema>=4.23.0",
     "joserfc>=1.7.5",
-    "litellm>=1.93.0",
+    "litellm>=1.93.0,<1.106",  # 1.106+ needs mcp>=2 (fails to import on mcp 1.x); see #6088
     "pillow>=12.3.0",
     "pydantic>=2.13.5",
     "python-frontmatter>=1.3.0",

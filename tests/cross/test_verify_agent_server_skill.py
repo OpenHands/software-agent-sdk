@@ -9,6 +9,7 @@ launching an agent server.
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import signal
 import subprocess
@@ -99,6 +100,25 @@ def _run(capsys, *argv):
     code = cas.main(list(argv))
     out = capsys.readouterr().out
     return code, out
+
+
+@pytest.mark.parametrize("body", [{"error": {"code": "insufficient_quota"}}, {}, None])
+def test_llm_stub_preserves_explicit_error_body(run_dir, capsys, body):
+    code, out = _run(
+        capsys,
+        "fixture",
+        "llm-stub",
+        "--name",
+        "quota",
+        "--step",
+        "status:429:" + json.dumps(body),
+    )
+    assert code == 0, out
+    url = json.loads(out)["url"]
+    with cas.http_client() as client:
+        response = client.post(url + "/v1/chat/completions", json={"messages": []})
+    assert response.status_code == 429
+    assert response.json() == body
 
 
 def test_api_checks_pass_and_fail_on_the_json_body(run_dir, capsys):
@@ -330,7 +350,7 @@ Preconditions:
   Requires: `F98.second`
   ```sh
   test "$VALUE" = carried
-  test "$VALUE" = fixed  # bug
+  test "$VALUE" = fixed  # bug: exit 1
   ```
 - **Offline (`F98.offline`), blocked: needs a GPU.** Not executed.
 
@@ -338,6 +358,30 @@ Preconditions:
 
 - None.
 """
+
+
+@pytest.mark.parametrize("healthy", [True, False])
+def test_fresh_map_health_gates_recipes_and_preserves_cleanup(
+    run_dir, capsys, write_verification_family, monkeypatch, healthy
+):
+    write_verification_family(cas, FAMILY)
+    stopped = []
+
+    def launch_or_stop(*args):
+        if args[0] == "stop":
+            stopped.append(args[-1])
+        return {"last_line": str(run_dir)}
+
+    monkeypatch.setattr(cas, "self_command", launch_or_stop)
+    monkeypatch.setattr(cas, "cmd_doctor", lambda args: {"ok": healthy})
+    code, out = _run(
+        capsys, "map", "run", "--file", "F98", "--only", "F98.first", "--fresh"
+    )
+    assert code == (0 if healthy else 3), out
+    assert stopped == [str(run_dir)]
+    health = run_dir / "evidence" / "map-run" / "doctor-before.json"
+    assert json.loads(health.read_text())["ok"] is healthy
+    assert (run_dir / "map-run" / "F98-demo.state.sh").exists() is healthy
 
 
 def test_map_run_carries_variables_and_reports_xfail_and_blocked(
@@ -797,17 +841,331 @@ def test_map_check_requires_a_bug_marker_in_known_bug_bullets(
 ):
     feature_map = tmp_path / "map"
     feature_map.mkdir()
-    (feature_map / "F98-demo.md").write_text(FAMILY.replace("  # bug", ""))
+    (feature_map / "F98-demo.md").write_text(FAMILY.replace("  # bug: exit 1", ""))
     monkeypatch.setattr(cas, "FEATURE_MAP_DIR", feature_map)
     code, out = _run(capsys, "map", "check", "--file", "F98", "--no-routes")
     assert code == 1
     assert "# bug" in out
 
 
+@pytest.mark.parametrize(
+    "marker, problem",
+    [
+        ("# bug", "needs the documented failure"),
+        ("# bug: exit", "is not PATH OP"),
+        ("# bug: exit 0", "from 1 to 255"),
+        ("# bug: exit 1 && status eq 500", "stands alone"),
+        ("# bug: status is 500", "is not PATH OP"),
+        ("# bug: status eq", "takes one value"),
+        ("# bug: detail missing 500", "takes no value"),
+        ("# bug: detail missing", "needs a clause naming"),
+        ("# bug: detail contains 'unclosed", "cannot parse"),
+        ("# bug: status eq 500", "does not call control-agent-server"),
+    ],
+)
+def test_map_check_rejects_a_missing_or_malformed_bug_predicate(
+    write_verification_family, capsys, marker, problem
+):
+    write_verification_family(cas, FAMILY.replace("# bug: exit 1", marker))
+    code, out = _run(capsys, "map", "check", "--file", "F98", "--no-routes")
+    assert code == 1, out
+    assert problem in out
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'if test "$VALUE" = carried; then false; fi  # bug: exit 1',
+        '! test "$VALUE" = carried  # bug: exit 1',
+        'test ! -e "$VALUE"  # bug: exit 1',
+    ],
+)
+def test_map_check_rejects_negative_bug_lines(write_verification_family, capsys, line):
+    write_verification_family(
+        cas, FAMILY.replace('test "$VALUE" = fixed  # bug: exit 1', line)
+    )
+    code, out = _run(capsys, "map", "check", "--file", "F98", "--no-routes")
+    assert code == 1, out
+    assert "positively" in out
+
+
+def test_assert_names_a_computed_value(tmp_path, capsys, monkeypatch):
+    code, out = _run(capsys, "assert", "--value", "1700", "--check", ".", "le", "1500")
+    result = json.loads(out)
+    assert code == 1
+    assert result["value"] == 1700
+    assert cas.bug_predicate_matches(
+        cas.parse_bug_predicate("value gt 1500"), 1, result
+    )
+    saved = tmp_path / "saved.json"
+    saved.write_text('{"status": 500}')
+    code, out = _run(
+        capsys, "assert", "--json", str(saved), "--check", "status", "eq", "409"
+    )
+    assert code == 1
+    assert json.loads(out)["checks"][0]["actual"] == "500"
+    monkeypatch.setattr("sys.stdin", io.StringIO("qa-text\n"))
+    code, out = _run(capsys, "assert", "--check", ".", "eq", "qa-text")
+    assert code == 0, out
+
+
+BUG_API = "control-agent-server api GET {path} --expect 200"
+DOCUMENTED = "  # bug: status eq 404 && response.body.detail eq 'Not Found'"
+
+
+@pytest.mark.parametrize(
+    "path, status",
+    [
+        # The documented failure: the marked command answers 404 Not Found.
+        ("/missing", "xfail"),
+        # An unrelated error at the same marked command is not the known bug.
+        ("/refused", "fail"),
+        # Correct behavior: the bug no longer reproduces.
+        ("/info", "xpass"),
+    ],
+)
+def test_known_bug_xfails_only_on_the_documented_failure(
+    run_dir, write_verification_family, capsys, path, status
+):
+    family = FAMILY.replace(
+        '  test "$VALUE" = fixed  # bug: exit 1',
+        "  " + BUG_API.format(path=path) + DOCUMENTED,
+    )
+    write_verification_family(cas, family)
+    code, out = _run(capsys, "map", "run", "--file", "F98", "--record")
+    result = json.loads(out)
+    bug = next(r for r in result["bullets"] if r.get("ids") == ["F98.bug"])
+    assert bug["status"] == status, out
+    assert code == (0 if status == "xfail" else 1)
+    if status == "fail":
+        assert bug["failed_status"] == 1
+        assert bug["observed"]["status"] == 503
+        assert "not with the documented failure" in bug["hint"]
+        ledger = [
+            json.loads(line)
+            for line in (run_dir / "evidence" / "ledger.jsonl").read_text().splitlines()
+        ]
+        assert {r["feature"]: r["result"] for r in ledger}["F98.bug"] == "fail"
+
+
+def test_known_bug_matches_the_failure_not_a_later_cleanup_call(
+    run_dir, write_verification_family, capsys
+):
+    # A recipe's EXIT cleanup calls the CLI after the marked command failed;
+    # the predicate still sees what the marked command observed.
+    family = FAMILY.replace(
+        '  test "$VALUE" = fixed  # bug: exit 1',
+        "  trap 'control-agent-server api GET /info >/dev/null' EXIT\n  "
+        + BUG_API.format(path="/missing")
+        + DOCUMENTED,
+    )
+    write_verification_family(cas, family)
+    code, out = _run(capsys, "map", "run", "--file", "F98")
+    bug = next(r for r in json.loads(out)["bullets"] if r.get("ids") == ["F98.bug"])
+    assert bug["status"] == "xfail", out
+
+
+def test_known_bug_pass_after_a_broken_arrange_is_not_a_fix(
+    run_dir, write_verification_family, capsys
+):
+    # With --keep-going, a recipe whose prerequisite failed can pass on empty
+    # variables; that is no evidence the bug is fixed.
+    family = FAMILY.replace(
+        "VALUE=$(echo carried)", "VALUE=$(echo carried)\n  false"
+    ).replace(
+        '  test "$VALUE" = carried\n  test "$VALUE" = fixed  # bug: exit 1',
+        "  true  # bug: exit 1",
+    )
+    write_verification_family(cas, family)
+    code, out = _run(capsys, "map", "run", "--file", "F98", "--keep-going")
+    bug = next(r for r in json.loads(out)["bullets"] if r.get("ids") == ["F98.bug"])
+    assert bug["status"] == "fail", out
+    assert "F98.second" in bug["hint"]
+
+
+def test_known_bug_pass_after_a_broken_indirect_arrange_is_not_a_fix(
+    run_dir, write_verification_family, capsys
+):
+    # F98.second passes on its own, but it needs F98.first, which failed; the
+    # known bug needs F98.second, so its pass is no evidence either.
+    family = (
+        FAMILY.replace("VALUE=$(echo carried)", "VALUE=$(echo carried)\n  false")
+        .replace(
+            '  test "$VALUE" = carried\n  control-agent-server api GET /info',
+            "  control-agent-server api GET /info",
+        )
+        .replace(
+            '  test "$VALUE" = carried\n  test "$VALUE" = fixed  # bug: exit 1',
+            "  true  # bug: exit 1",
+        )
+    )
+    write_verification_family(cas, family)
+    code, out = _run(capsys, "map", "run", "--file", "F98", "--keep-going")
+    rows = {tuple(r.get("ids") or []): r for r in json.loads(out)["bullets"]}
+    assert rows[("F98.second",)]["status"] == "pass", out
+    bug = rows[("F98.bug",)]
+    assert bug["status"] == "fail", out
+    assert "F98.first" in bug["hint"]
+
+
+@pytest.mark.parametrize(
+    "stored, status",
+    [
+        # The documented failure: the file is there and has no key.
+        ('{"agent": {"model": "m"}}', "xfail"),
+        # The file is missing: an error object has no `checks`, so the
+        # `eq null` clause must not read its absence as the bug.
+        (None, "fail"),
+    ],
+)
+def test_known_bug_predicate_needs_its_paths_present(
+    run_dir, write_verification_family, capsys, stored, status
+):
+    if stored is not None:
+        (run_dir / "state.json").write_text(stored)
+    family = FAMILY.replace(
+        '  test "$VALUE" = fixed  # bug: exit 1',
+        "  control-agent-server state cat state.json --check agent.key exists"
+        "  # bug: checks.0.actual eq null",
+    )
+    write_verification_family(cas, family)
+    code, out = _run(capsys, "map", "run", "--file", "F98")
+    bug = next(r for r in json.loads(out)["bullets"] if r.get("ids") == ["F98.bug"])
+    assert bug["status"] == status, out
+
+
+def test_known_bug_exit_predicate_tells_a_false_test_from_an_error(
+    run_dir, write_verification_family, capsys
+):
+    # `test` exits 1 when the comparison is false and 2 when it cannot run.
+    family = FAMILY.replace(
+        '  test "$VALUE" = fixed  # bug: exit 1',
+        '  test "$VALUE" -le 3  # bug: exit 1',
+    )
+    write_verification_family(cas, family)
+    code, out = _run(capsys, "map", "run", "--file", "F98")
+    bug = next(r for r in json.loads(out)["bullets"] if r.get("ids") == ["F98.bug"])
+    assert bug["status"] == "fail", out
+    assert bug["failed_status"] == 2
+
+
+def test_the_marked_call_replaces_an_earlier_observation(
+    run_dir, write_verification_family, capsys
+):
+    # The marked line's own call replaces what an earlier call observed, so an
+    # earlier 404 cannot stand in for the marked command's failure.
+    family = FAMILY.replace(
+        '  test "$VALUE" = fixed  # bug: exit 1',
+        "  control-agent-server api GET /missing --expect 404\n"
+        "  control-agent-server api GET /refused --expect 200" + DOCUMENTED,
+    )
+    write_verification_family(cas, family)
+    code, out = _run(capsys, "map", "run", "--file", "F98")
+    bug = next(r for r in json.loads(out)["bullets"] if r.get("ids") == ["F98.bug"])
+    assert bug["status"] == "fail", out
+    assert bug["observed"]["status"] == 503
+
+
 def test_committed_feature_map_is_structurally_valid(capsys):
     """`map check --no-routes`: headings, IDs, index counts, recipes parse."""
     code, out = _run(capsys, "map", "check", "--no-routes")
     assert code == 0, out
+
+
+def _index(feature_map, baseline_lines):
+    rows = "\n".join(
+        f"| F{n:02d} | [Family {n}](F{n:02d}-demo.md) | x | x | baseline | 0 |"
+        for n in range(1, 35)
+    )
+    (feature_map / "README.md").write_text(
+        "# Map\n\n" + "\n".join(baseline_lines) + "\n\n## Families\n\n" + rows + "\n"
+    )
+
+
+def test_map_baseline_reads_and_moves_the_index_line(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cas, "FEATURE_MAP_DIR", tmp_path)
+    head = cas.git("rev-parse", "HEAD")
+    _index(tmp_path, ["Maintenance baseline: main@abc1234 (2026-10-01). Keep me."])
+    code, out = _run(capsys, "map", "baseline")
+    assert code == 0, out
+    assert json.loads(out)["sha"] == "abc1234"
+
+    code, out = _run(
+        capsys,
+        "map",
+        "baseline",
+        "--set",
+        head,
+        "--date",
+        "2026-10-12",
+        "--main",
+        "HEAD",
+    )
+    assert code == 0, out
+    text = (tmp_path / "README.md").read_text()
+    assert f"Maintenance baseline: main@{head} (2026-10-12). Keep me." in text
+    code, out = _run(capsys, "map", "baseline")
+    assert json.loads(out)["commits_since"] == 0
+
+
+@pytest.mark.parametrize(
+    "lines, problem",
+    [
+        ([], "no `Maintenance baseline"),
+        (
+            [
+                "Maintenance baseline: main@abc1234 (2026-10-01).",
+                "Maintenance baseline: main@def5678 (2026-10-02).",
+            ],
+            "2 `Maintenance baseline:` lines",
+        ),
+        (["Maintenance baseline: `abc1234` (first pass)."], "malformed"),
+    ],
+)
+def test_map_baseline_rejects_missing_duplicate_or_malformed_lines(
+    tmp_path, monkeypatch, capsys, lines, problem
+):
+    monkeypatch.setattr(cas, "FEATURE_MAP_DIR", tmp_path)
+    _index(tmp_path, lines)
+    code, out = _run(capsys, "map", "baseline")
+    assert code == 1
+    assert problem in out
+    assert any(
+        problem in p
+        for p in cas.baseline_problems((tmp_path / "README.md").read_text())
+    )
+
+
+def test_compare_ledgers_sorts_what_changed():
+    def row(feature, result):
+        return {"feature": feature, "result": result, "run": "r"}
+
+    before = [row("F01.a", "pass"), row("F01.b", "fail"), row("F01.c", "pass")]
+    before += [row("F01.d", "xfail"), row("F01.e", "pass")]
+    after = [row("F01.a", "fail"), row("F01.b", "pass"), row("F01.d", "xpass")]
+    after += [row("F01.e", "pass"), row("F01.f", "blocked")]
+    changes = cas.compare_ledgers(before, after)
+    assert [c["feature"] for c in changes["newly_failing"]] == ["F01.a", "F01.d"]
+    assert [c["feature"] for c in changes["newly_passing"]] == ["F01.b"]
+    assert [c["feature"] for c in changes["not_checked"]] == ["F01.c"]
+    assert [c["feature"] for c in changes["other"]] == ["F01.f"]
+    assert "Newly failing:" in "\n".join(cas.changes_markdown(changes))
+
+
+def test_compare_ledgers_takes_the_newest_attempt_whatever_the_order():
+    def row(result, at):
+        return {"feature": "F01.a", "result": result, "run": at, "at": at}
+
+    baseline = [row("pass", "2026-10-12T00:00:00+00:00")]
+    early = row("pass", "2026-10-13T01:00:00+00:00")
+    late = row("fail", "2026-10-13T02:00:00+00:00")
+    for current in ([late, early], [early, late]):
+        changes = cas.compare_ledgers(baseline, current)
+        assert [c["feature"] for c in changes["newly_failing"]] == ["F01.a"]
+        assert changes["conflicting"][0]["feature"] == "F01.a"
+        text = "\n".join(cas.changes_markdown(changes))
+        assert "No result changed" not in text
+        assert "Conflicting attempts" in text
 
 
 def test_every_command_documents_examples(capsys):

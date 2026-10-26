@@ -455,7 +455,7 @@ Preconditions:
   back: after the network returns, the same token is still pending (200
   `connected: false`, not 404). The sleep honors `interval_seconds` before
   the next real call to OpenAI.
-- **Status with an expired login offline (`F24.status-offline`), known bug.**
+- **Status with an expired login offline (`F24.status-offline`).**
   An offline second run like `F24.offline-safe`'s. Two controls first: the
   network really is cut (`device/start` cannot succeed) and the same run
   reads an unexpired login as connected. Then a login that expired a second
@@ -467,22 +467,22 @@ Preconditions:
   EXP5=$(bash "$F24/write-login.sh" "$OFF" 3600000)
   control-agent-server api GET /api/llm/subscription/openai/status --run "$OFF" --expect 200 --check connected eq true \
     --check expires_at eq "$EXP5"
-  bash "$F24/write-login.sh" "$OFF" -1000 >/dev/null
+  EXP6=$(bash "$F24/write-login.sh" "$OFF" -1000)
   control-agent-server api GET /api/llm/subscription/openai/status --run "$OFF" --expect 200 --check connected eq false \
-    --save F24.status-offline/status  # bug
+    --save F24.status-offline/status
+  control-agent-server state cat --run "$OFF" home/.openhands/auth/openai_oauth.json --check expires_at eq "$EXP6" \
+    --check refresh_token eq qa-f24-refresh-token
   control-agent-server logs --run "$OFF" --grep 'Refreshing OpenAI access token' --expect-min 1
   control-agent-server logs --run "$OFF" --grep 'Unhandled exception on GET' --expect-none
   ```
   Expected: 200 `connected: false` after a refresh attempt, the answer
   status gives when OpenAI rejects a refresh (`F24.status-refresh-rejected`),
   and no traceback for the GET (the `device/start` control leaves its own
-  `Unhandled exception on POST`, `F24.device-start-offline`). Today the
-  marked status call is 500 `{"detail": "Internal Server Error",
-  "exception": "All connection attempts failed"}` with an `Unhandled
-  exception on GET /api/llm/subscription/openai/status` traceback in the
-  log: `get_openai_subscription_status` catches only `RuntimeError` around
-  `refresh_if_needed()`, and `_refresh_access_token` lets httpx transport
-  errors through (`llm_router.py`, `auth/openai.py`).
+  `Unhandled exception on POST`, `F24.device-start-offline`).
+  `get_openai_subscription_status` treats an httpx transport error from
+  `refresh_if_needed()` like a rejected refresh (`llm_router.py`); the
+  stored file is left as it was, so status retries the refresh once the
+  network returns.
 - **Start and poll a login offline (`F24.device-start-offline`), known bug.**
   A second run behind `netgate`: start a login while online and see it
   pending (the controls), cut the network, then start another and poll the
@@ -497,9 +497,9 @@ Preconditions:
     --expect 200 --check connected eq false
   bash "$F24/netgate.sh" down "$GP"
   control-agent-server api POST /api/llm/subscription/openai/device/start --run "$OUTAGE" --expect 502,503,504 \
-    --save F24.device-start-offline/start  # bug
+    --save F24.device-start-offline/start  # bug: status eq 500 && response.body.exception contains 'All connection attempts failed'
   control-agent-server api POST /api/llm/subscription/openai/device/poll --run "$OUTAGE" --json "{\"device_code\": \"$DC4\"}" \
-    --expect 502,503,504 --save F24.device-start-offline/poll  # bug
+    --expect 502,503,504 --save F24.device-start-offline/poll  # bug: status eq 500 && response.body.exception contains 'All connection attempts failed'
   control-agent-server logs --run "$OUTAGE" --grep 'Unhandled exception' --expect-none
   ```
   Expected: a gateway status (502, 503 or 504) that tells the client OpenAI

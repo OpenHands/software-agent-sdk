@@ -35,15 +35,15 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 - `F15.changes-base`: without `ref` the display base is `HEAD` on a remote-less default branch, the fork point from local `main` on a feature branch (committed work stays visible), the fork point from `origin`'s default branch on a fully pushed clean branch, and the branch's own upstream once the tree is dirty.
 - `F15.changes-ref`: `ref=HEAD` gives `git status`-style changes and an older commit adds its later commits' files; an unknown or option-shaped `ref` is 400 and never runs as a git option; no `path` is 422.
 - `F15.changes-nested-repo`: changes inside a repository nested one level below the requested repository are listed with the nested directory as prefix, the nested directory itself is not listed, and `diff` of such an entry reads the nested repository.
-- `F15.changes-repo-below-path`: a non-repository directory that holds one repository (the layout of a repository-backed conversation) lists that repository's changes with its directory as prefix; today it lists nothing.
+- `F15.changes-repo-below-path`: a non-repository directory that holds one repository (the layout of a repository-backed conversation) lists that repository's changes with its directory as prefix.
 - `F15.changes-special-names`: a modified tracked file whose name has a space or a non-ASCII character is listed under its real name; today a space fails the whole list with 400 and a non-ASCII name comes back as a mangled git-quoted string.
-- `F15.changes-subdir-paths`: `changes` for a subdirectory of a repository returns paths on one base; today tracked paths are repository-relative (and include files outside the subdirectory) while untracked paths are subdirectory-relative.
+- `F15.changes-subdir-paths`: `changes` for a subdirectory of a repository lists only the changes under it, tracked and untracked alike, as paths relative to the requested directory.
 - `F15.non-repo`: on a plain directory, a missing directory and a non-repository file every operation answers 200 with an empty result (`[]`, `{"original": null, "modified": null}`, `{"commits": [], "has_more": false}`); a repository without commits lists its files as `ADDED` and has no commits.
 - `F15.diff`: `diff` for a modified file returns the base text as `original` and the disk text as `modified` (final newline dropped on both sides), an untracked file has `original` `""`, and an explicit `ref` moves the base.
 - `F15.diff-commit`: `commit=<sha>` returns the file as that commit changed it, read from git objects: `original` from the first parent (empty for the root commit or an added file), `modified` from the commit (empty for a file it deleted), also for files no longer on disk and for abbreviated SHAs.
 - `F15.diff-errors`: `ref` together with `commit` is 400, a non-hex `commit` 422, an unknown commit or ref 400, a missing file 400, a file over 1 MiB 400, and no `path` 422.
-- `F15.diff-whitespace`: an unchanged file with leading indentation or trailing blank lines diffs to identical `original` and `modified`; today `original` loses them, so a file that `changes` does not list shows a phantom diff.
-- `F15.diff-deleted-file`: the working-tree diff of a file that `changes` lists as `DELETED` returns its base text as `original` and `""` as `modified`; today it is 400 `File does not exist`.
+- `F15.diff-whitespace`: an unchanged file with leading indentation or trailing blank lines diffs to identical `original` and `modified`, so a file that `changes` does not list shows no diff.
+- `F15.diff-deleted-file`: the working-tree diff of a file that `changes` lists as `DELETED` returns its base text as `original` and `""` as `modified`; a path missing both on disk and at the base is still 400 `File does not exist`.
 - `F15.commits`: `commits` lists the history newest first with `sha`, `short_sha`, `subject`, `author` and an ISO 8601 `timestamp`, `has_more` tells whether `limit` cut it, and `limit` outside 1..200 is 422.
 - `F15.commit-changes`: `commits/{sha}/changes` lists one commit's files against its first parent (the root commit as all `ADDED`, a rename as `DELETED` plus `ADDED`), accepts abbreviated SHAs, answers 400 for an unknown SHA and 422 for a non-hex or shorter-than-4 SHA.
 - `F15.scoped`: the four conversation-scoped routes on a conversation whose workspace is the fixture repository return exactly what the global routes return.
@@ -56,7 +56,8 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 - `F15.repo-search-errors`: `gitlab` and `bitbucket` are 400 (not supported), an unknown or missing `provider` is 422, and `limit` outside 1..100 is 422.
 - `F15.repo-search-unreachable`: when GitHub cannot be reached the search is 502 with the generic masked body and no token in it.
 - `F15.repo-search-timeout`: when GitHub does not answer within 15 s the search is 504 with the masked body `GitHub repository search timed out` and no token in it.
-- `F15.repo-search-github`: with a real GitHub token, search lists the token's repositories with a `page:offset` cursor and a case-insensitive `query` filter, and an invalid token is passed through as 401.
+- `F15.repo-search-github`: with a real GitHub token, search lists the token's repositories with a `page:offset` cursor and a case-insensitive `query` filter.
+- `F15.repo-search-rejected-token`: a provider's HTTP 401 for a rejected token is passed through as 401 with a generic error, without exposing the token.
 
 ## How to get to it (agent POV)
 
@@ -243,7 +244,7 @@ Preconditions:
   lists the inner repository's own changes under `inner/` and not the
   directory itself, and the diff of `inner/README.md` is read from the inner
   repository (its committed text against the edit).
-- **Repository below the requested directory (`F15.changes-repo-below-path`), known bug.**
+- **Repository below the requested directory (`F15.changes-repo-below-path`).**
   A plain directory that holds one repository, as a repository-backed
   conversation's workspace does (`{base}/{repo}`).
   ```sh
@@ -253,16 +254,14 @@ Preconditions:
   control-agent-server api GET /api/git/changes --query path="$F/ws/proj" --expect 200 --check . len-eq 2 \
     --check 0.path eq README.md --check 1.path eq notes.txt
   control-agent-server api GET /api/git/changes --query path="$F/ws" --expect 200 --check . len-eq 2 \
-    --check 0.path eq proj/README.md --check 1.path eq proj/notes.txt --save F15.changes-repo-below-path/ws  # bug
+    --check 0.path eq proj/README.md --check 1.path eq proj/notes.txt --save F15.changes-repo-below-path/ws
   ```
   `$F/ws` itself is not a repository and the repository below it answers
-  with its two changes (positive control). Expected: the repository's two
-  changes under `proj/`, as for a nested
-  repository (and as `GET /api/file/archive` resolves the same layout).
-  Actual: `200 []`. `get_git_changes` calls `get_changes_in_repo` on the
-  directory first; it raises `GitRepositoryError` before the `./*/.git` scan
-  runs, and the router maps that to `[]`. Consumers that pass the workspace
-  root see "no changes" for a repository-backed conversation.
+  with its two changes (positive control). The directory answers with the
+  repository's two changes under `proj/`, sorted by path, as for a nested
+  repository (and as `GET /api/file/archive` resolves the same layout), so
+  consumers that pass the workspace root of a repository-backed conversation
+  see its changes. The directory contributes no changes of its own.
 - **File names with a space or non-ASCII characters (`F15.changes-special-names`), known bug.**
   ```sh
   mkdir -p "$F/names"
@@ -277,11 +276,11 @@ Preconditions:
   rm "$F/names/untracked note.md"
   printf 'a2\n' > "$F/names/my notes.md"
   control-agent-server api GET /api/git/changes --query path="$F/names" --expect 200 --check . len-eq 1 \
-    --check 0.status eq UPDATED --check 0.path eq 'my notes.md' --save F15.changes-special-names/space  # bug
+    --check 0.status eq UPDATED --check 0.path eq 'my notes.md' --save F15.changes-special-names/space  # bug: status eq 400 && response.body.detail contains 'Unexpected git diff output format'
   git -C "$F/names" checkout -q -- 'my notes.md'
   printf 'b2\n' > "$F/names/café.txt"
   control-agent-server api GET /api/git/changes --query path="$F/names" --expect 200 --check . len-eq 1 \
-    --check 0.path eq café.txt --save F15.changes-special-names/non-ascii  # bug
+    --check 0.path eq café.txt --save F15.changes-special-names/non-ascii  # bug: status eq 200 && response.body.0.path contains 303/251
   ```
   The committed repository answers for an untracked name with a space
   (positive control: the route and the space in a name are fine on their
@@ -295,7 +294,7 @@ Preconditions:
   (`core.quotePath`), with quotes kept and backslashes turned into slashes by
   the POSIX path serializer. Untracked names with a space are fine; untracked
   non-ASCII names are mangled the same way.
-- **Subdirectory of a repository (`F15.changes-subdir-paths`), known bug.**
+- **Subdirectory of a repository (`F15.changes-subdir-paths`).**
   `path` is `src/` of a copy with a modified `src/app.py` and an untracked
   `src/new.py`.
   ```sh
@@ -306,23 +305,21 @@ Preconditions:
     --check 0.path eq README.md --check 1.path eq notes.txt --check 2.path eq src/app.py --check 3.path eq src/new.py
   control-agent-server api GET /api/git/changes --query path="$F/subdir/src" --expect 200 \
     --raw-out "$F/subdir.json" --save F15.changes-subdir-paths/src
-  python3 - "$F/subdir.json" "$F/subdir/src" "$F/subdir" <<'PY'  # bug
+  python3 - "$F/subdir.json" "$F/subdir/src" "$F/subdir" <<'PY' | control-agent-server assert --check paths eq '["app.py", "new.py"]' --check bases len-eq 1 --check 'bases.0' eq "$F/subdir/src"
   import json, os, sys
   changes = json.load(open(sys.argv[1]))
-  paths = [c["path"] for c in changes if c["status"] != "DELETED"]
+  paths = sorted(c["path"] for c in changes if c["status"] != "DELETED")
   bases = [b for b in sys.argv[2:] if all(os.path.exists(os.path.join(b, p)) for p in paths)]
-  assert paths and bases, f"no single base resolves every path: {changes}"
+  print(json.dumps({"paths": paths, "bases": bases}))
   PY
   ```
   The repository root lists all four changes on one base (positive
-  control). Expected: every returned path for `src/` resolves against one
-  base (the requested directory or the repository root). Actual:
-  `[UPDATED README.md, ADDED new.py, UPDATED src/app.py]`: tracked paths come
-  from `git diff --name-status` (repository-relative, whole repository, so
-  `README.md` outside `src/` is listed) and untracked ones from
-  `git ls-files --others` run in `src/` (subdirectory-relative, so the root's
-  `notes.txt` is missing). Joined to `path`, `README.md` and `src/app.py`
-  name files that do not exist.
+  control). For `src/` the list is `[UPDATED app.py, ADDED new.py]`: only the
+  changes under `src/` (the root's `README.md` and `notes.txt` are left out),
+  every path relative to the requested directory, so each one joined to
+  `path` names a file that exists. `get_changes_in_repo` runs
+  `git diff --name-status --relative`, which is scoped and relative the same
+  way as `git ls-files --others` for untracked files.
 - **Not a repository, or no commits yet (`F15.non-repo`).**
   ```sh
   mkdir -p "$F/plain"
@@ -407,7 +404,7 @@ Preconditions:
   ```
   400, 422, 400, 400, 400 (absolute path in the message), 400 for a file over
   1 MiB, and 422 without `path`.
-- **Phantom whitespace diff (`F15.diff-whitespace`), known bug.** Commit a
+- **Unchanged-file whitespace (`F15.diff-whitespace`).** Commit a
   file with leading indentation and one with trailing blank lines, change
   nothing, ask for their diffs.
   ```sh
@@ -423,41 +420,38 @@ Preconditions:
   for name in crlf lead trail; do
     control-agent-server api GET /api/git/diff --query path="$F/ws-files/$name.txt" --query ref=HEAD --expect 200 \
       --check modified len-ge 1 --raw-out "$F/ws-$name.json" --save "F15.diff-whitespace/$name"
-    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["original"] == d["modified"], d' "$F/ws-$name.json"  # bug
+    jq '{original, modified, same: (.original == .modified)}' "$F/ws-$name.json" \
+      | control-agent-server assert --check same eq true
   done
   ```
-  Expected: identical sides for every unchanged file (`changes` is `[]`).
-  Actual: the CRLF file passes (both sides are newline-normalized), but
-  `lead.txt` gives `original` `"indented line\nbody"` against `modified`
-  `"  indented line\nbody"`, and `trail.txt` `"body"` against `"body\n\n"`:
-  `original` comes from `run_git_command`, which `.strip()`s git's stdout,
-  while `modified` is `"\n".join(text.splitlines())`. The commit-mode diff
+  Expected: identical sides for every unchanged file (`changes` is `[]`):
+  `lead.txt` gives `"  indented line\nbody"` and `trail.txt` `"body\n\n"` on
+  both sides, and the CRLF file `"one\ntwo"`: `get_git_diff` reads the
+  `git show` blob verbatim (`strip=False`) and normalizes it like
+  `modified`, `"\n".join(text.splitlines())`. The commit-mode diff
   strips both sides alike, so it shows no phantom change but loses the
   whitespace.
-- **Diff of a deleted file (`F15.diff-deleted-file`), known bug.** `changes`
-  lists a deleted file; the diff the Changes tab opens for it fails.
+- **Diff of a deleted file (`F15.diff-deleted-file`).** `changes` lists a
+  deleted file; the diff the Changes tab opens for it shows the deletion.
   ```sh
   cp -r "$REPO" "$F/deleted"
   rm "$F/deleted/src/util.py"
   control-agent-server api GET /api/git/changes --query path="$F/deleted" --expect 200 \
     --check 2.status eq DELETED --check 2.path eq src/util.py
   control-agent-server api GET /api/git/diff --query path="$F/deleted/src/util.py" --expect 200 \
-    --check original eq "$(git -C "$REPO" show HEAD:src/util.py)" --check modified eq '' --save F15.diff-deleted-file/diff  # bug
+    --check original eq "$(git -C "$REPO" show HEAD:src/util.py)" --check modified eq '' --save F15.diff-deleted-file/diff
   ```
   Expected: the base text as `original` and `""` as `modified`, as the
-  commit-mode diff already does for deleted files. Actual:
-  `400 {"detail": "File does not exist: .../src/util.py"}`: `get_git_diff`
-  checks the disk before it looks at git. The old side of a working-tree
-  rename fails the same way. No route returns a working-tree-deleted file's
-  base text, so the Changes tab lists a deletion it cannot show. The SDK
-  unit test `test_get_git_diff_deleted_file` currently pins the
-  `GitPathError`, so a fix updates it too.
+  commit-mode diff does for deleted files; the old side of a working-tree
+  rename diffs the same way. `get_git_diff` reads a path missing from disk
+  from the base ref and answers `File does not exist` only when the base has
+  no file there either (`F15.diff-errors/missing`).
 - **Commit history (`F15.commits`).**
   ```sh
   control-agent-server api GET /api/git/commits --query path="$REPO" --expect 200 --check commits len-eq 2 \
     --check has_more eq false --check commits.0.sha eq "$C2" --check commits.0.subject eq 'Add util' \
     --check commits.0.short_sha eq "$(git -C "$REPO" log -1 --format=%h)" --check commits.0.author eq 'QA Verify' \
-    --check commits.0.timestamp matches '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$' \
+    --check commits.0.timestamp matches '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(Z|[+-]\d\d:\d\d)$' \
     --check commits.1.sha eq "$C1" --check commits.1.subject eq 'Initial commit' --save F15.commits/all
   control-agent-server api GET /api/git/commits --query path="$REPO" --query limit=1 --expect 200 --check commits len-eq 1 \
     --check commits.0.sha eq "$C2" --check has_more eq true --save F15.commits/limit-1
@@ -752,13 +746,20 @@ Preconditions:
   504 after about 15 s (between 14 and 30), with the masked 5xx body
   `{"detail": "Internal Server Error", "exception": "504: GitHub repository search timed out"}`
   and no token in it.
-- **Live GitHub listing (`F15.repo-search-github`), blocked.** Needs a GitHub
-  token with repository read access in `$QA_GITHUB_TOKEN` and egress that
-  allows `GET https://api.github.com/user/repos`. On the machine this was
-  mapped on, the egress proxy answers 403 for that path whatever the token,
-  and the server passed that 403 through as `403 {"detail": "GitHub repository search failed"}`.
+- **Live GitHub listing (`F15.repo-search-github`).**
+  Needs: `network`
+
+  Set `$QA_GITHUB_TOKEN` to a GitHub token with read access to at least three
+  repositories, including one named `agent-sdk`. Egress must allow
+  `GET https://api.github.com/user/repos`. The token travels through stdin;
+  the command-scoped `OPENHANDS_API_KEY` also registers that value with the
+  CLI's redactor, so neither the exchange nor a failure prints it. This
+  recipe only reads GitHub; its settings writes are on the owned local run.
   ```sh
-  control-agent-server api PUT /api/settings/secrets --json "{\"name\": \"github_token\", \"value\": \"$QA_GITHUB_TOKEN\"}" --expect 200
+  : "${QA_GITHUB_TOKEN:?Set a repository-read token before running this recipe}"
+  trap 'control-agent-server api DELETE /api/settings/secrets/github_token --expect 200 >/dev/null 2>&1 || true' EXIT
+  python3 -c 'import json, os; print(json.dumps({"name":"github_token","value":os.environ["QA_GITHUB_TOKEN"]}))' \
+    | env OPENHANDS_API_KEY="$QA_GITHUB_TOKEN" control-agent-server api PUT /api/settings/secrets --stdin --expect 200 --quiet
   NEXT=$(control-agent-server api GET /api/git/repositories/search --query provider=github --query limit=2 --expect 200 \
     --check missing_token eq false --check items len-eq 2 --check items.0.git_provider eq github \
     --check next_page_id eq 1:2 --save F15.repo-search-github/page-1 --field next_page_id)
@@ -766,15 +767,91 @@ Preconditions:
     --expect 200 --check items len-ge 1 --save F15.repo-search-github/page-2
   control-agent-server api GET /api/git/repositories/search --query provider=github --query query=AGENT-SDK --query limit=5 \
     --expect 200 --check items.0.full_name matches '(?i)agent-sdk'
-  control-agent-server api PUT /api/settings/secrets --json '{"name": "github_token", "value": "qa-f15-not-a-real-token"}' --expect 200
-  control-agent-server api GET /api/git/repositories/search --query provider=github --expect 401 \
-    --check detail eq 'GitHub repository search failed' --save F15.repo-search-github/bad-token
   control-agent-server api DELETE /api/settings/secrets/github_token --expect 200
+  trap - EXIT
   ```
   Two repositories per page with a `1:2` cursor (page 1, offset 2) that
-  continues the listing, a case-insensitive `query` match on `full_name`, and
-  GitHub's 401 for a bad token passed through (403 also passes through; other
-  4xx become 400, 5xx 502, a timeout 504).
+  continues the listing and a case-insensitive `query` match on `full_name`.
+  Some managed egress proxies inject credentials even when a request supplies
+  an invalid token; use the deterministic provider rejection below to prove
+  the server's 401 behavior independently of that environment policy.
+- **Rejected provider token (`F15.repo-search-rejected-token`).** A local TLS
+  fixture receives the server's GitHub request through an owned CONNECT proxy
+  and returns a provider 401. It never contacts GitHub and uses only a fake
+  token; the preceding recipe proves the real provider's successful path.
+  ```sh
+  cat > "$F/reject-github.py" <<'PY'
+  import datetime, json, pathlib, socketserver, ssl, sys
+  from cryptography import x509
+  from cryptography.hazmat.primitives import hashes, serialization
+  from cryptography.hazmat.primitives.asymmetric import rsa
+  from cryptography.x509.oid import NameOID
+  root = pathlib.Path(sys.argv[1])
+  key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+  name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'api.github.com')])
+  now = datetime.datetime.now(datetime.timezone.utc)
+  cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+      .public_key(key.public_key()).serial_number(x509.random_serial_number())
+      .not_valid_before(now - datetime.timedelta(minutes=1))
+      .not_valid_after(now + datetime.timedelta(days=1))
+      .add_extension(x509.SubjectAlternativeName([x509.DNSName('api.github.com')]), critical=False)
+      .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+      .sign(key, hashes.SHA256()))
+  (root / 'reject-cert.pem').write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+  (root / 'reject-key.pem').write_bytes(key.private_bytes(serialization.Encoding.PEM,
+      serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+  context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+  context.load_cert_chain(root / 'reject-cert.pem', root / 'reject-key.pem')
+  def headers(conn):
+      value = b''
+      while b'\r\n\r\n' not in value:
+          chunk = conn.recv(4096)
+          if not chunk: raise ConnectionError('incomplete request')
+          value += chunk
+      return value.decode('latin1')
+  class Handler(socketserver.BaseRequestHandler):
+      def handle(self):
+          if not headers(self.request).startswith('CONNECT api.github.com:443 '):
+              self.request.sendall(b'HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
+              return
+          self.request.sendall(b'HTTP/1.1 200 Connection Established\r\n\r\n')
+          with context.wrap_socket(self.request, server_side=True) as conn:
+              request = headers(conn)
+              assert request.startswith('GET /user/repos?')
+              assert 'authorization: bearer qa-f15-rejected-token' in request.lower()
+              (root / 'reject-observed.json').write_text(json.dumps({'request': 'GET /user/repos', 'fake_token_received': True, 'returned_status': 401}))
+              body = b'{"message":"Bad credentials"}'
+              conn.sendall(b'HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: ' + str(len(body)).encode() + b'\r\nConnection: close\r\n\r\n' + body)
+  with socketserver.ThreadingTCPServer(('127.0.0.1', 0), Handler) as server:
+      (root / 'reject-port').write_text(str(server.server_address[1]))
+      server.serve_forever()
+  PY
+  uv run --quiet python "$F/reject-github.py" "$F" > "$F/reject-log" 2>&1 &
+  REJECT_PID=$!
+  trap 'kill "$REJECT_PID" 2>/dev/null || true; control-agent-server api DELETE /api/settings/secrets/github_token --expect 200 >/dev/null 2>&1 || true; control-agent-server restart --reset-config >/dev/null 2>&1 || true' EXIT
+  for i in $(seq 1 100); do test -s "$F/reject-port" && break; sleep 0.1; done
+  REJECT_PROXY="http://127.0.0.1:$(cat "$F/reject-port")"
+  control-agent-server api PUT /api/settings/secrets --json '{"name":"github_token","value":"qa-f15-rejected-token"}' --expect 200
+  control-agent-server restart --env HTTPS_PROXY="$REJECT_PROXY" --env https_proxy="$REJECT_PROXY" \
+    --env HTTP_PROXY="$REJECT_PROXY" --env http_proxy="$REJECT_PROXY" \
+    --env "SSL_CERT_FILE=$F/reject-cert.pem" --env NO_PROXY=localhost,127.0.0.1 --env no_proxy=localhost,127.0.0.1
+  control-agent-server doctor
+  control-agent-server api GET /api/git/repositories/search --query provider=github --expect 401 \
+    --check detail eq 'GitHub repository search failed' --check . not-contains qa-f15-rejected-token --save F15.repo-search-rejected-token/rejected
+  control-agent-server assert --json "$F/reject-observed.json" --check request eq 'GET /user/repos' \
+    --check fake_token_received eq true --check returned_status eq 401
+  cp "$F/reject-observed.json" "$AGENT_SERVER_VERIFY_RUN/evidence/F15.repo-search-rejected-token/provider.json"
+  control-agent-server api DELETE /api/settings/secrets/github_token --expect 200
+  kill "$REJECT_PID"
+  wait "$REJECT_PID" || true
+  control-agent-server restart --reset-config
+  control-agent-server doctor
+  trap - EXIT
+  ```
+  The fixture confirms that the fake credential reached the provider and that
+  it returned 401. The live server preserves that status and returns only its
+  generic error. Source policy also preserves 403, maps other 4xx to 400 and
+  5xx to 502; connection failure and timeout are covered above.
 
 ## Gotchas
 
@@ -787,7 +864,8 @@ Preconditions:
   `git remote show origin`, a network call with a 30 s timeout. Use
   remote-less fixtures or a local bare remote cloned with `git clone` (which
   records `origin/HEAD`), as `F15.changes-base` does.
-- A non-repository `path` is not an error: `changes` is `[]`, commits are
+- A non-repository `path` is not an error: `changes` is `[]` (unless a
+  repository sits directly below it, `F15.changes-repo-below-path`), commits are
   empty and `diff` is `{"original": null, "modified": null}` (null, not `""`).
   A missing file inside a repository is 400, and so is a file over 1 MiB.
 - "Not a repository" means no ancestor holds a `.git`: git searches upward
@@ -804,14 +882,16 @@ Preconditions:
   calling.
 - Both diff sides drop the final newline and line endings are normalized
   (`\r\n` becomes `\n`, so a file whose only change is LF to CRLF is listed as
-  `UPDATED` but diffs to identical sides). Leading and trailing whitespace is
-  lost on `original` only (`F15.diff-whitespace`).
+  `UPDATED` but diffs to identical sides). Other leading and trailing
+  whitespace is kept on both sides (`F15.diff-whitespace`); the commit-mode
+  diff strips it from both.
 - `diff` on a directory inside a repository is not refused: it returns
   `git show`'s tree listing (`"tree <sha>:src\n\napp.py\nutil.py"`) as
   `original` and `""` as `modified`.
-- Nested repositories are only scanned one level below a `path` that is
-  itself a repository (`./*/.git`); deeper ones show up as an untracked
-  directory entry.
+- Nested repositories are only scanned one level below `path`
+  (`./*/.git`), whether or not `path` is itself a repository; deeper ones
+  show up as an untracked directory entry (or not at all below a
+  non-repository `path`).
 - `commits/{sha}/changes` keeps git's output order (renames as
   `DELETED`+`ADDED` pairs), unlike `changes`, which is sorted by path.
 - Git calls reset `idle_time` (`update_last_execution_time`), like file

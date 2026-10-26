@@ -1,5 +1,6 @@
 """Tests for skills router endpoints."""
 
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
@@ -401,6 +402,34 @@ class TestGetSkillsEndpoint:
             assert data["sources"]["sandbox"] == 1
 
 
+def test_skill_catalog_lists_profile_skills_with_their_origin(client):
+    catalog = [
+        Skill(name="from-catalog", content="c", description="catalog skill"),
+        Skill(name="mine", content="m", description="user skill"),
+        Skill(name="shadowed", content="s", description="user copy"),
+    ]
+    with (
+        patch(
+            "openhands.agent_server.skills_router.discover_profile_skills",
+            return_value=catalog,
+        ),
+        patch(
+            "openhands.agent_server.skills_router.discover_public_skill_names",
+            return_value={"from-catalog"},
+        ),
+    ):
+        response = client.get("/api/skills/catalog")
+
+    assert response.status_code == 200
+    skills = response.json()["skills"]
+    assert [(s["name"], s["origin"]) for s in skills] == [
+        ("from-catalog", "public"),
+        ("mine", "user"),
+        ("shadowed", "user"),
+    ]
+    assert skills[0]["description"] == "catalog skill"
+
+
 class TestSyncSkillsEndpoint:
     """Tests for POST /skills/sync endpoint."""
 
@@ -798,6 +827,91 @@ class TestRefreshSkillEndpoint:
             response = client.post("/api/skills/installed/nonexistent/refresh")
 
             assert response.status_code == 404
+
+    def test_refresh_vanished_source_is_400_and_keeps_skill(
+        self, client, tmp_path, monkeypatch
+    ):
+        """A skill whose recorded source vanished cannot be refreshed: the route
+        answers 400 like install does, and the installed copy stays."""
+        store = tmp_path / "installed-store"
+        store.mkdir()
+        monkeypatch.setattr(
+            "openhands.sdk.skills.installed.DEFAULT_INSTALLED_SKILLS_DIR", store
+        )
+        src = tmp_path / "gone-skill"
+        src.mkdir()
+        (src / "SKILL.md").write_text(
+            "---\nname: gone-skill\ndescription: Source that vanishes\n---\nBody\n"
+        )
+        installed = client.post("/api/skills/install", json={"source": str(src)})
+        assert installed.status_code == 200
+        shutil.rmtree(src)
+
+        response = client.post("/api/skills/installed/gone-skill/refresh")
+
+        assert response.status_code == 400
+        assert "fetch" in response.json()["detail"].lower()
+        kept = client.get("/api/skills/installed/gone-skill")
+        assert kept.status_code == 200
+        assert kept.json()["enabled"] is True
+
+    def test_refresh_source_without_skill_md_is_422_and_keeps_skill(
+        self, client, tmp_path, monkeypatch
+    ):
+        """A source that no longer holds a SKILL.md is 422, as on install, and
+        a later valid refresh still succeeds."""
+        store = tmp_path / "installed-store"
+        store.mkdir()
+        monkeypatch.setattr(
+            "openhands.sdk.skills.installed.DEFAULT_INSTALLED_SKILLS_DIR", store
+        )
+        src = tmp_path / "broken-skill"
+        src.mkdir()
+        skill_md = "---\nname: broken-skill\ndescription: Becomes invalid\n---\nBody\n"
+        (src / "SKILL.md").write_text(skill_md)
+        assert (
+            client.post("/api/skills/install", json={"source": str(src)}).status_code
+            == 200
+        )
+        (src / "SKILL.md").unlink()
+
+        response = client.post("/api/skills/installed/broken-skill/refresh")
+
+        assert response.status_code == 422
+        kept = client.get("/api/skills/installed/broken-skill")
+        assert kept.status_code == 200
+        assert kept.json()["enabled"] is True
+
+        (src / "SKILL.md").write_text(skill_md)
+        assert (
+            client.post("/api/skills/installed/broken-skill/refresh").status_code == 200
+        )
+
+    def test_refresh_fetch_error_returns_400(self, client):
+        """A source the SDK cannot parse (e.g. ``local`` for an adopted skill)
+        is a client error, not a 500."""
+        with patch(
+            "openhands.agent_server.skills_router.service_update_skill"
+        ) as mock_update:
+            mock_update.side_effect = ExtensionFetchError(
+                "Unable to parse extension source: local"
+            )
+
+            response = client.post("/api/skills/installed/test-skill/refresh")
+
+            assert response.status_code == 400
+
+    def test_refresh_validation_error_returns_422(self, client):
+        """A source that now holds an invalid skill is 422, as on install."""
+        with patch(
+            "openhands.agent_server.skills_router.service_update_skill"
+        ) as mock_update:
+            mock_update.side_effect = SkillValidationError("Missing SKILL.md")
+
+            response = client.post("/api/skills/installed/test-skill/refresh")
+
+            assert response.status_code == 422
+            assert "no longer holds a valid skill" in response.json()["detail"].lower()
 
 
 class TestMarketplaceCatalogEndpoint:

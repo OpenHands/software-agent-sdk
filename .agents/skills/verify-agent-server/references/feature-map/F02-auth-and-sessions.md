@@ -309,19 +309,23 @@ Preconditions:
   The clearing cookie has an empty value, `Max-Age=0` and the same path, so
   the jar drops it and the next file request is 401. Deleting still needs
   the header.
-- **A second key (`F02.multiple-keys`).** Add `OH_SESSION_API_KEYS_1` with a
-  restart and use both keys.
+- **A second key (`F02.multiple-keys`).** Add `OH_SESSION_API_KEYS_1` and an
+  empty third entry with a restart. Both real keys work; the empty entry
+  cannot authenticate.
 
   Needs: `tmux`
   ```sh
-  control-agent-server restart --env OH_SESSION_API_KEYS_1=qa-f02-second-key
+  control-agent-server restart --env OH_SESSION_API_KEYS_1=qa-f02-second-key --env OH_SESSION_API_KEYS_2=
   control-agent-server api GET /api/conversations/count --auth none --header 'X-Session-API-Key: qa-f02-second-key' --expect 200 --save F02.multiple-keys/second-key
   control-agent-server api GET /api/conversations/count --expect 200
   control-agent-server api GET /api/conversations/count --auth none --header 'X-Session-API-Key: qa-f02-third-key' --expect 401
+  control-agent-server api GET /api/conversations/count --auth none --header 'X-Session-API-Key:' --expect 401 --save F02.multiple-keys/empty-key
+  control-agent-server ws listen /sockets/bash-events --auth none --send '{"type":"auth","session_api_key":""}' --expect-close 4001 --duration 10 --save F02.multiple-keys/ws-empty-key
   control-agent-server ws listen /sockets/bash-events --auth none --send '{"type":"auth","session_api_key":"qa-f02-second-key"}' --send '{"command":"echo qa-f02-second"}' --until-kind BashOutput --duration 20 --save F02.multiple-keys/ws-second-key
   control-agent-server doctor
   ```
-  Both keys work on HTTP and on the socket; an unlisted key is 401.
+  Both keys work on HTTP and on the socket; an unlisted or empty key is
+  rejected. Empty configured entries are dropped, as fixed in PR #5659.
 - **Rotate the key (`F02.rotate-key`).** Mint a cookie with the current key,
   restart with a new one, and try the old key everywhere.
 
@@ -484,7 +488,7 @@ Preconditions:
   control-agent-server exec --run "$PREFIXED" --save F02.workspace-cookie-root-path/mint -- bash "$F02/jar.sh" POST /qa-f02-prefix/api/auth/workspace-session key 204
   grep -q oh_workspace_session_key "$PREFIXED/fixtures/qa-f02-cookies.txt"
   control-agent-server exec --run "$PREFIXED" -- bash "$F02/jar.sh" GET "/api/conversations/$PCID/workspace/qa-f02.html" nokey 200 'has:qa-f02-workspace-file'
-  control-agent-server exec --run "$PREFIXED" --save F02.workspace-cookie-root-path/file-with-cookie -- bash "$F02/jar.sh" GET "/qa-f02-prefix/api/conversations/$PCID/workspace/qa-f02.html" nokey 200 'has:qa-f02-workspace-file'  # bug
+  control-agent-server exec --run "$PREFIXED" --save F02.workspace-cookie-root-path/file-with-cookie -- bash "$F02/jar.sh" GET "/qa-f02-prefix/api/conversations/$PCID/workspace/qa-f02.html" nokey 200 'has:qa-f02-workspace-file'  # bug: exit_code eq 1 && stdout_tail contains status=401
   control-agent-server stop --run "$PREFIXED"
   ```
   The server advertises `servers: [{"url": "/qa-f02-prefix"}]` and serves
@@ -497,7 +501,7 @@ Preconditions:
   not send it and the file is 401. The TypeScript client's
   `startWorkspaceSession()` returns `${host}/api/conversations/{id}/workspace/`,
   which carries the prefix whenever `host` does.
-- **IPv6 loopback is not a secure context (`F02.workspace-session-ipv6-loopback`), known bug.**
+- **IPv6 loopback is a secure context (`F02.workspace-session-ipv6-loopback`).**
   Mint as browsers at the IPv4 loopback names would, then as a browser at
   `http://[::1]:PORT` would.
   ```sh
@@ -506,15 +510,14 @@ Preconditions:
   control-agent-server api POST /api/auth/workspace-session --header 'Host: localhost:8000' --expect 204 \
     --check-header set-cookie contains Secure --check-header set-cookie contains Partitioned
   control-agent-server api POST /api/auth/workspace-session --header 'Host: [::1]:8000' --expect 204 --save F02.workspace-session-ipv6-loopback/ipv6-host \
-    --check-header set-cookie contains SameSite=none --check-header set-cookie contains Secure --check-header set-cookie contains Partitioned  # bug
+    --check-header set-cookie contains SameSite=none --check-header set-cookie contains Secure --check-header set-cookie contains Partitioned
   ```
-  `127.0.0.1` and `localhost` get `Secure; Partitioned`. Expected: the
-  `Host: [::1]:8000` mint gets them too, since `::1` is in the server's
-  loopback list. Today it gets `SameSite=none` without `Secure`, which
-  browsers reject, so workspace embeds fail for a client at
-  `http://[::1]:PORT`: `_request_is_secure_context` handles brackets only in
-  `X-Forwarded-Host`, and splits the unbracketed `request.url.hostname`
-  (`::1`) on `:`, leaving an empty host.
+  `127.0.0.1`, `localhost` and the `Host: [::1]:8000` mint all get
+  `SameSite=none; Secure; Partitioned`, since `::1` is in the server's
+  loopback list, so workspace embeds work for a client at
+  `http://[::1]:PORT`. `request.url.hostname` returns the IPv6 address
+  unbracketed (`::1`), so `_request_is_secure_context` strips a `:port`
+  suffix only from a bracketed host or a host with a single colon.
 
 ## Gotchas
 

@@ -23,8 +23,8 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
 ## Sub-features
 
 - `F10.fork-whole`: `POST /fork` with no body answers 201 with a new `idle` conversation that names its source in `forked_from_conversation_id`, keeps the source's HEAD and working directory, and holds a copy of every event (same ids) in its own persistence directory; the source is unchanged.
-- `F10.fork-named`: a fork request's `id`, `title` and `tags` become the fork's id, title and tags (plus a `title` tag), on the response, on GET and in `meta.json`.
-- `F10.fork-tags-consistent`: when a fork request gives no tags, the fork's tags on GET and the tags stored in its `meta.json` are one consistent set (both inherit the source's tags, or neither does).
+- `F10.fork-named`: a fork request's `id`, `title` and `tags` become the fork's id, title and tags on the response, on GET and in `meta.json`; the title does not add a tag.
+- `F10.fork-tags-consistent`: when a fork request gives no tags, the fork's tags on GET and in `meta.json` are both empty; the source's tags are not inherited.
 - `F10.fork-from-event`: `from_event_id` copies only the branch up to and including that event, sets the fork's HEAD and `forked_from_event_id` to it, and leaves later events out.
 - `F10.fork-metrics`: by default the fork's `stats` start empty; `reset_metrics: false` copies the source's accumulated cost and token usage.
 - `F10.fork-independent`: messages appended to the fork never reach the source and vice versa; the fork's events socket replays the copied history plus its own events.
@@ -58,9 +58,10 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
   `{"event_id": "<id>" | null}`; `{}` means null; query `include_skills`),
   200 `ConversationInfo` with the new `leaf_event_id`; 404, 422.
 - REST: `POST /api/conversations/{conversation_id}/condense` (no body), 200
-  `{"success": true}` once the condensation step finished; 404, 500.
+  `{"success": true}` once the condensation step finished; 404, 409 (no
+  condenser that handles requests), 500.
 - REST: `POST /api/conversations/{conversation_id}/ask_agent` (body
-  `{"question": "..."}`), 200 `{"response": "..."}`; 422, 500.
+  `{"question": "..."}`), 200 `{"response": "..."}`; 404, 422, 500.
 - Second views used here: `GET /api/conversations/{conversation_id}`,
   `.../events/search`, `.../events/count`, `.../events/{event_id}`,
   `.../agent_final_response` (other families), the conversation's
@@ -156,12 +157,13 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   control-agent-server api POST "/api/conversations/$S/fork" \
     --json "{\"id\": \"$FN\", \"title\": \"QA F10 named fork\", \"tags\": {\"qa\": \"f10\"}}" --expect 201 \
     --check id eq "$FN" --check title eq 'QA F10 named fork' --check tags.qa eq f10 \
-    --check tags.title eq 'QA F10 named fork' --check forked_from_conversation_id eq "$S" --save F10.fork-named/fork
+    --check tags.title missing --check forked_from_conversation_id eq "$S" --save F10.fork-named/fork
   control-agent-server api GET "/api/conversations/$FN" --quiet --check title eq 'QA F10 named fork' --check tags.qa eq f10 --save F10.fork-named/get
   control-agent-server state cat meta.json --conversation "$FN" --check title eq 'QA F10 named fork' --check tags.qa eq f10
   ```
-  The fork answers to `$FN`; its `tags` are the requested tags plus
-  `title`, and `meta.json` stores the title and the requested tags.
+  The fork answers to `$FN`; its `tags` are exactly the requested tags.
+  The title is separate metadata, as established by #4814, and `meta.json`
+  stores the title and the requested tags.
 - **Fork from an event (`F10.fork-from-event`).** Fork `S` up to its first
   message.
   ```sh
@@ -231,7 +233,7 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   201-character title and the malformed id, 401 without a key (the same
   request with the key succeeded in `F10.fork-whole`). The conversation
   count and the `meta.json` files are unchanged.
-- **Fork tags agree with the stored metadata (`F10.fork-tags-consistent`), known bug.**
+- **Fork tags agree with the stored metadata (`F10.fork-tags-consistent`).**
   Fork a conversation tagged `qa=src` with a title and no tags, then compare
   the fork's `qa` tag on GET with the one in its `meta.json`.
   ```sh
@@ -239,28 +241,24 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   control-agent-server api GET "/api/conversations/$TS" --quiet --check tags.qa eq src
   control-agent-server state cat meta.json --conversation "$TS" --check tags.qa eq src
   TF=$(control-agent-server api POST "/api/conversations/$TS/fork" --json '{"title": "QA F10 tag fork"}' --expect 201 --quiet \
-    --check tags.title eq 'QA F10 tag fork' --save F10.fork-tags-consistent/fork --field id)
+    --check title eq 'QA F10 tag fork' --save F10.fork-tags-consistent/fork --field id)
   TF_QA=$(control-agent-server api GET "/api/conversations/$TF" --field tags | python3 -c 'import json, sys; v = json.load(sys.stdin).get("qa"); print("null" if v is None else v)')
-  control-agent-server state cat meta.json --conversation "$TF" --check title eq 'QA F10 tag fork' --check tags.qa eq "$TF_QA"  # bug
+  control-agent-server state cat meta.json --conversation "$TF" --check title eq 'QA F10 tag fork' --check tags.qa eq "$TF_QA"
+  control-agent-server api GET "/api/conversations/$TF" --quiet --check tags len-eq 0
+  control-agent-server state cat meta.json --conversation "$TF" --check tags len-eq 0
   ```
   The source shows `qa=src` on GET and in `meta.json` (the two views can
-  agree). Expected: the fork's GET and `meta.json` agree on `qa`, whichever
-  way the server settles it (inherit the source's tags or start without
-  them). Today GET (from `base_state.json`) shows only `{"title": "QA F10 tag
-  fork"}`, so `TF_QA` is `null`, while `meta.json` says `{"qa": "src"}`:
-  `ConversationService.fork_conversation` copies the source's stored metadata
-  and overrides `tags` only when the request has some, but
-  `LocalConversation.fork` builds the fork's state tags from the request
-  alone. Server code that reads `meta.json` tags (telemetry's automation
-  flag, the observability span's conversation tags) sees a different set
-  than every consumer.
+  agree). The fork's GET and `meta.json` both have empty tags, with the title
+  stored separately. `ConversationService.fork_conversation` and
+  `LocalConversation.fork` both use the requested tags, defaulting to an
+  empty set when none were supplied (#4814).
 - **The fork keeps the model keys (`F10.fork-keeps-credentials`), known bug.**
   Fork `S`, whose placeholder agent has a model key, and compare the stored
   agents.
   ```sh
   KF=$(control-agent-server api POST "/api/conversations/$S/fork" --expect 201 --field id)
   control-agent-server state cat base_state.json --conversation "$S" --max-chars 200 --check agent.llm.api_key exists --check agent.condenser.llm.api_key exists
-  control-agent-server state cat base_state.json --conversation "$KF" --max-chars 200 --check agent.llm.api_key exists --check agent.condenser.llm.api_key exists  # bug
+  control-agent-server state cat base_state.json --conversation "$KF" --max-chars 200 --check agent.llm.api_key exists --check agent.condenser.llm.api_key exists  # bug: content.agent.llm.model exists && checks.0.actual eq null && checks.1.actual eq null
   ```
   Expected: both files hold the keys (encrypted with the server's cipher;
   `state cat` shows `<redacted:encrypted>`). Today the source's do and the
@@ -277,7 +275,7 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   N_A_MSG=$(control-agent-server api GET "/api/conversations/$A/events/count" --query kind=$MSG --field .)
   AF=$(control-agent-server api POST "/api/conversations/$A/fork" --json '{"title": "QA F10 memory fork"}' --expect 201 --field id)
   control-agent-server conversation send "$AF" --text 'What is the project codename I told you? Answer with the codename only.' --wait --until finished,error --timeout 180
-  control-agent-server conversation events "$AF" --kinds ConversationErrorEvent --contains LLMAuthenticationError --expect-count 0 --save F10.fork-run-memory/auth-errors  # bug
+  control-agent-server conversation events "$AF" --kinds ConversationErrorEvent --contains LLMAuthenticationError --expect-count 0 --save F10.fork-run-memory/auth-errors  # bug: matching ge 1
   control-agent-server api GET "/api/conversations/$AF" --quiet --check execution_status eq finished --save F10.fork-run-memory/status
   control-agent-server api GET "/api/conversations/$AF/agent_final_response" --check response matches '(?i)pelican' --save F10.fork-run-memory/final
   control-agent-server api GET "/api/conversations/$A/events/count" --query kind=$MSG --check . eq "$N_A_MSG"
@@ -358,22 +356,21 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   a missing body (an empty body is not `{}`) and a malformed id, 401 without
   a key (the same request with the key worked in `F10.navigate-event`). HEAD
   is still empty.
-- **Final response after navigating back (`F10.navigate-final-response`), known bug.**
+- **Final response after navigating back (`F10.navigate-final-response`).**
   Use a fork of `A` so `A` keeps its history for the condense bullets.
   ```sh
   AN=$(control-agent-server api POST "/api/conversations/$A/fork" --expect 201 --field id)
   U1=$(control-agent-server api GET "/api/conversations/$AN/events/search" --query kind=$MSG --query source=user --check items len-eq 1 --field items.0.id)
   control-agent-server api GET "/api/conversations/$AN/agent_final_response" --check response matches '\S'
   control-agent-server api POST "/api/conversations/$AN/navigate" --json "{\"event_id\": \"$U1\"}" --expect 200 --quiet --check leaf_event_id eq "$U1"
-  control-agent-server api GET "/api/conversations/$AN/agent_final_response" --check response eq '' --save F10.navigate-final-response/after-navigate  # bug
+  control-agent-server api GET "/api/conversations/$AN/agent_final_response" --check response eq '' --save F10.navigate-final-response/after-navigate
   ```
-  Expected: once HEAD is back on the user's message, the active branch has no
-  agent answer, so `agent_final_response` is `""` (the agent's context, title
-  generation, pending-action and stuck checks all use the active branch).
-  Today it still returns the abandoned answer (`OK`): the route scans the
-  whole event log (`EventService._get_agent_final_response_sync`). The
-  status also stays `finished`, so `POST /run` right after such a navigate
-  does nothing; send a new message to regenerate.
+  Once HEAD is back on the user's message, the active branch has no agent
+  answer, so `agent_final_response` is `""`: like the agent's context, title
+  generation, pending-action and stuck checks, it reads only the active
+  branch, not the abandoned answer (`OK`). The status stays `finished`, so
+  `POST /run` right after such a navigate does nothing; send a new message to
+  regenerate.
 - **Condense with DeepSeek (`F10.condense-llm`).** `A` uses the default
   `LLMSummarizingCondenser` on DeepSeek flash.
   ```sh
@@ -408,22 +405,20 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   ```
   Both calls fail, naming the cause (`Cannot condense conversation: No
   condenser configured` / `Condenser NoOpCondenser does not handle
-  condensation requests`; the check reads the whole body, so it holds
-  whether the cause is in `exception` today or in `detail` once
-  `F10.condense-status` is fixed), and neither conversation gains an event.
-- **Refusal status (`F10.condense-status`), known bug.** A missing condenser
+  condensation requests`; the check reads the whole body), and neither
+  conversation gains an event.
+- **Refusal status (`F10.condense-status`).** A missing condenser
   is the caller's configuration, not a server fault.
   ```sh
   control-agent-server api GET "/api/conversations/$NC" --quiet --check execution_status eq idle
-  control-agent-server api POST "/api/conversations/$NC/condense" --expect 4xx --save F10.condense-status/disabled  # bug
-  control-agent-server api POST "/api/conversations/$NOOP/condense" --expect 4xx --save F10.condense-status/no-op  # bug
+  control-agent-server api POST "/api/conversations/$NC/condense" --expect 409 --check detail contains 'No condenser configured' --save F10.condense-status/disabled
+  control-agent-server api POST "/api/conversations/$NOOP/condense" --expect 409 --check detail contains 'NoOpCondenser does not handle condensation requests' --save F10.condense-status/no-op
   ```
-  Expected: a 4xx (400, 409 or 422) carrying the cause. Today both answer
-  500 `{"detail": "Internal Server Error", "exception": "Cannot condense
-  conversation: ...", "error_id": ...}`, and the server logs an unhandled
-  traceback: `LocalConversation._condense` raises `ValueError`, which neither
-  `EventService.condense` nor the router maps (the route documents only
-  404).
+  Both answer 409 with the cause in `detail` (`Cannot condense
+  conversation: ...`) and log no traceback: `EventService.condense` checks
+  the agent's condenser before stepping and the route maps that refusal to
+  409, since the same request succeeds once the agent has a condenser that
+  handles requests.
 - **Unreachable condenser model (`F10.condense-llm-failure`).** `OFF` uses
   the default summarizing condenser on an unreachable placeholder model.
   ```sh
@@ -504,17 +499,16 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   the step holds nor waits for it. `R` is still `running`, its event count is
   unchanged, and after the interrupt (which frees the run slot) no event
   carries the side answer.
-- **Unknown conversation (`F10.ask-agent-unknown`), known bug.** The route
+- **Unknown conversation (`F10.ask-agent-unknown`).** The route
   documents 404, like condense and navigate.
   ```sh
   control-agent-server api GET /openapi.json --auth none --quiet \
     --check 'paths./api/conversations/{conversation_id}/ask_agent.post.responses.404' exists
-  control-agent-server api POST "/api/conversations/$NOPE/ask_agent" --json '{"question": "hi"}' --expect 404 --save F10.ask-agent-unknown/unknown  # bug
+  control-agent-server api POST "/api/conversations/$NOPE/ask_agent" --json '{"question": "hi"}' --expect 404 --check detail eq 'Conversation not found' --save F10.ask-agent-unknown/unknown
   ```
-  Expected: 404. Today it is 500 `{"detail": "Internal Server Error",
-  "exception": "500: Internal Server Error"}`:
-  `ConversationService.ask_agent` returns `None` for an unknown id and the
-  router turns `None` into a bare 500.
+  Expected: 404 `{"detail": "Conversation not found"}`, the same answer
+  condense gives (`ConversationService.ask_agent` returns `None` for an
+  unknown id and the router maps it to 404).
 - **State after a restart (`F10.restart-persist`).** Restart, then read the
   forks and `S`'s empty HEAD back.
 
@@ -559,14 +553,11 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
 - A fork shares the source's working directory (`workspace.working_dir`):
   files one side's agent writes are visible to the other. The fork gets its
   own persistence directory, lease and event log only.
-- A fork's `tags` (on the response and GET) are the request's tags plus
-  `{"title": <title>}` when a title is given, never the source's. Its
-  `meta.json`, however, copies the source's stored metadata (secrets,
-  plugins, `parent_conversation_id`, client tools) including the source's
-  tags when the request has none: a fork of a conversation tagged
-  `{"qa": "src"}` shows `{"title": ...}` on GET (also after a restart) while
-  its `meta.json` says `{"qa": "src"}` (`F10.fork-tags-consistent`, a known
-  bug). The fork's `last_user_message_id` starts `null`.
+- A fork's `tags` are the requested tags, or an empty set when omitted, in
+  both the response and persisted metadata. The title is stored separately
+  and adds no tag (#4814). Other stored configuration (secrets, plugins,
+  `parent_conversation_id`, client tools) is copied from the source. The
+  fork's `last_user_message_id` starts `null`.
 - The fork's `base_state.json` is written without the server's cipher, so
   the model keys in the fork's agent are dropped from it
   (`F10.fork-keeps-credentials`) and a fork cannot call its model
