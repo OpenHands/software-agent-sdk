@@ -1358,6 +1358,7 @@ class EventService:
             token_callbacks=([_token_streaming_callback] if streaming_enabled else []),
             stream_callbacks=[_publish_stream_progress],
             max_iteration_per_run=self.stored.max_iterations,
+            max_budget_per_run=self.stored.max_budget_per_run,
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
             secrets=self.stored.secrets,
@@ -2165,6 +2166,15 @@ class EventService:
         await loop.run_in_executor(
             None, self._conversation.set_confirmation_policy, policy
         )
+
+    def set_max_budget_per_run(self, max_budget_per_run: float | None) -> None:
+        """Apply a new cost ceiling to the live conversation, if one is loaded.
+
+        The persisted value is owned by ``stored``; a conversation that is not
+        loaded picks it up from there when it starts.
+        """
+        if self._conversation is not None:
+            self._conversation.max_budget_per_run = max_budget_per_run
 
     async def set_security_analyzer(
         self, security_analyzer: SecurityAnalyzerBase | None

@@ -3168,3 +3168,105 @@ def test_profile_store_consumers_keep_live_server_responsive(
     finally:
         safety.cancel()
         held.release(force=True)
+
+
+def test_max_budget_per_run_set_updated_and_cleared_over_live_server(
+    server_env, monkeypatch: pytest.MonkeyPatch
+):
+    """The budget set at creation and changed via PATCH governs the live run."""
+    from openhands.sdk.conversation.exceptions import ConversationRunError
+    from openhands.sdk.llm.llm_response import LLMResponse
+
+    llm_calls = 0
+
+    def fake_completion_costing_one_dollar(
+        self, messages, tools, add_security_risk_prediction=False, **kwargs
+    ):  # type: ignore[no-untyped-def]
+        nonlocal llm_calls
+        llm_calls += 1
+        # A think call never finishes the run, so only a limit can stop it.
+        litellm_msg = LiteLLMMessage.model_validate(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": f"call_think_{llm_calls}",
+                        "type": "function",
+                        "function": {
+                            "name": "think",
+                            "arguments": '{"thought": "still working"}',
+                        },
+                    }
+                ],
+            }
+        )
+        raw_response = ModelResponse(
+            id=f"resp-{llm_calls}",
+            created=int(time.time()),
+            model="test-model",
+            choices=[Choices(index=0, finish_reason="stop", message=litellm_msg)],
+        )
+        self.metrics.add_cost(1.0)
+        return LLMResponse(
+            message=Message.from_llm_chat_message(litellm_msg),
+            metrics=self.metrics.get_snapshot(),
+            raw_response=raw_response,
+        )
+
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion_costing_one_dollar(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(
+        LLM, "completion", fake_completion_costing_one_dollar, raising=True
+    )
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
+
+    agent = Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(
+        agent=agent,
+        workspace=workspace,
+        max_iteration_per_run=12,
+        max_budget_per_run=2.5,
+        stuck_detection=False,
+    )
+    url = f"{server_env['host']}/api/conversations/{conv.id}"
+
+    def run_and_get_error_code() -> str:
+        conv.send_message("keep going")
+        with pytest.raises(ConversationRunError) as exc_info:
+            conv.run(poll_interval=0.1, timeout=60)
+        assert exc_info.value.conversation_error is not None
+        return exc_info.value.conversation_error.code
+
+    try:
+        with httpx.Client(timeout=10) as client:
+            assert client.get(url).json()["max_budget_per_run"] == 2.5
+
+            assert run_and_get_error_code() == "MaxBudgetReached"
+            assert llm_calls == 3
+
+            for invalid in (0, -1):
+                resp = client.patch(url, json={"max_budget_per_run": invalid})
+                assert resp.status_code == 422
+
+            # Omitting the field leaves the budget untouched.
+            assert client.patch(url, json={"title": "renamed"}).status_code == 200
+            assert client.get(url).json()["max_budget_per_run"] == 2.5
+
+            resp = client.patch(url, json={"max_budget_per_run": 6})
+            assert resp.status_code == 200
+            assert client.get(url).json()["max_budget_per_run"] == 6
+            assert run_and_get_error_code() == "MaxBudgetReached"
+            assert llm_calls == 6
+
+            resp = client.patch(url, json={"max_budget_per_run": None})
+            assert resp.status_code == 200
+            assert client.get(url).json()["max_budget_per_run"] is None
+            assert run_and_get_error_code() == "MaxIterationsReached"
+            assert llm_calls == 18
+    finally:
+        conv.close()

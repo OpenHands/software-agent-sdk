@@ -170,6 +170,13 @@ class _ConversationInfoBase(BaseModel):
             "Maximum number of iterations the agent can perform in a single run."
         ),
     )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        description=(
+            "Hard cost ceiling in USD for the conversation's accumulated LLM "
+            "cost. `None` means no budget limit."
+        ),
+    )
     stuck_detection: bool = Field(
         default=True,
         description="Whether to enable stuck detection for the agent.",
@@ -529,6 +536,15 @@ class UpdateConversationRequest(BaseModel):
             "Key-value tags to set on the conversation. Keys must be lowercase "
             "alphanumeric. Values are arbitrary strings up to 256 characters. "
             "Replaces all existing tags when provided."
+        ),
+    )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "New hard cost ceiling in USD. Applies to the running conversation "
+            "from its next step. Omit to leave unchanged; send `null` to remove "
+            "the limit."
         ),
     )
 
