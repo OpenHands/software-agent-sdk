@@ -57,7 +57,10 @@ from openhands.sdk.profiles import (
     save_profile_preserving_identity,
     validate_agent_profile,
 )
-from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
+from openhands.sdk.profiles.agent_profile_store import (
+    PROFILE_NAME_PATTERN,
+    canonical_profile_name,
+)
 from openhands.sdk.settings.model import OpenHandsAgentSettings
 from openhands.sdk.utils.cipher import Cipher
 
@@ -321,6 +324,7 @@ def active_agent_profile(
 
 def _summary_id_for_name(store: AgentProfileStore, name: str) -> str | None:
     """Return the stable id of the profile stored under ``name``, if present."""
+    name = canonical_profile_name(name)
     with store_errors():
         for summary in store.list_summaries():
             if summary.get("name") == name:

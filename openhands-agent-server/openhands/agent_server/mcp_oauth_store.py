@@ -23,10 +23,12 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
     MCPOAuthAuthCredential,
+    MCPOAuthClientInfoState,
     MCPOAuthState,
     MCPOAuthTokenStorageField,
     MCPServer,
 )
+from openhands.sdk.mcp.oauth import NonInteractiveMCPOAuth
 from openhands.sdk.mcp.utils import (
     ToolsChangedCallback,
     ToolsReconciledCallback,
@@ -51,6 +53,14 @@ _OAUTH_KEY_SPECS: tuple[_OAuthKeySpec, ...] = (
     _OAuthKeySpec("/client_info", "mcp-oauth-client-info", "client_info"),
     _OAuthKeySpec("/token_expiry", "mcp-oauth-token-expiry", "token_expires_at"),
 )
+
+
+def _client_id(client_info: MCPOAuthClientInfoState | None) -> str | None:
+    """The client a stored registration names."""
+    if client_info is None:
+        return None
+    client_id = (client_info.model_extra or {}).get("client_id")
+    return client_id if isinstance(client_id, str) else None
 
 
 def _server_url_from_fastmcp_key(key: str) -> str:
@@ -112,14 +122,23 @@ class MCPSettingsOAuthTokenStore:
         session_api_key: str | None = None,
     ):
         self._seeded: dict[str, MCPOAuthState] = {}
+        self._seeded_client_ids: dict[str, str | None] = {}
         self._seeded_lock = threading.Lock()
         self._write_back_webhooks = tuple(write_back_webhooks)
         self._session_api_key = session_api_key
         for server in (seed_mcp_config or {}).values():
-            if server.url is None or server.oauth_auth is None:
+            oauth_auth = server.oauth_auth
+            if server.url is None or oauth_auth is None:
                 continue
             state = server.initial_oauth_state(cipher=cipher) or MCPOAuthState()
             self._seeded[server.url.rstrip("/")] = state
+            # FastMCP always uses a configured static client, rewriting its
+            # stored registration on every connect.
+            authentication = oauth_auth.authentication
+            static_client_id = authentication.client_id if authentication else None
+            self._seeded_client_ids[server.url.rstrip("/")] = (
+                static_client_id or _client_id(state.client_info)
+            )
 
     def _seeded_state(self, key: str) -> MCPOAuthState | None:
         with self._seeded_lock:
@@ -219,9 +238,16 @@ class MCPSettingsOAuthTokenStore:
         tokens die with the sandbox, and the next conversation starts from
         the previous refresh token, which providers that rotate refresh
         tokens have already revoked. Best effort: a failure only logs, and
-        the in-memory overlay keeps serving the new tokens.
+        the in-memory overlay keeps serving the new tokens. Only a state with
+        tokens for the client it was seeded with is posted, so neither FastMCP
+        dropping the stored credentials nor a client it registers during the
+        conversation can replace them on the app server.
         """
         if not self._write_back_webhooks:
+            return
+        if state.tokens is None or state.tokens.access_token is None:
+            return
+        if _client_id(state.client_info) != self._seeded_client_ids.get(server_url):
             return
         payload = {
             "server_url": server_url,
@@ -430,7 +456,9 @@ class SettingsBackedMCPToolProvider:
 
     OAuth servers absent from settings (passed inline on the agent) fall back
     to the OAuth state they carry, and their refreshed state is posted back
-    through ``webhooks``; see ``MCPSettingsOAuthTokenStore``.
+    through ``webhooks``; see ``MCPSettingsOAuthTokenStore``. Conversations
+    only use and refresh that state: authorizing a server again is left to
+    the user.
     """
 
     cipher: Cipher | None = None
@@ -454,6 +482,7 @@ class SettingsBackedMCPToolProvider:
                 write_back_webhooks=self.webhooks,
                 session_api_key=self.session_api_key,
             ),
+            mcp_oauth_class=NonInteractiveMCPOAuth,
             on_tools_changed=on_tools_changed,
             on_tools_reconciled=on_tools_reconciled,
         )

@@ -79,6 +79,22 @@ class TestRepoSource:
         assert repo.provider is None
         assert repo.get_provider() == GitProvider.BITBUCKET
 
+    def test_full_https_url_azure_devops(self):
+        """Test RepoSource with a full Azure DevOps HTTPS URL."""
+        repo = RepoSource(url="https://dev.azure.com/org/project/_git/repo")
+        assert repo.provider is None
+        assert repo.get_provider() == GitProvider.AZURE_DEVOPS
+
+    def test_azure_devops_clone_dialog_url(self):
+        """The URL Azure DevOps shows in its Clone dialog names the organization."""
+        repo = RepoSource(url="https://org@dev.azure.com/org/project/_git/repo")
+        assert repo.get_provider() == GitProvider.AZURE_DEVOPS
+
+    def test_azure_devops_legacy_host(self):
+        """Organizations on {org}.visualstudio.com are Azure DevOps too."""
+        repo = RepoSource(url="https://org.visualstudio.com/project/_git/repo")
+        assert repo.get_provider() == GitProvider.AZURE_DEVOPS
+
     def test_git_ssh_url(self):
         """Test RepoSource with git SSH URL (contains github.com)."""
         repo = RepoSource(url="git@github.com:owner/repo.git")
@@ -108,6 +124,16 @@ class TestRepoSource:
         """Test Bitbucket token name."""
         repo = RepoSource(url="owner/repo", provider="bitbucket")
         assert repo.get_token_name() == "bitbucket_token"
+
+    def test_provider_azure_devops_token_name(self):
+        """Test Azure DevOps token name."""
+        repo = RepoSource(url="https://dev.azure.com/org/project/_git/repo")
+        assert repo.get_token_name() == "azure_devops_token"
+
+    def test_short_url_with_azure_devops_rejected(self):
+        """Azure DevOps needs org/project/repo, so owner/repo is refused."""
+        with pytest.raises(ValueError, match="need a full URL"):
+            RepoSource(url="owner/repo", provider="azure_devops")
 
     # --- URL validation ---
 
@@ -154,10 +180,27 @@ class TestProviderDetection:
             == GitProvider.BITBUCKET
         )
 
+    def test_detect_azure_devops(self):
+        assert (
+            _detect_provider_from_url("https://dev.azure.com/o/p/_git/r")
+            == GitProvider.AZURE_DEVOPS
+        )
+        # The Clone dialog URL names the organization as the user.
+        assert (
+            _detect_provider_from_url("https://o@dev.azure.com/o/p/_git/r")
+            == GitProvider.AZURE_DEVOPS
+        )
+        assert (
+            _detect_provider_from_url("https://o.visualstudio.com/p/_git/r")
+            == GitProvider.AZURE_DEVOPS
+        )
+
     def test_detect_unknown(self):
         assert _detect_provider_from_url("https://example.com/o/r") is None
         assert _detect_provider_from_url("owner/repo") is None
-        assert _detect_provider_from_url("https://dev.azure.com/o/p/_git/r") is None
+        assert _detect_provider_from_url("https://visualstudio.com/p/_git/r") is None
+        assert _detect_provider_from_url("https://dev.azure.com.evil.com/o/p") is None
+        assert _detect_provider_from_url("https://x.visualstudio.com.evil.com") is None
 
 
 class TestHelperFunctions:
@@ -189,6 +232,11 @@ class TestHelperFunctions:
         assert _extract_repo_name("https://github.com/owner/repo") == "repo"
         assert _extract_repo_name("https://github.com/owner/repo.git") == "repo"
         assert _extract_repo_name("https://gitlab.com/owner/repo") == "repo"
+
+    def test_extract_repo_name_azure_devops_url(self):
+        """Test extracting repo name from Azure DevOps URLs."""
+        assert _extract_repo_name("https://dev.azure.com/o/p/_git/repo") == "repo"
+        assert _extract_repo_name("https://o@dev.azure.com/o/p/_git/repo") == "repo"
 
     def test_extract_repo_name_windows_file_url(self):
         """Test extracting repo names from Windows file URLs."""
@@ -310,6 +358,62 @@ class TestHelperFunctions:
             explicit_provider=True,
         )
         assert url == "https://oauth2:embedded@gitlab.mycompany.com/owner/repo"
+
+    def test_build_clone_url_user_only_url_gets_token_as_password(self):
+        """A URL naming only a user keeps it and gets the token as its password."""
+        url = _build_clone_url(
+            "https://someone@github.com/owner/repo", GitProvider.GITHUB, "ghtoken123"
+        )
+        assert url == "https://someone:ghtoken123@github.com/owner/repo"
+
+    def test_build_clone_url_azure_devops_with_token(self):
+        """Test building clone URL for Azure DevOps with token."""
+        url = _build_clone_url(
+            "https://dev.azure.com/org/project/_git/repo",
+            GitProvider.AZURE_DEVOPS,
+            "adotoken",
+        )
+        assert url == "https://oauth2:adotoken@dev.azure.com/org/project/_git/repo"
+
+    def test_build_clone_url_azure_devops_keeps_organization_user(self):
+        """The Clone dialog's organization user stays, with the token as password."""
+        url = _build_clone_url(
+            "https://org@dev.azure.com/org/project/_git/repo",
+            GitProvider.AZURE_DEVOPS,
+            "adotoken",
+        )
+        assert url == "https://org:adotoken@dev.azure.com/org/project/_git/repo"
+
+    def test_build_clone_url_azure_devops_legacy_host(self):
+        """An {org}.visualstudio.com host is Azure DevOps' own and gets the token."""
+        url = _build_clone_url(
+            "https://org.visualstudio.com/project/_git/repo",
+            GitProvider.AZURE_DEVOPS,
+            "adotoken",
+        )
+        assert url == "https://oauth2:adotoken@org.visualstudio.com/project/_git/repo"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://dev.azure.com.evil.com/org/project/_git/repo",
+            "https://org.visualstudio.com.evil.com/project/_git/repo",
+        ],
+    )
+    @pytest.mark.parametrize("explicit_provider", [False, True])
+    def test_build_clone_url_azure_devops_lookalike_not_injected(
+        self, url, explicit_provider
+    ):
+        """Lookalikes of either Azure DevOps host never receive the token."""
+        assert (
+            _build_clone_url(
+                url,
+                GitProvider.AZURE_DEVOPS,
+                "adotoken",
+                explicit_provider=explicit_provider,
+            )
+            == url
+        )
 
 
 class TestGetReposContext:
@@ -520,6 +624,26 @@ class TestCloneRepos:
             call_args = mock_run.call_args[0][0]
             assert any(
                 "oauth2:gltoken123@gitlab.mycompany.com" in str(arg)
+                for arg in call_args
+            )
+
+    @patch("subprocess.run")
+    def test_clone_azure_devops_with_token(self, mock_run):
+        """An Azure DevOps repository clones with the azure_devops_token."""
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+
+        def token_fetcher(name: str) -> str | None:
+            return "adotoken" if name == "azure_devops_token" else None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos = [RepoSource(url="https://dev.azure.com/org/project/_git/repo")]
+            result = clone_repos(repos, Path(tmpdir), token_fetcher=token_fetcher)
+
+            assert result.success_count == 1
+            assert result.repo_mappings[repos[0].url].dir_name == "repo"
+            call_args = mock_run.call_args[0][0]
+            assert any(
+                "oauth2:adotoken@dev.azure.com/org/project/_git/repo" in str(arg)
                 for arg in call_args
             )
 

@@ -1,0 +1,154 @@
+{
+  "issue": "https://github.com/enyst/agent-sdk/issues/40",
+  "provider_response": {
+    "status": 429,
+    "body": {
+      "error": {
+        "message": "You exceeded your current quota, please check your plan and billing details.",
+        "type": "insufficient_quota",
+        "code": "insufficient_quota"
+      }
+    }
+  },
+  "method": "Real server REST requests through SDK, LiteLLM and OpenAI transport to a deterministic loopback HTTP error provider. API credentials and raw private state omitted.",
+  "runs": [
+    {
+      "run_id": "20261023-060605-a477-map-f20",
+      "checkout_sha": "5966c781ed014efc96c028a99bddd4ff78426741",
+      "stopped_at": "2026-10-23T06:06:17Z",
+      "transient_control": {
+        "method": "POST",
+        "path": "/api/profiles/qa-quota/validate",
+        "status": 200,
+        "body": {
+          "valid": true,
+          "error": null
+        }
+      },
+      "quota_exhausted": {
+        "method": "POST",
+        "path": "/api/profiles/qa-quota/validate",
+        "status": 200,
+        "body": {
+          "valid": true,
+          "error": null
+        }
+      },
+      "map_status": "xfail"
+    },
+    {
+      "run_id": "20261023-060618-fd05-map-f20",
+      "checkout_sha": "5966c781ed014efc96c028a99bddd4ff78426741",
+      "stopped_at": "2026-10-23T06:06:31Z",
+      "transient_control": {
+        "method": "POST",
+        "path": "/api/profiles/qa-quota/validate",
+        "status": 200,
+        "body": {
+          "valid": true,
+          "error": null
+        }
+      },
+      "quota_exhausted": {
+        "method": "POST",
+        "path": "/api/profiles/qa-quota/validate",
+        "status": 200,
+        "body": {
+          "valid": true,
+          "error": null
+        }
+      },
+      "map_status": "xfail"
+    },
+    {
+      "run_id": "20261023-070627-5271-map-f20",
+      "checkout_sha": "06a52395b85039fa5b9c9d0ce18f7085a8b942ab",
+      "stopped_at": "2026-10-23T07:06:40Z",
+      "transient_control": {
+        "method": "POST",
+        "path": "/api/profiles/qa-quota/validate",
+        "status": 200,
+        "body": {
+          "valid": true,
+          "error": null
+        }
+      },
+      "quota_exhausted": {
+        "method": "POST",
+        "path": "/api/profiles/qa-quota/validate",
+        "status": 200,
+        "body": {
+          "valid": false,
+          "error": {
+            "type": "LLMRateLimitError",
+            "message": "litellm.RateLimitError: RateLimitError: OpenAIException - You exceeded your current quota, please check your plan and billing details."
+          }
+        }
+      },
+      "doctor": {
+        "ok": true,
+        "build_git_sha": "06a52395b85039fa5b9c9d0ce18f7085a8b942ab",
+        "expected_sha": "06a52395b85039fa5b9c9d0ce18f7085a8b942ab"
+      },
+      "recipe_exit_code": 0,
+      "map_status": "xpass",
+      "profiles_unchanged": true,
+      "cleanup": {
+        "server_port_closed": true,
+        "server_pid_absent": true
+      }
+    },
+    {
+      "run_id": "20261023-070641-8fe2-map-f20",
+      "checkout_sha": "06a52395b85039fa5b9c9d0ce18f7085a8b942ab",
+      "stopped_at": "2026-10-23T07:06:53Z",
+      "transient_control": {
+        "method": "POST",
+        "path": "/api/profiles/qa-quota/validate",
+        "status": 200,
+        "body": {
+          "valid": true,
+          "error": null
+        }
+      },
+      "quota_exhausted": {
+        "method": "POST",
+        "path": "/api/profiles/qa-quota/validate",
+        "status": 200,
+        "body": {
+          "valid": false,
+          "error": {
+            "type": "LLMRateLimitError",
+            "message": "litellm.RateLimitError: RateLimitError: OpenAIException - You exceeded your current quota, please check your plan and billing details."
+          }
+        }
+      },
+      "doctor": {
+        "ok": true,
+        "build_git_sha": "06a52395b85039fa5b9c9d0ce18f7085a8b942ab",
+        "expected_sha": "06a52395b85039fa5b9c9d0ce18f7085a8b942ab"
+      },
+      "recipe_exit_code": 0,
+      "map_status": "xpass",
+      "profiles_unchanged": true,
+      "cleanup": {
+        "server_port_closed": true,
+        "server_pid_absent": true
+      }
+    }
+  ],
+  "unit_regression_before": {
+    "failed": 8,
+    "passed": 12,
+    "scope": "test_http_structured_quota_skips_retries on frozen base; new test file only"
+  },
+  "unit_regression_after": {
+    "passed": 20,
+    "scope": "test_http_structured_quota_skips_retries"
+  },
+  "related_suite": {
+    "passed": 272,
+    "warnings": 31,
+    "seconds": 109.12
+  }
+}
