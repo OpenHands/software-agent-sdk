@@ -18,7 +18,7 @@ from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
-from openhands.sdk.conversation.secret_registry import SecretValue
+from openhands.sdk.conversation.secret_registry import SecretRegistry, SecretValue
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -910,6 +910,9 @@ class LocalConversation(BaseConversation):
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
                 tags=tags,
+                # Same cipher as the source, so the fork's base_state.json keeps
+                # secrets encrypted rather than redacted (#5465).
+                cipher=self._cipher,
                 _parent_llm_call_context=self._llm_call_context,
             )
 
@@ -947,6 +950,19 @@ class LocalConversation(BaseConversation):
                 self._state.activated_path_rules
             )
             fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
+            # Conversation secrets (``secrets=`` / update_secrets) live in the
+            # registry, not the agent. Assigning the field (rather than
+            # mutating the registry) autosaves them, encrypted with the cipher.
+            source_secrets = self._state.secret_registry.secret_sources
+            fork_conv._state.secret_registry = SecretRegistry(
+                secret_sources={
+                    **fork_conv._state.secret_registry.secret_sources,
+                    **{
+                        name: source.model_copy(deep=True)
+                        for name, source in source_secrets.items()
+                    },
+                }
+            )
 
             # Reset or copy metrics
             if not reset_metrics:
