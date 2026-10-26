@@ -111,11 +111,62 @@ class LLMConvertibleEvent(Event, ABC):
         This is a read-only projection over the event log: events are
         immutable once created and appended, so merges build new content
         lists rather than mutating the events' own messages.
+
+        Each action/result pair is emitted under a single, conversation-unique
+        ``tool_call_id``. Provider call ids are only unique per LLM turn, so a
+        long session (or one resumed after a runtime reprovision) can contain
+        two unrelated calls sharing an id. Left as-is, the LLM would receive two
+        ``tool_use``s with one ``tool_result`` id and cross-pair one call's
+        result onto another. We therefore remint the *visible* id on collision
+        and thread it through both the call and its result, keeping the pairing
+        exact. Ids are left untouched when there is no collision, so provider
+        prompt-cache matching is preserved in the common case.
         """
         from openhands.sdk.event.llm_convertible import ActionEvent
 
         messages = []
         i = 0
+
+        # Pairing: an action result binds to its action by ``action_id``; an
+        # action-less observation (AgentErrorEvent) falls back to the earliest
+        # *still-unresolved* call sharing its raw id, mirroring
+        # get_unmatched_actions. Each resolved action is mapped to the
+        # collision-free id its ``tool_use`` carries in the payload.
+        display_by_action: dict[str, str] = {}
+        pending_by_call: dict[str, list[str]] = {}
+        used_ids: set[str] = set()
+
+        def _mint(action: "ActionEvent") -> str:
+            raw = action.tool_call_id
+            display = raw
+            suffix = 2
+            while display in used_ids:
+                display = f"{raw}__{suffix}"
+                suffix += 1
+            used_ids.add(display)
+            display_by_action[action.id] = display
+            pending_by_call.setdefault(raw, []).append(action.id)
+            return display
+
+        def _resolve(action_id: str | None, raw_call_id: str) -> str | None:
+            """Map a result to its call's visible id, retiring the pending entry.
+
+            With an ``action_id`` the binding is exact. Without one (crash-recovery
+            ``AgentErrorEvent``), assume the earliest still-pending call with this
+            raw id — the same resolution ``get_unmatched_actions`` uses.
+            """
+            display = display_by_action.get(action_id) if action_id else None
+            pending = pending_by_call.get(raw_call_id, [])
+            if action_id:
+                match = action_id if action_id in pending else None
+            else:
+                match = pending[0] if pending else None
+            if match is not None:
+                pending_by_call[raw_call_id] = [
+                    a for a in pending_by_call[raw_call_id] if a != match
+                ]
+                return display_by_action.get(match)
+            return display
 
         while i < len(events):
             event = events[i]
@@ -136,8 +187,21 @@ class LLMConvertibleEvent(Event, ABC):
                     batch_events.append(event)
                     j += 1
 
-                # Create combined message for the response
+                # Create combined message for the response, then rewrite each
+                # call's visible id to its collision-free display id.
                 msg = _combine_action_events(batch_events)
+                if msg.tool_calls:
+                    msg = msg.model_copy(
+                        update={
+                            "tool_calls": [
+                                tc.model_copy(update={"id": _mint(action)})
+                                for tc, action in zip(msg.tool_calls, batch_events)
+                            ]
+                        }
+                    )
+                else:
+                    for action in batch_events:
+                        _mint(action)
                 if messages and _can_merge_user_messages(messages[-1], msg):
                     messages[-1].content = list(messages[-1].content) + list(
                         msg.content
@@ -148,6 +212,14 @@ class LLMConvertibleEvent(Event, ABC):
             else:
                 # Regular event - direct conversion
                 msg = event.to_llm_message()
+                if msg.role == "tool" and msg.tool_call_id is not None:
+                    # Bind the result to its own call's visible id, so a shared
+                    # raw call id cannot attach this output to a sibling call.
+                    display = _resolve(
+                        getattr(event, "action_id", None), msg.tool_call_id
+                    )
+                    if display is not None and display != msg.tool_call_id:
+                        msg = msg.model_copy(update={"tool_call_id": display})
                 if messages and _can_merge_user_messages(messages[-1], msg):
                     messages[-1].content = list(messages[-1].content) + list(
                         msg.content

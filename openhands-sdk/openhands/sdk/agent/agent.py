@@ -1301,6 +1301,13 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 }
             )
 
+        # Same collision guard as the happy path: a recycled provider call id
+        # must not cross-pair this error with an earlier call's result. The
+        # AgentErrorEvent below copies the same id so the pair stays bound.
+        call_id = conversation.state.allocate_tool_call_id(tool_call.id)
+        if call_id != tool_call.id:
+            tool_call = tool_call.model_copy(update={"id": call_id})
+
         minted: dict[str, Any] = {}
         if stream is not None and (item_id := stream.claim()):
             minted["id"] = item_id
@@ -1313,7 +1320,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             responses_reasoning_item=responses_reasoning_item,
             tool_call=tool_call,
             tool_name=tool_call.name,
-            tool_call_id=tool_call.id,
+            tool_call_id=call_id,
             llm_response_id=llm_response_id,
             action=None,
         )
@@ -1323,13 +1330,13 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         error_event = AgentErrorEvent(
             error=error,
             tool_name=tool_name,
-            tool_call_id=tool_call.id,
+            tool_call_id=call_id,
             classification=AGENT_OUTCOME,
         )
         record_tool_result(
             conversation,
             name=span_name,
-            tool_call_id=tool_call.id,
+            tool_call_id=call_id,
             tool_input=tool_call,
             tool_output=error_event.to_llm_message(),
         )
@@ -1463,6 +1470,18 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         if stream is not None and (item_id := stream.claim()):
             minted["id"] = item_id
 
+        # Providers that reset per-session call-id counters (ACP sandboxes,
+        # reprovisioned runtimes) can recycle an id from an earlier turn. A
+        # recycled id would let id-based pairing cross-link the old call's
+        # result to this one, so remint within the conversation and thread the
+        # new id through both the tool_call and tool_call_id so the pair the
+        # observation copies later stays bound.
+        call_id = conversation.state.allocate_tool_call_id(normalized_tool_call.id)
+        if call_id != normalized_tool_call.id:
+            normalized_tool_call = normalized_tool_call.model_copy(
+                update={"id": call_id}
+            )
+
         action_event = ActionEvent(
             **minted,
             action=action,
@@ -1471,7 +1490,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             thinking_blocks=thinking_blocks or [],
             responses_reasoning_item=responses_reasoning_item,
             tool_name=tool.name,
-            tool_call_id=normalized_tool_call.id,
+            tool_call_id=call_id,
             tool_call=normalized_tool_call,
             llm_response_id=llm_response_id,
             security_risk=security_risk,
