@@ -42,7 +42,7 @@ Routes: none
 - `F31.config-invalid-fails-fast`: a non-numeric `OH_MAX_CONCURRENT_RUNS` or an out-of-range limit in the configuration file stops the server during startup instead of serving with a default.
 - `F31.config-silent-env`: an `OH_*` boolean other than `1`/`true` is read as false (it overrides a `true` in the configuration file) and a `Literal` variable outside its choices falls back to the default; the server starts either way, while the same invalid choice in the file stops startup.
 - `F31.tmux-dir-cleanup`: a server that defaulted its own per-process `TMUX_TMPDIR` removes that directory when it stops.
-- `F31.storage-retention`: with the Docker runtime, `conversation_storage_retention_days` archives a stopped conversation inactive past the limit (events readable, resume and proxied routes 410, runtime directory gone), and `conversation_storage_disk_budget` sheds a stopped workspace's gitignored directories while keeping its files (blocked here: no Docker daemon).
+- `F31.storage-retention`: with the Docker runtime, `conversation_storage_retention_days` archives a stopped conversation inactive past the limit (events readable, resume and proxied routes 410, runtime directory gone), and `conversation_storage_disk_budget` sheds a stopped workspace's gitignored directories while keeping its files, ignored individual files and nested Git checkouts; the runtime remains resumable.
 
 ## How to get to it (agent POV)
 
@@ -65,8 +65,8 @@ Routes: none
   overridden by `OH_*` variables): `lease_ttl_seconds` /
   `OH_LEASE_TTL_SECONDS` (45; 0 disables leasing),
   `conversation_idle_ttl_seconds` / `OH_CONVERSATION_IDLE_TTL_SECONDS` (1200;
-  `null`, or `OH_CONVERSATION_IDLE_TTL_SECONDS_IS_NONE=1` when the file does
-  not set it, disables eviction),
+  `null`, or `OH_CONVERSATION_IDLE_TTL_SECONDS_IS_NONE=1`, disables
+  eviction),
   `max_concurrent_runs` / `OH_MAX_CONCURRENT_RUNS` (10), `OH_SECRET_KEY` (the
   cipher for secrets at rest), `TMUX_TMPDIR`, and with the Docker runtime
   only `conversation_storage_retention_days` and
@@ -422,9 +422,9 @@ Preconditions:
   alive, so there is no early takeover) `B` takes `F` over as generation 2.
   Resumed, the old owner still has `F` loaded, but its message is refused:
   nothing of it reaches disk or the old owner's own event count, while
-  `B`'s write lands. Any error status passes here; which one it should be
-  is `F31.fenced-write-no-trace`. `B`'s stop releases the lease.
-- **Refused write leaves no trace (`F31.fenced-write-no-trace`), known bug.**
+  `B`'s write lands. Any error status passes here; the status itself (409)
+  is checked by `F31.fenced-write-no-trace`. `B`'s stop releases the lease.
+- **Refused write leaves no trace (`F31.fenced-write-no-trace`).**
   The old owner from the previous bullet tries to rename `F`.
 
   Requires: `F31.lease-expiry-fencing`
@@ -432,23 +432,21 @@ Preconditions:
   PS=$(control-agent-server api PATCH "/api/conversations/$F" --json '{"title": "QA F31 stale owner"}' --expect 4xx,5xx \
     --save F31.fenced-write-no-trace/patch | jq .status)
   control-agent-server state cat meta.json --conversation "$F" --check title eq 'QA F31 new owner'
-  control-agent-server api GET "/api/conversations/$F" --check title ne 'QA F31 stale owner' --save F31.fenced-write-no-trace/get  # bug: status eq 200 && response.body.title eq 'QA F31 stale owner'
+  control-agent-server api GET "/api/conversations/$F" --check title ne 'QA F31 stale owner' --save F31.fenced-write-no-trace/get
   echo "refused PATCH answered $PS"
-  control-agent-server assert --value "$PS" --check . lt 500  # bug: value eq 500
+  control-agent-server assert --value "$PS" --check . eq 409
   ```
-  Expected: a client error that says the conversation is owned elsewhere,
-  and no visible change. The refusal itself (any error status) and
-  `meta.json` keeping `QA F31 new owner` are the positive controls: the
-  guarded save did refuse the write. Today the stale owner's own GET reports
-  `QA F31 stale owner` (the first `# bug` assertion fails there): the title
-  was set in memory before the guarded save failed. The PATCH status, kept
-  in `PS` and checked last, is 500 `Internal Server Error` with `exception`
-  `conversation ownership was lost before the write completed` (the server
-  maps `ConversationOwnershipLostError` to nothing; the saved exchange shows
-  it). The stale owner keeps the conversation loaded and refuses every
-  write the same way until it is evicted or restarted, even after the new
-  owner stops and the lease file is gone, and meanwhile serves its stale
-  in-memory events (its count stays put while the new owner appends).
+  The PATCH answers 409 with `detail` `Conversation is owned by another
+  agent server instance; the write was refused`, and nothing changes: the
+  stale owner's own GET keeps its previous title, because metadata becomes
+  current in memory only after the guarded save succeeds. The refusal itself
+  (any error status) and `meta.json` keeping `QA F31 new owner` are the
+  positive controls: the guarded save did refuse the write. The PATCH
+  status, kept in `PS`, is checked last. The stale owner keeps the
+  conversation loaded and refuses every write the same way until it is
+  evicted or restarted, even after the new owner stops and the lease file
+  is gone, and meanwhile serves its stale in-memory events (its count stays
+  put while the new owner appends).
 - **Leasing disabled (`F31.lease-disabled`).** Both servers run with
   `lease_ttl_seconds` 0.
   ```sh
@@ -574,7 +572,7 @@ Preconditions:
   ```
   With only the file, a new lease expires about 30 s ahead; with the file
   still saying 30 and the variable saying 90, about 90 s ahead.
-- **Null from the environment (`F31.config-null-override`), known bug.**
+- **Null from the environment (`F31.config-null-override`).**
   The file sets `app_backend_public_url` (reported by `/server_info` as
   `app_backend_ingress_url`, an instant view of a nullable field); a
   non-null variable replaces it, then `_IS_NONE=1` should clear it.
@@ -588,19 +586,18 @@ Preconditions:
     --env OH_APP_BACKEND_PUBLIC_URL_IS_NONE=1
   control-agent-server config | jq -e '.config_file.app_backend_public_url == "http://qa-f31-file.invalid:9" and .server_env.OH_APP_BACKEND_PUBLIC_URL_IS_NONE == "1"'
   control-agent-server api GET /server_info --auth none --check app_backend_ingress_url missing \
-    --check capabilities not-contains canvas_app_backend_bridge_v1 --save F31.config-null-override/server-info  # bug: status eq 200 && response.body.app_backend_ingress_url eq http://qa-f31-file.invalid:9
+    --check capabilities not-contains canvas_app_backend_bridge_v1 --save F31.config-null-override/server-info
   ```
   The file value is served, and a non-null variable replaces it (the
   positive controls); the config shows the file value and the `_IS_NONE`
-  variable both reached the server before the `# bug` read. Expected:
-  with `OH_APP_BACKEND_PUBLIC_URL_IS_NONE=1` the field is null and the
-  bridge capability is gone. Today the file value is still served:
-  `load_config` merges the environment over the file with
-  `env_parser.merge`, which keeps the earlier value whenever the later one
-  is `None`, so an explicit null from the environment cannot clear a file
-  value. The same applies to `conversation_idle_ttl_seconds`: with a TTL in
-  the file, `OH_CONVERSATION_IDLE_TTL_SECONDS_IS_NONE=1` does not disable
-  eviction. The next bullet resets the config.
+  variable both reached the server before the last read. With
+  `OH_APP_BACKEND_PUBLIC_URL_IS_NONE=1` the field is null and the bridge
+  capability is gone: `load_config` merges the environment over the file
+  with `merge(..., none_overrides=True)`, so an explicit null from the
+  environment clears a file value. The same applies to
+  `conversation_idle_ttl_seconds`: with a TTL in the file,
+  `OH_CONVERSATION_IDLE_TTL_SECONDS_IS_NONE=1` disables eviction. The next
+  bullet resets the config.
 - **Invalid limits stop startup (`F31.config-invalid-fails-fast`).** A
   non-numeric variable, then a limit below its minimum in the file; then the
   run is restored to its defaults.
@@ -661,7 +658,7 @@ Preconditions:
   file stops startup with pydantic's `literal_error`, as a non-numeric
   integer variable does (`F31.config-invalid-fails-fast`): only the
   environment parser is lenient for booleans and choices.
-- **Per-process tmux directory removed on stop (`F31.tmux-dir-cleanup`), known bug.**
+- **Per-process tmux directory removed on stop (`F31.tmux-dir-cleanup`).**
   A second run whose `TMUX_TMPDIR` is empty, so the server picks its own.
   ```sh
   B=$(control-agent-server launch --new --name f31-tmux --env TMUX_TMPDIR= --print-run)
@@ -672,54 +669,137 @@ Preconditions:
   test -d "$TD"
   control-agent-server stop --run "$B" | jq -e '.server == "terminated"'
   trap 'rm -rf -- "$TD" || true' EXIT
-  control-agent-server assert --value "$([ -e "$TD" ] && echo true || echo false)" --check . eq false  # bug: value eq true
+  control-agent-server assert --value "$([ -e "$TD" ] && echo true || echo false)" --check . eq false
   trap - EXIT
   ```
   Expected: the directory is gone after a graceful stop (`stop` reports
   `terminated`, not `killed`, so the lifespan shutdown ran). The log line
   and the directory existing while `B` runs are the positive controls.
-  Today the server logs `TMUX_TMPDIR not set; defaulting to per-server tmux
+  The server logs `TMUX_TMPDIR not set; defaulting to per-server tmux
   directory /tmp/openhands-agent-server-<pid>`, creates it, and at shutdown
-  only removes the variable from its environment (`api_lifespan`), so every
-  such start leaves a directory in the temp dir and the `assert` fails. The
-  `trap` removes the leftover after the assertion.
-- **Storage retention and disk budget (`F31.storage-retention`), blocked.**
-  Needs a Docker daemon and the `conversation_image` pulled
-  (`control-agent-server capabilities` reports `docker`): the storage
-  reclaimer exists only in the Docker runtime (`DockerConversationRegistry`
-  builds it; the local runtime has none), and its pass runs every 300 s
-  (`MAINTENANCE_INTERVAL` in `storage/reclaimer.py`), first 300 s after
-  startup. It would prove that with `conversation_storage_retention_days`
-  set, a stopped conversation inactive past the limit is archived: its
-  events stay readable, while `/run`, a message and every route proxied into
-  its container answer 410 `Conversation runtime was archived; its history
-  is read-only`, `GET .../runtime` reports `missing` with `can_resume`
-  false, an `<id>.archived.json` marker appears under
-  `home/.openhands/runtime-control/` and its `runtime-data/<id>/` directory
-  (sandbox home and the workspace the server created) is gone. A second
-  server with only `conversation_storage_disk_budget` below the
-  filesystem's usage (for example 0.01) would show a stopped runtime's
-  workspace losing its gitignored directories (`node_modules`, `.venv`)
-  while tracked and untracked files stay, and `Conversation storage: freed`
-  in the log.
+  (`api_lifespan`) restores the variable and removes that directory. A
+  `TMUX_TMPDIR` the user provided is kept and never removed. The `trap`
+  removes a leftover if the assertion fails.
+- **Storage retention and disk budget (`F31.storage-retention`).**
+  Needs: `docker`
+
+  Pull the selected image first. This uses the same pinned minimal image and
+  `AGENT_SERVER_VERIFY_DOCKER_IMAGE` override as F12. Two isolated Docker
+  servers exercise separate policies concurrently, without invoking an LLM.
+  The outer server uses this checkout and the child image may be a release.
+  The real 300-second maintenance timer is left unchanged.
   ```sh
-  DK=$(control-agent-server launch --new --name f31-storage --print-run \
-    --config-json '{"conversation_runtime": "docker", "conversation_storage_retention_days": 0.0001}')
-  CID=$(control-agent-server api POST /api/conversations --run "$DK" \
-    --json '{"agent": {"llm": {"model": "openai/qa-stub", "api_key": "qa"}, "tools": []}}' --expect 200,201 --field id)
-  RT="/api/conversations/$CID/runtime"
-  NE=$(control-agent-server api GET "/api/conversations/$CID/events/count" --run "$DK" --field .)
-  control-agent-server api DELETE "$RT" --run "$DK" --expect 204
-  control-agent-server api GET "$RT" --run "$DK" --until-ok 330 --check runtime_status eq missing --check can_resume eq false
-  control-agent-server state ls --run "$DK" "home/.openhands/runtime-control/${CID//-/}.archived.json" --expect-count 1
-  control-agent-server state ls --run "$DK" "home/.openhands/runtime-data/${CID//-/}/**/*" --expect-count 0
-  control-agent-server api GET "/api/conversations/$CID/events/count" --run "$DK" --expect 200 --check . eq "$NE"
-  control-agent-server api POST "/api/conversations/$CID/run" --run "$DK" --expect 410 \
+  IMAGE=${AGENT_SERVER_VERIFY_DOCKER_IMAGE:-ghcr.io/openhands/agent-server:1.55.1-python-minimal}
+  docker image inspect "$IMAGE" >/dev/null
+  RET=
+  BUD=
+  trap 'for R in "$RET" "$BUD"; do if [ -n "$R" ]; then control-agent-server stop --run "$R" >/dev/null 2>&1 || true; fi; done' EXIT
+  RET=$(control-agent-server launch --new --name f31-retention --print-run \
+    --config-json "$(jq -nc --arg image "$IMAGE" '{conversation_runtime:"docker",conversation_image:$image,enable_browser:false,conversation_container_memory:"1g",conversation_storage_retention_days:0.00001}')")
+  BUD=$(control-agent-server launch --new --name f31-disk-budget --print-run \
+    --config-json "$(jq -nc --arg image "$IMAGE" '{conversation_runtime:"docker",conversation_image:$image,enable_browser:false,conversation_container_memory:"1g",conversation_storage_disk_budget:0.01}')")
+  for R in "$RET" "$BUD"; do control-agent-server doctor --run "$R"; done
+  control-agent-server exec --run "$RET" --save F31.storage-retention/image -- \
+    docker image inspect --format '{{.Id}} {{json .RepoDigests}}' "$IMAGE"
+  CREATE='{"agent":{"llm":{"model":"openai/qa-no-call","api_key":"qa-placeholder"},"tools":[]},"autotitle":false}'
+  RCID=$(control-agent-server api POST /api/conversations --run "$RET" --json "$CREATE" \
+    --expect 201 --timeout 180 --field id --save F31.storage-retention/retention-create)
+  BCID=$(control-agent-server api POST /api/conversations --run "$BUD" --json "$CREATE" \
+    --expect 201 --timeout 180 --field id --save F31.storage-retention/budget-create)
+  control-agent-server api POST "/api/conversations/$RCID/events" --run "$RET" --expect 200 --check success eq true \
+    --json '{"role":"user","content":[{"type":"text","text":"QA_F31_RETAINED_HISTORY"}],"run":false}'
+  control-agent-server api GET "/api/conversations/$RCID/events/search" --run "$RET" --expect 200 \
+    --check items.1.llm_message.content.0.text eq QA_F31_RETAINED_HISTORY --save F31.storage-retention/history-before
+  FILL=$(cat <<'SH'
+  set -e
+  cd /workspace
+  git init -q
+  printf 'node_modules/\n.venv/\nbuild/\n.env\nvendor/\n' > .gitignore
+  printf 'tracked\n' > main.txt
+  git add .gitignore main.txt
+  git -c user.name=qa -c user.email=qa@example.invalid commit -qm initial
+  printf 'untracked\n' > notes.txt
+  printf 'ignored file\n' > .env
+  mkdir -p node_modules/dep .venv/lib build vendor/lib
+  printf 'rebuild\n' > node_modules/dep/index.js
+  printf 'rebuild\n' > .venv/lib/site.py
+  printf 'rebuild\n' > build/out.o
+  git -C vendor/lib init -q
+  printf 'nested checkout\n' > vendor/lib/lib.txt
+  SH
+  )
+  control-agent-server api POST "/api/conversations/$BCID/bash/execute_bash_command" --run "$BUD" \
+    --json "$(jq -nc --arg command "$FILL" '{command:$command}')" --expect 200 --check exit_code eq 0 --save F31.storage-retention/budget-fill
+  BROOT="$BUD/home/.openhands/runtime-data/${BCID//-/}/workspace"
+  control-agent-server exec --run "$BUD" --env ROOT="$BROOT" --save F31.storage-retention/budget-before -- .venv/bin/python - <<'PY'
+  import json, os, shutil
+  from pathlib import Path
+  root = Path(os.environ["ROOT"])
+  usage = shutil.disk_usage(root)
+  fraction = usage.used / (usage.used + usage.free)
+  assert fraction > 0.01, "Filesystem must exceed the configured 1% budget"
+  for name in ("node_modules/dep/index.js", ".venv/lib/site.py", "build/out.o", "main.txt", "notes.txt", ".env", "vendor/lib/lib.txt"):
+      assert (root / name).is_file(), name
+  print(json.dumps(dict(over_budget=True, disk_usage_fraction=fraction, all_fixture_files_present=True)))
+  PY
+  control-agent-server api DELETE "/api/conversations/$RCID/runtime" --run "$RET" --expect 204
+  control-agent-server api DELETE "/api/conversations/$BCID/runtime" --run "$BUD" --expect 204
+  control-agent-server api GET "/api/conversations/$RCID/runtime" --run "$RET" --expect 200 \
+    --until-ok 330 --check runtime_status eq missing --check can_resume eq false --save F31.storage-retention/archived
+  control-agent-server state ls --run "$RET" "home/.openhands/runtime-control/${RCID//-/}.archived.json" --expect-count 1
+  control-agent-server exec --run "$RET" --env ROOT="$RET/home/.openhands/runtime-data/${RCID//-/}" \
+    --save F31.storage-retention/runtime-directory-gone -- .venv/bin/python - <<'PY'
+  import json, os
+  from pathlib import Path
+  assert not Path(os.environ["ROOT"]).exists()
+  print(json.dumps(dict(runtime_directory_exists=False)))
+  PY
+  control-agent-server api GET "/api/conversations/$RCID/events/search" --run "$RET" --expect 200 \
+    --check items.1.llm_message.content.0.text eq QA_F31_RETAINED_HISTORY --save F31.storage-retention/history-after
+  control-agent-server api POST "/api/conversations/$RCID/run" --run "$RET" --expect 410 \
     --check detail eq 'Conversation runtime was archived; its history is read-only' --save F31.storage-retention/run-410
-  control-agent-server api POST "$RT/reprovision" --run "$DK" --expect 410
-  control-agent-server logs --run "$DK" --grep 'Conversation storage: freed' --expect-min 1
-  control-agent-server stop --run "$DK"
+  control-agent-server api POST "/api/conversations/$RCID/events" --run "$RET" --expect 410 \
+    --json '{"role":"user","content":[{"type":"text","text":"must not persist"}],"run":false}' --save F31.storage-retention/message-410
+  control-agent-server api GET "/api/conversations/$RCID/file/download" --run "$RET" --query path=/workspace/main.txt \
+    --expect 410 --save F31.storage-retention/proxy-410
+  control-agent-server api POST "/api/conversations/$RCID/runtime/reprovision" --run "$RET" --expect 410
+  control-agent-server logs --run "$RET" --grep 'Conversation storage: freed' --expect-min 1
+  control-agent-server exec --run "$BUD" --env ROOT="$BROOT" --timeout 350 \
+    --save F31.storage-retention/budget-after -- .venv/bin/python - <<'PY'
+  import json, os, time
+  from pathlib import Path
+  root = Path(os.environ["ROOT"])
+  shed = ("node_modules", ".venv", "build")
+  deadline = time.monotonic() + 330
+  while any((root / name).exists() for name in shed) and time.monotonic() < deadline:
+      time.sleep(1)
+  for name in shed:
+      assert not (root / name).exists(), name
+  kept = {"main.txt": "tracked\n", "notes.txt": "untracked\n", ".env": "ignored file\n", "vendor/lib/lib.txt": "nested checkout\n"}
+  for name, contents in kept.items():
+      assert (root / name).read_text() == contents, name
+  assert (root / ".git/HEAD").is_file() and (root / "vendor/lib/.git/HEAD").is_file()
+  print(json.dumps(dict(shed=list(shed), kept_exact_contents=list(kept), git_checkouts_preserved=True)))
+  PY
+  control-agent-server logs --run "$BUD" --grep 'Conversation storage: freed' --expect-min 1
+  control-agent-server api GET "/api/conversations/$BCID/runtime" --run "$BUD" --expect 200 \
+    --check runtime_status eq missing --check can_resume eq true --save F31.storage-retention/budget-still-resumable
+  control-agent-server api POST "/api/conversations/$BCID/runtime/reprovision" --run "$BUD" --expect 200 \
+    --check runtime_status eq available --timeout 180 --save F31.storage-retention/budget-reprovision
+  control-agent-server api POST "/api/conversations/$BCID/bash/execute_bash_command" --run "$BUD" --expect 200 --check exit_code eq 0 \
+    --json '{"command":"cd /workspace && test ! -e node_modules && test ! -e .venv && test ! -e build && test -f vendor/lib/.git/HEAD && cat main.txt notes.txt .env vendor/lib/lib.txt"}' \
+    --check stdout eq $'tracked\nuntracked\nignored file\nnested checkout\n' --save F31.storage-retention/resumed-content
+  control-agent-server api DELETE "/api/conversations/$RCID" --run "$RET" --expect 200
+  control-agent-server api DELETE "/api/conversations/$BCID" --run "$BUD" --expect 200
+  for R in "$RET" "$BUD"; do control-agent-server stop --run "$R"; done
   ```
+  Retention removes the runtime directory and leaves an archive marker and
+  readable event history; writes, resume and proxied workspace access are
+  410. The separate disk-budget policy removes only the stopped workspace's
+  gitignored dependency directories. Tracked and untracked files, ignored
+  individual files and a nested checkout keep their exact content; the
+  conversation remains resumable and those files are readable after resume.
+  The budget is checked against actual filesystem usage before the test.
 
 ## Gotchas
 
@@ -746,7 +826,7 @@ Preconditions:
   over only after `expires_at`. A TTL below the 15 s renewal interval expires
   between renewals.
 - An owner that lost its lease keeps the conversation loaded and answers
-  every write with 500 until idle eviction or a restart closes it, and its
+  every write with 409 until idle eviction or a restart closes it, and its
   reads serve the stale in-memory state; each attempt counts as activity,
   so retries postpone the eviction. Its renewal loop only logs `Conversation
   lease lost while renewing` every 15 s.
@@ -758,9 +838,8 @@ Preconditions:
   (`max(60, ttl/2)`), and the first pass runs about 60 s after startup.
   `OH_CONVERSATION_IDLE_TTL_SECONDS=null` stops startup (`float('null')`);
   disable eviction with `null` in the file, or with
-  `OH_CONVERSATION_IDLE_TTL_SECONDS_IS_NONE=1` only when the file does not
-  set the TTL (an environment null never overrides a file value,
-  `F31.config-null-override`).
+  `OH_CONVERSATION_IDLE_TTL_SECONDS_IS_NONE=1`, which also overrides a TTL
+  the file sets (`F31.config-null-override`).
 - Creating a conversation needs a run slot, like `/run` (`F05.run-capacity`):
   with `max_concurrent_runs` slots busy, create every conversation a recipe
   needs before the first run starts.

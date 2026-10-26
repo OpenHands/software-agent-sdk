@@ -11,10 +11,10 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.launch import resolve
+from openhands.sdk.launch import LaunchStores, resolve
 from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileClass
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles.agent_profile import (
@@ -39,9 +39,14 @@ class Profile:
 
 @dataclass(frozen=True)
 class Reference:
-    """Resolved from the named profile reference."""
+    """Resolved from the named profile field(s)."""
 
     ref: str
+    also: tuple[str, ...] = ()
+
+    @property
+    def refs(self) -> tuple[str, ...]:
+        return (self.ref, *self.also)
 
 
 @dataclass(frozen=True)
@@ -49,6 +54,13 @@ class Fixed:
     """Set to ``value`` by resolve for every profile."""
 
     value: Any
+
+
+@dataclass(frozen=True)
+class Stores:
+    """Copied from the launching server's stores, never from the profile."""
+
+    field: str
 
 
 @dataclass(frozen=True)
@@ -64,11 +76,6 @@ class NotOnProfile:
 
 
 @dataclass(frozen=True)
-class Legacy:
-    removed_in: str
-
-
-@dataclass(frozen=True)
 class Nested:
     fields: dict[str, Any]
 
@@ -80,7 +87,7 @@ LAUNCH = Launch()
 _CATALOG = Fixed(False)
 
 OPENHANDS_CONTEXT = {
-    "skills": Reference("disabled_skills"),
+    "skills": Reference("disabled_skills", also=("public_skills",)),
     "system_message_suffix": PROFILE,
     "user_message_suffix": NotOnProfile("no profile field yet"),
     "load_user_skills": _CATALOG,
@@ -115,9 +122,7 @@ OPENHANDS_FIELDS: dict[str, Any] = {
     "verification": Nested(
         {
             **{name: PROFILE for name in ProfileVerificationSettings.model_fields},
-            "critic_api_key": NotOnProfile(
-                "a profile is secret-free; the critic reuses the resolved LLM key"
-            ),
+            "critic_api_key": Stores("critic_api_key"),
         }
     ),
 }
@@ -146,7 +151,6 @@ ACP_FIELDS: dict[str, Any] = {
         "set by the deploying application when conversations share a sandbox"
     ),
     "acp_file_secrets": NotOnProfile("a code-level spec for other ACP CLIs"),
-    "llm": Legacy(removed_in="1.56.0"),
     "agent_context": Nested(ACP_CONTEXT),
 }
 
@@ -203,7 +207,8 @@ def test_every_profile_owned_field_exists_on_the_profile(settings_model, profile
             head = field.split(".")[0]
             assert head in profile_model.model_fields, path
         if isinstance(owner, Reference) and owner.ref != "catalog":
-            assert owner.ref in profile_model.model_fields, path
+            for ref in owner.refs:
+                assert ref in profile_model.model_fields, path
 
 
 @pytest.mark.parametrize(
@@ -220,7 +225,7 @@ def test_every_profile_field_has_a_use(settings_model, profile_model):
         if isinstance(owner, Profile):
             used.add(path.removeprefix("agent_context.").split(".")[0])
         if isinstance(owner, Reference):
-            used.add(owner.ref)
+            used.update(owner.refs)
     assert set(profile_model.model_fields) <= used
 
 
@@ -270,7 +275,11 @@ def _stores():
         classifier_model="default",
         classes=[MetaProfileClass(description="all", model="default")],
     )
-    return fakes.stores(mcp={"srv": MCPServer(command="echo")}, metas={"router": meta})
+    return fakes.stores(
+        mcp={"srv": MCPServer(command="echo")},
+        metas={"router": meta},
+        critic_api_key=SecretStr("sk-critic"),
+    )
 
 
 @pytest.mark.parametrize(
@@ -282,7 +291,8 @@ def _stores():
     ids=["openhands", "acp"],
 )
 def test_resolve_copies_profile_fields_and_fixed_values(profile, table):
-    settings = resolve(profile, _stores()).settings
+    stores = _stores()
+    settings = resolve(profile, stores).settings
 
     for path, owner in _leaves(table):
         if isinstance(owner, Profile):
@@ -292,3 +302,6 @@ def test_resolve_copies_profile_fields_and_fixed_values(profile, table):
             assert _get(settings, path) == expected, path
         if isinstance(owner, Fixed):
             assert _get(settings, path) == owner.value, path
+        if isinstance(owner, Stores):
+            assert owner.field in LaunchStores.__dataclass_fields__, path
+            assert _get(settings, path) == getattr(stores, owner.field), path

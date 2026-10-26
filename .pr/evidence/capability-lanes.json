@@ -1,0 +1,375 @@
+{
+  "target": "5966c781ed014efc96c028a99bddd4ff78426741",
+  "F16": {
+    "run_id": "20261023-064306-4a02-map-f16",
+    "summary": {
+      "pass": 5,
+      "fail": 0,
+      "xfail": 0,
+      "xpass": 0,
+      "blocked": 0,
+      "skipped": 0,
+      "no-commands": 0
+    },
+    "source": {
+      "build_git_sha": "5966c781ed014efc96c028a99bddd4ff78426741",
+      "doctor_ok": true,
+      "provenance": {
+        "source": "20261023-064306-4a02-map-f16/evidence/map-run/doctor-before.json",
+        "sha256": "2fccb3db40bae1c77ab584b666a1a94fe81cff6bd465c6f4e26757fda3339858"
+      }
+    },
+    "features": [
+      {
+        "feature": "F16.vscode-url-shape",
+        "result": "pass",
+        "recipe_exit_code": 0,
+        "reviewed_assertions": [
+          {
+            "status": 200,
+            "checks": [
+              {
+                "check": "running eq true",
+                "ok": true,
+                "actual": "true"
+              }
+            ]
+          },
+          {
+            "status": 200,
+            "checks": [
+              {
+                "check": "url eq http://localhost:<port>/?tkn=<redacted:session-api-key>&folder=workspace",
+                "ok": true,
+                "actual": "http://localhost:<port>/?tkn=<redacted:session-api-key>&folder=workspace"
+              }
+            ]
+          },
+          {
+            "status": 200,
+            "checks": [
+              {
+                "check": "url eq https://qa-f16.example:9443/?tkn=<redacted:session-api-key>&folder=/qa/f16",
+                "ok": true,
+                "actual": "https://qa-f16.example:9443/?tkn=<redacted:session-api-key>&folder=/qa/f16"
+              }
+            ]
+          },
+          {
+            "status": 200,
+            "checks": [
+              {
+                "check": "url eq http://localhost:<port>/?tkn=<redacted:session-api-key>&folder=<run>/fixtures/qa-f16/ws",
+                "ok": true,
+                "actual": "http://localhost:<port>/?tkn=<redacted:session-api-key>&folder=<run>/fixtures/qa-f16/ws"
+              }
+            ]
+          },
+          {
+            "status": 200,
+            "checks": [
+              {
+                "check": "url eq http://localhost:<port>/?tkn=<redacted:session-api-key>&folder=<run>/fixtures/qa-f16/ws/sub",
+                "ok": true,
+                "actual": "http://localhost:<port>/?tkn=<redacted:session-api-key>&folder=<run>/fixtures/qa-f16/ws/sub"
+              }
+            ]
+          },
+          {
+            "status": 200,
+            "checks": [
+              {
+                "check": "url eq http://localhost:<port>/qa-f16/vscode/?tkn=<redacted:session-api-key>&folder=workspace",
+                "ok": true,
+                "actual": "http://localhost:<port>/qa-f16/vscode/?tkn=<redacted:session-api-key>&folder=workspace"
+              }
+            ]
+          },
+          {
+            "status": 200,
+            "checks": [
+              {
+                "check": "url eq https://qa-f16.example/qa-f16/vscode/?tkn=<redacted:session-api-key>&folder=<run>/fixtures/qa-f16/ws",
+                "ok": true,
+                "actual": "https://qa-f16.example/qa-f16/vscode/?tkn=<redacted:session-api-key>&folder=<run>/fixtures/qa-f16/ws"
+              }
+            ]
+          }
+        ],
+        "provenance": {
+          "source": "20261023-064306-4a02-map-f16/evidence/map-run/F16-workspace-serving-and-vscode-02-url-shape-f16-vscode-url-shape.json",
+          "sha256": "23ca5389ba6e8fe41ced97ed19569dd74021ee5c915a108af23113f79babb3b1"
+        }
+      },
+      {
+        "feature": "F16.vscode-folder-encoding",
+        "result": "pass",
+        "recipe_exit_code": 0,
+        "reviewed_assertions": [
+          {
+            "status": 200,
+            "checks": [
+              {
+                "check": "running eq true",
+                "ok": true,
+                "actual": "true"
+              }
+            ]
+          },
+          {
+            "value": {
+              "folder": [
+                "<run>/fixtures/qa-f16/qa f16&x=1#frag"
+              ],
+              "fragment": ""
+            },
+            "checks": [
+              {
+                "check": "folder len-eq 1",
+                "ok": true,
+                "actual": "[\"<run>/fixtures/qa-f16/qa f16&x=1#frag\"]"
+              },
+              {
+                "check": "folder.0 eq <run>/fixtures/qa-f16/qa f16&x=1#frag",
+                "ok": true,
+                "actual": "<run>/fixtures/qa-f16/qa f16&x=1#frag"
+              },
+              {
+                "check": "fragment eq ",
+                "ok": true,
+                "actual": ""
+              }
+            ]
+          }
+        ],
+        "provenance": {
+          "source": "20261023-064306-4a02-map-f16/evidence/map-run/F16-workspace-serving-and-vscode-03-folder-with-and-f16-vscode-folder-encodi.json",
+          "sha256": "265647a881160f880d55779e4df849bfbc0e91616c9b64c668846be6a857259f"
+        }
+      },
+      {
+        "feature": "F16.vscode-running",
+        "result": "pass",
+        "recipe_exit_code": 0,
+        "reviewed_assertions": [
+          {
+            "status": 200,
+            "checks": [
+              {
+                "check": "enabled eq true",
+                "ok": true,
+                "actual": "true"
+              },
+              {
+                "check": "running eq true",
+                "ok": true,
+                "actual": "true"
+              }
+            ]
+          },
+          {
+            "status": 200,
+            "checks": [
+              {
+                "check": "url contains folder=<run>/fixtures/qa-f16/ws",
+                "ok": true,
+                "actual": "http://localhost:<port>/?tkn=<redacted:session-api-key>&folder=<run>/fixtures/qa-f16/ws"
+              }
+            ]
+          },
+          {
+            "value": 200,
+            "checks": [
+              {
+                "check": ". eq 200",
+                "ok": true,
+                "actual": "200"
+              }
+            ]
+          }
+        ],
+        "provenance": {
+          "source": "20261023-064306-4a02-map-f16/evidence/map-run/F16-workspace-serving-and-vscode-04-vs-code-actually-running-f16-vscode-runn.json",
+          "sha256": "315c8351f767fd8ab0ab836077cc184fdb90952c3c72238be8c9ba6ba3d8ddfe"
+        },
+        "editor_result": {
+          "exit_code": 0,
+          "stdout": {
+            "editor_html": true
+          },
+          "provenance": {
+            "source": "20261023-064306-4a02-map-f16/evidence/F16.vscode-running/editor.json",
+            "sha256": "167dfe858af9307cddaa0047954f223313273510c56d7688fd4645760f355a84"
+          }
+        }
+      }
+    ],
+    "artifact": {
+      "tag": "openvscode-server-v1.109.5",
+      "asset": "openvscode-server-v1.109.5-linux-x64.tar.gz",
+      "url": "https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v1.109.5/openvscode-server-v1.109.5-linux-x64.tar.gz",
+      "expected_digest": "sha256:b433bf4f0227321a7014d8460d10a8f958adc0f45aa79bd889e84e65e8f88363",
+      "actual_digest": "sha256:b433bf4f0227321a7014d8460d10a8f958adc0f45aa79bd889e84e65e8f88363",
+      "bytes": 76686959,
+      "verified": true,
+      "install_scope": "task tools directory; bind-mounted fixed path only inside isolated container"
+    },
+    "artifact_provenance": {
+      "source": "F16-vscode-download.json",
+      "sha256": "d9e45b78a6b013d2b1b1dcef4e5f98c174f7f63a0796704e20c8ff0c00b9fa0c"
+    },
+    "isolation": "Pinned OpenVSCode release verified against official GitHub asset SHA-256, extracted to task tools directory, mounted at product fixed path only inside disposable container; source checkout Python environment runs as UID1000. Container removed after recipe; private cookies/editor HTML excluded.",
+    "qualification": "Exact final command blocks replayed after independent URL_PORT dependency correction. Earlier capability trial also passed. Only non-executable explanatory prose changed afterward."
+  },
+  "F17": {
+    "run_id": "20261023-063824-a607-map-f17",
+    "feature": "F17.noop-write-readonly",
+    "result": "pass",
+    "source": {
+      "build_git_sha": "5966c781ed014efc96c028a99bddd4ff78426741",
+      "doctor_ok": true,
+      "provenance": {
+        "source": "20261023-063824-a607-map-f17/evidence/map-run/doctor-before.json",
+        "sha256": "436dc0841ff844c194be33cdbd09669c6e4253bee83c5b1978abe4424972f718"
+      }
+    },
+    "recipe_exit_code": 0,
+    "reviewed_exchanges": [
+      {
+        "name": "delete-unknown",
+        "method": "DELETE",
+        "path": "/api/workspaces",
+        "status": 404,
+        "response_projection": {
+          "detail": "Workspace not found"
+        },
+        "provenance": {
+          "source": "20261023-063824-a607-map-f17/evidence/F17.noop-write-readonly/delete-unknown.json",
+          "sha256": "54c4499fa071bfc0d388a8b9a20021f1ad81835a76f74c93c18dc58b0ca1bf14"
+        }
+      },
+      {
+        "name": "get",
+        "method": "GET",
+        "path": "/api/workspaces",
+        "status": 200,
+        "response_projection": {
+          "workspaces_count": 5,
+          "workspaceParents_count": 2
+        },
+        "provenance": {
+          "source": "20261023-063824-a607-map-f17/evidence/F17.noop-write-readonly/get.json",
+          "sha256": "69d117bef74af77bf135c6c8ad882cb92fe47501d40e212f7a349bd0c81e881a"
+        }
+      },
+      {
+        "name": "real-add",
+        "method": "POST",
+        "path": "/api/workspaces",
+        "status": 500,
+        "response_projection": {
+          "detail": "Internal Server Error",
+          "exception": "500: Failed to save workspaces"
+        },
+        "provenance": {
+          "source": "20261023-063824-a607-map-f17/evidence/F17.noop-write-readonly/real-add.json",
+          "sha256": "6f8d2be1491be5031483b8ad788531db581a87051ceab41bde17aab276c95cfb"
+        }
+      }
+    ],
+    "reviewed_assertions": [
+      {
+        "status": 200,
+        "checks": [
+          {
+            "check": ". eq {\"workspaces\": [{\"id\": \"<run>/fixtures/qa-f17-repo\", \"name\": \"qa-f17-repo\", \"path\": \"<run>/fixtures/qa-f17-repo\"}, {\"id\": \"/qa-f17/snake\", \"name\": \"qa-f17-snake\", \"path\": \"/qa-f17/snake\", \"parentPath\": \"/qa-f17\"}, {\"id\": \"/qa-f17/null\", \"name\": \"qa-f17-null\", \"path\": \"/qa-f17/null\"}, {\"id\": \"/qa-f17/dup\", \"name\": \"qa-f17-dup-first\", \"path\": \"/qa-f17/dup\"}, {\"id\": \"<run>/fixtures/qa-f17/parent/alpha\", \"name\": \"alpha\", \"path\": \"<run>/fixtures/qa-f17/parent/alpha\", \"parentPath\": \"<run>/fixtures/qa-f17/parent\"}], \"workspaceParents\": [{\"id\": \"/qa-f17/other-parent\", \"name\": \"qa-f17-other-parent\", \"path\": \"/qa-f17/other-parent\"}, {\"id\": \"<run>/fixtures/qa-f17/plain\", \"name\": \"qa-f17-plain\", \"path\": \"<run>/fixtures/qa-f17/plain\"}]}",
+            "ok": true,
+            "actual": "{\"workspaces\": [{\"id\": \"<run>/fixtures/qa-f17-repo\", \"name\": \"qa-f17-repo\", \"path\": \"<run>/fixtures/qa-f\u2026"
+          }
+        ]
+      },
+      {
+        "status": 500,
+        "checks": [
+          {
+            "check": "exception contains Failed to save workspaces",
+            "ok": true,
+            "actual": "500: Failed to save workspaces"
+          }
+        ]
+      },
+      {
+        "status": 404,
+        "checks": [
+          {
+            "check": "detail eq Workspace not found",
+            "ok": true,
+            "actual": "Workspace not found"
+          }
+        ]
+      },
+      {
+        "status": 200,
+        "checks": [
+          {
+            "check": "workspaces len-eq 5",
+            "ok": true,
+            "actual": "[{\"id\": \"<run>/fixtures/qa-f17-repo\", \"name\": \"qa-f17-repo\", \"path\": \"<run>/fixtures/qa-f17-repo\"}, {\"id\u2026"
+          }
+        ]
+      },
+      {
+        "status": 200,
+        "checks": [
+          {
+            "check": "workspaceParents len-eq 2",
+            "ok": true,
+            "actual": "[{\"id\": \"/qa-f17/other-parent\", \"name\": \"qa-f17-other-parent\", \"path\": \"/qa-f17/other-parent\"}, {\"id\": \"<run>/fixtures/qa-f17/plain\", \"name\": \"qa-f17-pl\u2026"
+          }
+        ]
+      },
+      {
+        "status": 200,
+        "checks": [
+          {
+            "check": ". eq {\"workspaces\": [{\"id\": \"<run>/fixtures/qa-f17-repo\", \"name\": \"qa-f17-repo\", \"path\": \"<run>/fixtures/qa-f17-repo\"}, {\"id\": \"/qa-f17/snake\", \"name\": \"qa-f17-snake\", \"path\": \"/qa-f17/snake\", \"parentPath\": \"/qa-f17\"}, {\"id\": \"/qa-f17/null\", \"name\": \"qa-f17-null\", \"path\": \"/qa-f17/null\"}, {\"id\": \"/qa-f17/dup\", \"name\": \"qa-f17-dup-first\", \"path\": \"/qa-f17/dup\"}, {\"id\": \"<run>/fixtures/qa-f17/parent/alpha\", \"name\": \"alpha\", \"path\": \"<run>/fixtures/qa-f17/parent/alpha\", \"parentPath\": \"<run>/fixtures/qa-f17/parent\"}], \"workspaceParents\": [{\"id\": \"/qa-f17/other-parent\", \"name\": \"qa-f17-other-parent\", \"path\": \"/qa-f17/other-parent\"}, {\"id\": \"<run>/fixtures/qa-f17/plain\", \"name\": \"qa-f17-plain\", \"path\": \"<run>/fixtures/qa-f17/plain\"}]}",
+            "ok": true,
+            "actual": "{\"workspaces\": [{\"id\": \"<run>/fixtures/qa-f17-repo\", \"name\": \"qa-f17-repo\", \"path\": \"<run>/fixtures/qa-f\u2026"
+          },
+          {
+            "check": ". not-contains /qa-f17/ro",
+            "ok": true,
+            "actual": "{\"workspaces\": [{\"id\": \"<run>/fixtures/qa-f17-repo\", \"name\": \"qa-f17-repo\", \"path\": \"<run>/fixtures/qa-f\u2026"
+          }
+        ]
+      }
+    ],
+    "provenance": {
+      "source": "20261023-063824-a607-map-f17/evidence/map-run/F17-workspaces-registry-23-no-op-writes-on-read-only-storage-f17-no.json",
+      "sha256": "5e1d892eab21bf661867b6764d54bb72abf3762d961eb51a77feb22084960aed"
+    },
+    "identity": {
+      "ordinary_user_without_effective_capabilities": true,
+      "servers": [
+        {
+          "Uid": "1000\t1000\t1000\t1000",
+          "Gid": "1000\t1000\t1000\t1000",
+          "CapEff": "0000000000000000",
+          "CapAmb": "0000000000000000"
+        },
+        {
+          "Uid": "1000\t1000\t1000\t1000",
+          "Gid": "1000\t1000\t1000\t1000",
+          "CapEff": "0000000000000000",
+          "CapAmb": "0000000000000000"
+        }
+      ],
+      "provenance": {
+        "source": "F17-container-server-identity.json",
+        "sha256": "bc8de74cd0b345dd26dee3b0cf6e6e4f411d15080a22e7c392cbf457670b82c0"
+      }
+    },
+    "isolation": "Immutable flag applied with task-scoped chattr capability in disposable container; harness and actual source server have no effective/ambient capabilities. Recipe cleared flag; container removed."
+  },
+  "private_files_read_or_copied": false
+}

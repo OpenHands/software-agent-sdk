@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -155,6 +156,23 @@ def mock_repo_with_agentskills_references(tmp_path):
     return repo_dir
 
 
+def _create_skills_git_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "source"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "commit.gpgSign", "false"], cwd=repo, check=True)
+    (repo / "version.txt").write_text("v1")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "v1"], cwd=repo, check=True)
+    return repo
+
+
 def test_load_public_skills_success(mock_repo_dir, tmp_path):
     """Test successfully loading skills from cached repository."""
 
@@ -266,73 +284,30 @@ def test_load_public_skills_with_invalid_skill(tmp_path):
 
 
 def test_update_skills_repository_clone_new(tmp_path):
-    """Test cloning a new repository."""
+    source = _create_skills_git_repo(tmp_path)
     cache_dir = tmp_path / "cache"
-    cache_dir.mkdir()
 
-    mock_result = MagicMock()
-    mock_result.returncode = 0
+    repo_path = update_skills_repository(f"file://{source}", "main", cache_dir)
 
-    with patch(
-        "openhands.sdk.git.utils.subprocess.run", return_value=mock_result
-    ) as mock_run:
-        repo_path = update_skills_repository(
-            "https://github.com/OpenHands/extensions",
-            "main",
-            cache_dir,
-        )
-
-        assert repo_path is not None
-        # Check that git clone was called
-        mock_run.assert_called_once()
-        call_args = mock_run.call_args
-        assert call_args[0][0][0] == "git"
-        assert call_args[0][0][1] == "clone"
-        assert "--branch" in call_args[0][0]
-        assert "main" in call_args[0][0]
+    assert repo_path is not None
+    assert repo_path == cache_dir / "public-skills"
+    assert (repo_path / "version.txt").read_text() == "v1"
 
 
 def test_update_skills_repository_update_existing(tmp_path):
-    """Test updating an existing repository."""
+    source = _create_skills_git_repo(tmp_path)
     cache_dir = tmp_path / "cache"
-    cache_dir.mkdir()
+    repo_path = update_skills_repository(f"file://{source}", "main", cache_dir)
+    assert repo_path is not None
+    (source / "version.txt").write_text("v2")
+    subprocess.run(["git", "add", "."], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "v2"], cwd=source, check=True)
 
-    # Create existing repo with .git directory
-    repo_path = cache_dir / "public-skills"
-    repo_path.mkdir()
-    git_dir = repo_path / ".git"
-    git_dir.mkdir()
+    result_path = update_skills_repository(f"file://{source}", "main", cache_dir)
 
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-    # Simulate being on a branch (not detached HEAD) so reset is called
-    mock_result.stdout = "main"
-
-    with patch(
-        "openhands.sdk.git.utils.subprocess.run", return_value=mock_result
-    ) as mock_run:
-        result_path = update_skills_repository(
-            "https://github.com/OpenHands/extensions",
-            "main",
-            cache_dir,
-        )
-
-        assert result_path == repo_path
-        # For a branch ref, the sequence is:
-        #   1. checkout (optimistic local attempt)
-        #   2. rev-parse (detects we're on a branch → fall through to fetch)
-        #   3. fetch
-        #   4. checkout (proper update inside _try_checkout_and_reset)
-        #   5. rev-parse (detects branch again inside _checkout_ref)
-        #   6. reset --hard origin/main
-        assert mock_run.call_count == 6
-        all_commands = [call[0][0] for call in mock_run.call_args_list]
-        assert all_commands[0][:2] == ["git", "checkout"]
-        assert all_commands[1] == ["git", "rev-parse", "--abbrev-ref", "HEAD"]
-        assert all_commands[2][:3] == ["git", "fetch", "origin"]
-        assert all_commands[3][:2] == ["git", "checkout"]
-        assert all_commands[4] == ["git", "rev-parse", "--abbrev-ref", "HEAD"]
-        assert all_commands[5][:3] == ["git", "reset", "--hard"]
+    assert result_path is not None
+    assert result_path == repo_path
+    assert (result_path / "version.txt").read_text() == "v2"
 
 
 def test_update_skills_repository_clone_timeout(tmp_path):
@@ -355,34 +330,18 @@ def test_update_skills_repository_clone_timeout(tmp_path):
 
 
 def test_update_skills_repository_update_fails_uses_cache(tmp_path):
-    """Test that existing cache is used when update fails."""
+    source = _create_skills_git_repo(tmp_path)
     cache_dir = tmp_path / "cache"
-    cache_dir.mkdir()
+    source_url = f"file://{source}"
+    repo_path = update_skills_repository(source_url, "main", cache_dir)
+    source.rename(tmp_path / "offline-source")
 
-    # Create existing repo with .git directory
-    repo_path = cache_dir / "public-skills"
-    repo_path.mkdir()
-    git_dir = repo_path / ".git"
-    git_dir.mkdir()
+    result_path = update_skills_repository(source_url, "main", cache_dir)
 
-    # Mock subprocess.run to return a failed result (non-zero return code)
-    mock_result = MagicMock()
-    mock_result.returncode = 1
-    mock_result.stdout = ""
-    mock_result.stderr = "Error: fetch failed"
-
-    with patch(
-        "openhands.sdk.git.utils.subprocess.run",
-        return_value=mock_result,
-    ):
-        result_path = update_skills_repository(
-            "https://github.com/OpenHands/extensions",
-            "main",
-            cache_dir,
-        )
-
-        # Should still return the cached path even though update failed
-        assert result_path == repo_path
+    assert result_path == repo_path
+    assert repo_path is not None
+    assert (repo_path / "version.txt").read_text() == "v1"
+    assert update_skills_repository(source_url, "main", cache_dir, strict=True) is None
 
 
 def test_agent_context_loads_public_skills(mock_repo_dir, tmp_path):
@@ -971,3 +930,33 @@ def test_load_public_skills_does_not_cache_empty_results(mock_repo_dir, tmp_path
     assert first == []
     assert {s.name for s in second} == {"git", "docker", "testing"}
     assert update_mock.call_count == 2
+
+
+def test_load_public_skills_reads_extensions_path_without_cloning(
+    mock_repo_dir, monkeypatch
+):
+    monkeypatch.setenv("EXTENSIONS_PATH", str(mock_repo_dir))
+
+    with patch("openhands.sdk.skills.skill.update_skills_repository") as update:
+        skills = load_public_skills()
+
+    update.assert_not_called()
+    assert {s.name for s in skills} == {"git", "docker", "testing"}
+
+
+def test_extensions_path_does_not_replace_a_custom_repository(
+    mock_repo_dir, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("EXTENSIONS_PATH", str(tmp_path / "unused"))
+
+    with (
+        patch(
+            "openhands.sdk.skills.skill.update_skills_repository",
+            return_value=mock_repo_dir,
+        ) as update,
+        patch("openhands.sdk.skills.skill.get_skills_cache_dir", return_value=tmp_path),
+    ):
+        skills = load_public_skills(repo_url="https://example.com/skills.git")
+
+    update.assert_called_once()
+    assert {s.name for s in skills} == {"git", "docker", "testing"}

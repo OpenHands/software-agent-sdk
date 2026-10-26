@@ -69,12 +69,19 @@ def apply_llm_call_context(
     context: LLMCallContext,
     *,
     supports_prompt_cache_key: bool = False,
+    openrouter: bool = False,
 ) -> None:
     """Apply SDK-owned call context to provider request options in one place.
 
     ``prompt_cache_key`` is only sent to providers that accept it as an OpenAI
     param (OpenAI Responses/Chat). Anthropic and Gemini reject it with a 400
     ``UnsupportedParamsError`` when litellm validates non-default params.
+
+    ``openrouter`` selects OpenRouter's own affinity parameter: OpenRouter keys
+    sticky routing off ``session_id``, so later turns of a conversation return
+    to the endpoint holding the warm prompt cache. Without it OpenRouter derives
+    the routing key by hashing the opening messages, which agent conversations
+    rewrite as they compact, so affinity is lost mid-run.
     """
     if context.prompt_cache_key and supports_prompt_cache_key:
         options["prompt_cache_key"] = context.prompt_cache_key
@@ -84,3 +91,10 @@ def apply_llm_call_context(
             **existing,
             "x-litellm-session-id": context.session_id,
         }
+        if openrouter:
+            # Merge rather than replace: extra_body may already carry caller
+            # routing (e.g. provider.only) that must survive. An explicit
+            # session_id from the caller wins over the conversation id.
+            extra_body = dict(options.get("extra_body") or {})
+            extra_body.setdefault("session_id", context.session_id)
+            options["extra_body"] = extra_body

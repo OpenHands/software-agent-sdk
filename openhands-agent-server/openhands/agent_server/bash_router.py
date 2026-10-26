@@ -3,7 +3,7 @@
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import (
@@ -119,9 +119,42 @@ async def execute_bash_command(
     _validate_cwd(request, bash_event_service)
     command, task = await bash_event_service.start_bash_command(request)
     await task
-    page = await bash_event_service.search_bash_events(command_id__eq=command.id)
-    result = cast(BashOutput, page.items[-1])
-    return result
+    return await _collect_bash_output(bash_event_service, command.id)
+
+
+async def _collect_bash_output(
+    bash_event_service: BashEventService, command_id: UUID
+) -> BashOutput:
+    """Join every stored output chunk of a finished command into one result.
+
+    Output over ``MAX_CONTENT_CHAR_LENGTH`` is stored as several ``BashOutput``
+    events and only the final one carries the exit code, so read all pages
+    instead of returning the last event of the first page.
+    """
+    outputs: list[BashOutput] = []
+    page_id: str | None = None
+    while True:
+        page = await bash_event_service.search_bash_events(
+            kind__eq="BashOutput", command_id__eq=command_id, page_id=page_id
+        )
+        outputs.extend(item for item in page.items if isinstance(item, BashOutput))
+        page_id = page.next_page_id
+        if not page_id:
+            break
+    if not outputs:
+        return BashOutput(command_id=command_id, exit_code=-1)
+    # Search returns timestamp order; a stable sort keeps it for equal orders.
+    outputs.sort(key=lambda output: output.order)
+    final = outputs[-1]
+    stdout = "".join(output.stdout for output in outputs if output.stdout)
+    stderr = "".join(output.stderr for output in outputs if output.stderr)
+    return final.model_copy(
+        update={
+            "exit_code": -1 if final.exit_code is None else final.exit_code,
+            "stdout": stdout or None,
+            "stderr": stderr or None,
+        }
+    )
 
 
 @bash_router.delete("/bash_events")

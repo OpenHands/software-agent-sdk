@@ -31,8 +31,8 @@ Routes: `GET /api/file/home`, `GET /api/file/search_subdirs`,
 - `F14.auth`: every global and conversation-scoped file route answers 401 without a valid session key, and nothing is written.
 - `F14.upload-download`: a multipart upload creates missing parent directories, a download returns byte-identical bytes as an `application/octet-stream` attachment named after the basename, and a second upload to the same path replaces the content.
 - `F14.upload-errors`: an upload without the `file` part or without `path` is 422, and a relative `path` is 400 `Path must be absolute`.
-- `F14.upload-onto-directory`: uploading onto an existing directory, or to a path whose parent is a file, is a client error (4xx); today it is a masked 500.
-- `F14.upload-size`: the SDK's `RemoteWorkspace.file_upload` and the TypeScript `RemoteWorkspace.fileUpload` report the uploaded `file_size`, as `LocalWorkspace.file_upload` does; today the server sends only `{"success": true}` and both report no size.
+- `F14.upload-onto-directory`: uploading onto an existing directory, or to a path whose parent is a file, is a client error (400), as `create_directory` answers for the same collisions.
+- `F14.upload-size`: the SDK's `RemoteWorkspace.file_upload` and the TypeScript `RemoteWorkspace.fileUpload` report the uploaded `file_size`, as `LocalWorkspace.file_upload` does; the upload response carries it as `{"success": true, "file_size": N}`.
 - `F14.upload-atomic`: an overwrite that fails mid-write leaves the previous file intact; today the target is truncated before streaming and keeps a partial file.
 - `F14.download-errors`: downloading a missing file is 404 `File not found`, a directory 400 `Path is not a file`, a relative path 400.
 - `F14.mkdir`: `create_directory` creates missing parents, is idempotent and keeps existing contents, the new directory is listed by `search_subdirs`, and a path that is or runs through a file is 400.
@@ -46,7 +46,7 @@ Routes: `GET /api/file/home`, `GET /api/file/search_subdirs`,
 - `F14.archive-git-delta`: the default `git-delta` format with `base_ref=HEAD` is a `text/x-patch` of the uncommitted and untracked changes that applies to a clone of HEAD, carries `X-Archive-Base-Commit`, `X-Archive-Base-Ref`, `X-Archive-Branch` and `X-Archive-Head-Commit`, and leaves the repository's index untouched; without `base_ref` on a remote-less repo the patch is against the empty tree and has no base headers; a subdirectory of a repository yields only that subtree's delta.
 - `F14.archive-auto-base`: without `base_ref`, a clone with an `origin` remote is diffed against `origin/<branch>` (the patch holds the local commit and the uncommitted edit, applies to a clone of the origin tip, and carries `X-Archive-Base-Ref: auto`, `X-Archive-Base-Commit` = the origin tip and `X-Archive-Repo-Remote`); a detached HEAD is diffed against HEAD itself.
 - `F14.archive-nested-repo`: archiving a non-repo directory that holds exactly one git repository archives that repository; with two repositories `git-delta` is 400 and `tar.gz` archives the directory itself.
-- `F14.archive-format-doc`: the OpenAPI description of `format` matches what a non-repository directory holding one repository archives; today it promises a tarball of "the entire directory" while only the nested repository is packed.
+- `F14.archive-format-doc`: the OpenAPI description of `format` matches what a non-repository directory holding one repository archives: it does not promise "the entire directory" and says only the nested repository is packed.
 - `F14.archive-errors`: a relative path is 400, a missing directory 404, a file 400, a `base_ref` starting with `-` 400, an unknown `base_ref` 400, an unknown `format` 422, and `git-delta` of a non-repo directory 400.
 - `F14.trajectory`: `GET /api/file/download-trajectory/{id}` returns `<hex>.zip` with `meta.json`, `base_state.json` and one file per event, the LLM `api_key` redacted to `**********` and no Fernet ciphertext, for dashed and hex ids, and leaves no temp zip behind.
 - `F14.trajectory-errors`: an unknown conversation id is 404 `Conversation not found`, a malformed id 422.
@@ -186,24 +186,23 @@ Preconditions:
   ```
   A missing `file` part (or one sent under another field name) and a missing
   `path` are 422 with the missing location; a relative path is 400.
-- **Upload onto a directory (`F14.upload-onto-directory`), known bug.** The
-  caller's path is wrong, which `create_directory` reports as 400 for the
-  same collision; each of the two uploads alone encodes the bug.
+- **Upload onto a directory (`F14.upload-onto-directory`).** The caller's
+  path is wrong, which `create_directory` reports as 400 for the same
+  collision.
   ```sh
   mkdir -p "$F/xfer/is-a-dir"
   control-agent-server api POST /api/file/create_directory --query path="$F/v2.txt/child" --expect 400 \
     --check detail eq 'Path exists and is not a directory'
   control-agent-server api POST /api/file/upload --query path="$F/xfer/is-a-dir" --file file="$F/v2.txt" \
-    --expect 4xx --save F14.upload-onto-directory/upload  # bug: status eq 500 && response.body.exception contains 'Is a directory'
+    --expect 400 --check detail eq 'Path is a directory' --save F14.upload-onto-directory/upload
   control-agent-server api POST /api/file/upload --query path="$F/v2.txt/child" --file file="$F/v2.txt" \
-    --expect 4xx --save F14.upload-onto-directory/parent-is-file  # bug: status eq 500 && response.body.exception contains 'File exists'
+    --expect 400 --check detail eq 'A parent of the path is not a directory' --save F14.upload-onto-directory/parent-is-file
+  test -d "$F/xfer/is-a-dir"
   ```
-  Expected: a 4xx such as 400 `Path exists and is not a directory`, as
-  `create_directory` answers for the same collisions. Actual:
-  `500 {"detail": "Internal Server Error", "exception": "500: Failed to upload file: [Errno 21] Is a directory: ..."}`
-  (`_upload_file` maps every exception to 500). A path whose parent is a file
-  (`$F/v2.txt/child`) fails the same way (`[Errno 17] File exists`).
-- **Upload size in the consumers' result (`F14.upload-size`), known bug.**
+  Uploading onto an existing directory is 400 `Path is a directory`, and a path
+  whose parent is a file (`$F/v2.txt/child`) is 400 `A parent of the path is
+  not a directory`; neither touches what is already there.
+- **Upload size in the consumers' result (`F14.upload-size`).**
   The same 70 kB blob through `LocalWorkspace.file_upload` (the contract the
   remote workspaces mirror), the SDK's `RemoteWorkspace.file_upload` and the
   TypeScript client's `RemoteWorkspace.fileUpload`; each program checks the
@@ -252,16 +251,15 @@ Preconditions:
   control-agent-server exec --expect-output SDK_UPLOAD_OK --save F14.upload-size/sdk -- .venv/bin/python "$F/sdk_size.py" "$F"
   control-agent-server exec --expect-output TS_UPLOAD_OK --save F14.upload-size/ts -- node "$F/ts_size.mjs" "$F"
   control-agent-server api POST /api/file/upload --query path="$F/size/rest.bin" --file file="$F/blob.bin" --expect 200 \
-    --check success eq true --save F14.upload-size/rest
-  control-agent-server assert --value "$(cat "$F/sdk-size.txt")" --check . eq 70000  # bug: value eq None
-  control-agent-server assert --value "$(cat "$F/ts-size.txt")" --check . eq 70000  # bug: value eq undefined
+    --check success eq true --check file_size eq 70000 --save F14.upload-size/rest
+  control-agent-server assert --value "$(cat "$F/sdk-size.txt")" --check . eq 70000
+  control-agent-server assert --value "$(cat "$F/ts-size.txt")" --check . eq 70000
   ```
-  Expected: both remote workspaces report `file_size` 70000, as
-  `LocalWorkspace` does. Actual: every upload lands intact, but the server
-  answers only `{"success": true}` and both clients copy a `file_size` that is
-  never sent: the SDK reports `None`, the TypeScript client `undefined` (its
-  `write_file` tool then says `Successfully wrote undefined bytes`). Either
-  fix (the server sends the size, or the clients compute it) passes.
+  Expected: every upload lands intact, the server answers
+  `{"success": true, "file_size": 70000}` (the bytes it wrote), and both
+  remote workspaces copy that `file_size` into their result, as
+  `LocalWorkspace` reports it (the TypeScript `write_file` tool then says
+  `Successfully wrote 70000 bytes`).
 - **Failed overwrite (`F14.upload-atomic`), known bug.** A second server
   (stopped by the trap) has its file-size limit lowered to 500 kB with
   `prlimit`, the way a full disk or a quota fails a write mid-stream, while a
@@ -384,10 +382,10 @@ Preconditions:
   control-agent-server api GET /api/file/search_subdirs --expect 422
   ```
   The statuses are 404, 400, 400 and 422.
-- **Paging past a case-only twin (`F14.subdirs-case-pagination`), known bug.**
-  `Foo` and `foo` with one entry per page. Which twin sorts first depends on
-  the directory's order on disk, so the recipe reads page one and expects the
-  other twin on page two.
+- **Paging past a case-only twin (`F14.subdirs-case-pagination`).**
+  `Foo` and `foo` with one entry per page. Ties sort by the exact name, so
+  `Foo` comes first; the recipe still reads page one and expects the other
+  twin on page two.
   ```sh
   CASE_DIR="$F/case"
   mkdir -p "$CASE_DIR/Foo" "$CASE_DIR/foo"
@@ -399,13 +397,12 @@ Preconditions:
   test "$CASE_FIRST" = Foo -o "$CASE_FIRST" = foo
   control-agent-server api GET /api/file/search_subdirs --query path="$CASE_DIR" --query limit=1 --query page_id="$CASE_NEXT" \
     --expect 200 --check items len-eq 1 --check items.0.name eq "$CASE_OTHER" --check next_page_id missing \
-    --save F14.subdirs-case-pagination/page-2  # bug: status eq 200 && response.body.next_page_id eq foo && checks.1.ok eq false
+    --save F14.subdirs-case-pagination/page-2
   ```
-  Page one holds one twin and a cursor. Expected: page two holds exactly the
-  other twin and no cursor. Actual: the cursor is `foo`, the lowercase name,
-  and resuming picks the first entry whose lowercase name matches, which is
-  the first page's entry again, with `next_page_id` `foo` again. A client
-  that follows the cursor loops forever.
+  Page one holds one twin and a cursor. Page two holds exactly the other twin
+  and no cursor: ties in the case-insensitive order break by the exact name,
+  and the cursor is the exact name of the next entry, so it tells the twins
+  apart.
 - **tar.gz archive (`F14.archive-tar`).** Archive the fixture repo, then a
   plain tree whose symlinks point inside and outside it.
 
@@ -578,7 +575,7 @@ Preconditions:
   `proj.patch` / `proj.tar.gz`, rooted at `proj/`) and the parent's own
   `top.txt` is not in the tar. With two, the server refuses to guess:
   `git-delta` is 400 and `tar.gz` archives the parent as given.
-- **What `format` promises (`F14.archive-format-doc`), known bug.** The
+- **What `format` promises (`F14.archive-format-doc`).** The
   OpenAPI description of the `format` parameter, against a `tar.gz` of a
   non-repository directory that holds one repository and a file of its own.
   ```sh
@@ -594,15 +591,14 @@ Preconditions:
   tar tzf "$F/doc-parent.tgz" > "$F/doc-parent.list"
   grep -q 'proj/notes.txt$' "$F/doc-parent.list"
   jq -n --arg doc "$DOC_FORMAT" --rawfile list "$F/doc-parent.list" '{doc_entire_directory: ($doc | contains("entire directory")), tar_has_top: ($list | contains("top.txt"))} | .agree = (.tar_has_top or (.doc_entire_directory | not))' \
-    | control-agent-server assert --check agree eq true  # bug: value.doc_entire_directory eq true && value.tar_has_top eq false
+    | control-agent-server assert --check agree eq true
   ```
-  Expected: the description and the archive agree, either by documenting
-  that a directory holding exactly one repository archives only that
-  repository, or by packing the whole directory. Actual: the description
-  says `'tar.gz' for a full gzip tarball of the entire directory (works on
-  non-git directories too)`, while the tar holds only `proj/` and not
-  `top.txt` (the resolution to the nested repository is deliberate, see
-  `archive_directory`, so the description is what drifted).
+  The description and the archive agree: the tar holds only `proj/` and not
+  `top.txt`, and the `format` (and `path`) description says that a
+  non-repository path holding exactly one git repository (up to three levels
+  down) is archived as that repository, so files beside it are not included,
+  instead of promising "the entire directory". The resolution to the nested
+  repository is deliberate (see `archive_directory`).
 - **Archive validation (`F14.archive-errors`).**
 
   Requires: `F14.subdirs`
@@ -831,7 +827,7 @@ Preconditions:
   as many events as before) are all served after the restart, the restored
   conversation still binds its scope (the guard still refuses `WS` through
   `CID2`), and `doctor` is ok.
-- **Init-time conversations path (`F14.trajectory-init-path`), known bug.**
+- **Init-time conversations path (`F14.trajectory-init-path`).**
   A second server starts dormant;
   `POST /api/init` (`--auth init` sends that run's secret key in
   `X-Init-API-Key`) moves its conversations to a fixture directory. The trap
@@ -848,23 +844,21 @@ Preconditions:
   BCID=$(control-agent-server conversation start --run "$B" --tools file_editor --no-autotitle --print-id)
   test -d "$BP/$(printf '%s' "$BCID" | tr -d -)"
   control-agent-server api GET "/api/conversations/$BCID" --run "$B" --expect 200 --check id eq "$BCID"
-  control-agent-server api GET "/api/file/download-trajectory/$BCID" --run "$B" --expect 200 --save F14.trajectory-init-path/global  # bug: status eq 404 && response.body.detail eq 'Conversation not found'
+  control-agent-server api GET "/api/file/download-trajectory/$BCID" --run "$B" --expect 200 --save F14.trajectory-init-path/global
   control-agent-server api GET "/api/conversations/$BCID/file/download-trajectory/$BCID" --run "$B" --expect 200 \
-    --save F14.trajectory-init-path/scoped  # bug: status eq 404 && response.body.detail eq 'Conversation not found'
+    --save F14.trajectory-init-path/scoped
   ```
   The conversation is persisted under the init-time path and `GET` finds it.
-  Expected: both trajectory routes return the zip (each alone encodes the
-  bug). Actual: both answer `404 Conversation not found`:
-  `download_trajectory` reads `get_default_config().conversations_path` (the
-  launch-time default) instead of the config `POST /api/init` installed on
-  `app.state`.
+  Both trajectory routes return its zip: `download_trajectory` reads
+  `conversations_path` from the config `POST /api/init` installed on
+  `app.state`, not the launch-time default.
 
 ## Gotchas
 
 - The upload destination is the `path` query parameter, not a form field, and
-  the multipart field must be named `file`. The response is only
-  `{"success": true}`; the SDK and TypeScript consumers read a `file_size`
-  that is never sent (`F14.upload-size`).
+  the multipart field must be named `file`. The response is
+  `{"success": true, "file_size": N}`, the bytes written; the SDK and
+  TypeScript consumers report that `file_size` (`F14.upload-size`).
 - Upload truncates the target before streaming, so a failed upload can leave
   a partial file; it is not atomic (`F14.upload-atomic`). That recipe lowers
   the second server's `RLIMIT_FSIZE` with `prlimit` (util-linux, Linux only);
@@ -877,8 +871,9 @@ Preconditions:
 - Scoped path checks happen in a router dependency: relative and outside paths
   are 422 there, while the same relative path on a global route is 400.
   `home` and `search_subdirs` have no scoped variant.
-- `search_subdirs`' cursor is the lowercase name of the next entry; an unknown
-  `page_id` silently restarts at the first page, and case-only twins loop
+- `search_subdirs`' cursor is the exact name of the next entry (a lowercase
+  cursor still resumes case-insensitively); an unknown `page_id` silently
+  restarts at the first page. Case-only twins page apart
   (`F14.subdirs-case-pagination`). `home` lists at most 50 favorites, with no
   pagination. 403 (`Permission denied`) cannot be reproduced as root.
 - `F14.home` counts favorites exactly: it relies on the launcher's private
@@ -886,8 +881,8 @@ Preconditions:
 - `archive` resolves the repository to archive: if `path` is not a repository
   but holds exactly one up to three levels down (skipping hidden and vendored
   directories), both formats archive only that repository, so files beside it
-  are not in the `tar.gz` even though the `format` description says "the
-  entire directory" (`F14.archive-format-doc`). Callers that need everything
+  are not in the `tar.gz`; the `format` and `path` descriptions say so
+  (`F14.archive-format-doc`). Callers that need everything
   must pass a path with zero or several repositories, or the repository
   itself.
 - `git-delta` honors the repo's `.gitignore` (`git add -A` on a scratch index);
@@ -926,7 +921,8 @@ Preconditions:
   not that the conversation is loaded; it includes lease files and every
   event file, skips a top-level `acp/` directory, and redacts JSON/JSONL
   credential fields plus any Fernet token. It writes a fixed temp name
-  (`F14.trajectory-concurrent`) and ignores an init-time `conversations_path`
+  (`F14.trajectory-concurrent`) and reads `conversations_path` from the live
+  `app.state.config`, so it follows an init-time path
   (`F14.trajectory-init-path`).
 - No file route emits conversation events or WebSocket frames; their second
   views are downloads, listings, archives and the disk.

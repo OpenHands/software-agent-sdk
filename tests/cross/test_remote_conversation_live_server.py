@@ -5,8 +5,10 @@ while keeping the LLM deterministic via monkeypatching.
 """
 
 import json
+import os
 import shutil
 import sys
+import tempfile
 import textwrap
 import threading
 import time
@@ -28,6 +30,7 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect
 
 from openhands.agent_server.__main__ import preload_modules
+from openhands.agent_server.config import load_config
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.event import (
@@ -43,6 +46,8 @@ from openhands.sdk.event import (
     PauseEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.git.exceptions import GitCommandError
+from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.skills import Skill
 from openhands.sdk.subagent import AgentDefinition
@@ -53,6 +58,7 @@ from openhands.sdk.subagent.registry import (
     register_agent,
     register_agent_if_absent,
 )
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace import RemoteWorkspace
 from openhands.workspace.docker.workspace import find_available_tcp_port
@@ -65,6 +71,7 @@ def live_server_env(
     import_modules: str | None = None,
     session_api_keys: list[str] | None = None,
     deferred_init: bool = False,
+    config_overrides: dict[str, object] | None = None,
 ) -> Generator[dict]:
     """Launch a real FastAPI server backed by temp workspace and conversations.
 
@@ -104,7 +111,7 @@ def live_server_env(
         f"Conversations path not empty: {list(conversations_path.iterdir())}"
     )
 
-    cfg = {
+    cfg: dict[str, object] = {
         "session_api_keys": session_api_keys or [],
         "conversations_path": str(conversations_path),
         "workspace_path": str(workspace_path),
@@ -112,13 +119,17 @@ def live_server_env(
     }
     if deferred_init:
         cfg.update(deferred_init=True, secret_key="test-bootstrap-key")
+    cfg.update(config_overrides or {})
     cfg_file = tmp_path / "config.json"
     cfg_file.write_text(json.dumps(cfg))
 
     # Ensure default config uses our file and disable any env key override
     monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg_file))
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / ".openhands"))
+    monkeypatch.delenv("OH_CONVERSATIONS_PATH", raising=False)
     monkeypatch.delenv("SESSION_API_KEY", raising=False)
+    monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
+    monkeypatch.delenv("TMUX_TMPDIR", raising=False)
 
     if import_modules is not None:
         preload_modules(import_modules)
@@ -269,12 +280,128 @@ def test_deferred_websocket_initialization_lifecycle(
                 assert output == "websocket-ready"
 
 
+@pytest.mark.parametrize(
+    ("stored_key", "previous_keys"),
+    [
+        ("test-old-key", ["test-old-key"]),
+        ("test-current-key", []),
+    ],
+    ids=["rotated-key", "current-key"],
+)
+def test_deferred_init_refreshes_persistence_ciphers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stored_key: str,
+    previous_keys: list[str],
+):
+    with live_server_env(
+        tmp_path, monkeypatch, config_overrides={"secret_key": stored_key}
+    ) as environment:
+        with httpx.Client(base_url=environment["host"], trust_env=False) as client:
+            assert (
+                client.patch(
+                    "/api/settings",
+                    json={"agent_settings_diff": {"llm": {"api_key": "sk-test-saved"}}},
+                ).status_code
+                == 200
+            )
+            assert (
+                client.put(
+                    "/api/settings/secrets",
+                    json={"name": "QA_TOKEN", "value": "test-saved-secret"},
+                ).status_code
+                == 200
+            )
+
+    with live_server_env(
+        tmp_path,
+        monkeypatch,
+        deferred_init=True,
+        config_overrides={
+            "telemetry": {
+                "exporter": "http",
+                "http_endpoint": "http://127.0.0.1:9",
+            },
+        },
+    ) as environment:
+        with httpx.Client(base_url=environment["host"], trust_env=False) as client:
+            response = client.post(
+                "/api/init",
+                headers={"X-Init-API-Key": "test-bootstrap-key"},
+                json={
+                    "secret_key": "test-current-key",
+                    "previous_secret_keys": previous_keys,
+                },
+            )
+            assert response.status_code == 200
+            settings = client.get(
+                "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+            ).json()
+            assert settings["llm_api_key_is_set"] is True
+            assert settings["agent_settings"]["llm"]["api_key"] == "sk-test-saved"
+            assert client.get("/api/settings/secrets/QA_TOKEN").text == (
+                "test-saved-secret"
+            )
+
+            persistence_dir = tmp_path / ".openhands"
+            cipher = Cipher("test-current-key")
+            saved_settings = json.loads((persistence_dir / "settings.json").read_text())
+            saved_secrets = json.loads((persistence_dir / "secrets.json").read_text())
+            assert (
+                cipher.try_decrypt_str(
+                    saved_settings["agent_settings"]["llm"]["api_key"]
+                )
+                == "sk-test-saved"
+            )
+            assert (
+                cipher.try_decrypt_str(
+                    saved_secrets["custom_secrets"]["QA_TOKEN"]["secret"]
+                )
+                == "test-saved-secret"
+            )
+
+            assert (
+                client.patch(
+                    "/api/settings", json={"misc_settings_diff": {"qa_note": True}}
+                ).status_code
+                == 200
+            )
+            assert (
+                client.put(
+                    "/api/settings/secrets", json={"name": "QA_OTHER", "value": "x"}
+                ).status_code
+                == 200
+            )
+
+
 def test_health_endpoints_return_ok_json(server_env):
     with httpx.Client() as client:
         for endpoint in ("/alive", "/health"):
             response = client.get(f"{server_env['host']}{endpoint}", timeout=1.0)
             assert response.status_code == 200
             assert response.json() == {"status": "ok"}
+
+
+@pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix sockets")
+def test_live_server_does_not_use_inherited_tmux_namespace(tmp_path, monkeypatch):
+    with tempfile.TemporaryDirectory(prefix="oh-host-tmux-", dir="/tmp") as shared:
+        monkeypatch.setenv("TMUX_TMPDIR", shared)
+        with live_server_env(tmp_path, monkeypatch):
+            socket_root = os.environ.get("TMUX_TMPDIR")
+            assert socket_root != shared
+            assert socket_root is not None and Path(socket_root).is_dir()
+
+
+def test_live_server_does_not_use_inherited_session_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("OH_SESSION_API_KEYS_0", "host-session-key")
+    with live_server_env(tmp_path, monkeypatch):
+        assert "OH_SESSION_API_KEYS_0" not in os.environ
+
+
+def test_live_server_uses_configured_conversations_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("OH_CONVERSATIONS_PATH", str(tmp_path / "host-conversations"))
+    with live_server_env(tmp_path, monkeypatch):
+        assert load_config().conversations_path == tmp_path / "conversations"
 
 
 def test_prepare_for_sandbox_pause_drains_conversations(server_env):
@@ -380,6 +507,68 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> list[list[Message]]:
 
     monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
     return calls
+
+
+def test_child_launch_in_fresh_workspace_preserves_unborn_repository(
+    server_env, patched_llm
+):
+    workspace = server_env["workspace_path"] / "fresh-parent"
+    workspace.mkdir()
+    original_file = workspace / "parent.txt"
+    original_file.write_text("uncommitted parent work\n")
+    with httpx.Client(base_url=server_env["host"], timeout=30) as client:
+        parent_response = client.post(
+            "/api/conversations",
+            json={
+                "agent": {
+                    "llm": {"model": "gpt-4o-mini", "api_key": "test"},
+                    "tools": [],
+                },
+                "workspace": {"working_dir": str(workspace)},
+                "autotitle": False,
+            },
+        )
+        assert parent_response.status_code == 201
+        parent_id = parent_response.json()["id"]
+        assert (workspace / ".git").is_dir()
+        status_before = run_git_command(["git", "status", "--porcelain"], workspace)
+        head_before = run_git_command(["git", "symbolic-ref", "HEAD"], workspace)
+
+        response = client.post(
+            f"/api/conversations/{parent_id}/children",
+            json={"task": "Reply with ok."},
+        )
+        assert response.status_code == 201, response.text
+        child = response.json()
+        assert child["isolation"] == "shared"
+        assert child["workspace"] == str(workspace)
+        child_id = child["conversation_id"]
+        deadline = time.monotonic() + 10
+        while True:
+            child_info = client.get(f"/api/conversations/{child_id}").json()
+            if child_info["execution_status"] == "finished":
+                break
+            assert time.monotonic() < deadline, child_info["execution_status"]
+            time.sleep(0.05)
+        assert child_info["parent_conversation_id"] == parent_id
+        parent = client.get(f"/api/conversations/{parent_id}").json()
+        assert parent["sub_conversation_ids"] == [child_id]
+        assert (
+            run_git_command(["git", "symbolic-ref", "HEAD"], workspace) == head_before
+        )
+        assert (
+            run_git_command(["git", "status", "--porcelain"], workspace)
+            == status_before
+        )
+        with pytest.raises(GitCommandError):
+            run_git_command(["git", "rev-parse", "--verify", "HEAD"], workspace)
+        assert original_file.read_text() == "uncommitted parent work\n"
+        assert (
+            len(run_git_command(["git", "worktree", "list"], workspace).splitlines())
+            == 1
+        )
+        assert client.delete(f"/api/conversations/{child_id}").status_code == 200
+        assert client.delete(f"/api/conversations/{parent_id}").status_code == 200
 
 
 def test_remote_conversation_websocket_first_message_auth(
@@ -791,6 +980,47 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
     cwd_conversations = Path("workspace/conversations")
     if cwd_conversations.exists():
         shutil.rmtree(cwd_conversations)
+
+
+@pytest.mark.parametrize(
+    "tags", [None, {"purpose": "debugging"}, {"title": "user tag"}]
+)
+def test_remote_fork_title_stays_out_of_tags(server_env, tags: dict[str, str] | None):
+    agent = Agent(llm=LLM(model="gpt-4o-mini", usage_id="test"), tools=[])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    source = Conversation(agent=agent, workspace=workspace, tags={"source": "original"})
+    expected_tags = tags or {}
+    assert isinstance(source, RemoteConversation)
+    try:
+        fork = source.fork(title="Debug investigation", tags=tags)
+        try:
+            response = httpx.get(f"{server_env['host']}/api/conversations/{fork.id}")
+            response.raise_for_status()
+            assert response.json()["title"] == "Debug investigation"
+            assert response.json()["tags"] == expected_tags
+
+            pause = httpx.post(
+                f"{server_env['host']}/api/conversations/prepare-for-sandbox-pause"
+            )
+            pause.raise_for_status()
+            state_file = (
+                server_env["conversation_service"].conversations_dir
+                / fork.id.hex
+                / "base_state.json"
+            )
+            assert json.loads(state_file.read_text())["tags"] == expected_tags
+            metadata_file = state_file.with_name("meta.json")
+            assert json.loads(metadata_file.read_text())["tags"] == expected_tags
+            reloaded = httpx.get(f"{server_env['host']}/api/conversations/{fork.id}")
+            reloaded.raise_for_status()
+            assert reloaded.json()["title"] == "Debug investigation"
+            assert reloaded.json()["tags"] == expected_tags
+        finally:
+            fork.close()
+    finally:
+        source.close()
 
 
 def test_remote_conversation_created_from_agent_settings(server_env):
