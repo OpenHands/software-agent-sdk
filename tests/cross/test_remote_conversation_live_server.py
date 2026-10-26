@@ -13,6 +13,7 @@ import textwrap
 import threading
 import time
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -23,6 +24,7 @@ import httpx
 import pytest
 import uvicorn
 from fastapi import WebSocket
+from filelock import FileLock
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
 from openai.types.responses import ResponseInputItemParam
 from pydantic import SecretStr
@@ -3117,3 +3119,52 @@ def test_interrupt_endpoint_cancels_running_conversation(
         assert events_resp.status_code == 200
         items = events_resp.json()["items"]
         assert len(items) >= 1, f"Expected at least one InterruptEvent, got: {items}"
+
+
+@pytest.mark.parametrize(
+    ("lock_file", "method", "path", "payload", "expected_status"),
+    [
+        ("profiles/.profiles.lock", "GET", "/v1/models", None, 200),
+        (
+            "profiles/.profiles.lock",
+            "PATCH",
+            "/api/settings",
+            {"active_profile": "qa-missing"},
+            404,
+        ),
+        (
+            "agent-profiles/.agent-profiles.lock",
+            "GET",
+            "/api/settings/secrets?agent_profile_id=qa-missing",
+            None,
+            404,
+        ),
+    ],
+)
+def test_profile_store_consumers_keep_live_server_responsive(
+    server_env, tmp_path, lock_file, method, path, payload, expected_status
+):
+    lock_path = tmp_path / ".openhands" / lock_file
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    held = FileLock(lock_path, thread_local=False)
+    held.acquire()
+    safety = threading.Timer(5.0, held.release)
+    safety.start()
+    try:
+        with (
+            httpx.Client(base_url=server_env["host"], timeout=10) as client,
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            waiting = executor.submit(client.request, method, path, json=payload)
+            time.sleep(0.3)
+            started = time.monotonic()
+            alive = client.get("/alive")
+            assert alive.status_code == 200
+            assert time.monotonic() - started < 2.0
+            assert not waiting.done()
+            held.release()
+            response = waiting.result(timeout=5)
+            assert response.status_code == expected_status, response.text
+    finally:
+        safety.cancel()
+        held.release(force=True)
