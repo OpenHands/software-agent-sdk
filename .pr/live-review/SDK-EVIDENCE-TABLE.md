@@ -1,0 +1,17 @@
+# Generated evidence table
+
+Generated with `control-agent-server evidence report` from this new isolated run's ledger: **11 pass**. Private run paths are replaced with links to the curated published receipts. The checkout column is the launch revision recorded by the harness. Actual Python and TypeScript client programs ran from `d352755baaef9db42d2f46dc7d99b163362f11bb`; this source differs only by the client create-response fix. The server budget implementation is unchanged.
+
+| Feature | Run | Checkout | Result | Entry point | Expected | Actual | Evidence |
+|---|---|---|---|---|---|---|---|
+| F04.budget-validation | isolated budget-review | 7af842900b480f4028cb785a47c1abc68049b2c5 | pass | POST /api/conversations | Positive finite cap; null/omission unbounded | 0, -1, Infinity and NaN rejected422; null and omission returned null201 | [sdk-rest-receipts.json](sdk-rest-receipts.json) |
+| F05.budget-finished-over | isolated budget-review | 7af842900b480f4028cb785a47c1abc68049b2c5 | pass | REST + real DeepSeek | Budget contract retained | Finished preserved despite cost0.0003645 above cap1e-8 | [sdk-rest-receipts.json](sdk-rest-receipts.json) |
+| F05.budget-over | isolated budget-review | 7af842900b480f4028cb785a47c1abc68049b2c5 | pass | REST run + real DeepSeek flash | error | error; cap=1e-08; reported cost=0.00023423999999999998 | [sdk-rest-receipts.json](sdk-rest-receipts.json) |
+| F05.budget-under | isolated budget-review | 7af842900b480f4028cb785a47c1abc68049b2c5 | pass | REST run + real DeepSeek flash | finished | finished; cap=0.05; reported cost=0.00038639999999999996 | [sdk-rest-receipts.json](sdk-rest-receipts.json) |
+| F06.budget-over | isolated budget-review | 7af842900b480f4028cb785a47c1abc68049b2c5 | pass | WebSocket stats + REST + base_state.json | Matching cumulative costs | 1 live stats updates; REST and persisted cost/token values identical | [sdk-websocket-receipts.json](sdk-websocket-receipts.json) |
+| F06.budget-under | isolated budget-review | 7af842900b480f4028cb785a47c1abc68049b2c5 | pass | WebSocket stats + REST + base_state.json | Matching cumulative costs | 1 live stats updates; REST and persisted cost/token values identical | [sdk-websocket-receipts.json](sdk-websocket-receipts.json) |
+| F10.budget-over | isolated budget-review | 7af842900b480f4028cb785a47c1abc68049b2c5 | pass | POST /api/conversations/{id}/fork | Cap retained | fork cap=1e-08 | [sdk-rest-receipts.json](sdk-rest-receipts.json) |
+| F10.budget-under | isolated budget-review | 7af842900b480f4028cb785a47c1abc68049b2c5 | pass | POST /api/conversations/{id}/fork | Cap retained | fork cap=0.05 | [sdk-rest-receipts.json](sdk-rest-receipts.json) |
+| F31.budget-restart | isolated budget-review | 7af842900b480f4028cb785a47c1abc68049b2c5 | pass | Restart + GET original and forks | Cap retained | Both original and both fork caps retained after graceful restart | [sdk-rest-receipts.json](sdk-rest-receipts.json) |
+| F33.budget | isolated budget-review | 7af842900b480f4028cb785a47c1abc68049b2c5 | pass | Actual Python SDK through exec | Budget contract retained | Factory run, attach, fork, explicit request and idempotent cap all pass | [sdk-client-receipts.json](sdk-client-receipts.json) |
+| F34.budget | isolated budget-review | 7af842900b480f4028cb785a47c1abc68049b2c5 | pass | Built TypeScript client through exec | Budget contract retained | Manager run, load, fork, constructor override and explicit null all pass | [sdk-client-receipts.json](sdk-client-receipts.json) |

@@ -1,0 +1,29 @@
+{
+  "ok": true,
+  "total": 9,
+  "pages": 1,
+  "more": false,
+  "count": 3,
+  "events": [
+    {
+      "kind": "MessageEvent",
+      "source": "user",
+      "text": "First call think with thought \"budget probe\". Then in a separate later response reply BUDGET_OVER_DONE. Do not finish in the first response. Do not use any othe",
+      "truncated": true,
+      "ts": "2026-10-26T07:01:23.084188"
+    },
+    {
+      "kind": "ActionEvent",
+      "source": "agent",
+      "tool": "think",
+      "text": "",
+      "ts": "2026-10-26T07:01:25.481995"
+    },
+    {
+      "kind": "ConversationErrorEvent",
+      "source": "environment",
+      "text": "MaxBudgetReached: Agent reached maximum budget limit ($0.0000); accumulated cost $0.0026.",
+      "ts": "2026-10-26T07:01:25.486975"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "manager": "2dd1e617-413c-4545-a25b-05e98a268dd5",
+  "fork": "fda97163-340a-42f0-adeb-a1aa3ea3c18b",
+  "explicit": "7d211dd7-673c-4748-8829-e60b493eba75",
+  "unlimited": "5f70c732-bc17-4826-accc-95b5967b5020",
+  "cap": 0.05,
+  "cost": 0.00020364,
+  "status": "finished",
+  "explicit_cap": 0.03,
+  "null_override": true
+}

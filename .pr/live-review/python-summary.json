@@ -1,0 +1,10 @@
+{
+  "factory": "354c8064-580c-45fd-9b7e-5c985ce06d26",
+  "request": "37bd622d-e5d5-4a02-9f7f-754a9896201b",
+  "fork": "14cb9d80-21d0-478a-8084-1f81a614d7e7",
+  "cap": 0.05,
+  "cost": 0.000457308,
+  "status": "finished",
+  "reattach_cap": 0.05,
+  "idempotent_cap": 0.02
+}

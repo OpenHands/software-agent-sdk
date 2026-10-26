@@ -1,0 +1,64 @@
+{
+  "verified_at_utc": "2026-10-26T06:04:35.912923+00:00",
+  "sdk_source_sha": "d352755baaef9db42d2f46dc7d99b163362f11bb",
+  "git_status": "M .pr/budget-design.html",
+  "server": {
+    "version": "1.58.2",
+    "sdk_version": "1.58.2",
+    "build_git_sha": "7af842900b480f4028cb785a47c1abc68049b2c5",
+    "build_git_ref": "codex/conversation-budget-info"
+  },
+  "model": "deepseek/deepseek-flash",
+  "provider_stub_used": false,
+  "reported_original_conversation_cost_usd": 0.003003408,
+  "spend_note": "Excludes duplicate fork metrics. Includes preliminary recipe retries. Profile validation performs one tiny provider call whose cost endpoint does not report.",
+  "runtime_note": "Isolated run launched at7af8429; current source d352755 adds only a Python client echo fix. All actual client checks use current source; server budget implementation is unchanged.",
+  "finished_overshoot": {
+    "id": "fec2d424-d1a3-4259-b5bc-86ba72c9369f",
+    "cap": 1e-08,
+    "cost": 0.0003645,
+    "status": "finished"
+  },
+  "original_conversations": 18,
+  "rest": {
+    "null": "2151d0b8-6577-48a5-8897-bd5413b150cf",
+    "omitted": "0f5e757f-e5d8-42a2-aa2f-674ba8ed5da0",
+    "under": {
+      "id": "5c3d2a65-dc70-4506-95d2-3f47892285dc",
+      "fork": "8bb2a2d8-4ba2-4b6d-a693-fad82c7ab1d2",
+      "cap": 0.05,
+      "cost": 0.00038639999999999996,
+      "status": "finished",
+      "live_stats_updates": 1
+    },
+    "over": {
+      "id": "ca114c75-3807-4c0d-a8ea-7805e37c4f09",
+      "fork": "ff810356-a442-44fa-9409-cb80fa02d56d",
+      "cap": 1e-08,
+      "cost": 0.00023423999999999998,
+      "status": "error",
+      "live_stats_updates": 1
+    }
+  },
+  "python": {
+    "factory": "354c8064-580c-45fd-9b7e-5c985ce06d26",
+    "request": "37bd622d-e5d5-4a02-9f7f-754a9896201b",
+    "fork": "14cb9d80-21d0-478a-8084-1f81a614d7e7",
+    "cap": 0.05,
+    "cost": 0.000457308,
+    "status": "finished",
+    "reattach_cap": 0.05,
+    "idempotent_cap": 0.02
+  },
+  "typescript": {
+    "manager": "2dd1e617-413c-4545-a25b-05e98a268dd5",
+    "fork": "fda97163-340a-42f0-adeb-a1aa3ea3c18b",
+    "explicit": "7d211dd7-673c-4748-8829-e60b493eba75",
+    "unlimited": "5f70c732-bc17-4826-accc-95b5967b5020",
+    "cap": 0.05,
+    "cost": 0.00020364,
+    "status": "finished",
+    "explicit_cap": 0.03,
+    "null_override": true
+  }
+}

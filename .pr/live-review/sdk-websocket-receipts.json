@@ -1,0 +1,137 @@
+[
+  {
+    "source": "over-2035a3d0.jsonl",
+    "sha256": "54c071d7d0f2e5d487eb174455a128fcf3f07201eeb5952865075a03f28f74be",
+    "conversation_ids": [
+      "ca114c75-3807-4c0d-a8ea-7805e37c4f09"
+    ],
+    "frames": [
+      {
+        "direction": "received",
+        "at": "2026-10-26T05:59:11Z",
+        "kind": "ConversationStateUpdateEvent",
+        "frame": {
+          "id": "190856ed-b726-47f9-a57f-1963ccd45d6c",
+          "timestamp": "2026-10-26T06:59:11.014267",
+          "source": "environment",
+          "parent_id": "7d293e6f-ce66-44a5-9f59-d26645099f9d",
+          "key": "stats",
+          "value": {
+            "usage_to_metrics": {
+              "default": {
+                "model_name": "deepseek/deepseek-flash",
+                "accumulated_cost": 0.00023423999999999998,
+                "max_budget_per_task": null,
+                "accumulated_token_usage": {
+                  "model": "deepseek/deepseek-flash",
+                  "prompt_tokens": 4100,
+                  "completion_tokens": 111,
+                  "cache_read_tokens": 3840,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": 52,
+                  "context_window": 1000000,
+                  "per_turn_token": 4211,
+                  "response_id": ""
+                }
+              },
+              "condenser": {
+                "model_name": "deepseek/deepseek-flash",
+                "accumulated_cost": 0.0,
+                "max_budget_per_task": null,
+                "accumulated_token_usage": {
+                  "model": "deepseek/deepseek-flash",
+                  "prompt_tokens": 0,
+                  "completion_tokens": 0,
+                  "cache_read_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": 0,
+                  "context_window": 0,
+                  "per_turn_token": 0,
+                  "response_id": ""
+                }
+              }
+            }
+          },
+          "kind": "ConversationStateUpdateEvent"
+        }
+      },
+      {
+        "direction": "received",
+        "at": "2026-10-26T05:59:11Z",
+        "kind": "ConversationErrorEvent",
+        "frame": {
+          "id": "6187b10e-8732-4551-9bbb-5e0e23661be2",
+          "timestamp": "2026-10-26T06:59:11.028764",
+          "source": "environment",
+          "parent_id": "95da4608-715d-4ce2-a73f-0f444157bb6b",
+          "code": "MaxBudgetReached",
+          "detail": "Agent reached maximum budget limit ($0.0000); accumulated cost $0.0002.",
+          "classification": {
+            "kind": "quota",
+            "retryable": false,
+            "user_action": "settings"
+          },
+          "kind": "ConversationErrorEvent"
+        }
+      }
+    ]
+  },
+  {
+    "source": "under-aa209e20.jsonl",
+    "sha256": "36f01abfe68d942477460ca8c695332f4b3fecd28813d7bd0ccb14929a4e407a",
+    "conversation_ids": [
+      "5c3d2a65-dc70-4506-95d2-3f47892285dc"
+    ],
+    "frames": [
+      {
+        "direction": "received",
+        "at": "2026-10-26T05:59:05Z",
+        "kind": "ConversationStateUpdateEvent",
+        "frame": {
+          "id": "1b7363cb-6bf5-473e-99aa-af48a84d35a8",
+          "timestamp": "2026-10-26T06:59:05.745699",
+          "source": "environment",
+          "parent_id": "bcc26110-059a-4806-8997-261bf83d8844",
+          "key": "stats",
+          "value": {
+            "usage_to_metrics": {
+              "default": {
+                "model_name": "deepseek/deepseek-flash",
+                "accumulated_cost": 0.00038639999999999996,
+                "max_budget_per_task": null,
+                "accumulated_token_usage": {
+                  "model": "deepseek/deepseek-flash",
+                  "prompt_tokens": 4080,
+                  "completion_tokens": 86,
+                  "cache_read_tokens": 3200,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": 22,
+                  "context_window": 1000000,
+                  "per_turn_token": 4166,
+                  "response_id": ""
+                }
+              },
+              "condenser": {
+                "model_name": "deepseek/deepseek-flash",
+                "accumulated_cost": 0.0,
+                "max_budget_per_task": null,
+                "accumulated_token_usage": {
+                  "model": "deepseek/deepseek-flash",
+                  "prompt_tokens": 0,
+                  "completion_tokens": 0,
+                  "cache_read_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": 0,
+                  "context_window": 0,
+                  "per_turn_token": 0,
+                  "response_id": ""
+                }
+              }
+            }
+          },
+          "kind": "ConversationStateUpdateEvent"
+        }
+      }
+    ]
+  }
+]

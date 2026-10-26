@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "total": 14,
+  "pages": 1,
+  "more": false,
+  "count": 4,
+  "events": [
+    {
+      "kind": "MessageEvent",
+      "source": "user",
+      "text": "Reply exactly BUDGET_UI_OK. Do not run any tools. Do not inspect files or run commands.",
+      "ts": "2026-10-26T06:57:58.728683"
+    },
+    {
+      "kind": "MessageEvent",
+      "source": "agent",
+      "text": "BUDGET_UI_OK",
+      "ts": "2026-10-26T06:58:00.206682"
+    },
+    {
+      "kind": "MessageEvent",
+      "source": "user",
+      "text": "Reply exactly BUDGET_UI_SECOND_OK. Do not run any tools. Do not inspect files or run commands.",
+      "ts": "2026-10-26T06:58:42.079644"
+    },
+    {
+      "kind": "MessageEvent",
+      "source": "agent",
+      "text": "BUDGET_UI_SECOND_OK",
+      "ts": "2026-10-26T06:58:43.335372"
+    }
+  ]
+}

@@ -1,0 +1,190 @@
+{
+  "ok": true,
+  "since": "last clear",
+  "summary": {
+    "app:http-error": 7,
+    "app:console.error": 10,
+    "app:websocket-error": 3
+  },
+  "pageErrors": 0,
+  "appErrors": 20,
+  "warnings": 0,
+  "events": [
+    {
+      "ts": "2026-10-26T05:58:16.456Z",
+      "kind": "http-error",
+      "page": "http://127.0.0.1:18800/conversations/9fc6b24e-bcd9-425c-8c27-b0a09485cc45",
+      "appOrigin": true,
+      "url": "http://127.0.0.1:18800/api/llm/balance",
+      "method": "GET",
+      "status": 404
+    },
+    {
+      "ts": "2026-10-26T05:58:16.457Z",
+      "kind": "console.error",
+      "page": "http://127.0.0.1:18800/conversations/9fc6b24e-bcd9-425c-8c27-b0a09485cc45",
+      "appOrigin": true,
+      "message": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "url": "http://127.0.0.1:18800/api/llm/balance"
+    },
+    {
+      "ts": "2026-10-26T05:58:41.371Z",
+      "kind": "http-error",
+      "page": "http://127.0.0.1:18800/conversations/9fc6b24e-bcd9-425c-8c27-b0a09485cc45",
+      "appOrigin": true,
+      "url": "http://127.0.0.1:18800/api/llm/balance",
+      "method": "GET",
+      "status": 404
+    },
+    {
+      "ts": "2026-10-26T05:58:41.371Z",
+      "kind": "console.error",
+      "page": "http://127.0.0.1:18800/conversations/9fc6b24e-bcd9-425c-8c27-b0a09485cc45",
+      "appOrigin": true,
+      "message": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "url": "http://127.0.0.1:18800/api/llm/balance"
+    },
+    {
+      "ts": "2026-10-26T06:00:02.814Z",
+      "kind": "http-error",
+      "page": "http://127.0.0.1:18800/conversations/f4c36de1-0777-46d7-83b5-940f82d210ec",
+      "appOrigin": true,
+      "url": "http://127.0.0.1:18800/api/llm/balance",
+      "method": "GET",
+      "status": 404
+    },
+    {
+      "ts": "2026-10-26T06:00:02.814Z",
+      "kind": "console.error",
+      "page": "http://127.0.0.1:18800/conversations/f4c36de1-0777-46d7-83b5-940f82d210ec",
+      "appOrigin": true,
+      "message": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "url": "http://127.0.0.1:18800/api/llm/balance"
+    },
+    {
+      "ts": "2026-10-26T06:00:24.880Z",
+      "kind": "http-error",
+      "page": "http://127.0.0.1:18800/conversations/f4c36de1-0777-46d7-83b5-940f82d210ec",
+      "appOrigin": true,
+      "url": "http://127.0.0.1:18800/api/llm/balance",
+      "method": "GET",
+      "status": 404
+    },
+    {
+      "ts": "2026-10-26T06:00:24.880Z",
+      "kind": "console.error",
+      "page": "http://127.0.0.1:18800/conversations/f4c36de1-0777-46d7-83b5-940f82d210ec",
+      "appOrigin": true,
+      "message": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "url": "http://127.0.0.1:18800/api/llm/balance"
+    },
+    {
+      "ts": "2026-10-26T06:00:52.083Z",
+      "kind": "http-error",
+      "page": "http://127.0.0.1:18800/conversations/f4c36de1-0777-46d7-83b5-940f82d210ec/panel",
+      "appOrigin": true,
+      "url": "http://127.0.0.1:18800/api/llm/balance",
+      "method": "GET",
+      "status": 404
+    },
+    {
+      "ts": "2026-10-26T06:00:52.084Z",
+      "kind": "console.error",
+      "page": "http://127.0.0.1:18800/conversations/f4c36de1-0777-46d7-83b5-940f82d210ec/panel",
+      "appOrigin": true,
+      "message": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "url": "http://127.0.0.1:18800/api/llm/balance"
+    },
+    {
+      "ts": "2026-10-26T06:03:04.672Z",
+      "kind": "http-error",
+      "page": "http://127.0.0.1:18800/conversations/442115c1-470f-4fb5-a6bf-46b45c1ef6b6",
+      "appOrigin": true,
+      "url": "http://127.0.0.1:18800/api/llm/balance",
+      "method": "GET",
+      "status": 404
+    },
+    {
+      "ts": "2026-10-26T06:03:04.672Z",
+      "kind": "console.error",
+      "page": "http://127.0.0.1:18800/conversations/442115c1-470f-4fb5-a6bf-46b45c1ef6b6",
+      "appOrigin": true,
+      "message": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "url": "http://127.0.0.1:18800/api/llm/balance"
+    },
+    {
+      "ts": "2026-10-26T06:03:27.575Z",
+      "kind": "websocket-error",
+      "page": "http://127.0.0.1:18800/conversations/442115c1-470f-4fb5-a6bf-46b45c1ef6b6",
+      "appOrigin": true,
+      "connectionId": "2cabe3a211ae7e29",
+      "url": "ws://127.0.0.1:18800/sockets/session/442115c1-470f-4fb5-a6bf-46b45c1ef6b6?after_seq=8",
+      "afterSeq": "8",
+      "receivedFrames": 0,
+      "sentFrames": 0
+    },
+    {
+      "ts": "2026-10-26T06:03:27.575Z",
+      "kind": "console.error",
+      "page": "http://127.0.0.1:18800/conversations/442115c1-470f-4fb5-a6bf-46b45c1ef6b6",
+      "appOrigin": true,
+      "message": "WebSocket connection to 'ws://127.0.0.1:18800/sockets/session/442115c1-470f-4fb5-a6bf-46b45c1ef6b6?after_seq=8' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED",
+      "url": "http://127.0.0.1:18800/assets/markdown-renderer-BTZHM4gj.js"
+    },
+    {
+      "ts": "2026-10-26T06:03:29.673Z",
+      "kind": "websocket-error",
+      "page": "http://127.0.0.1:18800/conversations/442115c1-470f-4fb5-a6bf-46b45c1ef6b6",
+      "appOrigin": true,
+      "connectionId": "c5595dd2276652db",
+      "url": "ws://127.0.0.1:18800/sockets/session/442115c1-470f-4fb5-a6bf-46b45c1ef6b6?after_seq=8",
+      "afterSeq": "8",
+      "receivedFrames": 0,
+      "sentFrames": 0
+    },
+    {
+      "ts": "2026-10-26T06:03:29.673Z",
+      "kind": "console.error",
+      "page": "http://127.0.0.1:18800/conversations/442115c1-470f-4fb5-a6bf-46b45c1ef6b6",
+      "appOrigin": true,
+      "message": "WebSocket connection to 'ws://127.0.0.1:18800/sockets/session/442115c1-470f-4fb5-a6bf-46b45c1ef6b6?after_seq=8' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED",
+      "url": "http://127.0.0.1:18800/assets/markdown-renderer-BTZHM4gj.js"
+    },
+    {
+      "ts": "2026-10-26T06:03:34.371Z",
+      "kind": "websocket-error",
+      "page": "http://127.0.0.1:18800/conversations/442115c1-470f-4fb5-a6bf-46b45c1ef6b6",
+      "appOrigin": true,
+      "connectionId": "8e34581c424b038b",
+      "url": "ws://127.0.0.1:18800/sockets/session/442115c1-470f-4fb5-a6bf-46b45c1ef6b6?after_seq=8",
+      "afterSeq": "8",
+      "receivedFrames": 0,
+      "sentFrames": 0
+    },
+    {
+      "ts": "2026-10-26T06:03:34.371Z",
+      "kind": "console.error",
+      "page": "http://127.0.0.1:18800/conversations/442115c1-470f-4fb5-a6bf-46b45c1ef6b6",
+      "appOrigin": true,
+      "message": "WebSocket connection to 'ws://127.0.0.1:18800/sockets/session/442115c1-470f-4fb5-a6bf-46b45c1ef6b6?after_seq=8' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED",
+      "url": "http://127.0.0.1:18800/assets/markdown-renderer-BTZHM4gj.js"
+    },
+    {
+      "ts": "2026-10-26T06:03:58.622Z",
+      "kind": "http-error",
+      "page": "http://127.0.0.1:18800/conversations/442115c1-470f-4fb5-a6bf-46b45c1ef6b6",
+      "appOrigin": true,
+      "url": "http://127.0.0.1:18800/api/llm/balance",
+      "method": "GET",
+      "status": 404
+    },
+    {
+      "ts": "2026-10-26T06:03:58.622Z",
+      "kind": "console.error",
+      "page": "http://127.0.0.1:18800/conversations/442115c1-470f-4fb5-a6bf-46b45c1ef6b6",
+      "appOrigin": true,
+      "message": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "url": "http://127.0.0.1:18800/api/llm/balance"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "total": 7,
+  "pages": 1,
+  "more": false,
+  "count": 2,
+  "events": [
+    {
+      "kind": "MessageEvent",
+      "source": "user",
+      "text": "Reply exactly CAPPED_UI_OK. Do not run any tools. Do not inspect files or run commands.",
+      "ts": "2026-10-26T06:59:45.660536"
+    },
+    {
+      "kind": "MessageEvent",
+      "source": "agent",
+      "text": "CAPPED_UI_OK",
+      "ts": "2026-10-26T06:59:47.015194"
+    }
+  ]
+}

@@ -1,0 +1,609 @@
+[
+  {
+    "source": "F04.budget/zero-2.json",
+    "sha256": "4a35c32d84c0b595c1085d594ba14b4196a2174566dc60400e2e9c2ebb6bc766",
+    "status": 422,
+    "request": {
+      "method": "POST",
+      "path": "/api/conversations"
+    },
+    "response": {
+      "detail": [
+        {
+          "type": "greater_than",
+          "loc": [
+            "body",
+            "max_budget_per_run"
+          ],
+          "msg": "Input should be greater than 0",
+          "input": 0,
+          "ctx": {
+            "gt": 0.0
+          }
+        }
+      ]
+    }
+  },
+  {
+    "source": "F04.budget/negative-2.json",
+    "sha256": "9603820c16b919b2d17fb262417de9ec88fe2bc2b9ca6e3df779bc9e844919a8",
+    "status": 422,
+    "request": {
+      "method": "POST",
+      "path": "/api/conversations"
+    },
+    "response": {
+      "detail": [
+        {
+          "type": "greater_than",
+          "loc": [
+            "body",
+            "max_budget_per_run"
+          ],
+          "msg": "Input should be greater than 0",
+          "input": -1,
+          "ctx": {
+            "gt": 0.0
+          }
+        }
+      ]
+    }
+  },
+  {
+    "source": "F04.budget/nonfinite-2.json",
+    "sha256": "a03be2a20c4d6713347d6fbf52721343caf34b3987ae79d8f54c646b96d48c76",
+    "status": 422,
+    "request": {
+      "method": "POST",
+      "path": "/api/conversations"
+    },
+    "response": {
+      "detail": [
+        {
+          "type": "finite_number",
+          "loc": [
+            "body",
+            "max_budget_per_run"
+          ],
+          "msg": "Input should be a finite number",
+          "input": "Infinity"
+        }
+      ]
+    }
+  },
+  {
+    "source": "F04.budget/nan-2.json",
+    "sha256": "d88243066a01745ea7a9da975738e2bda3266af10b9ce3677dfadd9e2e194e47",
+    "status": 422,
+    "request": {
+      "method": "POST",
+      "path": "/api/conversations"
+    },
+    "response": {
+      "detail": [
+        {
+          "type": "finite_number",
+          "loc": [
+            "body",
+            "max_budget_per_run"
+          ],
+          "msg": "Input should be a finite number",
+          "input": "NaN"
+        }
+      ]
+    }
+  },
+  {
+    "source": "F04.budget/null-2.json",
+    "sha256": "e74ab44b6e7c6d20dc4138007ef1fff0afea6aa246896e74ad0469a38fd0ab36",
+    "status": 201,
+    "request": {
+      "method": "POST",
+      "path": "/api/conversations"
+    },
+    "response": {
+      "id": "2151d0b8-6577-48a5-8897-bd5413b150cf",
+      "max_budget_per_run": null,
+      "execution_status": "idle",
+      "stats": {
+        "usage_to_metrics": {}
+      },
+      "forked_from_conversation_id": null
+    }
+  },
+  {
+    "source": "F04.budget/omitted-2.json",
+    "sha256": "b3e8028f87d9024588e01e3ad0a129f2fbef4cc22c15cb03d5d2892a96f373ec",
+    "status": 201,
+    "request": {
+      "method": "POST",
+      "path": "/api/conversations"
+    },
+    "response": {
+      "id": "0f5e757f-e5d8-42a2-aa2f-674ba8ed5da0",
+      "max_budget_per_run": null,
+      "execution_status": "idle",
+      "stats": {
+        "usage_to_metrics": {}
+      },
+      "forked_from_conversation_id": null
+    }
+  },
+  {
+    "source": "F05.budget/under-stats-3.json",
+    "sha256": "2e49f65536007fde939e37de3c8e184dfeac6aa9799474581634ecb2ebe24ae7",
+    "status": 200,
+    "request": {
+      "method": "GET",
+      "path": "/api/conversations/5c3d2a65-dc70-4506-95d2-3f47892285dc"
+    },
+    "response": {
+      "id": "5c3d2a65-dc70-4506-95d2-3f47892285dc",
+      "max_budget_per_run": 0.05,
+      "execution_status": "finished",
+      "stats": {
+        "usage_to_metrics": {
+          "default": {
+            "model_name": "deepseek/deepseek-flash",
+            "accumulated_cost": 0.00038639999999999996,
+            "max_budget_per_task": null,
+            "accumulated_token_usage": {
+              "model": "deepseek/deepseek-flash",
+              "prompt_tokens": 4080,
+              "completion_tokens": 86,
+              "cache_read_tokens": 3200,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 22,
+              "context_window": 1000000,
+              "per_turn_token": 4166,
+              "response_id": ""
+            },
+            "costs": [
+              {
+                "model": "deepseek/deepseek-flash",
+                "cost": 0.00038639999999999996,
+                "timestamp": 1792994345.73992
+              }
+            ],
+            "response_latencies": [
+              {
+                "model": "deepseek/deepseek-flash",
+                "latency": 1.218315839767456,
+                "response_id": "f31db60b-d486-4aac-8956-eb5b41fbdaad"
+              }
+            ],
+            "token_usages": [
+              {
+                "model": "deepseek/deepseek-flash",
+                "prompt_tokens": 4080,
+                "completion_tokens": 86,
+                "cache_read_tokens": 3200,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 22,
+                "context_window": 1000000,
+                "per_turn_token": 4166,
+                "response_id": "f31db60b-d486-4aac-8956-eb5b41fbdaad"
+              }
+            ]
+          },
+          "condenser": {
+            "model_name": "deepseek/deepseek-flash",
+            "accumulated_cost": 0.0,
+            "max_budget_per_task": null,
+            "accumulated_token_usage": {
+              "model": "deepseek/deepseek-flash",
+              "prompt_tokens": 0,
+              "completion_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 0,
+              "context_window": 0,
+              "per_turn_token": 0,
+              "response_id": ""
+            },
+            "costs": [],
+            "response_latencies": [],
+            "token_usages": []
+          }
+        }
+      },
+      "forked_from_conversation_id": null
+    }
+  },
+  {
+    "source": "F05.budget/over-stats.json",
+    "sha256": "79efb354f1893d19a00af97680d36615f5d5237475143f60961970155dc98cd8",
+    "status": 200,
+    "request": {
+      "method": "GET",
+      "path": "/api/conversations/ca114c75-3807-4c0d-a8ea-7805e37c4f09"
+    },
+    "response": {
+      "id": "ca114c75-3807-4c0d-a8ea-7805e37c4f09",
+      "max_budget_per_run": 1e-08,
+      "execution_status": "error",
+      "stats": {
+        "usage_to_metrics": {
+          "default": {
+            "model_name": "deepseek/deepseek-flash",
+            "accumulated_cost": 0.00023423999999999998,
+            "max_budget_per_task": null,
+            "accumulated_token_usage": {
+              "model": "deepseek/deepseek-flash",
+              "prompt_tokens": 4100,
+              "completion_tokens": 111,
+              "cache_read_tokens": 3840,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 52,
+              "context_window": 1000000,
+              "per_turn_token": 4211,
+              "response_id": ""
+            },
+            "costs": [
+              {
+                "model": "deepseek/deepseek-flash",
+                "cost": 0.00023423999999999998,
+                "timestamp": 1792994351.013803
+              }
+            ],
+            "response_latencies": [
+              {
+                "model": "deepseek/deepseek-flash",
+                "latency": 1.5941648483276367,
+                "response_id": "3a4da3ae-525e-44c5-b37a-bc4bc0f96b9b"
+              }
+            ],
+            "token_usages": [
+              {
+                "model": "deepseek/deepseek-flash",
+                "prompt_tokens": 4100,
+                "completion_tokens": 111,
+                "cache_read_tokens": 3840,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 52,
+                "context_window": 1000000,
+                "per_turn_token": 4211,
+                "response_id": "3a4da3ae-525e-44c5-b37a-bc4bc0f96b9b"
+              }
+            ]
+          },
+          "condenser": {
+            "model_name": "deepseek/deepseek-flash",
+            "accumulated_cost": 0.0,
+            "max_budget_per_task": null,
+            "accumulated_token_usage": {
+              "model": "deepseek/deepseek-flash",
+              "prompt_tokens": 0,
+              "completion_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 0,
+              "context_window": 0,
+              "per_turn_token": 0,
+              "response_id": ""
+            },
+            "costs": [],
+            "response_latencies": [],
+            "token_usages": []
+          }
+        }
+      },
+      "forked_from_conversation_id": null
+    }
+  },
+  {
+    "source": "F05.budget/finished-over-stats.json",
+    "sha256": "ac126fbd97429318886b7d6880403b4b6c7d7ff1845ad96f68145a005372c6b8",
+    "status": 200,
+    "request": {
+      "method": "GET",
+      "path": "/api/conversations/fec2d424-d1a3-4259-b5bc-86ba72c9369f"
+    },
+    "response": {
+      "id": "fec2d424-d1a3-4259-b5bc-86ba72c9369f",
+      "max_budget_per_run": 1e-08,
+      "execution_status": "finished",
+      "stats": {
+        "usage_to_metrics": {
+          "default": {
+            "model_name": "deepseek/deepseek-flash",
+            "accumulated_cost": 0.00036449999999999997,
+            "max_budget_per_task": null,
+            "accumulated_token_usage": {
+              "model": "deepseek/deepseek-flash",
+              "prompt_tokens": 4083,
+              "completion_tokens": 67,
+              "cache_read_tokens": 3200,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 0,
+              "context_window": 1000000,
+              "per_turn_token": 4150,
+              "response_id": ""
+            },
+            "costs": [
+              {
+                "model": "deepseek/deepseek-flash",
+                "cost": 0.00036449999999999997,
+                "timestamp": 1792994499.598356
+              }
+            ],
+            "response_latencies": [
+              {
+                "model": "deepseek/deepseek-flash",
+                "latency": 1.3845338821411133,
+                "response_id": "37f0e679-76a2-4dd2-af9c-f5fab6854c13"
+              }
+            ],
+            "token_usages": [
+              {
+                "model": "deepseek/deepseek-flash",
+                "prompt_tokens": 4083,
+                "completion_tokens": 67,
+                "cache_read_tokens": 3200,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+                "context_window": 1000000,
+                "per_turn_token": 4150,
+                "response_id": "37f0e679-76a2-4dd2-af9c-f5fab6854c13"
+              }
+            ]
+          },
+          "condenser": {
+            "model_name": "deepseek/deepseek-flash",
+            "accumulated_cost": 0.0,
+            "max_budget_per_task": null,
+            "accumulated_token_usage": {
+              "model": "deepseek/deepseek-flash",
+              "prompt_tokens": 0,
+              "completion_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 0,
+              "context_window": 0,
+              "per_turn_token": 0,
+              "response_id": ""
+            },
+            "costs": [],
+            "response_latencies": [],
+            "token_usages": []
+          }
+        }
+      },
+      "forked_from_conversation_id": null
+    }
+  },
+  {
+    "source": "F10.budget/under-fork.json",
+    "sha256": "008cca45071e3d6bd1620f359f7a9f1d4b9803ce8d7adba6312055d3ac94261a",
+    "status": 201,
+    "request": {
+      "method": "POST",
+      "path": "/api/conversations/5c3d2a65-dc70-4506-95d2-3f47892285dc/fork"
+    },
+    "response": {
+      "id": "8bb2a2d8-4ba2-4b6d-a693-fad82c7ab1d2",
+      "max_budget_per_run": 0.05,
+      "execution_status": "idle",
+      "stats": {
+        "usage_to_metrics": {}
+      },
+      "forked_from_conversation_id": "5c3d2a65-dc70-4506-95d2-3f47892285dc"
+    }
+  },
+  {
+    "source": "F10.budget/over-fork.json",
+    "sha256": "46643ac24833e22d1d4d0e33188b6f90af1483e69675581ba5df270e850bb2ac",
+    "status": 201,
+    "request": {
+      "method": "POST",
+      "path": "/api/conversations/ca114c75-3807-4c0d-a8ea-7805e37c4f09/fork"
+    },
+    "response": {
+      "id": "ff810356-a442-44fa-9409-cb80fa02d56d",
+      "max_budget_per_run": 1e-08,
+      "execution_status": "idle",
+      "stats": {
+        "usage_to_metrics": {}
+      },
+      "forked_from_conversation_id": "ca114c75-3807-4c0d-a8ea-7805e37c4f09"
+    }
+  },
+  {
+    "source": "F31.budget/under-id-restart.json",
+    "sha256": "11dfd7dc222b71466f0baf1c8009f231b230f73e6e8bba69eaf77cff6d5a28bc",
+    "status": 200,
+    "request": {
+      "method": "GET",
+      "path": "/api/conversations/5c3d2a65-dc70-4506-95d2-3f47892285dc"
+    },
+    "response": {
+      "id": "5c3d2a65-dc70-4506-95d2-3f47892285dc",
+      "max_budget_per_run": 0.05,
+      "execution_status": "finished",
+      "stats": {
+        "usage_to_metrics": {
+          "default": {
+            "model_name": "deepseek/deepseek-flash",
+            "accumulated_cost": 0.00038639999999999996,
+            "max_budget_per_task": null,
+            "accumulated_token_usage": {
+              "model": "deepseek/deepseek-flash",
+              "prompt_tokens": 4080,
+              "completion_tokens": 86,
+              "cache_read_tokens": 3200,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 22,
+              "context_window": 1000000,
+              "per_turn_token": 4166,
+              "response_id": ""
+            },
+            "costs": [
+              {
+                "model": "deepseek/deepseek-flash",
+                "cost": 0.00038639999999999996,
+                "timestamp": 1792994345.73992
+              }
+            ],
+            "response_latencies": [
+              {
+                "model": "deepseek/deepseek-flash",
+                "latency": 1.218315839767456,
+                "response_id": "f31db60b-d486-4aac-8956-eb5b41fbdaad"
+              }
+            ],
+            "token_usages": [
+              {
+                "model": "deepseek/deepseek-flash",
+                "prompt_tokens": 4080,
+                "completion_tokens": 86,
+                "cache_read_tokens": 3200,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 22,
+                "context_window": 1000000,
+                "per_turn_token": 4166,
+                "response_id": "f31db60b-d486-4aac-8956-eb5b41fbdaad"
+              }
+            ]
+          },
+          "condenser": {
+            "model_name": "deepseek/deepseek-flash",
+            "accumulated_cost": 0.0,
+            "max_budget_per_task": null,
+            "accumulated_token_usage": {
+              "model": "deepseek/deepseek-flash",
+              "prompt_tokens": 0,
+              "completion_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 0,
+              "context_window": 0,
+              "per_turn_token": 0,
+              "response_id": ""
+            },
+            "costs": [],
+            "response_latencies": [],
+            "token_usages": []
+          }
+        }
+      },
+      "forked_from_conversation_id": null
+    }
+  },
+  {
+    "source": "F31.budget/under-fork-restart.json",
+    "sha256": "cfdd23cb79a3d5395a46beb8c6cb4d13b7f8246e0569d07b3145e805afa35a3c",
+    "status": 200,
+    "request": {
+      "method": "GET",
+      "path": "/api/conversations/8bb2a2d8-4ba2-4b6d-a693-fad82c7ab1d2"
+    },
+    "response": {
+      "id": "8bb2a2d8-4ba2-4b6d-a693-fad82c7ab1d2",
+      "max_budget_per_run": 0.05,
+      "execution_status": "idle",
+      "stats": {
+        "usage_to_metrics": {}
+      },
+      "forked_from_conversation_id": "5c3d2a65-dc70-4506-95d2-3f47892285dc"
+    }
+  },
+  {
+    "source": "F31.budget/over-id-restart.json",
+    "sha256": "d57f31e3a4f516f74fa37962a5e00c4017851717f570305e8dfd613a9d26390a",
+    "status": 200,
+    "request": {
+      "method": "GET",
+      "path": "/api/conversations/ca114c75-3807-4c0d-a8ea-7805e37c4f09"
+    },
+    "response": {
+      "id": "ca114c75-3807-4c0d-a8ea-7805e37c4f09",
+      "max_budget_per_run": 1e-08,
+      "execution_status": "error",
+      "stats": {
+        "usage_to_metrics": {
+          "default": {
+            "model_name": "deepseek/deepseek-flash",
+            "accumulated_cost": 0.00023423999999999998,
+            "max_budget_per_task": null,
+            "accumulated_token_usage": {
+              "model": "deepseek/deepseek-flash",
+              "prompt_tokens": 4100,
+              "completion_tokens": 111,
+              "cache_read_tokens": 3840,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 52,
+              "context_window": 1000000,
+              "per_turn_token": 4211,
+              "response_id": ""
+            },
+            "costs": [
+              {
+                "model": "deepseek/deepseek-flash",
+                "cost": 0.00023423999999999998,
+                "timestamp": 1792994351.013803
+              }
+            ],
+            "response_latencies": [
+              {
+                "model": "deepseek/deepseek-flash",
+                "latency": 1.5941648483276367,
+                "response_id": "3a4da3ae-525e-44c5-b37a-bc4bc0f96b9b"
+              }
+            ],
+            "token_usages": [
+              {
+                "model": "deepseek/deepseek-flash",
+                "prompt_tokens": 4100,
+                "completion_tokens": 111,
+                "cache_read_tokens": 3840,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 52,
+                "context_window": 1000000,
+                "per_turn_token": 4211,
+                "response_id": "3a4da3ae-525e-44c5-b37a-bc4bc0f96b9b"
+              }
+            ]
+          },
+          "condenser": {
+            "model_name": "deepseek/deepseek-flash",
+            "accumulated_cost": 0.0,
+            "max_budget_per_task": null,
+            "accumulated_token_usage": {
+              "model": "deepseek/deepseek-flash",
+              "prompt_tokens": 0,
+              "completion_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 0,
+              "context_window": 0,
+              "per_turn_token": 0,
+              "response_id": ""
+            },
+            "costs": [],
+            "response_latencies": [],
+            "token_usages": []
+          }
+        }
+      },
+      "forked_from_conversation_id": null
+    }
+  },
+  {
+    "source": "F31.budget/over-fork-restart.json",
+    "sha256": "89f47a6daad7b70b5a98e0ad67395bb42cf133cd4c21df75a78f3a737a2a4e99",
+    "status": 200,
+    "request": {
+      "method": "GET",
+      "path": "/api/conversations/ff810356-a442-44fa-9409-cb80fa02d56d"
+    },
+    "response": {
+      "id": "ff810356-a442-44fa-9409-cb80fa02d56d",
+      "max_budget_per_run": 1e-08,
+      "execution_status": "idle",
+      "stats": {
+        "usage_to_metrics": {}
+      },
+      "forked_from_conversation_id": "ca114c75-3807-4c0d-a8ea-7805e37c4f09"
+    }
+  }
+]

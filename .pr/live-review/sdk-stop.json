@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "helpers": [
+    {
+      "name": "under",
+      "outcome": "already-exited"
+    }
+  ],
+  "server": "terminated",
+  "port_closed": true,
+  "orphans_reaped": [],
+  "evidence": "<isolated-run>/evidence",
+  "evidence_files": 44
+}

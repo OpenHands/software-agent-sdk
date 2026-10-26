@@ -1,0 +1,4 @@
+{
+  "ok": true,
+  "text": "Context Window\n1% used (99% left)\n12,819 / 1,000,000\nCompact context\nToken Usage\nInput\n12,689\nCache Hit\n4,608\nCache Write\n0\nOutput\n130\nTotal\n12,819\nTotal Cost\n$0.0026"
+}
