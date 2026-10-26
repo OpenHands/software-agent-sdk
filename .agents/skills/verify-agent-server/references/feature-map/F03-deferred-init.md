@@ -28,7 +28,7 @@ at boot; this family reproduces it.
 
 Source: `openhands-agent-server/openhands/agent_server/init_router.py`, `openhands-agent-server/openhands/agent_server/api.py`, `openhands-agent-server/openhands/agent_server/config.py`, `openhands-agent-server/openhands/agent_server/sockets.py`, `openhands-agent-server/openhands/agent_server/dependencies.py`, `openhands-agent-server/openhands/agent_server/middleware.py`, `openhands-agent-server/openhands/agent_server/persistence/store.py`
 
-Needs: `git`
+Needs: `git`, `llm`
 
 Launch: `--no-auth --deferred-init`
 
@@ -41,7 +41,7 @@ Routes: `GET /api/init`, `POST /api/init`
 - `F03.dormant-gates-sockets`: while dormant the bash-events, conversation events and session WebSockets refuse the handshake (the gate closes with 1013 before accept, which the client sees as HTTP 403), so no auth frame is ever read.
 - `F03.dormant-gates-v1`: while dormant the OpenAI-compatible `GET /v1/models` and `POST /v1/chat/completions` answer 503 with the gate's reason, as does the Canvas app-backend bridge (`/app-backends/...`).
 - `F03.init-key-auth`: `POST /api/init` requires `X-Init-API-Key` equal to the dormant `secret_key`; a missing or wrong key is 401, checked before the body is validated, and leaves the state dormant.
-- `F03.init-validation`: an unknown field or an out-of-range value is a 422 (`extra_forbidden` / constraint) and the state stays dormant.
+- `F03.init-validation`: an unknown field, an out-of-range value or an empty delivered session key is a 422 and the state stays dormant.
 - `F03.init-redacts-secret-input`: a 422 whose echoed input carries a secret-bearing key (`Authorization` header) redacts it to `<redacted>` and the raw value appears nowhere in the response.
 - `F03.init-failure-rollback`: an init that fails mid-build returns 500, rolls the state back to `dormant` with the gate still closed, and records the error on `GET /api/init` so it can be retried.
 - `F03.init-success`: a valid `POST /api/init` flips the server to `ready`, and new conversations are stored under the delivered `conversations_path`.
@@ -55,6 +55,7 @@ Routes: `GET /api/init`, `POST /api/init`
 - `F03.init-delivered-max-runs`: a delivered `max_concurrent_runs` of 1 replaces the boot default (10): a second conversation's `/run` is 429 while another run holds the slot, and is accepted once the slot is free.
 - `F03.init-delivered-cors-origins`: an origin delivered in `allow_cors_origins` must pass a CORS preflight after init, as the field promises (reproduces a real bug; see Gotchas).
 - `F03.init-second-call-400`: a second `POST /api/init` after `ready` is rejected with 400 and the state is unchanged; the init key is now the delivered `secret_key`, so the dormant bootstrap key is 401.
+- `F03.init-child-launcher`: after a keyless boot and key delivery at init, a real-model parent uses the authenticated internal launcher to start a child.
 - `F03.init-open-without-secret`: a pod booted with neither a secret key nor session keys accepts `POST /api/init` without `X-Init-API-Key`; afterwards the first delivered session key is the init key (a keyless retry is 401, a retry with it is 400).
 - `F03.init-state-not-persisted`: the init state lives in memory only, so after a restart a deferred pod is dormant again (the previously delivered key gets the dormant 503 too) and must be re-initialized.
 - `F03.auth-before-gate`: retired by #5700. It asserted that a dormant pod with boot session keys answered 401 to a missing key before the 503 gate; readiness is now checked first, see `F03.gate-before-auth`.
@@ -110,9 +111,10 @@ Preconditions:
 - A fresh warm-pool run, launched dormant and without boot session keys, is
   live and exported: `control-agent-server launch --new --no-auth
   --deferred-init`. `doctor` is ok (a deferred run's `doctor` uses `/alive`,
-  since `/ready` is 200 even while dormant). No LLM profile is needed: the
-  only model calls go to an `llm-stub` that hangs (the one way to hold a run
-  slot on demand), and `git` is needed for the worktree fixture.
+  since `/ready` is 200 even while dormant). `$DEEPSEEK_API_KEY` is needed
+  only for the child-launcher bullet; capacity checks use an `llm-stub` that
+  hangs (the one way to hold a run slot on demand). `git` is needed for the
+  worktree fixture.
 - The following `sh` block runs first: it reads the run's dormant
   `secret_key` (the bootstrap `X-Init-API-Key`, never printed) into `$SK`,
   creates the user workspace dirs the success bullet delivers, a git
@@ -213,17 +215,21 @@ Preconditions:
   All three posts are 401; the third carries a body that the right key turns
   into a 422 (next bullet), so the key is checked first. `GET /api/init` is
   still dormant. The right key's 200 is `F03.init-success`.
-- **Init validation (`F03.init-validation`).** Unknown fields and out-of-range values are 422; the state stays dormant.
+- **Init validation (`F03.init-validation`).** Unknown fields, out-of-range
+  values and empty delivered session keys are 422; the state stays dormant.
   ```sh
   control-agent-server api POST /api/init --auth none --header "X-Init-API-Key: $SK" \
     --json '{"bogus":1}' --expect 422 --check 'detail.0.type' eq extra_forbidden --save F03.init-validation/unknown-field
   control-agent-server api POST /api/init --auth none --header "X-Init-API-Key: $SK" \
     --json '{"max_concurrent_runs":0}' --expect 422 --check 'detail.0.type' eq greater_than_equal
+  control-agent-server api POST /api/init --auth none --header "X-Init-API-Key: $SK" \
+    --json '{"session_api_keys":[""]}' --expect 422 \
+    --check detail eq 'session_api_keys cannot contain empty keys' --save F03.init-validation/empty-session-key
   control-agent-server api GET /api/init --auth none --check state eq dormant
   ```
   `InitRequest` is `extra="forbid"`, so `bogus` is `extra_forbidden`;
-  `max_concurrent_runs` has `ge=1`, so `0` fails the bound. Neither touches the
-  state.
+  `max_concurrent_runs` has `ge=1`, so `0` fails the bound. Empty delivered
+  keys are rejected before initialization (PR #5659). None changes the state.
 - **Input redaction (`F03.init-redacts-secret-input`).** A 422 echo redacts secret-bearing keys.
   ```sh
   RAW_REDACTED="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f03-422-redacted.json"
@@ -423,7 +429,7 @@ Preconditions:
   OPEN=$(control-agent-server launch --new --no-auth --no-secret-key --deferred-init --name f03-open --print-run)
   trap 'control-agent-server stop --run "$OPEN" >/dev/null' EXIT
   control-agent-server api GET /api/init --run "$OPEN" --auth none --expect 200 --check state eq dormant
-  control-agent-server api POST /api/init --run "$OPEN" --auth none --json '{"session_api_keys":["qa-open-key"]}' \
+  control-agent-server api POST /api/init --run "$OPEN" --auth none --json '{"session_api_keys":["qa-open-key"],"secret_key":""}' \
     --expect 200 --check state eq ready --save F03.init-open-without-secret/open
   control-agent-server api GET /api/settings --run "$OPEN" --auth none --expect 401
   control-agent-server api GET /api/settings --run "$OPEN" --auth none --header 'X-Session-API-Key: qa-open-key' --expect 200
@@ -434,9 +440,68 @@ Preconditions:
   ```
   With no `secret_key` (`check_init_api_key`: "No key configured → endpoint is
   open. Acceptable for dev."), the first post needs no header and applies the
-  delivered key. Because the dormant config had no secret, the merged config's
-  `secret_key` falls back to `qa-open-key`, so a keyless retry is now 401 and a
+  delivered key. The explicitly empty `secret_key` is normalized, so the
+  merged config's `secret_key` falls back to `qa-open-key`, so a keyless retry is now 401 and a
   retry with `qa-open-key` reaches the one-shot 400.
+- **Child launcher after init (`F03.init-child-launcher`).** A separate pod
+  boots without session keys, receives one at init, and uses it internally
+  when a real model calls the explicitly attached child-launch tool.
+  ```sh
+  CHILD_RUN=$(control-agent-server launch --new --no-auth --no-secret-key --deferred-init --name f03-child --print-run)
+  trap 'control-agent-server stop --run "$CHILD_RUN" >/dev/null' EXIT
+  control-agent-server doctor --run "$CHILD_RUN"
+  control-agent-server api POST /api/init --run "$CHILD_RUN" --auth none \
+    --json '{"session_api_keys":["qa-f03-child-key"],"max_concurrent_runs":2}' \
+    --expect 200 --check state eq ready --save F03.init-child-launcher/init
+  control-agent-server api GET /api/settings --run "$CHILD_RUN" --auth none --expect 401
+  CHILD_BODY=$(python3 - "$CHILD_RUN" <<'PY'
+  import json, os, sys
+  print(json.dumps({
+      "agent": {"llm": {"model": "deepseek/deepseek-flash", "api_key": os.environ["DEEPSEEK_API_KEY"]},
+                "tools": [{"name": "start_child_conversation"}]},
+      "workspace": {"working_dir": sys.argv[1] + "/fixtures/child-workspace"},
+      "autotitle": False, "max_iterations": 5,
+      "initial_message": {"role": "user", "content": [{"type": "text", "text":
+          'Call start_child_conversation exactly once with these arguments: {"title": "QA_F03_CHILD", "isolation": "shared", "task": "Reply with the single word ok. Do not use tools or create any child conversations."}. After the call returns, finish without any more tool calls.'}]},
+  }))
+  PY
+  )
+  mkdir -p "$CHILD_RUN/fixtures/child-workspace"
+  DPARENT=$(control-agent-server api POST /api/conversations --run "$CHILD_RUN" --auth none \
+    --header 'X-Session-API-Key: qa-f03-child-key' --json "$CHILD_BODY" --expect 201 --field id)
+  for attempt in $(seq 1 120); do
+    DSTATUS=$(control-agent-server api GET "/api/conversations/$DPARENT" --run "$CHILD_RUN" --auth none \
+      --header 'X-Session-API-Key: qa-f03-child-key' --field execution_status)
+    [ "$DSTATUS" = finished ] && break
+    [ "$DSTATUS" != error ]
+    sleep 2
+  done
+  test "$DSTATUS" = finished
+  DOBS=$(control-agent-server api GET "/api/conversations/$DPARENT/events/search" --run "$CHILD_RUN" --auth none \
+    --header 'X-Session-API-Key: qa-f03-child-key' --query kind=ObservationEvent \
+    --check items contains StartChildConversationObservation --save F03.init-child-launcher/observation --field items)
+  DCHILD=$(jq -er --arg parent "$DPARENT" '[.[] | select(.tool_name == "start_child_conversation")] |
+    select(length == 1) | .[0].observation |
+    select(.is_error == false and .parent_conversation_id == $parent and .isolation == "shared") |
+    .conversation_id' <<< "$DOBS")
+  for attempt in $(seq 1 120); do
+    DSTATUS=$(control-agent-server api GET "/api/conversations/$DCHILD" --run "$CHILD_RUN" --auth none \
+      --header 'X-Session-API-Key: qa-f03-child-key' --field execution_status)
+    [ "$DSTATUS" = finished ] && break
+    [ "$DSTATUS" != error ]
+    sleep 2
+  done
+  control-agent-server api GET "/api/conversations/$DCHILD" --run "$CHILD_RUN" --auth none \
+    --header 'X-Session-API-Key: qa-f03-child-key' --check execution_status eq finished \
+    --check parent_conversation_id eq "$DPARENT" --check title eq QA_F03_CHILD \
+    --save F03.init-child-launcher/child
+  control-agent-server api GET "/api/conversations/$DPARENT" --run "$CHILD_RUN" --auth none \
+    --header 'X-Session-API-Key: qa-f03-child-key' --check sub_conversation_ids contains "$DCHILD"
+  control-agent-server stop --run "$CHILD_RUN"
+  ```
+  The child tool's observation and catalog link prove that the internal
+  launcher received the init-delivered session key. A server that exported
+  only its empty boot credential would reject that internal request with 401.
 - **Init state is not persisted (`F03.init-state-not-persisted`).** This bullet restarts the run; a deferred pod comes back dormant.
   ```sh
   control-agent-server restart
@@ -505,9 +570,9 @@ Preconditions:
 - Harness: `api --auth init` reads `<run>/private/secret_key`, but on a
   `--no-auth` run it sends no header at all (the auth helper returns early when
   the run has no session key), so these recipes pass `--header
-  "X-Init-API-Key: $SK"` explicitly. `doctor`'s dormant detection reads a
-  `status` field that `GET /api/init` does not have (`state`), so it treats a
-  deferred run as dormant even after init.
+  "X-Init-API-Key: $SK"` explicitly. `doctor` reads the init `state`: while
+  dormant it checks the 503 HTTP and 403 socket gates; after init it checks
+  ordinary authentication using the run's configured credentials.
 - Init is one-shot and in-memory: it does not persist across a restart
   (`F03.init-state-not-persisted`), and a second call is 400 (`already in
   state: ready`; a call that lands while another is still building gets
