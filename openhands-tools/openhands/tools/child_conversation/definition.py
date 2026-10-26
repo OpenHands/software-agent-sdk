@@ -36,7 +36,8 @@ class StartChildConversationAction(Action):
         default="worktree",
         description=(
             "'worktree' gives the child its own git worktree and branch when the "
-            "workspace is a git repository; 'shared' runs it in the same directory."
+            "workspace has a usable git base commit; otherwise it shares the "
+            "directory. 'shared' always runs it in the same directory."
         ),
     )
 
@@ -92,7 +93,8 @@ _DESCRIPTION = (
     "conversation's history, so include the goal, relevant paths, constraints "
     "and the expected deliverable. Use `title` to name it. `isolation` controls "
     "the workspace: `worktree` (default) gives the child its own git worktree "
-    "and branch when the workspace is a git repository; the worktree starts "
+    "and branch when the workspace has a usable git base commit; otherwise "
+    "it shares the directory and reports `shared` isolation. The worktree starts "
     "from the repository's default branch, not from this conversation's branch "
     "or uncommitted changes, so use `shared` when the child must see them. "
     "`shared` runs it in the same directory; backends that manage workspaces "

@@ -12,8 +12,9 @@ server mints the id, never returns the key (only `api_key_set`), encrypts it
 at rest with the server's cipher, refuses to read a file it cannot decrypt
 rather than dropping keys, caps the store at 64 connections, and refuses to
 delete a connection that a profile or the active settings still reference.
-ACP model discovery is a separate pre-conversation request: a local launch
-failure returns a structured error and creates no conversation.
+ACP model discovery is a separate pre-conversation request: a throwaway
+session reports the real adapter's models, while a local launch failure
+returns a structured error. Neither creates a persisted conversation.
 
 Source: `openhands-agent-server/openhands/agent_server/llm_router.py`, `openhands-agent-server/openhands/agent_server/provider_connections_router.py`, `openhands-agent-server/openhands/agent_server/acp_router.py`, `openhands-sdk/openhands/sdk/agent/acp_model_discovery.py`, `openhands-sdk/openhands/sdk/llm/provider_connection_store.py`, `openhands-sdk/openhands/sdk/llm/utils/unverified_models.py`, `openhands-sdk/openhands/sdk/llm/utils/verified_models.py`, `clients/typescript/src/client/llm-client.ts`, `clients/typescript/src/client/acp-client.ts`
 
@@ -27,7 +28,8 @@ Routes: `GET /api/llm/providers`, `GET /api/llm/models`,
 
 ## Sub-features
 
-- `F23.acp-discovery-errors`: `POST /api/acp/models` requires a session key, validates `agent_settings`, and reports a missing local executable as HTTP 200 with `error.code: ACPSpawnError`, no models and no new conversation; `refresh: true` reports the same failure.
+- `F23.acp-discovery-errors`: `POST /api/acp/models` requires a session key, validates `agent_settings`, and reports a missing local executable as HTTP 200 with `error.code: ACPSpawnError`, no models and no new conversation; `refresh: true` reports the same failure; `ACPClient.discoverModels` exposes the same structured errors and rejects unauthorized calls.
+- `F23.acp-discovery-live`: the real Claude Code ACP adapter reports its default and offered models through REST and TypeScript `ACPClient.discoverModels`; a repeated request and `refresh: true` return the same catalog without persisting any conversation or probe directory.
 - `F23.auth-required`: all seven routes answer 401 `{"detail": "Unauthorized"}` without a valid `X-Session-API-Key`, and nothing is created.
 - `F23.providers`: `GET /api/llm/providers` returns LiteLLM's provider names, sorted and unique, including `deepseek`, `openai` and `anthropic`.
 - `F23.models`: `GET /api/llm/models` returns every LiteLLM model, sorted and unique, with no `bedrock`-prefixed id, including `deepseek/deepseek-flash`.
@@ -64,8 +66,9 @@ Routes: `GET /api/llm/providers`, `GET /api/llm/models`,
 - REST (ACP): `POST /api/acp/models` with `agent_settings`, optional `secrets`
   and `refresh`. `available_models` and `current_model_id` come from a
   throwaway ACP session; startup failures use the response's `error` field.
-  This recipe covers authentication, validation and local spawn failure.
-  Successful discovery requires the selected ACP provider and credentials.
+  `F23.acp-discovery-errors` covers refused requests and local spawn failure;
+  `F23.acp-discovery-live` starts the real Claude Code adapter with the same
+  DeepSeek Anthropic-compatible credentials as F09.
 - REST (connections): `GET /api/llm/provider-connections` (a JSON array),
   `POST /api/llm/provider-connections`
   (`{"display_name": "...", "provider": "deepseek", "api_key": "...", "base_url": null}`,
@@ -88,12 +91,14 @@ Routes: `GET /api/llm/providers`, `GET /api/llm/models`,
 - SDK: no Python client calls these routes. In-process code uses
   `ProviderConnectionStore` and `LLMProfileStore(provider_store=...)`
   (`openhands-sdk/openhands/sdk/llm/`). `RemoteWorkspace.get_llm()` of a
-  linked profile does not resolve the connection (LLM profiles family).
+  linked profile resolves the connection through its plaintext profile read
+  (`F20.sdk-get-llm-linked`, fixed by #4952).
 - TypeScript client: `LLMMetadataClient.getProviders()`, `getModels(provider?)`
   and `getVerifiedModels()` (`clients/typescript/src/client/llm-client.ts`);
   provider connections have only generated types
   (`clients/typescript/src/generated/agent-server-schema.ts`), no client
-  method.
+  method. `ACPClient.discoverModels(request)` reaches `POST /api/acp/models`;
+  both ACP bullets execute this TypeScript entry point.
 - Configuration: `OH_PERSISTENCE_DIR` (the store lives in
   `provider-connections/` under it, else `~/.openhands`), `OH_SECRET_KEY`
   (the cipher; without it the session key is used, and with neither keys
@@ -719,7 +724,88 @@ Preconditions:
   control-agent-server api GET /api/conversations/count --check . eq "$ACP_COUNT"
   ```
   The response records a launch error rather than a 500, and no conversation
-  is persisted. A working-provider discovery remains a separate prerequisite.
+  is persisted. The TypeScript consumer below checks that a structured
+  failure resolves normally and a missing session key rejects with 401.
+  ```sh
+  test -f clients/typescript/dist/clients.js || (cd clients/typescript && npm ci && npm run build)
+  cat > "$F23/ts_acp_errors.mjs" <<'JS'
+  import assert from 'node:assert/strict';
+  import { resolve } from 'node:path';
+  import { pathToFileURL } from 'node:url';
+  const { ACPClient } = await import(pathToFileURL(resolve('clients/typescript/dist/clients.js')).href);
+  const client = new ACPClient({ host: process.env.AGENT_SERVER_URL, apiKey: process.env.SESSION_API_KEY });
+  const unauthorized = new ACPClient({ host: process.env.AGENT_SERVER_URL });
+  const request = { agent_settings: { agent_kind: 'acp', acp_server: 'custom', acp_command: [process.env.QA_F23_MISSING_ACP] } };
+  try {
+    const failed = await client.discoverModels(request);
+    assert.equal(failed.error.code, 'ACPSpawnError');
+    assert.deepEqual(failed.available_models, []);
+    assert.equal(failed.current_model_id, null);
+    assert.equal((await client.discoverModels({ ...request, refresh: true })).error.code, 'ACPSpawnError');
+    await assert.rejects(unauthorized.discoverModels(request), (err) => err.name === 'HttpError' && err.status === 401);
+    console.log('QA_F23_ACP_ERRORS_OK');
+  } finally {
+    client.close();
+    unauthorized.close();
+  }
+  JS
+  control-agent-server exec --env QA_F23_MISSING_ACP="$AGENT_SERVER_VERIFY_RUN/qa-missing-acp" --timeout 60 \
+    --expect-output QA_F23_ACP_ERRORS_OK --save F23.acp-discovery-errors/typescript -- node "$F23/ts_acp_errors.mjs"
+  control-agent-server api GET /api/conversations/count --check . eq "$ACP_COUNT"
+  ```
+- **Real ACP model discovery (`F23.acp-discovery-live`).** Use the real
+  Claude Code adapter through its built-in `npx` command. As in F09,
+  DeepSeek's Anthropic-compatible endpoint supplies the credentials and
+  `IS_SANDBOX=1` permits the adapter's session mode when running as root.
+  Discovery initializes a throwaway session without sending a model prompt.
+  ```sh
+  ACP_COUNT=$(control-agent-server api GET /api/conversations/count --field .)
+  printf '{"agent_settings":{"agent_kind":"acp","acp_server":"claude-code"},"secrets":{"ANTHROPIC_API_KEY":{"kind":"StaticSecret","value":"%s"},"ANTHROPIC_BASE_URL":{"kind":"StaticSecret","value":"https://api.deepseek.com/anthropic"},"IS_SANDBOX":{"kind":"StaticSecret","value":"1"}}}' "$DEEPSEEK_API_KEY" \
+    | control-agent-server api POST /api/acp/models --stdin --timeout 180 --expect 200 \
+      --check error missing --check agent_name exists --check current_model_id exists --check supports_runtime_model_switch eq true \
+      --check available_models contains '"model_id": "sonnet"' --check available_models contains '"model_id": "haiku"' \
+      --raw-out "$F23/acp-models.json" --save F23.acp-discovery-live/rest
+  test -f clients/typescript/dist/clients.js || (cd clients/typescript && npm ci && npm run build)
+  cat > "$F23/ts_acp_live.mjs" <<'JS'
+  import assert from 'node:assert/strict';
+  import { readFileSync } from 'node:fs';
+  import { resolve } from 'node:path';
+  import { pathToFileURL } from 'node:url';
+  const { ACPClient } = await import(pathToFileURL(resolve('clients/typescript/dist/clients.js')).href);
+  const client = new ACPClient({ host: process.env.AGENT_SERVER_URL, apiKey: process.env.SESSION_API_KEY, timeout: 180000 });
+  const expected = JSON.parse(readFileSync(process.env.QA_F23_ACP_REFERENCE, 'utf8'));
+  assert.ok(process.env.DEEPSEEK_API_KEY);
+  const secret = (value) => ({ kind: 'StaticSecret', value });
+  const request = {
+    agent_settings: { agent_kind: 'acp', acp_server: 'claude-code' },
+    secrets: {
+      ANTHROPIC_API_KEY: secret(process.env.DEEPSEEK_API_KEY),
+      ANTHROPIC_BASE_URL: secret('https://api.deepseek.com/anthropic'),
+      IS_SANDBOX: secret('1'),
+    },
+  };
+  try {
+    assert.deepEqual(await client.discoverModels(request), expected);
+    const refreshed = await client.discoverModels({ ...request, refresh: true });
+    assert.equal(refreshed.error, null);
+    assert.equal(refreshed.agent_name, expected.agent_name);
+    assert.equal(refreshed.current_model_id, expected.current_model_id);
+    assert.deepEqual(refreshed.available_models, expected.available_models);
+    assert.equal(refreshed.supports_runtime_model_switch, true);
+    console.log('QA_F23_ACP_LIVE_OK');
+  } finally {
+    client.close();
+  }
+  JS
+  control-agent-server exec --env QA_F23_ACP_REFERENCE="$F23/acp-models.json" --timeout 240 \
+    --expect-output QA_F23_ACP_LIVE_OK --save F23.acp-discovery-live/typescript -- node "$F23/ts_acp_live.mjs"
+  control-agent-server api GET /api/conversations/count --check . eq "$ACP_COUNT"
+  control-agent-server state ls 'server/workspace/conversations/.acp-model-discovery-*' --expect-count 0
+  ```
+  REST reports the real adapter's model catalog. The TypeScript consumer
+  receives the same response on a repeated request and the same default
+  and offered models after an explicit refresh. The conversation count
+  stays unchanged and discovery removes its temporary probe directory.
 
 ## Gotchas
 

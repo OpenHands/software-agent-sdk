@@ -1,0 +1,110 @@
+{
+  "issue": "https://github.com/enyst/agent-sdk/issues/41",
+  "tested_product_sha": "c250e521e1f0d7e091ce7599a626945bd6c7943a",
+  "base_sha": "5966c781ed014efc96c028a99bddd4ff78426741",
+  "baseline_evidence": "https://github.com/enyst/agent-sdk/pull/43",
+  "runtime": "Python 3.13.5, official Node 24.21.0, worktree-owned virtualenv and built TypeScript client; entire run under docker-init -s.",
+  "recipe": "F21.ts-payload-types from the maintained verification harness; recipe unchanged in this product PR.",
+  "command": "control-agent-server map run --file F21 --only F21.ts-payload-types --fresh --repeat 2 --record --timeout 120 --checkout <fixed-worktree>",
+  "checks": {
+    "before_fix": "The new compiler-backed regression fails for missing public_skills in OpenHandsAgentProfile, AgentProfileDiagnostics and OpenHands save input; generated schema already contains the field.",
+    "coverage": "396 tests pass across 27 files, including 9 contract tests; statements 60.93%, branches 52.36%, functions 60.27%, lines 61.63%.",
+    "build": "npm run build: pass",
+    "lint": "npm run lint: pass, five pre-existing warnings in untouched files",
+    "format": "npm run format:check: pass",
+    "pre_commit": "uv run pre-commit run --files <two changed TypeScript files>: pass"
+  },
+  "attempts": [
+    {
+      "run": "20261023-070220-2697-map-f21",
+      "checkout_sha": "c250e521e1f0d7e091ce7599a626945bd6c7943a",
+      "doctor_ok": true,
+      "arrange_results": {
+        "F21.save-create": "pass",
+        "F21.acp-kind": "pass"
+      },
+      "feature": "F21.ts-payload-types",
+      "verdict": "xpass",
+      "transcript": {
+        "artifact": "20261023-070220-2697-map-f21/evidence/map-run/F21-agent-profiles-03-typescript-payload-types-f21-ts-payload-.json",
+        "sha256": "aed5b1ebd885e699fc7232a759651af22747a3781f9daf3c7a90d39222095363",
+        "exit_code": 0,
+        "elapsed_ms": 3851
+      },
+      "generated_contract_compile": "pass (first command; shell error propagation enabled)",
+      "public_export_compile": "pass (pipeline error propagation enabled; no TypeScript diagnostics)",
+      "compiler_output_assertion": {
+        "ok": true,
+        "value": "",
+        "checks": [
+          {
+            "check": ". not-contains error TS",
+            "ok": true,
+            "actual": ""
+          }
+        ]
+      },
+      "compiled_fixtures": [
+        {
+          "name": "contract.ts",
+          "sha256": "bfc6329fec3f6da9454590f89773a8b1a95a74ac1c8f6b96650a5e1c94f31e31",
+          "import": "import type { AgentProfileInfo, OpenHandsAgentProfile, AcpAgentProfile, AgentProfileDiagnostics } from '<fixed-worktree>/clients/typescript/dist/generated/agent-server-schema.js';"
+        },
+        {
+          "name": "exported.ts",
+          "sha256": "6243a50b205dae8d5a5939dc997df149e2e1de15f20c483c4917ee1e12e5b450",
+          "import": "import type { AgentProfileSummary, OpenHandsAgentProfile, ACPAgentProfile, AgentProfileDiagnostics } from '<fixed-worktree>/clients/typescript/dist/index.js';"
+        }
+      ],
+      "live_profile_public_skills": null,
+      "live_diagnostics_public_skills": null,
+      "stopped_at": "2026-10-23T07:02:37Z"
+    },
+    {
+      "run": "20261023-070238-9833-map-f21",
+      "checkout_sha": "c250e521e1f0d7e091ce7599a626945bd6c7943a",
+      "doctor_ok": true,
+      "arrange_results": {
+        "F21.save-create": "pass",
+        "F21.acp-kind": "pass"
+      },
+      "feature": "F21.ts-payload-types",
+      "verdict": "xpass",
+      "transcript": {
+        "artifact": "20261023-070238-9833-map-f21/evidence/map-run/F21-agent-profiles-03-typescript-payload-types-f21-ts-payload-.json",
+        "sha256": "9658ec77a7605df666b9f8ec2a5806c6374180bc52c89123cf40b74c01dbe9c3",
+        "exit_code": 0,
+        "elapsed_ms": 3395
+      },
+      "generated_contract_compile": "pass (first command; shell error propagation enabled)",
+      "public_export_compile": "pass (pipeline error propagation enabled; no TypeScript diagnostics)",
+      "compiler_output_assertion": {
+        "ok": true,
+        "value": "",
+        "checks": [
+          {
+            "check": ". not-contains error TS",
+            "ok": true,
+            "actual": ""
+          }
+        ]
+      },
+      "compiled_fixtures": [
+        {
+          "name": "contract.ts",
+          "sha256": "bfc6329fec3f6da9454590f89773a8b1a95a74ac1c8f6b96650a5e1c94f31e31",
+          "import": "import type { AgentProfileInfo, OpenHandsAgentProfile, AcpAgentProfile, AgentProfileDiagnostics } from '<fixed-worktree>/clients/typescript/dist/generated/agent-server-schema.js';"
+        },
+        {
+          "name": "exported.ts",
+          "sha256": "6243a50b205dae8d5a5939dc997df149e2e1de15f20c483c4917ee1e12e5b450",
+          "import": "import type { AgentProfileSummary, OpenHandsAgentProfile, ACPAgentProfile, AgentProfileDiagnostics } from '<fixed-worktree>/clients/typescript/dist/index.js';"
+        }
+      ],
+      "live_profile_public_skills": null,
+      "live_diagnostics_public_skills": null,
+      "stopped_at": "2026-10-23T07:02:54Z"
+    }
+  ],
+  "environment_note": "An earlier owned attempt using the environment default Node 24.19.0 hung in generated-contract tsc before exercising the exported types. It was aborted through coordinator cleanup; its server and compiler were stopped. The same command finished under official Node 24.21.0, then the complete fresh pair succeeded. No product workaround was added."
+}
