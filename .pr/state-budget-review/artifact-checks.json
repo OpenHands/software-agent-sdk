@@ -1,0 +1,23 @@
+[
+  {
+    "command": [
+      "node",
+      "--check",
+      "meter-observer.js"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/Users/enyst/.codex/worktrees/budget-info/agent-sdk/.venv/bin/python",
+      "-m",
+      "py_compile",
+      "local-state-probe.py"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  }
+]

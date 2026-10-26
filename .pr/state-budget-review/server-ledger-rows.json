@@ -1,0 +1,47 @@
+{
+  "note": "Artifact paths rebased to siblings; original row results preserved. Aggregate server report groups by feature and reports one budget feature pass.",
+  "rows": [
+    {
+      "at": "2026-10-26T13:30:24Z",
+      "run": "20261026-132337-2e88-state-budget-review",
+      "checkout_sha": null,
+      "feature": "F03.budget",
+      "result": "pass",
+      "entry": "attached REST normal and overshoot before/after restart",
+      "expected": "Single persisted state budget owner retained across supported paths",
+      "actual": "HTTP 200 cap 0.05 and 0.0001 persist; finished/error statuses expected",
+      "artifacts": [
+        "server-normal-post-restart.json"
+      ],
+      "note": null
+    },
+    {
+      "at": "2026-10-26T13:30:24Z",
+      "run": "20261026-132337-2e88-state-budget-review",
+      "checkout_sha": null,
+      "feature": "F03.budget",
+      "result": "pass",
+      "entry": "run-owned persisted base_state/meta selected facts",
+      "expected": "Single persisted state budget owner retained across supported paths",
+      "actual": "Only base_state owns cap; recursive meta budget-key scan empty for both fixtures",
+      "artifacts": [
+        "persistence-final.json"
+      ],
+      "note": null
+    },
+    {
+      "at": "2026-10-26T13:30:25Z",
+      "run": "20261026-132337-2e88-state-budget-review",
+      "checkout_sha": null,
+      "feature": "F03.budget",
+      "result": "pass",
+      "entry": "actual no-LLM LocalConversation creation/mutation/resume",
+      "expected": "Single persisted state budget owner retained across supported paths",
+      "actual": "State/property agree; 0.07 resumes; 0.08 override persists; clear/null resumes",
+      "artifacts": [
+        "local-state-summary.json"
+      ],
+      "note": null
+    }
+  ]
+}

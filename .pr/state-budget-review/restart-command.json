@@ -1,0 +1,18 @@
+{
+  "ok": true,
+  "run": "/var/folders/15/pyrd6jhs3tnd259qd39xsplm0000gn/T/openhands-verify/state-budget-review",
+  "baseUrl": "http://127.0.0.1:18800",
+  "stopped": {
+    "stopped": true,
+    "forced": false
+  },
+  "ports": {
+    "ingress": 18800,
+    "agentServer": 18801,
+    "automation": 18802,
+    "frontend": 18803,
+    "vscode": 19801
+  },
+  "rotatedKey": false,
+  "note": "Same state, keys and port block; reload the browser to reconnect."
+}

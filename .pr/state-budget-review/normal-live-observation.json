@@ -1,0 +1,29 @@
+{
+  "rest": {
+    "id": "56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8",
+    "cap": 0.05,
+    "status": "finished",
+    "cost": 0.001331268,
+    "legacy_caps": {
+      "default": null,
+      "condenser": null
+    },
+    "sub_conversation_ids": []
+  },
+  "usage": "Context Window\n2% used (98% left)\n17,076 / 1,000,000\nCompact context\nToken Usage\nInput\n34,110\nCache Hit\n25,856\nCache Write\n0\nOutput\n26\nTotal\n34,136\n$0.0013 / $0.0500 (2.66% used)\nTotal Cost\n$0.0013",
+  "meter": {
+    "meterCount": 1,
+    "budgetText": "$0.0013 / $0.0500 (2.66% used)",
+    "inlineWidth": "2.66254%",
+    "fillWidth": 13.8125,
+    "trackWidth": 519,
+    "fillColor": "rgb(236, 236, 236)",
+    "trackColor": "rgb(49, 49, 49)",
+    "fillTrackContrast": 11.011784042828806,
+    "foregroundRole": "#ECECEC",
+    "errorRole": "#ff684e",
+    "textColor": "rgb(151, 151, 151)",
+    "surfaceColor": "rgb(40, 40, 40)",
+    "textSurfaceContrast": 5.047373179150879
+  }
+}

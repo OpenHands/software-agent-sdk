@@ -1,0 +1,16 @@
+{
+  "date": "2026-10-26",
+  "files_scanned": 43,
+  "credential_matches": 0,
+  "scope": "Exact actual DeepSeek API key and Canvas run session key bytes across every published text file, binary media and embedded metadata",
+  "visual_review": "All six screenshots and first/middle/last representative frames of both recordings inspected; no credentials or unrelated user content visible",
+  "excluded": [
+    "driver.py",
+    "commands.jsonl",
+    "server-run.txt",
+    "local-state-exec.json",
+    "raw private profiles/state/logs",
+    "failure screenshot",
+    "scratch keyframes"
+  ]
+}

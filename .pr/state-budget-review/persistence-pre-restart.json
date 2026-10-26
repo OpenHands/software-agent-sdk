@@ -1,0 +1,16 @@
+{
+  "normal": {
+    "id": "56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8",
+    "base_state_max_budget_per_run": 0.05,
+    "base_state_cost": 0.001331268,
+    "meta_has_max_budget_per_run": false,
+    "meta_budget_keys": []
+  },
+  "over": {
+    "id": "5f17ea8b-6d57-409d-8d85-5d81e15a28da",
+    "base_state_max_budget_per_run": 0.0001,
+    "base_state_cost": 0,
+    "meta_has_max_budget_per_run": false,
+    "meta_budget_keys": []
+  }
+}

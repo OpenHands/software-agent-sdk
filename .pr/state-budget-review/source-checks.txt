@@ -1,0 +1,46 @@
+Budget state ownership: source validation
+Source: c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35
+Checkout: /Users/enyst/.codex/worktrees/budget-info/agent-sdk
+
+These commands passed while preparing this source revision. The focused
+suites overlap; their counts must not be added as distinct tests.
+
+Local persistence, fork, enforcement, factory and callback behavior:
+  uv run pytest tests/sdk/conversation/local/test_state_serialization.py tests/sdk/conversation/local/test_fork.py tests/sdk/conversation/local/test_agent_status_transition.py tests/sdk/conversation/test_conversation_factory.py tests/sdk/conversation/test_state_change_callback.py -q
+  87 passed in 6.91s.
+
+Server event lifecycle, conversation service, eviction and child creation:
+  uv run pytest tests/agent_server/test_event_service.py tests/agent_server/test_conversation_service.py tests/agent_server/test_conversation_eviction.py tests/agent_server/test_parent_child_conversations.py -q
+  297 passed in 25.74s; 2 deprecation warnings.
+
+Budget persistence and real HTTP/WebSocket regression tests:
+  uv run pytest tests/agent_server/test_conversation_budget.py tests/cross/test_remote_conversation_live_server.py -k 'budget' -q
+  11 passed, 34 deselected in 4.26s.
+  The three cross tests use deterministic provider responses through a real
+  uvicorn server. The separate README documents the real-model follow-up.
+
+Remote state, factory, attach/reuse and full-snapshot clearing:
+  uv run pytest tests/sdk/conversation/remote tests/sdk/conversation/test_remote_conversation_state_updates.py tests/sdk/conversation/test_conversation_factory.py -q
+  178 passed in 4.04s.
+
+After removing a redundant test-only rewrite:
+  uv run pre-commit run --files tests/agent_server/test_conversation_budget.py
+  All applicable hooks passed.
+  uv run pytest tests/agent_server/test_conversation_budget.py -q
+  8 passed in 0.61s.
+
+Per-file pre-commit and the source commit hooks passed, including applicable
+ruff, pycodestyle, pyright, dynamic-attribute, import and registration gates.
+
+Independent ownership review found no material blocker: ConversationState
+owns the cap; StoredConversation/meta.json omit it; creation bootstrap cannot
+replace resumed state; Local/Remote properties delegate to their state owner.
+Docker forwarding was traced in source, not exercised in a live Docker image.
+
+Design evidence validation:
+  uv run pre-commit run --files .pr/budget-design.html
+  All applicable hooks passed.
+  Installed Prettier --check and git diff --check passed.
+  72 commit-pinned source links checked against local Git objects.
+  Chromium desktop 1360x1050 and phone 390x844 layouts: no horizontal overflow,
+  broken anchors or external assets. Both screenshots visually reviewed.

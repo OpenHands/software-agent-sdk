@@ -1,354 +1,1307 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Budget information for client applications</title><style>
-:root{--fg:#192c32;--muted:#516268;--bg:#fcfcf9;--card:#fff;--line:#d9e1df;--accent:#225c70;--soft:#eaf3f3;--delta:#a94b13;--delta-bg:#fff4e8;--mono:ui-monospace,SFMono-Regular,monospace}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,sans-serif}.layout{max-width:1200px;margin:auto;padding:48px 28px 80px;display:grid;grid-template-columns:190px minmax(0,1fr);gap:40px}nav{position:sticky;top:30px;align-self:start}nav a{display:block;margin:10px 0}a{color:var(--accent);text-underline-offset:3px}h1{font-size:40px;line-height:1.15;letter-spacing:-1px;margin:10px 0 20px}h2{font-size:25px;margin:40px 0 12px}h3{margin:0 0 8px}p{max-width:75ch}.eyebrow{font-size:13px;letter-spacing:.13em;text-transform:uppercase;color:var(--muted)}.muted,figcaption{color:var(--muted)}.callout{background:var(--soft);border-left:4px solid var(--accent);padding:18px 22px}.pair{display:grid;grid-template-columns:1fr 1fr;gap:18px}.card{border:1px solid var(--line);background:var(--card);padding:20px;border-radius:8px}.after{border-color:var(--delta);background:var(--delta-bg)}code,pre{font-family:var(--mono);font-size:13px}pre{padding:16px;background:var(--soft);overflow:auto;border-radius:6px;line-height:1.55}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:12px;border-bottom:1px solid var(--line)}details{border-top:1px solid var(--line);padding:12px 0}summary{cursor:pointer;overflow-wrap:anywhere}details pre{max-height:500px}svg{width:100%;height:auto;display:block}.old{fill:var(--card);stroke:var(--muted);stroke-dasharray:6 4}.new{fill:var(--delta-bg);stroke:var(--delta);stroke-width:2}.label{font:600 16px system-ui;fill:var(--fg)}.detail{font:13px system-ui;fill:var(--muted)}.arrow{stroke:var(--delta);stroke-width:2;fill:none}figcaption{font-size:14px;margin-top:12px}.sources{font-size:13px;overflow-wrap:anywhere}@media(max-width:800px){.layout{grid-template-columns:1fr;padding:24px 18px}nav{position:static;display:flex;gap:20px;flex-wrap:wrap}h1{font-size:32px}.pair{grid-template-columns:1fr}}
-</style></head><body><div class="layout"><nav aria-label="Page sections"><strong>SDK proposal</strong><a href="#api">API</a><a href="#flow">Data flow</a><a href="#semantics">Cost semantics</a><a href="#evidence">Verification</a><a href="#files">Changed files</a></nav><main>
-<p class="eyebrow">Review guide · additive API</p><h1>Send budget information<br>to client applications.</h1>
-<p>Accept a conversation cost limit, retain it through server restart and fork, and return it alongside the existing cost statistics. Client applications can display both amounts without a second accounting system.</p>
-<div class="callout"><strong>★ Reuse the existing limiter.</strong> A call or step may overshoot. The option keeps its existing name, <code>max_budget_per_run</code>, and its existing accumulated-conversation-cost behavior. No budget reset or reservation is introduced.</div>
-<p class="sources">Limiter: <a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L742">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:742</a></p>
-<section id="api"><h2>One optional field on creation and response</h2><div class="pair"><div class="card"><h3>Before</h3><pre>POST /api/conversations
-{ "max_iterations": 500, ... }
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>One persisted conversation budget · SDK design</title>
+    <style>
+      :root {
+        --fg: #192c32;
+        --muted: #4f6267;
+        --subtle: #66777a;
+        --bg: #fcfcf9;
+        --card: #fff;
+        --line: #d9e1df;
+        --accent: #225c70;
+        --soft: #eaf3f3;
+        --delta: #a94b13;
+        --delta-bg: #fff4e8;
+        --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+        --sans: system-ui, -apple-system, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 15px/1.6 var(--sans);
+      }
+      .layout {
+        max-width: 1180px;
+        margin: auto;
+        padding: 36px 24px 72px;
+        display: grid;
+        grid-template-columns: 176px minmax(0, 1fr);
+        gap: 36px;
+      }
+      main {
+        min-width: 0;
+      }
+      nav {
+        position: sticky;
+        top: 26px;
+        align-self: start;
+        font-size: 13px;
+      }
+      nav a {
+        display: block;
+        margin: 9px 0;
+        text-decoration: none;
+      }
+      nav small {
+        display: block;
+        color: var(--muted);
+        line-height: 1.5;
+        margin: 3px 0 16px;
+      }
+      a {
+        color: var(--accent);
+        text-underline-offset: 3px;
+      }
+      h1 {
+        font-size: 38px;
+        line-height: 1.15;
+        letter-spacing: -1px;
+        margin: 8px 0 16px;
+      }
+      h2 {
+        font-size: 23px;
+        line-height: 1.3;
+        margin: 32px 0 12px;
+      }
+      h3 {
+        font-size: 16px;
+        margin: 0 0 7px;
+      }
+      h4 {
+        font: 12px/1.6 var(--mono);
+        overflow-wrap: anywhere;
+        margin: 20px 0 8px;
+      }
+      p {
+        margin: 10px 0;
+        max-width: 78ch;
+      }
+      .eyebrow {
+        font-size: 11px;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+        color: var(--accent);
+        font-weight: 700;
+      }
+      .muted,
+      figcaption {
+        color: var(--muted);
+      }
+      .callout {
+        background: var(--soft);
+        border-left: 3px solid var(--accent);
+        padding: 12px 16px;
+        margin: 16px 0;
+      }
+      .pair {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+      .card {
+        min-width: 0;
+        border: 1px solid var(--line);
+        background: var(--card);
+        padding: 16px;
+        border-radius: 6px;
+      }
+      .after {
+        border-color: var(--delta);
+        background: var(--delta-bg);
+      }
+      code,
+      pre {
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      code {
+        overflow-wrap: anywhere;
+      }
+      pre {
+        padding: 13px;
+        background: var(--soft);
+        overflow: auto;
+        border-radius: 5px;
+        line-height: 1.55;
+        margin: 10px 0;
+      }
+      .card pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 14px;
+      }
+      th,
+      td {
+        text-align: left;
+        vertical-align: top;
+        padding: 10px;
+        border-bottom: 1px solid var(--line);
+      }
+      th {
+        background: var(--soft);
+        font-size: 12px;
+      }
+      td:first-child {
+        width: 29%;
+      }
+      details {
+        border-top: 1px solid var(--line);
+        padding: 10px 0;
+        margin: 8px 0;
+      }
+      summary {
+        cursor: pointer;
+        overflow-wrap: anywhere;
+        font-size: 13px;
+        color: var(--accent);
+      }
+      details pre {
+        max-height: 380px;
+        white-space: pre;
+        overflow: auto;
+      }
+      .sources {
+        font-size: 11px;
+        overflow-wrap: anywhere;
+        line-height: 1.65;
+        color: var(--muted);
+      }
+      figure {
+        margin: 18px 0 12px;
+      }
+      svg {
+        width: 100%;
+        height: auto;
+        display: block;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+      }
+      .existing {
+        fill: var(--card);
+        stroke: var(--subtle);
+        stroke-dasharray: 6 4;
+      }
+      .new {
+        fill: var(--delta-bg);
+        stroke: var(--delta);
+        stroke-width: 1.6;
+      }
+      .node-title {
+        font: 650 14px var(--sans);
+        fill: var(--fg);
+      }
+      .node-detail {
+        font: 12px var(--sans);
+        fill: var(--muted);
+      }
+      .node-source {
+        font: 10.5px var(--mono);
+        fill: var(--subtle);
+      }
+      .row-label {
+        font: 700 10px var(--sans);
+        letter-spacing: 1px;
+        fill: var(--muted);
+      }
+      .after-label {
+        fill: var(--delta);
+      }
+      .edge {
+        stroke: var(--subtle);
+        stroke-dasharray: 4 3;
+        fill: none;
+      }
+      .edge-change {
+        stroke: var(--delta);
+        stroke-width: 1.8;
+        stroke-dasharray: 5 3;
+        fill: none;
+      }
+      figcaption {
+        font-size: 12px;
+        line-height: 1.55;
+        margin-top: 8px;
+      }
+      .file-list {
+        columns: 2;
+        column-gap: 24px;
+        padding-left: 18px;
+        font-size: 12px;
+      }
+      .file-list li {
+        break-inside: avoid;
+        margin-bottom: 7px;
+        overflow-wrap: anywhere;
+      }
+      footer {
+        margin-top: 28px;
+        padding-top: 16px;
+        border-top: 1px solid var(--line);
+      }
+      @media (max-width: 800px) {
+        .layout {
+          grid-template-columns: 1fr;
+          padding: 22px 16px;
+          gap: 20px;
+        }
+        nav {
+          position: static;
+          display: flex;
+          flex-wrap: wrap;
+          gap: 4px 18px;
+        }
+        nav strong {
+          width: 100%;
+        }
+        nav small {
+          display: none;
+        }
+        nav a {
+          margin: 0;
+        }
+        h1 {
+          font-size: 30px;
+        }
+        .pair {
+          grid-template-columns: 1fr;
+        }
+        .file-list {
+          columns: 1;
+        }
+        th,
+        td {
+          padding: 8px 5px;
+        }
+        body {
+          font-size: 14px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <nav aria-label="Document sections">
+        <strong>Budget design</strong>
+        <a href="#api">1. Expose the existing cap</a
+        ><small>✏️ Request + response</small>
+        <a href="#state">2. Persist it with state</a
+        ><small>✏️ State + local conversation</small>
+        <a href="#server">3. Project current state</a
+        ><small>✏️ Server launch + lifecycle</small>
+        <a href="#remote">4. Reuse the remote cache</a
+        ><small>✏️ Python remote client</small>
+        <a href="#display">5. Keep the same spend</a
+        ><small>⚙️ Typed client plumbing</small>
+        <a href="#evidence">6. Review the evidence</a
+        ><small>🟢 Lifecycle regressions</small>
+      </nav>
+      <main>
+        <header>
+          <p class="eyebrow">SDK + Agent Server · additive API</p>
+          <h1>One persisted cap.<br />Available to client applications.</h1>
+          <p>
+            The existing <code>max_budget_per_run</code> limit becomes a field
+            of <code>ConversationState</code>, saved in
+            <code>base_state.json</code> and returned through the server’s
+            existing state projection. Local and remote properties read their
+            existing state owners; accumulated-cost accounting stays unchanged.
+          </p>
+          <div class="callout">
+            <strong
+              >★ The cap and its accumulated spend belong to the same
+              conversation state.</strong
+            >
+            An LLM call or step may overshoot the cap. This change preserves
+            that behavior and makes the cap available for display.
+          </div>
+          <p class="sources">
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/state.py#L114"
+              >ConversationState.max_budget_per_run</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L756"
+              >Existing limiter</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-agent-server/openhands/agent_server/conversation_service.py#L373"
+              >ConversationInfo projection</a
+            >
+          </p>
+          <p class="sources">
+            Before: <code>d2ee0cdea60825608c2f8906eb54e1d4d264fb42</code> ·
+            implementation:
+            <code>c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35</code>. Links and
+            diffs use these exact revisions.
+          </p>
+        </header>
+        <section id="api">
+          <h2>1. Add one optional field to creation and response</h2>
+          <div class="pair">
+            <div class="card">
+              <h3>Before</h3>
+              <pre>
+LocalConversation(max_budget_per_run=5)
+# Existing in-memory limit
+
+POST /api/conversations
+GET  /api/conversations/{id}
+# No budget field in the contract</pre>
+              <p>
+                Standalone local construction accepts a cap, but saved state
+                does not retain it. The server already exposes accumulated
+                costs.
+              </p>
+              <p class="sources">
+                <a
+                  href="https://github.com/OpenHands/software-agent-sdk/blob/d2ee0cdea60825608c2f8906eb54e1d4d264fb42/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L517"
+                  >Local attribute</a
+                >
+                ·
+                <a
+                  href="https://github.com/OpenHands/software-agent-sdk/blob/d2ee0cdea60825608c2f8906eb54e1d4d264fb42/openhands-sdk/openhands/sdk/conversation/state.py#L108"
+                  >State fields</a
+                >
+                ·
+                <a
+                  href="https://github.com/OpenHands/software-agent-sdk/blob/d2ee0cdea60825608c2f8906eb54e1d4d264fb42/openhands-agent-server/openhands/agent_server/models.py#L150"
+                  >Response fields</a
+                >
+              </p>
+            </div>
+            <div class="card after">
+              <h3>After</h3>
+              <pre>
+POST /api/conversations
+{ "max_budget_per_run": 5.0, ... }
 
 GET /api/conversations/{id}
-{ "stats": { ... }, ... }</pre><p>The server has live costs but no configured budget to return.</p><p class="sources"><a href="https://github.com/OpenHands/software-agent-sdk/blob/d2ee0cdea60825608c2f8906eb54e1d4d264fb42/openhands-sdk/openhands/sdk/conversation/request.py#L225">Before: ConversationConfig</a> · <a href="https://github.com/OpenHands/software-agent-sdk/blob/d2ee0cdea60825608c2f8906eb54e1d4d264fb42/openhands-agent-server/openhands/agent_server/event_service.py#L1351">Before: EventService.start</a></p></div><div class="card after"><h3>After</h3><pre>POST /api/conversations
-{ "max_budget_per_run": 10.0, ... }
-
-GET /api/conversations/{id}
-{ "max_budget_per_run": 10.0,
-  "stats": { ... }, ... }</pre><p>A finite positive USD amount, or <code>null</code> for unbounded. Older stored metadata loads with no limit.</p></div></div><p class="sources"><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/openhands-sdk/openhands/sdk/conversation/request.py#L285">openhands-sdk/openhands/sdk/conversation/request.py:285</a> · <a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/openhands-agent-server/openhands/agent_server/models.py#L173">openhands-agent-server/openhands/agent_server/models.py:173</a> · <a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/tests/agent_server/test_conversation_budget.py#L24">tests/agent_server/test_conversation_budget.py:24</a></p></section>
-<section id="flow"><h2>Connect configuration to the existing run loop</h2>
-<figure><svg viewBox="0 0 860 250" role="img" aria-labelledby="flow-title flow-desc"><title id="flow-title">Before and after budget forwarding</title><desc id="flow-desc">Previously the request had no budget and LocalConversation was constructed without one. Now ConversationConfig persists a budget in meta.json, EventService forwards it to LocalConversation, and ConversationInfo returns it to clients.</desc>
-<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="var(--delta)"/></marker></defs>
-<g><rect class="old" x="10" y="15" width="250" height="90" rx="7"/><text class="label" x="28" y="48">ConversationConfig</text><text class="detail" x="28" y="74">Before: no budget field</text></g>
-<g><rect class="old" x="305" y="15" width="250" height="90" rx="7"/><text class="label" x="323" y="48">EventService.start</text><text class="detail" x="323" y="74">Before: default unbounded</text></g>
-<g><rect class="old" x="600" y="15" width="250" height="90" rx="7"/><text class="label" x="618" y="48">ConversationInfo</text><text class="detail" x="618" y="74">Before: stats only</text></g>
-<g><rect class="new" x="10" y="145" width="250" height="90" rx="7"/><text class="label" x="28" y="178">ConversationConfig</text><text class="detail" x="28" y="204">After: cap stored in meta.json</text></g>
-<path class="arrow" d="M260 190H300" marker-end="url(#arrow)"/>
-<g><rect class="new" x="305" y="145" width="250" height="90" rx="7"/><text class="label" x="323" y="178">LocalConversation</text><text class="detail" x="323" y="204">After: receives stored cap</text></g>
-<path class="arrow" d="M555 190H595" marker-end="url(#arrow)"/>
-<g><rect class="new" x="600" y="145" width="250" height="90" rx="7"/><text class="label" x="618" y="178">ConversationInfo</text><text class="detail" x="618" y="204">After: cap + existing stats</text></g></svg><figcaption>Fig. 1 · Orange marks the new budget path. The existing stats stream continues unchanged.</figcaption></figure>
-<p class="sources"><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/openhands-sdk/openhands/sdk/conversation/request.py#L285">openhands-sdk/openhands/sdk/conversation/request.py:285</a> · <a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/openhands-agent-server/openhands/agent_server/event_service.py#L1361">openhands-agent-server/openhands/agent_server/event_service.py:1361</a> · <a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/openhands-agent-server/openhands/agent_server/conversation_service.py#L374">openhands-agent-server/openhands/agent_server/conversation_service.py:374</a></p>
-<div class="pair"><div class="card"><h3>Python entry points</h3><p><code>Conversation(...)</code> and <code>RemoteConversation(...)</code> accept and forward the option. The remote client reads the effective limit from the server response, including when an older server omits it. A local fork now copies the limit alongside the existing iteration cap.</p><p class="sources"><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/openhands-sdk/openhands/sdk/conversation/conversation.py#L76">openhands-sdk/openhands/sdk/conversation/conversation.py:76</a> · <a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py#L793">openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py:793</a> · <a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L908">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:908</a></p></div><div class="card"><h3>TypeScript entry points</h3><p><code>maxBudgetPerRun</code> passes through normal and ACP creation. <code>ConversationInfo.max_budget_per_run</code> and typed <code>stats.usage_to_metrics</code> support the display.</p><p class="sources"><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/clients/typescript/src/types/base.ts#L135">clients/typescript/src/types/base.ts:135</a> · <a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/clients/typescript/src/conversation/remote-conversation.ts#L183">clients/typescript/src/conversation/remote-conversation.ts:183</a></p></div></div></section>
-<section id="semantics"><h2>The displayed spend matches enforcement</h2><pre>spent = sum(stats.usage_to_metrics[*].accumulated_cost)
-limit = conversation.max_budget_per_run</pre><p>Both amounts are USD. Spend includes earlier runs and all tracked conversation LLMs. The limit is checked after a step; an over-budget unfinished run emits <code>MaxBudgetReached</code>. A completed task keeps <code>finished</code> status.</p><p class="sources"><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L742">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:742</a></p><p>Fetch the static cap through create/GET, then refresh spend from WebSocket <code>stats</code> updates. A fork keeps the cap and follows its existing <code>reset_metrics</code> choice. Do not alias the legacy per-LLM <code>max_budget_per_task</code> into the UI.</p><p class="sources"><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L908">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:908</a> · <a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/openhands-agent-server/openhands/agent_server/models.py#L173">openhands-agent-server/openhands/agent_server/models.py:173</a> · <a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/tests/cross/test_remote_conversation_live_server.py#L1632">tests/cross/test_remote_conversation_live_server.py:1632</a></p></section>
-<section id="evidence"><h2>Test the contract through real server sockets</h2><table><thead><tr><th>Configured limit</th><th>Observed result</th></tr></thead><tbody><tr><td>Unbounded</td><td>$0.01 → $0.02 while running; finishes at $0.03</td></tr><tr><td>$0.015</td><td>Second call allowed; stops at $0.02 with MaxBudgetReached</td></tr><tr><td>$0.10</td><td>$0.01 → $0.02 while running; finishes at $0.03</td></tr></tbody></table><p class="sources"><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/tests/cross/test_remote_conversation_live_server.py#L1632">tests/cross/test_remote_conversation_live_server.py:1632</a> · <a href="budget-evidence.txt">Before/after evidence and commands</a></p><p>The baseline lacks the cap response, but its live REST, persisted-state, and WebSocket costs already work. The implementation therefore adds no stats publication mechanism. Tests use a real uvicorn server and persistence with deterministic provider responses priced at $0.01; they do not verify provider billing or Docker packaging.</p><p>Initial validation: 385 Python tests and 395 TypeScript tests passed, plus per-file hooks, TypeScript build and OpenAPI export. Full TypeScript lint has three existing errors in untouched integration tests. The release-pinned generated schema remains unchanged; regeneration follows the SDK release pin update.</p><p>Independent architecture, simplicity and compatibility reviews found one client inconsistency: the constructor retained the requested budget instead of the returned budget. It now trusts the server response. All 93 focused remote, factory and fork regression tests pass.</p><p>A separate real-provider pass with DeepSeek verified 11 focused SDK checks, including overshoot, matching REST/WebSocket/persisted costs, fork/restart and actual Python/TypeScript clients. Canvas displayed live costs on desktop and phone, retained them after reload/restart, and surfaced the budget-stop error. The new cap still needs the later Canvas display mapping.</p><p class="sources"><a href="https://github.com/smolpaws/software-agent-sdk/blob/b11cb32be50909541a2085eec6fca096bf99f40f/.pr/live-review/SDK-LIVE-VERIFICATION.md">Real-model SDK report and receipts</a> · <a href="https://github.com/smolpaws/software-agent-sdk/blob/b11cb32be50909541a2085eec6fca096bf99f40f/.pr/live-review/canvas/README.md">Canvas report and screenshots</a></p></section>
-<section id="files"><h2>Changed files</h2><p class="muted">Expand a file for its diff and a commit-pinned source link. Configuration and client plumbing are additive; tests cover the resulting behavior.</p><details><summary>clients/typescript/README.md <span class="muted">+22 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/clients/typescript/README.md#L1">clients/typescript/README.md:1</a></p><pre>diff --git a/clients/typescript/README.md b/clients/typescript/README.md
-index 5726143e6..29e817203 100644
---- a/clients/typescript/README.md
-+++ b/clients/typescript/README.md
-@@ -299,6 +299,28 @@ await conversation.updateSecrets({
- });
- ```
-
-+### Displaying a Conversation Budget
+{ "max_budget_per_run": 5.0,
+  "stats": { "usage_to_metrics": ... } }</pre>
+              <p>
+                The request accepts a finite positive USD value or
+                <code>null</code>. Responses expose the effective state value;
+                older servers may omit it.
+              </p>
+              <p class="sources">
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/request.py#L468"
+                  >Request validation</a
+                >
+                ·
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-agent-server/openhands/agent_server/models.py#L173"
+                  >Response field</a
+                >
+                ·
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py#L716"
+                  >Missing field → None</a
+                >
+              </p>
+            </div>
+          </div>
+        </section>
+        <section id="state">
+          <h2>2. Save the existing limit in ConversationState</h2>
+          <figure>
+            <svg
+              viewBox="0 0 840 280"
+              role="img"
+              aria-labelledby="ownership-title ownership-desc"
+            >
+              <title id="ownership-title">
+                Budget ownership before and after
+              </title>
+              <desc id="ownership-desc">
+                Before the local budget is a plain attribute, the limiter reads
+                it, and persisted state has no cap. After the property reads
+                ConversationState, which persists the budget in base_state.json.
+              </desc>
+              <defs>
+                <marker
+                  id="ownership-arrow"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto"
+                >
+                  <path d="M0 0L10 5L0 10Z" fill="var(--delta)" />
+                </marker>
+              </defs>
+              <text class="row-label" x="18" y="22">BEFORE · d2ee0cd</text>
+              <text class="row-label after-label" x="18" y="158">
+                AFTER · c13bcc6
+              </text>
+              <a
+                href="https://github.com/OpenHands/software-agent-sdk/blob/d2ee0cdea60825608c2f8906eb54e1d4d264fb42/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L517"
+              >
+                <g>
+                  <rect
+                    class="existing"
+                    x="18"
+                    y="35"
+                    width="244"
+                    height="88"
+                    rx="6"
+                  />
+                  <text class="node-title" x="32" y="61">
+                    LocalConversation.__init__
+                  </text>
+                  <text class="node-detail" x="32" y="84">
+                    Plain runtime budget attribute
+                  </text>
+                  <text class="node-source" x="32" y="105">
+                    local_conversation.py:517
+                  </text>
+                </g>
+              </a>
+              <a
+                href="https://github.com/OpenHands/software-agent-sdk/blob/d2ee0cdea60825608c2f8906eb54e1d4d264fb42/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L743"
+              >
+                <g>
+                  <rect
+                    class="existing"
+                    x="298"
+                    y="35"
+                    width="244"
+                    height="88"
+                    rx="6"
+                  />
+                  <text class="node-title" x="312" y="61">
+                    _budget_exceeded_detail()
+                  </text>
+                  <text class="node-detail" x="312" y="84">
+                    Reads the local attribute
+                  </text>
+                  <text class="node-source" x="312" y="105">
+                    local_conversation.py:743
+                  </text>
+                </g>
+              </a>
+              <a
+                href="https://github.com/OpenHands/software-agent-sdk/blob/d2ee0cdea60825608c2f8906eb54e1d4d264fb42/openhands-sdk/openhands/sdk/conversation/state.py#L108"
+              >
+                <g>
+                  <rect
+                    class="existing"
+                    x="578"
+                    y="35"
+                    width="244"
+                    height="88"
+                    rx="6"
+                  />
+                  <text class="node-title" x="592" y="61">
+                    ConversationState
+                  </text>
+                  <text class="node-detail" x="592" y="84">
+                    Saved state has no budget field
+                  </text>
+                  <text class="node-source" x="592" y="105">state.py:108</text>
+                </g>
+              </a>
+              <path
+                class="edge"
+                d="M266 79H293"
+                marker-end="url(#ownership-arrow)"
+              />
+              <path
+                class="edge"
+                d="M546 79H573"
+                marker-end="url(#ownership-arrow)"
+              />
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L733"
+              >
+                <g>
+                  <rect
+                    class="new"
+                    x="18"
+                    y="171"
+                    width="244"
+                    height="88"
+                    rx="6"
+                  />
+                  <text class="node-title" x="32" y="197">
+                    LocalConversation property
+                  </text>
+                  <text class="node-detail" x="32" y="220">
+                    Locked read/write of state
+                  </text>
+                  <text class="node-source" x="32" y="241">
+                    local_conversation.py:733
+                  </text>
+                </g>
+              </a>
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/state.py#L114"
+              >
+                <g>
+                  <rect
+                    class="new"
+                    x="298"
+                    y="171"
+                    width="244"
+                    height="88"
+                    rx="6"
+                  />
+                  <text class="node-title" x="312" y="197">
+                    ConversationState
+                  </text>
+                  <text class="node-detail" x="312" y="220">
+                    Owns max_budget_per_run
+                  </text>
+                  <text class="node-source" x="312" y="241">state.py:114</text>
+                </g>
+              </a>
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/state.py#L451"
+              >
+                <g>
+                  <rect
+                    class="new"
+                    x="578"
+                    y="171"
+                    width="244"
+                    height="88"
+                    rx="6"
+                  />
+                  <text class="node-title" x="592" y="197">
+                    _save_base_state()
+                  </text>
+                  <text class="node-detail" x="592" y="220">
+                    Writes the existing state model
+                  </text>
+                  <text class="node-source" x="592" y="241">state.py:451</text>
+                </g>
+              </a>
+              <path
+                class="edge-change"
+                d="M266 215H293"
+                marker-end="url(#ownership-arrow)"
+              />
+              <path
+                class="edge-change"
+                d="M546 215H573"
+                marker-end="url(#ownership-arrow)"
+              />
+            </svg>
+            <figcaption>
+              Fig. 1 · The public local attribute becomes a property over the
+              existing synchronized state. Persistence uses the existing
+              serializer. Every node links to its source revision.
+            </figcaption>
+          </figure>
+          <table>
+            <thead>
+              <tr>
+                <th>Local SDK operation</th>
+                <th>Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>New conversation, omitted / <code>None</code></td>
+                <td>Unbounded.</td>
+              </tr>
+              <tr>
+                <td>Resume, omitted / <code>None</code></td>
+                <td>
+                  Preserve the saved cap. An old snapshot without the field
+                  loads as <code>None</code>.
+                </td>
+              </tr>
+              <tr>
+                <td>Resume with a number</td>
+                <td>Replace the saved cap and persist it.</td>
+              </tr>
+              <tr>
+                <td><code>conversation.max_budget_per_run = None</code></td>
+                <td>
+                  Clear the cap through the existing state lock and persistence
+                  path.
+                </td>
+              </tr>
+              <tr>
+                <td>Local <code>0</code> / negative values</td>
+                <td>
+                  Retain existing local compatibility. Positive-finite
+                  validation applies to the new server creation request.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="sources">
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/state.py#L571"
+              >Resume semantics</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L738"
+              >Persistent mutation</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/sdk/conversation/local/test_state_serialization.py#L1472"
+              >Resume / numeric override</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/sdk/conversation/local/test_state_serialization.py#L1553"
+              >Old snapshot compatibility</a
+            >
+          </p>
+          <details class="diffs">
+            <summary>State and local API · exact diffs</summary>
+            <h4>
+              openhands-sdk/openhands/sdk/conversation/state.py
+              <span class="muted">+11 / −0</span>
+            </h4>
+            <p class="sources">
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/state.py"
+                >Committed source</a
+              >
+            </p>
+            <pre>
+diff --git a/openhands-sdk/openhands/sdk/conversation/state.py b/openhands-sdk/openhands/sdk/conversation/state.py
+index 648feed14..c0849c187 100644
+--- a/openhands-sdk/openhands/sdk/conversation/state.py
++++ b/openhands-sdk/openhands/sdk/conversation/state.py
+@@ -111,6 +111,11 @@ class ConversationState(OpenHandsModel):
+         description=&quot;Maximum number of iterations the agent can &quot;
+         &quot;perform in a single run.&quot;,
+     )
++    max_budget_per_run: float | None = Field(
++        default=None,
++        description=&quot;USD limit on accumulated conversation LLM cost; &quot;
++        &quot;None means unbounded.&quot;,
++    )
+     stuck_detection: bool = Field(
+         default=True,
+         description=&quot;Whether to enable stuck detection for the agent.&quot;,
+@@ -463,6 +468,7 @@ class ConversationState(OpenHandsModel):
+         cipher: Cipher | None = None,
+         tags: dict[str, str] | None = None,
+         file_store: FileStore | None = None,
++        max_budget_per_run: float | None = None,
+     ) -&gt; &quot;ConversationState&quot;:
+         &quot;&quot;&quot;Create a new conversation state or resume from persistence.
+&#32;
+@@ -488,6 +494,8 @@ class ConversationState(OpenHandsModel):
+                 value is still stored on the state and used for environment
+                 observation paths.
+             max_iterations: Maximum iterations per run
++            max_budget_per_run: Accumulated LLM cost limit. None preserves a
++                resumed state&#x27;s cap and leaves new conversations unbounded.
+             stuck_detection: Whether to enable stuck detection
+             cipher: Optional cipher for encrypting/decrypting secrets in
+                     persisted state. If provided, secrets are encrypted when
+@@ -560,6 +568,8 @@ class ConversationState(OpenHandsModel):
+                 state.agent = agent
+             state.workspace = workspace
+             state.max_iterations = max_iterations
++            if max_budget_per_run is not None:
++                state.max_budget_per_run = max_budget_per_run
+&#32;
+             # Note: stats are already deserialized from base_state.json above.
+             # Do NOT reset stats here - this would lose accumulated metrics.
+@@ -579,6 +589,7 @@ class ConversationState(OpenHandsModel):
+             workspace=workspace,
+             persistence_dir=persistence_dir,
+             max_iterations=max_iterations,
++            max_budget_per_run=max_budget_per_run,
+             stuck_detection=stuck_detection,
+             tags=tags or {},
+         )</pre>
+            <h4>
+              openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
+              <span class="muted">+23 / −8</span>
+            </h4>
+            <p class="sources">
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py"
+                >Committed source</a
+              >
+            </p>
+            <pre>
+diff --git a/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py b/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
+index 067674a68..9cdf32ab7 100644
+--- a/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
++++ b/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
+@@ -283,6 +283,9 @@ class LocalConversation(BaseConversation):
+             hook_config: Optional hook configuration to auto-wire session hooks.
+                 If plugins are loaded, their hooks are combined with this config.
+             max_iteration_per_run: Maximum number of iterations per run
++            max_budget_per_run: Accumulated LLM cost limit. On resume, None keeps
++                the persisted cap; a number replaces it. Assign None to the
++                conversation&#x27;s max_budget_per_run property to clear a saved cap.
+             visualizer: Visualization configuration. Can be:
+                        - ConversationVisualizerBase subclass: Class to instantiate
+                          (default: ConversationVisualizer)
+@@ -412,6 +415,7 @@ class LocalConversation(BaseConversation):
+             else None,
+             file_store=file_store,
+             max_iterations=max_iteration_per_run,
++            max_budget_per_run=max_budget_per_run,
+             stuck_detection=stuck_detection,
+             cipher=cipher,
+             tags=tags,
+@@ -513,8 +517,6 @@ class LocalConversation(BaseConversation):
+         )
+&#32;
+         self.max_iteration_per_run = max_iteration_per_run
+-        # Hard cost ceiling (USD) for a run; None disables the budget check.
+-        self.max_budget_per_run = max_budget_per_run
+&#32;
+         # Initialize stuck detector
+         if stuck_detection:
+@@ -727,6 +729,17 @@ class LocalConversation(BaseConversation):
+         &quot;&quot;&quot;
+         return self._state
+&#32;
++    @property
++    def max_budget_per_run(self) -&gt; float | None:
++        &quot;&quot;&quot;The persisted accumulated-cost limit; None means unbounded.&quot;&quot;&quot;
++        with self._state:
++            return self._state.max_budget_per_run
 +
-+Set `maxBudgetPerRun` when creating a remote conversation, using an Agent Server
-+that supports `max_budget_per_run`. Omit it or pass `null` for no limit.
++    @max_budget_per_run.setter
++    def max_budget_per_run(self, value: float | None) -&gt; None:
++        with self._state:
++            self._state.max_budget_per_run = value
 +
-+```typescript
-+const conversation = await manager.createConversation(agent, { maxBudgetPerRun: 5 });
-+const info = await manager.getConversation(conversation.id);
-+const spent = Object.values(info.stats?.usage_to_metrics ?? {}).reduce(
-+  (total, metrics) =&gt; total + (metrics.accumulated_cost ?? 0),
-+  0
-+);
-+console.log({ spent, limit: info.max_budget_per_run });
-+```
-+
-+Both amounts are in USD. Despite its legacy name, the limit applies to the
-+conversation&#x27;s accumulated cost, including earlier runs. The server checks the
-+limit after each completed agent step, so a step may overshoot it. The same
-+`stats.usage_to_metrics` costs arrive in WebSocket state updates while running;
-+use those updates to refresh a live display. The configured limit remains
-+available from the conversation&#x27;s REST response after reconnecting.
-+
- ## API Reference
-
- ### Conversation
-</pre></details>
-<details><summary>clients/typescript/src/__tests__/conversation-create-options.test.ts <span class="muted">+33 / −6</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/clients/typescript/src/__tests__/conversation-create-options.test.ts#L1">clients/typescript/src/__tests__/conversation-create-options.test.ts:1</a></p><pre>diff --git a/clients/typescript/src/__tests__/conversation-create-options.test.ts b/clients/typescript/src/__tests__/conversation-create-options.test.ts
-index a75a1e1b7..a76a18737 100644
---- a/clients/typescript/src/__tests__/conversation-create-options.test.ts
-+++ b/clients/typescript/src/__tests__/conversation-create-options.test.ts
-@@ -41,12 +41,20 @@ describe(&#x27;conversation create options&#x27;, () =&gt; {
-     bodies.length = 0;
-   });
-
--  it(&#x27;ConversationManager.createConversation sends maxIterations and stuckDetection&#x27;, async () =&gt; {
-+  it(&#x27;ConversationManager.createConversation sends execution limits&#x27;, async () =&gt; {
-     const manager = new ConversationManager({ host });
--    await manager.createConversation(agent, { maxIterations: 7, stuckDetection: false });
-+    await manager.createConversation(agent, {
-+      maxIterations: 7,
-+      maxBudgetPerRun: 2.5,
-+      stuckDetection: false,
-+    });
-
-     expect(bodies).toHaveLength(1);
--    expect(bodies[0]).toMatchObject({ max_iterations: 7, stuck_detection: false });
-+    expect(bodies[0]).toMatchObject({
-+      max_iterations: 7,
-+      max_budget_per_run: 2.5,
-+      stuck_detection: false,
-+    });
-   });
-
-   it(&#x27;ConversationManager.createConversation keeps the defaults when both are omitted&#x27;, async () =&gt; {
-@@ -54,19 +62,38 @@ describe(&#x27;conversation create options&#x27;, () =&gt; {
-     await manager.createConversation(agent);
-
-     expect(bodies[0]).toMatchObject({ max_iterations: 500, stuck_detection: true });
-+    expect(bodies[0]).not.toHaveProperty(&#x27;max_budget_per_run&#x27;);
-   });
-
-   it(&#x27;RemoteConversation uses its constructor options, overridden by start() options&#x27;, async () =&gt; {
-     const workspace = new RemoteWorkspace({ host, workingDir: &#x27;/workspace&#x27; });
--    const options = { maxIterations: 7, stuckDetection: false };
-+    const options = { maxIterations: 7, maxBudgetPerRun: 2.5, stuckDetection: false };
-
-     await new RemoteConversation(agent, workspace, options).start();
-     await new RemoteConversation(agent, workspace, options).start({
-       maxIterations: 9,
-+      maxBudgetPerRun: 4,
-       stuckDetection: true,
-     });
-+    await new RemoteConversation(agent, workspace, options).start({ maxBudgetPerRun: null });
-+
-+    expect(bodies[0]).toMatchObject({
-+      max_iterations: 7,
-+      max_budget_per_run: 2.5,
-+      stuck_detection: false,
-+    });
-+    expect(bodies[1]).toMatchObject({
-+      max_iterations: 9,
-+      max_budget_per_run: 4,
-+      stuck_detection: true,
-+    });
-+    expect(bodies[2]).toHaveProperty(&#x27;max_budget_per_run&#x27;, null);
-+  });
-+
-+  it(&#x27;ACP creation forwards the budget through the manager namespace&#x27;, async () =&gt; {
-+    const manager = new ConversationManager({ host });
-+    await manager.acp.createConversation({ kind: &#x27;ACPAgent&#x27; }, { maxBudgetPerRun: 3 });
-
--    expect(bodies[0]).toMatchObject({ max_iterations: 7, stuck_detection: false });
--    expect(bodies[1]).toMatchObject({ max_iterations: 9, stuck_detection: true });
-+    expect(bodies[0]).toHaveProperty(&#x27;max_budget_per_run&#x27;, 3);
-   });
- });
-</pre></details>
-<details><summary>clients/typescript/src/client/conversation-client.ts <span class="muted">+2 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/clients/typescript/src/client/conversation-client.ts#L1">clients/typescript/src/client/conversation-client.ts:1</a></p><pre>diff --git a/clients/typescript/src/client/conversation-client.ts b/clients/typescript/src/client/conversation-client.ts
-index aaf5163f5..f56392751 100644
---- a/clients/typescript/src/client/conversation-client.ts
-+++ b/clients/typescript/src/client/conversation-client.ts
-@@ -44,6 +44,8 @@ export interface CreateConversationPayload {
-   agent_profile_id?: string;
-   agent?: unknown;
-   agent_settings?: unknown;
-+  /** Positive USD limit on accumulated conversation cost; a step may overshoot. */
-+  max_budget_per_run?: number | null;
-   [key: string]: unknown;
- }
-
-</pre></details>
-<details><summary>clients/typescript/src/conversation/conversation-manager.ts <span class="muted">+6 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/clients/typescript/src/conversation/conversation-manager.ts#L1">clients/typescript/src/conversation/conversation-manager.ts:1</a></p><pre>diff --git a/clients/typescript/src/conversation/conversation-manager.ts b/clients/typescript/src/conversation/conversation-manager.ts
-index 8ac58e347..575cd5ba1 100644
---- a/clients/typescript/src/conversation/conversation-manager.ts
-+++ b/clients/typescript/src/conversation/conversation-manager.ts
-@@ -62,6 +62,7 @@ export class ACPConversationNamespace {
-     options: {
-       initialMessage?: string;
-       maxIterations?: number;
-+      maxBudgetPerRun?: number | null;
-       stuckDetection?: boolean;
-       workingDir?: string;
-     } = {}
-@@ -207,6 +208,7 @@ export class ConversationManager {
-     options: {
-       initialMessage?: string;
-       maxIterations?: number;
-+      maxBudgetPerRun?: number | null;
-       stuckDetection?: boolean;
-       workingDir?: string;
-       userId?: string;
-@@ -220,6 +222,7 @@ export class ConversationManager {
-
-     const conversation = new RemoteConversation(agent, workspace, {
-       maxIterations: options.maxIterations,
-+      maxBudgetPerRun: options.maxBudgetPerRun,
-       stuckDetection: options.stuckDetection,
-       userId: options.userId,
-     });
-@@ -227,6 +230,7 @@ export class ConversationManager {
-     await conversation.start({
-       initialMessage: options.initialMessage,
-       maxIterations: options.maxIterations,
-+      maxBudgetPerRun: options.maxBudgetPerRun,
-       stuckDetection: options.stuckDetection,
-       userId: options.userId,
-     });
-@@ -338,6 +342,7 @@ export class ConversationManager {
-     options: {
-       initialMessage?: string;
-       maxIterations?: number;
-+      maxBudgetPerRun?: number | null;
-       stuckDetection?: boolean;
-       workingDir?: string;
-       userId?: string;
-@@ -355,6 +360,7 @@ export class ConversationManager {
-       agent,
-       initial_message: initialMessage,
-       max_iterations: options.maxIterations || 500,
-+      max_budget_per_run: options.maxBudgetPerRun,
-       stuck_detection: options.stuckDetection ?? true,
-       workspace: { type: &#x27;local&#x27;, working_dir: options.workingDir || &#x27;/tmp&#x27; },
-       user_id: options.userId ?? null,
-</pre></details>
-<details><summary>clients/typescript/src/conversation/remote-conversation.ts <span class="muted">+10 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/clients/typescript/src/conversation/remote-conversation.ts#L1">clients/typescript/src/conversation/remote-conversation.ts:1</a></p><pre>diff --git a/clients/typescript/src/conversation/remote-conversation.ts b/clients/typescript/src/conversation/remote-conversation.ts
-index 04091d075..11620915d 100644
---- a/clients/typescript/src/conversation/remote-conversation.ts
-+++ b/clients/typescript/src/conversation/remote-conversation.ts
-@@ -42,6 +42,11 @@ import type { HookConfig } from &#x27;../hooks&#x27;;
-  * Options for creating a RemoteConversation instance.
-  */
- export interface RemoteConversationOptions extends BaseConversationOptions {
-+  /**
-+   * Positive USD limit on accumulated conversation cost, including earlier runs.
-+   * Null means unbounded. A completed agent step may overshoot the limit.
-+   */
-+  maxBudgetPerRun?: number | null;
-   /**
-    * Optional user ID to associate with server-side observability traces.
-    */
-@@ -93,6 +98,7 @@ export class RemoteConversation implements IConversation {
-   private hookConfig?: HookConfig;
-   private userId?: string;
-   private maxIterations?: number;
-+  private maxBudgetPerRun?: number | null;
-   private stuckDetection?: boolean;
-
-   constructor(
-@@ -108,6 +114,7 @@ export class RemoteConversation implements IConversation {
-     this.hookConfig = options.hookConfig;
-     this.userId = options.userId;
-     this.maxIterations = options.maxIterations;
-+    this.maxBudgetPerRun = options.maxBudgetPerRun;
-     this.stuckDetection = options.stuckDetection;
-
-     this.client = new HttpClient({
-@@ -144,6 +151,7 @@ export class RemoteConversation implements IConversation {
-     options: {
-       initialMessage?: string;
-       maxIterations?: number;
-+      maxBudgetPerRun?: number | null;
-       stuckDetection?: boolean;
-       hookConfig?: HookConfig;
-       userId?: string;
-@@ -175,6 +183,8 @@ export class RemoteConversation implements IConversation {
-       agent: this.agent,
-       initial_message: initialMessage,
-       max_iterations: options.maxIterations || this.maxIterations || 500,
-+      max_budget_per_run:
-+        options.maxBudgetPerRun !== undefined ? options.maxBudgetPerRun : this.maxBudgetPerRun,
-       stuck_detection: options.stuckDetection ?? this.stuckDetection ?? true,
-       workspace: { type: &#x27;local&#x27;, working_dir: this.workspace.workingDir },
-       hook_config: hookConfig ?? null,
-</pre></details>
-<details><summary>clients/typescript/src/models/conversation.ts <span class="muted">+6 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/clients/typescript/src/models/conversation.ts#L1">clients/typescript/src/models/conversation.ts:1</a></p><pre>diff --git a/clients/typescript/src/models/conversation.ts b/clients/typescript/src/models/conversation.ts
-index bfd1b6eec..8c7210b4c 100644
---- a/clients/typescript/src/models/conversation.ts
-+++ b/clients/typescript/src/models/conversation.ts
-@@ -57,6 +57,8 @@ export interface ConversationInfo {
-   workspace: unknown;
-   persistence_dir: string;
-   max_iterations?: number;
-+  /** USD limit on accumulated conversation cost; a completed step may overshoot. */
-+  max_budget_per_run?: number | null;
-   stuck_detection?: boolean;
-   conversation_stats?: ConversationStats;
-   /** API may return stats instead of conversation_stats */
-@@ -118,6 +120,8 @@ export interface CreateConversationRequest {
-   agent: AgentBase;
-   initial_message?: Message;
-   max_iterations: number;
-+  /** Positive USD limit on accumulated conversation cost; null means unbounded. */
-+  max_budget_per_run?: number | null;
-   stuck_detection: boolean;
-   workspace: Record&lt;string, unknown&gt;;
-   hook_config?: HookConfig | null;
-@@ -128,6 +132,8 @@ export interface CreateACPConversationRequest {
-   agent: ACPAgentConfig;
-   initial_message?: Message;
-   max_iterations: number;
-+  /** Positive USD limit on accumulated conversation cost; null means unbounded. */
-+  max_budget_per_run?: number | null;
-   stuck_detection: boolean;
-   workspace: Record&lt;string, unknown&gt;;
-   hook_config?: HookConfig | null;
-</pre></details>
-<details><summary>clients/typescript/src/types/base.ts <span class="muted">+4 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/clients/typescript/src/types/base.ts#L1">clients/typescript/src/types/base.ts:1</a></p><pre>diff --git a/clients/typescript/src/types/base.ts b/clients/typescript/src/types/base.ts
-index 9d18316cd..47d63f63a 100644
---- a/clients/typescript/src/types/base.ts
-+++ b/clients/typescript/src/types/base.ts
-@@ -2,6 +2,8 @@
-  * Base types and interfaces for the OpenHands Agent Server TypeScript client
-  */
-
-+import type { MetricsSnapshot } from &#x27;../generated/agent-server-schema&#x27;;
-+
- export type ConversationID = string;
-
- /**
-@@ -129,6 +131,8 @@ export interface ConversationStats {
-   message_events: number;
-   action_events: number;
-   observation_events: number;
-+  /** Per-LLM accumulated costs in USD, updated as responses are received. */
-+  usage_to_metrics?: Record&lt;string, MetricsSnapshot&gt;;
-   [key: string]: unknown;
- }
-
-</pre></details>
-<details><summary>openhands-agent-server/openhands/agent_server/conversation_service.py <span class="muted">+1 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/openhands-agent-server/openhands/agent_server/conversation_service.py#L1">openhands-agent-server/openhands/agent_server/conversation_service.py:1</a></p><pre>diff --git a/openhands-agent-server/openhands/agent_server/conversation_service.py b/openhands-agent-server/openhands/agent_server/conversation_service.py
-index ceda02387..05781d065 100644
+     @property
+     def conversation_stats(self):
+         return self._state.stats
+@@ -741,19 +754,20 @@ class LocalConversation(BaseConversation):
+         return acp_prompt_messages[-1].id if acp_prompt_messages else None
+&#32;
+     def _budget_exceeded_detail(self) -&gt; str | None:
+-        &quot;&quot;&quot;Error detail if the run has hit its cost budget, else None.
++        &quot;&quot;&quot;Error detail if accumulated conversation cost has hit the limit.
+&#32;
+-        Bounds total spend across all of the run&#x27;s LLMs (agent, condenser, ...),
+-        complementing the iteration cap which only bounds step count.
++        Checked after each step across all tracked LLMs (agent, condenser, ...).
++        A step may overshoot; resuming a run does not reset accumulated cost.
+         &quot;&quot;&quot;
+-        if self.max_budget_per_run is None:
++        max_budget = self.max_budget_per_run
++        if max_budget is None:
+             return None
+         spent = self.conversation_stats.get_combined_metrics().accumulated_cost
+-        if spent &lt; self.max_budget_per_run:
++        if spent &lt; max_budget:
+             return None
+         return (
+             f&quot;Agent reached maximum budget limit &quot;
+-            f&quot;(${self.max_budget_per_run:.4f}); accumulated cost ${spent:.4f}.&quot;
++            f&quot;(${max_budget:.4f}); accumulated cost ${spent:.4f}.&quot;
+         )
+&#32;
+     def _emit_run_limit_error(self, code: str, detail: str) -&gt; None:
+@@ -906,6 +920,7 @@ class LocalConversation(BaseConversation):
+                 persistence_dir=fork_persistence,
+                 conversation_id=fork_id,
+                 max_iteration_per_run=self.max_iteration_per_run,
++                max_budget_per_run=self._state.max_budget_per_run,
+                 stuck_detection=self._stuck_detector is not None,
+                 visualizer=type(self._visualizer) if self._visualizer else None,
+                 delete_on_close=self.delete_on_close,</pre>
+          </details>
+        </section>
+        <section id="server">
+          <h2>3. Bootstrap once, then project current state</h2>
+          <figure>
+            <svg
+              viewBox="0 0 840 280"
+              role="img"
+              aria-labelledby="server-flow-title server-flow-desc"
+            >
+              <title id="server-flow-title">
+                Server budget path before and after
+              </title>
+              <desc id="server-flow-desc">
+                Previously server start did not pass a budget and responses
+                exposed only statistics. The request now passes a creation-only
+                budget to EventService, and ConversationInfo projects it from
+                ConversationState.
+              </desc>
+              <defs>
+                <marker
+                  id="server-flow-arrow"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto"
+                >
+                  <path d="M0 0L10 5L0 10Z" fill="var(--delta)" />
+                </marker>
+              </defs>
+              <text class="row-label" x="18" y="22">BEFORE · d2ee0cd</text>
+              <text class="row-label after-label" x="18" y="158">
+                AFTER · c13bcc6
+              </text>
+              <a
+                href="https://github.com/OpenHands/software-agent-sdk/blob/d2ee0cdea60825608c2f8906eb54e1d4d264fb42/openhands-sdk/openhands/sdk/conversation/request.py#L437"
+              >
+                <g>
+                  <rect
+                    class="existing"
+                    x="18"
+                    y="35"
+                    width="244"
+                    height="88"
+                    rx="6"
+                  />
+                  <text class="node-title" x="32" y="61">
+                    StartConversationRequest
+                  </text>
+                  <text class="node-detail" x="32" y="84">
+                    No creation budget option
+                  </text>
+                  <text class="node-source" x="32" y="105">request.py:437</text>
+                </g>
+              </a>
+              <a
+                href="https://github.com/OpenHands/software-agent-sdk/blob/d2ee0cdea60825608c2f8906eb54e1d4d264fb42/openhands-agent-server/openhands/agent_server/event_service.py#L1351"
+              >
+                <g>
+                  <rect
+                    class="existing"
+                    x="298"
+                    y="35"
+                    width="244"
+                    height="88"
+                    rx="6"
+                  />
+                  <text class="node-title" x="312" y="61">
+                    EventService.start()
+                  </text>
+                  <text class="node-detail" x="312" y="84">
+                    Constructs without a cap
+                  </text>
+                  <text class="node-source" x="312" y="105">
+                    event_service.py:1351
+                  </text>
+                </g>
+              </a>
+              <a
+                href="https://github.com/OpenHands/software-agent-sdk/blob/d2ee0cdea60825608c2f8906eb54e1d4d264fb42/openhands-agent-server/openhands/agent_server/conversation_service.py#L373"
+              >
+                <g>
+                  <rect
+                    class="existing"
+                    x="578"
+                    y="35"
+                    width="244"
+                    height="88"
+                    rx="6"
+                  />
+                  <text class="node-title" x="592" y="61">
+                    ConversationInfo
+                  </text>
+                  <text class="node-detail" x="592" y="84">
+                    Existing stats projection
+                  </text>
+                  <text class="node-source" x="592" y="105">
+                    conversation_service.py:373
+                  </text>
+                </g>
+              </a>
+              <path
+                class="edge"
+                d="M266 79H293"
+                marker-end="url(#server-flow-arrow)"
+              />
+              <path
+                class="edge"
+                d="M546 79H573"
+                marker-end="url(#server-flow-arrow)"
+              />
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/request.py#L468"
+              >
+                <g>
+                  <rect
+                    class="new"
+                    x="18"
+                    y="171"
+                    width="244"
+                    height="88"
+                    rx="6"
+                  />
+                  <text class="node-title" x="32" y="197">
+                    StartConversationRequest
+                  </text>
+                  <text class="node-detail" x="32" y="220">
+                    Validated creation-only input
+                  </text>
+                  <text class="node-source" x="32" y="241">request.py:468</text>
+                </g>
+              </a>
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-agent-server/openhands/agent_server/event_service.py#L1363"
+              >
+                <g>
+                  <rect
+                    class="new"
+                    x="298"
+                    y="171"
+                    width="244"
+                    height="88"
+                    rx="6"
+                  />
+                  <text class="node-title" x="312" y="197">
+                    EventService.start()
+                  </text>
+                  <text class="node-detail" x="312" y="220">
+                    Uses input only for fresh state
+                  </text>
+                  <text class="node-source" x="312" y="241">
+                    event_service.py:1363
+                  </text>
+                </g>
+              </a>
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-agent-server/openhands/agent_server/conversation_service.py#L373"
+              >
+                <g>
+                  <rect
+                    class="new"
+                    x="578"
+                    y="171"
+                    width="244"
+                    height="88"
+                    rx="6"
+                  />
+                  <text class="node-title" x="592" y="197">
+                    ConversationInfo
+                  </text>
+                  <text class="node-detail" x="592" y="220">
+                    Projects the current state cap
+                  </text>
+                  <text class="node-source" x="592" y="241">
+                    conversation_service.py:373
+                  </text>
+                </g>
+              </a>
+              <path
+                class="edge-change"
+                d="M266 215H293"
+                marker-end="url(#server-flow-arrow)"
+              />
+              <path
+                class="edge-change"
+                d="M546 215H573"
+                marker-end="url(#server-flow-arrow)"
+              />
+            </svg>
+            <figcaption>
+              Fig. 2 · The cap travels beside launch inputs, then state owns it.
+              StoredConversation and meta.json do not contain a budget field.
+            </figcaption>
+          </figure>
+          <p>
+            <code>initial_max_budget_per_run</code> is a bootstrap input, used
+            only when <code>base_state.json</code> does not exist.
+            <code>_compose_conversation_info()</code> already serializes state,
+            so live and cold responses obtain the cap from the same source.
+          </p>
+          <p class="sources">
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-agent-server/openhands/agent_server/event_service.py#L233"
+              >Bootstrap input</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-agent-server/openhands/agent_server/event_service.py#L1363"
+              >Resume guard</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-agent-server/openhands/agent_server/conversation_service.py#L1684"
+              >Excluded from metadata input</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-agent-server/openhands/agent_server/models.py#L104"
+              >Stored metadata model</a
+            >
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Lifecycle</th>
+                <th>Budget behavior</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Reuse / eviction / restart</td>
+                <td>
+                  Keep current persisted state, including a cleared cap. Reusing
+                  an ID does not apply a new request cap.
+                </td>
+              </tr>
+              <tr>
+                <td>Fork</td>
+                <td>
+                  Copy the current state cap. Existing
+                  <code>reset_metrics</code> behavior decides whether spend is
+                  reset or copied.
+                </td>
+              </tr>
+              <tr>
+                <td>Child creation</td>
+                <td>
+                  Read the current parent property in a worker thread, then
+                  initialize the child’s own cap. The blocking state lock stays
+                  off the event loop.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="sources">
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/agent_server/test_conversation_budget.py#L32"
+              >Reuse / eviction / fork / restart</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L923"
+              >Fork current state</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-agent-server/openhands/agent_server/conversation_service.py#L2123"
+              >Child inheritance</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/agent_server/test_conversation_budget.py#L95"
+              >Child regression</a
+            >
+          </p>
+          <details class="diffs">
+            <summary>Request and server lifecycle · exact diffs</summary>
+            <h4>
+              openhands-sdk/openhands/sdk/conversation/request.py
+              <span class="muted">+14 / −3</span>
+            </h4>
+            <p class="sources">
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/request.py"
+                >Committed source</a
+              >
+            </p>
+            <pre>
+diff --git a/openhands-sdk/openhands/sdk/conversation/request.py b/openhands-sdk/openhands/sdk/conversation/request.py
+index dea125f86..6879f41b7 100644
+--- a/openhands-sdk/openhands/sdk/conversation/request.py
++++ b/openhands-sdk/openhands/sdk/conversation/request.py
+@@ -223,7 +223,7 @@ class ConversationWorktreeOptions(BaseModel):
+&#32;
+&#32;
+ class ConversationConfig(BaseModel):
+-    &quot;&quot;&quot;Shared conversation configuration — everything except the agent.
++    &quot;&quot;&quot;Creation options shared with stored conversation metadata.
+&#32;
+     This is the common base for :class:`StartConversationRequest` (which adds the
+     ``agent``/``agent_settings``/``agent_profile_id`` family) and the
+@@ -443,9 +443,9 @@ class StartConversationRequest(ConversationConfig):
+     server turns the source into the conversation&#x27;s agent at launch; this model
+     only checks that exactly one source is given.
+&#32;
+-    Note: the agent lives here on the *request*, deliberately not on
++    Note: the agent and budget live here on the *request*, deliberately not on
+     ``ConversationConfig``. The persisted record (``StoredConversation``) does
+-    not carry the agent — its single source of truth is ``ConversationState`` /
++    not carry them — their single source of truth is ``ConversationState`` /
+     ``base_state.json``.
+     &quot;&quot;&quot;
+&#32;
+@@ -465,6 +465,17 @@ class StartConversationRequest(ConversationConfig):
+         ),
+     )
+     agent: AgentBase = Field(default=cast(AgentBase, None))
++    max_budget_per_run: float | None = Field(
++        default=None,
++        gt=0,
++        allow_inf_nan=False,
++        description=(
++            &quot;USD limit checked against the conversation&#x27;s accumulated LLM cost &quot;
++            &quot;after each agent step. A step may overshoot the limit. Despite the &quot;
++            &quot;name, accumulated cost does not reset between runs. None means &quot;
++            &quot;unbounded.&quot;
++        ),
++    )
+     conversation_runtime: ConversationRuntime | None = Field(
+         default=None,
+         description=(</pre>
+            <h4>
+              openhands-agent-server/openhands/agent_server/conversation_service.py
+              <span class="muted">+13 / −1</span>
+            </h4>
+            <p class="sources">
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-agent-server/openhands/agent_server/conversation_service.py"
+                >Committed source</a
+              >
+            </p>
+            <pre>
+diff --git a/openhands-agent-server/openhands/agent_server/conversation_service.py b/openhands-agent-server/openhands/agent_server/conversation_service.py
+index ceda02387..9d43ea4c0 100644
 --- a/openhands-agent-server/openhands/agent_server/conversation_service.py
 +++ b/openhands-agent-server/openhands/agent_server/conversation_service.py
-@@ -371,6 +371,7 @@ def _compose_conversation_info(
-     )
-     return ConversationInfo(
-         **state.model_dump(mode=&quot;json&quot;),
-+        max_budget_per_run=stored.max_budget_per_run,
-         title=stored.title,
-         metrics=stored.metrics,
-         created_at=stored.created_at,
-</pre></details>
-<details><summary>openhands-agent-server/openhands/agent_server/event_service.py <span class="muted">+1 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/openhands-agent-server/openhands/agent_server/event_service.py#L1">openhands-agent-server/openhands/agent_server/event_service.py:1</a></p><pre>diff --git a/openhands-agent-server/openhands/agent_server/event_service.py b/openhands-agent-server/openhands/agent_server/event_service.py
-index f902d8040..ea327e12f 100644
+@@ -1681,6 +1681,7 @@ class ConversationService:
+                 &quot;agent_settings&quot;,
+                 &quot;agent_profile_id&quot;,
+                 &quot;agent_launch_additions&quot;,
++                &quot;max_budget_per_run&quot;,
+             },
+         )
+         launched_agent_profile = launched.profile or runtime_launched_profile
+@@ -1714,6 +1715,7 @@ class ConversationService:
+                 else None
+             ),
+             reuse_request=request,
++            max_budget_per_run=request.max_budget_per_run,
+         )
+&#32;
+     async def _launch_prepared_conversation(
+@@ -1724,6 +1726,7 @@ class ConversationService:
+         run_slot: RunSlot,
+         initial_message: Message | None,
+         reuse_request: StartConversationRequest | None = None,
++        max_budget_per_run: float | None = None,
+     ) -&gt; tuple[ConversationInfo, bool]:
+         &quot;&quot;&quot;Persist a prepared conversation, deliver its first message and notify.
+&#32;
+@@ -1753,7 +1756,10 @@ class ConversationService:
+             # New conversation: the agent is written to base_state.json (its
+             # single source of truth), not to meta.json. Pass it explicitly.
+             event_service = await self._start_event_service(
+-                stored, is_new_conversation=True, launched=launched
++                stored,
++                is_new_conversation=True,
++                launched=launched,
++                max_budget_per_run=max_budget_per_run,
+             )
+         if initial_message is not None:
+             await event_service.send_message(initial_message, False)
+@@ -2113,6 +2119,9 @@ class ConversationService:
+         with await RunSlot.acquire(self._run_semaphore) as run_slot:
+             parent_stored = parent_service.stored
+             parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
++            max_budget_per_run = await asyncio.to_thread(
++                lambda: parent_service.get_conversation().max_budget_per_run
++            )
+             child_id = uuid4()
+&#32;
+             # Reuse the worktree machinery of a regular start: a worktree is
+@@ -2162,6 +2171,7 @@ class ConversationService:
+                 child_stored,
+                 launched,
+                 run_slot=run_slot,
++                max_budget_per_run=max_budget_per_run,
+                 initial_message=Message(
+                     role=&quot;user&quot;, content=[TextContent(text=request.task)]
+                 ),
+@@ -2442,6 +2452,7 @@ class ConversationService:
+         is_new_conversation: bool = False,
+         launched: LaunchedAgent | None = None,
+         persisted_agent: AgentBase | None = None,
++        max_budget_per_run: float | None = None,
+     ) -&gt; EventService:
+         event_services = self._event_services
+         if event_services is None:
+@@ -2458,6 +2469,7 @@ class ConversationService:
+             stored=stored,
+             conversations_dir=self.conversations_dir,
+             agent=launched.agent if launched is not None else None,
++            initial_max_budget_per_run=max_budget_per_run,
+             cipher=self._cipher_for(stored.id),
+             mcp_tool_provider=self.mcp_tool_provider,
+             credential_bindings=credential_bindings,</pre>
+            <h4>
+              openhands-agent-server/openhands/agent_server/event_service.py
+              <span class="muted">+4 / −0</span>
+            </h4>
+            <p class="sources">
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-agent-server/openhands/agent_server/event_service.py"
+                >Committed source</a
+              >
+            </p>
+            <pre>
+diff --git a/openhands-agent-server/openhands/agent_server/event_service.py b/openhands-agent-server/openhands/agent_server/event_service.py
+index f902d8040..b28433e2c 100644
 --- a/openhands-agent-server/openhands/agent_server/event_service.py
 +++ b/openhands-agent-server/openhands/agent_server/event_service.py
-@@ -1358,6 +1358,7 @@ class EventService:
+@@ -230,6 +230,7 @@ class EventService:
+     # caller passes it here. On resume this is ``None`` and the agent is loaded
+     # from base_state.json.
+     agent: AgentBase | None = None
++    initial_max_budget_per_run: float | None = field(default=None, kw_only=True)
+     cipher: Cipher | None = None
+     mcp_tool_provider: MCPToolProvider | None = None
+     credential_bindings: dict[str, VersionedCredentialBinding] = field(
+@@ -1358,6 +1359,9 @@ class EventService:
              token_callbacks=([_token_streaming_callback] if streaming_enabled else []),
              stream_callbacks=[_publish_stream_progress],
              max_iteration_per_run=self.stored.max_iterations,
-+            max_budget_per_run=self.stored.max_budget_per_run,
++            max_budget_per_run=(
++                None if base_state_exists else self.initial_max_budget_per_run
++            ),
              stuck_detection=self.stored.stuck_detection,
              visualizer=None,
-             secrets=self.stored.secrets,
-</pre></details>
-<details><summary>openhands-agent-server/openhands/agent_server/models.py <span class="muted">+9 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/openhands-agent-server/openhands/agent_server/models.py#L1">openhands-agent-server/openhands/agent_server/models.py:1</a></p><pre>diff --git a/openhands-agent-server/openhands/agent_server/models.py b/openhands-agent-server/openhands/agent_server/models.py
-index ea2d8d332..1453c7775 100644
+             secrets=self.stored.secrets,</pre>
+            <h4>
+              openhands-agent-server/openhands/agent_server/models.py
+              <span class="muted">+7 / −0</span>
+            </h4>
+            <p class="sources">
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-agent-server/openhands/agent_server/models.py"
+                >Committed source</a
+              >
+            </p>
+            <pre>
+diff --git a/openhands-agent-server/openhands/agent_server/models.py b/openhands-agent-server/openhands/agent_server/models.py
+index ea2d8d332..89a2d88dc 100644
 --- a/openhands-agent-server/openhands/agent_server/models.py
 +++ b/openhands-agent-server/openhands/agent_server/models.py
-@@ -170,6 +170,15 @@ class _ConversationInfoBase(BaseModel):
+@@ -170,6 +170,13 @@ class _ConversationInfoBase(BaseModel):
              &quot;Maximum number of iterations the agent can perform in a single run.&quot;
          ),
      )
 +    max_budget_per_run: float | None = Field(
 +        default=None,
-+        gt=0,
-+        allow_inf_nan=False,
 +        description=(
 +            &quot;USD limit on accumulated conversation LLM cost, checked after each &quot;
 +            &quot;agent step; a step may overshoot. None means unbounded.&quot;
@@ -356,9 +1309,512 @@ index ea2d8d332..1453c7775 100644
 +    )
      stuck_detection: bool = Field(
          default=True,
-         description=&quot;Whether to enable stuck detection for the agent.&quot;,
-</pre></details>
-<details><summary>openhands-sdk/openhands/sdk/conversation/conversation.py <span class="muted">+5 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/openhands-sdk/openhands/sdk/conversation/conversation.py#L1">openhands-sdk/openhands/sdk/conversation/conversation.py:1</a></p><pre>diff --git a/openhands-sdk/openhands/sdk/conversation/conversation.py b/openhands-sdk/openhands/sdk/conversation/conversation.py
+         description=&quot;Whether to enable stuck detection for the agent.&quot;,</pre>
+          </details>
+        </section>
+        <section id="remote">
+          <h2>4. Read the existing remote state cache</h2>
+          <figure>
+            <svg
+              viewBox="0 0 840 280"
+              role="img"
+              aria-labelledby="remote-flow-title remote-flow-desc"
+            >
+              <title id="remote-flow-title">
+                Remote cache update before and after
+              </title>
+              <desc id="remote-flow-desc">
+                Before the remote state cache starts empty and full snapshots
+                merge. After create and attach responses seed the same cache;
+                full snapshots replace it so omitted null fields clear.
+              </desc>
+              <defs>
+                <marker
+                  id="remote-flow-arrow"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto"
+                >
+                  <path d="M0 0L10 5L0 10Z" fill="var(--delta)" />
+                </marker>
+              </defs>
+              <text class="row-label" x="18" y="22">BEFORE · d2ee0cd</text>
+              <text class="row-label after-label" x="18" y="158">
+                AFTER · c13bcc6
+              </text>
+              <a
+                href="https://github.com/OpenHands/software-agent-sdk/blob/d2ee0cdea60825608c2f8906eb54e1d4d264fb42/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py#L577"
+              >
+                <g>
+                  <rect
+                    class="existing"
+                    x="18"
+                    y="35"
+                    width="244"
+                    height="88"
+                    rx="6"
+                  />
+                  <text class="node-title" x="32" y="61">
+                    RemoteState.__init__()
+                  </text>
+                  <text class="node-detail" x="32" y="84">
+                    Cache starts empty
+                  </text>
+                  <text class="node-source" x="32" y="105">
+                    remote_conversation.py:577
+                  </text>
+                </g>
+              </a>
+              <a
+                href="https://github.com/OpenHands/software-agent-sdk/blob/d2ee0cdea60825608c2f8906eb54e1d4d264fb42/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py#L610"
+              >
+                <g>
+                  <rect
+                    class="existing"
+                    x="298"
+                    y="35"
+                    width="244"
+                    height="88"
+                    rx="6"
+                  />
+                  <text class="node-title" x="312" y="61">
+                    update_state_from_event()
+                  </text>
+                  <text class="node-detail" x="312" y="84">
+                    Full snapshots merge old keys
+                  </text>
+                  <text class="node-source" x="312" y="105">
+                    remote_conversation.py:610
+                  </text>
+                </g>
+              </a>
+              <a
+                href="https://github.com/OpenHands/software-agent-sdk/blob/d2ee0cdea60825608c2f8906eb54e1d4d264fb42/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py#L1332"
+              >
+                <g>
+                  <rect
+                    class="existing"
+                    x="578"
+                    y="35"
+                    width="244"
+                    height="88"
+                    rx="6"
+                  />
+                  <text class="node-title" x="592" y="61">
+                    RemoteConversation
+                  </text>
+                  <text class="node-detail" x="592" y="84">
+                    No budget accessor
+                  </text>
+                  <text class="node-source" x="592" y="105">
+                    remote_conversation.py:1332
+                  </text>
+                </g>
+              </a>
+              <path
+                class="edge"
+                d="M266 79H293"
+                marker-end="url(#remote-flow-arrow)"
+              />
+              <path
+                class="edge"
+                d="M546 79H573"
+                marker-end="url(#remote-flow-arrow)"
+              />
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py#L578"
+              >
+                <g>
+                  <rect
+                    class="new"
+                    x="18"
+                    y="171"
+                    width="244"
+                    height="88"
+                    rx="6"
+                  />
+                  <text class="node-title" x="32" y="197">
+                    RemoteState.__init__()
+                  </text>
+                  <text class="node-detail" x="32" y="220">
+                    Seed from create / attach info
+                  </text>
+                  <text class="node-source" x="32" y="241">
+                    remote_conversation.py:578
+                  </text>
+                </g>
+              </a>
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py#L609"
+              >
+                <g>
+                  <rect
+                    class="new"
+                    x="298"
+                    y="171"
+                    width="244"
+                    height="88"
+                    rx="6"
+                  />
+                  <text class="node-title" x="312" y="197">
+                    update_state_from_event()
+                  </text>
+                  <text class="node-detail" x="312" y="220">
+                    Full snapshot replaces cache
+                  </text>
+                  <text class="node-source" x="312" y="241">
+                    remote_conversation.py:609
+                  </text>
+                </g>
+              </a>
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py#L1357"
+              >
+                <g>
+                  <rect
+                    class="new"
+                    x="578"
+                    y="171"
+                    width="244"
+                    height="88"
+                    rx="6"
+                  />
+                  <text class="node-title" x="592" y="197">
+                    RemoteConversation property
+                  </text>
+                  <text class="node-detail" x="592" y="220">
+                    Reads the same RemoteState
+                  </text>
+                  <text class="node-source" x="592" y="241">
+                    remote_conversation.py:1357
+                  </text>
+                </g>
+              </a>
+              <path
+                class="edge-change"
+                d="M266 215H293"
+                marker-end="url(#remote-flow-arrow)"
+              />
+              <path
+                class="edge-change"
+                d="M546 215H573"
+                marker-end="url(#remote-flow-arrow)"
+              />
+            </svg>
+            <figcaption>
+              Fig. 3 · No separate remote budget cache is introduced. The
+              create/attach response and subsequent state events feed the
+              existing RemoteState cache.
+            </figcaption>
+          </figure>
+          <p>
+            Full snapshots omit <code>None</code> fields. Replacing the cache
+            clears an old cap when a snapshot omits it; merging would retain the
+            stale value. Individual field events still update one key. A missing
+            cap from an older server reads as <code>None</code>.
+          </p>
+          <p class="sources">
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/event/conversation_state.py#L98"
+              >Snapshot omits nulls</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py#L609"
+              >Replace full / merge partial</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/sdk/conversation/test_remote_conversation_state_updates.py#L179"
+              >Real snapshot regression</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/sdk/conversation/remote/test_remote_conversation.py#L504"
+              >Seeded cache + live updates</a
+            >
+          </p>
+          <details class="diffs">
+            <summary>Python remote cache · exact diff</summary>
+            <h4>
+              openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py
+              <span class="muted">+31 / −8</span>
+            </h4>
+            <p class="sources">
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py"
+                >Committed source</a
+              >
+            </p>
+            <pre>
+diff --git a/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py b/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py
+index 7eadd78e2..f31c1e942 100644
+--- a/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py
++++ b/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py
+@@ -567,6 +567,7 @@ class RemoteState(ConversationStateProtocol):
+         conversation_id: str,
+         conversation_info_base_path: str = CONVERSATIONS_PATH,
+         events_base_path: str = CONVERSATIONS_PATH,
++        initial_state: dict | None = None,
+     ):
+         self._client = client
+         self._conversation_id = conversation_id
+@@ -574,7 +575,7 @@ class RemoteState(ConversationStateProtocol):
+         self._events = RemoteEventsList(client, conversation_id, events_base_path)
+&#32;
+         # Cache for state information to avoid REST calls
+-        self._cached_state = None
++        self._cached_state = initial_state
+         self._lock = threading.RLock()
+&#32;
+     def _get_conversation_info(self) -&gt; dict:
+@@ -604,10 +605,8 @@ class RemoteState(ConversationStateProtocol):
+         with self._lock:
+             # Handle full state snapshot
+             if event.key == FULL_STATE_KEY:
+-                # Update cached state with the full snapshot
+-                if self._cached_state is None:
+-                    self._cached_state = {}
+-                self._cached_state.update(event.value)
++                # Snapshots omit null fields, so merging would retain cleared values.
++                self._cached_state = dict(event.value)
+             else:
+                 # Handle individual field updates
+                 if self._cached_state is None:
+@@ -713,6 +712,11 @@ class RemoteState(ConversationStateProtocol):
+         stats_data = info.get(&quot;stats&quot;, {})
+         return ConversationStats.model_validate(stats_data)
+&#32;
++    @property
++    def max_budget_per_run(self) -&gt; float | None:
++        &quot;&quot;&quot;The server&#x27;s limit on accumulated conversation LLM cost.&quot;&quot;&quot;
++        return self._get_conversation_info().get(&quot;max_budget_per_run&quot;)
++
+     @property
+     def hook_config(self) -&gt; HookConfig | None:
+         &quot;&quot;&quot;Get hook configuration (fetched from remote).&quot;&quot;&quot;
+@@ -789,6 +793,7 @@ class RemoteConversation(BaseConversation):
+         observability_span_name: str = &quot;conversation&quot;,
+         observability_parent_span_context: str | None = None,
+         token_callbacks: list[ConversationTokenCallbackType] | None = None,
++        max_budget_per_run: float | None = None,
+         **_: object,
+     ) -&gt; None:
+         &quot;&quot;&quot;Remote conversation proxy that talks to an agent server.
+@@ -801,6 +806,9 @@ class RemoteConversation(BaseConversation):
+             conversation_id: Optional existing conversation id to attach to
+             callbacks: Optional callbacks to receive events (not yet streamed)
+             max_iteration_per_run: Max iterations configured on server
++            max_budget_per_run: USD limit on accumulated conversation LLM cost.
++                      Checked after each agent step, which may overshoot the limit.
++                      None means unbounded; cost does not reset between runs.
+             stuck_detection: Whether to enable stuck detection on server
+             stuck_detection_thresholds: Optional configuration for stuck detection
+                       thresholds. Can be a StuckDetectionThresholds instance or
+@@ -849,6 +857,7 @@ class RemoteConversation(BaseConversation):
+         # this has to happen before ``_initialize_connection`` syncs events.
+         attached_tool_module_qualnames: Mapping[str, str] = {}
+&#32;
++        initial_state: dict | None = None
+         should_create = conversation_id is None
+         if conversation_id is not None:
+             # Try to attach to existing conversation
+@@ -863,6 +872,7 @@ class RemoteConversation(BaseConversation):
+                 should_create = True
+             else:
+                 info = resp.json()
++                initial_state = info
+                 agent_payload = info.get(&quot;agent&quot;)
+                 if agent_payload is not None:
+                     remote_agent = _validate_remote_agent(agent_payload)
+@@ -894,6 +904,7 @@ class RemoteConversation(BaseConversation):
+                 ),
+                 &quot;initial_message&quot;: None,
+                 &quot;max_iterations&quot;: max_iteration_per_run,
++                &quot;max_budget_per_run&quot;: max_budget_per_run,
+                 &quot;stuck_detection&quot;: stuck_detection,
+                 # We need to convert RemoteWorkspace to LocalWorkspace for the server
+                 &quot;workspace&quot;: LocalWorkspace(
+@@ -945,9 +956,10 @@ class RemoteConversation(BaseConversation):
+                 CONVERSATIONS_PATH,
+                 json=payload,
+             )
+-            data = resp.json()
++            info = resp.json()
++            initial_state = info
+             # Expect a ConversationInfo
+-            cid = data.get(&quot;id&quot;) or data.get(&quot;conversation_id&quot;)
++            cid = info.get(&quot;id&quot;) or info.get(&quot;conversation_id&quot;)
+             if not cid:
+                 raise RuntimeError(
+                     &quot;Invalid response from server: missing conversation id&quot;
+@@ -957,6 +969,7 @@ class RemoteConversation(BaseConversation):
+             workspace.register_conversation(str(conversation_id))
+&#32;
+         assert conversation_id is not None
++        assert initial_state is not None
+         # Register the persisted tools before connecting so that events synced
+         # during ``_initialize_connection`` can be deserialized. ``_from_info``
+         # does the same for the ``attach``/``create`` entry points.
+@@ -968,6 +981,7 @@ class RemoteConversation(BaseConversation):
+             callbacks=callbacks,
+             token_callbacks=token_callbacks,
+             max_iteration_per_run=max_iteration_per_run,
++            initial_state=initial_state,
+             client_tools=[*(client_tools or []), *attached_client_tools],
+             visualizer=visualizer,
+         )
+@@ -1087,6 +1101,7 @@ class RemoteConversation(BaseConversation):
+             conversation_id=uuid.UUID(info[&quot;id&quot;]),
+             callbacks=callbacks,
+             max_iteration_per_run=info[&quot;max_iterations&quot;],
++            initial_state=info,
+             client_tools=[
+                 ClientToolSpec.model_validate(spec)
+                 for spec in info.get(&quot;client_tools&quot;) or []
+@@ -1103,6 +1118,7 @@ class RemoteConversation(BaseConversation):
+         conversation_id: ConversationID,
+         callbacks: list[ConversationCallbackType] | None,
+         max_iteration_per_run: int,
++        initial_state: dict,
+         client_tools: list[ClientToolSpec],
+         visualizer: (
+             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
+@@ -1135,7 +1151,9 @@ class RemoteConversation(BaseConversation):
+             ClientTool.from_spec(spec)
+&#32;
+         # Initialize the remote state
+-        self._state = RemoteState(self._client, str(self._id))
++        self._state = RemoteState(
++            self._client, str(self._id), initial_state=initial_state
++        )
+&#32;
+         # Add default callback to maintain local event state
+         default_callback = self._state.events.create_default_callback()
+@@ -1333,6 +1351,11 @@ class RemoteConversation(BaseConversation):
+         &quot;&quot;&quot;Access to remote conversation state.&quot;&quot;&quot;
+         return self._state
+&#32;
++    @property
++    def max_budget_per_run(self) -&gt; float | None:
++        &quot;&quot;&quot;The server&#x27;s limit on accumulated conversation LLM cost.&quot;&quot;&quot;
++        return self._state.max_budget_per_run
++
+     @property
+     def conversation_stats(self):
+         return self._state.stats</pre>
+          </details>
+        </section>
+        <section id="display">
+          <h2>5. Display the same cost the limiter uses</h2>
+          <pre>
+spent = sum(stats.usage_to_metrics[*].accumulated_cost)
+limit = conversation.max_budget_per_run</pre>
+          <p>
+            Both amounts are USD. Accumulated cost includes earlier runs and all
+            tracked conversation LLMs. The existing loop checks after an agent
+            step, so overshoot is expected. An unfinished run at the limit emits
+            <code>MaxBudgetReached</code>; a completed task retains its finished
+            status.
+          </p>
+          <p class="sources">
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L756"
+              >Combined cost comparison</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L2088"
+              >Existing post-step check</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/cross/test_remote_conversation_live_server.py#L1633"
+              >Live socket behavior test</a
+            >
+          </p>
+          <p>
+            Clients obtain the cap from conversation info and refresh spend from
+            existing WebSocket <code>stats</code> updates. This adds no cost
+            counter, reset, reservation, or per-LLM budget alias.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Public entry point</th>
+                <th>Additive forwarding</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Python <code>Conversation(...)</code></td>
+                <td>
+                  Accepts <code>max_budget_per_run</code> and forwards it to
+                  local or remote construction.
+                </td>
+              </tr>
+              <tr>
+                <td>TypeScript normal / ACP creation</td>
+                <td>
+                  Accepts <code>maxBudgetPerRun</code>; explicit
+                  <code>null</code> overrides a constructor creation default.
+                </td>
+              </tr>
+              <tr>
+                <td>TypeScript response types</td>
+                <td>
+                  Optional <code>max_budget_per_run</code> and typed
+                  <code>stats.usage_to_metrics</code> expose the existing wire
+                  values.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="sources">
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/conversation.py#L76"
+              >Python factory</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/clients/typescript/src/conversation/remote-conversation.ts#L187"
+              >TypeScript creation option</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/clients/typescript/src/conversation/conversation-manager.ts#L340"
+              >ACP creation</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/clients/typescript/src/models/conversation.ts#L61"
+              >Response type</a
+            >
+            ·
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/clients/typescript/src/types/base.ts#L135"
+              >Existing metrics shape</a
+            >
+          </p>
+          <details class="diffs">
+            <summary>
+              Python factory and TypeScript plumbing · exact diffs
+            </summary>
+            <h4>
+              openhands-sdk/openhands/sdk/conversation/conversation.py
+              <span class="muted">+5 / −0</span>
+            </h4>
+            <p class="sources">
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/conversation.py"
+                >Committed source</a
+              >
+            </p>
+            <pre>
+diff --git a/openhands-sdk/openhands/sdk/conversation/conversation.py b/openhands-sdk/openhands/sdk/conversation/conversation.py
 index c508fef15..510ac4b9a 100644
 --- a/openhands-sdk/openhands/sdk/conversation/conversation.py
 +++ b/openhands-sdk/openhands/sdk/conversation/conversation.py
@@ -401,580 +1857,552 @@ index c508fef15..510ac4b9a 100644
 +            max_budget_per_run=max_budget_per_run,
              stuck_detection=stuck_detection,
              stuck_detection_thresholds=stuck_detection_thresholds,
-             visualizer=visualizer,
-</pre></details>
-<details><summary>openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py <span class="muted">+4 / −4</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L1">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:1</a></p><pre>diff --git a/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py b/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
-index 067674a68..f6dc29419 100644
---- a/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
-+++ b/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
-@@ -513,7 +513,6 @@ class LocalConversation(BaseConversation):
-         )
-
-         self.max_iteration_per_run = max_iteration_per_run
--        # Hard cost ceiling (USD) for a run; None disables the budget check.
-         self.max_budget_per_run = max_budget_per_run
-
-         # Initialize stuck detector
-@@ -741,10 +740,10 @@ class LocalConversation(BaseConversation):
-         return acp_prompt_messages[-1].id if acp_prompt_messages else None
-
-     def _budget_exceeded_detail(self) -&gt; str | None:
--        &quot;&quot;&quot;Error detail if the run has hit its cost budget, else None.
-+        &quot;&quot;&quot;Error detail if accumulated conversation cost has hit the limit.
-
--        Bounds total spend across all of the run&#x27;s LLMs (agent, condenser, ...),
--        complementing the iteration cap which only bounds step count.
-+        Checked after each step across all tracked LLMs (agent, condenser, ...).
-+        A step may overshoot; resuming a run does not reset accumulated cost.
-         &quot;&quot;&quot;
-         if self.max_budget_per_run is None:
-             return None
-@@ -906,6 +905,7 @@ class LocalConversation(BaseConversation):
-                 persistence_dir=fork_persistence,
-                 conversation_id=fork_id,
-                 max_iteration_per_run=self.max_iteration_per_run,
-+                max_budget_per_run=self.max_budget_per_run,
-                 stuck_detection=self._stuck_detector is not None,
-                 visualizer=type(self._visualizer) if self._visualizer else None,
-                 delete_on_close=self.delete_on_close,
-</pre></details>
-<details><summary>openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py <span class="muted">+12 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py#L1">openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py:1</a></p><pre>diff --git a/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py b/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py
-index 7eadd78e2..8a8ab840d 100644
---- a/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py
-+++ b/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py
-@@ -756,6 +756,7 @@ class RemoteConversation(BaseConversation):
-     agent: AgentBase
-     _callbacks: list[ConversationCallbackType]
-     max_iteration_per_run: int
-+    max_budget_per_run: float | None
-     workspace: RemoteWorkspace
-     _client: httpx.Client
-     _cleanup_initiated: bool
-@@ -789,6 +790,7 @@ class RemoteConversation(BaseConversation):
-         observability_span_name: str = &quot;conversation&quot;,
-         observability_parent_span_context: str | None = None,
-         token_callbacks: list[ConversationTokenCallbackType] | None = None,
-+        max_budget_per_run: float | None = None,
-         **_: object,
-     ) -&gt; None:
-         &quot;&quot;&quot;Remote conversation proxy that talks to an agent server.
-@@ -801,6 +803,9 @@ class RemoteConversation(BaseConversation):
-             conversation_id: Optional existing conversation id to attach to
-             callbacks: Optional callbacks to receive events (not yet streamed)
-             max_iteration_per_run: Max iterations configured on server
-+            max_budget_per_run: USD limit on accumulated conversation LLM cost.
-+                      Checked after each agent step, which may overshoot the limit.
-+                      None means unbounded; cost does not reset between runs.
-             stuck_detection: Whether to enable stuck detection on server
-             stuck_detection_thresholds: Optional configuration for stuck detection
-                       thresholds. Can be a StuckDetectionThresholds instance or
-@@ -863,6 +868,7 @@ class RemoteConversation(BaseConversation):
-                 should_create = True
-             else:
-                 info = resp.json()
-+                max_budget_per_run = info.get(&quot;max_budget_per_run&quot;)
-                 agent_payload = info.get(&quot;agent&quot;)
-                 if agent_payload is not None:
-                     remote_agent = _validate_remote_agent(agent_payload)
-@@ -894,6 +900,7 @@ class RemoteConversation(BaseConversation):
-                 ),
-                 &quot;initial_message&quot;: None,
-                 &quot;max_iterations&quot;: max_iteration_per_run,
-+                &quot;max_budget_per_run&quot;: max_budget_per_run,
-                 &quot;stuck_detection&quot;: stuck_detection,
-                 # We need to convert RemoteWorkspace to LocalWorkspace for the server
-                 &quot;workspace&quot;: LocalWorkspace(
-@@ -953,6 +960,7 @@ class RemoteConversation(BaseConversation):
-                     &quot;Invalid response from server: missing conversation id&quot;
-                 )
-             conversation_id = uuid.UUID(cid)
-+            max_budget_per_run = data.get(&quot;max_budget_per_run&quot;)
-
-             workspace.register_conversation(str(conversation_id))
-
-@@ -968,6 +976,7 @@ class RemoteConversation(BaseConversation):
-             callbacks=callbacks,
-             token_callbacks=token_callbacks,
-             max_iteration_per_run=max_iteration_per_run,
-+            max_budget_per_run=max_budget_per_run,
-             client_tools=[*(client_tools or []), *attached_client_tools],
-             visualizer=visualizer,
-         )
-@@ -1087,6 +1096,7 @@ class RemoteConversation(BaseConversation):
-             conversation_id=uuid.UUID(info[&quot;id&quot;]),
-             callbacks=callbacks,
-             max_iteration_per_run=info[&quot;max_iterations&quot;],
-+            max_budget_per_run=info.get(&quot;max_budget_per_run&quot;),
-             client_tools=[
-                 ClientToolSpec.model_validate(spec)
-                 for spec in info.get(&quot;client_tools&quot;) or []
-@@ -1103,6 +1113,7 @@ class RemoteConversation(BaseConversation):
-         conversation_id: ConversationID,
-         callbacks: list[ConversationCallbackType] | None,
-         max_iteration_per_run: int,
-+        max_budget_per_run: float | None,
-         client_tools: list[ClientToolSpec],
-         visualizer: (
-             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
-@@ -1115,6 +1126,7 @@ class RemoteConversation(BaseConversation):
-         if token_callbacks:
-             self._callbacks.append(_token_delta_callback(token_callbacks))
-         self.max_iteration_per_run = max_iteration_per_run
-+        self.max_budget_per_run = max_budget_per_run
-         self.workspace = workspace
-         self._client = workspace.client
-         self._cleanup_initiated = False
-</pre></details>
-<details><summary>openhands-sdk/openhands/sdk/conversation/request.py <span class="muted">+11 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/openhands-sdk/openhands/sdk/conversation/request.py#L1">openhands-sdk/openhands/sdk/conversation/request.py:1</a></p><pre>diff --git a/openhands-sdk/openhands/sdk/conversation/request.py b/openhands-sdk/openhands/sdk/conversation/request.py
-index dea125f86..88a482c2a 100644
---- a/openhands-sdk/openhands/sdk/conversation/request.py
-+++ b/openhands-sdk/openhands/sdk/conversation/request.py
-@@ -282,6 +282,17 @@ class ConversationConfig(BaseModel):
-         description=&quot;If set, the max number of iterations the agent will run &quot;
-         &quot;before stopping. This is useful to prevent infinite loops.&quot;,
-     )
-+    max_budget_per_run: float | None = Field(
-+        default=None,
-+        gt=0,
-+        allow_inf_nan=False,
-+        description=(
-+            &quot;USD limit checked against the conversation&#x27;s accumulated LLM cost &quot;
-+            &quot;after each agent step. A step may overshoot the limit. Despite the &quot;
-+            &quot;name, accumulated cost does not reset between runs. None means &quot;
-+            &quot;unbounded.&quot;
-+        ),
-+    )
-     stuck_detection: bool = Field(
-         default=True,
-         description=&quot;If true, the conversation will use stuck detection to &quot;
-</pre></details>
-<details><summary>tests/agent_server/test_conversation_budget.py <span class="muted">+64 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/tests/agent_server/test_conversation_budget.py#L1">tests/agent_server/test_conversation_budget.py:1</a></p><pre>diff --git a/tests/agent_server/test_conversation_budget.py b/tests/agent_server/test_conversation_budget.py
-new file mode 100644
-index 000000000..97d3e409f
---- /dev/null
-+++ b/tests/agent_server/test_conversation_budget.py
-@@ -0,0 +1,64 @@
-+import json
+             visualizer=visualizer,</pre>
+            <h4>
+              clients/typescript/src/client/conversation-client.ts
+              <span class="muted">+2 / −0</span>
+            </h4>
+            <p class="sources">
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/clients/typescript/src/client/conversation-client.ts"
+                >Committed source</a
+              >
+            </p>
+            <pre>
+diff --git a/clients/typescript/src/client/conversation-client.ts b/clients/typescript/src/client/conversation-client.ts
+index aaf5163f5..f56392751 100644
+--- a/clients/typescript/src/client/conversation-client.ts
++++ b/clients/typescript/src/client/conversation-client.ts
+@@ -44,6 +44,8 @@ export interface CreateConversationPayload {
+   agent_profile_id?: string;
+   agent?: unknown;
+   agent_settings?: unknown;
++  /** Positive USD limit on accumulated conversation cost; a step may overshoot. */
++  max_budget_per_run?: number | null;
+   [key: string]: unknown;
+ }
+&#32;</pre>
+            <h4>
+              clients/typescript/src/conversation/conversation-manager.ts
+              <span class="muted">+6 / −0</span>
+            </h4>
+            <p class="sources">
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/clients/typescript/src/conversation/conversation-manager.ts"
+                >Committed source</a
+              >
+            </p>
+            <pre>
+diff --git a/clients/typescript/src/conversation/conversation-manager.ts b/clients/typescript/src/conversation/conversation-manager.ts
+index 8ac58e347..575cd5ba1 100644
+--- a/clients/typescript/src/conversation/conversation-manager.ts
++++ b/clients/typescript/src/conversation/conversation-manager.ts
+@@ -62,6 +62,7 @@ export class ACPConversationNamespace {
+     options: {
+       initialMessage?: string;
+       maxIterations?: number;
++      maxBudgetPerRun?: number | null;
+       stuckDetection?: boolean;
+       workingDir?: string;
+     } = {}
+@@ -207,6 +208,7 @@ export class ConversationManager {
+     options: {
+       initialMessage?: string;
+       maxIterations?: number;
++      maxBudgetPerRun?: number | null;
+       stuckDetection?: boolean;
+       workingDir?: string;
+       userId?: string;
+@@ -220,6 +222,7 @@ export class ConversationManager {
+&#32;
+     const conversation = new RemoteConversation(agent, workspace, {
+       maxIterations: options.maxIterations,
++      maxBudgetPerRun: options.maxBudgetPerRun,
+       stuckDetection: options.stuckDetection,
+       userId: options.userId,
+     });
+@@ -227,6 +230,7 @@ export class ConversationManager {
+     await conversation.start({
+       initialMessage: options.initialMessage,
+       maxIterations: options.maxIterations,
++      maxBudgetPerRun: options.maxBudgetPerRun,
+       stuckDetection: options.stuckDetection,
+       userId: options.userId,
+     });
+@@ -338,6 +342,7 @@ export class ConversationManager {
+     options: {
+       initialMessage?: string;
+       maxIterations?: number;
++      maxBudgetPerRun?: number | null;
+       stuckDetection?: boolean;
+       workingDir?: string;
+       userId?: string;
+@@ -355,6 +360,7 @@ export class ConversationManager {
+       agent,
+       initial_message: initialMessage,
+       max_iterations: options.maxIterations || 500,
++      max_budget_per_run: options.maxBudgetPerRun,
+       stuck_detection: options.stuckDetection ?? true,
+       workspace: { type: &#x27;local&#x27;, working_dir: options.workingDir || &#x27;/tmp&#x27; },
+       user_id: options.userId ?? null,</pre>
+            <h4>
+              clients/typescript/src/conversation/remote-conversation.ts
+              <span class="muted">+10 / −0</span>
+            </h4>
+            <p class="sources">
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/clients/typescript/src/conversation/remote-conversation.ts"
+                >Committed source</a
+              >
+            </p>
+            <pre>
+diff --git a/clients/typescript/src/conversation/remote-conversation.ts b/clients/typescript/src/conversation/remote-conversation.ts
+index 04091d075..11620915d 100644
+--- a/clients/typescript/src/conversation/remote-conversation.ts
++++ b/clients/typescript/src/conversation/remote-conversation.ts
+@@ -42,6 +42,11 @@ import type { HookConfig } from &#x27;../hooks&#x27;;
+  * Options for creating a RemoteConversation instance.
+  */
+ export interface RemoteConversationOptions extends BaseConversationOptions {
++  /**
++   * Positive USD limit on accumulated conversation cost, including earlier runs.
++   * Null means unbounded. A completed agent step may overshoot the limit.
++   */
++  maxBudgetPerRun?: number | null;
+   /**
+    * Optional user ID to associate with server-side observability traces.
+    */
+@@ -93,6 +98,7 @@ export class RemoteConversation implements IConversation {
+   private hookConfig?: HookConfig;
+   private userId?: string;
+   private maxIterations?: number;
++  private maxBudgetPerRun?: number | null;
+   private stuckDetection?: boolean;
+&#32;
+   constructor(
+@@ -108,6 +114,7 @@ export class RemoteConversation implements IConversation {
+     this.hookConfig = options.hookConfig;
+     this.userId = options.userId;
+     this.maxIterations = options.maxIterations;
++    this.maxBudgetPerRun = options.maxBudgetPerRun;
+     this.stuckDetection = options.stuckDetection;
+&#32;
+     this.client = new HttpClient({
+@@ -144,6 +151,7 @@ export class RemoteConversation implements IConversation {
+     options: {
+       initialMessage?: string;
+       maxIterations?: number;
++      maxBudgetPerRun?: number | null;
+       stuckDetection?: boolean;
+       hookConfig?: HookConfig;
+       userId?: string;
+@@ -175,6 +183,8 @@ export class RemoteConversation implements IConversation {
+       agent: this.agent,
+       initial_message: initialMessage,
+       max_iterations: options.maxIterations || this.maxIterations || 500,
++      max_budget_per_run:
++        options.maxBudgetPerRun !== undefined ? options.maxBudgetPerRun : this.maxBudgetPerRun,
+       stuck_detection: options.stuckDetection ?? this.stuckDetection ?? true,
+       workspace: { type: &#x27;local&#x27;, working_dir: this.workspace.workingDir },
+       hook_config: hookConfig ?? null,</pre>
+            <h4>
+              clients/typescript/src/models/conversation.ts
+              <span class="muted">+6 / −0</span>
+            </h4>
+            <p class="sources">
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/clients/typescript/src/models/conversation.ts"
+                >Committed source</a
+              >
+            </p>
+            <pre>
+diff --git a/clients/typescript/src/models/conversation.ts b/clients/typescript/src/models/conversation.ts
+index bfd1b6eec..8c7210b4c 100644
+--- a/clients/typescript/src/models/conversation.ts
++++ b/clients/typescript/src/models/conversation.ts
+@@ -57,6 +57,8 @@ export interface ConversationInfo {
+   workspace: unknown;
+   persistence_dir: string;
+   max_iterations?: number;
++  /** USD limit on accumulated conversation cost; a completed step may overshoot. */
++  max_budget_per_run?: number | null;
+   stuck_detection?: boolean;
+   conversation_stats?: ConversationStats;
+   /** API may return stats instead of conversation_stats */
+@@ -118,6 +120,8 @@ export interface CreateConversationRequest {
+   agent: AgentBase;
+   initial_message?: Message;
+   max_iterations: number;
++  /** Positive USD limit on accumulated conversation cost; null means unbounded. */
++  max_budget_per_run?: number | null;
+   stuck_detection: boolean;
+   workspace: Record&lt;string, unknown&gt;;
+   hook_config?: HookConfig | null;
+@@ -128,6 +132,8 @@ export interface CreateACPConversationRequest {
+   agent: ACPAgentConfig;
+   initial_message?: Message;
+   max_iterations: number;
++  /** Positive USD limit on accumulated conversation cost; null means unbounded. */
++  max_budget_per_run?: number | null;
+   stuck_detection: boolean;
+   workspace: Record&lt;string, unknown&gt;;
+   hook_config?: HookConfig | null;</pre>
+            <h4>
+              clients/typescript/src/types/base.ts
+              <span class="muted">+4 / −0</span>
+            </h4>
+            <p class="sources">
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/clients/typescript/src/types/base.ts"
+                >Committed source</a
+              >
+            </p>
+            <pre>
+diff --git a/clients/typescript/src/types/base.ts b/clients/typescript/src/types/base.ts
+index 9d18316cd..47d63f63a 100644
+--- a/clients/typescript/src/types/base.ts
++++ b/clients/typescript/src/types/base.ts
+@@ -2,6 +2,8 @@
+  * Base types and interfaces for the OpenHands Agent Server TypeScript client
+  */
+&#32;
++import type { MetricsSnapshot } from &#x27;../generated/agent-server-schema&#x27;;
 +
-+import pytest
-+from pydantic import ValidationError
+ export type ConversationID = string;
+&#32;
+ /**
+@@ -129,6 +131,8 @@ export interface ConversationStats {
+   message_events: number;
+   action_events: number;
+   observation_events: number;
++  /** Per-LLM accumulated costs in USD, updated as responses are received. */
++  usage_to_metrics?: Record&lt;string, MetricsSnapshot&gt;;
+   [key: string]: unknown;
+ }
+&#32;</pre>
+            <h4>
+              clients/typescript/README.md <span class="muted">+22 / −0</span>
+            </h4>
+            <p class="sources">
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/clients/typescript/README.md"
+                >Committed source</a
+              >
+            </p>
+            <pre>
+diff --git a/clients/typescript/README.md b/clients/typescript/README.md
+index 5726143e6..29e817203 100644
+--- a/clients/typescript/README.md
++++ b/clients/typescript/README.md
+@@ -299,6 +299,28 @@ await conversation.updateSecrets({
+ });
+ ```
+&#32;
++### Displaying a Conversation Budget
 +
-+from openhands.agent_server.conversation_service import ConversationService
-+from openhands.agent_server.models import StartConversationRequest, StoredConversation
-+from openhands.sdk import LLM, Agent
-+from openhands.sdk.workspace import LocalWorkspace
++Set `maxBudgetPerRun` when creating a remote conversation, using an Agent Server
++that supports `max_budget_per_run`. Omit it or pass `null` for no limit.
 +
++```typescript
++const conversation = await manager.createConversation(agent, { maxBudgetPerRun: 5 });
++const info = await manager.getConversation(conversation.id);
++const spent = Object.values(info.stats?.usage_to_metrics ?? {}).reduce(
++  (total, metrics) =&gt; total + (metrics.accumulated_cost ?? 0),
++  0
++);
++console.log({ spent, limit: info.max_budget_per_run });
++```
 +
-+@pytest.mark.parametrize(&quot;budget&quot;, [0, -1, float(&quot;inf&quot;), float(&quot;nan&quot;)])
-+def test_creation_rejects_invalid_budget(budget, tmp_path):
-+    with pytest.raises(ValidationError, match=&quot;max_budget_per_run&quot;):
-+        StartConversationRequest(
-+            agent=Agent(llm=LLM(model=&quot;gpt-4o&quot;), tools=[]),
-+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
-+            max_budget_per_run=budget,
-+        )
++Both amounts are in USD. Despite its legacy name, the limit applies to the
++conversation&#x27;s accumulated cost, including earlier runs. The server checks the
++limit after each completed agent step, so a step may overshoot it. The same
++`stats.usage_to_metrics` costs arrive in WebSocket state updates while running;
++use those updates to refresh a live display. The configured limit remains
++available from the conversation&#x27;s REST response after reconnecting.
 +
-+
-+@pytest.mark.asyncio
-+@pytest.mark.parametrize(&quot;budget&quot;, [None, 1.25])
-+async def test_budget_survives_creation_fork_and_restart(tmp_path, budget):
-+    conversations_dir = tmp_path / &quot;conversations&quot;
-+    workspace_dir = tmp_path / &quot;workspace&quot;
-+    workspace_dir.mkdir()
-+    request = StartConversationRequest(
-+        agent=Agent(llm=LLM(model=&quot;gpt-4o&quot;), tools=[]),
-+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
-+        max_budget_per_run=budget,
-+    )
-+    async with ConversationService(conversations_dir=conversations_dir) as service:
-+        info, _ = await service.start_conversation(request)
-+        assert info.max_budget_per_run == budget
-+        original = await service.get_event_service(info.id)
-+        assert original is not None
-+        assert original.get_conversation().max_budget_per_run == budget
-+
-+        fork = await service.fork_conversation(info.id)
-+        assert fork is not None
-+        assert fork.max_budget_per_run == budget
-+        fork_service = await service.get_event_service(fork.id)
-+        assert fork_service is not None
-+        assert fork_service.get_conversation().max_budget_per_run == budget
-+
-+    for conversation_id in (info.id, fork.id):
-+        meta_path = conversations_dir / conversation_id.hex / &quot;meta.json&quot;
-+        meta = json.loads(meta_path.read_text())
-+        assert meta[&quot;max_budget_per_run&quot;] == budget
-+        if budget is None:
-+            # Old metadata has no budget field.
-+            del meta[&quot;max_budget_per_run&quot;]
-+            meta_path.write_text(json.dumps(meta))
-+            assert StoredConversation.model_validate(meta).max_budget_per_run is None
-+
-+    async with ConversationService(conversations_dir=conversations_dir) as restarted:
-+        for conversation_id in (info.id, fork.id):
-+            reloaded = await restarted.get_conversation(conversation_id)
-+            assert reloaded is not None
-+            assert reloaded.max_budget_per_run == budget
-+            event_service = await restarted.get_event_service(conversation_id)
-+            assert event_service is not None
-+            assert event_service.get_conversation().max_budget_per_run == budget
-</pre></details>
-<details><summary>tests/cross/test_remote_conversation_live_server.py <span class="muted">+137 / −1</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/tests/cross/test_remote_conversation_live_server.py#L1">tests/cross/test_remote_conversation_live_server.py:1</a></p><pre>diff --git a/tests/cross/test_remote_conversation_live_server.py b/tests/cross/test_remote_conversation_live_server.py
-index b03557eee..03258391c 100644
---- a/tests/cross/test_remote_conversation_live_server.py
-+++ b/tests/cross/test_remote_conversation_live_server.py
-@@ -4,6 +4,7 @@ This validates RemoteConversation against actual REST + WebSocket endpoints,
- while keeping the LLM deterministic via monkeypatching.
- &quot;&quot;&quot;
-
-+import asyncio
- import json
- import os
- import shutil
-@@ -15,7 +16,7 @@ import time
- from collections.abc import Generator
- from contextlib import contextmanager
- from pathlib import Path
--from typing import cast
-+from typing import Any, cast
- from unittest.mock import patch
- from uuid import UUID
-
-@@ -1628,6 +1629,141 @@ def test_conversation_stats_with_live_server(
-     conv.close()
-
-
-+@pytest.mark.parametrize(&quot;budget&quot;, [None, 0.015, 0.1])
-+def test_budget_and_live_cost_with_live_server(
-+    server_env, monkeypatch: pytest.MonkeyPatch, budget: float | None
-+):
-+    &quot;&quot;&quot;REST, persisted state and WebSocket report spend before the run ends.&quot;&quot;&quot;
-+    calls_started = [threading.Event() for _ in range(3)]
-+    release_calls = [threading.Event() for _ in range(3)]
-+    release_calls[0].set()
-+    call_count = 0
-+
-+    async def completion(**_kwargs: Any) -&gt; ModelResponse:
-+        nonlocal call_count
-+        index = call_count
-+        call_count += 1
-+        calls_started[index].set()
-+        assert await asyncio.to_thread(release_calls[index].wait, 15)
-+        if index &lt; 2:
-+            message = {
-+                &quot;role&quot;: &quot;assistant&quot;,
-+                &quot;tool_calls&quot;: [
-+                    {
-+                        &quot;id&quot;: f&quot;think-{index}&quot;,
-+                        &quot;type&quot;: &quot;function&quot;,
-+                        &quot;function&quot;: {
-+                            &quot;name&quot;: &quot;think&quot;,
-+                            &quot;arguments&quot;: json.dumps({&quot;thought&quot;: f&quot;Step {index}&quot;}),
-+                        },
-+                    }
-+                ],
-+            }
-+        else:
-+            message = {&quot;role&quot;: &quot;assistant&quot;, &quot;content&quot;: &quot;Done&quot;}
-+        return ModelResponse(
-+            id=f&quot;budget-response-{index}&quot;,
-+            model=&quot;gpt-4o-mini&quot;,
-+            choices=[{&quot;index&quot;: 0, &quot;message&quot;: message, &quot;finish_reason&quot;: &quot;stop&quot;}],
-+            usage={&quot;prompt_tokens&quot;: 100, &quot;completion_tokens&quot;: 10},
-+        )
-+
-+    monkeypatch.setattr(&quot;openhands.sdk.llm.llm.litellm_acompletion&quot;, completion)
-+    monkeypatch.setattr(
-+        &quot;openhands.sdk.llm.utils.telemetry.Telemetry._compute_cost&quot;,
-+        lambda *args, **kwargs: 0.01,
-+    )
-+    host = server_env[&quot;host&quot;]
-+    with httpx.Client(base_url=host, timeout=10, trust_env=False) as client:
-+        created = client.post(
-+            &quot;/api/conversations&quot;,
-+            json={
-+                &quot;agent&quot;: {
-+                    &quot;llm&quot;: {&quot;model&quot;: &quot;gpt-4o-mini&quot;, &quot;api_key&quot;: &quot;test&quot;},
-+                    &quot;tools&quot;: [],
-+                },
-+                &quot;workspace&quot;: {&quot;working_dir&quot;: str(server_env[&quot;workspace_path&quot;])},
-+                &quot;max_budget_per_run&quot;: budget,
-+            },
-+        )
-+        assert created.status_code == 201, created.text
-+        assert created.json()[&quot;max_budget_per_run&quot;] == budget
-+        conversation_id = created.json()[&quot;id&quot;]
-+        route = f&quot;/api/conversations/{conversation_id}&quot;
-+        state_path = (
-+            server_env[&quot;workspace_path&quot;].parent
-+            / &quot;conversations&quot;
-+            / UUID(conversation_id).hex
-+            / &quot;base_state.json&quot;
-+        )
-+        socket_url = (
-+            f&quot;{host.replace(&#x27;http://&#x27;, &#x27;ws://&#x27;)}/sockets/events/{conversation_id}&quot;
-+        )
-+        try:
-+            with connect(socket_url) as socket:
-+                socket.recv(timeout=5)
-+                sent = client.post(
-+                    f&quot;{route}/events&quot;,
-+                    json={&quot;content&quot;: [{&quot;type&quot;: &quot;text&quot;, &quot;text&quot;: &quot;Think twice&quot;}]},
-+                )
-+                assert sent.status_code == 200, sent.text
-+                assert client.post(f&quot;{route}/run&quot;).status_code == 200
-+
-+                samples = 1 if budget == 0.015 else 2
-+                for index in range(1, samples + 1):
-+                    assert calls_started[index].wait(10)
-+                    expected_cost = index * 0.01
-+                    info = client.get(route).json()
-+                    assert info[&quot;execution_status&quot;] == &quot;running&quot;
-+                    assert info[&quot;max_budget_per_run&quot;] == budget
-+                    for snapshot in (info, json.loads(state_path.read_text())):
-+                        cost = sum(
-+                            metrics[&quot;accumulated_cost&quot;]
-+                            for metrics in snapshot[&quot;stats&quot;][
-+                                &quot;usage_to_metrics&quot;
-+                            ].values()
-+                        )
-+                        assert cost == pytest.approx(expected_cost)
-+                    while True:
-+                        event = json.loads(socket.recv(timeout=5))
-+                        if event.get(&quot;key&quot;) == &quot;stats&quot;:
-+                            cost = sum(
-+                                metrics[&quot;accumulated_cost&quot;]
-+                                for metrics in event[&quot;value&quot;][
-+                                    &quot;usage_to_metrics&quot;
-+                                ].values()
-+                            )
-+                            if cost &gt;= expected_cost:
-+                                break
-+                    release_calls[index].set()
-+
-+                info = client.get(route).json()
-+                deadline = time.monotonic() + 10
-+                while time.monotonic() &lt; deadline:
-+                    info = client.get(route).json()
-+                    if info[&quot;execution_status&quot;] in (&quot;error&quot;, &quot;finished&quot;):
-+                        break
-+                    time.sleep(0.01)
-+                if budget == 0.015:
-+                    assert info[&quot;execution_status&quot;] == &quot;error&quot;
-+                    assert call_count == 2
-+                    events = client.get(f&quot;{route}/events/search&quot;).json()[&quot;items&quot;]
-+                    assert any(
-+                        event.get(&quot;code&quot;) == &quot;MaxBudgetReached&quot; for event in events
-+                    )
-+                else:
-+                    assert info[&quot;execution_status&quot;] == &quot;finished&quot;
-+                    assert call_count == 3
-+                assert sum(
-+                    metrics[&quot;accumulated_cost&quot;]
-+                    for metrics in info[&quot;stats&quot;][&quot;usage_to_metrics&quot;].values()
-+                ) == pytest.approx(call_count * 0.01)
-+        finally:
-+            for release in release_calls:
-+                release.set()
-+            client.delete(route)
-+
-+
- def test_events_not_lost_during_client_disconnection(
-     server_env, monkeypatch: pytest.MonkeyPatch
- ):
-</pre></details>
-<details><summary>tests/sdk/conversation/local/test_fork.py <span class="muted">+14 / −2</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/tests/sdk/conversation/local/test_fork.py#L1">tests/sdk/conversation/local/test_fork.py:1</a></p><pre>diff --git a/tests/sdk/conversation/local/test_fork.py b/tests/sdk/conversation/local/test_fork.py
-index b9b93141c..a82ec36c1 100644
---- a/tests/sdk/conversation/local/test_fork.py
-+++ b/tests/sdk/conversation/local/test_fork.py
-@@ -154,9 +154,15 @@ def test_fork_execution_status_is_idle():
- def test_fork_resets_metrics_by_default():
-     &quot;&quot;&quot;By default, metrics on the fork should be fresh (empty).&quot;&quot;&quot;
-     with tempfile.TemporaryDirectory() as tmpdir:
--        src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
-+        src = Conversation(
-+            agent=_agent(),
-+            persistence_dir=tmpdir,
-+            workspace=tmpdir,
-+            max_budget_per_run=2.0,
-+        )
-         fork = src.fork()
-
-+        assert fork.max_budget_per_run == 2.0
-         combined = fork.state.stats.get_combined_metrics()
-         assert combined.accumulated_cost == 0
-
-@@ -164,7 +170,12 @@ def test_fork_resets_metrics_by_default():
- def test_fork_preserves_metrics_when_requested():
-     &quot;&quot;&quot;When reset_metrics=False the fork should carry over stats.&quot;&quot;&quot;
-     with tempfile.TemporaryDirectory() as tmpdir:
--        src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
-+        src = Conversation(
-+            agent=_agent(),
-+            persistence_dir=tmpdir,
-+            workspace=tmpdir,
-+            max_budget_per_run=2.0,
-+        )
-         # Inject a non-zero metric
-         from openhands.sdk.llm.utils.metrics import Metrics
-
-@@ -174,6 +185,7 @@ def test_fork_preserves_metrics_when_requested():
-
-         fork = src.fork(reset_metrics=False)
-
-+        assert fork.max_budget_per_run == 2.0
-         combined = fork.state.stats.get_combined_metrics()
-         assert combined.accumulated_cost == pytest.approx(1.5)
-
-</pre></details>
-<details><summary>tests/sdk/conversation/remote/test_remote_conversation.py <span class="muted">+32 / −1</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/tests/sdk/conversation/remote/test_remote_conversation.py#L1">tests/sdk/conversation/remote/test_remote_conversation.py:1</a></p><pre>diff --git a/tests/sdk/conversation/remote/test_remote_conversation.py b/tests/sdk/conversation/remote/test_remote_conversation.py
-index 2a7fb1c2e..ab2495b17 100644
---- a/tests/sdk/conversation/remote/test_remote_conversation.py
-+++ b/tests/sdk/conversation/remote/test_remote_conversation.py
-@@ -193,6 +193,7 @@ class TestRemoteConversation:
-             if method == &quot;GET&quot; and url == f&quot;/api/conversations/{cid}&quot;:
-                 response.json.return_value[&quot;agent&quot;] = expected.model_dump(mode=&quot;json&quot;)
-                 response.json.return_value[&quot;max_iterations&quot;] = 500
-+                response.json.return_value[&quot;max_budget_per_run&quot;] = 2.5
-             return response
-
-         client.request.side_effect = respond
-@@ -208,6 +209,7 @@ class TestRemoteConversation:
-             assert isinstance(expected, ACPAgent)
-             assert conversation.agent.acp_command == expected.acp_command
-         assert conversation.id == cid
-+        assert conversation.max_budget_per_run == 2.5
-         conversation.close()
-         assert all(call.args[0] == &quot;GET&quot; for call in client.request.call_args_list)
-         client.close.assert_not_called()  # The caller still owns the workspace.
-@@ -343,6 +345,7 @@ class TestRemoteConversation:
-                 parsed = StartConversationRequest.model_validate(payload)
-                 assert parsed.agent_profile_id == profile_id
-                 assert payload[&quot;max_iterations&quot;] == 17
-+                assert payload[&quot;max_budget_per_run&quot;] == 2.5
-                 assert payload[&quot;tags&quot;] == {&quot;automationrun&quot;: &quot;run-one&quot;}
-                 assert payload[&quot;stuck_detection&quot;] is False
-                 assert parsed.hook_config == hooks
-@@ -352,6 +355,7 @@ class TestRemoteConversation:
-                 assert payload[&quot;user_id&quot;] == &quot;operator&quot;
-                 response.json.return_value[&quot;agent&quot;] = self.agent.model_dump(mode=&quot;json&quot;)
-                 response.json.return_value[&quot;max_iterations&quot;] = 17
-+                response.json.return_value[&quot;max_budget_per_run&quot;] = 2.5
-                 created = True
-             return response
-
-@@ -363,6 +367,7 @@ class TestRemoteConversation:
-                 conversation_id=cid,
-                 agent_profile_id=profile_id,
-                 max_iterations=17,
-+                max_budget_per_run=2.5,
-                 tags={&quot;automationrun&quot;: &quot;run-one&quot;},
-                 stuck_detection=False,
-                 hook_config=hooks,
-@@ -375,6 +380,7 @@ class TestRemoteConversation:
-         )
-         assert client.request.call_args_list[0].args == (&quot;POST&quot;, &quot;/api/conversations&quot;)
-         assert conversation.max_iteration_per_run == 17
-+        assert conversation.max_budget_per_run == 2.5
-         assert conversation.id == cid
-         assert conversation.agent.llm.model == self.agent.llm.model
-         conversation.set_title(&quot;Scheduled run&quot;)
-@@ -414,14 +420,34 @@ class TestRemoteConversation:
-             expected_method
-         ]
-
-+    @pytest.mark.parametrize(
-+        &quot;budget_response&quot;,
-+        [
-+            {},
-+            {&quot;max_budget_per_run&quot;: None},
-+            {&quot;max_budget_per_run&quot;: 2.5},
-+            {&quot;max_budget_per_run&quot;: 5.0},
-+        ],
-+    )
-     @patch(
-         &quot;openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient&quot;
-     )
--    def test_remote_conversation_initialization_new_conversation(self, mock_ws_client):
-+    def test_remote_conversation_initialization_new_conversation(
-+        self, mock_ws_client, budget_response
-+    ):
-         &quot;&quot;&quot;Test RemoteConversation initialization with new conversation.&quot;&quot;&quot;
-         # Set up mock client
-         conversation_id = str(uuid.uuid4())
-         mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
-+        original_request = mock_client_instance.request.side_effect
-+
-+        def respond(method, url, **kwargs):
-+            response = original_request(method, url, **kwargs)
-+            if method == &quot;POST&quot; and url == &quot;/api/conversations&quot;:
-+                response.json.return_value.update(budget_response)
-+            return response
-+
-+        mock_client_instance.request.side_effect = respond
-
-         # Mock WebSocket client
-         mock_ws_instance = Mock()
-@@ -432,6 +458,7 @@ class TestRemoteConversation:
-             agent=self.agent,
-             workspace=self.workspace,
-             max_iteration_per_run=100,
-+            max_budget_per_run=2.5,
-             stuck_detection=True,
-         )
-
-@@ -443,6 +470,9 @@ class TestRemoteConversation:
-         assert conversation.id == uuid.UUID(conversation_id)
-         assert conversation.workspace.host == self.host
-         assert conversation.max_iteration_per_run == 100
-+        assert conversation.max_budget_per_run == budget_response.get(
-+            &quot;max_budget_per_run&quot;
-+        )
-
-         # Verify POST was called to create the conversation
-         post_calls = [
-@@ -453,6 +483,7 @@ class TestRemoteConversation:
-         assert len(post_calls) == 1, (
-             &quot;Should have made exactly one POST call to create conversation&quot;
-         )
-+        assert post_calls[0].kwargs[&quot;json&quot;][&quot;max_budget_per_run&quot;] == 2.5
-
-         # Verify GET was called to fetch events (RemoteEventsList initialization)
-         # This happens in RemoteEventsList._do_full_sync() which is called
-</pre></details>
-<details><summary>tests/sdk/conversation/test_conversation_factory.py <span class="muted">+5 / −0</span></summary><p><a href="https://github.com/smolpaws/software-agent-sdk/blob/d352755baaef9db42d2f46dc7d99b163362f11bb/tests/sdk/conversation/test_conversation_factory.py#L1">tests/sdk/conversation/test_conversation_factory.py:1</a></p><pre>diff --git a/tests/sdk/conversation/test_conversation_factory.py b/tests/sdk/conversation/test_conversation_factory.py
-index ad6620efa..641657b23 100644
---- a/tests/sdk/conversation/test_conversation_factory.py
-+++ b/tests/sdk/conversation/test_conversation_factory.py
-@@ -79,12 +79,14 @@ def test_conversation_factory_forwards_local_parameters(agent):
-     conversation = Conversation(
-         agent=agent,
-         max_iteration_per_run=100,
-+        max_budget_per_run=1.5,
-         stuck_detection=False,
-         visualizer=None,
-     )
-
-     assert isinstance(conversation, LocalConversation)
-     assert conversation.max_iteration_per_run == 100
-+    assert conversation.max_budget_per_run == 1.5
-     conversation.close()
-
-
-@@ -123,11 +125,14 @@ def test_conversation_factory_forwards_remote_parameters(
-         agent=agent,
-         workspace=remote_workspace,
-         max_iteration_per_run=200,
-+        max_budget_per_run=2.5,
-         stuck_detection=True,
-     )
-
-     assert isinstance(conversation, RemoteConversation)
-     assert conversation.max_iteration_per_run == 200
-+    create_call = remote_workspace._client.request.call_args_list[0]
-+    assert create_call.kwargs[&quot;json&quot;][&quot;max_budget_per_run&quot;] == 2.5
-
-
- @patch(&quot;openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient&quot;)
-</pre></details>
-</section></main></div></body></html>
+ ## API Reference
+&#32;
+ ### Conversation</pre>
+          </details>
+        </section>
+        <section id="evidence">
+          <h2>6. Regressions follow the ownership boundary</h2>
+          <p>
+            The focused tests exercise actual disk persistence, server lifecycle
+            operations, and state snapshots. The follow-up live report records
+            verification of this ownership revision separately.
+          </p>
+          <div class="callout">
+            <strong>Current follow-up:</strong>
+            <a href="state-budget-review/README.md"
+              >state-budget-review/README.md</a
+            >. This design page makes no claim about that run before its report
+            is available.
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Behavior</th>
+                <th>Committed regression</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Local resume, numeric override, clear, old snapshot</td>
+                <td>
+                  <a
+                    href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/sdk/conversation/local/test_state_serialization.py#L1472"
+                    >Local disk persistence</a
+                  >
+                </td>
+              </tr>
+              <tr>
+                <td>Fork current cap with reset / preserved spend</td>
+                <td>
+                  <a
+                    href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/sdk/conversation/local/test_fork.py#L155"
+                    >Fork behavior</a
+                  >
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  Create, mutate, reuse, evict, fork, restart; metadata has no
+                  cap
+                </td>
+                <td>
+                  <a
+                    href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/agent_server/test_conversation_budget.py#L32"
+                    >Server lifecycle</a
+                  >
+                </td>
+              </tr>
+              <tr>
+                <td>Child inherits the current parent cap</td>
+                <td>
+                  <a
+                    href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/agent_server/test_conversation_budget.py#L95"
+                    >Child creation</a
+                  >
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  Full snapshot clears cap and analyzer, retains agent /
+                  workspace / status
+                </td>
+                <td>
+                  <a
+                    href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/sdk/conversation/test_remote_conversation_state_updates.py#L179"
+                    >Remote snapshot</a
+                  >
+                </td>
+              </tr>
+              <tr>
+                <td>Real HTTP / WebSocket, live spend, expected overshoot</td>
+                <td>
+                  <a
+                    href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/cross/test_remote_conversation_live_server.py#L1633"
+                    >Socket regression</a
+                  >
+                </td>
+              </tr>
+              <tr>
+                <td>Normal / ACP creation and explicit null</td>
+                <td>
+                  <a
+                    href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/clients/typescript/src/__tests__/conversation-create-options.test.ts#L8"
+                    >TypeScript wire payloads</a
+                  >
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <details>
+            <summary>
+              Historical evidence · earlier implementations only
+            </summary>
+            <p>
+              The earlier deterministic socket run and real-provider SDK /
+              Canvas reports predate this ownership correction. They remain
+              useful context for cost updates and overshoot; they do not
+              establish verification of <code>c13bcc6</code>.
+            </p>
+            <p>
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/b11cb32be50909541a2085eec6fca096bf99f40f/.pr/budget-evidence.txt"
+                >Earlier deterministic socket report</a
+              >
+              ·
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/b11cb32be50909541a2085eec6fca096bf99f40f/.pr/live-review/SDK-LIVE-VERIFICATION.md"
+                >Earlier real-provider SDK report</a
+              >
+              ·
+              <a
+                href="https://github.com/smolpaws/software-agent-sdk/blob/b11cb32be50909541a2085eec6fca096bf99f40f/.pr/live-review/canvas/README.md"
+                >Earlier Canvas report</a
+              >
+            </p>
+          </details>
+          <details>
+            <summary>
+              Changed source and test files · exact revision totals
+            </summary>
+            <ul class="file-list">
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/clients/typescript/README.md"
+                  >clients/typescript/README.md:1</a
+                ><br /><span class="muted">✏️ changed · +22 / −0</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/clients/typescript/src/__tests__/conversation-create-options.test.ts"
+                  >clients/typescript/src/__tests__/conversation-create-options.test.ts:1</a
+                ><br /><span class="muted">✏️ changed · +33 / −6</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/clients/typescript/src/client/conversation-client.ts"
+                  >clients/typescript/src/client/conversation-client.ts:1</a
+                ><br /><span class="muted">✏️ changed · +2 / −0</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/clients/typescript/src/conversation/conversation-manager.ts"
+                  >clients/typescript/src/conversation/conversation-manager.ts:1</a
+                ><br /><span class="muted">✏️ changed · +6 / −0</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/clients/typescript/src/conversation/remote-conversation.ts"
+                  >clients/typescript/src/conversation/remote-conversation.ts:1</a
+                ><br /><span class="muted">✏️ changed · +10 / −0</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/clients/typescript/src/models/conversation.ts"
+                  >clients/typescript/src/models/conversation.ts:1</a
+                ><br /><span class="muted">✏️ changed · +6 / −0</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/clients/typescript/src/types/base.ts"
+                  >clients/typescript/src/types/base.ts:1</a
+                ><br /><span class="muted">✏️ changed · +4 / −0</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-agent-server/openhands/agent_server/conversation_service.py"
+                  >openhands-agent-server/openhands/agent_server/conversation_service.py:1</a
+                ><br /><span class="muted">✏️ changed · +13 / −1</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-agent-server/openhands/agent_server/event_service.py"
+                  >openhands-agent-server/openhands/agent_server/event_service.py:1</a
+                ><br /><span class="muted">✏️ changed · +4 / −0</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-agent-server/openhands/agent_server/models.py"
+                  >openhands-agent-server/openhands/agent_server/models.py:1</a
+                ><br /><span class="muted">✏️ changed · +7 / −0</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/conversation.py"
+                  >openhands-sdk/openhands/sdk/conversation/conversation.py:1</a
+                ><br /><span class="muted">✏️ changed · +5 / −0</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py"
+                  >openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:1</a
+                ><br /><span class="muted">✏️ changed · +23 / −8</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py"
+                  >openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py:1</a
+                ><br /><span class="muted">✏️ changed · +31 / −8</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/request.py"
+                  >openhands-sdk/openhands/sdk/conversation/request.py:1</a
+                ><br /><span class="muted">✏️ changed · +14 / −3</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/openhands-sdk/openhands/sdk/conversation/state.py"
+                  >openhands-sdk/openhands/sdk/conversation/state.py:1</a
+                ><br /><span class="muted">✏️ changed · +11 / −0</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/agent_server/test_conversation_budget.py"
+                  >tests/agent_server/test_conversation_budget.py:1</a
+                ><br /><span class="muted">🟢 added · +128 / −0</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/agent_server/test_parent_child_conversations.py"
+                  >tests/agent_server/test_parent_child_conversations.py:1</a
+                ><br /><span class="muted">✏️ changed · +3 / −1</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/cross/test_remote_conversation_live_server.py"
+                  >tests/cross/test_remote_conversation_live_server.py:1</a
+                ><br /><span class="muted">✏️ changed · +143 / −1</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/sdk/conversation/local/test_fork.py"
+                  >tests/sdk/conversation/local/test_fork.py:1</a
+                ><br /><span class="muted">✏️ changed · +18 / −2</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/sdk/conversation/local/test_state_serialization.py"
+                  >tests/sdk/conversation/local/test_state_serialization.py:1</a
+                ><br /><span class="muted">✏️ changed · +113 / −0</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/sdk/conversation/remote/test_remote_conversation.py"
+                  >tests/sdk/conversation/remote/test_remote_conversation.py:1</a
+                ><br /><span class="muted">✏️ changed · +92 / −2</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/sdk/conversation/test_conversation_factory.py"
+                  >tests/sdk/conversation/test_conversation_factory.py:1</a
+                ><br /><span class="muted">✏️ changed · +5 / −0</span>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/tests/sdk/conversation/test_remote_conversation_state_updates.py"
+                  >tests/sdk/conversation/test_remote_conversation_state_updates.py:1</a
+                ><br /><span class="muted">✏️ changed · +35 / −28</span>
+              </li>
+            </ul>
+          </details>
+        </section>
+        <footer>
+          <p class="sources">
+            Temporary PR review context. The repository’s
+            <a
+              href="https://github.com/smolpaws/software-agent-sdk/blob/c13bcc6a3e7670cfe7b5f6c472d6183cb4105b35/.github/workflows/pr-artifacts.yml#L96"
+              >PR Artifacts workflow</a
+            >
+            removes merged artifacts through a cleanup PR. This page contains
+            only inline CSS and SVG; source links require a network connection.
+          </p>
+        </footer>
+      </main>
+    </div>
+  </body>
+</html>

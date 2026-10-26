@@ -1,0 +1,13 @@
+{
+  "created_cap": 0.05,
+  "state_mutation_property_cap": 0.06,
+  "property_mutation_state_cap": 0.07,
+  "property_mutation_saved_cap": 0.07,
+  "resumed_without_argument": 0.07,
+  "explicit_numeric_override": 0.08,
+  "cleared_state_cap": null,
+  "resumed_cleared_cap": null,
+  "llm_calls": 0,
+  "exec_exit_code": 0,
+  "driver": "verify-agent-server exec"
+}

@@ -1,0 +1,32 @@
+{
+  "ok": true,
+  "status": 200,
+  "request": {
+    "method": "GET",
+    "path": "/api/conversations/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8",
+    "query": [],
+    "auth": "header",
+    "files": []
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-length": "6745",
+      "content-type": "application/json"
+    },
+    "truncated": false
+  },
+  "elapsed_ms": 39,
+  "checks": [
+    {
+      "check": "max_budget_per_run eq 0.05",
+      "ok": true,
+      "actual": "0.05"
+    },
+    {
+      "check": "execution_status eq finished",
+      "ok": true,
+      "actual": "finished"
+    }
+  ]
+}

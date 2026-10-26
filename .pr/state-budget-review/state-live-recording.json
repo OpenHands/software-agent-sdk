@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "path": "/var/folders/15/pyrd6jhs3tnd259qd39xsplm0000gn/T/openhands-verify/state-budget-review/evidence/F27.budget-meter/state-live.mp4",
+  "seconds": 15.5,
+  "recordedSeconds": 16.9,
+  "size": "1440x1000",
+  "fps": 4,
+  "captures": 67,
+  "changes": 10,
+  "misses": 0,
+  "capped": false,
+  "cutSeconds": 0,
+  "url": "http://127.0.0.1:18800/conversations/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8",
+  "gif": "/var/folders/15/pyrd6jhs3tnd259qd39xsplm0000gn/T/openhands-verify/state-budget-review/evidence/F27.budget-meter/state-live.gif"
+}

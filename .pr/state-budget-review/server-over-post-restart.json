@@ -1,0 +1,27 @@
+{
+  "ok": true,
+  "status": 200,
+  "request": {
+    "method": "GET",
+    "path": "/api/conversations/5f17ea8b-6d57-409d-8d85-5d81e15a28da",
+    "query": [],
+    "auth": "header",
+    "files": []
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-length": "5442",
+      "content-type": "application/json"
+    },
+    "truncated": false
+  },
+  "elapsed_ms": 28,
+  "checks": [
+    {
+      "check": "max_budget_per_run eq 0.0001",
+      "ok": true,
+      "actual": "0.0001"
+    }
+  ]
+}

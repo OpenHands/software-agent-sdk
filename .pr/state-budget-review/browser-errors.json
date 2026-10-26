@@ -1,0 +1,157 @@
+{
+  "ok": true,
+  "since": "last clear",
+  "summary": {
+    "app:http-error": 4,
+    "app:console.error": 8,
+    "app:websocket-error": 3,
+    "app:requestfailed": 1
+  },
+  "pageErrors": 0,
+  "appErrors": 16,
+  "warnings": 0,
+  "events": [
+    {
+      "ts": "2026-10-26T13:24:36.082Z",
+      "kind": "http-error",
+      "page": "http://127.0.0.1:18800/conversations/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8",
+      "appOrigin": true,
+      "url": "http://127.0.0.1:18800/api/llm/balance",
+      "method": "GET",
+      "status": 404
+    },
+    {
+      "ts": "2026-10-26T13:24:36.083Z",
+      "kind": "console.error",
+      "page": "http://127.0.0.1:18800/conversations/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8",
+      "appOrigin": true,
+      "message": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "url": "http://127.0.0.1:18800/api/llm/balance"
+    },
+    {
+      "ts": "2026-10-26T13:26:09.264Z",
+      "kind": "websocket-error",
+      "page": "http://127.0.0.1:18800/conversations/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8",
+      "appOrigin": true,
+      "connectionId": "9c8df9b10d38a0d3",
+      "url": "ws://127.0.0.1:18800/sockets/session/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8?after_seq=13",
+      "afterSeq": "13",
+      "receivedFrames": 0,
+      "sentFrames": 0
+    },
+    {
+      "ts": "2026-10-26T13:26:09.265Z",
+      "kind": "console.error",
+      "page": "http://127.0.0.1:18800/conversations/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8",
+      "appOrigin": true,
+      "message": "WebSocket connection to 'ws://127.0.0.1:18800/sockets/session/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8?after_seq=13' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED",
+      "url": "http://127.0.0.1:18800/assets/markdown-renderer-nuCtTNz9.js"
+    },
+    {
+      "ts": "2026-10-26T13:26:11.777Z",
+      "kind": "websocket-error",
+      "page": "http://127.0.0.1:18800/conversations/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8",
+      "appOrigin": true,
+      "connectionId": "4219c910525096be",
+      "url": "ws://127.0.0.1:18800/sockets/session/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8?after_seq=13",
+      "afterSeq": "13",
+      "receivedFrames": 0,
+      "sentFrames": 0
+    },
+    {
+      "ts": "2026-10-26T13:26:11.777Z",
+      "kind": "console.error",
+      "page": "http://127.0.0.1:18800/conversations/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8",
+      "appOrigin": true,
+      "message": "WebSocket connection to 'ws://127.0.0.1:18800/sockets/session/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8?after_seq=13' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED",
+      "url": "http://127.0.0.1:18800/assets/markdown-renderer-nuCtTNz9.js"
+    },
+    {
+      "ts": "2026-10-26T13:26:15.385Z",
+      "kind": "requestfailed",
+      "page": "http://127.0.0.1:18800/conversations/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8",
+      "appOrigin": true,
+      "url": "http://127.0.0.1:18800/server_info",
+      "method": "GET",
+      "message": "net::ERR_CONNECTION_REFUSED"
+    },
+    {
+      "ts": "2026-10-26T13:26:15.385Z",
+      "kind": "console.error",
+      "page": "http://127.0.0.1:18800/conversations/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8",
+      "appOrigin": true,
+      "message": "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+      "url": "http://127.0.0.1:18800/server_info"
+    },
+    {
+      "ts": "2026-10-26T13:26:16.874Z",
+      "kind": "websocket-error",
+      "page": "http://127.0.0.1:18800/conversations/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8",
+      "appOrigin": true,
+      "connectionId": "bf8b50e38408ad11",
+      "url": "ws://127.0.0.1:18800/sockets/session/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8?after_seq=13",
+      "afterSeq": "13",
+      "receivedFrames": 0,
+      "sentFrames": 0
+    },
+    {
+      "ts": "2026-10-26T13:26:16.874Z",
+      "kind": "console.error",
+      "page": "http://127.0.0.1:18800/conversations/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8",
+      "appOrigin": true,
+      "message": "WebSocket connection to 'ws://127.0.0.1:18800/sockets/session/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8?after_seq=13' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED",
+      "url": "http://127.0.0.1:18800/assets/markdown-renderer-nuCtTNz9.js"
+    },
+    {
+      "ts": "2026-10-26T13:26:18.956Z",
+      "kind": "http-error",
+      "page": "http://127.0.0.1:18800/conversations/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8",
+      "appOrigin": true,
+      "url": "http://127.0.0.1:18800/api/llm/balance",
+      "method": "GET",
+      "status": 404
+    },
+    {
+      "ts": "2026-10-26T13:26:18.956Z",
+      "kind": "console.error",
+      "page": "http://127.0.0.1:18800/conversations/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8",
+      "appOrigin": true,
+      "message": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "url": "http://127.0.0.1:18800/api/llm/balance"
+    },
+    {
+      "ts": "2026-10-26T13:27:15.063Z",
+      "kind": "http-error",
+      "page": "http://127.0.0.1:18800/conversations/5f17ea8b-6d57-409d-8d85-5d81e15a28da",
+      "appOrigin": true,
+      "url": "http://127.0.0.1:18800/api/llm/balance",
+      "method": "GET",
+      "status": 404
+    },
+    {
+      "ts": "2026-10-26T13:27:15.063Z",
+      "kind": "console.error",
+      "page": "http://127.0.0.1:18800/conversations/5f17ea8b-6d57-409d-8d85-5d81e15a28da",
+      "appOrigin": true,
+      "message": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "url": "http://127.0.0.1:18800/api/llm/balance"
+    },
+    {
+      "ts": "2026-10-26T13:29:09.038Z",
+      "kind": "http-error",
+      "page": "http://127.0.0.1:18800/conversations/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8/panel",
+      "appOrigin": true,
+      "url": "http://127.0.0.1:18800/api/llm/balance",
+      "method": "GET",
+      "status": 404
+    },
+    {
+      "ts": "2026-10-26T13:29:09.039Z",
+      "kind": "console.error",
+      "page": "http://127.0.0.1:18800/conversations/56b2af4c-1ce4-4e3d-a287-a0dc25a8e1b8/panel",
+      "appOrigin": true,
+      "message": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "url": "http://127.0.0.1:18800/api/llm/balance"
+    }
+  ]
+}
