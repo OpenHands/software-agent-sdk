@@ -168,7 +168,11 @@ i.e. pre-existing drift, not from this change.
   only server run permit is 429 but is admitted once the holder finishes.
 - Admission unit tests: `tests/agent_server/test_run_admission.py` holds two of
   four conversations' direct calls and a direct-vs-run competition on a shared
-  blocking event; each fails if the `RunSlot.acquire` line is removed.
+  blocking event; each fails if the `RunSlot.acquire` line is removed. The same
+  file's `test_direct_call_keeps_its_permit_until_close_drains_it` closes a
+  conversation mid-call and asserts a competing call is still 429 while
+  `close()` drains the worker, then admitted once it returns; it fails if
+  `close()` returns the permit before the drain.
 - `uv run pytest tests/agent_server tests/sdk/conversation tests/tools/terminal`
   -> passes locally (378 agent-server, 107 sdk/terminal) and in CI.
 - `npm run check:agent-server-api` -> clean; `ruff check` / `ruff format --check`

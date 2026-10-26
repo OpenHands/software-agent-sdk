@@ -2296,11 +2296,13 @@ class EventService:
         # Abandon any in-flight direct tool call: it does not hold the
         # conversation state lock, so it would otherwise keep running (and keep
         # holding the executor) through the teardown below. The bump makes a
-        # worker that has not reached the executor yet exit without touching it,
-        # and lets a blocked admission through.
+        # worker that has not reached the executor yet exit without touching it.
+        # The server-wide permit is *not* returned here: the worker and any
+        # interrupt it offloaded are still live on the executor, so the
+        # conversation must keep counting against ``max_concurrent_runs`` until
+        # they settle below.
         self._direct_tool_abandon += 1
         self._direct_tool_in_flight = False
-        self._release_direct_tool_slot()
         # A worker that has already entered the tool executor cannot be stopped
         # by the bump, so interrupt the command (Ctrl+C for the terminal) and
         # wait for the thread to return before the teardown below closes that
@@ -2329,6 +2331,11 @@ class EventService:
             except Exception as exc:
                 logger.debug("Direct tool worker failed during close: %s", exc)
         await self._drain_direct_tool_interrupt()
+        # The worker and its interrupts have now settled or timed out. Return
+        # the permit held across the teardown: a worker that outlived its 10s
+        # drain is abandoned work, and leaving the permit to its done callback
+        # would let a permanently stuck thread shrink server capacity forever.
+        self._release_direct_tool_slot()
         self._direct_tool_worker = None
         self._direct_tool_executor = None
         # Drop any pin held by a supersede window that is being torn down, then

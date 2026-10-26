@@ -578,3 +578,46 @@ async def test_direct_tool_call_competes_with_a_run_for_capacity(tmp_path, monke
         await direct
         await other.run()
         await wait_until(lambda: capacity.state.entered == 2)
+
+
+async def test_direct_call_keeps_its_permit_until_close_drains_it(
+    tmp_path, monkeypatch
+):
+    """A direct call being closed still occupies its server permit.
+
+    Regression: ``EventService.close()`` returned the permit before it waited
+    for the abandoned worker and its offloaded interrupt. With
+    ``max_concurrent_runs=1`` that freed the only slot while the closing worker
+    was still running, so a competing call in another conversation was admitted
+    alongside live work and the server exceeded its own budget. The permit must
+    be held until both settle.
+    """
+    async with _direct_capacity(tmp_path, monkeypatch, 1) as capacity:
+        holder = await capacity.create()
+        other = await capacity.create()
+
+        direct = asyncio.create_task(
+            holder.execute_tool("terminal", {"kind": "TerminalAction", "command": "x"})
+        )
+        await wait_until(lambda: capacity.state.active == 1)
+
+        close_task = asyncio.create_task(holder.close())
+        await asyncio.sleep(0.2)
+        assert close_task.done() is False
+
+        # The closing conversation still holds the only permit: a competing
+        # call in another conversation must be refused, not admitted next to
+        # the worker close() is still draining.
+        with pytest.raises(ConversationRunLimitExceeded):
+            await other.execute_tool(
+                "terminal", {"kind": "TerminalAction", "command": "y"}
+            )
+
+        capacity.release.set()
+        await asyncio.wait_for(close_task, timeout=10)
+        await asyncio.gather(direct, return_exceptions=True)
+
+        # Once close() has drained the worker the permit is returned, so the
+        # same call is admitted: the 429 was capacity, not a permanent refusal.
+        await other.execute_tool("terminal", {"kind": "TerminalAction", "command": "y"})
+        assert capacity.state.entered == 2
