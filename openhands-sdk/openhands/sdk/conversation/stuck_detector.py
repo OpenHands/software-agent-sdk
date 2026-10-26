@@ -338,6 +338,10 @@ class StuckDetector:
                 and event1.thought == event2.thought
                 and event1.action == event2.action
                 and event1.tool_name == event2.tool_name
+                and (
+                    event1.action is not None
+                    or event1.tool_call.arguments == event2.tool_call.arguments
+                )
                 # Ignore tool_call_id, llm_response_id, action_id as they vary
             )
 
