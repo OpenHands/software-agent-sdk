@@ -331,11 +331,10 @@ class StuckDetector:
         if type(event1) is not type(event2):
             return False
 
-        # For ActionEvents, compare the action content, ignoring IDs
+        # Narrative thought is not part of the tool invocation.
         if isinstance(event1, ActionEvent) and isinstance(event2, ActionEvent):
             return (
                 event1.source == event2.source
-                and event1.thought == event2.thought
                 and event1.action == event2.action
                 and event1.tool_name == event2.tool_name
                 # Ignore tool_call_id, llm_response_id, action_id as they vary
