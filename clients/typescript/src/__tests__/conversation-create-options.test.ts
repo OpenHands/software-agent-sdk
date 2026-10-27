@@ -43,10 +43,18 @@ describe('conversation create options', () => {
 
   it('ConversationManager.createConversation sends maxIterations and stuckDetection', async () => {
     const manager = new ConversationManager({ host });
-    await manager.createConversation(agent, { maxIterations: 7, stuckDetection: false });
+    await manager.createConversation(agent, {
+      maxIterations: 7,
+      stuckDetection: false,
+      stuckDetectionThresholds: { actionObservation: 6 },
+    });
 
     expect(bodies).toHaveLength(1);
-    expect(bodies[0]).toMatchObject({ max_iterations: 7, stuck_detection: false });
+    expect(bodies[0]).toMatchObject({
+      max_iterations: 7,
+      stuck_detection: false,
+      stuck_detection_thresholds: { action_observation: 6 },
+    });
   });
 
   it('ConversationManager.createConversation keeps the defaults when both are omitted', async () => {
@@ -54,19 +62,40 @@ describe('conversation create options', () => {
     await manager.createConversation(agent);
 
     expect(bodies[0]).toMatchObject({ max_iterations: 500, stuck_detection: true });
+    expect(bodies[0]).not.toHaveProperty('stuck_detection_thresholds');
   });
 
   it('RemoteConversation uses its constructor options, overridden by start() options', async () => {
     const workspace = new RemoteWorkspace({ host, workingDir: '/workspace' });
-    const options = { maxIterations: 7, stuckDetection: false };
+    const options = {
+      maxIterations: 7,
+      stuckDetection: false,
+      stuckDetectionThresholds: {
+        actionObservation: 6,
+        actionError: 2,
+        monologue: 5,
+        alternatingPattern: 8,
+      },
+    };
 
     await new RemoteConversation(agent, workspace, options).start();
     await new RemoteConversation(agent, workspace, options).start({
       maxIterations: 9,
       stuckDetection: true,
+      stuckDetectionThresholds: { actionObservation: 2 },
     });
 
     expect(bodies[0]).toMatchObject({ max_iterations: 7, stuck_detection: false });
-    expect(bodies[1]).toMatchObject({ max_iterations: 9, stuck_detection: true });
+    expect(bodies[0]?.stuck_detection_thresholds).toEqual({
+      action_observation: 6,
+      action_error: 2,
+      monologue: 5,
+      alternating_pattern: 8,
+    });
+    expect(bodies[1]).toMatchObject({
+      max_iterations: 9,
+      stuck_detection: true,
+      stuck_detection_thresholds: { action_observation: 2 },
+    });
   });
 });

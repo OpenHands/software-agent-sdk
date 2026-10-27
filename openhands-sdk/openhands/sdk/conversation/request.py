@@ -32,6 +32,7 @@ from openhands.sdk.conversation.types import (
     ConversationObservabilitySpanName,
     ConversationObservabilityTags,
     ConversationTags,
+    StuckDetectionThresholds,
 )
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.plugin import PluginSource
@@ -296,6 +297,10 @@ class ConversationConfig(BaseModel):
         default=True,
         description="If true, the conversation will use stuck detection to "
         "prevent infinite loops.",
+    )
+    stuck_detection_thresholds: StuckDetectionThresholds | None = Field(
+        default=None,
+        description="Optional stuck detection thresholds. Omitted fields use defaults.",
     )
     secrets: dict[str, SecretSource] = Field(
         default_factory=dict,

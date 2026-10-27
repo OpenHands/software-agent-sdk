@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
@@ -108,17 +108,7 @@ def _event_service_for(stored: StoredConversation, agent: AgentBase) -> AsyncMoc
         workspace=stored.workspace,
         execution_status=ConversationExecutionStatus.IDLE,
     )
-    event_service.stored = MagicMock(
-        launched_agent_profile=stored.launched_agent_profile,
-        client_tools=[],
-        title=None,
-        metrics=None,
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
-        forked_from_conversation_id=None,
-        forked_from_event_id=None,
-        parent_conversation_id=None,
-    )
+    event_service.stored = stored
     return event_service
 
 

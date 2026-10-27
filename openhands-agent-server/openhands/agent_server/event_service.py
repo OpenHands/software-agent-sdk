@@ -1360,6 +1360,7 @@ class EventService:
             max_iteration_per_run=self.stored.max_iterations,
             max_budget_per_run=self.stored.max_budget_per_run,
             stuck_detection=self.stored.stuck_detection,
+            stuck_detection_thresholds=self.stored.stuck_detection_thresholds,
             visualizer=None,
             secrets=self.stored.secrets,
             cipher=self.cipher,

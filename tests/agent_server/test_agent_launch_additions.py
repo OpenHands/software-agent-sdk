@@ -1,6 +1,5 @@
-from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
@@ -44,20 +43,12 @@ def _agent(suffix: str | None = None) -> Agent:
     )
 
 
-def _mock_event_service(state: ConversationState) -> AsyncMock:
+def _mock_event_service(
+    state: ConversationState, stored: StoredConversation
+) -> AsyncMock:
     event_service = AsyncMock(spec=EventService)
     event_service.get_state.return_value = state
-    event_service.stored = MagicMock(
-        launched_agent_profile=None,
-        client_tools=[],
-        title=None,
-        metrics=None,
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
-        forked_from_conversation_id=None,
-        forked_from_event_id=None,
-        parent_conversation_id=None,
-    )
+    event_service.stored = stored
     return event_service
 
 
@@ -138,7 +129,7 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
     async def capture_start(stored, **kwargs):
         captured["stored"] = stored
         captured["agent"] = kwargs["launched"].agent
-        return _mock_event_service(state)
+        return _mock_event_service(state, stored)
 
     with (
         patch(

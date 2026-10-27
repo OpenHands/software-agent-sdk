@@ -93,7 +93,10 @@ def sample_stored_conversation():
 
 
 @pytest.mark.asyncio
-async def test_meta_json_has_no_agent_and_reload_uses_base_state(tmp_path):
+@pytest.mark.parametrize(
+    "thresholds", [None, {"action_observation": 6, "alternating_pattern": 8}]
+)
+async def test_meta_json_has_no_agent_and_reload_uses_base_state(tmp_path, thresholds):
     """End-to-end single-source-of-truth guarantee.
 
     A newly started conversation must persist its agent to base_state.json and
@@ -107,6 +110,7 @@ async def test_meta_json_has_no_agent_and_reload_uses_base_state(tmp_path):
         agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
         workspace=LocalWorkspace(working_dir=str(workspace_dir)),
         confirmation_policy=NeverConfirm(),
+        stuck_detection_thresholds=thresholds,
     )
     async with ConversationService(conversations_dir=conversations_dir) as service:
         info, _ = await service.start_conversation(request)
@@ -124,6 +128,12 @@ async def test_meta_json_has_no_agent_and_reload_uses_base_state(tmp_path):
         reloaded = await service2.get_conversation(conv_id)
         assert reloaded is not None
         assert reloaded.agent.llm.model == "gpt-4o"
+        assert reloaded.stuck_detection_thresholds == request.stuck_detection_thresholds
+        event_service = await service2.get_event_service(conv_id)
+        assert event_service is not None
+        detector = event_service.get_conversation().stuck_detector
+        assert detector is not None
+        assert detector.thresholds.action_observation == (6 if thresholds else 4)
 
 
 @pytest.mark.asyncio

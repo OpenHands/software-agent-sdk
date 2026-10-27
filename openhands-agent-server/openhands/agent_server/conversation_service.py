@@ -398,6 +398,7 @@ def _compose_conversation_info(
         current_model_id=current_model_id,
         available_models=available_models,
         supports_runtime_model_switch=supports_runtime_model_switch,
+        stuck_detection_thresholds=stored.stuck_detection_thresholds,
         client_tools=stored.client_tools,
         tool_module_qualnames=dict(stored.tool_module_qualnames),
         launched_agent_profile=stored.launched_agent_profile,

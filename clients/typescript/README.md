@@ -42,6 +42,24 @@ npm install @openhands/typescript-client
 npm install @openhands/typescript-client --registry=https://npm.pkg.github.com
 ```
 
+## Remote stuck detection thresholds
+
+Set `stuckDetectionThresholds` on `RemoteConversation` options or
+`ConversationManager.createConversation()` to customize server-side detection:
+
+```typescript
+const conversation = await manager.createConversation(agent, {
+  stuckDetectionThresholds: { actionObservation: 6, alternatingPattern: 8 },
+});
+```
+
+The client sends snake_case threshold fields to the Agent Server. Omitted fields
+use server defaults, and `stuckDetection: false` disables detection. The server
+retains configured thresholds across reloads and server forks. This requires an
+Agent Server containing the remote-threshold propagation fix; older servers
+silently discard the field. The generated release contract below stays pinned
+until a release containing this fix is selected.
+
 ## Agent Server API contract
 
 Selected handwritten clients are statically checked against generated types in

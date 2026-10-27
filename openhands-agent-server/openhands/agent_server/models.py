@@ -21,7 +21,7 @@ from openhands.sdk.conversation.request import (  # re-export for backward compa
 )
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.conversation.types import ConversationTags
+from openhands.sdk.conversation.types import ConversationTags, StuckDetectionThresholds
 from openhands.sdk.event.base import Event
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm.message import (  # re-export
@@ -180,6 +180,9 @@ class _ConversationInfoBase(BaseModel):
     stuck_detection: bool = Field(
         default=True,
         description="Whether to enable stuck detection for the agent.",
+    )
+    stuck_detection_thresholds: StuckDetectionThresholds | None = Field(
+        default=None, description="Configured stuck detection thresholds, if supplied."
     )
     execution_status: ConversationExecutionStatus = Field(
         default=ConversationExecutionStatus.IDLE

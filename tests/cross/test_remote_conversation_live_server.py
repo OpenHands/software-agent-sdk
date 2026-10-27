@@ -3385,3 +3385,130 @@ def test_max_budget_per_run_set_updated_and_cleared_over_live_server(
             assert llm_calls == 18
     finally:
         conv.close()
+
+
+@pytest.mark.parametrize(
+    "threshold,enabled,expected_count",
+    [(2, True, 2), (6, True, 6), (None, True, 4), (2, False, 7)],
+)
+def test_remote_stuck_thresholds_survive_reload_and_server_fork(
+    server_env, monkeypatch: pytest.MonkeyPatch, threshold, enabled, expected_count
+):
+    messages = [
+        Message(
+            role="assistant",
+            content=[],
+            tool_calls=[
+                MessageToolCall(
+                    id=f"call_{i}",
+                    name="think",
+                    arguments='{"thought":"same"}',
+                    origin="completion",
+                )
+            ],
+        )
+        for i in range(7)
+    ] + [Message(role="assistant", content=[TextContent(text="Done.")])]
+    thresholds = {"action_observation": threshold, "alternating_pattern": 8}
+    payload = {
+        "agent": {"llm": {"model": "gpt-4o-mini", "api_key": "test"}},
+        "workspace": {"working_dir": str(server_env["workspace_path"])},
+        "max_iterations": 10,
+        "autotitle": False,
+        "stuck_detection": enabled,
+    }
+    if threshold is not None:
+        payload["stuck_detection_thresholds"] = thresholds
+    service = server_env["conversation_service"]
+    with httpx.Client(
+        base_url=server_env["host"], timeout=20, trust_env=False
+    ) as client:
+        response = client.post("/api/conversations", json=payload)
+        assert response.status_code == 201, response.text
+        source_id = response.json()["id"]
+        for stage in ["created", "reloaded", "forked"]:
+            conversation_id = source_id
+            if stage == "reloaded":
+                client.post(
+                    "/api/conversations/prepare-for-sandbox-pause"
+                ).raise_for_status()
+                if threshold is None:
+                    metadata = (
+                        service.conversations_dir / UUID(source_id).hex / "meta.json"
+                    )
+                    old_meta = json.loads(metadata.read_text())
+                    old_meta.pop("stuck_detection_thresholds", None)
+                    metadata.write_text(json.dumps(old_meta))
+                client.get(f"/api/conversations/{source_id}").raise_for_status()
+            elif stage == "forked":
+                fork = client.post(f"/api/conversations/{source_id}/fork", json={})
+                fork.raise_for_status()
+                conversation_id = fork.json()["id"]
+            scripted = TestLLM.from_messages([*messages])
+            monkeypatch.setattr(
+                LLM, "completion", lambda self, *a, **kw: scripted.completion(*a, **kw)
+            )
+
+            async def completion(self, *args, **kwargs):
+                return scripted.completion(*args, **kwargs)
+
+            monkeypatch.setattr(LLM, "acompletion", completion)
+            client.post(
+                f"/api/conversations/{conversation_id}/events",
+                json={
+                    "content": [{"type": "text", "text": "Start again"}],
+                    "run": False,
+                },
+            ).raise_for_status()
+            local = service._event_services[UUID(conversation_id)].get_conversation()
+            before = sum(isinstance(event, ActionEvent) for event in local.state.events)
+            client.post(f"/api/conversations/{conversation_id}/run").raise_for_status()
+            info = {}
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                info = client.get(f"/api/conversations/{conversation_id}").json()
+                if info["execution_status"] in ["stuck", "finished", "error"]:
+                    break
+                time.sleep(0.05)
+            count = (
+                sum(isinstance(event, ActionEvent) for event in local.state.events)
+                - before
+            )
+            print(
+                f"threshold={threshold} enabled={enabled} stage={stage}: "
+                f"{count} calls, {info['execution_status']}"
+            )
+            assert count == expected_count
+            assert info["execution_status"] == ("stuck" if enabled else "finished")
+            if threshold is not None:
+                assert (
+                    info["stuck_detection_thresholds"]["action_observation"]
+                    == threshold
+                )
+                meta = json.loads(
+                    (
+                        service.conversations_dir
+                        / UUID(conversation_id).hex
+                        / "meta.json"
+                    ).read_text()
+                )
+                assert (
+                    meta["stuck_detection_thresholds"]["action_observation"]
+                    == threshold
+                )
+
+
+def test_remote_invalid_stuck_threshold_rejected_before_creation(server_env):
+    with httpx.Client(base_url=server_env["host"], trust_env=False) as client:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "agent": {"llm": {"model": "gpt-4o-mini", "api_key": "test"}},
+                "workspace": {"working_dir": str(server_env["workspace_path"])},
+                "autotitle": False,
+                "stuck_detection_thresholds": {"action_observation": 0},
+            },
+        )
+        assert response.status_code == 422, response.text
+        assert "action_observation" in response.text
+        assert not list(server_env["conversation_service"].conversations_dir.iterdir())
