@@ -121,6 +121,7 @@ from openhands.tools.terminal.constants import (
     TMUX_SOCKET_NAME,
     TMUX_SOCKET_OWNER_OPTION,
 )
+from openhands.tools.terminal.env import UTF8_FALLBACK_LOCALE, ensure_utf8_locale
 from openhands.tools.terminal.terminal.tmux_terminal import _socket_creation_lock
 
 
@@ -176,42 +177,6 @@ def _ensure_server_tmux_tmpdir() -> tuple[Path, bool, bool]:
             tmux_tmpdir,
         )
     return tmux_tmpdir, True, created
-
-
-# tmux decides whether to emit UTF-8 from the first non-empty of LC_ALL,
-# LC_CTYPE and LANG, by name. Without UTF-8 it turns libtmux's "␞" format
-# separator into "_", so libtmux cannot parse its own queries and every
-# terminal fails with TmuxObjectDoesNotExist. The Docker image sets LC_ALL,
-# but runtimes that do not pass the image ENV through drop it.
-_TMUX_LOCALE_VARS = ("LC_ALL", "LC_CTYPE", "LANG")
-_UTF8_FALLBACK_LOCALE = "C.UTF-8"
-
-
-def _locale_is_utf8() -> bool:
-    for name in _TMUX_LOCALE_VARS:
-        value = os.environ.get(name)
-        if value:
-            value = value.lower()
-            return "utf-8" in value or "utf8" in value
-    return False
-
-
-def _ensure_utf8_locale_for_tmux() -> tuple[bool, str | None]:
-    """Set LC_ALL to a UTF-8 locale when the inherited locale is not UTF-8.
-
-    Return whether LC_ALL was changed and its previous value, so shutdown can
-    restore it.
-    """
-    if os.name != "posix" or _locale_is_utf8():
-        return False, None
-    original = os.environ.get("LC_ALL")
-    os.environ["LC_ALL"] = _UTF8_FALLBACK_LOCALE
-    logger.warning(
-        "No UTF-8 locale in LC_ALL/LC_CTYPE/LANG; setting LC_ALL=%s so tmux "
-        "terminals work",
-        _UTF8_FALLBACK_LOCALE,
-    )
-    return True, original
 
 
 def _isolated_socket_names(socket_dir: Path) -> list[str]:
@@ -304,7 +269,8 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     tmux_tmpdir, tmux_tmpdir_was_defaulted, tmux_tmpdir_was_created = (
         _ensure_server_tmux_tmpdir()
     )
-    lc_all_was_set, original_lc_all = _ensure_utf8_locale_for_tmux()
+    # Stale-session cleanup below queries tmux before any terminal exists.
+    locale_override = ensure_utf8_locale() if os.name == "posix" else None
     secret_resolution: local_secret_resolution | None = None
     try:
         # Clean up stale tmux sessions from previous server runs
@@ -479,11 +445,13 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                     os.environ.pop("TMUX_TMPDIR", None)
                 else:
                     os.environ["TMUX_TMPDIR"] = original_tmux_tmpdir
-        if lc_all_was_set and os.environ.get("LC_ALL") == _UTF8_FALLBACK_LOCALE:
-            if original_lc_all is None:
-                os.environ.pop("LC_ALL", None)
-            else:
-                os.environ["LC_ALL"] = original_lc_all
+        if locale_override is not None:
+            locale_name, original_locale = locale_override
+            if os.environ.get(locale_name) == UTF8_FALLBACK_LOCALE:
+                if original_locale is None:
+                    os.environ.pop(locale_name, None)
+                else:
+                    os.environ[locale_name] = original_locale
         if os.environ.get(V1_SESSION_API_KEY_ENV) != original_session_api_key:
             if original_session_api_key is None:
                 os.environ.pop(V1_SESSION_API_KEY_ENV, None)

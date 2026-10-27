@@ -131,7 +131,6 @@ def _new_owned_session(
     lock. Startup cleanup in another process takes the same lock, so it can
     never observe the socket before its owner is published.
     """
-    ensure_utf8_locale()
     socket_name = f"{TMUX_SOCKET_NAME}-{uuid.uuid4().hex}"
     socket_dir = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
     socket_path = socket_dir / socket_name
@@ -216,6 +215,8 @@ class TmuxTerminal(TerminalInterface):
         if self._initialized:
             return
 
+        # Before building env, so the shell gets the same locale as tmux.
+        ensure_utf8_locale()
         env = build_terminal_env(self._env)
         # Disable interactive pagers (git, man, systemctl, ...) so commands that
         # auto-launch `less` on a TTY don't capture the pane and wedge the session.

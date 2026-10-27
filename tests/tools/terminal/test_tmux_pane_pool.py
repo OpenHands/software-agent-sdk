@@ -12,6 +12,8 @@ from openhands.tools.terminal.constants import (
     TMUX_SESSION_HEIGHT,
     TMUX_SESSION_WIDTH,
 )
+from openhands.tools.terminal.definition import TerminalAction
+from openhands.tools.terminal.terminal import create_terminal_session
 from openhands.tools.terminal.terminal.tmux_pane_pool import TmuxPanePool
 from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
 
@@ -328,10 +330,14 @@ def test_stale_terminal_cannot_access_restarted_server(
     "locale_env",
     [{}, {"LANG": "C"}, {"LC_ALL": "POSIX"}, {"LANG": "", "LC_ALL": ""}],
 )
-def test_initialize_without_utf8_locale(tmp_path, monkeypatch, locale_env):
-    for name in ("LC_ALL", "LC_CTYPE", "LANG"):
-        monkeypatch.setenv(name, "C")  # records the original for teardown
-        monkeypatch.delenv(name)
+def test_initialize_without_utf8_locale(
+    tmp_path, monkeypatch, no_locale_env, locale_env
+):
+    """Without a UTF-8 locale tmux turns libtmux's format separator into "_"
+    (OpenHands/OpenHands#18982).
+
+    The locale is cleared at runtime on purpose: Python started under the C
+    locale sets LC_CTYPE=C.UTF-8 itself (PEP 538) and hides the bug."""
     for name, value in locale_env.items():
         monkeypatch.setenv(name, value)
 
@@ -344,8 +350,7 @@ def test_initialize_without_utf8_locale(tmp_path, monkeypatch, locale_env):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix sockets")
-def test_initialize_keeps_existing_utf8_locale(tmp_path, monkeypatch):
-    monkeypatch.delenv("LC_ALL", raising=False)
+def test_initialize_keeps_existing_utf8_locale(tmp_path, monkeypatch, no_locale_env):
     monkeypatch.setenv("LANG", "en_US.UTF-8")
 
     p = TmuxPanePool(work_dir=str(tmp_path), max_panes=1)
@@ -355,3 +360,20 @@ def test_initialize_keeps_existing_utf8_locale(tmp_path, monkeypatch):
         p.close()
 
     assert "LC_ALL" not in os.environ
+    assert "LC_CTYPE" not in os.environ
+
+
+@pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix sockets")
+def test_first_terminal_shell_gets_fallback_locale(
+    tmp_path, monkeypatch, no_locale_env
+):
+    monkeypatch.setenv("LANG", "C")
+
+    session = create_terminal_session(work_dir=str(tmp_path), terminal_type="tmux")
+    session.initialize()
+    try:
+        obs = session.execute(TerminalAction(command='echo "ctype=$LC_CTYPE"'))
+    finally:
+        session.close()
+
+    assert "ctype=C.UTF-8" in obs.text
