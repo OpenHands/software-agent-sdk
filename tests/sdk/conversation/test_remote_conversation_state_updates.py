@@ -2,6 +2,7 @@
 
 from unittest.mock import patch
 
+import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import RemoteWorkspace
@@ -19,7 +20,8 @@ def create_test_agent() -> Agent:
     return Agent(llm=llm, tools=[])
 
 
-def test_update_state_from_event_with_full_state():
+@pytest.mark.parametrize("status", ["running", "pausing"])
+def test_update_state_from_event_with_full_state(status):
     """Test updating cached state from a full state snapshot."""
     agent = create_test_agent()
 
@@ -41,7 +43,7 @@ def test_update_state_from_event_with_full_state():
 
         # Create a full state event
         full_state = {
-            "execution_status": "running",
+            "execution_status": status,
             "confirmation_policy": {"kind": "NeverConfirm"},
             "max_iterations": 100,
         }
@@ -53,11 +55,12 @@ def test_update_state_from_event_with_full_state():
         # Verify all fields were updated
         assert conv.state._cached_state is not None
         assert conv.state._cached_state == full_state
-        assert conv.state._cached_state["execution_status"] == "running"
+        assert conv.state.execution_status.value == status
         assert conv.state._cached_state["max_iterations"] == 100
 
 
-def test_update_state_from_event_with_individual_field():
+@pytest.mark.parametrize("status", ["running", "pausing"])
+def test_update_state_from_event_with_individual_field(status):
     """Test updating cached state from an individual field update."""
     agent = create_test_agent()
 
@@ -84,14 +87,14 @@ def test_update_state_from_event_with_individual_field():
         }
 
         # Create an individual field update event
-        event = ConversationStateUpdateEvent(key="execution_status", value="running")
+        event = ConversationStateUpdateEvent(key="execution_status", value=status)
 
         # Update state using the real RemoteState
         conv.state.update_state_from_event(event)
 
         # Verify only that field was updated
         assert conv.state._cached_state is not None
-        assert conv.state._cached_state["execution_status"] == "running"
+        assert conv.state.execution_status.value == status
         assert conv.state._cached_state["max_iterations"] == 50  # Unchanged
 
 
