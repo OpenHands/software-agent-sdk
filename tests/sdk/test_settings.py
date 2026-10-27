@@ -201,7 +201,7 @@ def test_conversation_settings_export_schema_groups_sections() -> None:
 
     assert schema.model_name == "ConversationSettings"
     section_keys = [section.key for section in schema.sections]
-    assert section_keys == ["general", "verification"]
+    assert section_keys == ["general", "verification", "runtime"]
 
     sections = {s.key: s for s in schema.sections}
     general_fields = {f.key: f for f in sections["general"].fields}
@@ -222,6 +222,92 @@ def test_conversation_settings_export_schema_groups_sections() -> None:
     assert verification_fields["security_analyzer"].default == "llm"
     assert verification_fields["security_analyzer"].choices[0].value == "llm"
     assert verification_fields["security_analyzer"].depends_on == ["confirmation_mode"]
+
+    runtime_fields = {f.key: f for f in sections["runtime"].fields}
+    assert [c.value for c in runtime_fields["default_runtime"].choices] == [
+        "local",
+        "worktree",
+        "docker",
+    ]
+    assert runtime_fields["default_runtime"].default == "local"
+    # Each runtime's options show only while that runtime is the default.
+    assert {key: f.depends_on for key, f in runtime_fields.items()} == {
+        "default_runtime": [],
+        "worktree_base": ["default_runtime=worktree"],
+        "worktree_base_ref": ["default_runtime=worktree", "worktree_base=ref"],
+        "worktree_branch_prefix": ["default_runtime=worktree"],
+        "container_memory": ["default_runtime=docker"],
+        "container_cpus": ["default_runtime=docker"],
+        "container_browser": ["default_runtime=docker"],
+    }
+    assert [c.value for c in runtime_fields["worktree_base"].choices] == [
+        "default_branch",
+        "head",
+        "ref",
+    ]
+    assert runtime_fields["worktree_branch_prefix"].default == "openhands/"
+    assert runtime_fields["container_browser"].default is True
+    # One tier: the page has a few fields, none worth hiding behind "All".
+    assert {f.prominence for f in runtime_fields.values()} == {SettingProminence.MAJOR}
+
+
+def test_runtime_settings_stay_out_of_create_request() -> None:
+    # They are Canvas launcher defaults; create_request() callers such as the
+    # OpenAI gateway start in-process and must keep running locally.
+    settings = ConversationSettings(
+        default_runtime="worktree",
+        worktree_base="head",
+        container_memory="4g",
+    )
+
+    request = settings.create_request(
+        StartConversationRequest,
+        agent=Agent(llm=LLM(model="test-model", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir="/tmp"),
+    )
+
+    assert request.worktree is False
+    assert request.conversation_runtime is None
+    assert request.worktree_options is None
+    assert request.container is None
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        # "Other ref" needs the ref itself.
+        {"worktree_base": "ref"},
+        # git would read a leading "-" as an option.
+        {"worktree_base": "ref", "worktree_base_ref": "--orphan"},
+        {"worktree_branch_prefix": "-b"},
+    ],
+)
+def test_unusable_worktree_settings_are_refused(values: dict[str, str]) -> None:
+    with pytest.raises(ValidationError):
+        ConversationSettings.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "valid"),
+    [
+        ("container_memory", "512m", True),
+        ("container_memory", "4 GB", True),
+        ("container_memory", "2GiB", True),
+        # `docker run --memory` refuses these, so every start would fail.
+        ("container_memory", "lots", False),
+        ("container_memory", "", False),
+        ("container_cpus", 0.01, True),
+        ("container_cpus", 0.001, False),
+    ],
+)
+def test_container_limits_are_checked_when_saved(
+    field: str, value: str | float, valid: bool
+) -> None:
+    if valid:
+        ConversationSettings.model_validate({field: value})
+    else:
+        with pytest.raises(ValidationError):
+            ConversationSettings.model_validate({field: value})
 
 
 def test_export_settings_schema_remains_backward_compatible():
@@ -2014,7 +2100,7 @@ def test_acp_resolve_command_keeps_npx_when_binary_absent(
         "npx",
         "-y",
         "--prefer-offline",
-        "@agentclientprotocol/codex-acp@1.10.0",
+        "@agentclientprotocol/codex-acp@2.2.2",
     ]
 
 

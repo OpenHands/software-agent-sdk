@@ -16,7 +16,7 @@ from openhands.sdk.context.memory import load_memory
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
-from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.event_store import ROOT_PARENT_ID, EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
@@ -172,9 +172,16 @@ def _is_acp_prompt_message(event: Event) -> TypeGuard[MessageEvent]:
     )
 
 
-def _copy_event_for_fork(event: Event) -> Event:
+def _copy_event_for_fork(event: Event, source: EventLog) -> Event:
     # Mirrors persisted event loading and skips runtime-only fields like executors.
-    return Event.model_validate_json(event.model_dump_json(exclude_none=True))
+    copied = Event.model_validate_json(event.model_dump_json(exclude_none=True))
+    parent_id = copied.parent_id
+    if parent_id is None or parent_id == ROOT_PARENT_ID or parent_id in source:
+        return copied
+    # The parent's file was lost from the source log: link the copy to the
+    # event the source's own branch walk bridges to instead.
+    bridged = source._effective_parent_id(source.get_index(event.id), event)
+    return copied.model_copy(update={"parent_id": bridged})
 
 
 def _same_llm_config(a: LLM, b: LLM) -> bool:
@@ -446,8 +453,14 @@ class LocalConversation(BaseConversation):
             # Single chokepoint: stamps parent_id (catching any event a hook
             # swapped in downstream of _tree_stamping) and advances HEAD.
             self._state.append_event(e)
+
+        def _track_last_user_message(e):
             # Track user MessageEvent IDs here so hook callbacks (which may
             # synthesize or alter user messages) are captured in one place.
+            # This runs after the caller-supplied callbacks: setting the field
+            # can emit a ConversationStateUpdateEvent through on_state_change
+            # (the agent server wires it to this chain), and that update must
+            # reach subscribers after the message that caused it.
             if isinstance(e, MessageEvent) and e.source == "user":
                 # Track the latest real user message ID for hook-blocked checks.
                 # Stop-hook feedback is emitted with source="environment".
@@ -461,7 +474,7 @@ class LocalConversation(BaseConversation):
         # list never run. The visualizer is prepended below and so still renders
         # ahead of persist — that is local terminal output, not an announcement
         # a client can act on.
-        composed_list = [_default_callback] + callback_list
+        composed_list = [_default_callback] + callback_list + [_track_last_user_message]
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
             # Use custom visualizer instance
@@ -538,8 +551,8 @@ class LocalConversation(BaseConversation):
         # Idempotent with the create_request() lift; lower priority than
         # request.secrets (below). On resume, fill-if-absent so a persisted
         # value is never downgraded (or lost to redacted/no-cipher serialization).
-        if (ctx := getattr(self.agent, "agent_context", None)) is not None:
-            ctx_secrets = getattr(ctx, "secrets", None)
+        if self.agent is not None and self.agent.agent_context is not None:
+            ctx_secrets = self.agent.agent_context.secrets
             if ctx_secrets:
                 existing_sources = self._state.secret_registry.secret_sources
                 fill_secrets: dict[str, SecretValue] = {}
@@ -900,6 +913,7 @@ class LocalConversation(BaseConversation):
                 persistence_dir=fork_persistence,
                 conversation_id=fork_id,
                 max_iteration_per_run=self.max_iteration_per_run,
+                max_budget_per_run=self.max_budget_per_run,
                 stuck_detection=self._stuck_detector is not None,
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
@@ -919,7 +933,9 @@ class LocalConversation(BaseConversation):
                 fork_leaf = self._state.leaf_event_id
 
             for event in source_events:
-                fork_conv._state.events.append(_copy_event_for_fork(event))
+                fork_conv._state.events.append(
+                    _copy_event_for_fork(event, self._state.events)
+                )
             fork_conv._state.leaf_event_id = fork_leaf
             # A full fork inherits the source's empty-HEAD state; a branch slice
             # roots HEAD at a real event (from_event_id), so it is never empty.
@@ -1605,6 +1621,13 @@ class LocalConversation(BaseConversation):
                     self._state,
                     on_event=self._on_event,
                 )
+
+                # Deliver any SessionStart additional_context now that
+                # init_state() has emitted the SystemPromptEvent, so the system
+                # prompt stays first in the LLM request. The hook processor
+                # collected it earlier during _ensure_plugins_loaded().
+                if self._hook_processor is not None:
+                    self._hook_processor.inject_pending_additional_context()
             except Exception:
                 self._close_runtime_tools(runtime_mcp_tools)
                 raise
@@ -2846,9 +2869,9 @@ class LocalConversation(BaseConversation):
 
     def close(self) -> None:
         """Close the conversation and clean up all tool executors."""
-        if getattr(self, "_cleanup_complete", False):
+        if self._cleanup_complete:
             return
-        first_attempt = not getattr(self, "_cleanup_initiated", False)
+        first_attempt = not self._cleanup_initiated
         if first_attempt:
             self._cleanup_initiated = True
 
@@ -2863,7 +2886,7 @@ class LocalConversation(BaseConversation):
                 logger.debug(f"Could not register accumulated cost: {e}")
 
             logger.debug("Closing conversation and cleaning up tool executors")
-            hook_processor = getattr(self, "_hook_processor", None)
+            hook_processor = self._hook_processor
             if hook_processor is not None:
                 hook_processor.run_session_end()
             try:

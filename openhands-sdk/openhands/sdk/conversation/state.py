@@ -5,7 +5,7 @@ from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from enum import Enum
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Self, cast
 
 from pydantic import Field, PrivateAttr
 
@@ -230,7 +230,7 @@ class ConversationState(OpenHandsModel):
     )
 
     # ===== Private attrs (NOT Fields) =====
-    _fs: FileStore = PrivateAttr()  # filestore for persistence
+    _fs: FileStore = PrivateAttr(default=cast(Any, None))  # filestore for persistence
     _events: EventLog = PrivateAttr()  # now the storage for events
     # Cached projection of `_events` for the *active branch*, lazily updated on
     # read. Derived state — never persisted. `_view_branch_leaf` is the resolved
@@ -291,6 +291,28 @@ class ConversationState(OpenHandsModel):
             if not isinstance(self._events[i], artifacts):
                 return self._events.get_id(i)
         return None
+
+    def _repair_missing_leaf(self) -> bool:
+        """Move a persisted HEAD whose event file was lost onto a surviving event.
+
+        The lost event held its own parent, so the branch it was on cannot be
+        recovered; HEAD falls back to the lineage rule (the last real event, or
+        no HEAD for an empty log), and the warning says so. Returns whether
+        HEAD was moved.
+        """
+        lost = self.leaf_event_id
+        if lost is None or lost in self._events:
+            return False
+        self.leaf_event_id = None
+        self.leaf_event_id = self._resolve_active_leaf()
+        logger.warning(
+            "HEAD event '%s' is missing from the event log (its file was lost); "
+            "moved HEAD to '%s', the last surviving event. If HEAD was on "
+            "another branch, navigate back to it.",
+            lost,
+            self.leaf_event_id,
+        )
+        return True
 
     def active_branch(self, limit: int | None = None) -> list[Event]:
         """Raw events on the active branch (``path_to_root(leaf)``), root-first.
@@ -540,6 +562,7 @@ class ConversationState(OpenHandsModel):
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
             state._cipher = cipher
+            head_repaired = state._repair_missing_leaf()
 
             # Cold-load: rebuild the cached view with full property
             # enforcement — persisted events may come from an older code
@@ -548,6 +571,8 @@ class ConversationState(OpenHandsModel):
 
             # Commit runtime-provided values (may autosave)
             state._autosave_enabled = True
+            if head_repaired:  # persist it so the next load does not repeat it
+                state._save_base_state(file_store)
             # Agent: base_state.json is the single source of truth. When the
             # caller does not supply an agent (``agent is None``), keep the
             # persisted one untouched — this is what lets a persisted
@@ -603,8 +628,8 @@ class ConversationState(OpenHandsModel):
         super().__setattr__(name, value)
 
         is_field = name in self.__class__.model_fields
-        autosave_enabled = getattr(self, "_autosave_enabled", False)
-        fs = getattr(self, "_fs", None)
+        autosave_enabled = self._autosave_enabled
+        fs = self._fs
 
         if not (autosave_enabled and is_field and fs is not None):
             return
@@ -612,7 +637,7 @@ class ConversationState(OpenHandsModel):
         if old is _sentinel or old != value:
             # Inside a context-manager block, defer the save until __exit__
             # so that multiple field mutations produce a single I/O write.
-            if getattr(self, "_save_depth", 0) > 0:
+            if self._save_depth > 0:
                 self._dirty = True
             else:
                 try:
@@ -625,7 +650,7 @@ class ConversationState(OpenHandsModel):
             # skipped: they are internal HEAD bookkeeping (leaf_event_id changes
             # every event, so broadcasting it would ~double the persisted log) and
             # the HEAD is recoverable from the just-appended event.
-            callback = getattr(self, "_on_state_change", None)
+            callback = self._on_state_change
             if (
                 callback is not None
                 and old is not _sentinel
@@ -755,8 +780,8 @@ class ConversationState(OpenHandsModel):
         try:
             self._save_depth -= 1
             if self._save_depth == 0 and self._dirty:
-                fs = getattr(self, "_fs", None)
-                autosave_enabled = getattr(self, "_autosave_enabled", False)
+                fs = self._fs
+                autosave_enabled = self._autosave_enabled
                 if autosave_enabled and fs is not None:
                     self._save_base_state(fs)
                 self._dirty = False

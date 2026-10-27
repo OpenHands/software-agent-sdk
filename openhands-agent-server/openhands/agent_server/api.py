@@ -78,6 +78,7 @@ from openhands.agent_server.openai.router import (
     check_openai_api_key,
     openai_router,
 )
+from openhands.agent_server.persistence import reencrypt_stale_stores
 from openhands.agent_server.plugins_router import plugins_router
 from openhands.agent_server.profiles_router import profiles_router
 from openhands.agent_server.provider_connections_router import (
@@ -120,6 +121,7 @@ from openhands.tools.terminal.constants import (
     TMUX_SOCKET_NAME,
     TMUX_SOCKET_OWNER_OPTION,
 )
+from openhands.tools.terminal.env import UTF8_FALLBACK_LOCALE, ensure_utf8_locale
 from openhands.tools.terminal.terminal.tmux_terminal import _socket_creation_lock
 
 
@@ -267,6 +269,8 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     tmux_tmpdir, tmux_tmpdir_was_defaulted, tmux_tmpdir_was_created = (
         _ensure_server_tmux_tmpdir()
     )
+    # Stale-session cleanup below queries tmux before any terminal exists.
+    locale_override = ensure_utf8_locale() if os.name == "posix" else None
     secret_resolution: local_secret_resolution | None = None
     try:
         # Clean up stale tmux sessions from previous server runs
@@ -375,6 +379,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
 
         # Non-deferred (legacy) path: build and enter the conversation
         # service as part of the lifespan, exactly as before.
+        await asyncio.to_thread(reencrypt_stale_stores, config)
         #
         # A key that came from the config file is visible only in ``config``;
         # in-process callers of this server read it from the environment.
@@ -440,6 +445,13 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                     os.environ.pop("TMUX_TMPDIR", None)
                 else:
                     os.environ["TMUX_TMPDIR"] = original_tmux_tmpdir
+        if locale_override is not None:
+            locale_name, original_locale = locale_override
+            if os.environ.get(locale_name) == UTF8_FALLBACK_LOCALE:
+                if original_locale is None:
+                    os.environ.pop(locale_name, None)
+                else:
+                    os.environ[locale_name] = original_locale
         if os.environ.get(V1_SESSION_API_KEY_ENV) != original_session_api_key:
             if original_session_api_key is None:
                 os.environ.pop(V1_SESSION_API_KEY_ENV, None)
@@ -890,6 +902,12 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     _add_api_routes(app)
     _setup_static_files(app, config)
+    if config.conversation_runtime_selectable:
+        from openhands.agent_server.docker_runtime.hybrid import (
+            RuntimeDispatchMiddleware,
+        )
+
+        app.add_middleware(RuntimeDispatchMiddleware)
     app.add_middleware(
         CORSDispatcher,
         allow_origins=config.allow_cors_origins,

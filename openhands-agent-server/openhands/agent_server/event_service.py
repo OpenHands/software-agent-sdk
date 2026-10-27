@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import cast
 from uuid import UUID, uuid4
@@ -61,6 +62,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.conversation.types import ConversationCallbackType
 from openhands.sdk.credential import (
     CredentialBindingError,
     CredentialNeedsReauthentication,
@@ -100,6 +102,10 @@ logger = get_logger(__name__)
 
 class ConversationRunLimitExceeded(RuntimeError):
     """The server has no capacity to start another conversation run."""
+
+
+class CondensationUnavailable(ValueError):
+    """The conversation's agent has no condenser that handles requests."""
 
 
 class _RunPermit:
@@ -183,6 +189,17 @@ class RunSlot:
 
 class CredentialBindingActivationTooLate(RuntimeError):
     pass
+
+
+def _log_emit_failure(event_kind: str, future: "asyncio.Future[None]") -> None:
+    """Log an event emission that failed inside the executor thread."""
+    if future.cancelled():
+        return
+    error = future.exception()
+    if error is not None:
+        logger.error(
+            "Failed to emit %s from thread: %s", event_kind, error, exc_info=error
+        )
 
 
 def _without_agent_context_secret(
@@ -540,10 +557,13 @@ class EventService:
 
         Reads directly from the EventLog without acquiring the state lock.
         EventLog reads are safe without the FIFOLock because events are
-        append-only and immutable once written.
+        append-only and immutable once written. Returns None for an unknown id.
         """
         events = self._events_for_read()
-        index = events.get_index(event_id)
+        try:
+            index = events.get_index(event_id)
+        except KeyError:
+            return None
         return events[index]
 
     async def get_event(self, event_id: str) -> Event | None:
@@ -1043,6 +1063,10 @@ class EventService:
         This schedules event emission in the main event loop, making it safe to call
         from callbacks that may run in different threads. Events are emitted through
         the conversation's normal event flow to ensure they are persisted.
+
+        The event is re-stamped once the lock is held: it is appended only
+        after the step holding the lock appends its own events, and search
+        and ``resend_mode=since`` rely on log order being timestamp order.
         """
         main_loop = self._main_loop
         conversation = self._conversation
@@ -1051,11 +1075,27 @@ class EventService:
             # to conversation state and event log during concurrent operations
             def locked_on_event():
                 with conversation._state:
-                    conversation._on_event(event)
+                    conversation._on_event(
+                        event.model_copy(
+                            update={"timestamp": datetime.now().isoformat()}
+                        )
+                    )
 
             # Run the locked callback in an executor to ensure the event is
-            # both persisted and sent to WebSocket subscribers
-            main_loop.run_in_executor(None, locked_on_event)
+            # both persisted and sent to WebSocket subscribers. The future
+            # needs a done-callback: otherwise it is collected with an unread
+            # exception, so a dropped stats or LLM-log event leaves no signal
+            # beyond a GC-time warning.
+            future = main_loop.run_in_executor(None, locked_on_event)
+            # Attach from the loop thread. This helper is called from foreign
+            # threads, and `add_done_callback` on an already-done future uses
+            # plain `call_soon`, which neither is thread-safe nor wakes an idle
+            # loop -- the report could then sit unfired, which is the failure
+            # this callback exists to prevent.
+            main_loop.call_soon_threadsafe(
+                future.add_done_callback,
+                partial(_log_emit_failure, type(event).__name__),
+            )
 
     def _setup_llm_log_streaming(self, agent: AgentBase) -> None:
         """Configure LLM log callbacks to stream logs via events."""
@@ -1115,6 +1155,24 @@ class EventService:
             return
         self._last_stream_activity_signal = now
         update_last_execution_time()
+
+    @staticmethod
+    def _state_change_callback(
+        conversation: LocalConversation,
+    ) -> ConversationCallbackType:
+        """Publish state changes, re-wiring the managed-key hook on a new agent.
+
+        ``switch_llm`` / ``switch_profile`` (REST endpoints and the agent's
+        switch tools) install a new LLM object without the refresh hook that
+        ``start()`` registered (#5890).
+        """
+
+        def callback(event: Event) -> None:
+            if isinstance(event, ConversationStateUpdateEvent) and event.key == "agent":
+                register_managed_llm_key_refresh(conversation._state.agent)
+            conversation._on_event(event)
+
+        return callback
 
     def _setup_stats_streaming(self, agent: AgentBase) -> None:
         """Configure stats update callbacks to stream stats changes via events."""
@@ -1300,6 +1358,7 @@ class EventService:
             token_callbacks=([_token_streaming_callback] if streaming_enabled else []),
             stream_callbacks=[_publish_stream_progress],
             max_iteration_per_run=self.stored.max_iterations,
+            max_budget_per_run=self.stored.max_budget_per_run,
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
             secrets=self.stored.secrets,
@@ -1344,7 +1403,9 @@ class EventService:
             self._lease_task = asyncio.create_task(self._renew_lease_loop())
 
         # Register state change callback to automatically publish updates
-        self._conversation._state.set_on_state_change(self._conversation._on_event)
+        self._conversation._state.set_on_state_change(
+            self._state_change_callback(self._conversation)
+        )
 
         # Setup LLM log streaming for remote execution
         self._setup_llm_log_streaming(self._conversation.agent)
@@ -1995,7 +2056,13 @@ class EventService:
             judge_llm,
             max_iterations=max_iterations or int(last["max_iterations"]),
         )
-        controller.iteration = int(last["iteration"])
+        # Every resume runs at least one more audit round, so keep one round
+        # in hand: a status persisted with the count already at the cap (by
+        # an older server, or a lower max_iterations override) must not let
+        # the resumed loop report more rounds than max_iterations.
+        controller.iteration = min(
+            int(last["iteration"]), controller.max_iterations - 1
+        )
         # Same busy guard as start_goal_loop: refuse a goal loop or active run.
         async with self._run_lock:
             if self._closing:
@@ -2099,6 +2166,15 @@ class EventService:
         await loop.run_in_executor(
             None, self._conversation.set_confirmation_policy, policy
         )
+
+    def set_max_budget_per_run(self, max_budget_per_run: float | None) -> None:
+        """Apply a new cost ceiling to the live conversation, if one is loaded.
+
+        The persisted value is owned by ``stored``; a conversation that is not
+        loaded picks it up from there when it starts.
+        """
+        if self._conversation is not None:
+            self._conversation.max_budget_per_run = max_budget_per_run
 
     async def set_security_analyzer(
         self, security_analyzer: SecurityAnalyzerBase | None
@@ -2253,6 +2329,20 @@ class EventService:
         """
         if not self._conversation:
             raise ValueError("inactive_service")
+
+        # A missing or request-ignoring condenser is the caller's agent
+        # configuration, not a server fault: report it as such instead of
+        # letting LocalConversation's ValueError surface as a 500.
+        condenser = self._conversation.agent.condenser
+        if condenser is None:
+            raise CondensationUnavailable(
+                "Cannot condense conversation: No condenser configured"
+            )
+        if not condenser.handles_condensation_requests():
+            raise CondensationUnavailable(
+                f"Cannot condense conversation: Condenser "
+                f"{type(condenser).__name__} does not handle condensation requests"
+            )
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._conversation.condense)
