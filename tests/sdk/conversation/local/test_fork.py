@@ -1,5 +1,6 @@
 """Tests for Conversation.fork() primitive."""
 
+import json
 import tempfile
 import threading
 import uuid
@@ -16,6 +17,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.tool import Action, Observation, ToolDefinition, ToolExecutor
+from openhands.sdk.utils.cipher import Cipher
 
 
 def _agent() -> Agent:
@@ -349,3 +351,55 @@ def test_fork_with_aliased_agent_does_not_clobber_source_cache_key():
         )
         assert fork.get_llm_call_context().prompt_cache_key == str(fork.id)
         assert fork.agent.llm is not src.agent.llm
+
+
+def test_fork_inherits_cipher_for_secret_encryption():
+    """Forked conversation keeps encrypting secrets at rest (#5465).
+
+    The fork resumes from its own base_state.json. If ``fork()`` dropped the
+    source cipher, the fork's LLM api_key would serialize redacted
+    (``**********``) instead of encrypted, and its first resumed turn would
+    fail with LLMAuthenticationError.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cipher = Cipher(secret_key="fork-cipher-key")
+        src = LocalConversation(
+            agent=_agent(),
+            workspace=tmpdir,
+            persistence_dir=tmpdir,
+            cipher=cipher,
+        )
+
+        fork = src.fork()
+
+        # The fork's persisted base_state keeps the key encrypted with the
+        # source's cipher; decrypting it recovers the original credential.
+        base_path = Path(tmpdir) / fork.id.hex / "base_state.json"
+        base = json.loads(base_path.read_text())
+        api_key = base["agent"]["llm"]["api_key"]
+        assert api_key != "**********"
+        assert cipher.try_decrypt_str(api_key) == "test-key"
+
+
+def test_fork_keeps_runtime_added_secrets():
+    """A fork inherits secrets added via update_secrets() after creation."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cipher = Cipher(secret_key="fork-cipher-key")
+        src = LocalConversation(
+            agent=_agent(),
+            workspace=tmpdir,
+            persistence_dir=tmpdir,
+            cipher=cipher,
+        )
+        src.update_secrets({"MY_TOKEN": "tok-123"})
+
+        fork = src.fork()
+
+        assert fork.state.secret_registry.get_secret_value("MY_TOKEN") == "tok-123"
+        # The runtime secret also persists encrypted in the fork's
+        # base_state, so a resume keeps it.
+        base_path = Path(tmpdir) / fork.id.hex / "base_state.json"
+        base = json.loads(base_path.read_text())
+        token = base["secret_registry"]["secret_sources"]["MY_TOKEN"]["value"]
+        assert token != "**********"
+        assert cipher.try_decrypt_str(token) == "tok-123"
