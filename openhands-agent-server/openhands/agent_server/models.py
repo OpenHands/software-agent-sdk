@@ -541,6 +541,7 @@ class UpdateConversationRequest(BaseModel):
     max_budget_per_run: float | None = Field(
         default=None,
         gt=0,
+        allow_inf_nan=False,
         description=(
             "New hard cost ceiling in USD. Applies to the running conversation "
             "from its next step. Omit to leave unchanged; send `null` to remove "

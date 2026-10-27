@@ -1375,6 +1375,12 @@ class EventService:
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
         conversation.set_security_analyzer(self.stored.security_analyzer)
+        # ``stored`` owns the budget; the state keeps a mirror for clients. On
+        # resume a ``None`` argument keeps the persisted mirror, so re-assert
+        # the stored value to apply a limit cleared while the conversation was
+        # not loaded.
+        if conversation.max_budget_per_run != self.stored.max_budget_per_run:
+            conversation.max_budget_per_run = self.stored.max_budget_per_run
         # On resume the agent was unknown at construction time (loaded from
         # base_state.json), so decide token streaming now and disable it when the
         # resolved agent can't emit token callbacks.
@@ -2167,14 +2173,21 @@ class EventService:
             None, self._conversation.set_confirmation_policy, policy
         )
 
-    def set_max_budget_per_run(self, max_budget_per_run: float | None) -> None:
+    async def set_max_budget_per_run(self, max_budget_per_run: float | None) -> None:
         """Apply a new cost ceiling to the live conversation, if one is loaded.
 
         The persisted value is owned by ``stored``; a conversation that is not
-        loaded picks it up from there when it starts.
+        loaded picks it up from there when it starts. The live value is
+        mirrored into the conversation state (taking its lock, hence the
+        executor), so connected clients receive it as a state update.
         """
-        if self._conversation is not None:
-            self._conversation.max_budget_per_run = max_budget_per_run
+        conversation = self._conversation
+        if conversation is None:
+            return
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, setattr, conversation, "max_budget_per_run", max_budget_per_run
+        )
 
     async def set_security_analyzer(
         self, security_analyzer: SecurityAnalyzerBase | None

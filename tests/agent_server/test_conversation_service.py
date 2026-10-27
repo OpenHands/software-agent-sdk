@@ -166,6 +166,47 @@ async def test_max_budget_per_run_update_survives_restart_and_fork(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_max_budget_per_run_state_mirror_follows_stored_value(tmp_path):
+    """meta.json owns the budget; base_state.json mirrors it for live clients.
+
+    A limit cleared while the conversation was not loaded must win over the
+    stale mirror when the conversation starts again.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=_sample_agent(),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        max_budget_per_run=3.0,
+    )
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        info, _ = await service.start_conversation(request)
+        await service.update_conversation(
+            info.id, UpdateConversationRequest(max_budget_per_run=4.0)
+        )
+        conv_id = info.id
+    conversation_dir = conversations_dir / conv_id.hex
+    base_state = json.loads((conversation_dir / "base_state.json").read_text())
+    assert base_state["max_budget_per_run"] == 4.0
+
+    meta_path = conversation_dir / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["max_budget_per_run"] = None
+    meta_path.write_text(json.dumps(meta))
+
+    async with ConversationService(conversations_dir=conversations_dir) as service2:
+        reloaded = await service2.get_conversation(conv_id)
+        assert reloaded is not None
+        assert reloaded.max_budget_per_run is None
+        event_service = await service2.get_event_service(conv_id)
+        assert event_service is not None
+        conversation = event_service.get_conversation()
+        assert conversation.max_budget_per_run is None
+        assert conversation.state.max_budget_per_run is None
+
+
+@pytest.mark.asyncio
 async def test_server_resolved_tool_modules_are_persisted(tmp_path):
     """A lightweight creator need not import the runtime's tool modules."""
     conversations_dir = tmp_path / "conversations"

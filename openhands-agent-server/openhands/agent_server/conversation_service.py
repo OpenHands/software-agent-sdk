@@ -384,10 +384,12 @@ def _compose_conversation_info(
     supports_runtime_model_switch = bool(
         agent_state.get("acp_supports_runtime_model_switch", False)
     )
+    # ``stored`` owns the budget; the state only mirrors it for live clients.
+    state_data = state.model_dump(mode="json")
+    state_data["max_budget_per_run"] = stored.max_budget_per_run
     return ConversationInfo(
-        **state.model_dump(mode="json"),
+        **state_data,
         title=stored.title,
-        max_budget_per_run=stored.max_budget_per_run,
         metrics=stored.metrics,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
@@ -1925,7 +1927,7 @@ class ConversationService:
                 None, _update_state_tags_sync, state, request.tags
             )
         if budget_updated:
-            event_service.set_max_budget_per_run(request.max_budget_per_run)
+            await event_service.set_max_budget_per_run(request.max_budget_per_run)
         record = self._conversation_records.get(conversation_id)
         if record is not None:
             record.stored = event_service.stored
