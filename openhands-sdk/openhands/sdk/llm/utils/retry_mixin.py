@@ -1,5 +1,5 @@
-from collections.abc import Callable, Iterable
-from typing import Any, cast
+from collections.abc import Callable
+from typing import Any, Protocol, cast, runtime_checkable
 
 from tenacity import (
     RetryCallState,
@@ -10,7 +10,8 @@ from tenacity import (
     wait_exponential,
 )
 
-from openhands.sdk.llm.exceptions import LLMNoResponseError
+from openhands.sdk.llm.exceptions import LLMError, LLMNoResponseError
+from openhands.sdk.llm.exceptions.mapping import attach_exhausted_retry_metadata
 from openhands.sdk.logger import get_logger
 
 
@@ -18,6 +19,13 @@ logger = get_logger(__name__)
 
 # Helpful alias for listener signature: (attempt_number, max_retries) -> None
 RetryListener = Callable[[int, int, BaseException | None], None]
+
+
+@runtime_checkable
+class SupportsTemperature(Protocol):
+    """Protocol for objects exposing a configured temperature."""
+
+    temperature: float | None
 
 
 class RetryMixin:
@@ -31,7 +39,7 @@ class RetryMixin:
         """Build a ``before_sleep`` callback shared by sync and async decorators."""
 
         def before_sleep(retry_state: RetryCallState) -> None:
-            self.log_retry_attempt(retry_state)
+            self.log_retry_attempt(retry_state, num_retries)
 
             if retry_listener is not None:
                 exc = (
@@ -49,11 +57,14 @@ class RetryMixin:
 
             # Only adjust temperature for LLMNoResponseError
             if isinstance(exc, LLMNoResponseError):
-                kwargs = getattr(retry_state, "kwargs", None)
+                kwargs = retry_state.kwargs
                 if isinstance(kwargs, dict):
-                    current_temp = kwargs.get(
-                        "temperature", getattr(self, "temperature", None)
+                    configured_temp: float | None = (
+                        self.temperature
+                        if isinstance(self, SupportsTemperature)
+                        else None
                     )
+                    current_temp = kwargs.get("temperature", configured_temp)
                     if current_temp is None:
                         logger.warning(
                             "LLMNoResponseError with no configured temperature, "
@@ -96,6 +107,20 @@ class RetryMixin:
         """
         before_sleep = self._build_before_sleep(num_retries, retry_listener)
 
+        def on_exhausted(retry_state: RetryCallState) -> Any:
+            # Tenacity skips reraise when this callback is set, and before_sleep
+            # does not run for the final attempt. Stamp that attempt, then
+            # re-raise the original exception.
+            outcome = retry_state.outcome
+            exc = outcome.exception() if outcome is not None else None
+            if exc is not None:
+                attach_exhausted_retry_metadata(
+                    exc, retry_state.attempt_number, num_retries
+                )
+            if outcome is not None:
+                return outcome.result()
+            return None
+
         retry_condition = (
             retry_if_exception_type(retry_exceptions)
             if isinstance(retry_exceptions, tuple)
@@ -104,6 +129,7 @@ class RetryMixin:
 
         retry_decorator: Callable[[Callable[..., Any]], Callable[..., Any]] = retry(
             before_sleep=before_sleep,
+            retry_error_callback=on_exhausted,
             stop=stop_after_attempt(num_retries),
             reraise=True,
             retry=retry_condition,
@@ -115,7 +141,9 @@ class RetryMixin:
         )
         return retry_decorator
 
-    def log_retry_attempt(self, retry_state: RetryCallState) -> None:
+    def log_retry_attempt(
+        self, retry_state: RetryCallState, num_retries: int | None = None
+    ) -> None:
         """Log retry attempts."""
 
         if retry_state.outcome is None:
@@ -130,26 +158,15 @@ class RetryMixin:
             logger.error("retry_state.outcome.exception() returned None.")
             return
 
-        # Try to get max attempts from the stop condition if present
-        max_attempts: int | None = None
-        retry_obj = getattr(retry_state, "retry_object", None)
-        stop_condition = getattr(retry_obj, "stop", None)
-        if stop_condition is not None:
-            # stop_any has .stops, single stop does not
-            stops: Iterable[Any]
-            if hasattr(stop_condition, "stops"):
-                stops = stop_condition.stops  # type: ignore[attr-defined]
-            else:
-                stops = [stop_condition]
-            for stop_func in stops:
-                if hasattr(stop_func, "max_attempts"):
-                    max_attempts = getattr(stop_func, "max_attempts")
-                    break
-
-        # Attach dynamic fields for downstream consumers (keep existing behavior)
-        setattr(cast(Any, exc), "retry_attempt", retry_state.attempt_number)
-        if max_attempts is not None:
-            setattr(cast(Any, exc), "max_retries", max_attempts)
+        attempt = retry_state.attempt_number
+        if isinstance(exc, LLMError):
+            exc.retry_attempt = attempt
+            exc.max_retries = num_retries
+        else:
+            try:
+                cast(Any, exc).retry_attempt = attempt
+            except (AttributeError, TypeError):
+                return
 
         logger.error(
             "%s. Attempt #%d | You can customize retry values in the configuration.",
