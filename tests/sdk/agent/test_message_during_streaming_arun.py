@@ -390,6 +390,52 @@ async def test_pause_during_llm_preserves_confirmation_handling(
         convo.close()
 
 
+@pytest.mark.parametrize("queued_message", [False, True])
+async def test_pause_during_final_llm_call_preserves_finished(
+    tmp_path, monkeypatch, queued_message
+):
+    """A pause that lands while the agent produces its final answer must not
+    turn FINISHED into PAUSED: resuming a "paused" finished turn would make
+    Agent.step() call the LLM again with nothing new to say. Only a message
+    queued during that step justifies PAUSED, so the resume picks it up."""
+    llm = _InjectingAsyncConfirmLLM()
+    convo = _make_conversation(llm, tmp_path)
+
+    async def completion(self, *, messages, **kwargs):
+        self._calls.append(" ".join(str(m) for m in messages))
+        if len(self._calls) == 1:
+            # Agent.astep has released the state lock for this LLM call.
+            await asyncio.to_thread(convo.pause)
+            assert convo.state.execution_status == ConversationExecutionStatus.PAUSING
+            if queued_message:
+                await asyncio.to_thread(convo.send_message, "second message")
+        return _finishing_response()
+
+    monkeypatch.setattr(_InjectingAsyncConfirmLLM, "acompletion", completion)
+    try:
+        convo.send_message("first message")
+        await asyncio.wait_for(convo.arun(), timeout=5)
+        assert len(llm._calls) == 1
+        pause_events = [e for e in convo.state.events if isinstance(e, PauseEvent)]
+        if queued_message:
+            assert convo.state.execution_status == ConversationExecutionStatus.PAUSED
+            assert len(pause_events) == 1
+        else:
+            assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
+            assert pause_events == []
+
+        await asyncio.wait_for(convo.arun(), timeout=5)
+        assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
+        if queued_message:
+            assert len(llm._calls) == 2
+            assert _saw(llm._calls, "second message") == [1]
+        else:
+            # Nothing was queued, so the resume has nothing to run.
+            assert len(llm._calls) == 1
+    finally:
+        convo.close()
+
+
 class _InjectingAsyncBudgetLLM(LLM):
     """Finishing response with a message landing mid-call, while the run's
     accumulated cost is already over budget."""

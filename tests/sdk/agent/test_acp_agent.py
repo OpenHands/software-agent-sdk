@@ -2165,6 +2165,33 @@ class TestACPAgentStep:
         agent.step(conversation, on_event=lambda _: None)
         assert agent.last_prompt_completed
 
+    def test_step_defers_finished_while_pause_is_pending(self, tmp_path):
+        """A completed prompt under PAUSING leaves the outcome to the run loop,
+        which reports FINISHED or PAUSED at the boundary; the agent only records
+        that the prompt completed."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        def _fake_run_async(_coro, **_kwargs):
+            conversation.state.execution_status = ConversationExecutionStatus.PAUSING
+            mock_client.accumulated_text.append("done")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.PAUSING
+        )
+        assert agent.last_prompt_completed
+
     def test_step_no_user_message_finishes(self, tmp_path):
         agent = _make_agent()
         state = _make_state(tmp_path)

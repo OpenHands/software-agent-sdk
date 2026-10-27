@@ -1984,6 +1984,9 @@ class LocalConversation(BaseConversation):
             if self._state.execution_status in [
                 ConversationExecutionStatus.IDLE,
                 ConversationExecutionStatus.PAUSED,
+                # A pending pause with no loop left to consume it (the request
+                # was reset above) must not outlive this run.
+                ConversationExecutionStatus.PAUSING,
                 ConversationExecutionStatus.ERROR,
                 ConversationExecutionStatus.STUCK,
             ]:
@@ -2061,6 +2064,10 @@ class LocalConversation(BaseConversation):
                         self._step_holds_state_lock = False
                     iteration += 1
 
+                    # The lock is held across the whole synchronous step, so a
+                    # pause() can only land between iterations and is normally
+                    # consumed at the top of the loop. This check covers a
+                    # pause() issued from within the step on this same thread.
                     if self._consume_pause_request():
                         break
 
@@ -2211,6 +2218,7 @@ class LocalConversation(BaseConversation):
             if self._state.execution_status in [
                 ConversationExecutionStatus.IDLE,
                 ConversationExecutionStatus.PAUSED,
+                ConversationExecutionStatus.PAUSING,  # see _run()
                 ConversationExecutionStatus.ERROR,
                 ConversationExecutionStatus.STUCK,
             ]:
@@ -2378,7 +2386,12 @@ class LocalConversation(BaseConversation):
                                 "Superseded by a new user message"
                             )
 
-                        if self._consume_pause_request():
+                        # A step that FINISHED stays FINISHED unless a message
+                        # is queued: resuming a "paused" finished turn would
+                        # make Agent.step() issue a redundant LLM call.
+                        if self._consume_pause_request(
+                            pending_input=new_message_arrived
+                        ):
                             break
 
                         if new_message_arrived and (
@@ -2528,8 +2541,6 @@ class LocalConversation(BaseConversation):
                         ConversationExecutionStatus.STUCK,
                     ):
                         break
-                    if self._consume_pause_request():
-                        break
 
                     latest_acp_prompt_message_id = self._latest_acp_prompt_message_id()
                     acp_prompt_message_changed = (
@@ -2537,6 +2548,25 @@ class LocalConversation(BaseConversation):
                         and latest_acp_prompt_message_id
                         != last_acp_prompt_user_message_id
                     )
+                    if (
+                        self._state.execution_status
+                        == ConversationExecutionStatus.PAUSING
+                        and not acp_prompt_message_changed
+                        and isinstance(self.agent, ACPAgent)
+                        and self.agent.last_prompt_completed
+                    ):
+                        # The prompt completed while a pause was pending and
+                        # nothing is queued: there is no work left to pause.
+                        # _finalize_successful_turn deferred FINISHED so the
+                        # wire never flips FINISHED -> PAUSED mid-boundary.
+                        self._state.execution_status = (
+                            ConversationExecutionStatus.FINISHED
+                        )
+                    if self._consume_pause_request(
+                        pending_input=acp_prompt_message_changed
+                    ):
+                        break
+
                     if acp_prompt_message_changed and self._state.execution_status in (
                         ConversationExecutionStatus.FINISHED,
                         ConversationExecutionStatus.IDLE,
@@ -2787,22 +2817,34 @@ class LocalConversation(BaseConversation):
                 )
             )
 
-    def _consume_pause_request(self) -> bool:
+    def _enter_paused(self) -> None:
+        """Complete a pause under the state lock: PAUSED plus one PauseEvent."""
+        self._state.execution_status = ConversationExecutionStatus.PAUSED
+        self._on_event(PauseEvent())
+
+    def _consume_pause_request(self, *, pending_input: bool = False) -> bool:
         """Consume a pause request at a step boundary, under the state lock.
 
         Return True when a request was consumed and the run loop should stop.
-        This need not mean PAUSED: preserve errors and pending confirmation.
+        This need not mean PAUSED: errors, pending confirmation and a FINISHED
+        step are preserved, because they already describe a stopped agent and
+        a resume from PAUSED would re-run a turn that has nothing left to do.
+        A FINISHED step with ``pending_input`` queued does become PAUSED, so
+        the next ``run()`` picks the queued message up instead of exiting.
         """
         if not self._pause_requested:
             return False
         self._pause_requested = False
-        if self._state.execution_status not in (
+        status = self._state.execution_status
+        if status in (
             ConversationExecutionStatus.ERROR,
             ConversationExecutionStatus.STUCK,
             ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
         ):
-            self._state.execution_status = ConversationExecutionStatus.PAUSED
-            self._on_event(PauseEvent())
+            return True
+        if status == ConversationExecutionStatus.FINISHED and not pending_input:
+            return True
+        self._enter_paused()
         return True
 
     def pause(self) -> None:
@@ -2814,18 +2856,25 @@ class LocalConversation(BaseConversation):
 
         While the current step is executing, status is ``PAUSING``. Once it
         completes, status becomes ``PAUSED`` and a ``PauseEvent`` is emitted,
-        unless confirmation is required or execution fails.
+        unless the step finished, requires confirmation or failed.
         An ACP step includes the entire remote prompt turn. Use ``interrupt()``
         to request cancellation of an in-flight async operation.
+
+        Without an active run loop there is no step to wait for, so a RUNNING
+        or IDLE conversation becomes PAUSED immediately.
         """
 
         with self._state:
-            if self._state.execution_status == ConversationExecutionStatus.RUNNING:
+            status = self._state.execution_status
+            run_loop_active = self._cancel_token is not None
+            if status == ConversationExecutionStatus.RUNNING and run_loop_active:
                 self._pause_requested = True
                 self._state.execution_status = ConversationExecutionStatus.PAUSING
-            elif self._state.execution_status == ConversationExecutionStatus.IDLE:
-                self._pause_requested = True
-                self._consume_pause_request()
+            elif status in (
+                ConversationExecutionStatus.RUNNING,
+                ConversationExecutionStatus.IDLE,
+            ):
+                self._enter_paused()
 
     def interrupt(self) -> None:
         """Immediately cancel an in-flight ``arun()``, including mid-LLM-call.

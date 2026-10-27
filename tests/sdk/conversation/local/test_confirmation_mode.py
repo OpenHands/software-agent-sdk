@@ -643,11 +643,12 @@ class TestConfirmationMode:
                 ConversationExecutionStatus.RUNNING
             )
 
-        # Pause from RUNNING remains pending until the run loop reaches a boundary.
+        # Pause from RUNNING without an active run loop completes immediately;
+        # only a live run() / arun() goes through PAUSING first.
         self.conversation.pause()
         assert (
             self.conversation._state.execution_status
-            == ConversationExecutionStatus.PAUSING
+            == ConversationExecutionStatus.PAUSED
         )
 
     def test_is_confirmation_mode_active_property(self):
