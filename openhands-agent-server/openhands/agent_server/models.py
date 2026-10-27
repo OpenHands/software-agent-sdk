@@ -8,6 +8,9 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
+from openhands.agent_server.conversation_serialization import (
+    ConversationAPIExecutionStatus,
+)
 from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
@@ -174,8 +177,14 @@ class _ConversationInfoBase(BaseModel):
         default=True,
         description="Whether to enable stuck detection for the agent.",
     )
-    execution_status: ConversationExecutionStatus = Field(
-        default=ConversationExecutionStatus.IDLE
+    execution_status: ConversationAPIExecutionStatus = Field(
+        default=ConversationExecutionStatus.IDLE,
+        description=(
+            "Current execution status. During the PAUSING migration window, "
+            "pending pauses are reported as running until the current step stops. "
+            "Clients should also accept pausing as active work for a future release; "
+            "that change requires an announced five-minor-release migration window."
+        ),
     )
     confirmation_policy: ConfirmationPolicyBase = Field(default=NeverConfirm())
     security_analyzer: SecurityAnalyzerBase | None = Field(

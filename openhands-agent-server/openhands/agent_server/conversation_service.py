@@ -20,6 +20,10 @@ from openhands.agent_server.conversation_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
     ConversationLeaseHeldError,
 )
+from openhands.agent_server.conversation_serialization import (
+    conversation_event_for_api,
+    execution_status_for_api,
+)
 from openhands.agent_server.event_service import (
     LEASE_RENEW_INTERVAL_SECONDS,
     EventService,
@@ -1212,7 +1216,12 @@ class ConversationService:
         records = [
             (conversation_id, record)
             for conversation_id, record in self._conversation_records.items()
-            if execution_status is None or record.execution_status == execution_status
+            if execution_status is None
+            or execution_status
+            in (
+                record.execution_status,
+                execution_status_for_api(record.execution_status),
+            )
         ]
         if sort_order in (
             ConversationSortOrder.CREATED_AT,
@@ -1272,7 +1281,11 @@ class ConversationService:
         return sum(
             1
             for record in self._conversation_records.values()
-            if record.execution_status == execution_status
+            if execution_status
+            in (
+                record.execution_status,
+                execution_status_for_api(record.execution_status),
+            )
         )
 
     async def batch_get_conversations(
@@ -2893,7 +2906,7 @@ class WebhookSubscriber(Subscriber):
     def _event_data(event: Event) -> dict[str, Any]:
         # mode="json" makes types such as set and SecretStr JSON-safe.
         if hasattr(event, "model_dump"):
-            return event.model_dump(mode="json")
+            return conversation_event_for_api(event).model_dump(mode="json")
         return event.__dict__
 
     @classmethod
