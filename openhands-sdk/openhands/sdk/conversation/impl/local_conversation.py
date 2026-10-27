@@ -2348,9 +2348,6 @@ class LocalConversation(BaseConversation):
                             self._step_holds_state_lock = False
                         iteration += 1
 
-                        if self._finish_pending_pause():
-                            break
-
                         # astep releases the state lock for the LLM call, so a
                         # message can land mid-step with status still RUNNING and
                         # go unrecorded; without this rescan the loop would break
@@ -2370,23 +2367,23 @@ class LocalConversation(BaseConversation):
                         new_message_arrived = (
                             self._state.last_user_message_id != last_user_message_id
                         )
+                        if new_message_arrived and step_awaiting_confirmation:
+                            # Reject before completing a pause: otherwise the
+                            # next run implicitly approves the superseded action.
+                            logger.info(
+                                "User message arrived while awaiting "
+                                "confirmation; rejecting the pending action"
+                            )
+                            self.reject_pending_actions(
+                                "Superseded by a new user message"
+                            )
+
+                        if self._finish_pending_pause():
+                            break
+
                         if new_message_arrived and (
                             step_finished or step_awaiting_confirmation
                         ):
-                            if step_awaiting_confirmation:
-                                # Reject up front, regardless of whether we
-                                # continue running or go IDLE below: astep()
-                                # executes any pending action it finds as an
-                                # implicit confirmation, so leaving it
-                                # unmatched would let it run on the very next
-                                # call, silently overriding the new message.
-                                logger.info(
-                                    "User message arrived while awaiting "
-                                    "confirmation; rejecting the pending action"
-                                )
-                                self.reject_pending_actions(
-                                    "Superseded by a new user message"
-                                )
                             if iteration >= self.max_iteration_per_run:
                                 logger.info(
                                     "User message arrived during final iteration; "
@@ -2798,6 +2795,7 @@ class LocalConversation(BaseConversation):
         if self._state.execution_status not in (
             ConversationExecutionStatus.ERROR,
             ConversationExecutionStatus.STUCK,
+            ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
         ):
             self._state.execution_status = ConversationExecutionStatus.PAUSED
             self._on_event(PauseEvent())
