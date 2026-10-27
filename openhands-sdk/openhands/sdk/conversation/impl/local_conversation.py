@@ -2809,7 +2809,8 @@ class LocalConversation(BaseConversation):
         of the run loop (between agent steps).
 
         While the current step is executing, status is ``PAUSING``. Once it
-        completes, status becomes ``PAUSED`` and a ``PauseEvent`` is emitted.
+        completes, status becomes ``PAUSED`` and a ``PauseEvent`` is emitted,
+        unless confirmation is required or execution fails.
         An ACP step includes the entire remote prompt turn. Use ``interrupt()``
         to request cancellation of an in-flight async operation.
         """

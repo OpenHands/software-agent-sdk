@@ -373,8 +373,9 @@ async def pause_conversation(
     """Request a pause at the next agent step boundary.
 
     An active conversation reports ``pausing`` until the current step ends,
-    then reports ``paused`` and emits a PauseEvent. An ACP step spans the
-    entire remote prompt turn. Use ``/interrupt`` to cancel in-flight work.
+    then reports ``paused`` and emits a PauseEvent unless confirmation is
+    required or execution fails. An ACP step spans the entire remote prompt
+    turn. Use ``/interrupt`` to cancel in-flight work.
     """
     paused = await conversation_service.pause_conversation(conversation_id)
     if not paused:
