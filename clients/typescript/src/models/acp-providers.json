@@ -87,7 +87,7 @@
       "npx",
       "-y",
       "--prefer-offline",
-      "@agentclientprotocol/codex-acp@1.10.0"
+      "@agentclientprotocol/codex-acp@2.2.2"
     ],
     "default_model": "gpt-5.5",
     "default_session_mode": "agent-full-access",

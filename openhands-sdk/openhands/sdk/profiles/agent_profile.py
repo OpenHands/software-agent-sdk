@@ -162,6 +162,19 @@ class AgentProfileBase(BaseModel):
             "provider credential to receive it."
         ),
     )
+    # Built-in integrations (GitHub, GitLab, Bitbucket, Slack, Jira Data
+    # Center, Azure DevOps, ...) are connected per user; a profile narrows
+    # which of them a conversation may use. Same tri-state as ``secret_refs``:
+    # an allow-list over whatever the launch supplies, so an unmatched name
+    # is a harmless no-op and nothing is added back.
+    integration_refs: list[str] | None = Field(
+        default=None,
+        description=(
+            "Which of the user's connected built-in integrations to expose to "
+            "this agent. null = all; [] = none; a non-null list = filter to the "
+            "named integrations."
+        ),
+    )
 
 
 class OpenHandsAgentProfile(AgentProfileBase):
@@ -388,6 +401,13 @@ class LaunchedAgentProfile(BaseModel):
             "null preserves unrestricted behavior for older conversations."
         ),
     )
+    integration_refs: list[str] | None = Field(
+        default=None,
+        description=(
+            "Built-in integration allow-list captured at launch. "
+            "null preserves unrestricted behavior for older conversations."
+        ),
+    )
     llm_profile_ref: str | None = Field(
         default=None,
         description=(
@@ -398,6 +418,9 @@ class LaunchedAgentProfile(BaseModel):
 
     def allows_secret(self, name: str) -> bool:
         return self.secret_refs is None or name in self.secret_refs
+
+    def allows_integration(self, name: str) -> bool:
+        return self.integration_refs is None or name in self.integration_refs
 
 
 def _agent_profile_discriminator(value: Any) -> str:

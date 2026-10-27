@@ -771,6 +771,7 @@ class RemoteConversation(BaseConversation):
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
+        max_budget_per_run: float | None = None,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
@@ -801,6 +802,8 @@ class RemoteConversation(BaseConversation):
             conversation_id: Optional existing conversation id to attach to
             callbacks: Optional callbacks to receive events (not yet streamed)
             max_iteration_per_run: Max iterations configured on server
+            max_budget_per_run: Optional hard cost ceiling (USD) enforced on
+                    the server. Only applied when creating a new conversation.
             stuck_detection: Whether to enable stuck detection on server
             stuck_detection_thresholds: Optional configuration for stuck detection
                       thresholds. Can be a StuckDetectionThresholds instance or
@@ -894,6 +897,7 @@ class RemoteConversation(BaseConversation):
                 ),
                 "initial_message": None,
                 "max_iterations": max_iteration_per_run,
+                "max_budget_per_run": max_budget_per_run,
                 "stuck_detection": stuck_detection,
                 # We need to convert RemoteWorkspace to LocalWorkspace for the server
                 "workspace": LocalWorkspace(

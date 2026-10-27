@@ -906,6 +906,7 @@ class LocalConversation(BaseConversation):
                 persistence_dir=fork_persistence,
                 conversation_id=fork_id,
                 max_iteration_per_run=self.max_iteration_per_run,
+                max_budget_per_run=self.max_budget_per_run,
                 stuck_detection=self._stuck_detector is not None,
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
