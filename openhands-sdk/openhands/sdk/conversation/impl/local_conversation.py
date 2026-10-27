@@ -1424,6 +1424,8 @@ class LocalConversation(BaseConversation):
                 mcp_config, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
             )
         except Exception as exc:
+            if any(spec.strict for spec in mcp_config.values()):
+                raise
             logger.warning(
                 "MCP server startup failed for %s; continuing without its tools: %s",
                 ", ".join(sorted(mcp_config)),
