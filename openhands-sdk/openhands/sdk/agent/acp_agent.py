@@ -2279,6 +2279,16 @@ class ACPAgent(AgentBase):
         return provider is not None and provider.supports_runtime_model_switch
 
     @property
+    def last_prompt_completed(self) -> bool:
+        """Whether the latest step finalized a successful ACP prompt response.
+
+        Resets when a step starts. May be true even when cancellation propagates
+        after finalization, so callers can avoid replaying a completed prompt.
+        This does not mean that cleanup has finished or the conversation stopped.
+        """
+        return self._last_prompt_completed
+
+    @property
     def has_live_acp_session(self) -> bool:
         """Whether a live ACP session exists to act on right now.
 
@@ -4073,6 +4083,7 @@ class ACPAgent(AgentBase):
         on_event: ConversationCallbackType,
         on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
+        self._last_prompt_completed = False
         state = conversation.state
 
         if self._restart_session_on_next_turn:

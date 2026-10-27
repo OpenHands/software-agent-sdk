@@ -1998,7 +1998,7 @@ class LocalConversation(BaseConversation):
                     # Pause attempts to acquire the state lock
                     # Before value can be modified step can be taken
                     # Ensure step conditions are checked when lock is already acquired
-                    if self._finish_pending_pause():
+                    if self._consume_pause_request():
                         break
                     if self._state.execution_status in [
                         ConversationExecutionStatus.PAUSED,
@@ -2061,7 +2061,7 @@ class LocalConversation(BaseConversation):
                         self._step_holds_state_lock = False
                     iteration += 1
 
-                    if self._finish_pending_pause():
+                    if self._consume_pause_request():
                         break
 
                     # Check for non-finished terminal conditions
@@ -2227,7 +2227,7 @@ class LocalConversation(BaseConversation):
                 acp_step_user_message_id: str | None = None
                 acp_step_user_message: MessageEvent | None = None
                 with self._state:
-                    if self._finish_pending_pause():
+                    if self._consume_pause_request():
                         break
                     if self._state.execution_status in [
                         ConversationExecutionStatus.PAUSED,
@@ -2378,7 +2378,7 @@ class LocalConversation(BaseConversation):
                                 "Superseded by a new user message"
                             )
 
-                        if self._finish_pending_pause():
+                        if self._consume_pause_request():
                             break
 
                         if new_message_arrived and (
@@ -2476,7 +2476,7 @@ class LocalConversation(BaseConversation):
                     break
 
                 with self._state:
-                    if self._finish_pending_pause():
+                    if self._consume_pause_request():
                         break
                     if self._state.execution_status in (
                         ConversationExecutionStatus.PAUSED,
@@ -2528,7 +2528,7 @@ class LocalConversation(BaseConversation):
                         ConversationExecutionStatus.STUCK,
                     ):
                         break
-                    if self._finish_pending_pause():
+                    if self._consume_pause_request():
                         break
 
                     latest_acp_prompt_message_id = self._latest_acp_prompt_message_id()
@@ -2613,7 +2613,7 @@ class LocalConversation(BaseConversation):
                         self._state.execution_status
                         == ConversationExecutionStatus.PAUSING
                         and isinstance(self.agent, ACPAgent)
-                        and self.agent._last_prompt_completed
+                        and self.agent.last_prompt_completed
                     )
                 )
                 if (
@@ -2787,8 +2787,12 @@ class LocalConversation(BaseConversation):
                 )
             )
 
-    def _finish_pending_pause(self) -> bool:
-        """Complete a requested pause at a step boundary, under the state lock."""
+    def _consume_pause_request(self) -> bool:
+        """Consume a pause request at a step boundary, under the state lock.
+
+        Return True when a request was consumed and the run loop should stop.
+        This need not mean PAUSED: preserve errors and pending confirmation.
+        """
         if not self._pause_requested:
             return False
         self._pause_requested = False
@@ -2821,7 +2825,7 @@ class LocalConversation(BaseConversation):
                 self._state.execution_status = ConversationExecutionStatus.PAUSING
             elif self._state.execution_status == ConversationExecutionStatus.IDLE:
                 self._pause_requested = True
-                self._finish_pending_pause()
+                self._consume_pause_request()
 
     def interrupt(self) -> None:
         """Immediately cancel an in-flight ``arun()``, including mid-LLM-call.
