@@ -1,0 +1,64 @@
+{
+  "base": "d0d9d81324210414462fb676b377e0563a08a0cb",
+  "implementation_head": "0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80",
+  "date": "2026-10-27",
+  "environment": {
+    "os": "Linux in Docker",
+    "python": "3.13.11",
+    "dependency_install": "uv sync --frozen --dev"
+  },
+  "red": [
+    {
+      "scenario": "ACP pending pause unit tests",
+      "result": "2 failed: paused != pausing before the core fix"
+    },
+    {
+      "scenario": "HTTP/WebSocket ACP pause on baseline",
+      "result": "1 failed: paused != pausing",
+      "base": "d0d9d81324210414462fb676b377e0563a08a0cb"
+    },
+    {
+      "scenario": "Remote waiting / stale-state recovery / runtime retention",
+      "result": "Expected failures captured before the respective fixes"
+    },
+    {
+      "scenario": "Pause then interrupt after ACP finalization",
+      "result": "Completed prompt replayed; resumed run timed out before the completion bookkeeping fix"
+    }
+  ],
+  "green": {
+    "python_command": "uv run pytest tests/sdk/conversation tests/sdk/agent tests/agent_server/test_conversation_service.py tests/agent_server/test_event_service.py tests/agent_server/docker_runtime/test_registry.py tests/cross/test_acp_pause_live_server.py -q --timeout=60",
+    "python": {
+      "passed": 2204,
+      "deselected": 6,
+      "warnings": 52,
+      "duration_seconds": 173.75
+    },
+    "typescript": {
+      "tests_passed": 396,
+      "build": "passed",
+      "changed_file_eslint": "passed",
+      "full_eslint": "3 errors in unchanged integration tests; baseline file equality checked"
+    },
+    "crash_recovery": {
+      "before_crash": "pausing",
+      "after_restart": "error",
+      "catalog_after_restart": "error",
+      "prompt_count": 1,
+      "shell_writes": [
+        "1-1"
+      ],
+      "restart": "SIGKILL via control-agent-server restart --hard"
+    },
+    "docs": "Both Python snippets parsed; diff reviewed; no full Mintlify render"
+  },
+  "limits": [
+    "Scripted ACP protocol subprocess; no hosted model or vendor ACP agent was exercised",
+    "Pause-then-interrupt variant gates credential cleanup after a real ACP response",
+    "Repository defaults deselect stress, acp_live and docker_live markers",
+    "Python emitted dependency/test warnings and an unawaited _apply_acp_model coroutine warning; not a warning-clean run",
+    "Older clients reject pausing; upstream compatibility and rollout remain unresolved",
+    "Generated TypeScript schema remains pinned to the released server image",
+    "The fork cleanup workflow was not verified; remove .pr before merge"
+  ]
+}
