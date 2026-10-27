@@ -872,30 +872,31 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   ```
   The create waits out the 30-second lock timeout and answers 503
   (`exception` `503: Agent profile store is busy`, the retryable launch-store
-  failure) and no conversation is created. Unlike the profile routes
+  failure) and no conversation is created. Like the profile routes
   (`F21.busy-blocks-server`), the launch resolves the profile in a worker
   thread, so `/alive` answers within two seconds while the create waits
   (the bare `sleep 5` only lets the create reach the server).
-- **Lock wait stalls the server (`F21.busy-blocks-server`), known bug.**
-  The handlers are `async` but take the store's file lock synchronously, so
-  the event loop waits with them.
+- **Lock wait does not stall the server (`F21.busy-blocks-server`).**
+  The handlers are plain `def` (and `materialize` loads the profile with
+  `asyncio.to_thread`), so the store's synchronous file-lock wait runs in a
+  worker thread, never on the event loop.
   ```sh
   control-agent-server api GET /alive --auth none --expect 200 --expect-max-ms 2000
+  control-agent-server api GET /api/agent-profiles --expect 200 --quiet > /dev/null  # creates the store dir under --only
   LOCK="$AGENT_SERVER_VERIFY_RUN/home/.openhands/agent-profiles/.agent-profiles.lock"
   exec 9>>"$LOCK"
   flock -w 5 9
   (exec 9>&- >/dev/null 2>&1; control-agent-server api GET /api/agent-profiles/qa-f21-coder --timeout 90 --quiet) &
   sleep 5
-  control-agent-server api GET /alive --auth none --expect 200 --timeout 60 --expect-max-ms 2000 --save F21.busy-blocks-server/alive  # bug: status eq 200 && elapsed_ms gt 2000
+  control-agent-server api GET /alive --auth none --expect 200 --timeout 60 --expect-max-ms 2000 --save F21.busy-blocks-server/alive
   flock -u 9
   wait
   ```
-  Correct behavior: `/alive` answers within two seconds while the profile
-  request waits for the lock (the bare `sleep 5` only lets that request
-  reach the server). Today `/alive`, like every other route and socket,
-  hangs until the 30-second lock wait ends, so orchestrator probes fail
-  while any other process holds the lock. The background request does not
-  inherit the lock, so the server recovers as soon as the shell exits.
+  `/alive` answers within two seconds while the profile request waits for
+  the lock (the bare `sleep 5` only lets that request reach the server), so
+  orchestrator probes keep passing while another process holds the lock.
+  The background request does not inherit the lock, so it finishes as soon
+  as the shell lets go.
 - **How a dangling LLM reference is reported (`F21.dangling-llm-report`).**
   The server's seed code (`_seed_default_llm_profile` in the checkout that
   serves the run) documents how materialize reports a seeded `default`
@@ -1057,10 +1058,9 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   launch on a local run carries no OpenHands skills where the same profile
   in the image carries the whole catalog. `restart --env` overrides stay
   until `restart --reset-config`.
-- The profile routes wait for the store lock on the event loop (the
-  `F21.busy-blocks-server` bug), but `POST /api/conversations` resolves the
-  profile in a worker thread: a held lock stalls the whole server only when
-  a profile route is waiting.
+- The profile routes and `POST /api/conversations` wait for the store lock
+  in a worker thread: a held lock delays only the requests that need the
+  store, never `/alive` (`F21.busy-blocks-server`).
 - `agent_launch_additions` act once, at start: they are not a stored
   conversation field and the profile is not modified, so only the agent
   state (`base_state.json`, the `SystemPromptEvent`) shows the appended

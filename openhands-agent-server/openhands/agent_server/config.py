@@ -472,7 +472,8 @@ class Config(BaseModel):
             "container runtimes, where that host configuration is absent): also "
             "inject the user/org/public/marketplace skills the server "
             "discovers. Project/repository skills are never injected either way "
-            "— the CLI reads AGENTS.md itself (#4019). Set explicitly per "
+            "— the CLI reads AGENTS.md itself (#4019). Skills a client supplies "
+            "at launch are kept in both modes. Set explicitly per "
             "deployment; the agent-server image sets 'openhands_managed'."
         ),
     )

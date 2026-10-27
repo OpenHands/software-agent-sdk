@@ -388,6 +388,7 @@ def _compose_conversation_info(
     return ConversationInfo(
         **state.model_dump(mode="json"),
         title=stored.title,
+        max_budget_per_run=stored.max_budget_per_run,
         metrics=stored.metrics,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
@@ -1911,6 +1912,10 @@ class ConversationService:
             update["title"] = request.title.strip()
         if request.tags is not None:
             update["tags"] = request.tags
+        # Membership, not None: an explicit null removes the budget limit.
+        budget_updated = "max_budget_per_run" in request.model_fields_set
+        if budget_updated:
+            update["max_budget_per_run"] = request.max_budget_per_run
         # Persist first: a refused write (e.g. lost lease ownership) must leave
         # the in-memory metadata and state untouched.
         await event_service.save_meta(event_service.stored.model_copy(update=update))
@@ -1920,6 +1925,8 @@ class ConversationService:
             state = await loop.run_in_executor(
                 None, _update_state_tags_sync, state, request.tags
             )
+        if budget_updated:
+            event_service.set_max_budget_per_run(request.max_budget_per_run)
         record = self._conversation_records.get(conversation_id)
         if record is not None:
             record.stored = event_service.stored
@@ -1938,6 +1945,8 @@ class ConversationService:
             updated_fields.append("title")
         if request.tags is not None:
             updated_fields.append("tags")
+        if budget_updated:
+            updated_fields.append("max_budget_per_run")
         logger.info(
             "Successfully updated conversation %s (%s)",
             conversation_id,

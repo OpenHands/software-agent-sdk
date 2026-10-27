@@ -948,9 +948,9 @@ Preconditions:
 - `?agent_profile_id=` loads the agent profile under the store's error
   mapping: a profile file that no longer validates answers 400, and a lock
   held by another process for 30 seconds answers 503, as on the
-  agent-profile routes (`F18.secret-scope-profile-errors`). Like every
-  file-locked store route, a held lock also stalls the whole server for
-  those 30 seconds.
+  agent-profile routes (`F18.secret-scope-profile-errors`). Scoped secret
+  listing and settings updates wait for profile-store locks in worker
+  threads, so other requests remain responsive while those locks are held.
 - `RemoteWorkspace.clone_repos` runs `git` on the client's machine, not on
   the server, and leaves the token in the clone's `remote.origin.url`
   (`https://<github_token>@github.com/...`). A local stand-in therefore

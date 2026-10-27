@@ -2,12 +2,14 @@
 
 import base64
 from enum import Enum
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 import mcp.types
 from pydantic import BaseModel, SecretStr
 
 from openhands.sdk.conversation.secret_registry import SecretRegistry
+from openhands.sdk.event import Event
+from openhands.sdk.event.security import SecurityAnalysisEvent
 from openhands.sdk.llm import ImageContent
 from openhands.sdk.mcp import MCPToolObservation
 
@@ -42,9 +44,15 @@ class Outer(BaseModel):
     span: Span | None = None
 
 
-def _registry() -> SecretRegistry:
+class Command(BaseModel):
+    command: Literal["view", "undo_edit"]
+    isolation: Literal["worktree", "shared"] | None = None
+    output: str = ""
+
+
+def _registry(secret: str = SECRET) -> SecretRegistry:
     registry = SecretRegistry()
-    registry.update_secrets({"TOKEN": SECRET})
+    registry.update_secrets({"TOKEN": secret})
     registry.get_secret_value("TOKEN")  # resolve -> tracked for masking
     return registry
 
@@ -87,6 +95,30 @@ def test_preserves_str_subclass_enum_members():
 
     assert masked.inner.kind is Kind.ADD
     assert isinstance(masked.inner.kind, Kind)
+
+
+def test_preserves_literal_values():
+    """A ``Literal`` value must survive masking, like an Enum member.
+
+    A masked value is outside the vocabulary, so the model no longer loads.
+    """
+    model = Command(command="undo_edit", isolation="shared", output="undo_edit shared")
+
+    masked = _registry("ed").mask_secrets_in_model(model)
+
+    assert masked.command == "undo_edit"
+    assert masked.isolation == "shared"
+    assert masked.output == f"undo_{MASK}it shar{MASK}"
+
+
+def test_masked_event_source_still_loads():
+    event = SecurityAnalysisEvent(analyzer="iron", policy="p", risks={})
+
+    masked = _registry("iron").mask_secrets_in_model(event)
+
+    assert masked.source == "environment"
+    assert masked.analyzer == MASK
+    assert Event.model_validate_json(masked.model_dump_json()) == masked
 
 
 def test_secretstr_is_not_walked_as_a_string():

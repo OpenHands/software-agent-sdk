@@ -137,6 +137,18 @@ def mock_tool():
     return mock_tool
 
 
+@pytest.fixture
+def no_locale_env(monkeypatch):
+    """Unset what tmux reads to choose UTF-8 output, and restore it afterwards.
+
+    setenv before delenv makes monkeypatch record each original, so a value the
+    code under test sets is removed too.
+    """
+    for name in ("LC_ALL", "LC_CTYPE", "LANG", "TMUX"):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
+
+
 def create_mock_litellm_response(
     content: str = "Test response",
     response_id: str = "test-id",

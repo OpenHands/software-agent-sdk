@@ -349,3 +349,17 @@ def test_fork_with_aliased_agent_does_not_clobber_source_cache_key():
         )
         assert fork.get_llm_call_context().prompt_cache_key == str(fork.id)
         assert fork.agent.llm is not src.agent.llm
+
+
+def test_fork_preserves_max_budget_per_run():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            max_budget_per_run=2.0,
+        )
+        fork = src.fork()
+
+        assert isinstance(fork, LocalConversation)
+        assert fork.max_budget_per_run == 2.0

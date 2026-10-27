@@ -177,11 +177,11 @@ def _make_state(tmp_path) -> ConversationState:
 
 def test_logs_matching_acp_provider_version(caplog):
     with caplog.at_level("INFO"):
-        _log_acp_provider_version("codex-acp", "1.10.0")
+        _log_acp_provider_version("codex-acp", "2.2.2")
 
     assert "provider=codex" in caplog.text
-    assert "pinned_version='1.10.0'" in caplog.text
-    assert "reported_version='1.10.0'" in caplog.text
+    assert "pinned_version='2.2.2'" in caplog.text
+    assert "reported_version='2.2.2'" in caplog.text
     assert "mismatch" not in caplog.text
 
 
@@ -6457,6 +6457,44 @@ class TestACPSessionIdPersistence:
         conn.new_session.assert_awaited_once()
         conn.load_session.assert_not_awaited()
         assert agent._session_id == "fresh-sess"
+
+    @pytest.mark.parametrize("with_skills", [True, False])
+    def test_skills_directory_is_shared_with_the_session(self, tmp_path, with_skills):
+        context = (
+            AgentContext(
+                skills=[Skill(name="s", content="body", is_agentskills_format=True)]
+            )
+            if with_skills
+            else None
+        )
+        agent = _make_agent().model_copy(update={"agent_context": context})
+        state = _make_state(tmp_path)
+        agent._materialize_skills(state)
+        conn = self._make_conn()
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        extra = conn.new_session.await_args.kwargs["additional_directories"]
+        assert extra == ([str(agent._skills_root)] if with_skills else None)
+
+    def test_skills_directory_is_not_sent_when_the_server_lacks_the_capability(
+        self, tmp_path
+    ):
+        agent = _make_agent().model_copy(
+            update={
+                "agent_context": AgentContext(
+                    skills=[Skill(name="s", content="body", is_agentskills_format=True)]
+                )
+            }
+        )
+        state = _make_state(tmp_path)
+        agent._materialize_skills(state)
+        conn = self._make_conn()
+        conn.initialize.return_value.agent_capabilities.session_capabilities = None
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        assert conn.new_session.await_args.kwargs["additional_directories"] is None
 
     def test_cancel_drain_restart_keeps_retry_flag_when_init_fails(self, tmp_path):
         """A failed replacement session should leave the deferred restart armed."""
