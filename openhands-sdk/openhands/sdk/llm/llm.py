@@ -141,7 +141,6 @@ from openhands.sdk.llm.exceptions import (
 # OpenHands utilities
 from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.llm.message import (
-    ImageContent,
     Message,
 )
 from openhands.sdk.llm.mixins.non_native_fc import NonNativeToolCallingMixin
@@ -1889,21 +1888,23 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ]
         return max(fees) if fees else 0.0
 
-    def _count_request_images(self, messages: Sequence[Message]) -> int:
-        """Count images the request will actually send.
+    @staticmethod
+    def _count_payload_images(payload: Any) -> int:
+        """Count image parts in a prepared chat or Responses payload.
 
-        Images are dropped from the payload when vision is inactive, so a
-        disabled-vision request carries no per-image charge even if its message
-        objects hold image content.
+        Chat completions carry images as ``image_url`` parts; the Responses API
+        uses ``input_image`` (nested inside a message's content or a
+        ``function_call_output``). Counting the prepared payload rather than the
+        source messages matches what is actually sent, so roles the serializer
+        drops images from (assistant/system history) and a disabled-vision
+        payload do not inflate the reservation.
         """
-        if not self.vision_is_active():
-            return 0
-        return sum(
-            len(item.image_urls)
-            for message in messages
-            for item in message.content
-            if isinstance(item, ImageContent)
-        )
+        if isinstance(payload, Mapping):
+            count = 1 if payload.get("type") in ("image_url", "input_image") else 0
+            return count + sum(LLM._count_payload_images(v) for v in payload.values())
+        if isinstance(payload, list | tuple):
+            return sum(LLM._count_payload_images(item) for item in payload)
+        return 0
 
     def _reserve_budget(
         self,
@@ -2202,7 +2203,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         @self._budget_guarded_attempt(
             call_context,
             call_kwargs,
-            image_count=self._count_request_images(messages),
+            image_count=self._count_payload_images(formatted_messages),
         )
         def _one_attempt(**retry_kwargs: Any) -> ModelResponse:
             assert self._telemetry is not None
@@ -2329,7 +2330,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         @self._budget_guarded_attempt(
             call_context,
             call_kwargs,
-            image_count=self._count_request_images(messages),
+            image_count=self._count_payload_images(formatted_messages),
         )
         async def _one_attempt(**retry_kwargs: Any) -> ModelResponse:
             assert self._telemetry is not None
@@ -2478,7 +2479,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         @self._budget_guarded_attempt(
             call_context,
             {"tools": resp_tools, **call_kwargs},
-            image_count=self._count_request_images(messages),
+            image_count=self._count_payload_images(input_items),
         )
         def _one_attempt(**retry_kwargs: Any) -> ResponsesAPIResponse:
             assert self._telemetry is not None
@@ -2651,7 +2652,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         @self._budget_guarded_attempt(
             call_context,
             {"tools": resp_tools, **call_kwargs},
-            image_count=self._count_request_images(messages),
+            image_count=self._count_payload_images(input_items),
         )
         async def _one_attempt(
             **retry_kwargs: Any,

@@ -1023,18 +1023,15 @@ async def test_budget_settles_from_the_attempt_not_a_concurrent_call(
             llm.completion(messages, call_context=context)
 
 
+def _image_content(url: str = "data:image/png;base64,AAAA") -> ImageContent:
+    return ImageContent(image_urls=[url])
+
+
 def _with_image(messages: list[Message]) -> list[Message]:
     """Attach one image to the fixture's user message."""
     out = list(messages)
     user = out[-1]
-    out[-1] = user.model_copy(
-        update={
-            "content": [
-                *user.content,
-                ImageContent(image_urls=["data:image/png;base64,AAAA"]),
-            ]
-        }
-    )
+    out[-1] = user.model_copy(update={"content": [*user.content, _image_content()]})
     return out
 
 
@@ -1131,3 +1128,33 @@ def test_budget_suppresses_catalog_image_fee_with_custom_prices(budget_call):
 
     assert result.message.content == [TextContent(text="ok")]
     providers[0].assert_called_once()
+
+
+def test_budget_ignores_responses_images_dropped_from_history(budget_call):
+    """Responses sends only user/tool images, so history images must not count.
+
+    Regression: counting source messages inflated the reservation for a
+    Responses call whose only image sat in assistant/system history, denying a
+    request that actually sends none.
+    """
+    info, make_llm, _messages, providers = budget_call
+    info["supports_vision"] = True
+    info["input_cost_per_image"] = 0.05
+    info["output_cost_per_token"] = 0.0001
+    llm = make_llm()
+    history = [
+        Message(
+            role="system",
+            content=[TextContent(text="sys"), _image_content()],
+        ),
+        Message(role="assistant", content=[TextContent(text="prev"), _image_content()]),
+        Message(role="user", content=[TextContent(text="hi")]),
+    ]
+
+    # Token-only bound is $0.02; the two history images would add $0.10.
+    result = llm.responses(
+        history, call_context=LLMCallContext(cost_budget=CostBudget(0.05))
+    )
+
+    assert result.message.content == [TextContent(text="ok")]
+    providers[2].assert_called_once()
