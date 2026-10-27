@@ -1,7 +1,9 @@
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.security import APIKeyCookie, APIKeyHeader
+from pydantic import TypeAdapter, ValidationError
 
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
@@ -73,7 +75,27 @@ def get_conversation_service(request: Request) -> ConversationService:
 
 async def get_bash_event_service(request: Request) -> BashEventService:
     if "runtime_conversation_id" in request.path_params:
-        event_service: EventService = request.state.runtime_event_service
+        event_service: EventService | None = getattr(
+            request.state, "runtime_event_service", None
+        )
+        if event_service is None:
+            # FastAPI still resolves this dependency when the router dependency
+            # bind_local_conversation_runtime failed validation, so report that
+            # validation error instead of reading state it never set.
+            raw_id = request.path_params["runtime_conversation_id"]
+            try:
+                TypeAdapter(UUID).validate_python(raw_id)
+            except ValidationError as exc:
+                raise RequestValidationError(
+                    [
+                        {**error, "loc": ("path", "runtime_conversation_id")}
+                        for error in exc.errors(include_url=False)
+                    ]
+                ) from exc
+            raise HTTPException(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                "Conversation runtime is not bound",
+            )
         if event_service.bash_event_service is None:
             event_service.bash_event_service = BashEventService(
                 bash_events_dir=event_service.conversation_dir / "bash_events",
@@ -95,10 +117,9 @@ async def get_event_service(
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> EventService:
     registry = getattr(request.app.state, "conversation_registry", None)
-    if (
-        isinstance(registry, ConversationRegistry)
-        and registry.serves_persisted_event_reads
-    ):
+    if isinstance(
+        registry, ConversationRegistry
+    ) and registry.serves_persisted_event_reads(conversation_id):
         event_service = await conversation_service.get_persisted_event_service(
             conversation_id
         )

@@ -4,7 +4,7 @@ import json
 import os
 import signal
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
@@ -34,6 +34,16 @@ class BashEventService:
     default_cwd: str | None = None
     _tasks: set[asyncio.Task] = field(default_factory=set, init=False)
     _closed: bool = field(default=False, init=False)
+    # Processes of currently running commands, keyed by command id. A None
+    # value means the spawn is still pending: start_bash_command registers
+    # the id synchronously so a stop arriving before the subprocess exists
+    # is recorded instead of lost. Lets a stop-by-id operation signal one
+    # command without touching the others.
+    _processes: dict[UUID, asyncio.subprocess.Process | None] = field(
+        default_factory=dict, init=False
+    )
+    # Ids a stop was requested for while their spawn was still pending.
+    _stop_requests: set[UUID] = field(default_factory=set, init=False)
     _pub_sub: PubSub[BashEventBase] = field(
         default_factory=lambda: PubSub[BashEventBase](max_subscribers=50),
         init=False,
@@ -62,6 +72,10 @@ class BashEventService:
         # Include microseconds so filename-based ordering reflects emission
         # order for sub-second bursts (e.g. fast `yes`-style floods that
         # emit several BashOutput chunks in the same wall-clock second).
+        # File names hold UTC times, so convert aware datetimes (e.g. a
+        # ``+02:00`` search bound) to UTC first; naive ones are taken as UTC.
+        if timestamp.tzinfo is not None:
+            timestamp = timestamp.astimezone(UTC)
         return timestamp.strftime("%Y%m%d%H%M%S%f")
 
     def _get_event_filename(self, event: BashEventBase) -> str:
@@ -219,13 +233,13 @@ class BashEventService:
                     start_index = i
                     break
 
-        page_slice = matched[start_index : start_index + limit]
-        next_page_id = None
-        if start_index + limit < len(matched):
-            next_page_id = matched[start_index + limit]
-
+        # Filter before counting toward ``limit``: slicing file names first let
+        # ``order__gt`` empty a page while ``next_page_id`` was still set.
+        # The cursor is the next event that passes the filter, so a page is
+        # never followed by an empty one.
         page_events: list[BashEventBase] = []
-        for name in page_slice:
+        next_page_id = None
+        for name in matched[start_index:]:
             event = self._load_event_from_file(self.bash_events_dir / name)
             if event is None:
                 continue
@@ -234,6 +248,9 @@ class BashEventService:
                 event_order = getattr(event, "order", None)
                 if event_order is not None and event_order <= order__gt:
                     continue
+            if len(page_events) >= limit:
+                next_page_id = name
+                break
             page_events.append(event)
 
         return BashEventPage(items=page_events, next_page_id=next_page_id)
@@ -265,6 +282,9 @@ class BashEventService:
         self._save_event_to_file(command)
         await self._pub_sub(command)
 
+        # Register synchronously so a stop racing the spawn is recorded
+        # instead of lost; the task replaces None with the live process.
+        self._processes[command.id] = None
         # Execute the bash command in a background task
         task = asyncio.create_task(self._execute_bash_command(command))
         self._tasks.add(task)
@@ -286,6 +306,12 @@ class BashEventService:
                 env=sanitized_env(),
                 start_new_session=True,
             )
+            self._processes[command.id] = process
+            if command.id in self._stop_requests:
+                # A stop arrived before the spawn completed: apply it now
+                # instead of letting the command run to its timeout.
+                self._stop_requests.discard(command.id)
+                await self.stop_bash_command(command.id)
 
             # Track output order and buffers
             output_order = 0
@@ -413,6 +439,40 @@ class BashEventService:
 
             self._save_event_to_file(error_output)
             await self._pub_sub(error_output)
+        finally:
+            self._processes.pop(command.id, None)
+            self._stop_requests.discard(command.id)
+
+    async def stop_bash_command(self, command_id: UUID) -> bool:
+        """Stop a running command's process group by command id.
+
+        Reuses the timeout path's SIGTERM-then-SIGKILL escalation so
+        user-installed cleanup traps run. The command's own task observes
+        the exit and publishes the terminal output, so only signalling
+        is needed here.
+
+        A stop racing the spawn is recorded and applied as soon as the
+        subprocess exists. Returns True when the id is known (signalled
+        now, already finished, or recorded for a pending spawn).
+        Returns False only for unknown ids; the caller maps a
+        known-but-finished id to success and an unknown id to not-found.
+        """
+        if command_id not in self._processes:
+            return False
+        process = self._processes[command_id]
+        if process is None:
+            self._stop_requests.add(command_id)
+            return True
+        self._signal_process_group(process, signal.SIGTERM)
+        try:
+            await asyncio.wait_for(process.wait(), timeout=1.0)
+        except TimeoutError:
+            self._signal_process_group(process, signal.SIGKILL)
+            try:
+                await asyncio.wait_for(process.wait(), timeout=1.0)
+            except TimeoutError:
+                logger.error("Failed to stop process (command_id=%s)", command_id)
+        return True
 
     def delete_events_older_than(self, cutoff: datetime) -> int:
         """Delete bash event files with a recorded timestamp older than ``cutoff``.
@@ -525,6 +585,8 @@ class BashEventService:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        self._processes.clear()
+        self._stop_requests.clear()
         await self._pub_sub.close()
 
     async def __aenter__(self):

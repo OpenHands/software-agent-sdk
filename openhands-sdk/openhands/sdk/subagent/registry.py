@@ -317,20 +317,37 @@ def register_file_agents(work_dir: str | Path) -> list[str]:
 
     registered: list[str] = []
     for agent_def in deduplicated:
-        factory = agent_definition_to_factory(agent_def, work_dir=work_dir)
-        was_registered = register_agent_if_absent(
-            name=agent_def.name,
-            factory_func=factory,
-            description=agent_def,
-        )
-        if was_registered:
+        if _register_definition(agent_def, work_dir, kind="file-based"):
             registered.append(agent_def.name)
-            logger.info(
-                f"Registered file-based agent '{agent_def.name}'"
-                + (f" from {agent_def.source}" if agent_def.source else "")
-            )
 
     return registered
+
+
+def _register_definition(
+    agent_def: AgentDefinition,
+    work_dir: str | Path | None,
+    kind: str,
+) -> bool:
+    """Register one agent definition; skip it with a warning if it is invalid.
+
+    A definition that cannot be turned into a factory (for example, one naming
+    a skill that does not exist) is skipped so that it does not break the
+    conversation that loads it or the other agents registered alongside it.
+    """
+    source = f" from {agent_def.source}" if agent_def.source else ""
+    try:
+        factory = agent_definition_to_factory(agent_def, work_dir=work_dir)
+    except ValueError as e:
+        logger.warning(f"Skipping {kind} agent '{agent_def.name}'{source}: {e}")
+        return False
+    was_registered = register_agent_if_absent(
+        name=agent_def.name,
+        factory_func=factory,
+        description=agent_def,
+    )
+    if was_registered:
+        logger.info(f"Registered {kind} agent '{agent_def.name}'{source}")
+    return was_registered
 
 
 def register_plugin_agents(
@@ -354,15 +371,8 @@ def register_plugin_agents(
     """
     registered: list[str] = []
     for agent_def in agents:
-        factory = agent_definition_to_factory(agent_def, work_dir=work_dir)
-        was_registered = register_agent_if_absent(
-            name=agent_def.name,
-            factory_func=factory,
-            description=agent_def,
-        )
-        if was_registered:
+        if _register_definition(agent_def, work_dir, kind="plugin"):
             registered.append(agent_def.name)
-            logger.info(f"Registered plugin agent '{agent_def.name}'")
 
     return registered
 

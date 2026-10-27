@@ -75,11 +75,14 @@ def _is_abstract_method(cls: type, name: str) -> bool:
     # Unwrap classmethod/staticmethod
     if isinstance(attr, (classmethod, staticmethod)):
         attr = attr.__func__
-    return getattr(attr, "__isabstractmethod__", False)
+    return bool(inspect.getattr_static(attr, "__isabstractmethod__", False))
 
 
 def _resolver_from_subclass(_name: str, cls: type[ToolDefinition]) -> Resolver:
-    create = getattr(cls, "create", None)
+    try:
+        create = cls.create
+    except AttributeError:
+        create = None
 
     if create is None or not callable(create) or _is_abstract_method(cls, "create"):
         raise TypeError(

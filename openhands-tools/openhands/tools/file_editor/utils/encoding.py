@@ -1,5 +1,6 @@
 """Encoding management for file operations."""
 
+import codecs
 import functools
 import inspect
 import os
@@ -22,7 +23,8 @@ BINARY_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0e-\x1f\x7f]")
 # file's encoding. Short non-UTF-8 files fall below the detector's confidence
 # threshold and are reported as the default encoding, so the detected value
 # alone is not enough to recover them. Ordered most to least likely for source
-# files; the detector's own guess is tried first when it is one of these.
+# files; the detector's own guess is tried right after UTF-8 when it is one of
+# these.
 TEXT_DECODE_CANDIDATES = ("utf-8", "cp1252", "latin-1", "cp1251")
 
 # charset_normalizer reports some codecs under IANA names; map them to the
@@ -70,6 +72,16 @@ class EncodingManager:
         with open(path, "rb") as f:
             raw_data = f.read(sample_size)
 
+        if raw_data.startswith(codecs.BOM_UTF8):
+            return "utf-8-sig"
+
+        try:
+            raw_data.decode(self.default_encoding)
+        except UnicodeDecodeError:
+            pass
+        else:
+            return self.default_encoding
+
         # Use charset_normalizer instead of chardet
         results = charset_normalizer.detect(raw_data)
 
@@ -116,7 +128,11 @@ class EncodingManager:
 
     def _recover_encoding(self, path: Path) -> str | None:
         """Return a codec that decodes ``path`` to control-byte-free text."""
-        candidates = (self._best_guess_encoding(path), *TEXT_DECODE_CANDIDATES)
+        candidates = (
+            self.default_encoding,
+            self._best_guess_encoding(path),
+            *TEXT_DECODE_CANDIDATES,
+        )
         for candidate in dict.fromkeys(c for c in candidates if c):
             try:
                 text = path.read_text(encoding=candidate)

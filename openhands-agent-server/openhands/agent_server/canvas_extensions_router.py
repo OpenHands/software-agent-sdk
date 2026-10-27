@@ -26,6 +26,7 @@ from openhands.agent_server.canvas_extensions.installed import (
     disable_canvas_extension,
     enable_canvas_extension,
     get_canvas_extension_bundle_path,
+    get_canvas_extension_icon_path,
     get_installed_canvas_extension,
     get_installed_canvas_extension_manifest,
     install_canvas_extension,
@@ -107,6 +108,13 @@ class InstalledCanvasExtensionResponse(BaseModel):
         default=False, description="Whether the canvas extension is enabled"
     )
     source: str = Field(description="Original source (e.g., 'github:owner/repo')")
+    requested_ref: str | None = Field(
+        default=None,
+        description=(
+            "Branch, tag, or commit requested at install time. None means no "
+            "ref was requested (tracking the source's default branch)."
+        ),
+    )
     resolved_ref: str | None = Field(
         default=None, description="Resolved git commit SHA"
     )
@@ -136,6 +144,7 @@ class InstalledCanvasExtensionResponse(BaseModel):
             description=info.description,
             enabled=info.enabled,
             source=info.source,
+            requested_ref=info.requested_ref,
             resolved_ref=info.resolved_ref,
             repo_path=info.repo_path,
             installed_at=info.installed_at,
@@ -437,3 +446,42 @@ def get_canvas_extension_bundle_endpoint(
             detail=f"Canvas extension '{extension_name}' bundle not found",
         )
     return FileResponse(bundle_path, headers={"Cache-Control": "no-cache"})
+
+
+@canvas_extensions_router.get(
+    "/installed/{extension_name}/icon",
+    response_class=FileResponse,
+    responses={
+        200: {
+            "content": {
+                "image/svg+xml": {"schema": {"type": "string", "format": "binary"}}
+            }
+        },
+        404: {"description": "Canvas extension or icon not found"},
+    },
+)
+def get_canvas_extension_icon_endpoint(
+    extension_name: CanvasExtensionNamePath,
+) -> FileResponse:
+    """Serve the SVG icon declared by an installed canvas extension's manifest.
+
+    The path comes from the manifest, never the request. The CSP sandbox keeps
+    a directly opened SVG from running scripts on the agent-server origin.
+    """
+    icon_path = get_canvas_extension_icon_path(name=extension_name)
+    if icon_path is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Canvas extension '{extension_name}' icon not found",
+        )
+    return FileResponse(
+        icon_path,
+        media_type="image/svg+xml",
+        headers={
+            "Cache-Control": "no-cache",
+            "Content-Security-Policy": (
+                "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+            ),
+            "X-Content-Type-Options": "nosniff",
+        },
+    )

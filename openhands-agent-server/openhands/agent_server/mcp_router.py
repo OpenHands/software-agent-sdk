@@ -744,7 +744,12 @@ async def get_mcp_oauth_status(job_id: str) -> MCPOAuthStatusResponse:
 
 
 def _validate_callback_url(callback_url: str, job: _MCPOAuthProbeJob) -> None:
-    parsed = urlparse(callback_url)
+    try:
+        parsed = urlparse(callback_url)
+    except ValueError:  # e.g. an unclosed IPv6 bracket
+        raise HTTPException(
+            status_code=400, detail="Invalid OAuth callback URL"
+        ) from None
     if parsed.scheme != "http" or parsed.hostname not in {
         "localhost",
         "127.0.0.1",
@@ -758,7 +763,13 @@ def _validate_callback_url(callback_url: str, job: _MCPOAuthProbeJob) -> None:
         raise HTTPException(status_code=409, detail="OAuth callback is not ready")
 
     expected_parsed = urlparse(expected)
-    if parsed.port != expected_parsed.port or parsed.path != expected_parsed.path:
+    try:
+        port = parsed.port
+    except ValueError:  # out of range or not a number
+        raise HTTPException(
+            status_code=400, detail="Unexpected OAuth callback URL"
+        ) from None
+    if port != expected_parsed.port or parsed.path != expected_parsed.path:
         raise HTTPException(status_code=400, detail="Unexpected OAuth callback URL")
 
 
@@ -773,8 +784,20 @@ async def submit_mcp_oauth_callback(
 ) -> MCPOAuthStatusResponse:
     job = _get_oauth_job(job_id)
     _validate_callback_url(request.callback_url, job)
-    async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
-        response = await client.get(request.callback_url)
+    if job.done.is_set():
+        # A replayed or late callback: the probe finished and its callback
+        # server is closed, so report the outcome instead of forwarding.
+        return job.to_status_response()
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+            response = await client.get(request.callback_url)
+    except httpx.TransportError as exc:
+        # The probe may have finished while we were forwarding.
+        if job.done.is_set():
+            return job.to_status_response()
+        raise HTTPException(
+            status_code=409, detail="OAuth callback server is not listening"
+        ) from exc
     if response.status_code >= 400:
         return MCPOAuthStatusResponse(
             ok=False,

@@ -4,7 +4,7 @@ This example demonstrates using OpenHandsCloudWorkspace to provision a sandbox
 via OpenHands Cloud (app.all-hands.dev) and run an agent conversation.
 
 Usage:
-  uv run examples/02_remote_agent_server/06_convo_with_cloud_workspace.py
+  uv run examples/02_remote_agent_server/07_convo_with_cloud_workspace.py
 
 Requirements:
   - LLM_API_KEY: API key for direct LLM provider access (e.g., Anthropic API key)

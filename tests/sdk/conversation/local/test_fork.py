@@ -221,13 +221,15 @@ def test_fork_with_tags():
         assert fork.state.tags.get("env") == "test"
 
 
-def test_fork_with_title_sets_tag():
-    """Title is stored as a 'title' tag."""
+@pytest.mark.parametrize("tags", [{}, {"purpose": "debugging"}, {"title": "user tag"}])
+def test_fork_with_title_is_deprecated(tags: dict[str, str]):
+    """Passing title is accepted for compat but warns and does not pollute tags."""
     with tempfile.TemporaryDirectory() as tmpdir:
         src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
-        fork = src.fork(title="My Fork")
+        with pytest.warns(DeprecationWarning, match="title parameter is deprecated"):
+            fork = src.fork(title="My Fork", tags=tags)
 
-        assert fork.state.tags.get("title") == "My Fork"
+        assert dict(fork.state.tags) == tags
 
 
 def test_fork_shares_workspace():
@@ -347,3 +349,17 @@ def test_fork_with_aliased_agent_does_not_clobber_source_cache_key():
         )
         assert fork.get_llm_call_context().prompt_cache_key == str(fork.id)
         assert fork.agent.llm is not src.agent.llm
+
+
+def test_fork_preserves_max_budget_per_run():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            max_budget_per_run=2.0,
+        )
+        fork = src.fork()
+
+        assert isinstance(fork, LocalConversation)
+        assert fork.max_budget_per_run == 2.0
