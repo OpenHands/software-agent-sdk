@@ -22,6 +22,9 @@ from openhands.sdk.utils.redact import is_secret_key, redact_text_secrets, sanit
 
 logger = get_logger(__name__)
 
+# Cap on remembered per-response costs; only in-flight attempts need matching.
+_MAX_REMEMBERED_RESPONSE_COSTS = 1024
+
 
 @dataclass(frozen=True, slots=True)
 class UsageSnapshot:
@@ -155,6 +158,11 @@ class Telemetry(BaseModel):
     _req_start: float = PrivateAttr(default=0.0)
     _req_ctx: dict[str, Any] = PrivateAttr(default_factory=dict)
     _last_latency: float = PrivateAttr(default=0.0)
+    # Cost recorded for each response of an attempt in flight, keyed by response
+    # id. Scoped per response so a caller can read the attempt's own cost instead
+    # of a shared cumulative total that other concurrent calls on the same LLM
+    # may have advanced. A missing id means the price could not be established.
+    _costs_by_response_id: dict[str, float | None] = PrivateAttr(default_factory=dict)
     _log_completions_callback: Callable[[str, str], None] | None = PrivateAttr(
         default=None
     )
@@ -210,6 +218,7 @@ class Telemetry(BaseModel):
 
         # 2) cost
         cost = self._compute_cost(resp, provider_info=provider_info)
+        self._remember_response_cost(response_id, cost)
         # Intentionally skip logging zero-cost (0.0) responses; only record
         # positive cost
         if cost:
@@ -239,6 +248,24 @@ class Telemetry(BaseModel):
                 logger.exception("Stats update callback failed", exc_info=True)
 
         return self.metrics.deep_copy()
+
+    @property
+    def costs_by_response_id(self) -> dict[str, float | None]:
+        """Cost recorded for each response of an attempt in flight, by response id.
+
+        A caller identifies its attempt's own cost by the response id it
+        returned, rather than reading a shared cumulative total that concurrent
+        calls on the same LLM may have advanced. A missing id means the price
+        could not be established.
+        """
+        return self._costs_by_response_id
+
+    def _remember_response_cost(self, response_id: str, cost: float | None) -> None:
+        # Bound the map: it is only needed to match an in-flight response, and
+        # response ids are unique per call, so the oldest entries are dead.
+        if len(self._costs_by_response_id) >= _MAX_REMEMBERED_RESPONSE_COSTS:
+            self._costs_by_response_id.clear()
+        self._costs_by_response_id[response_id] = cost
 
     def on_error(self, _err: BaseException) -> None:
         # Best-effort logging for failed requests (so we can debug malformed

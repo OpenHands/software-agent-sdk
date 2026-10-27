@@ -175,3 +175,49 @@ def test_acp_budget_rejection_leaves_no_orphan_state():
                 delete_on_close=False,
             )
         assert not (persist / cid.hex / "base_state.json").exists()
+
+
+def test_acp_delegate_rejects_inherited_budget():
+    """An ACP delegate that inherits a parent's budget must be rejected.
+
+    ``DelegateExecutor`` forwards the parent's LLM call context without an
+    explicit cap, so a delegate's effective budget is the inherited one. Its
+    prompts bypass reservation, so the ceiling must be checked even when
+    ``max_budget_per_run`` is unset.
+    """
+    from openhands.sdk.agent.acp_agent import ACPAgent
+    from openhands.sdk.conversation.exceptions import CostBudgetUnsupportedError
+
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        parent = _conversation(tmp, max_budget_per_run=1.0)
+        with pytest.raises(CostBudgetUnsupportedError, match="ACP agents"):
+            LocalConversation(
+                agent=ACPAgent(acp_command=["echo", "test"]),
+                workspace=str(tmp),
+                persistence_dir=str(tmp / "sub"),
+                max_budget_per_run=None,
+                visualizer=None,
+                delete_on_close=False,
+                _parent_llm_call_context=parent.get_llm_call_context(),
+            )
+        # Rejection happened before any conversation state was created.
+        assert not (tmp / "sub").exists()
+
+
+def test_acp_delegate_without_inherited_budget_is_allowed():
+    from openhands.sdk.agent.acp_agent import ACPAgent
+
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        parent = _conversation(tmp, max_budget_per_run=None)
+        conv = LocalConversation(
+            agent=ACPAgent(acp_command=["echo", "test"]),
+            workspace=str(tmp),
+            persistence_dir=str(tmp / "sub"),
+            max_budget_per_run=None,
+            visualizer=None,
+            delete_on_close=False,
+            _parent_llm_call_context=parent.get_llm_call_context(),
+        )
+        assert conv._cost_budget is None

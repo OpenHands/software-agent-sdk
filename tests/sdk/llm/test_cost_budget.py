@@ -112,6 +112,47 @@ def test_child_denial_reports_its_own_tighter_ceiling():
     assert "maximum budget limit ($1.0000)" in child.denial_detail(2.0)
 
 
+def test_child_ceiling_measures_only_its_own_subtree():
+    """A child's own cap must not be charged for its parent's spending.
+
+    Regression: the child's first request was denied because the shared total
+    included the parent's earlier work, even though the child had spent nothing.
+    """
+    parent = CostBudget(5.0)
+    child = parent.child(1.31)
+    _settle(parent, 0.02)  # the parent's own work, before delegating
+
+    # $1.30 fits the child's $1.31 cap: the parent's $0.02 belongs to the
+    # parent's subtree, not the child's.
+    assert child.try_reserve(1.30) is not None
+
+
+def test_sibling_spend_does_not_consume_a_siblings_ceiling():
+    parent = CostBudget(10.0)
+    left = parent.child(1.0)
+    right = parent.child(1.0)
+    _settle(left, 0.9)
+
+    # The right sibling has spent nothing of its own $1 allowance.
+    assert right.try_reserve(0.9) is not None
+    # The left sibling's own cap is exhausted.
+    assert left.try_reserve(0.9) is None
+
+
+def test_reseed_resets_descendant_subtree_totals():
+    parent = CostBudget(10.0)
+    child = parent.child(1.0)
+    _settle(child, 0.9)
+    assert child.spent == pytest.approx(0.9)
+
+    parent.reseed()
+
+    assert parent.spent == 0.0
+    assert child.spent == 0.0
+    # The child gets its own per-run allowance back.
+    assert child.try_reserve(0.9) is not None
+
+
 def test_concurrent_reservations_cannot_overshoot():
     """A shared budget admits at most the calls that fit, even in parallel."""
     budget = CostBudget(1.0)
@@ -931,3 +972,52 @@ def test_budget_retains_successful_work_when_cost_is_unknown(budget_call, monkey
     providers[0].assert_called_once()
     assert llm.metrics.accumulated_cost == 0
     assert budget.spent == pytest.approx(0.11)
+
+
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+async def test_budget_settles_from_the_attempt_not_a_concurrent_call(
+    budget_call, use_async
+):
+    """Another in-flight call's cost must not settle this attempt's reservation.
+
+    Regression: settlement read the cumulative ``metrics.accumulated_cost``
+    delta, so a concurrent call sharing this LLM could release a reservation
+    whose own price was unknown and admit a request the cap should deny.
+    """
+    _, make_llm, messages, providers = budget_call
+    llm = make_llm()
+    budget = CostBudget(0.15)
+    context = LLMCallContext(cost_budget=budget)
+    assert llm._telemetry is not None
+
+    def concurrent_charge(**_kwargs):
+        # A sibling attempt on the same LLM records its own priced response
+        # while this attempt sits between reservation and settlement.
+        llm._telemetry.on_response(
+            create_mock_litellm_response(
+                "sibling",
+                response_id="sibling-resp",
+                prompt_tokens=100,
+                completion_tokens=100,
+            )
+        )
+        return create_mock_litellm_response(
+            "ok", response_id="unknown-cost-resp", prompt_tokens=0, completion_tokens=0
+        )
+
+    providers[0].side_effect = concurrent_charge
+    providers[1].side_effect = concurrent_charge
+
+    if use_async:
+        await llm.acompletion(messages, call_context=context)
+    else:
+        llm.completion(messages, call_context=context)
+
+    # This attempt reported no usage, so its own price is unknown and the full
+    # reservation is retained -- not the sibling's recorded cost.
+    assert budget.spent == pytest.approx(0.11)
+    with pytest.raises(LLMBudgetExceededError):
+        if use_async:
+            await llm.acompletion(messages, call_context=context)
+        else:
+            llm.completion(messages, call_context=context)

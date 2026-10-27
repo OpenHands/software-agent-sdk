@@ -210,6 +210,11 @@ export class ConversationManager {
       stuckDetection?: boolean;
       workingDir?: string;
       userId?: string;
+      /**
+       * Per-run cost ceiling in USD. Must be > 0 when set. Enforced
+       * server-side before each LLM call.
+       */
+      maxBudgetPerRun?: number;
     } = {}
   ): Promise<RemoteConversation> {
     const workspace = new RemoteWorkspace({
@@ -222,6 +227,7 @@ export class ConversationManager {
       maxIterations: options.maxIterations,
       stuckDetection: options.stuckDetection,
       userId: options.userId,
+      maxBudgetPerRun: options.maxBudgetPerRun,
     });
 
     await conversation.start({
@@ -229,6 +235,7 @@ export class ConversationManager {
       maxIterations: options.maxIterations,
       stuckDetection: options.stuckDetection,
       userId: options.userId,
+      maxBudgetPerRun: options.maxBudgetPerRun,
     });
 
     return conversation;

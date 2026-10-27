@@ -56,6 +56,23 @@ describe('conversation create options', () => {
     expect(bodies[0]).toMatchObject({ max_iterations: 500, stuck_detection: true });
   });
 
+  it('ConversationManager.createConversation forwards the per-run budget', async () => {
+    const manager = new ConversationManager({ host });
+    // A structurally typed options variable must not silently drop the budget.
+    const options = { initialMessage: 'hello', maxBudgetPerRun: 2.5 };
+    await manager.createConversation(agent, options);
+
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({ max_budget_per_run: 2.5 });
+  });
+
+  it('ConversationManager.createConversation omits the budget when unset', async () => {
+    const manager = new ConversationManager({ host });
+    await manager.createConversation(agent, { initialMessage: 'hello' });
+
+    expect(bodies[0]).toMatchObject({ max_budget_per_run: null });
+  });
+
   it('RemoteConversation uses its constructor options, overridden by start() options', async () => {
     const workspace = new RemoteWorkspace({ host, workingDir: '/workspace' });
     const options = { maxIterations: 7, stuckDetection: false };

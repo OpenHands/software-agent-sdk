@@ -182,21 +182,24 @@ def _copy_event_for_fork(event: Event) -> Event:
     return Event.model_validate_json(event.model_dump_json(exclude_none=True))
 
 
-def reject_acp_budget(
-    agent: AgentBase | None, max_budget_per_run: float | None
-) -> None:
-    """Reject a per-run budget on an ACP agent, which cannot enforce one.
+def reject_acp_budget(agent: AgentBase | None, effective_budget: float | None) -> None:
+    """Reject an ACP agent that would run under a cost budget.
 
     ACP prompts run in an external process that reports usage only after the
     turn, so the SDK cannot reserve a call's worst-case cost before sending and
     a single prompt can exceed the ceiling. Accepting the budget would silently
     promise enforcement the SDK cannot deliver.
 
+    ``effective_budget`` is the ceiling that actually applies to this
+    conversation -- its own ``max_budget_per_run`` or one inherited from a
+    parent that delegated to it. Either way the ACP agent would bypass
+    reservation, so both are refused.
+
     Callers that create host-local state for a conversation (the agent server's
     worktree/branch, for instance) must call this once the agent is known and
     before that state exists, so a rejection leaves nothing behind.
     """
-    if max_budget_per_run is None or not isinstance(agent, ACPAgent):
+    if effective_budget is None or not isinstance(agent, ACPAgent):
         return
     raise CostBudgetUnsupportedError(
         "max_budget_per_run is not supported for ACP agents: their "
@@ -440,6 +443,19 @@ class LocalConversation(BaseConversation):
         ws_path = Path(self.workspace.working_dir)
         if not ws_path.exists():
             ws_path.mkdir(parents=True, exist_ok=True)
+        # A delegate inherits its parent's budget even without one of its own,
+        # and an ACP agent bypasses reservation either way, so the ceiling that
+        # actually applies decides whether this agent is admissible.
+        inherited_budget = (
+            _parent_llm_call_context.cost_budget
+            if _parent_llm_call_context is not None
+            else None
+        )
+        effective_budget = (
+            max_budget_per_run
+            if max_budget_per_run is not None
+            else (inherited_budget.limit if inherited_budget is not None else None)
+        )
         # Reject an ACP budget before ``ConversationState.create`` writes
         # ``base_state.json``. A later rejection would leave an orphaned state
         # file behind, so a retry with the same id but a different agent would
@@ -447,7 +463,7 @@ class LocalConversation(BaseConversation):
         # The resumed agent is not known until after ``create``, so only a
         # caller-supplied agent can be checked here; the resume path re-checks
         # once the persisted agent is loaded.
-        reject_acp_budget(agent, max_budget_per_run)
+        reject_acp_budget(agent, effective_budget)
         self._state = ConversationState.create(
             id=desired_id,
             agent=agent,
@@ -469,7 +485,7 @@ class LocalConversation(BaseConversation):
             # Resume path: the persisted agent is known only now. No state file
             # is created here (base_state.json already exists), so re-checking
             # the budget cannot orphan anything.
-            reject_acp_budget(agent, max_budget_per_run)
+            reject_acp_budget(agent, effective_budget)
             # The persisted agent carries client-tool ``Tool`` specs, but in a
             # fresh process the ``ClientTool`` *classes* are absent from the
             # global registry. Re-register them from the persisted specs so
@@ -559,14 +575,9 @@ class LocalConversation(BaseConversation):
         # Hard cost ceiling (USD) per run; None disables it.
         self.max_budget_per_run = max_budget_per_run
         self._budget_run_baseline = 0.0
-        inherited_budget = (
-            _parent_llm_call_context.cost_budget
-            if _parent_llm_call_context is not None
-            else None
-        )
         self._cost_budget: CostBudget | None = None
         # True only for the conversation that created the budget; a conversation
-        # that inherited a parent's budget shares its ledger and must never
+        # that inherited a parent's budget shares its tree and must never
         # re-seed it mid-flight.
         self._owns_budget = False
         if max_budget_per_run is not None:
@@ -837,7 +848,7 @@ class LocalConversation(BaseConversation):
             return detail
         if self.max_budget_per_run is None:
             # Inherited a parent's ceiling without one of its own; the shared
-            # ledger already enforces it.
+            # tree already enforces it.
             return None
         spent = self._combined_cost()
         if spent < self.max_budget_per_run:
@@ -850,10 +861,10 @@ class LocalConversation(BaseConversation):
     def _begin_budget_run(self) -> None:
         """Start a fresh per-run budget allowance for a top-level run.
 
-        Records the run-start baseline and reseeds the ledger, so each
+        Records the run-start baseline and reseeds the tree, so each
         ``run()``/``arun()`` gets its own ``max_budget_per_run`` allowance rather
         than inheriting earlier runs' spend. A conversation that only inherited a
-        parent's budget shares the parent's ledger and must not reseed it
+        parent's budget shares the parent's tree and must not reseed it
         mid-flight.
         """
         self._budget_run_baseline = self._combined_cost_total()
@@ -1018,7 +1029,7 @@ class LocalConversation(BaseConversation):
                 tags=tags,
                 # A fork is an independent conversation: inherit the source's
                 # non-budget call context but not its ceiling, so the fork's
-                # calls never reserve against the source's ledger. Its own
+                # calls never reserve against the source's tree. Its own
                 # max_budget_per_run (copied from the source) starts fresh.
                 _parent_llm_call_context=replace(
                     self._llm_call_context, cost_budget=None

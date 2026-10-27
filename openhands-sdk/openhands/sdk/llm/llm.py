@@ -1957,8 +1957,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Failed/cancelled attempts retain their bound because the provider may
         have processed work without returning complete usage. Successful calls
         settle to recorded positive cost when its pricing is complete; absent
-        or endpoint-premium-unaware telemetry retains the bound too. This ledger
-        is budget usage, not a provider billing record. Unbudgeted calls keep
+        or endpoint-premium-unaware telemetry retains the bound too. This tracked
+        usage is budget usage, not a provider billing record. Unbudgeted calls keep
         their existing transport options and behavior.
         """
 
@@ -1972,7 +1972,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     )
                     if reservation is None:
                         return await attempt(*args, **kwargs)
-                    cost_before = self.metrics.accumulated_cost
                     # Keep retries in the SDK guard and never drop the cap as
                     # an unsupported parameter inside LiteLLM.
                     kwargs = {
@@ -1986,12 +1985,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     except BaseException:
                         reservation.budget.settle(
                             reservation,
-                            max(reservation.amount, self._cost_delta(cost_before)),
+                            max(reservation.amount, self._attempt_cost(result=None)),
                         )
                         raise
-                    cost = self._cost_delta(cost_before)
                     reservation.budget.settle(
-                        reservation, self._budget_success_cost(reservation, cost)
+                        reservation,
+                        self._budget_success_cost(
+                            reservation, self._attempt_cost(result=result)
+                        ),
                     )
                     return result
 
@@ -2004,7 +2005,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
                 if reservation is None:
                     return attempt(*args, **kwargs)
-                cost_before = self.metrics.accumulated_cost
                 kwargs = {
                     **kwargs,
                     "drop_params": False,
@@ -2016,12 +2016,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 except BaseException:
                     reservation.budget.settle(
                         reservation,
-                        max(reservation.amount, self._cost_delta(cost_before)),
+                        max(reservation.amount, self._attempt_cost(result=None)),
                     )
                     raise
-                cost = self._cost_delta(cost_before)
                 reservation.budget.settle(
-                    reservation, self._budget_success_cost(reservation, cost)
+                    reservation,
+                    self._budget_success_cost(
+                        reservation, self._attempt_cost(result=result)
+                    ),
                 )
                 return result
 
@@ -2029,9 +2031,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         return decorate
 
-    def _cost_delta(self, cost_before: float) -> float:
-        """Cost added to this LLM's own metrics by the call just completed."""
-        return max(0.0, self.metrics.accumulated_cost - cost_before)
+    def _attempt_cost(
+        self, result: ModelResponse | ResponsesAPIResponse | None
+    ) -> float:
+        """Cost recorded for the attempt just completed, or ``0.0`` if unknown.
+
+        Keyed by the response id the attempt returned, so a concurrent call
+        sharing this LLM cannot settle the reservation with its own cost. The
+        telemetry callback runs inside the transport call, so the entry exists
+        by the time the attempt returns; ``0.0`` means the price could not be
+        established and the caller retains the full reservation.
+        """
+        assert self._telemetry is not None
+        if result is None:
+            return 0.0
+        cost = self._telemetry.costs_by_response_id.get(result.id)
+        return cost if cost is not None else 0.0
 
     def _budget_success_cost(
         self, reservation: BudgetReservation, cost: float
