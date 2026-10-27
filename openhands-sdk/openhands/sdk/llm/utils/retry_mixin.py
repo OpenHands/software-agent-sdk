@@ -9,8 +9,10 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
+from tenacity.stop import stop_base
 
 from openhands.sdk.llm.exceptions import LLMNoResponseError
+from openhands.sdk.llm.utils.retry_after import retry_after_seconds
 from openhands.sdk.logger import get_logger
 
 
@@ -24,6 +26,15 @@ RetryListener = Callable[[int, int, BaseException | None], None]
 class _HasStatusCode(Protocol):
     @property
     def status_code(self) -> object: ...
+
+
+class _StopBeforeLongWait(stop_base):
+    def __init__(self, max_wait: float):
+        self.max_wait = max_wait
+
+    def __call__(self, retry_state: RetryCallState) -> bool:
+        error = retry_state.outcome.exception() if retry_state.outcome else None
+        return retry_after_seconds(error) > self.max_wait
 
 
 class RetryMixin:
@@ -130,16 +141,22 @@ class RetryMixin:
                 )
             return eligible
 
+        exponential_wait = wait_exponential(
+            multiplier=retry_multiplier, min=retry_min_wait, max=retry_max_wait
+        )
+
+        def wait(retry_state: RetryCallState) -> float:
+            error = retry_state.outcome.exception() if retry_state.outcome else None
+            return max(exponential_wait(retry_state), retry_after_seconds(error))
+
         retry_decorator: Callable[[Callable[..., Any]], Callable[..., Any]] = retry(
             before_sleep=before_sleep,
-            stop=stop_after_attempt(num_retries),
+            stop=(
+                stop_after_attempt(num_retries) | _StopBeforeLongWait(retry_max_wait)
+            ),
             reraise=True,
             retry=diagnosed_retry,
-            wait=wait_exponential(
-                multiplier=retry_multiplier,
-                min=retry_min_wait,
-                max=retry_max_wait,
-            ),
+            wait=wait,
         )
         return retry_decorator
 

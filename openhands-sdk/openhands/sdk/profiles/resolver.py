@@ -130,6 +130,8 @@ class AgentProfileDiagnostics(BaseModel):
     # No dangling report: this is an
     # allow-list over what a launch supplies, so an unmatched name is a no-op.
     secret_refs: list[str] | None = None
+    # Built-in integration scope (both variants); same allow-list semantics.
+    integration_refs: list[str] | None = None
 
     # ACP provider credential channels the editor/materialize checks (ACP only).
     # These are NOT jointly required: authentication needs the API key *or* one
@@ -496,6 +498,7 @@ def resolve_agent_profile_dry_run(
         resolved_mcp_config_keys=resolved,
         dangling_mcp_server_refs=dangling,
         secret_refs=profile.secret_refs,
+        integration_refs=profile.integration_refs,
     )
     if dangling:
         diagnostics.errors.append(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import Final
 
 from litellm.exceptions import (
@@ -13,8 +14,8 @@ from litellm.exceptions import (
     InternalServerError,
     OpenAIError,
     PermissionDeniedError,
-    RateLimitError,
 )
+from openai import APIError as OpenAIAPIError, RateLimitError as OpenAIRateLimitError
 
 from .types import (
     LLMContextWindowExceedError,
@@ -140,21 +141,46 @@ def is_prompt_cache_too_small(exception: Exception) -> bool:
     return any(p in s for p in PROMPT_CACHE_TOO_SMALL_PATTERNS)
 
 
+def _has_rate_limit_code(exception: BaseException, codes: Collection[str]) -> bool:
+    if not isinstance(exception, (OpenAIRateLimitError, LLMRateLimitError)):
+        return False
+    # LiteLLM can replace the outer code/body while preserving the provider
+    # exception as context; SDK mapping preserves LiteLLM as the explicit cause.
+    current: BaseException | None = exception
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, OpenAIAPIError) and (
+            current.code in codes or current.type in codes
+        ):
+            return True
+        current = current.__cause__ or (
+            None if current.__suppress_context__ else current.__context__
+        )
+    return False
+
+
 def is_budget_exceeded_error(exception: BaseException) -> bool:
     """Recognize explicit budget denials before or after SDK error mapping."""
     if isinstance(exception, BudgetExceededError):
         return True
-    if not isinstance(exception, (RateLimitError, LLMRateLimitError)):
+    if not isinstance(exception, (OpenAIRateLimitError, LLMRateLimitError)):
         return False
     message = str(exception).lower()
-    return "budget_exceeded" in message or "budget has been exceeded" in message
+    return (
+        _has_rate_limit_code(exception, ("budget_exceeded",))
+        or "budget_exceeded" in message
+        or "budget has been exceeded" in message
+    )
 
 
 def is_quota_exhaustion_error(exception: BaseException) -> bool:
     """Identify exhausted allowances that require a reset or limit increase."""
     s = str(exception).lower()
-    return is_budget_exceeded_error(exception) or any(
-        p in s for p in QUOTA_EXHAUSTION_PATTERNS
+    return (
+        is_budget_exceeded_error(exception)
+        or _has_rate_limit_code(exception, QUOTA_EXHAUSTION_PATTERNS)
+        or any(p in s for p in QUOTA_EXHAUSTION_PATTERNS)
     )
 
 

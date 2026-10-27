@@ -96,8 +96,9 @@ class StartChildConversationRequest(BaseModel):
         description=(
             "Workspace isolation for the child. 'worktree' runs it in a git "
             "worktree carved from the parent's workspace when that workspace is a "
-            "git repository; 'shared' runs it in the parent's directory. Backends "
-            "that manage workspaces themselves may ignore this."
+            "git repository with a usable base commit; otherwise it shares the "
+            "parent's directory. 'shared' always uses the parent's directory. "
+            "Backends that manage workspaces themselves may ignore this."
         ),
     )
 
@@ -281,6 +282,15 @@ class ConversationConfig(BaseModel):
         ge=1,
         description="If set, the max number of iterations the agent will run "
         "before stopping. This is useful to prevent infinite loops.",
+    )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Hard cost ceiling in USD, checked against the conversation's "
+            "accumulated LLM cost across all of its LLMs. When reached, the run "
+            "stops with a `MaxBudgetReached` error. `None` disables the check."
+        ),
     )
     stuck_detection: bool = Field(
         default=True,
