@@ -151,6 +151,8 @@ def build_powershell_init_script() -> str:
         "catch { $oh_cwd = $null }; "
         "try { $oh_py = (Get-Command python -ErrorAction SilentlyContinue | "
         "Select-Object -First 1 -ExpandProperty Source) } catch { $oh_py = $null }; "
+        # PowerShell 5.1 serializes a pipeline's AutomationNull as {}, not JSON null.
+        "if (-not $oh_py) { $oh_py = $null }; "
         "$oh_meta = @{ pid = $PID; exit_code = $oh_code; username = $env:USERNAME; "
         "hostname = $env:COMPUTERNAME; working_dir = $oh_cwd; "
         "py_interpreter_path = $oh_py }; "

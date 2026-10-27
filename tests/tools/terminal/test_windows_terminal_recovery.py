@@ -111,17 +111,23 @@ def test_completion_detected_however_command_ends(
 # Interrupt recovers the session and kills the process subtree
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("frozen", [False, True])
+@pytest.mark.parametrize("python_on_path", [False, True])
 def test_ctrl_c_of_builtin_makes_session_ready(
-    work_dir: str, monkeypatch: pytest.MonkeyPatch, frozen: bool
+    work_dir: str, monkeypatch: pytest.MonkeyPatch, frozen: bool, python_on_path: bool
 ) -> None:
     if frozen:
         monkeypatch.setattr(
             sys, "executable", os.path.join(work_dir, "agent-server.exe")
         )
+    system_dir = os.path.join(os.environ["SystemRoot"], "System32")
     session = create_terminal_session(
         work_dir=work_dir,
         terminal_type="powershell",
         no_change_timeout_seconds=NO_CHANGE,
+        shell_path=os.path.join(
+            system_dir, "WindowsPowerShell", "v1.0", "powershell.exe"
+        ),
+        env=None if python_on_path else {"PATH": system_dir},
     )
     try:
         session.initialize()
