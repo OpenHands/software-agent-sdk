@@ -20,13 +20,17 @@ persist it through the settings API under the tested server's ``auth.state``.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
+import os
+import re
 import threading
 import time
 import traceback
 import uuid
 from collections.abc import Callable, Collection
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Final, Literal
 from urllib.parse import urlparse
 
 import httpx
@@ -40,12 +44,12 @@ from openhands.agent_server.mcp_oauth_store import (
     InMemoryMCPOAuthTokenStore,
 )
 from openhands.agent_server.persistence import get_secrets_store
-from openhands.sdk.conversation.secret_registry import SecretMask
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
     MCPAuthCredential,
+    MCPBasicAuthCredential,
     MCPOAuthAuthCredential,
     MCPOAuthAuthentication,
     MCPOAuthStateResponse,
@@ -529,6 +533,56 @@ def _run_tool_call(
     return MCPToolCallResult(is_error=bool(result.isError), text=text)
 
 
+# What a masked value reads as, as in a conversation's masked output.
+SECRET_MASK: Final[str] = "<secret-hidden>"
+
+# Environment values shorter than this (a port, a flag) are not masked: they
+# would mangle every match in the error, and are rarely credentials. Saved
+# secrets are always masked.
+MIN_MASKED_ENV_VALUE_LENGTH: Final[int] = 8
+
+
+def _char_pattern(ch: str) -> str:
+    """Regex for ``ch`` in the forms text can echo it.
+
+    A value can come back literally, JSON-escaped (a logged payload) or
+    percent-encoded (httpx encodes each URL component with its own safe
+    characters, so ``user:p%40ss`` mixes the two).
+    """
+    literal = {ch, json.dumps(ch)[1:-1]}
+    if ch == " ":
+        literal.add("+")
+    encoded = "".join(f"%{byte:02X}" for byte in ch.encode())
+    forms = sorted(re.escape(form) for form in literal) + [f"(?i:{encoded})"]
+    return "(?:" + "|".join(forms) + ")"
+
+
+class SecretMask:
+    """Masks the given values wherever text echoes them, in any encoding.
+
+    Built once per test request; conversations use ``SecretRegistry``.
+    """
+
+    def __init__(self, values: Collection[str]) -> None:
+        # Longest first so an overlapping shorter value cannot mask half of a
+        # longer one and leave the rest in cleartext.
+        ordered = sorted({value for value in values if value}, key=len, reverse=True)
+        self.pattern = (
+            re.compile(
+                "|".join(
+                    "".join(_char_pattern(ch) for ch in value) for value in ordered
+                )
+            )
+            if ordered
+            else None
+        )
+
+    def mask(self, text: str) -> str:
+        if self.pattern is None or not text:
+            return text
+        return self.pattern.sub(SECRET_MASK, text)
+
+
 def _error_scrubber(mask: SecretMask) -> Callable[[str], str]:
     """Mask substituted secrets in error text, then the credential shapes
     ``redact_text_secrets`` knows, such as a token typed into a URL query."""
@@ -649,23 +703,28 @@ def _expand_secret_references(
 ) -> tuple[dict[str, MCPServer], list[str]]:
     """Expand ``${NAME}`` references the way a conversation on this server does.
 
-    Adds the saved-secret values substituted to ``values`` (also when the
-    expanded config fails validation, so the caller can mask the error) and
-    returns the expanded config with the references without a default that
-    nothing resolved. An OAuth server's ``auth`` stays as written: the OAuth
-    client copies a configured client secret into the state returned for the
-    caller to save.
+    Adds the values substituted to ``values`` (also when the expanded config
+    fails validation, so the caller can mask the error), environment values
+    only from ``MIN_MASKED_ENV_VALUE_LENGTH`` characters, plus the encoded
+    form of a Basic credential that used a reference. Returns the expanded
+    config with the references without a default that nothing resolved. An
+    OAuth server's ``auth`` stays as written: the OAuth client copies a
+    configured client secret into the state returned for the caller to save.
     """
     cache: dict[str, str | None] = {}
 
     def lookup(name: str) -> str | None:
         # Secrets, then this process's environment, as in a conversation; the
-        # SDK reads the environment. Like a conversation, mask only the
-        # secrets' values. One store read per name, however often it is used.
+        # SDK reads the environment. One store read per name, however often
+        # it is used.
         if name not in cache:
             cache[name] = value = get_secret(name)
             if value:
                 values.add(value)
+            elif value is None:
+                env_value = os.environ.get(name, "")
+                if len(env_value) >= MIN_MASKED_ENV_VALUE_LENGTH:
+                    values.add(env_value)
         return cache[name]
 
     unresolved: set[str] = set()
@@ -686,6 +745,16 @@ def _expand_secret_references(
     )
     for name, auth in oauth_auth.items():
         expanded[name] = expanded[name].model_copy(update={"auth": auth})
+    for name, server in expanded.items():
+        # The SDK sends Basic auth as ``base64(user:password)``.
+        auth = server.auth
+        if (
+            isinstance(auth, MCPBasicAuthCredential)
+            and auth.password is not None
+            and auth != mcp_config[name].auth
+        ):
+            credential = f"{auth.username}:{auth.password.get_secret_value()}"
+            values.add(base64.b64encode(credential.encode()).decode("ascii"))
     return expanded, sorted(unresolved)
 
 

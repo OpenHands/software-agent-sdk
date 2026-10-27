@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import sys
@@ -19,6 +20,7 @@ from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.mcp_router import (
     _OAUTH_PROBE_JOB_TTL_SECONDS,
+    SECRET_MASK,
     MCPTestRequest,
     _BrowserCoordinatedOAuth,
     _MCPOAuthProbeJob,
@@ -28,7 +30,6 @@ from openhands.agent_server.mcp_router import (
 )
 from openhands.agent_server.persistence import get_secrets_store, reset_stores
 from openhands.agent_server.persistence.store import FileSecretsStore
-from openhands.sdk.conversation.secret_registry import SECRET_MASK
 from openhands.sdk.mcp.config import to_fastmcp_mcp_config
 from tests.agent_server.conftest import FakeMCPTools
 
@@ -381,8 +382,9 @@ def test_mcp_test_expands_remote_secret_reference_from_saved_secrets(
 def test_mcp_test_expands_references_like_a_conversation(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Saved secrets, then the environment, then ``:-`` defaults; as in a
-    conversation, only saved secrets are masked in the returned tool output."""
+    """Saved secrets, then the environment, then ``:-`` defaults. The saved
+    secret is masked in the returned tool output; the short environment
+    value is not."""
     config = Config(session_api_keys=[])
     get_secrets_store(config).set_secret("HF_BOT_TOKEN", "xoxb-saved-secret")
     monkeypatch.setenv("HF_TEAM_ID", "T0123")
@@ -481,6 +483,106 @@ def test_mcp_test_masks_substituted_secrets_in_errors_and_logs(
     [record] = [r for r in caplog.records if "failed unexpectedly" in r.getMessage()]
     # A traceback that needs masking can only be logged as text.
     assert record.exc_info is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://mcp.example/mcp?q=${HF_ENV_TOKEN}",
+        "https://mcp.example/${HF_ENV_TOKEN}/mcp",
+    ],
+    ids=["query", "path"],
+)
+def test_mcp_test_masks_environment_values_in_errors_and_logs(
+    client: TestClient,
+    fake_mcp_tools: FakeMCPTools,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    url: str,
+):
+    """A value from the server's environment is masked like a saved secret,
+    whatever the query key or position it is substituted into."""
+    monkeypatch.setenv("HF_ENV_TOKEN", "env-super-secret-999")
+    _fail_with_expanded_url(fake_mcp_tools)
+
+    with caplog.at_level(logging.INFO, logger="openhands.agent_server.mcp_router"):
+        response = client.post(
+            "/api/mcp/test",
+            json={"server": {"transport": "http", "url": url}, "timeout": 5.0},
+        )
+
+    assert "env-super-secret-999" not in response.text
+    assert "env-super-secret-999" not in caplog.text
+    assert SECRET_MASK in response.json()["error"]
+
+
+def test_mcp_test_leaves_short_environment_values_readable(
+    client: TestClient,
+    fake_mcp_tools: FakeMCPTools,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Short environment values such as a port or a flag are not masked, so
+    they do not mangle every ``80`` or ``1`` in the returned error."""
+    monkeypatch.setenv("HF_PORT", "80")
+    monkeypatch.setenv("HF_DEBUG", "1")
+    _fail_with_expanded_url(fake_mcp_tools)
+
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "transport": "http",
+                "url": "https://mcp.example:${HF_PORT}/v1801/mcp?debug=${HF_DEBUG}",
+            },
+            "timeout": 5.0,
+        },
+    )
+
+    assert response.json()["error"] == (
+        "RuntimeError: 401 Unauthorized for url "
+        "'https://mcp.example:80/v1801/mcp?debug=1'"
+    )
+
+
+def test_mcp_test_masks_an_expanded_basic_credential(
+    fake_mcp_tools: FakeMCPTools, caplog: pytest.LogCaptureFixture
+):
+    """Basic auth goes out as ``base64(user:password)``; that form is masked
+    too, not only the substituted password."""
+    config = Config(session_api_keys=[])
+    get_secrets_store(config).set_secret("HF_DB_PASS", "s3cret-pw")
+    client = TestClient(create_app(config), raise_server_exceptions=False)
+    token = base64.b64encode(b"user:s3cret-pw").decode()
+
+    def fail(config, kwargs):
+        headers = to_fastmcp_mcp_config(config)["mcpServers"]["db"]["headers"]
+        raise RuntimeError(f"rejected Authorization: {headers['Authorization']}")
+
+    fake_mcp_tools.on_create = fail
+
+    with caplog.at_level(logging.INFO, logger="openhands.agent_server.mcp_router"):
+        response = client.post(
+            "/api/mcp/test",
+            json={
+                "name": "db",
+                "server": {
+                    "transport": "http",
+                    "url": "https://mcp.example/mcp",
+                    "auth": {
+                        "strategy": "basic",
+                        "username": "user",
+                        "password": "${HF_DB_PASS}",
+                    },
+                },
+                "timeout": 5.0,
+            },
+        )
+
+    error = response.json()["error"]
+    assert "rejected Authorization: " in error
+    for value in (token, "s3cret-pw"):
+        assert value not in response.text
+        assert value not in caplog.text
 
 
 def test_mcp_test_logs_a_clean_unexpected_failure_with_exc_info(
@@ -727,7 +829,8 @@ def test_mcp_test_keeps_the_secret_out_of_a_post_expansion_validation_error(
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["ok"] is False
-    assert "Authorization" in body["error"]
+    # The header name came from the environment, so it is masked too.
+    assert "cannot be combined with an explicit top-level" in body["error"]
     assert "REAL-SECRET-VALUE-123" not in response.text
     assert "REAL-SECRET-VALUE-123" not in caplog.text
 
