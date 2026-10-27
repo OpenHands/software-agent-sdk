@@ -53,7 +53,10 @@ from openhands.sdk.llm._tokenizer import (
     count_tokenized_output,
     load_chat_template_tokenizer,
 )
-from openhands.sdk.llm.exceptions.classifier import is_transient_http_error
+from openhands.sdk.llm.exceptions.classifier import (
+    is_transient_http_error,
+    is_transient_proxy_auth_error,
+)
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 from openhands.sdk.llm.utils.runtime_metadata import (
@@ -1149,6 +1152,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         retry_condition = (
             retry_if_exception_type(LLM_RETRY_EXCEPTIONS)
             | retry_if_exception(is_transient_http_error)
+            # LiteLLM proxy cache-miss 401s recover on retry (#18951)
+            | retry_if_exception(is_transient_proxy_auth_error)
         ) & retry_if_exception(lambda e: not is_quota_exhaustion_error(e))
         return self.retry_decorator(
             num_retries=self.num_retries,

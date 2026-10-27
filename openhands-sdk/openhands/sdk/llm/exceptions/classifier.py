@@ -89,6 +89,17 @@ AUTH_PATTERNS: Final[list[str]] = [
     "access denied",
 ]
 
+# LiteLLM proxy-side cache misses surface as AuthenticationError (401) even
+# though the token is valid and the same call succeeds on retry (#18951).
+# These are transient proxy state issues, not credential problems: retrying
+# is the correct recovery, so they must NOT be classified as fatal auth
+# errors (which would mark the conversation failed and tell the user to
+# rotate keys that were never broken).
+TRANSIENT_PROXY_AUTH_PATTERNS: Final[list[str]] = [
+    "unable to find token in cache",
+    "invalid proxy server token",
+]
+
 CONTENT_POLICY_PATTERNS: Final[list[str]] = [
     "content_policy",
     "content filtering policy",
@@ -184,11 +195,21 @@ def is_quota_exhaustion_error(exception: BaseException) -> bool:
     )
 
 
+def is_transient_proxy_auth_error(exception: BaseException) -> bool:
+    """Detect LiteLLM proxy cache-miss 401s that succeed on retry (#18951).
+
+    The proxy raises these as typed AuthenticationError, so they look fatal,
+    but the token is valid — the retry loop must see them as transient.
+    """
+    s = str(exception).lower()
+    return any(p in s for p in TRANSIENT_PROXY_AUTH_PATTERNS)
+
+
 def looks_like_auth_error(exception: Exception) -> bool:
-    # Trust the typed exception when the provider/LiteLLM raised an explicit
-    # 401/403 — its message text may not contain the heuristic patterns below.
+    # LiteLLM proxy cache-miss 401s carry the typed AuthenticationError but
+    # recover on retry — exclude them before trusting the exception type.
     if isinstance(exception, (AuthenticationError, PermissionDeniedError)):
-        return True
+        return not is_transient_proxy_auth_error(exception)
     if not isinstance(exception, (BadRequestError, OpenAIError)):
         return False
     s = str(exception).lower()
