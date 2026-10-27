@@ -2,7 +2,9 @@
 
 import asyncio
 import os
+import signal
 from pathlib import Path
+from urllib.parse import quote, urlencode
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import sanitized_env
@@ -75,17 +77,31 @@ class VSCodeService:
         """Stop the VSCode server."""
         if self.process:
             try:
-                self.process.terminate()
-                await asyncio.wait_for(self.process.wait(), timeout=5.0)
+                self._signal_process_group(signal.SIGTERM)
+                await asyncio.wait_for(self._wait_for_exit(), timeout=5.0)
                 logger.info("VSCode server stopped successfully")
             except TimeoutError:
                 logger.warning("VSCode server did not stop gracefully, killing process")
-                self.process.kill()
+                self._signal_process_group(signal.SIGKILL)
                 await self.process.wait()
             except Exception as e:
                 logger.error(f"Error stopping VSCode server: {e}")
             finally:
                 self.process = None
+
+    async def set_connection_token(self, connection_token: str) -> None:
+        """Restart a running server with a new connection token.
+
+        openvscode-server reads its token only at startup, so the server is
+        stopped and started again with the new one. A server that is not
+        running keeps its token, so ``get_vscode_url`` doesn't advertise a
+        server that isn't there (for example, in images without VSCode).
+        """
+        if not self.is_running() or connection_token == self.connection_token:
+            return
+        self.connection_token = connection_token
+        await self.stop()
+        await self.start()
 
     def get_vscode_url(
         self,
@@ -105,9 +121,11 @@ class VSCodeService:
             workspace_dir: Path to workspace directory
 
         Returns:
-            VSCode URL with token, or None if not available
+            VSCode URL with token, or None if the server is not running
         """
-        if self.connection_token is None:
+        # A keyed server seeds the token before start() runs, so the token
+        # alone does not mean a server is there to open.
+        if self.connection_token is None or not self.is_running():
             return None
 
         if base_url is None:
@@ -117,7 +135,14 @@ class VSCodeService:
         if self.server_base_path:
             base = f"{base}/{self.server_base_path.strip('/')}"
 
-        return f"{base}/?tkn={self.connection_token}&folder={workspace_dir}"
+        # Encode the values so a path with '&', '#', '?' or spaces decodes back
+        # to the same folder; '/' stays readable.
+        query = urlencode(
+            {"tkn": self.connection_token, "folder": workspace_dir},
+            quote_via=quote,
+            safe="/",
+        )
+        return f"{base}/?{query}"
 
     def is_running(self) -> bool:
         """Check if VSCode server is running.
@@ -153,6 +178,29 @@ class VSCodeService:
         except OSError:
             return False
 
+    def _signal_process_group(self, sig: signal.Signals) -> None:
+        """Signal the launcher script and the node server it runs.
+
+        The launcher runs node as a child instead of exec'ing it, so signalling
+        the script alone leaves node running and holding the port. The script
+        leads its own process group (``start_new_session``), so its pid is the
+        group id even after the script itself has exited.
+        """
+        if self.process is None:
+            return
+        try:
+            os.killpg(self.process.pid, sig)
+        except ProcessLookupError:
+            pass
+
+    async def _wait_for_exit(self) -> None:
+        """Wait for the launcher to exit and for node to release the port."""
+        if self.process is None:
+            return
+        await self.process.wait()
+        while not await self._is_port_available():
+            await asyncio.sleep(0.1)
+
     async def _start_vscode_process(self) -> None:
         """Start the VSCode server process."""
         extensions_arg = (
@@ -175,12 +223,14 @@ class VSCodeService:
             f"--disable-workspace-trust\n"
         )
 
-        # Start the process
+        # Start the process in its own process group, so stop() can signal
+        # node along with the launcher script.
         self.process = await asyncio.create_subprocess_shell(
             cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             env=sanitized_env(),
+            start_new_session=True,
         )
 
         # Wait for server to start (look for startup message)

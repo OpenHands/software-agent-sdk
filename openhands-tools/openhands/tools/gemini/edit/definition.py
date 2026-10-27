@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import Field
 
@@ -95,6 +95,8 @@ Examples:
 
 class EditTool(ToolDefinition[EditAction, EditObservation]):
     """Tool for editing files via find/replace."""
+
+    user_selectable: ClassVar[bool] = False
 
     def declared_resources(self, action: Action) -> DeclaredResources:
         """Lock on the target file path so concurrent edits to the same

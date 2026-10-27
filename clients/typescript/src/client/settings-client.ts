@@ -117,8 +117,10 @@ export class SettingsClient {
     return response.data;
   }
 
-  async listSecrets(): Promise<SecretsListResponse> {
-    const response = await this.client.get<SecretsListResponse>('/api/settings/secrets');
+  async listSecrets(options: { agentProfileId?: string } = {}): Promise<SecretsListResponse> {
+    const response = await this.client.get<SecretsListResponse>('/api/settings/secrets', {
+      params: options.agentProfileId ? { agent_profile_id: options.agentProfileId } : undefined,
+    });
     return response.data;
   }
 

@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.llm.llm import LLM, LLMCallContext
+    from openhands.sdk.llm.llm import LLM
 
 
 def apply_defaults_if_absent(
@@ -57,29 +57,13 @@ def apply_extra_body(user_kwargs: dict[str, Any], llm: LLM) -> dict[str, Any]:
     return out
 
 
-def apply_call_context(
-    user_kwargs: dict[str, Any],
-    llm: LLM,
-    call_context: LLMCallContext | None,
-) -> dict[str, Any]:
-    """Return a new dict with per-conversation call context applied (#3443).
+def is_openrouter(llm: LLM) -> bool:
+    """Return whether this LLM routes through OpenRouter.
 
-    Prefers the explicitly threaded context and falls back to the LLM's own
-    PrivateAttr for callers that don't thread one (e.g. the condenser's
-    dedicated LLM).
-
-    - Pure and deterministic; does not mutate inputs
+    Matches the ``openrouter/`` model prefix and the ``openrouter.ai`` base URL
+    that the OpenRouter runtime-metadata resolver also keys off, so the two
+    agree on what counts as OpenRouter.
     """
-    out = dict(user_kwargs)
-
-    ctx = call_context or llm._call_context
-    if ctx.prompt_cache_key:
-        out["prompt_cache_key"] = ctx.prompt_cache_key
-    if ctx.session_id:
-        existing = out.get("extra_headers") or {}
-        out["extra_headers"] = {
-            **existing,
-            "x-litellm-session-id": ctx.session_id,
-        }
-
-    return out
+    model = llm.model or ""
+    base_url = llm.base_url or ""
+    return model.startswith("openrouter/") or "openrouter.ai" in base_url

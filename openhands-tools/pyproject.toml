@@ -1,17 +1,19 @@
 [project]
 name = "openhands-tools"
-version = "1.47.0"
+version = "1.58.2"
 description = "OpenHands Tools - Runtime tools for AI agents"
 
 requires-python = ">=3.12"
 dependencies = [
     "openhands-sdk",
+    "certifi>=2026.10.19",  # eMudhra CA distrust: GHSA-6q48-6c7w-9gw2
     "tree-sitter>=0.24",
     "tree-sitter-bash>=0.23",
-    "binaryornot>=0.4.4",
+    "binaryornot>=0.6.0",
     "cachetools",
+    "filelock>=3.20.1",
     "libtmux>=0.53.0",
-    "pydantic>=2.11.7",
+    "pydantic>=2.13.5",
     "browser-use>=0.8.0",
     "func-timeout>=4.3.5",
     "tom-swe>=1.0.3",
@@ -24,7 +26,7 @@ Documentation = "https://docs.openhands.dev/sdk"
 "Bug Tracker" = "https://github.com/OpenHands/software-agent-sdk/issues"
 
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=83.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]

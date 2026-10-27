@@ -1,0 +1,30 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "good-server": {
+      "type": "stdio",
+      "command": "echo"
+    },
+    "legacy-sse": {
+      "type": "sse",
+      "url": "https://sse.example.com/mcp"
+    },
+    "escaping-command": {
+      "type": "stdio",
+      "command": "./../escape/bin"
+    },
+    "placeholder-command": {
+      "type": "stdio",
+      "command": "${PLUGIN_ROOT}/bin/serve.sh"
+    },
+    "escaping-cwd": {
+      "type": "stdio",
+      "command": "echo",
+      "cwd": "./../outside"
+    },
+    "insecure-url": {
+      "type": "streamable-http",
+      "url": "http://api.example.com/mcp"
+    }
+  }
+}

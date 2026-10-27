@@ -1,0 +1,212 @@
+{
+  "date_utc": "2026-10-23",
+  "repository": "enyst/agent-sdk",
+  "target": "5966c781ed014efc96c028a99bddd4ff78426741",
+  "scope": "Real live API/SDK verification on the fork; no live claim about upstream.",
+  "issue": "https://github.com/enyst/agent-sdk/issues/41",
+  "feature": "F21.ts-payload-types",
+  "expected": "Exported OpenHandsAgentProfile and AgentProfileDiagnostics accept public_skills, as generated types and live payloads do.",
+  "actual": "Two TS2353 compiler errors reject public_skills in the exported types.",
+  "positive_control": "Generated-contract object literals from identical live payload key sets compile successfully before exported-type check.",
+  "reproducer": "control-agent-server map run --file F21 --only F21.ts-payload-types --fresh --repeat 2 --record",
+  "attempts": [
+    {
+      "run_id": "20261023-060333-85de-map-f21",
+      "provenance": {
+        "source": "20261023-060333-85de-map-f21/evidence/map-run/F21-agent-profiles-08-typescript-payload-types-f21-ts-payload-.json",
+        "sha256": "9c124bec37585971c4af5a6ab10c983415b65e654434470b0261693605c61984"
+      },
+      "compiler_errors": [
+        "error TS2353: Object literal may only specify known properties, and '\"public_skills\"' does not exist in type 'Shape<OpenHandsAgentProfile>'.",
+        "error TS2353: Object literal may only specify known properties, and '\"public_skills\"' does not exist in type 'Shape<AgentProfileDiagnostics>'."
+      ],
+      "live_payload_calls": [
+        {
+          "method": "GET",
+          "path": "/api/agent-profiles",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/agent-profiles/qa-f21-coder",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/agent-profiles/qa-f21-acp",
+          "status": 200
+        },
+        {
+          "method": "POST",
+          "path": "/api/agent-profiles/qa-f21-acp/materialize",
+          "status": 200
+        }
+      ],
+      "generated_contract_compile_exit_code": 0,
+      "recipe_exit_code": 1,
+      "source_revision": {
+        "checkout_sha": "5966c781ed014efc96c028a99bddd4ff78426741",
+        "created_at": "2026-10-23T06:03:33Z",
+        "mode": "launch",
+        "provenance": {
+          "source": "20261023-060333-85de-map-f21/run.json",
+          "sha256": "272caa5e54ba5c3e3c60273dfea306a84e289038b64094d40f31f135cfd432d2"
+        }
+      },
+      "exported_types_compile_exit_code": 2,
+      "independent_compiler_recheck": {
+        "run_id": "20261023-060333-85de-map-f21",
+        "rechecked_at": "2026-10-23T06:24:25.233133+00:00",
+        "compiler_version": "Version 6.0.3",
+        "input_provenance": [
+          {
+            "source": "20261023-060333-85de-map-f21/fixtures/qa-f21-types/shape.ts",
+            "sha256": "ecef6e908d6641a6d60b1752df46a67cc34a89332efff43fd632a37e547cece9"
+          },
+          {
+            "source": "20261023-060333-85de-map-f21/fixtures/qa-f21-types/contract.ts",
+            "sha256": "731bd58216ef882ac5bbbf43b09c64ac8e32f9065d5b69110a70a00e4e7e6e0a"
+          },
+          {
+            "source": "20261023-060333-85de-map-f21/fixtures/qa-f21-types/exported.ts",
+            "sha256": "8c2aaf51a2f32c6f9d5a1e8aa528eefb74fb818186b782799fb766ddd0c934fc"
+          }
+        ],
+        "results": [
+          {
+            "input": "contract.ts",
+            "exit_code": 0,
+            "compiler_errors": []
+          },
+          {
+            "input": "exported.ts",
+            "exit_code": 2,
+            "compiler_errors": [
+              "error TS2353: Object literal may only specify known properties, and '\"public_skills\"' does not exist in type 'Shape<OpenHandsAgentProfile>'.",
+              "error TS2353: Object literal may only specify known properties, and '\"public_skills\"' does not exist in type 'Shape<AgentProfileDiagnostics>'."
+            ]
+          }
+        ]
+      },
+      "live_public_skills_fields": [
+        {
+          "payload": "openhands.json",
+          "field": "profile.public_skills",
+          "observed_value": null,
+          "provenance": {
+            "source": "20261023-060333-85de-map-f21/fixtures/qa-f21-types/openhands.json",
+            "sha256": "defc66298bb4c91cd9e22470b1e1b5564d7bdf036b6416e8fff36deab8a82955"
+          }
+        },
+        {
+          "payload": "diagnostics.json",
+          "field": "public_skills",
+          "observed_value": null,
+          "provenance": {
+            "source": "20261023-060333-85de-map-f21/fixtures/qa-f21-types/diagnostics.json",
+            "sha256": "25cd4bc42aa74ef271ed6db181c389ea9c6c56f2063fa432f7ae1aa69f989760"
+          }
+        }
+      ]
+    },
+    {
+      "run_id": "20261023-060410-8fdb-map-f21",
+      "provenance": {
+        "source": "20261023-060410-8fdb-map-f21/evidence/map-run/F21-agent-profiles-08-typescript-payload-types-f21-ts-payload-.json",
+        "sha256": "e3df44d343f67a623bf6931fc8f99c3f4cf9c6d69e9a09ff1c92d4f7362df752"
+      },
+      "compiler_errors": [
+        "error TS2353: Object literal may only specify known properties, and '\"public_skills\"' does not exist in type 'Shape<OpenHandsAgentProfile>'.",
+        "error TS2353: Object literal may only specify known properties, and '\"public_skills\"' does not exist in type 'Shape<AgentProfileDiagnostics>'."
+      ],
+      "live_payload_calls": [
+        {
+          "method": "GET",
+          "path": "/api/agent-profiles",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/agent-profiles/qa-f21-coder",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/agent-profiles/qa-f21-acp",
+          "status": 200
+        },
+        {
+          "method": "POST",
+          "path": "/api/agent-profiles/qa-f21-acp/materialize",
+          "status": 200
+        }
+      ],
+      "generated_contract_compile_exit_code": 0,
+      "recipe_exit_code": 1,
+      "source_revision": {
+        "checkout_sha": "5966c781ed014efc96c028a99bddd4ff78426741",
+        "created_at": "2026-10-23T06:04:10Z",
+        "mode": "launch",
+        "provenance": {
+          "source": "20261023-060410-8fdb-map-f21/run.json",
+          "sha256": "fac93236beef874999d3e045de28f49fcf51b15e1dac2e9125d2df689cd73ac7"
+        }
+      },
+      "exported_types_compile_exit_code": 2,
+      "independent_compiler_recheck": {
+        "run_id": "20261023-060410-8fdb-map-f21",
+        "rechecked_at": "2026-10-23T06:24:26.446921+00:00",
+        "compiler_version": "Version 6.0.3",
+        "input_provenance": [
+          {
+            "source": "20261023-060410-8fdb-map-f21/fixtures/qa-f21-types/shape.ts",
+            "sha256": "ecef6e908d6641a6d60b1752df46a67cc34a89332efff43fd632a37e547cece9"
+          },
+          {
+            "source": "20261023-060410-8fdb-map-f21/fixtures/qa-f21-types/contract.ts",
+            "sha256": "731bd58216ef882ac5bbbf43b09c64ac8e32f9065d5b69110a70a00e4e7e6e0a"
+          },
+          {
+            "source": "20261023-060410-8fdb-map-f21/fixtures/qa-f21-types/exported.ts",
+            "sha256": "8c2aaf51a2f32c6f9d5a1e8aa528eefb74fb818186b782799fb766ddd0c934fc"
+          }
+        ],
+        "results": [
+          {
+            "input": "contract.ts",
+            "exit_code": 0,
+            "compiler_errors": []
+          },
+          {
+            "input": "exported.ts",
+            "exit_code": 2,
+            "compiler_errors": [
+              "error TS2353: Object literal may only specify known properties, and '\"public_skills\"' does not exist in type 'Shape<OpenHandsAgentProfile>'.",
+              "error TS2353: Object literal may only specify known properties, and '\"public_skills\"' does not exist in type 'Shape<AgentProfileDiagnostics>'."
+            ]
+          }
+        ]
+      },
+      "live_public_skills_fields": [
+        {
+          "payload": "openhands.json",
+          "field": "profile.public_skills",
+          "observed_value": null,
+          "provenance": {
+            "source": "20261023-060410-8fdb-map-f21/fixtures/qa-f21-types/openhands.json",
+            "sha256": "20185ed0ed2a6e89a906e5cd367c5241a39e4abfed624aed198c026439d16032"
+          }
+        },
+        {
+          "payload": "diagnostics.json",
+          "field": "public_skills",
+          "observed_value": null,
+          "provenance": {
+            "source": "20261023-060410-8fdb-map-f21/fixtures/qa-f21-types/diagnostics.json",
+            "sha256": "25cd4bc42aa74ef271ed6db181c389ea9c6c56f2063fa432f7ae1aa69f989760"
+          }
+        }
+      ]
+    }
+  ]
+}

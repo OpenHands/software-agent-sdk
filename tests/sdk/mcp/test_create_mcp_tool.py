@@ -13,11 +13,14 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+import uvicorn
 from fastmcp import FastMCP
 from fastmcp.client.auth import OAuth
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.stores.memory import MemoryStore
 from pydantic import SecretStr
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import PlainTextResponse
 
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.config import (
@@ -31,6 +34,7 @@ from openhands.sdk.mcp.config import (
     to_fastmcp_mcp_config,
 )
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
+from openhands.sdk.mcp.oauth import MCPOAuth
 from openhands.sdk.mcp.utils import _prepare_mcp_config
 
 
@@ -447,6 +451,36 @@ def test_prepare_mcp_config_applies_oauth_token_storage_to_bare_oauth_credential
     assert auth._token_storage is token_storage
 
 
+def test_prepare_mcp_config_builds_endpoint_discovering_oauth_clients():
+    # Arrange: one server with explicit authentication, one bare credential.
+    config = {
+        "mcpServers": {
+            "explicit": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "authentication": {"type": "oauth", "client_auth_method": "none"},
+                },
+            },
+            "bare": {
+                "url": "https://mcp.example.org/mcp",
+                "auth": {"strategy": "oauth2"},
+            },
+        }
+    }
+
+    # Act
+    prepared = _prepare_mcp_config(
+        native_mcp_config(config), mcp_oauth_token_storage=MemoryStore()
+    )
+
+    # Assert: both refresh against the discovered token endpoint.
+    for name in ("explicit", "bare"):
+        server = prepared.mcpServers[name]
+        assert isinstance(server, RemoteMCPServer)
+        assert isinstance(server.auth, MCPOAuth)
+
+
 def test_create_mcp_tools_http_server(http_mcp_server: MCPTestServer):
     """Test creating MCP tools with a real HTTP server."""
     config = {
@@ -742,3 +776,51 @@ def test_create_mcp_tools_timeout_error_message():
 
         assert exc_info.value.timeout == 30.0
         assert exc_info.value.config is not None
+
+
+def test_mcp_tool_reconnects_after_http_error():
+    mcp = FastMCP("http-error-test-server")
+
+    @mcp.tool()
+    def ping() -> str:
+        return "pong"
+
+    class FailFirstToolCall(BaseHTTPMiddleware):
+        failed = False
+
+        async def dispatch(self, request, call_next):
+            body = (await request.body()).replace(b" ", b"")
+            if not self.failed and b'"method":"tools/call"' in body:
+                self.failed = True
+                return PlainTextResponse("gateway timeout", status_code=504)
+            return await call_next(request)
+
+    port = _find_free_port()
+    app = mcp.http_app(path="/mcp")
+    app.add_middleware(FailFirstToolCall)
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    _wait_for_port(port)
+
+    try:
+        config = {
+            "server": {"transport": "http", "url": f"http://127.0.0.1:{port}/mcp"}
+        }
+        with create_mcp_tools(coerce_mcp_config(config), timeout=5) as client:
+            tool = next(tool for tool in client if tool.name == "ping")
+            assert tool.executor is not None
+            action = tool.action_from_arguments({})
+
+            first = tool.executor(action)
+            second = tool.executor(action)
+
+            assert first.is_error
+            assert "504 Gateway Timeout" in first.text
+            assert not second.is_error
+            assert "pong" in second.text
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)

@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from pydantic import Field
 from rich.text import Text
@@ -80,6 +80,8 @@ class ThinkExecutor(ToolExecutor):
 
 class ThinkTool(ToolDefinition[ThinkAction, ThinkObservation]):
     """Tool for logging thoughts without making changes."""
+
+    user_selectable: ClassVar[bool] = False
 
     @classmethod
     def create(

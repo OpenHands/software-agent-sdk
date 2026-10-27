@@ -9,7 +9,6 @@ import time
 from collections.abc import Generator
 from types import SimpleNamespace
 
-import anyio
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -18,7 +17,9 @@ from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.mcp_router import (
     _OAUTH_PROBE_JOB_TTL_SECONDS,
+    MCPTestFailure,
     MCPTestRequest,
+    MCPTestSuccess,
     _BrowserCoordinatedOAuth,
     _MCPOAuthProbeJob,
     _oauth_probe_jobs,
@@ -769,9 +770,62 @@ def test_mcp_oauth_start_returns_authorization_url_and_final_state(
     assert access_token != "oauth-access-token"
 
 
-def test_browser_coordinated_oauth_callback_handler_uses_fastmcp_callback_api(
+def test_mcp_oauth_start_succeeds_without_consent_when_stored_tokens_work(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    # Arrange: the probe connects with the stored tokens; FastMCP never
+    # publishes an authorization URL.
+    config = Config(session_api_keys=[], secret_key=SecretStr("test-secret-key"))
+    client = TestClient(create_app(config), raise_server_exceptions=False)
+
+    class FakeClient:
+        def __init__(self):
+            self.tools = [SimpleNamespace(name="notion_lookup")]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+    monkeypatch.setattr(
+        "openhands.agent_server.mcp_router.create_mcp_tools",
+        lambda *args, **kwargs: FakeClient(),
+    )
+
+    # Act
+    started = time.monotonic()
+    response = client.post(
+        "/api/mcp/oauth/start",
+        json={
+            "server": {
+                "transport": "http",
+                "url": "https://mcp.example.com/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "state": {"tokens": {"access_token": "stored-access-token"}},
+                },
+            },
+            "timeout": 10.0,
+        },
+    )
+    elapsed = time.monotonic() - started
+
+    # Assert: success with only the job id, without waiting for the consent
+    # timeout; the outcome is on the status route.
+    assert response.status_code == 200, response.text
+    job_id = response.json()["job_id"]
+    assert response.json() == {"ok": True, "job_id": job_id}
+    assert elapsed < 5.0
+    status_body = client.get(f"/api/mcp/oauth/status/{job_id}").json()
+    assert status_body["status"] == "succeeded"
+    assert status_body["tools"] == ["notion_lookup"]
+
+
+def test_browser_coordinated_oauth_callback_handler_delegates_to_fastmcp(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Return FastMCP's result untouched; re-wrapping it broke mcp 2.x."""
     job = _MCPOAuthProbeJob(
         request=MCPTestRequest.model_validate(
             {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}
@@ -783,48 +837,26 @@ def test_browser_coordinated_oauth_callback_handler_uses_fastmcp_callback_api(
         mcp_url="https://mcp.example.com/mcp",
         callback_port=64801,
     )
-    calls: list[dict[str, object]] = []
 
-    class FakeServer:
-        should_exit = False
+    sentinel = object()
+    seen: list[bool] = []
 
-        def __init__(self, *, result_container, result_ready):
-            self.result_container = result_container
-            self.result_ready = result_ready
-
-        async def serve(self):
-            self.result_container.code = "oauth-code"
-            self.result_container.state = "oauth-state"
-            self.result_ready.set()
-            while not self.should_exit:
-                await anyio.sleep(0.01)
-
-    def fake_create_oauth_callback_server(**kwargs):
-        calls.append(kwargs)
-        return FakeServer(
-            result_container=kwargs["result_container"],
-            result_ready=kwargs["result_ready"],
-        )
+    async def fake_base_callback_handler(self):
+        # The URL must be published before the base blocks on the callback,
+        # otherwise the frontend never learns where to send the browser.
+        seen.append(job.callback_ready.is_set())
+        return sentinel
 
     monkeypatch.setattr(
-        "openhands.agent_server.mcp_router.create_oauth_callback_server",
-        fake_create_oauth_callback_server,
+        "fastmcp.client.auth.oauth.OAuth.callback_handler",
+        fake_base_callback_handler,
     )
 
-    code, state = asyncio.run(oauth.callback_handler())
+    result = asyncio.run(oauth.callback_handler())
 
-    assert (code, state) == ("oauth-code", "oauth-state")
-    assert job.callback_ready.is_set()
+    assert result is sentinel
+    assert seen == [True]
     assert job.callback_url == "http://localhost:64801/callback"
-    assert calls == [
-        {
-            "port": 64801,
-            "server_url": "https://mcp.example.com/mcp",
-            "result_container": calls[0]["result_container"],
-            "result_ready": calls[0]["result_ready"],
-        }
-    ]
-    assert "host" not in calls[0]
 
 
 def test_mcp_oauth_callback_rejects_unknown_job(client: TestClient):
@@ -834,6 +866,66 @@ def test_mcp_oauth_callback_rejects_unknown_job(client: TestClient):
     )
 
     assert response.status_code == 404
+
+
+@pytest.fixture
+def closed_callback_job() -> Generator[_MCPOAuthProbeJob]:
+    """A registered job whose local callback server is no longer listening."""
+    job = _MCPOAuthProbeJob(
+        request=MCPTestRequest.model_validate(
+            {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}
+        ),
+        cipher=None,
+    )
+    job.set_authorization_url("https://oauth.example.com/authorize?state=s")
+    job.set_callback_ready(f"http://localhost:{_find_free_port()}/callback")
+    _register_oauth_job(job)
+    try:
+        yield job
+    finally:
+        with _oauth_probe_jobs_lock:
+            _oauth_probe_jobs.pop(job.id, None)
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_status"),
+    [
+        (MCPTestSuccess(tools=["echo"]), "succeeded"),
+        (
+            MCPTestFailure(error="Timed out", error_kind="timeout"),
+            "failed",
+        ),
+    ],
+)
+def test_mcp_oauth_callback_replay_on_finished_job_returns_job_status(
+    client: TestClient,
+    closed_callback_job: _MCPOAuthProbeJob,
+    result,
+    expected_status: str,
+):
+    closed_callback_job.set_result(result)
+
+    response = client.post(
+        f"/api/mcp/oauth/callback/{closed_callback_job.id}",
+        json={"callback_url": f"{closed_callback_job.callback_url}?code=x&state=s"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == expected_status
+    assert closed_callback_job.status == expected_status
+
+
+def test_mcp_oauth_callback_server_gone_on_live_job_returns_409(
+    client: TestClient, closed_callback_job: _MCPOAuthProbeJob
+):
+    response = client.post(
+        f"/api/mcp/oauth/callback/{closed_callback_job.id}",
+        json={"callback_url": f"{closed_callback_job.callback_url}?code=x&state=s"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "OAuth callback server is not listening"
+    assert closed_callback_job.status == "authorizing"
 
 
 def test_register_oauth_job_sweeps_expired_jobs():
@@ -882,3 +974,37 @@ def test_mcp_test_rejects_legacy_top_level_oauth_authentication(client: TestClie
     )
 
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("callback_url", "detail"),
+    [
+        ("http://localhost:99999/callback?code=x", "Unexpected OAuth callback URL"),
+        ("http://localhost:abc/callback?code=x", "Unexpected OAuth callback URL"),
+        ("http://[::1/callback?code=x", "Invalid OAuth callback URL"),
+    ],
+)
+def test_mcp_oauth_callback_rejects_malformed_url_with_400(
+    client: TestClient, callback_url: str, detail: str
+):
+    job = _MCPOAuthProbeJob(
+        request=MCPTestRequest.model_validate(
+            {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}
+        ),
+        cipher=None,
+    )
+    job.set_authorization_url("https://auth.example.com/authorize")
+    job.set_callback_ready("http://localhost:64801/callback")
+    try:
+        _register_oauth_job(job)
+        response = client.post(
+            f"/api/mcp/oauth/callback/{job.id}",
+            json={"callback_url": callback_url},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == detail
+        assert job.status == "authorizing"
+    finally:
+        with _oauth_probe_jobs_lock:
+            _oauth_probe_jobs.clear()

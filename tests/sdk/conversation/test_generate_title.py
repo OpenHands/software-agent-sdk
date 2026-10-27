@@ -1,5 +1,9 @@
 """Tests for the generate_title method in Conversation class."""
 
+import json
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,6 +17,9 @@ from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.title_utils import generate_title_with_llm
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import LLM, LLMResponse, Message, MetricsSnapshot, TextContent
+from openhands.sdk.llm.auth.credentials import CredentialStore, OAuthCredentials
+from openhands.sdk.llm.auth.openai import OpenAISubscriptionAuth
+from openhands.sdk.settings import ACPAgentSettings
 
 
 def create_test_agent() -> Agent:
@@ -67,6 +74,13 @@ def create_mock_llm_response(content: str) -> LLMResponse:
     )
 
 
+def get_completion_user_prompt(mock_completion: MagicMock) -> str:
+    messages = mock_completion.call_args.kwargs["messages"]
+    content = messages[1].content[0]
+    assert isinstance(content, TextContent)
+    return content.text
+
+
 @patch("openhands.sdk.llm.llm.LLM.completion")
 def test_generate_title_without_llm_uses_agent_llm(mock_completion):
     """Without an explicit LLM, generate_title falls back to the agent's LLM.
@@ -86,6 +100,22 @@ def test_generate_title_without_llm_uses_agent_llm(mock_completion):
 
     assert title == "Create Python Script"
     mock_completion.assert_called_once()
+
+
+def test_generate_title_skips_llm_for_settings_built_acp_agent(tmp_path):
+    agent = ACPAgentSettings(
+        acp_server="custom", acp_command=["true"], acp_model="claude-opus-4-7"
+    ).create_agent()
+    conv = Conversation(agent=agent, workspace=str(tmp_path), visualizer=None)
+    conv.state.events.append(create_user_message_event("Fix the login bug"))
+
+    with patch(
+        "openhands.sdk.conversation.title_utils.generate_title_with_llm"
+    ) as mock_llm_title:
+        title = conv.generate_title()
+
+    assert title == "Fix the login bug"
+    mock_llm_title.assert_not_called()
 
 
 def test_generate_title_no_user_messages():
@@ -139,6 +169,56 @@ def test_generate_title_with_llm_invokes_on_error(mock_completion):
     assert result is None
     assert len(seen) == 1
     assert str(seen[0]) == "model does not exist"
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_with_llm_renders_custom_prompt_placeholders(mock_completion):
+    custom_llm = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="test")
+    mock_completion.return_value = create_mock_llm_response("Fix Login")
+
+    result = generate_title_with_llm(
+        "Fix the login bug",
+        custom_llm,
+        max_length=32,
+        prompt=(
+            "Return a title under {max_length} characters for: {conversation_content}"
+        ),
+    )
+
+    assert result == "Fix Login"
+    assert get_completion_user_prompt(mock_completion) == (
+        "Return a title under 32 characters for: Fix the login bug"
+    )
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_with_llm_appends_content_to_custom_prompt(mock_completion):
+    custom_llm = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="test")
+    mock_completion.return_value = create_mock_llm_response("Fix Login")
+
+    generate_title_with_llm(
+        "Fix the login bug",
+        custom_llm,
+        prompt="Use sentence case without an emoji.",
+    )
+
+    assert get_completion_user_prompt(mock_completion) == (
+        "Use sentence case without an emoji.\n\n"
+        "Conversation content:\nFix the login bug"
+    )
+
+
+@pytest.mark.parametrize("prompt", [None, "", "   "])
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_with_llm_uses_default_for_blank_prompt(mock_completion, prompt):
+    custom_llm = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="test")
+    mock_completion.return_value = create_mock_llm_response("🐛 Fix Login")
+
+    generate_title_with_llm("Fix the login bug", custom_llm, prompt=prompt)
+
+    user_prompt = get_completion_user_prompt(mock_completion)
+    assert user_prompt.startswith("Generate a title (maximum 50 characters)")
+    assert "🐛 bugfix: Bug fixes" in user_prompt
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")
@@ -287,3 +367,180 @@ def test_generate_title_disables_streaming_when_llm_streams(mock_transport):
     assert mock_transport.call_args.kwargs["enable_streaming"] is False
     assert mock_transport.call_args.kwargs["on_token"] is None
     assert streaming_llm.stream is True
+
+
+@pytest.fixture
+def title_http_server():
+    requests = []
+    title = "Fix title transport"
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append((self.path, body))
+            if self.path == "/v1/responses":
+                response = {
+                    "id": "resp_title",
+                    "object": "response",
+                    "created_at": 1,
+                    "status": "completed",
+                    "model": "gpt-5.6-luna",
+                    "output": [
+                        {
+                            "id": "msg_title",
+                            "type": "message",
+                            "role": "assistant",
+                            "status": "completed",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": title,
+                                    "annotations": [],
+                                }
+                            ],
+                        }
+                    ],
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 4,
+                        "total_tokens": 14,
+                    },
+                }
+                if body.get("stream"):
+                    payload = (
+                        "event: response.completed\ndata: "
+                        + json.dumps(
+                            {
+                                "type": "response.completed",
+                                "sequence_number": 1,
+                                "response": response,
+                            }
+                        )
+                        + "\n\n"
+                    ).encode()
+                    content_type = "text/event-stream"
+                else:
+                    payload = json.dumps(response).encode()
+                    content_type = "application/json"
+            else:
+                payload = json.dumps(
+                    {
+                        "id": "chat_title",
+                        "object": "chat.completion",
+                        "created": 1,
+                        "model": "gpt-4o-mini",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "finish_reason": "stop",
+                                "message": {"role": "assistant", "content": title},
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 10,
+                            "completion_tokens": 4,
+                            "total_tokens": 14,
+                        },
+                    }
+                ).encode()
+                content_type = "application/json"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/v1", requests
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("mode", ["chat", "responses", "subscription"])
+def test_title_uses_real_http_transport(title_http_server, tmp_path, mode):
+    base_url, requests = title_http_server
+    if mode == "subscription":
+        auth = OpenAISubscriptionAuth(
+            credential_store=CredentialStore(tmp_path / "auth")
+        )
+        llm = auth.create_llm(
+            model="gpt-5.6-luna",
+            credentials=OAuthCredentials(
+                vendor="openai",
+                access_token="local-test-token",
+                refresh_token="unused-test-token",
+                expires_at=int(time.time() * 1000) + 3600000,
+            ),
+        )
+        llm = llm.model_copy(update={"base_url": base_url, "num_retries": 0})
+    else:
+        llm = LLM(
+            model="openai/gpt-4o-mini",
+            api_key=SecretStr("local-test-key"),
+            base_url=base_url,
+            api_mode=mode,
+            stream=True,
+            num_retries=0,
+        )
+    errors = []
+    assert (
+        generate_title_with_llm("Fix the title", llm, on_error=errors.append)
+        == "Fix title transport"
+    )
+    assert not errors
+    assert len(requests) == 1
+    path, body = requests[0]
+    assert path == ("/v1/chat/completions" if mode == "chat" else "/v1/responses")
+    assert bool(body.get("stream")) == (mode == "subscription")
+    if mode != "chat":
+        assert body["store"] is False
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_strips_inline_reasoning(mock_completion):
+    """Guards #4530.
+
+    Providers that do not split chain-of-thought into `reasoning_content` return it
+    inline as `<think>...</think>`. The title is consumed verbatim, so without
+    stripping, truncation to `max_length` keeps the reasoning and discards the title.
+    """
+    llm = LLM(model="qwen3-32b", api_key=SecretStr("test-key"), usage_id="t")
+    mock_completion.return_value = create_mock_llm_response(
+        "<think>The user wants a CSV summary script. I will pick the features "
+        "emoji and keep it short.</think>✨ Summarise a CSV in Python"
+    )
+
+    title = generate_title_with_llm("Help me summarise a CSV", llm)
+
+    assert title == "✨ Summarise a CSV in Python"
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_strips_unterminated_reasoning(mock_completion):
+    """An unterminated block means the response was cut mid-thought, so there is no
+    title to salvage and the caller falls back to a truncated message title."""
+    llm = LLM(model="qwen3-32b", api_key=SecretStr("test-key"), usage_id="t")
+    mock_completion.return_value = create_mock_llm_response(
+        "<think>Let me consider what this conversation is really about"
+    )
+
+    assert generate_title_with_llm("Help me summarise a CSV", llm) is None
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_keeps_text_without_reasoning(mock_completion):
+    """A normal response is unaffected."""
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="t")
+    mock_completion.return_value = create_mock_llm_response("✨ Create Python Script")
+
+    assert generate_title_with_llm("Help me write a script", llm) == (
+        "✨ Create Python Script"
+    )

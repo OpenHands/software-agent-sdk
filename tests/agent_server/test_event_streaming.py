@@ -348,7 +348,7 @@ async def test_deltas_keep_idle_time_below_the_threshold(
 
     callback(_make_chunk(content="tok"))
 
-    assert (await server_details_router.get_server_info()).idle_time < _IDLE_THRESHOLD
+    assert server_details_router.build_server_info().idle_time < _IDLE_THRESHOLD
 
 
 @pytest.mark.asyncio

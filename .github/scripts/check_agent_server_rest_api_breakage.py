@@ -47,7 +47,12 @@ Policies enforced:
      replacing ``MCPNoneAuthCredential-Input`` with the structurally identical
      ``MCPNoneAuthCredential`` is a component-name repair, not a union removal.
 
-6) No in-place contract breakage
+6) Publishing the existing pagination limit is allowed
+   - Four search endpoints already rejected limits above 100 at runtime. Their
+     historical schemas used the unsupported ``lte: 100`` keyword. Replacing it
+     with ``maximum: 100`` documents that existing bound.
+
+7) No in-place contract breakage
    - Breaking REST contract changes that are not removals of previously-deprecated
      operations/properties, additive oneOf expansions, or additive response property
      type widenings fail the check. REST clients need 5 minor releases of runway, so
@@ -678,6 +683,43 @@ def _is_accepted_vscode_base_url_default_removal(change: dict) -> bool:
     )
 
 
+_SEARCH_LIMIT_SCHEMA_REPAIR_PATHS = frozenset(
+    {
+        "/api/conversations/search",
+        "/api/conversations/{conversation_id}/events/search",
+        "/api/bash/bash_events/search",
+        "/api/file/search_subdirs",
+    }
+)
+
+
+def _is_search_limit_schema_repair(change: dict, prev_schema: dict) -> bool:
+    """Accept the known pagination ``lte: 100`` to ``maximum: 100`` repair."""
+    path = change.get("path", "")
+    if (
+        change.get("id") != "request-parameter-max-set"
+        or path not in _SEARCH_LIMIT_SCHEMA_REPAIR_PATHS
+        or str(change.get("operation", "")).lower() != "get"
+        or change.get("text")
+        != "for the `query` request parameter `limit`, the max was set to `100.00`"
+    ):
+        return False
+
+    operation = prev_schema.get("paths", {}).get(path, {}).get("get", {})
+    if change.get("operationId") != operation.get("operationId"):
+        return False
+
+    for parameter in operation.get("parameters", []):
+        if parameter.get("in") == "query" and parameter.get("name") == "limit":
+            schema = parameter.get("schema", {})
+            return (
+                schema.get("type") == "integer"
+                and schema.get("lte") == 100
+                and "maximum" not in schema
+            )
+    return False
+
+
 def _is_accepted_cloud_proxy_removal(operation: dict) -> bool:
     """Return True for the accepted /api/cloud-proxy removal from PR #3326."""
     path = str(operation.get("path", ""))
@@ -1099,6 +1141,16 @@ def main() -> int:
             for change in other_breaking_changes
             if not _is_accepted_vscode_base_url_default_removal(change)
         ]
+        search_limit_schema_repairs = [
+            change
+            for change in other_breaking_changes
+            if _is_search_limit_schema_repair(change, prev_schema)
+        ]
+        other_breaking_changes = [
+            change
+            for change in other_breaking_changes
+            if not _is_search_limit_schema_repair(change, prev_schema)
+        ]
 
         removal_errors = _validate_removed_operations(
             removed_operations,
@@ -1130,6 +1182,15 @@ def main() -> int:
                 "The parameter stays optional; only the server-side fallback "
                 "changed, so requests that omit it keep working."
             )
+
+        if search_limit_schema_repairs:
+            print(
+                f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
+                "Published the existing search limit of 100 by correcting "
+                "legacy lte metadata to maximum."
+            )
+            for item in search_limit_schema_repairs:
+                print(f"  - GET {item['path']}: {item['text']}")
 
         if additive_response_oneof:
             print(
@@ -1211,7 +1272,7 @@ def main() -> int:
                 "GET /api/vscode/url base_url default removal, additive response "
                 "oneOf expansions, and/or additive response property type widenings."
                 " It may also include wire-compatible repairs of historically "
-                "opaque MCP/settings schemas."
+                "opaque MCP/settings schemas or the existing search limit of 100."
             )
         else:
             return 1

@@ -16,6 +16,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    field_validator,
     model_validator,
 )
 
@@ -263,6 +264,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             )
         return data
 
+    @field_validator("system_prompt_kwargs")
+    @classmethod
+    def _drop_retired_enable_browser(
+        cls, value: dict[str, object]
+    ) -> dict[str, object]:
+        """Old saved conversations may still carry this retired prompt flag."""
+        return {key: item for key, item in value.items() if key != "enable_browser"}
+
     condenser: CondenserBase | None = Field(
         default=None,
         description="Optional condenser to use for condensing conversation history.",
@@ -343,14 +352,15 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         Built-in prompts (the ``default`` and ``planning`` presets) are assembled from
         the typed section registry, which also resolves a custom
         ``security_policy_filename``. Escape hatches keep the Jinja path: an inline
-        ``system_prompt`` is returned verbatim; a custom ``system_prompt_filename`` or
-        subclass ``prompt_dir`` renders its own template.
+        ``system_prompt`` is used verbatim, followed by the loaded tools' guidance; a
+        custom ``system_prompt_filename`` or subclass ``prompt_dir`` renders its own
+        template.
 
         Returns:
             The static system prompt without dynamic context.
         """
         if self.system_prompt is not None:
-            return self.system_prompt
+            return "\n\n".join((self.system_prompt, *self._tool_guidance()))
 
         # Escape hatch: a custom filename or a subclass's own prompt_dir renders its
         # own Jinja template; everything else (incl. custom policies) uses the registry.
@@ -363,6 +373,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             )
 
         return create_registry(preset).build(self._build_prompt_context()).static
+
+    def _tool_guidance(self) -> tuple[str, ...]:
+        """Distinct ``prompt_guidance`` texts of the loaded tools, in tool order."""
+        with self._tools_lock:
+            tools = list(self._tools.values())
+        return tuple(
+            dict.fromkeys(t.prompt_guidance for t in tools if t.prompt_guidance)
+        )
 
     def _resolved_template_kwargs(self) -> dict[str, object]:
         """Resolve the system-prompt template kwargs.
@@ -377,10 +395,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             template_kwargs["soul_content"] = _load_soul_md()
 
         template_kwargs.setdefault(
-            "enable_browser",
-            any(t.name == "browser_tool_set" for t in self.tools),
-        )
-        template_kwargs.setdefault(
             "memory_enabled",
             self.agent_context is not None and self.agent_context.load_memory,
         )
@@ -390,9 +404,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "model_family" not in template_kwargs
             or "model_variant" not in template_kwargs
         ):
-            spec = get_model_prompt_spec(
-                self.llm.model, getattr(self.llm, "model_canonical_name", None)
-            )
+            spec = get_model_prompt_spec(self.llm.model, self.llm.model_canonical_name)
             if "model_family" not in template_kwargs and spec.family:
                 template_kwargs["model_family"] = spec.family
             if "model_variant" not in template_kwargs and spec.variant:
@@ -484,6 +496,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         return PromptContext(
             template_kwargs=template_kwargs,
             tool_names=tuple(t.name for t in self.tools),
+            tool_guidance=self._tool_guidance(),
             platform=Platform.current(),
             working_dir=None,
             now=now,

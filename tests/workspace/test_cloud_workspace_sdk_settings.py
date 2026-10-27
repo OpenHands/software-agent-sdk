@@ -235,6 +235,22 @@ class TestGetSecrets:
         assert "GITHUB_TOKEN" in secrets
         assert "MY_API_KEY" not in secrets
 
+    def test_get_secrets_requests_agent_profile_scope(self, mock_workspace):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"secrets": [{"name": "GITHUB_TOKEN"}]}
+
+        with patch.object(
+            mock_workspace, "_send_settings_request", return_value=mock_response
+        ) as mock_req:
+            secrets = mock_workspace.get_secrets(agent_profile_id="profile-id")
+
+        assert list(secrets) == ["GITHUB_TOKEN"]
+        mock_req.assert_called_once_with(
+            "GET",
+            f"{CLOUD_URL}/api/v1/sandboxes/{SANDBOX_ID}/settings/secrets",
+            params={"agent_profile_id": "profile-id"},
+        )
+
     def test_get_secrets_empty(self, mock_workspace):
         """Empty secrets list returns empty dict."""
         mock_response = MagicMock()

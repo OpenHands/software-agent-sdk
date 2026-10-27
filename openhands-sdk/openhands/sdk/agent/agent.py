@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from pydantic import PrivateAttr, ValidationError, model_validator
+from pydantic import Field, PrivateAttr, ValidationError, model_validator
 
 import openhands.sdk.security.analyzer as analyzer
 import openhands.sdk.security.risk as risk
@@ -20,10 +21,8 @@ from openhands.sdk.agent.response_dispatch import (
 )
 from openhands.sdk.agent.stream_context import StreamContext
 from openhands.sdk.agent.utils import (
-    amake_llm_completion,
     aprepare_llm_messages,
     fix_malformed_tool_arguments,
-    make_llm_completion,
     normalize_tool_call,
     parse_tool_call_arguments,
     prepare_llm_messages,
@@ -52,6 +51,7 @@ from openhands.sdk.event.condenser import (
     CondensationRequest,
 )
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
+from openhands.sdk.event.security import SecurityAnalysisEvent
 from openhands.sdk.llm import (
     LLM,
     ImageContent,
@@ -63,6 +63,7 @@ from openhands.sdk.llm import (
     TextContent,
     ThinkingBlock,
 )
+from openhands.sdk.llm.call_context import llm_call_context_scope
 from openhands.sdk.llm.exceptions import (
     FunctionCallValidationError,
     LLMContentPolicyViolationError,
@@ -122,6 +123,18 @@ INIT_STATE_PREFIX_SCAN_WINDOW = 3
 
 
 def _latest_user_message_contains_image(messages: list[Message]) -> bool:
+    """Check if the most recent user message contains image content.
+
+    Scans the message list in reverse order to find the latest user message
+    and checks whether it contains any image attachments.
+
+    Args:
+        messages: List of conversation messages to search.
+
+    Returns:
+        True if the most recent user message contains images, False otherwise.
+        Returns False if no user messages are found.
+    """
     for message in reversed(messages):
         if message.role == "user":
             return message.contains_image
@@ -129,6 +142,18 @@ def _latest_user_message_contains_image(messages: list[Message]) -> bool:
 
 
 def _non_multimodal_image_message(model: str) -> Message:
+    """Create an error message for when images are sent to a non-vision model.
+
+    Constructs a user-friendly assistant message explaining that the current
+    model does not support image understanding and suggesting the user switch
+    to a multimodal model.
+
+    Args:
+        model: The name of the current model that does not support vision.
+
+    Returns:
+        A Message object containing an assistant response with the error explanation.
+    """
     return Message(
         role="assistant",
         content=[
@@ -146,6 +171,20 @@ def _non_multimodal_image_message(model: str) -> Message:
 def _replace_latest_user_images_with_references(
     messages: list[Message],
 ) -> list[Message]:
+    """Replace images in the most recent user message containing images.
+
+    Searches backward, skipping user messages without images. Each image URL
+    becomes a textual reference to the inspect_image_with_vision tool, with a
+    zero-based image index within the selected message.
+
+    Args:
+        messages: List of conversation messages to process.
+
+    Returns:
+        A new list with the selected message copied and its images replaced.
+        Other messages and non-image content are unchanged. If no user message
+        contains images, returns a shallow copy of the original list.
+    """
     rewritten = list(messages)
     for index in range(len(rewritten) - 1, -1, -1):
         message = rewritten[index]
@@ -400,7 +439,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         from openhands.sdk import LLM, Agent, Tool
         from pydantic import SecretStr
 
-        llm = LLM(model="gpt-5.5", api_key=SecretStr("key"))
+        llm = LLM(model="gpt-5.6", api_key=SecretStr("key"))
         tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
         agent = Agent(llm=llm, tools=tools)
         ```
@@ -414,6 +453,17 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             )
     """
 
+    persona: str | None = Field(
+        default=None,
+        description=(
+            "Persona text that replaces OpenHands' built-in persona and "
+            "coding-workflow sections of the system prompt. Capability and policy "
+            "sections (memory, security policy, risk assessment, browser, external "
+            "services, process management, model-specific guidance) and the dynamic "
+            "context still apply. Ignored when `system_prompt` is set; a custom "
+            "template receives it as the `persona` kwarg."
+        ),
+    )
     _parallel_executor: ParallelToolExecutor = PrivateAttr(
         default_factory=ParallelToolExecutor
     )
@@ -423,6 +473,12 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         self._parallel_executor = ParallelToolExecutor(
             max_workers=self.tool_concurrency_limit
         )
+
+    def _resolved_template_kwargs(self) -> dict[str, object]:
+        template_kwargs = super()._resolved_template_kwargs()
+        if self.persona is not None:
+            template_kwargs["persona"] = self.persona
+        return template_kwargs
 
     @model_validator(mode="before")
     @classmethod
@@ -536,7 +592,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             system_prompt=TextContent(text=self.static_system_message),
             # Tools are stored as ToolDefinition objects and converted to
             # OpenAI format with security_risk parameter during LLM completion.
-            # See make_llm_completion() in agent/utils.py for details.
+            # Agent calls always expose security risk prediction in tool schemas.
             tools=list(self.tools_map.values()),
             dynamic_context=TextContent(text=dynamic_context)
             if dynamic_context
@@ -569,6 +625,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         preset = self._prompt_preset or PromptPreset.DEFAULT
         return create_registry(preset).build(ctx).dynamic
 
+    @staticmethod
+    def _mark_conversation_finished(state: ConversationState) -> None:
+        state.execution_status = ConversationExecutionStatus.FINISHED
+
     def _execute_actions(
         self,
         conversation: LocalConversation,
@@ -592,11 +652,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             check_iterative_refinement=lambda ae: (
                 self._check_iterative_refinement(conversation, ae)
             ),
-            mark_finished=lambda: setattr(
-                state,
-                "execution_status",
-                ConversationExecutionStatus.FINISHED,
-            ),
+            mark_finished=lambda: self._mark_conversation_finished(state),
         )
 
     async def _aexecute_actions(
@@ -627,11 +683,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             check_iterative_refinement=lambda ae: (
                 self._check_iterative_refinement(conversation, ae)
             ),
-            mark_finished=lambda: setattr(
-                state,
-                "execution_status",
-                ConversationExecutionStatus.FINISHED,
-            ),
+            mark_finished=lambda: self._mark_conversation_finished(state),
         )
 
     @observe(name="agent.step", ignore_inputs=["state", "on_event"])
@@ -641,7 +693,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         on_event: ConversationCallbackType,
         on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
-        with StreamContext.open(conversation, on_token) as stream:
+        call_context = conversation.get_llm_call_context()
+        with (
+            llm_call_context_scope(call_context),
+            StreamContext.open(conversation, on_token) as stream,
+        ):
             self._step(conversation, on_event, stream)
 
     def _step(
@@ -727,10 +783,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         )
 
         try:
-            llm_response = make_llm_completion(
-                self.llm,
-                _messages,
+            llm_response = self.llm.generate(
+                messages=_messages,
                 tools=list(self.tools_map.values()),
+                store=False,
+                add_security_risk_prediction=True,
                 on_token=stream.token_callback,
                 call_context=call_context,
             )
@@ -844,13 +901,17 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         """Async variant of :meth:`step`.
 
         The LLM completion is performed asynchronously via
-        :func:`amake_llm_completion`.  Tool dispatch uses
+        :meth:`LLM.agenerate`.  Tool dispatch uses
         :meth:`_aexecute_actions` which runs each tool call in its own
         thread via :func:`asyncio.loop.run_in_executor` and schedules
         parallel calls with :func:`asyncio.gather`, keeping the event
         loop responsive during blocking tool I/O.
         """
-        with StreamContext.open(conversation, on_token) as stream:
+        call_context = conversation.get_llm_call_context()
+        with (
+            llm_call_context_scope(call_context),
+            StreamContext.open(conversation, on_token) as stream,
+        ):
             await self._astep(conversation, on_event, stream)
 
     async def _astep(
@@ -934,10 +995,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             # and state snapshots aren't blocked for the whole response. No-op
             # unless the run loop holds the lock (e.g. direct astep() in tests).
             async with conversation._released_state_lock_during_io():
-                llm_response = await amake_llm_completion(
-                    self.llm,
-                    _messages,
+                llm_response = await self.llm.agenerate(
+                    messages=_messages,
                     tools=list(self.tools_map.values()),
+                    store=False,
+                    add_security_risk_prediction=True,
                     on_token=stream.token_callback,
                     call_context=call_context,
                 )
@@ -1022,6 +1084,18 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         message: Message = llm_response.message
         response_type = classify_response(message)
+        if response_type is not LLMResponseType.TOOL_CALLS:
+            # Resolve outside the event loop and state lock. A lookup may call
+            # this server, and update_secrets() may register another source while
+            # we await it. Repeat until the registry is stable under the lock.
+            while True:
+                sources = dict(state.secret_registry.secret_sources)
+                async with conversation._released_state_lock_during_io():
+                    message = await asyncio.to_thread(
+                        self._mask_secrets, message, conversation
+                    )
+                if sources == state.secret_registry.secret_sources:
+                    break
 
         match response_type:
             case LLMResponseType.TOOL_CALLS:
@@ -1030,7 +1104,13 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 )
             case LLMResponseType.CONTENT:
                 self._handle_content_response(
-                    message, llm_response, conversation, state, on_event, stream
+                    message,
+                    llm_response,
+                    conversation,
+                    state,
+                    on_event,
+                    stream,
+                    mask_secrets=False,
                 )
             case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
                 self._handle_no_content_response(
@@ -1041,43 +1121,74 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     on_event,
                     stream,
                     response_type=response_type,
+                    mask_secrets=False,
                 )
 
     def _requires_user_confirmation(
-        self, state: ConversationState, action_events: list[ActionEvent]
+        self,
+        state: ConversationState,
+        action_events: list[ActionEvent],
+        on_event: ConversationCallbackType | None = None,
     ) -> bool:
-        """
-        Decide whether user confirmation is needed to proceed.
+        """Analyze actions and record the verdict before applying the policy."""
+        risks, event = self._analyze_for_confirmation(state, action_events)
+        if event is not None and on_event is not None:
+            on_event(state.secret_registry.mask_secrets_in_model(event))
+        return self._set_confirmation_status(state, risks)
 
-        Rules:
-            1. Confirmation mode is enabled
-            2. Every action requires confirmation
-            3. A single `FinishAction` never requires confirmation
-            4. A single `ThinkAction` never requires confirmation
-        """
+    async def _arequires_user_confirmation(
+        self,
+        conversation: LocalConversation,
+        state: ConversationState,
+        action_events: list[ActionEvent],
+        on_event: ConversationCallbackType,
+    ) -> bool:
+        """Resolve audit secrets without blocking the loop or holding state."""
+        risks, event = self._analyze_for_confirmation(state, action_events)
+        if event is not None:
+            while True:
+                sources = dict(state.secret_registry.secret_sources)
+                async with conversation._released_state_lock_during_io():
+                    event = await asyncio.to_thread(
+                        state.secret_registry.mask_secrets_in_model, event
+                    )
+                if sources == state.secret_registry.secret_sources:
+                    break
+            on_event(event)
+        return self._set_confirmation_status(state, risks)
+
+    def _analyze_for_confirmation(
+        self, state: ConversationState, action_events: list[ActionEvent]
+    ) -> tuple[list[risk.SecurityRisk], SecurityAnalysisEvent | None]:
         # A single `FinishAction` or `ThinkAction` never requires confirmation
         if len(action_events) == 1 and isinstance(
             action_events[0].action, (FinishAction, ThinkAction)
         ):
-            return False
+            return [], None
 
-        # If there are no actions there is nothing to confirm
-        if len(action_events) == 0:
-            return False
+        if not action_events:
+            return [], None
 
-        # If a security analyzer is registered, use it to grab the risks of the actions
-        # involved. If not, we'll set the risks to UNKNOWN.
-        if state.security_analyzer is not None:
-            risks = [
-                risk
-                for _, risk in state.security_analyzer.analyze_pending_actions(
-                    action_events
-                )
-            ]
-        else:
-            risks = [risk.SecurityRisk.UNKNOWN] * len(action_events)
+        if state.security_analyzer is None:
+            return [risk.SecurityRisk.UNKNOWN] * len(action_events), None
 
-        # Grab the confirmation policy from the state and pass in the risks.
+        analyses = state.security_analyzer.analyze_actions(action_events)
+        event = SecurityAnalysisEvent(
+            analyzer=state.security_analyzer.__class__.__name__,
+            policy=state.confirmation_policy.__class__.__name__,
+            risks={action.id: analysis.risk for action, analysis in analyses},
+            details={
+                action.id: analysis.details
+                for action, analysis in analyses
+                if analysis.details is not None
+            },
+        )
+        return [analysis.risk for _, analysis in analyses], event
+
+    @staticmethod
+    def _set_confirmation_status(
+        state: ConversationState, risks: list[risk.SecurityRisk]
+    ) -> bool:
         if any(state.confirmation_policy.should_confirm(risk) for risk in risks):
             state.execution_status = (
                 ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
@@ -1479,7 +1590,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             condenser_config = self.condenser.model_dump(
                 exclude={"llm"}, exclude_none=True
             )
-            condenser_llm_obj = getattr(self.condenser, "llm", None)
+            condenser_llm_obj = self.condenser.get_llm()
             condenser_llm = (
                 condenser_llm_obj.model if condenser_llm_obj is not None else "N/A"
             )

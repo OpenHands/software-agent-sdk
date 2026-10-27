@@ -30,11 +30,13 @@ from pydantic import (
     ValidationInfo,
     field_serializer,
     field_validator,
+    model_validator,
 )
 from pydantic.fields import FieldInfo
 
+from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.conversation.request import SendMessageRequest
+from openhands.sdk.conversation.message_request import SendMessageRequest
 from openhands.sdk.conversation.types import (
     ConversationObservabilityMetadata,
     ConversationObservabilitySpanName,
@@ -42,6 +44,7 @@ from openhands.sdk.conversation.types import (
 )
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.meta_profile_store import MetaProfile
 from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
 )
@@ -53,6 +56,14 @@ from openhands.sdk.mcp.config import (
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
+from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, ClassifyAndSwitchLLMTool
+from openhands.sdk.tool.defaults import (
+    drop_retired_tool_switches,
+    effective_builtin_class,
+    fold_retired_tool_switches,
+    merge_duplicate_tools,
+    resolve_tool_specs,
+)
 from openhands.sdk.utils.pydantic_secrets import (
     serialize_secret,
     validate_secret,
@@ -76,7 +87,6 @@ from .metadata import (
 
 if TYPE_CHECKING:
     from openhands.sdk.agent import ACPAgent, Agent
-    from openhands.sdk.agent.base import AgentBase
     from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
     from openhands.sdk.critic.base import CriticBase
 
@@ -145,6 +155,29 @@ class SettingsSchema(BaseModel):
 
 CriticMode = Literal["finish_and_message", "all_actions"]
 SecurityAnalyzerType = Literal["llm", "none"]
+WorktreeBase = Literal["default_branch", "head", "ref"]
+"""What a conversation worktree branches from: the repository's default branch
+(fetched from ``origin`` when there is one), the checkout's current ``HEAD``, or
+a given ref."""
+DEFAULT_WORKTREE_BRANCH_PREFIX = "openhands/"
+"""Worktree branches are named ``<prefix><conversation id>``."""
+GIT_REF_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._/-]*$"
+"""A branch, tag or commit name. It never starts with ``-``, so git cannot read
+it as an option."""
+GIT_BRANCH_PREFIX_PATTERN = r"^([A-Za-z0-9][A-Za-z0-9._/-]*)?$"
+"""A branch name prefix, possibly empty, under the same rule."""
+ConversationRuntime = Literal["local", "docker"]
+"""Where a conversation runs: on the agent-server's host or in its own container."""
+DefaultRuntime = Literal["local", "worktree", "docker"]
+"""Where new conversations run by default: the workspace on the host, a new git
+worktree of it on the host, or their own container."""
+DOCKER_MEMORY_PATTERN = r"^\d+(\.\d+)? ?[kKmMgGtTpP]?[iI]?[bB]?$"
+"""What `docker run --memory` accepts (Docker's `RAMInBytes`), e.g. `512m`, `4g`."""
+MIN_CONTAINER_CPUS = 0.01
+"""The smallest `docker run --cpus` value Docker accepts."""
+
+
+type CondenserKind = Literal["llm_summarizing", "no_op"]
 
 
 class CondenserSettings(BaseModel):
@@ -154,6 +187,11 @@ class CondenserSettings(BaseModel):
     condenser-settings variant.
     """
 
+    condenser_kind: CondenserKind = Field(
+        default="llm_summarizing",
+        description="Discriminator for the condenser settings union.",
+        json_schema_extra={SETTINGS_METADATA_KEY: SettingsFieldMetadata().model_dump()},
+    )
     enabled: bool = Field(
         default=True,
         description="Enable conversation memory condensation.",
@@ -191,7 +229,7 @@ class CondenserSettings(BaseModel):
 class LLMSummarizingCondenserSettings(CondenserSettings):
     """Settings for the default LLM summarizing condenser."""
 
-    condenser_kind: Literal["llm_summarizing"] = Field(
+    condenser_kind: Literal["llm_summarizing"] = Field(  # type: ignore[reportIncompatibleVariableOverride]
         default="llm_summarizing",
         description=(
             "Discriminator for the condenser settings union. ``'llm_summarizing'`` "
@@ -298,7 +336,7 @@ class NoOpCondenserSettings(CondenserSettings):
     """Settings for a condenser that leaves conversation views unchanged."""
 
     max_size: ClassVar[int] = 240  # type: ignore[reportIncompatibleVariableOverride]
-    condenser_kind: Literal["no_op"] = Field(
+    condenser_kind: Literal["no_op"] = Field(  # type: ignore[reportIncompatibleVariableOverride]
         default="no_op",
         description=(
             "Discriminator for the condenser settings union. ``'no_op'`` selects "
@@ -324,8 +362,8 @@ def _condenser_settings_discriminator(value: Any) -> str:
     LLM summarizing condenser fields. Treat missing discriminators as
     ``'llm_summarizing'`` so those payloads continue to validate.
     """
-    if isinstance(value, BaseModel):
-        return getattr(value, "condenser_kind", "llm_summarizing")
+    if isinstance(value, CondenserSettings):
+        return value.condenser_kind
     if isinstance(value, dict):
         return value.get("condenser_kind", "llm_summarizing")
     return "llm_summarizing"
@@ -470,8 +508,13 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
-AGENT_SETTINGS_SCHEMA_VERSION = 6
+type AgentKind = Literal["openhands", "llm", "acp"]
+AGENT_SETTINGS_SCHEMA_VERSION = 9
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
+
+_RUNTIME_SECTION_METADATA = SettingsSectionMetadata(
+    key="runtime", label="Runtime"
+).model_dump()
 
 
 class AgentSettingsBase(BaseModel):
@@ -485,9 +528,8 @@ class AgentSettingsBase(BaseModel):
     - :meth:`create_agent` — canonical construction path; concrete subclasses
       must override this.
 
-    The ``llm`` field is intentionally *not* hoisted here — its semantics
-    differ between variants (execution config vs. attribution identity) and
-    the metadata overrides would make a shared field awkward.
+    The ``llm`` field is intentionally *not* hoisted here: only
+    :class:`OpenHandsAgentSettings` calls an LLM.
 
     Use :data:`AgentSettingsConfig` as the type for fields that may hold
     either the :class:`OpenHandsAgentSettings` or :class:`ACPAgentSettings`
@@ -495,6 +537,10 @@ class AgentSettingsBase(BaseModel):
     """
 
     schema_version: int = Field(default=AGENT_SETTINGS_SCHEMA_VERSION, ge=1)
+    agent_kind: AgentKind = Field(
+        default="openhands",
+        description="Discriminator for the agent settings union.",
+    )
 
     @classmethod
     def export_schema(cls) -> SettingsSchema:
@@ -538,12 +584,7 @@ class AgentSettingsBase(BaseModel):
             return data
         if isinstance(data, BaseModel):
             data = data.model_dump(mode="json", context={"expose_secrets": "plaintext"})
-        payload = _apply_persisted_migrations(
-            data,
-            current_version=AGENT_SETTINGS_SCHEMA_VERSION,
-            migrations=_AGENT_SETTINGS_MIGRATIONS,
-            payload_name="AgentSettings",
-        )
+        payload = _migrate_agent_settings_payload(data, persisted=True)
         return cls.model_validate(payload, context=context)
 
     def create_agent(self) -> AgentBase:
@@ -702,6 +743,63 @@ def _migrate_agent_settings_v5_to_v6(payload: dict[str, Any]) -> dict[str, Any]:
         migrated["llm"] = llm
     migrated["schema_version"] = 6
     return migrated
+
+
+def _migrate_agent_settings_v6_to_v7(payload: dict[str, Any]) -> dict[str, Any]:
+    """Drop the deprecated ``llm`` from ACP settings."""
+    migrated = dict(payload)
+    if migrated.get("agent_kind") == "acp":
+        migrated.pop("llm", None)
+    migrated["schema_version"] = 7
+    return migrated
+
+
+def _migrate_agent_settings_v7_to_v8(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fold the retired tool switches into ``tools``."""
+    if payload.get("agent_kind", "openhands") == "acp":
+        migrated = drop_retired_tool_switches(payload)
+    else:
+        migrated = fold_retired_tool_switches(payload)
+    migrated["schema_version"] = 8
+    return migrated
+
+
+def _migrate_agent_settings_v8_to_v9(payload: dict[str, Any]) -> dict[str, Any]:
+    """Discard retired input fields without restoring their former behavior."""
+    migrated = drop_retired_tool_switches(payload)
+    if payload.get("agent_kind", "openhands") == "acp":
+        migrated.pop("llm", None)
+    migrated["schema_version"] = 9
+    return migrated
+
+
+def _migrate_agent_settings_payload(
+    data: Any, *, persisted: bool = False
+) -> dict[str, Any]:
+    payload = _copy_persisted_payload(data)
+    is_request = not persisted and payload.get("schema_version") is None
+    if is_request:
+        _reject_removed_settings_input(payload)
+    return _apply_persisted_migrations(
+        payload,
+        current_version=AGENT_SETTINGS_SCHEMA_VERSION,
+        migrations=(
+            _REQUEST_AGENT_SETTINGS_MIGRATIONS
+            if is_request
+            else _AGENT_SETTINGS_MIGRATIONS
+        ),
+        payload_name="AgentSettings",
+    )
+
+
+def _reject_removed_settings_input(data: Any) -> Any:
+    if isinstance(data, Mapping):
+        removed = {"enable_sub_agents", "enable_switch_llm_tool"}.intersection(data)
+        if data.get("agent_kind") == "acp" and "llm" in data:
+            removed.add("llm")
+        if removed:
+            raise ValueError(f"Removed agent settings: {', '.join(sorted(removed))}")
+    return data
 
 
 _MCP_OAUTH_TOKEN_COLLECTION = "mcp-oauth-token"
@@ -1000,6 +1098,14 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     3: _migrate_agent_settings_v3_to_v4,
     4: _migrate_agent_settings_v4_to_v5,
     5: _migrate_agent_settings_v5_to_v6,
+    6: _migrate_agent_settings_v6_to_v7,
+    7: _migrate_agent_settings_v7_to_v8,
+    8: _migrate_agent_settings_v8_to_v9,
+}
+_REQUEST_AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
+    **_AGENT_SETTINGS_MIGRATIONS,
+    7: lambda payload: {**payload, "schema_version": 8},
+    8: lambda payload: {**payload, "schema_version": 9},
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,
@@ -1119,6 +1225,122 @@ class ConversationSettings(BaseModel):
             ).model_dump(),
         },
     )
+    default_runtime: DefaultRuntime = Field(
+        default="local",
+        description=(
+            "Where new conversations run: in the workspace on the host, in a "
+            "new git worktree of it, or in their own Docker container (which "
+            "needs a server that offers it)."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Default runtime",
+                prominence=SettingProminence.MAJOR,
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: _RUNTIME_SECTION_METADATA,
+        },
+    )
+    worktree_base: WorktreeBase = Field(
+        default="default_branch",
+        description=(
+            "What a new conversation worktree branches from: the repository's "
+            "default branch, the checkout's current HEAD, or `worktree_base_ref`."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Create worktrees from",
+                prominence=SettingProminence.MAJOR,
+                depends_on=("default_runtime=worktree",),
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: _RUNTIME_SECTION_METADATA,
+        },
+    )
+    worktree_base_ref: str | None = Field(
+        default=None,
+        pattern=GIT_REF_PATTERN,
+        description=(
+            "Branch, tag or commit new worktrees branch from when "
+            "`worktree_base` is `ref`, e.g. `develop` or `origin/release`."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Ref",
+                prominence=SettingProminence.MAJOR,
+                depends_on=("default_runtime=worktree", "worktree_base=ref"),
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: _RUNTIME_SECTION_METADATA,
+        },
+    )
+    worktree_branch_prefix: str = Field(
+        default=DEFAULT_WORKTREE_BRANCH_PREFIX,
+        pattern=GIT_BRANCH_PREFIX_PATTERN,
+        description=(
+            "Start of each worktree's branch name, which ends in the "
+            "conversation id, e.g. `openhands/` or `me/`."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Branch name prefix",
+                prominence=SettingProminence.MAJOR,
+                depends_on=("default_runtime=worktree",),
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: _RUNTIME_SECTION_METADATA,
+        },
+    )
+    container_memory: str | None = Field(
+        default=None,
+        pattern=DOCKER_MEMORY_PATTERN,
+        description=(
+            "Memory limit for each new Docker conversation's container, in "
+            "`docker run --memory` syntax such as `512m` or `4g`. Unset keeps "
+            "the server default."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Container memory limit",
+                prominence=SettingProminence.MAJOR,
+                depends_on=("default_runtime=docker",),
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: _RUNTIME_SECTION_METADATA,
+        },
+    )
+    container_cpus: float | None = Field(
+        default=None,
+        ge=MIN_CONTAINER_CPUS,
+        description=(
+            "CPUs each new Docker conversation's container may use, from 0.01 "
+            "up to the machine's CPU count. Unset keeps the server default."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Container CPU limit",
+                prominence=SettingProminence.MAJOR,
+                depends_on=("default_runtime=docker",),
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: _RUNTIME_SECTION_METADATA,
+        },
+    )
+    container_browser: bool = Field(
+        default=True,
+        description=(
+            "Run a browser in new Docker conversations' containers. Has no "
+            "effect when the server's image ships without one."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Browser in containers",
+                prominence=SettingProminence.MAJOR,
+                depends_on=("default_runtime=docker",),
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: _RUNTIME_SECTION_METADATA,
+        },
+    )
+
+    @model_validator(mode="after")
+    def _ref_for_ref_base(self) -> ConversationSettings:
+        if self.worktree_base == "ref" and self.worktree_base_ref is None:
+            raise ValueError("Branching worktrees from a ref needs worktree_base_ref")
+        return self
 
     @classmethod
     def export_schema(cls) -> SettingsSchema:
@@ -1167,7 +1389,11 @@ class ConversationSettings(BaseModel):
         # variant returns an ``Agent`` and the ACP variant returns an
         # ``ACPAgent``. Callers that want a narrowed type should access
         # ``self.agent_settings.create_agent()`` directly.
-        if "agent" not in payload and self.agent_settings is not None:
+        has_agent_source = any(
+            payload.get(name) is not None
+            for name in ("agent", "agent_settings", "agent_profile_id")
+        )
+        if not has_agent_source and self.agent_settings is not None:
             payload["agent"] = self.agent_settings.create_agent()
 
         # --- secrets (from agent's context) ---------------------------------
@@ -1176,9 +1402,10 @@ class ConversationSettings(BaseModel):
         # agents without AgentContext.
         agent = payload.get("agent")
         if "secrets" not in payload and agent is not None:
-            ctx = getattr(agent, "agent_context", None)
-            if ctx is not None and getattr(ctx, "secrets", None):
-                payload["secrets"] = ctx.secrets
+            if isinstance(agent, AgentBase) and agent.agent_context is not None:
+                secrets = agent.agent_context.secrets
+                if secrets:
+                    payload["secrets"] = secrets
 
         # --- runtime fields -------------------------------------------------
         if self.workspace is not None:
@@ -1222,8 +1449,6 @@ class ConversationSettings(BaseModel):
         return request_type(**self._start_request_kwargs(**kwargs))
 
 
-AgentKind = Literal["openhands", "llm", "acp"]
-
 ACPServerKind = Literal[
     "claude-code", "codex", "gemini-cli", "kimi-code", "pi", "opencode", "custom"
 ]
@@ -1242,7 +1467,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
     the default ``Agent`` (LLM + tools + MCP + condenser + critic).
     """
 
-    agent_kind: Literal["openhands"] = Field(
+    agent_kind: Literal["openhands"] = Field(  # type: ignore[reportIncompatibleVariableOverride]
         default="openhands",
         description=(
             "Discriminator for the ``AgentSettings`` union. ``'openhands'`` selects "
@@ -1275,11 +1500,10 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         default=None,
         description=(
             "Tools available to the agent. None (the default) resolves to the "
-            "standard exec set (see openhands.sdk.tool.defaults), plus the "
-            "sub-agent tool set when enable_sub_agents is set; [] is an "
-            "explicitly bare agent; a non-empty list is used exactly as given. "
-            "Environment-dependent tools (browser) are injected by the serving "
-            "layer, not the default."
+            "standard exec set plus switch_llm (see openhands.sdk.tool.defaults); "
+            "[] is an explicitly bare agent; a non-empty list is used exactly as "
+            "given. Environment-dependent tools (browser) are injected by the "
+            "serving layer, not the default."
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
@@ -1289,30 +1513,49 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             ).model_dump()
         },
     )
-    enable_sub_agents: bool = Field(
+    enable_classify_and_switch_llm_tool: bool = Field(
         default=False,
-        description="Enable sub-agent delegation via TaskToolSet.",
-        json_schema_extra={
-            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="Enable sub-agents",
-                prominence=SettingProminence.MAJOR,
-                variant="openhands",
-            ).model_dump()
-        },
-    )
-    enable_switch_llm_tool: bool = Field(
-        default=True,
         description=(
-            "Enable the built-in switch_llm tool for switching between saved "
-            "LLM profiles."
+            "Enable the built-in route_task_to_model tool, which routes the "
+            "task to the best LLM profile using the active meta-profile. When no "
+            "active_meta_profile is set, the first available meta-profile is used."
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="Enable LLM switching tool",
+                label="Enable intelligent model routing tool",
                 prominence=SettingProminence.MINOR,
                 variant="openhands",
             ).model_dump()
         },
+    )
+    active_meta_profile: str | None = Field(
+        default=None,
+        description=(
+            "Name of the active meta-profile (in ~/.openhands/meta-profiles) used "
+            "by the route_task_to_model tool to route tasks to LLM profiles."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Active meta-profile",
+                prominence=SettingProminence.MINOR,
+                variant="openhands",
+            ).model_dump()
+        },
+    )
+    meta_profile: MetaProfile | None = Field(
+        default=None,
+        description=(
+            "Inline configuration for the active meta-profile. Cloud runtimes "
+            "use this field because their ephemeral filesystem does not contain "
+            "the control plane's meta-profile store."
+        ),
+    )
+    meta_profile_llms: dict[str, LLM] = Field(
+        default_factory=dict,
+        description=(
+            "Resolved LLM configurations referenced by the active meta-profile. "
+            "Cloud control planes hydrate this map for ephemeral runtimes."
+        ),
     )
     tool_concurrency_limit: int = Field(
         default=1,
@@ -1342,6 +1585,18 @@ class OpenHandsAgentSettings(AgentSettingsBase):
                 variant="openhands",
             ).model_dump()
         },
+    )
+    persona: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=65536,
+        description=(
+            "Persona text that replaces OpenHands' built-in persona and "
+            "coding-workflow guidance. Capability and policy guidance (memory, "
+            "security policy, risk assessment, browser, external services, process "
+            "management, model-specific notes) and the dynamic context are still "
+            "included. None keeps the built-in persona."
+        ),
     )
     agent_context: AgentContext = Field(
         default_factory=AgentContext,
@@ -1377,6 +1632,11 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         },
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_tool_switches(cls, data: Any) -> Any:
+        return _reject_removed_settings_input(data)
+
     @field_validator("condenser", mode="before")
     @classmethod
     def _upgrade_base_condenser_settings(cls, value: Any) -> Any:
@@ -1397,20 +1657,39 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         """
         from openhands.sdk.agent import Agent
         from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
-        from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, SwitchLLMTool
-        from openhands.sdk.tool.defaults import default_tool_specs
 
-        # Single defaulting point: None = the canonical default set (honoring
-        # enable_sub_agents); [] stays an explicitly bare agent.
-        tools = (
-            self.tools
-            if self.tools is not None
-            else default_tool_specs(enable_sub_agents=self.enable_sub_agents)
-        )
-
+        specs = merge_duplicate_tools(resolve_tool_specs(self.tools))
         include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
-        if self.enable_switch_llm_tool:
-            include_default_tools.append(SwitchLLMTool.__name__)
+        tools: list[Tool] = []
+        for spec in specs:
+            builtin = effective_builtin_class(spec.name)
+            if builtin is None:
+                tools.append(spec)
+            elif spec.params:
+                tools.append(Tool(name=builtin.__name__, params=spec.params))
+                if builtin.__name__ in include_default_tools:
+                    include_default_tools.remove(builtin.__name__)
+            elif builtin.__name__ not in include_default_tools:
+                include_default_tools.append(builtin.__name__)
+
+        # The routing tool needs the active meta-profile name, which the
+        # name-only ``include_default_tools`` path cannot pass, so add it as a
+        # ``Tool`` spec carrying the param. When no meta-profile is active, the
+        # tool falls back to the first available one, so we still wire it.
+        if self.enable_classify_and_switch_llm_tool:
+            params: dict[str, Any] = {}
+            if self.active_meta_profile:
+                params["active_meta_profile"] = self.active_meta_profile
+            if self.meta_profile:
+                params["meta_profile"] = self.meta_profile.model_dump(mode="json")
+            if self.meta_profile_llms:
+                params["meta_profile_llms"] = self.meta_profile_llms
+            if ClassifyAndSwitchLLMTool.__name__ in include_default_tools:
+                include_default_tools.remove(ClassifyAndSwitchLLMTool.__name__)
+            tools = [
+                spec for spec in tools if spec.name != ClassifyAndSwitchLLMTool.__name__
+            ]
+            tools.append(Tool(name=ClassifyAndSwitchLLMTool.__name__, params=params))
 
         llm = create_subscription_llm_from_config(self.llm)
         condenser = self.build_condenser(llm)
@@ -1420,6 +1699,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             mcp_config=self.mcp_config,
             include_default_tools=include_default_tools,
             agent_context=self.agent_context,
+            persona=self.persona,
             condenser=condenser,
             critic=self.build_critic(),
             tool_concurrency_limit=self.tool_concurrency_limit,
@@ -1486,15 +1766,14 @@ class ACPAgentSettings(AgentSettingsBase):
     tools, MCP, and (primary) LLM calls; those fields from
     :class:`OpenHandsAgentSettings` do not apply here.
 
-    ``ACPAgent`` uses the :attr:`llm` field purely for cost/token attribution,
-    never for LLM requests; :attr:`acp_model` is the model identity. Any
-    credentials set on it (``llm.api_key`` / ``llm.base_url``) are ignored —
-    provider credentials ride the conversation secrets channel
+    :attr:`acp_model` is the model identity. The created ``ACPAgent`` keeps its
+    own metrics LLM, so title generation can tell it is never callable.
+    Provider credentials ride the conversation secrets channel
     (``request.secrets`` / ``agent_context.secrets`` → ``state.secret_registry``)
     keyed by the provider's env var name (:attr:`api_key_env_var`).
     """
 
-    agent_kind: Literal["acp"] = Field(
+    agent_kind: Literal["acp"] = Field(  # type: ignore[reportIncompatibleVariableOverride]
         default="acp",
         description=(
             "Discriminator for the ``AgentSettings`` union. ``'acp'`` selects "
@@ -1687,26 +1966,6 @@ class ACPAgentSettings(AgentSettingsBase):
             "file-auth schemes."
         ),
     )
-    llm: LLM = Field(
-        default_factory=_default_llm_settings,
-        description=(
-            "DEPRECATED (removed in 1.33.0): LLM identity used for cost/token "
-            "attribution. The ACP subprocess makes its own model calls; "
-            "``acp_model`` is the model identity. Credentials set here "
-            "(``api_key`` / ``base_url``) are ignored — route provider "
-            "credentials through the conversation secrets channel "
-            "(agent_context.secrets / StartConversationRequest.secrets, which "
-            "route through state.secret_registry), keyed by the provider's "
-            "env var name."
-        ),
-        json_schema_extra={
-            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
-                key="llm",
-                label="LLM (for metrics)",
-                variant="acp",
-            ).model_dump()
-        },
-    )
     agent_context: AgentContext | None = Field(
         default=None,
         description=(
@@ -1721,6 +1980,13 @@ class ACPAgentSettings(AgentSettingsBase):
             "provider's env var name."
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_llm(cls, data: Any) -> Any:
+        if isinstance(data, Mapping) and "llm" in data:
+            raise ValueError("ACPAgentSettings.llm was removed; use acp_model instead.")
+        return _reject_removed_settings_input(data)
 
     @property
     def provider_info(self) -> ACPProviderInfo | None:
@@ -1850,22 +2116,17 @@ class ACPAgentSettings(AgentSettingsBase):
         which maps :attr:`acp_server` to a default when no explicit
         :attr:`acp_command` is set.
 
-        Credentials on :attr:`llm` (``api_key`` / ``base_url``) are ignored:
-        provider credentials ride the conversation secrets channel
+        :attr:`llm` is not read: the agent keeps its default ``acp-managed``
+        metrics LLM, relabelled with :attr:`acp_model` when set. Provider
+        credentials ride the conversation secrets channel
         (``agent_context.secrets`` / ``StartConversationRequest.secrets``,
         which route through ``state.secret_registry``) keyed by the
-        provider's env var name (:attr:`api_key_env_var`), exactly like the
-        regular agent's credentials, and reach the subprocess from the
-        registry.
+        provider's env var name (:attr:`api_key_env_var`), and reach the
+        subprocess from the registry.
         """
         from openhands.sdk.agent import ACPAgent
 
-        # Credentials on ``llm`` (api_key / base_url) are intentionally not read:
-        # provider credentials ride the conversation secrets channel keyed by the
-        # provider's env var name (#3632). ``llm`` is kept only for cost/token
-        # attribution; ``acp_model`` is the model identity.
         return ACPAgent(
-            llm=self.llm,
             acp_command=self.resolve_acp_command(),
             # Carry the authoritative provider key onto the agent: acp_command
             # alone does not reliably reverse-map to a provider, so consumers
@@ -1923,8 +2184,8 @@ def _agent_settings_discriminator(value: Any) -> str:
     ``'llm'`` is still a valid tag, routed to the deprecated
     :class:`LLMAgentSettings` subclass.
     """
-    if isinstance(value, BaseModel):
-        return getattr(value, "agent_kind", "openhands")
+    if isinstance(value, AgentSettingsBase):
+        return value.agent_kind
     if isinstance(value, dict):
         return value.get("agent_kind", "openhands")
     return "openhands"
@@ -1958,21 +2219,19 @@ def validate_agent_settings(
     data: Any,
     *,
     context: Mapping[str, Any] | None = None,
+    persisted: bool = False,
 ) -> OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings:
     """Load and validate an agent-settings payload.
 
     Persisted payloads are migrated to the current schema version before
     validation, including legacy ``agent_kind: "llm"`` payloads from before the
-    ``OpenHandsAgentSettings`` rename.
+    ``OpenHandsAgentSettings`` rename. Pass ``persisted=True`` for stored data,
+    so a payload without ``schema_version`` is migrated as a legacy row rather
+    than validated as a request.
     """
     if isinstance(data, OpenHandsAgentSettings | ACPAgentSettings):
         return data
-    payload = _apply_persisted_migrations(
-        data,
-        current_version=AGENT_SETTINGS_SCHEMA_VERSION,
-        migrations=_AGENT_SETTINGS_MIGRATIONS,
-        payload_name="AgentSettings",
-    )
+    payload = _migrate_agent_settings_payload(data, persisted=persisted)
     # The v1->v2 migration renames the deprecated ``agent_kind: 'llm'`` tag, but
     # only while advancing ``schema_version``. A payload already at the current
     # version keeps the ``llm`` tag and would dispatch to the deprecated
@@ -2025,7 +2284,7 @@ def apply_agent_settings_diff(
     This is the single owner of agent-settings diff application; settings stores
     should delegate here instead of hand-rolling the dump/merge/validate dance.
     """
-    base_settings = validate_agent_settings(base, context=context)
+    base_settings = validate_agent_settings(base, context=context, persisted=True)
     if not diff:
         return base_settings
     new_kind = diff.get("agent_kind")
@@ -2151,7 +2410,7 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
             key=metadata.key,
             label=metadata.label or _humanize_name(metadata.key),
             fields=[],
-            variant=getattr(metadata, "variant", None),
+            variant=metadata.variant,
         )
         sections_by_key[metadata.key] = section
         sections.append(section)
@@ -2185,10 +2444,11 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                                 existing_choice_values.add(choice.value)
                         continue
                     default_value = None
-                    if isinstance(section_default, BaseModel) and hasattr(
-                        section_default, nested_key
+                    if (
+                        isinstance(section_default, BaseModel)
+                        and nested_key in type(section_default).model_fields
                     ):
-                        default_value = getattr(section_default, nested_key)
+                        default_value = dict(section_default).get(nested_key)
                     field_schema = SettingsFieldSchema(
                         key=f"{explicit_section_metadata.key}.{nested_key}",
                         label=(
