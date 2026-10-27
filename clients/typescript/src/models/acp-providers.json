@@ -108,6 +108,30 @@
     "supports_runtime_model_switch": true,
     "supports_set_session_model": true
   },
+  "devin": {
+    "agent_name_patterns": [
+      "affogato",
+      "devin"
+    ],
+    "api_key_env_var": "WINDSURF_API_KEY",
+    "available_models": [],
+    "base_url_env_var": null,
+    "binary_name": null,
+    "data_dir_env_var": null,
+    "default_command": [
+      "devin",
+      "acp"
+    ],
+    "default_model": null,
+    "default_session_mode": null,
+    "display_name": "Devin",
+    "env_conflicts": [],
+    "file_secrets": [],
+    "key": "devin",
+    "session_meta_key": null,
+    "supports_runtime_model_switch": true,
+    "supports_set_session_model": true
+  },
   "gemini-cli": {
     "agent_name_patterns": [
       "gemini-cli"

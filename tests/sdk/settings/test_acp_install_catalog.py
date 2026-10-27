@@ -127,14 +127,23 @@ class TestACPInstallCatalogMatchesACPProviders:
     verify the two stay in lockstep for every npm-installable provider."""
 
     def test_catalog_keys_match_registered_npm_providers(self):
-        assert set(ACP_INSTALL_CATALOG) == set(ACP_PROVIDERS)
+        # The catalog covers npm-installable providers only — standalone
+        # binaries like devin have no npm package to pin.
+        npm_backed = {
+            key
+            for key, info in ACP_PROVIDERS.items()
+            if info.default_command[0] == "npx"
+        }
+        assert set(ACP_INSTALL_CATALOG) == npm_backed
 
     def test_default_commands_are_derived_from_catalog(self):
-        for key, info in ACP_PROVIDERS.items():
+        for key in ACP_INSTALL_CATALOG:
+            info = ACP_PROVIDERS[key]
             assert info.default_command == ACP_INSTALL_CATALOG[key].npx_command()
 
     def test_binary_names_are_derived_from_catalog(self):
-        for key, info in ACP_PROVIDERS.items():
+        for key in ACP_INSTALL_CATALOG:
+            info = ACP_PROVIDERS[key]
             assert info.binary_name == ACP_INSTALL_CATALOG[key].binary_name
 
     def test_pinned_versions_unchanged(self):
