@@ -1,0 +1,237 @@
+{
+  "proxy_version": "1.103.6",
+  "results": [
+    {
+      "case": "baseline-direct",
+      "exit": 0,
+      "provider_calls": 3,
+      "offsets": [
+        0.0,
+        8.027,
+        24.052
+      ],
+      "elapsed": 24.175,
+      "retry_module": "/Users/alonaking/Documents/All-Hands/worktrees/sdk-retry-after-148-base/openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py",
+      "events": [
+        {
+          "attempt": 1,
+          "maximum": 3,
+          "hints": {
+            "retry-after": "12"
+          }
+        },
+        {
+          "attempt": 2,
+          "maximum": 3,
+          "hints": {
+            "retry-after": "4"
+          }
+        }
+      ],
+      "response": {
+        "role": "assistant",
+        "content": [
+          {
+            "cache_prompt": false,
+            "type": "text",
+            "text": "OK"
+          }
+        ],
+        "tool_calls": null,
+        "tool_call_id": null,
+        "name": null,
+        "reasoning_content": null,
+        "thinking_blocks": [],
+        "responses_reasoning_item": null
+      }
+    },
+    {
+      "case": "baseline-proxy",
+      "exit": 0,
+      "provider_calls": 3,
+      "offsets": [
+        0.0,
+        8.078,
+        24.129
+      ],
+      "elapsed": 25.002,
+      "retry_module": "/Users/alonaking/Documents/All-Hands/worktrees/sdk-retry-after-148-base/openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py",
+      "events": [
+        {
+          "attempt": 1,
+          "maximum": 3,
+          "hints": {
+            "llm_provider-retry-after": "12"
+          }
+        },
+        {
+          "attempt": 2,
+          "maximum": 3,
+          "hints": {
+            "llm_provider-retry-after": "4"
+          }
+        }
+      ],
+      "response": {
+        "role": "assistant",
+        "content": [
+          {
+            "cache_prompt": false,
+            "type": "text",
+            "text": "OK"
+          }
+        ],
+        "tool_calls": null,
+        "tool_call_id": null,
+        "name": null,
+        "reasoning_content": null,
+        "thinking_blocks": [],
+        "responses_reasoning_item": null
+      }
+    },
+    {
+      "case": "candidate-direct",
+      "exit": 0,
+      "provider_calls": 2,
+      "offsets": [
+        0.0,
+        12.027
+      ],
+      "elapsed": 12.144,
+      "retry_module": "/Users/alonaking/Documents/All-Hands/worktrees/sdk-retry-after-148/openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py",
+      "events": [
+        {
+          "attempt": 1,
+          "maximum": 3,
+          "hints": {
+            "retry-after": "12"
+          }
+        }
+      ],
+      "response": {
+        "role": "assistant",
+        "content": [
+          {
+            "cache_prompt": false,
+            "type": "text",
+            "text": "OK"
+          }
+        ],
+        "tool_calls": null,
+        "tool_call_id": null,
+        "name": null,
+        "reasoning_content": null,
+        "thinking_blocks": [],
+        "responses_reasoning_item": null
+      }
+    },
+    {
+      "case": "candidate-proxy",
+      "exit": 0,
+      "provider_calls": 2,
+      "offsets": [
+        0.0,
+        12.06
+      ],
+      "elapsed": 12.301,
+      "retry_module": "/Users/alonaking/Documents/All-Hands/worktrees/sdk-retry-after-148/openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py",
+      "events": [
+        {
+          "attempt": 1,
+          "maximum": 3,
+          "hints": {
+            "llm_provider-retry-after": "12"
+          }
+        }
+      ],
+      "response": {
+        "role": "assistant",
+        "content": [
+          {
+            "cache_prompt": false,
+            "type": "text",
+            "text": "OK"
+          }
+        ],
+        "tool_calls": null,
+        "tool_call_id": null,
+        "name": null,
+        "reasoning_content": null,
+        "thinking_blocks": [],
+        "responses_reasoning_item": null
+      }
+    },
+    {
+      "case": "candidate-async-direct",
+      "exit": 0,
+      "provider_calls": 2,
+      "offsets": [
+        0.0,
+        12.023
+      ],
+      "elapsed": 12.137,
+      "retry_module": "/Users/alonaking/Documents/All-Hands/worktrees/sdk-retry-after-148/openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py",
+      "events": [
+        {
+          "attempt": 1,
+          "maximum": 3,
+          "hints": {
+            "retry-after": "12"
+          }
+        }
+      ],
+      "response": {
+        "role": "assistant",
+        "content": [
+          {
+            "cache_prompt": false,
+            "type": "text",
+            "text": "OK"
+          }
+        ],
+        "tool_calls": null,
+        "tool_call_id": null,
+        "name": null,
+        "reasoning_content": null,
+        "thinking_blocks": [],
+        "responses_reasoning_item": null
+      }
+    },
+    {
+      "case": "candidate-async-proxy",
+      "exit": 0,
+      "provider_calls": 2,
+      "offsets": [
+        0.0,
+        12.04
+      ],
+      "elapsed": 12.151,
+      "retry_module": "/Users/alonaking/Documents/All-Hands/worktrees/sdk-retry-after-148/openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py",
+      "events": [
+        {
+          "attempt": 1,
+          "maximum": 3,
+          "hints": {
+            "llm_provider-retry-after": "12"
+          }
+        }
+      ],
+      "response": {
+        "role": "assistant",
+        "content": [
+          {
+            "cache_prompt": false,
+            "type": "text",
+            "text": "OK"
+          }
+        ],
+        "tool_calls": null,
+        "tool_call_id": null,
+        "name": null,
+        "reasoning_content": null,
+        "thinking_blocks": [],
+        "responses_reasoning_item": null
+      }
+    }
+  ]
+}
