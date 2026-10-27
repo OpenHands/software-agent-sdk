@@ -283,15 +283,23 @@ def _repeating_terminal_loop_events(repeat_count: int) -> list[Event]:
     return loop_events
 
 
-def test_content_response_sets_finished():
-    """_handle_content_response sets execution status to FINISHED."""
+def test_content_response_sends_nudge():
+    """_handle_content_response emits message + corrective nudge, keeps loop alive."""
     msg = Message(role="assistant", content=[TextContent(text="Done!")])
     events, convo = _run_single_step(_make_llm_response(msg))
     msg_events = [e for e in events if isinstance(e, MessageEvent)]
 
-    assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
-    assert len(msg_events) == 1
+    # Content-only turns must NOT terminate — the agent loop stays alive.
+    assert convo.state.execution_status != ConversationExecutionStatus.FINISHED
+    assert len(msg_events) == 2
     assert msg_events[0].source == "agent"
+    # Framework corrective nudge is injected so the model knows to call finish.
+    assert msg_events[1].source == "environment"
+    assert msg_events[1].llm_message.role == "user"
+    nudge_text = msg_events[1].llm_message.content[0]
+    assert isinstance(nudge_text, TextContent)
+    assert "no function call" in nudge_text.text
+    assert "finish" in nudge_text.text
 
 
 def test_empty_response_sends_nudge():
