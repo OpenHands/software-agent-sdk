@@ -757,3 +757,54 @@ async def test_cancelled_close_keeps_its_permit_until_the_worker_exits(
         await wait_until(lambda: _free_run_permits(holder) == 1)
 
         await other.execute_tool("terminal", {"kind": "TerminalAction", "command": "y"})
+
+
+async def test_cancelled_close_still_tears_the_conversation_down(tmp_path, monkeypatch):
+    """Cancelling close() must not strand the conversation mid-teardown.
+
+    Regression: a cancellation at close()'s worker wait re-raised out of
+    ``close()``, so the rest of teardown never ran. The completion callbacks
+    returned the run permit, but the conversation, its executor and its lease
+    stayed allocated, and ``_closing`` blocked idle eviction, so nothing could
+    release them. Teardown must be owned by the service and finish even though
+    the caller is gone.
+    """
+    owner, create = await _terminal_services(tmp_path, 1)
+    async with owner:
+        holder = await create()
+        conversation = holder.get_conversation()
+        conversation._ensure_agent_ready()
+
+        worker_started = threading.Event()
+        worker_release = threading.Event()
+
+        def blocked_execute_tool(tool_name, action):
+            worker_started.set()
+            worker_release.wait(timeout=30)
+            return TerminalObservation.from_text("done", command="x")
+
+        monkeypatch.setattr(conversation, "execute_tool", blocked_execute_tool)
+
+        direct = asyncio.create_task(
+            holder.execute_tool("terminal", {"kind": "TerminalAction", "command": "x"})
+        )
+        await asyncio.to_thread(worker_started.wait, 10)
+
+        close_task = asyncio.create_task(holder.close())
+        await asyncio.sleep(0.2)
+        close_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await close_task
+
+        # The worker is still live, so teardown is still pending.
+        assert holder.is_open()
+
+        worker_release.set()
+        await asyncio.gather(direct, return_exceptions=True)
+        # Teardown finishes on its own once the worker settles: the
+        # conversation and its executor are closed and the lease is released.
+        await wait_until(lambda: not holder.is_open())
+        await wait_until(lambda: _free_run_permits(holder) == 1)
+        assert holder._conversation is None
+        assert holder._lease is None
+        assert holder._lease_generation is None

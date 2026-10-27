@@ -296,6 +296,12 @@ class EventService:
     # so a later Stop/Pause cannot be overwritten by an automatic restart.
     _explicit_interrupt_generation: int = field(default=0, init=False)
     _closing: bool = field(default=False, init=False)
+    # The service-owned teardown task. close() awaits it through a shield so a
+    # cancelled caller cannot abort teardown partway and strand the
+    # conversation, its executor and its lease (``_closing`` blocks idle
+    # eviction, so nothing else would release them). Retained so a retry
+    # close() joins the same teardown instead of starting a second one.
+    _teardown_task: asyncio.Task[None] | None = field(default=None, init=False)
     _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     # Whether a direct tool execution is in flight (see execute_tool). Direct
     # calls are serialized per conversation and used by run()/start_goal_loop()
@@ -2287,12 +2293,48 @@ class EventService:
         await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
 
     async def close(self):
-        if self.bash_event_service is not None:
-            await self.bash_event_service.close()
+        """Tear the conversation down, surviving cancellation of the caller.
+
+        The teardown runs on a task the service owns and is awaited through a
+        shield, so cancelling the caller (a cancelled DELETE request, for
+        example) does not abort it partway. ``_closing`` blocks idle eviction,
+        so a half-finished teardown would leave the conversation, its executor
+        and its lease allocated with no path to release them. A retry
+        ``close()`` joins the same task.
+        """
+        # Close admission synchronously, before the teardown task starts, so no
+        # new work slips in during the window where the task is only scheduled.
         self._closing = True
         self._explicit_interrupt_generation += 1
         self._rerun_requested = False
         self._acp_internal_rerun_requested = False
+        task = self._teardown_task
+        if task is None or task.done():
+            # A finished teardown (successful or not) is replaced rather than
+            # joined: a failed one must be retryable so the remaining cleanup
+            # can still run, which is how a failed close() behaved before.
+            task = asyncio.create_task(self._teardown())
+            task.add_done_callback(self._retrieve_teardown_result)
+            self._teardown_task = task
+        await asyncio.shield(task)
+
+    @staticmethod
+    def _retrieve_teardown_result(task: asyncio.Task) -> None:
+        """Retrieve a detached teardown's outcome.
+
+        A cancelled caller stops awaiting the shielded teardown, so nothing
+        would retrieve its exception and the loop would report it as never
+        retrieved. The exception still propagates to a caller that awaits.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.debug("Conversation teardown failed: %s", exc)
+
+    async def _teardown(self) -> None:
+        if self.bash_event_service is not None:
+            await self.bash_event_service.close()
         # Abandon any in-flight direct tool call: it does not hold the
         # conversation state lock, so it would otherwise keep running (and keep
         # holding the executor) through the teardown below. The bump makes a

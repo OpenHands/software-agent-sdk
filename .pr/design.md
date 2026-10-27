@@ -92,6 +92,14 @@ a version compare would reject a working endpoint.
   if `close()` itself is cancelled mid-teardown, it aborts and leaves the
   release to the worker/interrupt done callbacks so the permit is not returned
   under still-live work.
+- **Teardown survives cancellation of the caller.** `close()` hands the teardown
+  to a task the service owns and awaits it through `asyncio.shield`, so
+  cancelling the caller (a cancelled DELETE, say) cannot abort teardown
+  partway. `_closing` latches and blocks idle eviction, so a half-finished
+  teardown would leave the conversation, its executor and its lease allocated
+  with nothing left to release them; only the teardown task finishes that work.
+  A retry `close()` joins the same task, while a *finished* teardown is replaced
+  so a failed `close()` stays retryable.
 - **Cancellation returns promptly; teardown owns the worker and the
   interrupt.** Cancelling the request cannot stop the synchronous worker, and
   blocking the cancel on it would hold the request open for as long as the
@@ -189,7 +197,11 @@ i.e. pre-existing drift, not from this change.
   competing call is 429 until initialization finishes, and
   `test_cancelled_close_keeps_its_permit_until_the_worker_exits` cancels
   `close()` while the worker is still running and asserts the permit is not
-  returned under it. Both fail on the pre-fix head.
+  returned under it. Both fail on the pre-fix head. A third,
+  `test_cancelled_close_still_tears_the_conversation_down`, cancels `close()`
+  mid-worker and asserts teardown still finishes on its own — the conversation
+  and executor are closed and the lease is released — and fails (times out) on
+  the pre-fix head.
 - `uv run pytest tests/agent_server tests/sdk/conversation tests/tools/terminal`
   -> passes locally (378 agent-server, 107 sdk/terminal) and in CI.
 - `npm run check:agent-server-api` -> clean; `ruff check` / `ruff format --check`
