@@ -1209,7 +1209,7 @@ class RemoteConversation(BaseConversation):
             except ValueError:
                 return
 
-            if status != ConversationExecutionStatus.RUNNING:
+            if not status.is_active():
                 self._terminal_status_queue.put(status.value)
 
         # Compose all callbacks into a single callback
@@ -1580,7 +1580,10 @@ class RemoteConversation(BaseConversation):
 
     def _handle_conversation_status(self, status: str | None, since: int = 0) -> bool:
         """Handle non-running statuses; return True if the run is complete."""
-        if status == ConversationExecutionStatus.RUNNING.value:
+        if status in (
+            ConversationExecutionStatus.RUNNING.value,
+            ConversationExecutionStatus.PAUSING.value,
+        ):
             return False
         if status == ConversationExecutionStatus.ERROR.value:
             self._state.events.reconcile()

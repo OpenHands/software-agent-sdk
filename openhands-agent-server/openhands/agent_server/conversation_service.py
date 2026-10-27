@@ -2235,13 +2235,13 @@ class ConversationService:
         ]
 
         # Preserve crash recovery semantics without hydrating every idle
-        # conversation. RUNNING records may contain an interrupted tool call;
+        # conversation. Active records may contain an interrupted tool call;
         # EventService.start() marks those records as ERROR and appends the
         # corresponding recovery event. A live lease still prevents takeover.
         running_ids = [
             conversation_id
             for conversation_id, record in self._conversation_records.items()
-            if record.execution_status == ConversationExecutionStatus.RUNNING
+            if record.execution_status.is_active()
         ]
         for conversation_id in running_ids:
             try:

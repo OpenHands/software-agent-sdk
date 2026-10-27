@@ -643,11 +643,11 @@ class TestConfirmationMode:
                 ConversationExecutionStatus.RUNNING
             )
 
-        # Pause from RUNNING should change status to PAUSED
+        # Pause from RUNNING remains pending until the run loop reaches a boundary.
         self.conversation.pause()
         assert (
             self.conversation._state.execution_status
-            == ConversationExecutionStatus.PAUSED
+            == ConversationExecutionStatus.PAUSING
         )
 
     def test_is_confirmation_mode_active_property(self):

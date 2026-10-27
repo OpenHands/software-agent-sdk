@@ -370,7 +370,12 @@ async def pause_conversation(
     conversation_id: UUID,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> Success:
-    """Pause a conversation, allowing it to be resumed later."""
+    """Request a pause at the next agent step boundary.
+
+    An active conversation reports ``pausing`` until the current step ends,
+    then reports ``paused`` and emits a PauseEvent. An ACP step spans the
+    entire remote prompt turn. Use ``/interrupt`` to cancel in-flight work.
+    """
     paused = await conversation_service.pause_conversation(conversation_id)
     if not paused:
         raise HTTPException(status.HTTP_404_NOT_FOUND)

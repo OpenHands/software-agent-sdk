@@ -110,6 +110,7 @@ export namespace EventSortOrder {
 export enum ConversationExecutionStatus {
   IDLE = 'idle',
   RUNNING = 'running',
+  PAUSING = 'pausing',
   PAUSED = 'paused',
   WAITING_FOR_CONFIRMATION = 'waiting_for_confirmation',
   FINISHED = 'finished',
