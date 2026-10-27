@@ -3168,3 +3168,83 @@ def test_profile_store_consumers_keep_live_server_responsive(
     finally:
         safety.cancel()
         held.release(force=True)
+
+
+def _start_live_conversation(server_env) -> str:
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conversation: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+    return str(conversation.id)
+
+
+@pytest.mark.parametrize(
+    ("lock_file", "endpoint", "payload", "expected_status"),
+    [
+        (
+            "profiles/.profiles.lock",
+            "switch_profile",
+            {"profile_name": "qa-busy"},
+            404,
+        ),
+        (
+            "provider-connections/.provider-connections.lock",
+            "switch_llm",
+            {"llm": {"model": "gpt-4o-mini", "provider_connection_id": "qa-missing"}},
+            422,
+        ),
+    ],
+)
+def test_conversation_switch_keeps_live_server_responsive(
+    server_env,
+    monkeypatch,
+    tmp_path,
+    lock_file,
+    endpoint,
+    payload,
+    expected_status,
+):
+    # Server-side conversations build their LLMProfileStore from the module
+    # default, which is frozen at import time; point it at the fixture's
+    # persistence dir so the held lock and the store's lock are the same file.
+    import openhands.sdk.llm.llm_profile_store as _llm_profile_store
+
+    monkeypatch.setattr(
+        _llm_profile_store, "_DEFAULT_PROFILE_DIR", tmp_path / ".openhands" / "profiles"
+    )
+    conversation_id = _start_live_conversation(server_env)
+
+    lock_path = tmp_path / ".openhands" / lock_file
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    held = FileLock(lock_path, thread_local=False)
+    held.acquire()
+    safety = threading.Timer(5.0, held.release)
+    safety.start()
+    try:
+        with (
+            httpx.Client(base_url=server_env["host"], timeout=10) as client,
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            waiting = executor.submit(
+                client.post,
+                f"/api/conversations/{conversation_id}/{endpoint}",
+                json=payload,
+            )
+            time.sleep(0.3)
+            started = time.monotonic()
+            alive = client.get("/alive")
+            assert alive.status_code == 200
+            assert time.monotonic() - started < 2.0, (
+                f"/alive took {time.monotonic() - started:.1f}s while the "
+                f"{endpoint} request waited for the store lock: the wait is "
+                "blocking the event loop"
+            )
+            assert not waiting.done()
+            held.release()
+            response = waiting.result(timeout=5)
+            assert response.status_code == expected_status, response.text
+    finally:
+        safety.cancel()
+        held.release(force=True)
