@@ -109,10 +109,21 @@ class StoredConversation(ConversationConfig):
     single source of truth for the agent / runtime state is
     ``ConversationState`` persisted to ``base_state.json``. Because
     ``StoredConversation`` is not a ``StartConversationRequest``, the agent
-    cannot silently re-appear in ``meta.json``.
+    cannot silently re-appear in ``meta.json``. The same holds for the
+    conversation budget (``max_budget_per_run``).
     """
 
     required_runtime_credential_bindings: set[str] = Field(default_factory=set)
+    legacy_max_budget_per_run: float | None = Field(
+        default=None,
+        validation_alias="max_budget_per_run",
+        exclude=True,
+        description=(
+            "Budget read from a meta.json written before the budget moved to "
+            "base_state.json. Moved into the conversation state on load; never "
+            "written back."
+        ),
+    )
 
     id: OpenHandsUUID
     title: str | None = Field(

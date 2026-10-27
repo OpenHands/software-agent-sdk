@@ -166,12 +166,7 @@ async def test_max_budget_per_run_update_survives_restart_and_fork(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_max_budget_per_run_state_mirror_follows_stored_value(tmp_path):
-    """meta.json owns the budget; base_state.json mirrors it for live clients.
-
-    A limit cleared while the conversation was not loaded must win over the
-    stale mirror when the conversation starts again.
-    """
+async def test_max_budget_per_run_lives_only_in_base_state(tmp_path):
     conversations_dir = tmp_path / "conversations"
     workspace_dir = tmp_path / "workspace"
     workspace_dir.mkdir()
@@ -185,25 +180,53 @@ async def test_max_budget_per_run_state_mirror_follows_stored_value(tmp_path):
         await service.update_conversation(
             info.id, UpdateConversationRequest(max_budget_per_run=4.0)
         )
+        conversation_dir = conversations_dir / info.id.hex
+        base_state = json.loads((conversation_dir / "base_state.json").read_text())
+        meta = json.loads((conversation_dir / "meta.json").read_text())
+        assert base_state["max_budget_per_run"] == 4.0
+        assert "max_budget_per_run" not in meta
+        assert "legacy_max_budget_per_run" not in meta
+
+
+@pytest.mark.asyncio
+async def test_max_budget_per_run_moves_from_legacy_meta_json(tmp_path):
+    """A budget saved in meta.json by an earlier build moves to base_state.json."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=_sample_agent(),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+    )
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        info, _ = await service.start_conversation(request)
         conv_id = info.id
     conversation_dir = conversations_dir / conv_id.hex
-    base_state = json.loads((conversation_dir / "base_state.json").read_text())
-    assert base_state["max_budget_per_run"] == 4.0
-
     meta_path = conversation_dir / "meta.json"
     meta = json.loads(meta_path.read_text())
-    meta["max_budget_per_run"] = None
+    meta["max_budget_per_run"] = 5.0
     meta_path.write_text(json.dumps(meta))
 
     async with ConversationService(conversations_dir=conversations_dir) as service2:
         reloaded = await service2.get_conversation(conv_id)
         assert reloaded is not None
-        assert reloaded.max_budget_per_run is None
         event_service = await service2.get_event_service(conv_id)
         assert event_service is not None
-        conversation = event_service.get_conversation()
-        assert conversation.max_budget_per_run is None
-        assert conversation.state.max_budget_per_run is None
+        assert event_service.get_conversation().max_budget_per_run == 5.0
+        assert "max_budget_per_run" not in json.loads(meta_path.read_text())
+
+        # A clear after the move is not undone by the old meta.json value.
+        await service2.update_conversation(
+            conv_id, UpdateConversationRequest(max_budget_per_run=None)
+        )
+
+    async with ConversationService(conversations_dir=conversations_dir) as service3:
+        event_service = await service3.get_event_service(conv_id)
+        assert event_service is not None
+        assert event_service.get_conversation().max_budget_per_run is None
+        cleared = await service3.get_conversation(conv_id)
+        assert cleared is not None
+        assert cleared.max_budget_per_run is None
 
 
 @pytest.mark.asyncio

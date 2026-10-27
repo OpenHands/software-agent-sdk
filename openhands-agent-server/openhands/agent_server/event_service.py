@@ -230,6 +230,8 @@ class EventService:
     # caller passes it here. On resume this is ``None`` and the agent is loaded
     # from base_state.json.
     agent: AgentBase | None = None
+    # Budget for a new conversation; base_state.json owns it from then on.
+    initial_max_budget_per_run: float | None = field(default=None, kw_only=True)
     cipher: Cipher | None = None
     mcp_tool_provider: MCPToolProvider | None = None
     credential_bindings: dict[str, VersionedCredentialBinding] = field(
@@ -1358,7 +1360,7 @@ class EventService:
             token_callbacks=([_token_streaming_callback] if streaming_enabled else []),
             stream_callbacks=[_publish_stream_progress],
             max_iteration_per_run=self.stored.max_iterations,
-            max_budget_per_run=self.stored.max_budget_per_run,
+            max_budget_per_run=self.initial_max_budget_per_run,
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
             secrets=self.stored.secrets,
@@ -1375,12 +1377,12 @@ class EventService:
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
         conversation.set_security_analyzer(self.stored.security_analyzer)
-        # ``stored`` owns the budget; the state keeps a mirror for clients. On
-        # resume a ``None`` argument keeps the persisted mirror, so re-assert
-        # the stored value to apply a limit cleared while the conversation was
-        # not loaded.
-        if conversation.max_budget_per_run != self.stored.max_budget_per_run:
-            conversation.max_budget_per_run = self.stored.max_budget_per_run
+        # Conversations created before the budget moved to base_state.json
+        # carry it in meta.json. Move it over once; meta.json drops it on the
+        # next save, so a later change or clear is not overwritten.
+        legacy_budget = self.stored.legacy_max_budget_per_run
+        if legacy_budget is not None and conversation.max_budget_per_run is None:
+            conversation.max_budget_per_run = legacy_budget
         # On resume the agent was unknown at construction time (loaded from
         # base_state.json), so decide token streaming now and disable it when the
         # resolved agent can't emit token callbacks.
@@ -1400,6 +1402,10 @@ class EventService:
                     binding,
                 )
         self._conversation._state.set_write_guard(self._write_guard)
+        if legacy_budget is not None:
+            await self.save_meta(
+                self.stored.model_copy(update={"legacy_max_budget_per_run": None})
+            )
 
         # Inert unless the deployment opted in (OH_LLM_API_KEY_REFRESH_URL plus
         # OH_LLM_API_KEY_REFRESH_BASE_URLS); see #5189.
@@ -2174,16 +2180,15 @@ class EventService:
         )
 
     async def set_max_budget_per_run(self, max_budget_per_run: float | None) -> None:
-        """Apply a new cost ceiling to the live conversation, if one is loaded.
+        """Set the conversation's cost ceiling, taking effect from its next step.
 
-        The persisted value is owned by ``stored``; a conversation that is not
-        loaded picks it up from there when it starts. The live value is
-        mirrored into the conversation state (taking its lock, hence the
-        executor), so connected clients receive it as a state update.
+        The value lives in the conversation state (base_state.json). Writing it
+        takes the state lock, hence the executor; connected clients receive it
+        as a state update.
         """
         conversation = self._conversation
         if conversation is None:
-            return
+            raise ValueError("inactive_service")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None, setattr, conversation, "max_budget_per_run", max_budget_per_run
