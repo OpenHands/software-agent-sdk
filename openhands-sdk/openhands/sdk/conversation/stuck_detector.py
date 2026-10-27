@@ -1,3 +1,6 @@
+import json
+from collections import Counter
+
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.conversation.types import StuckDetectionThresholds
 from openhands.sdk.event import (
@@ -196,14 +199,63 @@ class StuckDetector:
         if not last_actions or not last_observations:
             return 0
         reference = last_actions[0]
+        if not isinstance(reference, ActionEvent):
+            return 0
+        remaining = list(last_observations)
+        reference_error: AgentErrorEvent | None = None
         streak = 0
-        for action, observation in zip(last_actions, last_observations):
-            if not self._event_eq(reference, action):
+        for action in last_actions:
+            if not isinstance(action, ActionEvent):
                 break
+            index = next(
+                (
+                    i
+                    for i, obs in enumerate(remaining)
+                    if isinstance(obs, ObservationBaseEvent)
+                    and obs.tool_call_id == action.tool_call_id
+                ),
+                None,
+            )
+            if index is None:
+                break
+            observation = remaining.pop(index)
             if not isinstance(observation, AgentErrorEvent):
+                break
+            if reference_error is None:
+                reference_error = observation
+            if not self._same_error_action(
+                reference, action, reference_error, observation
+            ):
                 break
             streak += 1
         return streak
+
+    def _same_error_action(
+        self,
+        reference: ActionEvent,
+        action: ActionEvent,
+        reference_error: AgentErrorEvent,
+        error: AgentErrorEvent,
+    ) -> bool:
+        if reference.tool_name != action.tool_name:
+            return False
+        if reference.action is None and action.action is None:
+            left = reference_error.validation_errors
+            right = error.validation_errors
+            if left and right:
+                # Custom validators can report different repairs at one location.
+                if not any(
+                    e.type in ("value_error", "assertion_error")
+                    for e in [*left, *right]
+                ):
+                    return Counter(
+                        (e.type, tuple(0 if isinstance(p, int) else p for p in e.loc))
+                        for e in left
+                    ) == Counter(
+                        (e.type, tuple(0 if isinstance(p, int) else p for p in e.loc))
+                        for e in right
+                    )
+        return self._event_eq(reference, action)
 
     def _is_stuck_repeating_action_error(
         self, last_actions: list[Event], last_observations: list[Event]
@@ -231,13 +283,26 @@ class StuckDetector:
             return None
 
         action = last_actions[0]
-        error = last_observations[0]
         assert isinstance(action, ActionEvent)
+        error = next(
+            observation
+            for observation in last_observations
+            if isinstance(observation, AgentErrorEvent)
+            and observation.tool_call_id == action.tool_call_id
+        )
         assert isinstance(error, AgentErrorEvent)
 
         if error.id == self._last_nudged_error_event_id:
             return None
         self._last_nudged_error_event_id = error.id
+
+        if action.action is None and error.validation_errors:
+            return (
+                f"Your calls to `{action.tool_name}` have failed validation "
+                f"{threshold} times without resolving the failing fields. "
+                f"Latest error: {error.error}. Correct the invalid or missing "
+                "fields or try a different approach before calling this tool again."
+            )
 
         return (
             f"You've called `{action.tool_name}` with the same arguments "
@@ -333,6 +398,20 @@ class StuckDetector:
 
         # For ActionEvents, compare the action content, ignoring IDs
         if isinstance(event1, ActionEvent) and isinstance(event2, ActionEvent):
+            if event1.action is None and event2.action is None:
+                try:
+                    arguments_equal = json.loads(
+                        event1.tool_call.arguments
+                    ) == json.loads(event2.tool_call.arguments)
+                except (ValueError, TypeError):
+                    arguments_equal = (
+                        event1.tool_call.arguments == event2.tool_call.arguments
+                    )
+                return (
+                    event1.source == event2.source
+                    and event1.tool_name == event2.tool_name
+                    and arguments_equal
+                )
             return (
                 event1.source == event2.source
                 and event1.thought == event2.thought

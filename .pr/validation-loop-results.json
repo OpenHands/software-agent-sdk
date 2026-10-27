@@ -1,0 +1,398 @@
+{
+  "runs": {
+    "base-sync": {
+      "source": "/Users/alonaking/Documents/All-Hands/worktrees/sdk-validation-loops-149-base/openhands-sdk/openhands/sdk/conversation/stuck_detector.py",
+      "revision": "f7cbea4ff6210f8f665aacb166abfacfca6f8be0",
+      "expect": "base",
+      "asynchronous": false,
+      "results": [
+        {
+          "case": "identical",
+          "llm_calls": 4,
+          "status": "stuck",
+          "errors": 4,
+          "actions_none": 4,
+          "nudge_count": 1,
+          "validation_error_counts": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "case": "vary_thought",
+          "llm_calls": 12,
+          "status": "error",
+          "errors": 12,
+          "actions_none": 12,
+          "nudge_count": 0,
+          "validation_error_counts": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "case": "vary_invalid_args",
+          "llm_calls": 4,
+          "status": "stuck",
+          "errors": 4,
+          "actions_none": 4,
+          "nudge_count": 1,
+          "validation_error_counts": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "case": "repair_different_fields",
+          "llm_calls": 4,
+          "status": "stuck",
+          "errors": 4,
+          "actions_none": 4,
+          "nudge_count": 1,
+          "validation_error_counts": [
+            6,
+            5,
+            4,
+            3
+          ]
+        },
+        {
+          "case": "repair_control",
+          "llm_calls": 8,
+          "status": "finished",
+          "errors": 6,
+          "actions_none": 6,
+          "nudge_count": 0,
+          "validation_error_counts": [
+            6,
+            5,
+            4,
+            3,
+            2,
+            1
+          ]
+        },
+        {
+          "case": "recover_after_two",
+          "llm_calls": 4,
+          "status": "finished",
+          "errors": 2,
+          "actions_none": 2,
+          "nudge_count": 0,
+          "validation_error_counts": [
+            1,
+            1
+          ]
+        }
+      ]
+    },
+    "base-async": {
+      "source": "/Users/alonaking/Documents/All-Hands/worktrees/sdk-validation-loops-149-base/openhands-sdk/openhands/sdk/conversation/stuck_detector.py",
+      "revision": "f7cbea4ff6210f8f665aacb166abfacfca6f8be0",
+      "expect": "base",
+      "asynchronous": true,
+      "results": [
+        {
+          "case": "identical",
+          "llm_calls": 4,
+          "status": "stuck",
+          "errors": 4,
+          "actions_none": 4,
+          "nudge_count": 1,
+          "validation_error_counts": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "case": "vary_thought",
+          "llm_calls": 12,
+          "status": "error",
+          "errors": 12,
+          "actions_none": 12,
+          "nudge_count": 0,
+          "validation_error_counts": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "case": "vary_invalid_args",
+          "llm_calls": 4,
+          "status": "stuck",
+          "errors": 4,
+          "actions_none": 4,
+          "nudge_count": 1,
+          "validation_error_counts": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "case": "repair_different_fields",
+          "llm_calls": 4,
+          "status": "stuck",
+          "errors": 4,
+          "actions_none": 4,
+          "nudge_count": 1,
+          "validation_error_counts": [
+            6,
+            5,
+            4,
+            3
+          ]
+        },
+        {
+          "case": "repair_control",
+          "llm_calls": 8,
+          "status": "finished",
+          "errors": 6,
+          "actions_none": 6,
+          "nudge_count": 0,
+          "validation_error_counts": [
+            6,
+            5,
+            4,
+            3,
+            2,
+            1
+          ]
+        },
+        {
+          "case": "recover_after_two",
+          "llm_calls": 4,
+          "status": "finished",
+          "errors": 2,
+          "actions_none": 2,
+          "nudge_count": 0,
+          "validation_error_counts": [
+            1,
+            1
+          ]
+        }
+      ]
+    },
+    "candidate-sync": {
+      "source": "/Users/alonaking/Documents/All-Hands/worktrees/sdk-validation-loops-149/openhands-sdk/openhands/sdk/conversation/stuck_detector.py",
+      "revision": "f7cbea4ff6210f8f665aacb166abfacfca6f8be0",
+      "expect": "candidate",
+      "asynchronous": false,
+      "results": [
+        {
+          "case": "identical",
+          "llm_calls": 4,
+          "status": "stuck",
+          "errors": 4,
+          "actions_none": 4,
+          "nudge_count": 1,
+          "validation_error_counts": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "case": "vary_thought",
+          "llm_calls": 4,
+          "status": "stuck",
+          "errors": 4,
+          "actions_none": 4,
+          "nudge_count": 1,
+          "validation_error_counts": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "case": "vary_invalid_args",
+          "llm_calls": 4,
+          "status": "stuck",
+          "errors": 4,
+          "actions_none": 4,
+          "nudge_count": 1,
+          "validation_error_counts": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "case": "repair_different_fields",
+          "llm_calls": 8,
+          "status": "finished",
+          "errors": 6,
+          "actions_none": 6,
+          "nudge_count": 0,
+          "validation_error_counts": [
+            6,
+            5,
+            4,
+            3,
+            2,
+            1
+          ]
+        },
+        {
+          "case": "repair_control",
+          "llm_calls": 8,
+          "status": "finished",
+          "errors": 6,
+          "actions_none": 6,
+          "nudge_count": 0,
+          "validation_error_counts": [
+            6,
+            5,
+            4,
+            3,
+            2,
+            1
+          ]
+        },
+        {
+          "case": "recover_after_two",
+          "llm_calls": 4,
+          "status": "finished",
+          "errors": 2,
+          "actions_none": 2,
+          "nudge_count": 0,
+          "validation_error_counts": [
+            1,
+            1
+          ]
+        }
+      ]
+    },
+    "candidate-async": {
+      "source": "/Users/alonaking/Documents/All-Hands/worktrees/sdk-validation-loops-149/openhands-sdk/openhands/sdk/conversation/stuck_detector.py",
+      "revision": "f7cbea4ff6210f8f665aacb166abfacfca6f8be0",
+      "expect": "candidate",
+      "asynchronous": true,
+      "results": [
+        {
+          "case": "identical",
+          "llm_calls": 4,
+          "status": "stuck",
+          "errors": 4,
+          "actions_none": 4,
+          "nudge_count": 1,
+          "validation_error_counts": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "case": "vary_thought",
+          "llm_calls": 4,
+          "status": "stuck",
+          "errors": 4,
+          "actions_none": 4,
+          "nudge_count": 1,
+          "validation_error_counts": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "case": "vary_invalid_args",
+          "llm_calls": 4,
+          "status": "stuck",
+          "errors": 4,
+          "actions_none": 4,
+          "nudge_count": 1,
+          "validation_error_counts": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "case": "repair_different_fields",
+          "llm_calls": 8,
+          "status": "finished",
+          "errors": 6,
+          "actions_none": 6,
+          "nudge_count": 0,
+          "validation_error_counts": [
+            6,
+            5,
+            4,
+            3,
+            2,
+            1
+          ]
+        },
+        {
+          "case": "repair_control",
+          "llm_calls": 8,
+          "status": "finished",
+          "errors": 6,
+          "actions_none": 6,
+          "nudge_count": 0,
+          "validation_error_counts": [
+            6,
+            5,
+            4,
+            3,
+            2,
+            1
+          ]
+        },
+        {
+          "case": "recover_after_two",
+          "llm_calls": 4,
+          "status": "finished",
+          "errors": 2,
+          "actions_none": 2,
+          "nudge_count": 0,
+          "validation_error_counts": [
+            1,
+            1
+          ]
+        }
+      ]
+    }
+  },
+  "candidate_source_sha256": {
+    "openhands-sdk/openhands/sdk/agent/agent.py": "34f04cff3195f64f59a0b5d9c1c197fb7c4a4ec201a6b42865105787f9c967f6",
+    "openhands-sdk/openhands/sdk/conversation/stuck_detector.py": "54e292eb04f8a96e61db45fa84dd9077745e6bb0be1a901abfd400861bb40290",
+    "openhands-sdk/openhands/sdk/event/llm_convertible/observation.py": "3d85108461485a0525b3fc271e5b144f86036bb396e766435799839585ac5b8a"
+  },
+  "locked_litellm": "1.93.0"
+}
