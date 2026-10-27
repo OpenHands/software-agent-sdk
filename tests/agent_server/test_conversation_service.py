@@ -1418,6 +1418,7 @@ class TestConversationServiceSearchConversations:
             [
                 ConversationExecutionStatus.IDLE,
                 ConversationExecutionStatus.RUNNING,
+                ConversationExecutionStatus.PAUSING,
                 ConversationExecutionStatus.FINISHED,
             ]
         ):
@@ -1456,8 +1457,14 @@ class TestConversationServiceSearchConversations:
         result = await conversation_service.search_conversations(
             execution_status=ConversationExecutionStatus.RUNNING
         )
-        assert len(result.items) == 1
-        assert result.items[0].execution_status == ConversationExecutionStatus.RUNNING
+        assert {info.execution_status for info in result.items} == {
+            ConversationExecutionStatus.RUNNING,
+            ConversationExecutionStatus.PAUSING,
+        }
+        assert all(
+            info.model_dump(mode="json")["execution_status"] == "running"
+            for info in result.items
+        )
 
         # Test filtering by non-existent status
         result = await conversation_service.search_conversations(
@@ -1728,6 +1735,7 @@ class TestConversationServiceCountConversations:
         statuses = [
             ConversationExecutionStatus.IDLE,
             ConversationExecutionStatus.RUNNING,
+            ConversationExecutionStatus.PAUSING,
             ConversationExecutionStatus.FINISHED,
             ConversationExecutionStatus.IDLE,  # Another IDLE one
         ]
@@ -1758,7 +1766,7 @@ class TestConversationServiceCountConversations:
 
         # Test counting all conversations
         result = await conversation_service.count_conversations()
-        assert result == 4
+        assert result == 5
 
         # Test counting by IDLE status (should be 2)
         result = await conversation_service.count_conversations(
@@ -1766,11 +1774,11 @@ class TestConversationServiceCountConversations:
         )
         assert result == 2
 
-        # Test counting by RUNNING status (should be 1)
+        # Pending pauses still appear as RUNNING during the migration window.
         result = await conversation_service.count_conversations(
             execution_status=ConversationExecutionStatus.RUNNING
         )
-        assert result == 1
+        assert result == 2
 
         # Test counting by non-existent status (should be 0)
         result = await conversation_service.count_conversations(

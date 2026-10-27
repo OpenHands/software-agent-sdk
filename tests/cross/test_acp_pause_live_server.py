@@ -75,7 +75,9 @@ def test_acp_pause_waits_for_actual_turn_completion(
                     wait_until(lambda: steps() == ["1-1"])
                     conversation.pause()
                     conversation.pause()
-                    assert conversation.state.execution_status.value == "pausing"
+                    # Existing clients keep waiting on RUNNING during the
+                    # migration window; PAUSING remains the internal state.
+                    assert conversation.state.execution_status.value == "running"
                     assert not any(
                         isinstance(e, PauseEvent) for e in conversation.state.events
                     )
@@ -90,7 +92,7 @@ def test_acp_pause_waits_for_actual_turn_completion(
                     allow(1, 2)
                     allow(1, 3)
                     wait_until(lambda: steps() == ["1-1", "1-2", "1-3"])
-                    assert conversation.state.execution_status.value == "pausing"
+                    assert conversation.state.execution_status.value == "running"
                     assert not run.done()
                     assert not (control / "cancels.txt").exists()
                     (control / "finish-1").touch()
