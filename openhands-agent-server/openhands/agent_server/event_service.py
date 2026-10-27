@@ -2339,12 +2339,13 @@ class EventService:
         await asyncio.shield(task)
         # If the drain timed out, teardown handed its remainder to a
         # continuation that keeps the conversation and its capacity permit
-        # until the abandoned work really stops. Joining it means close()
-        # returns with the conversation fully torn down, which is what its
-        # callers (delete, eviction, shutdown) rely on.
+        # until the abandoned work really stops. Always observe its result --
+        # including when it has already finished -- so a failed cleanup is
+        # reported instead of the caller treating the conversation as closed.
         continuation = self._teardown_continuation
-        if continuation is not None and not continuation.done():
+        if continuation is not None:
             await asyncio.shield(continuation)
+            self._teardown_continuation = None
 
     @staticmethod
     def _retrieve_teardown_result(task: asyncio.Task) -> None:
@@ -2362,12 +2363,17 @@ class EventService:
 
     async def _teardown(self) -> None:
         continuation = self._teardown_continuation
-        if continuation is not None and not continuation.done():
-            # A previous teardown already handed its remainder to a continuation
-            # that is still finishing. Join it instead of draining and closing
-            # the conversation a second time.
-            await asyncio.shield(continuation)
-            return
+        if continuation is not None:
+            if not continuation.done():
+                # A previous teardown already handed its remainder to a
+                # continuation that is still finishing. Join it instead of
+                # draining and closing the conversation a second time.
+                await asyncio.shield(continuation)
+                return
+            # A continuation that already finished was superseded by this fresh
+            # attempt: drop it so a retry does not replay its stale outcome
+            # after the cleanup below succeeds.
+            self._teardown_continuation = None
         if self.bash_event_service is not None:
             await self.bash_event_service.close()
         # Abandon any in-flight direct tool call: it does not hold the

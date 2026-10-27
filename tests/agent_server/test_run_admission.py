@@ -12,6 +12,7 @@ import pytest_asyncio
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import (
     ConversationRunLimitExceeded,
+    EventService,
 )
 from openhands.agent_server.openai.service import _run_agent
 from openhands.sdk import LLM, Agent, Message, TextContent
@@ -874,6 +875,80 @@ async def test_worker_timeout_keeps_permit_until_the_worker_stops(
         await wait_until(lambda: not holder.is_open())
         await wait_until(lambda: _free_run_permits(holder) == 1)
         await other.execute_tool("terminal", {"kind": "TerminalAction", "command": "y"})
+
+
+async def test_failed_teardown_continuation_is_reported_and_retryable(
+    tmp_path, monkeypatch
+):
+    """A continuation that fails after the drain must not pass as a clean close.
+
+    Regression: ``close()`` skipped a continuation that had already finished, so
+    a cleanup failure in it was never observed. The caller then treated the
+    conversation as closed while it (and its lease) was still open, and
+    ``delete_conversation`` removed the record and directory regardless. The
+    result must be observed even when it is already complete, and a retry must
+    re-run the cleanup without replaying the stale failure.
+    """
+    owner, create = await _terminal_services(tmp_path, 1)
+    async with owner:
+        holder = await create()
+        conversation = holder.get_conversation()
+        conversation._ensure_agent_ready()
+
+        worker_started = threading.Event()
+        worker_release = threading.Event()
+
+        def blocked_execute_tool(tool_name, action):
+            worker_started.set()
+            worker_release.wait(timeout=60)
+            return TerminalObservation.from_text("done", command="x")
+
+        monkeypatch.setattr(conversation, "execute_tool", blocked_execute_tool)
+        monkeypatch.setattr(
+            "openhands.agent_server.event_service.DIRECT_TOOL_DRAIN_TIMEOUT_SECONDS",
+            0.5,
+        )
+
+        # Fail the continuation's cleanup on its first run, the way a subscriber
+        # raising inside ``PubSub.close()`` would. Failing synchronously makes
+        # the continuation complete before close() inspects it, which is the
+        # window this regression covers.
+        real_after = EventService._finish_teardown_after
+        attempts = {"n": 0}
+
+        async def failing_after(self, pending):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise RuntimeError("subscriber failed during close")
+            await real_after(self, pending)
+
+        monkeypatch.setattr(EventService, "_finish_teardown_after", failing_after)
+
+        direct = asyncio.create_task(
+            holder.execute_tool("terminal", {"kind": "TerminalAction", "command": "x"})
+        )
+        await asyncio.to_thread(worker_started.wait, 10)
+
+        close_task = asyncio.create_task(holder.close())
+        # Let the drain time out and park the continuation, which then fails.
+        await wait_until(lambda: holder._teardown_continuation is not None)
+        worker_release.set()
+
+        # The continuation failed, so close() must report it rather than
+        # silently reporting success while the conversation is still open.
+        with pytest.raises(RuntimeError, match="subscriber failed"):
+            await asyncio.wait_for(close_task, timeout=30)
+        await asyncio.gather(direct, return_exceptions=True)
+        assert holder.is_open()
+
+        # A retry re-runs the cleanup and succeeds, without replaying the stale
+        # failure from the first attempt.
+        await asyncio.wait_for(holder.close(), timeout=30)
+        await wait_until(lambda: not holder.is_open())
+        await wait_until(lambda: _free_run_permits(holder) == 1)
+        assert holder._conversation is None
+        assert holder._lease is None
+        assert attempts["n"] == 1
 
 
 async def test_interrupt_timeout_keeps_permit_until_the_interrupt_stops(

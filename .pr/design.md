@@ -100,9 +100,12 @@ a version compare would reject a working endpoint.
   futures and only then closes the conversation and returns the permit. So a
   worker that outlives the drain still counts against `max_concurrent_runs`
   and keeps its executor to itself, and teardown still completes once the work
-  really stops. `close()` joins that continuation, so it returns with the
-  conversation fully torn down, which is what its callers (delete, eviction,
-  shutdown) rely on; a retry `close()` joins it too instead of draining twice.
+  really stops. `close()` always observes that continuation's result, including
+  when it has already completed, so it returns with the conversation fully torn
+  down (what its callers — delete, eviction, shutdown — rely on) or raises the
+  cleanup failure instead of reporting a false success. A retry `close()` joins
+  a still-running continuation, while a *finished* one is dropped so a
+  successful retry does not replay the stale failure.
 - **Teardown survives cancellation of the caller.** `close()` hands the teardown
   to a task the service owns and awaits it through `asyncio.shield`, so
   cancelling the caller (a cancelled DELETE, say) cannot abort teardown
@@ -221,6 +224,13 @@ i.e. pre-existing drift, not from this change.
   `close()` has not returned; releasing the work lets `close()` finish and the
   same call be admitted. Both fail (hang) on the pre-fix head, where the
   timeout released the permit and closed the conversation under the live work.
+- `test_failed_teardown_continuation_is_reported_and_retryable` makes the
+  parked continuation fail (a subscriber raising in `PubSub.close()`, injected
+  so the continuation is already complete when `close()` inspects it) and
+  asserts `close()` raises rather than reporting success with the conversation
+  still open, that a retry then cleans up successfully without replaying the
+  stale failure, and that cleanup ran only once. It fails on the pre-fix head,
+  where `close()` skipped a completed continuation.
 - `uv run pytest tests/agent_server tests/sdk/conversation tests/tools/terminal`
   -> passes locally (378 agent-server, 107 sdk/terminal) and in CI.
 - `npm run check:agent-server-api` -> clean; `ruff check` / `ruff format --check`
