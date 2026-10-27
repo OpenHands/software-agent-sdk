@@ -1,5 +1,6 @@
 """Conversation router for OpenHands SDK."""
 
+import asyncio
 import json
 from typing import Annotated
 from uuid import UUID
@@ -607,7 +608,9 @@ async def switch_conversation_profile(
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     conversation = event_service.get_conversation()
     try:
-        conversation.switch_profile(profile_name)
+        # The store's file-lock wait (up to 30 s) must stay off the event
+        # loop, or /alive stops answering while another process holds it.
+        await asyncio.to_thread(conversation.switch_profile, profile_name)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -646,14 +649,21 @@ async def switch_conversation_llm(
     cipher = get_cipher(request)
     if cipher is not None:
         llm = decrypt_incoming_llm_secrets(llm, cipher)
+
     # Resolve a referenced provider connection before installing the LLM, so a
     # profile linked to a shared connection runs with its api_key / base_url
     # instead of a keyless config (mirrors LLMProfileStore.load). A dangling
     # reference or missing credential surfaces as 422 before the working LLM
     # is replaced. Inline-key configs without a provider_connection_id are
-    # byte-identical to the old path.
-    with store_errors():
-        llm = get_llm_profile_store().resolve_provider_connection(llm, cipher=cipher)
+    # byte-identical to the old path. The provider store's file-lock wait (up
+    # to 30 s) runs in a worker thread, like every other store route.
+    def _resolve_connection() -> LLM:
+        with store_errors():
+            return get_llm_profile_store().resolve_provider_connection(
+                llm, cipher=cipher
+            )
+
+    llm = await asyncio.to_thread(_resolve_connection)
     conversation.switch_llm(llm)
     return Success()
 
