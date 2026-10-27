@@ -23,7 +23,9 @@ from openhands.agent_server.api import (
     _cleanup_stale_tmux_sessions,
     _default_server_tmux_tmpdir,
     _ensure_server_tmux_tmpdir,
+    _ensure_utf8_locale_for_tmux,
     _get_root_path,
+    _locale_is_utf8,
     api_lifespan,
     create_app,
 )
@@ -180,6 +182,59 @@ def test_ensure_server_tmux_tmpdir_replaces_too_deep_env(
         pool.initialize()
     finally:
         pool.close()
+
+
+def _set_locale_env(monkeypatch, **env):
+    # setenv("") rather than delenv: monkeypatch only restores variables it
+    # recorded, and an LC_ALL set by the code under test must not leak.
+    for name in ("LC_ALL", "LC_CTYPE", "LANG"):
+        monkeypatch.setenv(name, env.get(name, ""))
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({"LANG": "C.UTF-8"}, True),
+        ({"LANG": "en_US.utf8"}, True),
+        ({"LC_CTYPE": "UTF-8"}, True),
+        ({"LC_ALL": "C", "LANG": "C.UTF-8"}, False),
+        ({"LANG": "C"}, False),
+        ({}, False),
+    ],
+)
+def test_locale_is_utf8_follows_tmux_precedence(env, expected, monkeypatch):
+    _set_locale_env(monkeypatch, **env)
+    assert _locale_is_utf8() is expected
+
+
+@pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix")
+def test_ensure_utf8_locale_for_tmux_keeps_utf8_env(monkeypatch):
+    _set_locale_env(monkeypatch, LANG="en_US.UTF-8")
+
+    assert _ensure_utf8_locale_for_tmux() == (False, None)
+    assert os.environ["LC_ALL"] == ""
+
+
+@pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix")
+def test_tmux_terminal_works_without_utf8_locale(tmp_path, short_tmp_path, monkeypatch):
+    """Without a UTF-8 locale tmux turns libtmux's format separator into "_"
+    and every terminal fails with TmuxObjectDoesNotExist
+    (OpenHands/OpenHands#18982).
+
+    The locale is cleared at runtime on purpose: a plain Python interpreter
+    started under the C locale coerces LC_CTYPE to C.UTF-8 (PEP 538) and hides
+    the bug, but the PyInstaller-built agent-server does not."""
+    _set_locale_env(monkeypatch, LANG="C")
+    monkeypatch.setenv("TMUX_TMPDIR", str(short_tmp_path))
+
+    changed = _ensure_utf8_locale_for_tmux()
+    pool = TmuxPanePool(str(tmp_path))
+    try:
+        pool.initialize()
+    finally:
+        pool.close()
+    assert changed == (True, "")
+    assert os.environ["LC_ALL"] == "C.UTF-8"
 
 
 @pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix")
@@ -785,6 +840,35 @@ class TestServiceParallelization:
 
             assert os.environ["TMUX_TMPDIR"] == str(user_tmux_tmpdir)
             assert user_tmux_tmpdir.is_dir()
+
+    @pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix")
+    async def test_lifespan_sets_and_restores_utf8_locale(
+        self, short_tmp_path, monkeypatch
+    ):
+        """A non-UTF-8 locale is replaced while serving and restored after."""
+        _set_locale_env(monkeypatch, LC_ALL="C")
+        monkeypatch.setattr(
+            "openhands.agent_server.api._default_server_tmux_tmpdir",
+            lambda: short_tmp_path / "tmux",
+        )
+        mock_conversation_service = AsyncMock()
+
+        with (
+            patch(
+                "openhands.agent_server.api.ConversationService.get_instance",
+                return_value=mock_conversation_service,
+            ),
+            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
+            patch(
+                "openhands.agent_server.api.get_tool_preload_service", return_value=None
+            ),
+        ):
+            mock_app = AsyncMock()
+            mock_app.state = SimpleNamespace(config=Config())
+            async with api_lifespan(mock_app):
+                assert os.environ["LC_ALL"] == "C.UTF-8"
+
+            assert os.environ["LC_ALL"] == "C"
 
     async def test_lifespan_removes_substitute_for_too_deep_tmux_tmpdir(
         self, deep_tmp_path, short_tmp_path, monkeypatch
