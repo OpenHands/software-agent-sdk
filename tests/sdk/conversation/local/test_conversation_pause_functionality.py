@@ -430,9 +430,9 @@ class TestPauseFunctionality:
         # Wait until we're *inside* tool execution of the current iteration
         assert step_entered.wait(timeout=3.0), "Agent never reached tool execution"
         self.conversation.pause()
-        assert (
-            self.conversation.state.execution_status
-            == ConversationExecutionStatus.PAUSED
+        assert self.conversation.state.execution_status in (
+            ConversationExecutionStatus.PAUSING,
+            ConversationExecutionStatus.PAUSED,
         )
 
         assert finished.wait(timeout=3.0), "run() did not exit after pause"

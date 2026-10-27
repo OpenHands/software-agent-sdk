@@ -111,7 +111,7 @@ async def test_interrupt_without_arun_falls_back_to_pause(tmp_path):
 
     conv.interrupt()
 
-    assert conv.state.execution_status == ConversationExecutionStatus.PAUSED
+    assert conv.state.execution_status == ConversationExecutionStatus.PAUSING
 
 
 @pytest.mark.asyncio

@@ -3903,7 +3903,8 @@ class ACPAgent(AgentBase):
                 tool_call_id=tc_id,
             )
         )
-        state.execution_status = ConversationExecutionStatus.FINISHED
+        if state.execution_status != ConversationExecutionStatus.PAUSING:
+            state.execution_status = ConversationExecutionStatus.FINISHED
 
     def _emit_turn_timeout(
         self,
