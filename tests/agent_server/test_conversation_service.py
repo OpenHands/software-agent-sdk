@@ -1109,6 +1109,76 @@ async def test_finished_status_refresh_invalidates_cached_info(persisted_convers
 
 
 @pytest.mark.asyncio
+async def test_second_service_load_keeps_metadata_written_after_its_startup(
+    persisted_conversation,
+):
+    """A load re-reads meta.json instead of saving the startup catalog copy.
+
+    The second service snapshots meta.json when it starts. The owner then
+    renames and retags the conversation and releases it; the second service's
+    first load must keep those values on disk and in what it reports.
+    """
+    conversations_dir, conversation_id = persisted_conversation
+    meta_file = conversations_dir / conversation_id.hex / "meta.json"
+
+    async with ConversationService(conversations_dir=conversations_dir) as second:
+        async with ConversationService(conversations_dir=conversations_dir) as owner:
+            assert await owner.update_conversation(
+                conversation_id,
+                UpdateConversationRequest(title="after second", tags={"env": "new"}),
+            )
+        stored_by_owner = json.loads(meta_file.read_text())
+        assert stored_by_owner["title"] == "after second"
+        assert (
+            second._conversation_records[conversation_id].stored.title != "after second"
+        )
+
+        event_service = await second.get_event_service(conversation_id)
+        assert event_service is not None
+
+        on_disk = json.loads(meta_file.read_text())
+        assert on_disk["title"] == "after second"
+        assert on_disk["tags"] == {"env": "new"}
+        assert on_disk["updated_at"] == stored_by_owner["updated_at"]
+        info = await second.get_conversation(conversation_id)
+        assert info is not None
+        assert info.title == "after second"
+        assert info.tags == {"env": "new"}
+
+
+@pytest.mark.asyncio
+async def test_load_with_unreadable_meta_fails_without_overwriting_it(
+    persisted_conversation,
+):
+    """An unreadable meta.json fails the load and is not replaced."""
+    conversations_dir, conversation_id = persisted_conversation
+    meta_file = conversations_dir / conversation_id.hex / "meta.json"
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        meta_file.write_text("{not json")
+        with pytest.raises(ValueError):
+            await service.get_event_service(conversation_id)
+        assert meta_file.read_text() == "{not json"
+        assert conversation_id not in (service._event_services or {})
+
+
+@pytest.mark.asyncio
+async def test_load_layers_resume_secrets_over_reread_meta(persisted_conversation):
+    """Secrets a resuming request supplies survive the meta.json re-read."""
+    conversations_dir, conversation_id = persisted_conversation
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        event_service = await service._get_or_load_event_service_locked(
+            conversation_id,
+            resume_secrets={"RESUME_TOKEN": StaticSecret(value=SecretStr("v"))},
+        )
+        assert event_service is not None
+        assert "RESUME_TOKEN" in event_service.stored.secrets
+        record = service._conversation_records[conversation_id]
+        assert "RESUME_TOKEN" in record.stored.secrets
+
+
+@pytest.mark.asyncio
 async def test_search_refreshes_cached_info_on_metadata_only_update(
     persisted_conversation,
 ):

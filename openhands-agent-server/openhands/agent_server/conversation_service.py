@@ -87,6 +87,7 @@ from openhands.sdk.launch import LaunchedAgent, finalize
 from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
+from openhands.sdk.secret import SecretSource
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.tool.registry import get_tool_module_qualnames, is_tool_available
 from openhands.sdk.utils.cipher import Cipher
@@ -1095,6 +1096,7 @@ class ConversationService:
         *,
         require_runtime_bindings: bool = True,
         agent: AgentBase | None = None,
+        resume_secrets: dict[str, SecretSource] | None = None,
     ) -> EventService | None:
         event_services = self._event_services
         if event_services is None:
@@ -1121,7 +1123,11 @@ class ConversationService:
 
         await asyncio.to_thread(self._prepare_persisted_runtime, record.stored)
         try:
-            return await self._start_event_service(record.stored, persisted_agent=agent)
+            return await self._start_event_service(
+                record.stored,
+                persisted_agent=agent,
+                resume_secrets=resume_secrets,
+            )
         except ConversationLeaseHeldError as exc:
             logger.debug(
                 "Skipping active conversation %s owned by %s until %s",
@@ -1439,28 +1445,20 @@ class ConversationService:
         )
         fallback_secret = request.secrets.get(CODEX_AUTH_SECRET_NAME)
         if managed_codex_credential or fallback_secret is not None:
-            original_stored = existing_record.stored
-            injected_fallback = (
-                not managed_codex_credential and fallback_secret is not None
+            # Without a managed credential, the request's auth secret is the
+            # fallback the resumed conversation starts with.
+            resume_secrets = (
+                {CODEX_AUTH_SECRET_NAME: fallback_secret}
+                if not managed_codex_credential and fallback_secret is not None
+                else None
             )
-            if injected_fallback:
-                existing_record.stored = original_stored.model_copy(
-                    update={
-                        "secrets": {
-                            **original_stored.secrets,
-                            CODEX_AUTH_SECRET_NAME: fallback_secret,
-                        }
-                    }
-                )
-            try:
-                # Reuse the agent we already parsed from base_state.json
-                # above so the load path doesn't read and parse it again.
-                event_service = await self._get_or_load_event_service_locked(
-                    conversation_id, agent=reattach_agent
-                )
-            finally:
-                if injected_fallback:
-                    existing_record.stored = original_stored
+            # Reuse the agent we already parsed from base_state.json
+            # above so the load path doesn't read and parse it again.
+            event_service = await self._get_or_load_event_service_locked(
+                conversation_id,
+                agent=reattach_agent,
+                resume_secrets=resume_secrets,
+            )
             if event_service is not None:
                 state = await event_service.get_state()
                 return (
@@ -2458,6 +2456,7 @@ class ConversationService:
         is_new_conversation: bool = False,
         launched: LaunchedAgent | None = None,
         persisted_agent: AgentBase | None = None,
+        resume_secrets: dict[str, SecretSource] | None = None,
     ) -> EventService:
         event_services = self._event_services
         if event_services is None:
@@ -2479,6 +2478,11 @@ class ConversationService:
             credential_bindings=credential_bindings,
             owner_instance_id=self.owner_instance_id,
             lease_ttl_seconds=self.lease_ttl_seconds,
+            # A load resumes from the catalog copy read at startup; re-read
+            # meta.json once the lease is ours so newer metadata written by
+            # another server is kept rather than overwritten.
+            reload_meta=not is_new_conversation,
+            resume_secrets=dict(resume_secrets or {}),
         )
         # Lease renewal is handled by the centralized
         # _renew_all_leases_loop task on ConversationService.
@@ -2494,12 +2498,14 @@ class ConversationService:
             await event_service.subscribe_to_events(
                 _EventSubscriber(service=event_service)
             )
-            if stored.autotitle and stored.title is None:
+            # start() may have re-read meta.json; decide from what it loaded.
+            loaded = event_service.stored
+            if loaded.autotitle and loaded.title is None:
                 await event_service.subscribe_to_events(
                     AutoTitleSubscriber(service=event_service)
                 )
             await self._maybe_subscribe_telemetry(
-                event_service, stored, is_new_conversation=is_new_conversation
+                event_service, loaded, is_new_conversation=is_new_conversation
             )
             await asyncio.gather(
                 *[
