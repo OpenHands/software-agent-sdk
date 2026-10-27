@@ -141,6 +141,7 @@ from openhands.sdk.llm.exceptions import (
 # OpenHands utilities
 from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.llm.message import (
+    ImageContent,
     Message,
 )
 from openhands.sdk.llm.mixins.non_native_fc import NonNativeToolCallingMixin
@@ -1783,17 +1784,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         *,
         input_tokens: int | None = None,
         max_output_tokens: int | None = None,
+        image_count: int = 0,
     ) -> float:
         """Upper-bound USD using finite token bounds and published price tiers.
 
         Unknown pricing or token limits cannot establish a hard ceiling and are
         refused. Each direction uses its highest known context/cache tier, or
-        the paired custom prices also used by telemetry.
+        the paired custom prices also used by telemetry. A flat per-image input
+        fee is charged per image outside the token rates, so ``image_count``
+        adds the highest published fee for every image the request carries.
         """
         input_upper = self._budget_token_bound(input_tokens, "input")
         output_upper = self._budget_token_bound(max_output_tokens, "output")
-        in_cost, out_cost = self._cost_per_token_bounds()
+        in_cost, out_cost = self._cost_per_token_bounds(image_tokens=image_count > 0)
         total = input_upper * in_cost + output_upper * out_cost
+        if image_count:
+            total += image_count * self._per_image_input_cost()
         if not math.isfinite(total):
             raise self._budget_bound_error("nonfinite price projection")
         return total
@@ -1808,12 +1814,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             raise self._budget_bound_error("unknown or invalid token price")
         return float(value)
 
-    def _cost_per_token_bounds(self) -> tuple[float, float]:
+    def _cost_per_token_bounds(
+        self, *, image_tokens: bool = False
+    ) -> tuple[float, float]:
         """Conservative directional rates, including context/cache tiers.
 
         A single custom rate is not a complete override: telemetry uses custom
         pricing only when both input and output prices are supplied. Explicit
-        zero is a valid known price; missing/nonfinite prices are not.
+        zero is a valid known price; missing/nonfinite prices are not. When the
+        request carries images, an ``input_cost_per_image_token`` rate is a
+        possible input rate for image tokens and joins the input maximum.
         """
         if (
             self.input_cost_per_token is not None
@@ -1838,7 +1848,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     "cache_read_input_token_cost",
                     "cache_creation_input_token_cost",
                 )
-            ):
+            ) or (image_tokens and key.startswith("input_cost_per_image_token")):
                 input_costs.append(self._budget_price(value))
             elif key.startswith(
                 ("output_cost_per_token", "output_cost_per_reasoning_token")
@@ -1854,16 +1864,61 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         uplift = max(uplifts)
         return max(input_costs) * uplift, max(output_costs) * uplift
 
+    def _per_image_input_cost(self) -> float:
+        """Highest published flat per-image input fee, or ``0.0`` when unpriced.
+
+        ``input_cost_per_image`` (and its context-tier variants) is charged per
+        image in addition to token rates, so it must be added to the token bound
+        for any request that carries images. Paired custom token prices make
+        telemetry ignore the catalog fee, so they suppress it here too.
+        """
+        if (
+            self.input_cost_per_token is not None
+            and self.output_cost_per_token is not None
+        ):
+            return 0.0
+        info = self._model_info or {}
+        fees = [
+            self._budget_price(value)
+            for key, value in info.items()
+            if value is not None
+            and (
+                key == "input_cost_per_image"
+                or key.startswith("input_cost_per_image_above")
+            )
+        ]
+        return max(fees) if fees else 0.0
+
+    def _count_request_images(self, messages: Sequence[Message]) -> int:
+        """Count images the request will actually send.
+
+        Images are dropped from the payload when vision is inactive, so a
+        disabled-vision request carries no per-image charge even if its message
+        objects hold image content.
+        """
+        if not self.vision_is_active():
+            return 0
+        return sum(
+            len(item.image_urls)
+            for message in messages
+            for item in message.content
+            if isinstance(item, ImageContent)
+        )
+
     def _reserve_budget(
         self,
         call_context: LLMCallContext | None,
         request_kwargs: dict[str, Any],
+        *,
+        image_count: int = 0,
     ) -> BudgetReservation | None:
         """Atomically reserve the bound for this exact prepared attempt.
 
         Unsupported request overrides are refused only for budgeted calls:
         opaque provider bodies, multiple completions and route changes can
         invalidate the configured model's prices or the outgoing token cap.
+        ``image_count`` is the number of images this attempt will send, so a
+        flat per-image fee is included in the bound rather than escaping it.
         """
         budget = call_context.cost_budget if call_context else None
         if budget is None:
@@ -1940,7 +1995,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             provider_cap = metadata.max_input_tokens
         input_bound = self._budget_token_bound(provider_cap, "input")
         worst_case = self.worst_case_cost(
-            input_tokens=input_bound, max_output_tokens=max(output_bounds)
+            input_tokens=input_bound,
+            max_output_tokens=max(output_bounds),
+            image_count=image_count,
         )
         reservation = budget.try_reserve(worst_case)
         if reservation is None:
@@ -1951,6 +2008,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         self,
         call_context: LLMCallContext | None,
         request_kwargs: dict[str, Any],
+        *,
+        image_count: int = 0,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Reserve inside SDK retry, before each bounded transport attempt.
 
@@ -1968,7 +2027,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 @wraps(attempt)
                 async def _reserved_async(*args: Any, **kwargs: Any) -> Any:
                     reservation = self._reserve_budget(
-                        call_context, {**request_kwargs, **kwargs}
+                        call_context,
+                        {**request_kwargs, **kwargs},
+                        image_count=image_count,
                     )
                     if reservation is None:
                         return await attempt(*args, **kwargs)
@@ -2001,7 +2062,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             @wraps(attempt)
             def _reserved_sync(*args: Any, **kwargs: Any) -> Any:
                 reservation = self._reserve_budget(
-                    call_context, {**request_kwargs, **kwargs}
+                    call_context,
+                    {**request_kwargs, **kwargs},
+                    image_count=image_count,
                 )
                 if reservation is None:
                     return attempt(*args, **kwargs)
@@ -2136,7 +2199,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
 
         @self._make_retry_decorator()
-        @self._budget_guarded_attempt(call_context, call_kwargs)
+        @self._budget_guarded_attempt(
+            call_context,
+            call_kwargs,
+            image_count=self._count_request_images(messages),
+        )
         def _one_attempt(**retry_kwargs: Any) -> ModelResponse:
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
@@ -2259,7 +2326,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         @self._make_retry_decorator()
         @self._async_hard_timeout_decorator()
-        @self._budget_guarded_attempt(call_context, call_kwargs)
+        @self._budget_guarded_attempt(
+            call_context,
+            call_kwargs,
+            image_count=self._count_request_images(messages),
+        )
         async def _one_attempt(**retry_kwargs: Any) -> ModelResponse:
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
@@ -2405,7 +2476,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         @self._make_retry_decorator()
         @self._budget_guarded_attempt(
-            call_context, {"tools": resp_tools, **call_kwargs}
+            call_context,
+            {"tools": resp_tools, **call_kwargs},
+            image_count=self._count_request_images(messages),
         )
         def _one_attempt(**retry_kwargs: Any) -> ResponsesAPIResponse:
             assert self._telemetry is not None
@@ -2576,7 +2649,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         @self._make_retry_decorator()
         @self._async_hard_timeout_decorator()
         @self._budget_guarded_attempt(
-            call_context, {"tools": resp_tools, **call_kwargs}
+            call_context,
+            {"tools": resp_tools, **call_kwargs},
+            image_count=self._count_request_images(messages),
         )
         async def _one_attempt(
             **retry_kwargs: Any,

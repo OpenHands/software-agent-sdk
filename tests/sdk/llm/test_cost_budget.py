@@ -12,7 +12,7 @@ from openai.types.responses import ResponseOutputMessage, ResponseOutputText
 
 import openhands.sdk.llm.llm as llm_module
 import openhands.sdk.llm.utils.telemetry as telemetry_module
-from openhands.sdk import LLM, Message, TextContent
+from openhands.sdk import LLM, ImageContent, Message, TextContent
 from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.cost_budget import BudgetReservation, CostBudget
 from openhands.sdk.llm.exceptions import LLMBudgetExceededError
@@ -1021,3 +1021,113 @@ async def test_budget_settles_from_the_attempt_not_a_concurrent_call(
             await llm.acompletion(messages, call_context=context)
         else:
             llm.completion(messages, call_context=context)
+
+
+def _with_image(messages: list[Message]) -> list[Message]:
+    """Attach one image to the fixture's user message."""
+    out = list(messages)
+    user = out[-1]
+    out[-1] = user.model_copy(
+        update={
+            "content": [
+                *user.content,
+                ImageContent(image_urls=["data:image/png;base64,AAAA"]),
+            ]
+        }
+    )
+    return out
+
+
+@pytest.mark.parametrize(
+    "invoke",
+    [LLM.completion, LLM.acompletion, LLM.responses, LLM.aresponses],
+)
+async def test_budget_counts_flat_per_image_fee(budget_call, invoke):
+    """A flat per-image fee must join the token bound, not bypass the cap.
+
+    Regression: the reservation priced only tokens, so a model that also
+    charges ``input_cost_per_image`` could be admitted under a ceiling the
+    request would exceed once the per-image fee was billed.
+    """
+    info, make_llm, messages, providers = budget_call
+    info["supports_vision"] = True
+    info["input_cost_per_image"] = 0.05
+    llm = make_llm()
+    image_messages = _with_image(messages)
+
+    with pytest.raises(LLMBudgetExceededError):
+        result = invoke(
+            llm,
+            image_messages,
+            call_context=LLMCallContext(cost_budget=CostBudget(0.12)),
+        )
+        if inspect.isawaitable(result):
+            await result
+
+    for provider in providers:
+        provider.assert_not_called()
+
+
+def test_budget_admits_image_request_when_per_image_fee_fits(budget_call):
+    info, make_llm, messages, providers = budget_call
+    info["supports_vision"] = True
+    info["input_cost_per_image"] = 0.05
+    llm = make_llm()
+
+    result = llm.completion(
+        _with_image(messages),
+        call_context=LLMCallContext(cost_budget=CostBudget(0.2)),
+    )
+
+    assert result.message.content == [TextContent(text="ok")]
+    providers[0].assert_called_once()
+
+
+def test_budget_counts_image_token_rate_only_when_images_are_sent(budget_call):
+    """``input_cost_per_image_token`` is a possible rate only with images."""
+    info, make_llm, messages, providers = budget_call
+    info["supports_vision"] = True
+    info["input_cost_per_image_token"] = 0.0001
+    llm = make_llm()
+    budget = CostBudget(0.12)
+
+    with pytest.raises(LLMBudgetExceededError):
+        llm.completion(
+            _with_image(messages), call_context=LLMCallContext(cost_budget=budget)
+        )
+    providers[0].assert_not_called()
+
+    result = llm.completion(messages, call_context=LLMCallContext(cost_budget=budget))
+    assert result.message.content == [TextContent(text="ok")]
+    providers[0].assert_called_once()
+
+
+def test_budget_ignores_images_dropped_by_disabled_vision(budget_call):
+    info, make_llm, messages, providers = budget_call
+    info["supports_vision"] = True
+    info["input_cost_per_image"] = 0.05
+    llm = make_llm(disable_vision=True)
+
+    result = llm.completion(
+        _with_image(messages),
+        call_context=LLMCallContext(cost_budget=CostBudget(0.12)),
+    )
+
+    assert result.message.content == [TextContent(text="ok")]
+    providers[0].assert_called_once()
+
+
+def test_budget_suppresses_catalog_image_fee_with_custom_prices(budget_call):
+    """Paired custom token prices override the catalog, as telemetry does."""
+    info, make_llm, messages, providers = budget_call
+    info["supports_vision"] = True
+    info["input_cost_per_image"] = 0.05
+    llm = make_llm(input_cost_per_token=0.0000005, output_cost_per_token=0.001)
+
+    result = llm.completion(
+        _with_image(messages),
+        call_context=LLMCallContext(cost_budget=CostBudget(0.12)),
+    )
+
+    assert result.message.content == [TextContent(text="ok")]
+    providers[0].assert_called_once()
