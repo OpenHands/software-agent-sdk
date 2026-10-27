@@ -321,3 +321,37 @@ def test_stale_terminal_cannot_access_restarted_server(
         finally:
             first.close()
             second.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix sockets")
+@pytest.mark.parametrize(
+    "locale_env",
+    [{}, {"LANG": "C"}, {"LC_ALL": "POSIX"}, {"LANG": "", "LC_ALL": ""}],
+)
+def test_initialize_without_utf8_locale(tmp_path, monkeypatch, locale_env):
+    for name in ("LC_ALL", "LC_CTYPE", "LANG"):
+        monkeypatch.setenv(name, "C")  # records the original for teardown
+        monkeypatch.delenv(name)
+    for name, value in locale_env.items():
+        monkeypatch.setenv(name, value)
+
+    p = TmuxPanePool(work_dir=str(tmp_path), max_panes=1)
+    try:
+        p.initialize()
+        assert isinstance(p.checkout(), TmuxTerminal)
+    finally:
+        p.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix sockets")
+def test_initialize_keeps_existing_utf8_locale(tmp_path, monkeypatch):
+    monkeypatch.delenv("LC_ALL", raising=False)
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
+
+    p = TmuxPanePool(work_dir=str(tmp_path), max_panes=1)
+    try:
+        p.initialize()
+    finally:
+        p.close()
+
+    assert "LC_ALL" not in os.environ
