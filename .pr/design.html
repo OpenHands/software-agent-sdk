@@ -47,11 +47,11 @@ index 067674a68..71178cb57 100644
          self._cancel_token = None
 +        self._pause_requested = False
          self._step_holds_state_lock = False
- 
+
          # Store plugin specs for lazy loading (no IO in constructor)
 @@ -1978,6 +1980,7 @@ class LocalConversation(BaseConversation):
          self._cancel_token = CancellationToken()
- 
+
          with self._state:
 +            self._pause_requested = False
              if self._state.execution_status in [
@@ -69,7 +69,7 @@ index 067674a68..71178cb57 100644
 @@ -2056,6 +2061,9 @@ class LocalConversation(BaseConversation):
                          self._step_holds_state_lock = False
                      iteration += 1
- 
+
 +                    if self._finish_pending_pause():
 +                        break
 +
@@ -82,12 +82,12 @@ index 067674a68..71178cb57 100644
              self._cancel_token = None
 +            with self._state:
 +                self._pause_requested = False
- 
+
      @observe(name=&quot;conversation.arun&quot;)
      async def arun(self) -&gt; None:
 @@ -2182,6 +2192,7 @@ class LocalConversation(BaseConversation):
          await asyncio.to_thread(self._ensure_agent_ready)
- 
+
          with self._state:
 +            self._pause_requested = False
              if isinstance(self.agent, ACPAgent) and self._state.execution_status in (
@@ -105,7 +105,7 @@ index 067674a68..71178cb57 100644
 @@ -2335,6 +2348,9 @@ class LocalConversation(BaseConversation):
                              self._step_holds_state_lock = False
                          iteration += 1
- 
+
 +                        if self._finish_pending_pause():
 +                            break
 +
@@ -115,7 +115,7 @@ index 067674a68..71178cb57 100644
 @@ -2462,14 +2478,14 @@ class LocalConversation(BaseConversation):
                          )
                      break
- 
+
 -                acp_step_start_event_count = 0
                  with self._state:
 +                    if self._finish_pending_pause():
@@ -150,7 +150,7 @@ index 067674a68..71178cb57 100644
 -                        )
 +                    if self._finish_pending_pause():
                          break
- 
+
                      latest_acp_prompt_message_id = self._latest_acp_prompt_message_id()
 @@ -2603,6 +2612,12 @@ class LocalConversation(BaseConversation):
                  )
@@ -171,13 +171,13 @@ index 067674a68..71178cb57 100644
              self._arun_task = None
 +            with self._state:
 +                self._pause_requested = False
- 
+
      def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -&gt; None:
          &quot;&quot;&quot;Set the confirmation policy and store it in conversation state.&quot;&quot;&quot;
 @@ -2773,6 +2790,19 @@ class LocalConversation(BaseConversation):
                  )
              )
- 
+
 +    def _finish_pending_pause(self) -&gt; bool:
 +        &quot;&quot;&quot;Complete a requested pause at a step boundary, under the state lock.&quot;&quot;&quot;
 +        if not self._pause_requested:
@@ -193,11 +193,11 @@ index 067674a68..71178cb57 100644
 +
      def pause(self) -&gt; None:
          &quot;&quot;&quot;Pause agent execution.
- 
+
 @@ -2780,23 +2810,19 @@ class LocalConversation(BaseConversation):
          pause execution. The pause will take effect at the next iteration
          of the run loop (between agent steps).
- 
+
 -        Note: If called during an LLM completion, the pause will not take
 -        effect until the current LLM call completes.
 +        While the current step is executing, status is ``PAUSING``. Once it
@@ -205,7 +205,7 @@ index 067674a68..71178cb57 100644
 +        An ACP step includes the entire remote prompt turn. Use ``interrupt()``
 +        to request cancellation of an in-flight async operation.
          &quot;&quot;&quot;
- 
+
 -        if self._state.execution_status == ConversationExecutionStatus.PAUSED:
 -            return
 -
@@ -225,7 +225,7 @@ index 067674a68..71178cb57 100644
 +            elif self._state.execution_status == ConversationExecutionStatus.IDLE:
 +                self._pause_requested = True
 +                self._finish_pending_pause()
- 
+
      def interrupt(self) -&gt; None:
          &quot;&quot;&quot;Immediately cancel an in-flight ``arun()``, including mid-LLM-call.
 </pre></details></article><article id="acp"><h3>Prompt completion survives a pending pause</h3><p>The successful finalizer records completion separately. LocalConversation can advance the prompt cursor even if interrupt() arrives during post-response credential cleanup. An unfinished interrupted prompt retains the existing retry behavior.</p>
@@ -256,7 +256,7 @@ index ea1fe4b54..889dc37ae 100644
 +        self._last_prompt_completed = True
 +        if state.execution_status != ConversationExecutionStatus.PAUSING:
 +            state.execution_status = ConversationExecutionStatus.FINISHED
- 
+
      def _emit_turn_timeout(
          self,
 @@ -4247,6 +4251,7 @@ class ACPAgent(AgentBase):
@@ -265,7 +265,7 @@ index ea1fe4b54..889dc37ae 100644
      ) -&gt; None:
 +        self._last_prompt_completed = False
          state = conversation.state
- 
+
          if self._restart_session_on_next_turn:
 </pre></details></article><article id="remote"><h3>Clients wait for execution to stop</h3><p>Both full WebSocket state snapshots and polling/status updates treat PAUSING as active. A completed pause releases the blocking client call; a concurrent /run remains HTTP 409.</p>
 <p class="source">Before: <a href="https://github.com/Scrates1/software-agent-sdk/blob/d0d9d81324210414462fb676b377e0563a08a0cb/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py#L1581">openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py:1581</a><br>After: <a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py#L1581">openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py:1581</a></p>
@@ -281,14 +281,14 @@ index 7eadd78e2..7dbecdf27 100644
 @@ -1209,7 +1209,7 @@ class RemoteConversation(BaseConversation):
              except ValueError:
                  return
- 
+
 -            if status != ConversationExecutionStatus.RUNNING:
 +            if not status.is_active():
                  self._terminal_status_queue.put(status.value)
- 
+
          # Compose all callbacks into a single callback
 @@ -1580,7 +1580,10 @@ class RemoteConversation(BaseConversation):
- 
+
      def _handle_conversation_status(self, status: str | None, since: int = 0) -&gt; bool:
          &quot;&quot;&quot;Handle non-running statuses; return True if the run is complete.&quot;&quot;&quot;
 -        if status == ConversationExecutionStatus.RUNNING.value:
@@ -313,7 +313,7 @@ index f902d8040..4460ec2c6 100644
 @@ -1418,12 +1418,12 @@ class EventService:
          # the pod during long conn.prompt() calls.
          self._setup_acp_activity_heartbeat(self._conversation.agent)
- 
+
 -        # Any conversation loaded from disk with RUNNING status is stale. Active
 +        # Any conversation loaded from disk with an active status is stale. Active
          # split-brain resumes are prevented earlier by the lease claim itself, so if
@@ -368,7 +368,7 @@ index 3da553a53..910c9a1cd 100644
 +++ b/openhands-agent-server/openhands/agent_server/conversation_service.py
 @@ -2235,13 +2235,13 @@ class ConversationService:
          ]
- 
+
          # Preserve crash recovery semantics without hydrating every idle
 -        # conversation. RUNNING records may contain an interrupted tool call;
 +        # conversation. Active records may contain an interrupted tool call;
@@ -402,7 +402,7 @@ index b17b1a0bd..10a4377d9 100644
  from openhands.sdk.utils.cipher import Cipher
  from openhands.sdk.utils.command import execute_command, sanitized_env
 @@ -391,10 +390,7 @@ class DockerConversationRegistry(ConversationRegistry):
- 
+
          for conversation_id, container in candidates:
              info = await service.get_conversation(conversation_id)
 -            if (
