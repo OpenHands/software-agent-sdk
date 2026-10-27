@@ -1,10 +1,12 @@
 """Owned lifecycle for optional Canvas App backend subprocesses."""
 
 import asyncio
+import codecs
 import gzip
 import hashlib
 import os
 import platform
+import re
 import shutil
 import signal
 import socket
@@ -33,6 +35,7 @@ from openhands.agent_server.canvas_extensions.manifest import (
     CanvasExtensionManifest,
 )
 from openhands.agent_server.persistence.store import SecretsStore, get_secrets_store
+from openhands.sdk.conversation.secret_registry import StreamOutputMask
 from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
@@ -670,30 +673,26 @@ class CanvasExtensionBackendManager:
     ) -> None:
         if stream is None:
             return
-        pending = b""
-        values = sorted(runtime.secret_values, key=len, reverse=True)
+        values = sorted(
+            (value.decode("utf-8") for value in runtime.secret_values),
+            key=len,
+            reverse=True,
+        )
+        pattern = (
+            re.compile("|".join(re.escape(value) for value in values))
+            if values
+            else None
+        )
+        masker = StreamOutputMask(pattern, max(map(len, values), default=0))
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
         while True:
             chunk = await stream.read(8192)
-            pending += chunk
-            output = bytearray()
-            offset = 0
-            while offset < len(pending):
-                # A complete short value can still prefix a longer split value.
-                if chunk and any(
-                    len(v) > len(pending) - offset and v.startswith(pending[offset:])
-                    for v in values
-                ):
-                    break
-                match = next((v for v in values if pending.startswith(v, offset)), None)
-                if match is not None:
-                    output.extend(REDACTED_SECRET_VALUE.encode())
-                    offset += len(match)
-                else:
-                    output.append(pending[offset])
-                    offset += 1
-            pending = pending[offset:]
+            text = decoder.decode(chunk, final=not chunk)
+            output = masker.feed(text)
+            if not chunk:
+                output += masker.flush()
             if output:
-                entry = label + bytes(output)
+                entry = label + output.encode("utf-8")
                 runtime.logs.append(entry)
                 runtime.log_bytes += len(entry)
                 while runtime.log_bytes > _MAX_LOG_BYTES and runtime.logs:

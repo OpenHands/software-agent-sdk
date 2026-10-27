@@ -1149,7 +1149,13 @@ async def test_enable_orchestrates_backend_and_retains_revision_consent(
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
-        assert (await client.patch(base, json={"enabled": True})).status_code == 409
+        legacy = await client.patch(base, json={"enabled": True})
+        assert legacy.status_code == (409 if needs_secret else 200)
+        assert (await manager.status("my-extension")).state == "stopped"
+        assert manager.ready_endpoint("my-extension") is None
+        if not needs_secret:
+            assert (await client.get(base)).json()["enabled"]
+            await client.patch(base, json={"enabled": False})
         if needs_secret:
             failed = await client.patch(
                 base, json={"enabled": True, "revision": revision, "secret_refs": refs}
@@ -1196,3 +1202,24 @@ async def test_enable_orchestrates_backend_and_retains_revision_consent(
         ).status_code == 409
         assert not (await client.get(base)).json()["enabled"]
     await app.state.app_backend_session_store.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_backend_masks_multibyte_output_and_flushes_eof(tmp_path: Path):
+    manager = CanvasExtensionBackendManager(tmp_path / "installed", tmp_path / "state")
+    runtime = _Runtime()
+    secret = "clé-秘密"
+    runtime.secret_values = (secret.encode(),)
+    stream = asyncio.StreamReader()
+    task = asyncio.create_task(manager._drain(runtime, stream, b"[stdout] "))
+    payload = ("before " + secret + " after é").encode()
+    for byte in payload:
+        stream.feed_data(bytes([byte]))
+        await asyncio.sleep(0)
+    stream.feed_eof()
+    await task
+    output = b"".join(runtime.logs).decode()
+    assert secret not in output
+    assert "<secret-hidden>" in output
+    assert "é" in output
+    assert "\ufffd" not in output

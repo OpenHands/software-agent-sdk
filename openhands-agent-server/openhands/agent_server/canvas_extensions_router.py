@@ -321,7 +321,16 @@ async def set_canvas_extension_enabled_endpoint(
                 name=extension_name, enabled=False
             )
         manifest = get_installed_canvas_extension_manifest(extension_name)
-        if manifest and manifest.backend:
+        # Legacy toggle-only clients must not implicitly download or execute code.
+        if (
+            manifest
+            and manifest.backend
+            and (
+                request.revision is not None
+                or request.secret_refs is not None
+                or manifest.backend.secret_refs
+            )
+        ):
             try:
                 if not request.revision or request.revision != manager.revision(
                     extension_name
