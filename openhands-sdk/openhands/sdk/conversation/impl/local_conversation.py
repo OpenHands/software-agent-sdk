@@ -2612,6 +2612,12 @@ class LocalConversation(BaseConversation):
                 )
                 completed_cancelled_prompt = (
                     self._state.execution_status == ConversationExecutionStatus.FINISHED
+                    or (
+                        self._state.execution_status
+                        == ConversationExecutionStatus.PAUSING
+                        and isinstance(self.agent, ACPAgent)
+                        and self.agent._last_prompt_completed
+                    )
                 )
                 if (
                     superseded_by_new_message or completed_cancelled_prompt
