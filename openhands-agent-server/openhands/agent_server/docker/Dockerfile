@@ -337,10 +337,8 @@ ARG USERNAME UID GID ENABLE_VERTEX
 ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
 ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 
-# uv 0.11.5+ embeds python-build-standalone 20260408 metadata, which is the
-# first release with the PT_GNU_STACK fix. Pin to 0.12.15 (latest eligible at time of
-# writing) rather than :latest so builds are reproducible.
-COPY --from=ghcr.io/astral-sh/uv:0.12.15 /uv /uvx /bin/
+# Managed Python must include the non-executable-stack fix for glibc/seccomp.
+COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /uvx /bin/
 
 RUN groupadd -g ${GID} ${USERNAME} \
  && useradd -m -u ${UID} -g ${GID} -s /usr/sbin/nologin ${USERNAME} \
@@ -357,8 +355,8 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-se
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
     EXTRA_FLAGS=""; \
     if [ "$ENABLE_VERTEX" = "1" ]; then EXTRA_FLAGS="--extra vertex"; fi; \
-    uv python install 3.13 && \
-    uv venv --python-preference only-managed --python 3.13 .venv && \
+    uv python install 3.13.18 && \
+    uv venv --python-preference only-managed --python 3.13.18 .venv && \
     uv sync --frozen --no-editable --managed-python --extra boto3 $EXTRA_FLAGS && \
     readlink -f .venv/bin/python | grep -q '^/agent-server/uv-managed-python/'
 
