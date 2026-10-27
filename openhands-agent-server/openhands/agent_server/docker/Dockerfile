@@ -38,9 +38,9 @@ ARG ENABLE_VSCODE=true
 # newly published Debian packages have a three-day observation period.
 ####################################################################################
 FROM python:3.13.15-slim-trixie AS python-runtime
-FROM node:24.21.0-trixie-slim AS node-runtime
+FROM node:24.22.1-trixie-slim AS node-runtime
 
-# pip 26.2.1 vendors urllib3 2.7.0 (CVE-2026-97689) and msgpack 1.1.2
+# pip 26.2.2 vendors urllib3 2.7.0 (CVE-2026-97689) and msgpack 1.1.2
 # (GHSA-6v7p-g79w-8964), and no pip release vendors the fixed versions yet.
 # Its pkg_resources (setuptools 70.3.0: CVE-2025-47273, CVE-2026-59890) is
 # removed, as setuptools dropped it in 82.0.0 but fixed CVE-2026-59890 in 83.0.0.
@@ -49,9 +49,13 @@ FROM node:24.21.0-trixie-slim AS node-runtime
 # bom.cdx.json stay consistent; the source archive is used because the sdist
 # omits tools/vendoring/patches. Drop this stage once pip ships the fixes;
 # tests/agent_server/docker_runtime/test_pip_revendoring_retirement.py flags it.
-FROM python:3.13.15-trixie AS pip-revendored
-ADD --checksum=sha256:65cac79de403d368cc8333f3d9981f293248dc336662338749693ff99659d5e3 \
-    https://github.com/pypa/pip/archive/refs/tags/26.2.1.tar.gz /tmp/pip.tar.gz
+# 3.13.17 bundles pip 26.2.2, whose vendored certifi already distrusts the
+# compromised eMudhra roots. 3.13.15 bundles pip 26.2.1, which still trusts
+# emSign ECC Root CA - G3, and this stage's `venv` + `pip install vendoring`
+# fetches from PyPI before the re-vendored wheel exists (GHSA-6q48-6c7w-9gw2).
+FROM python:3.13.17-trixie AS pip-revendored
+ADD --checksum=sha256:b505949bb27827b32f54c9f1f5ca660a6fae3fde61cbe0a971975a3ed34a7ee1 \
+    https://github.com/pypa/pip/archive/refs/tags/26.2.2.tar.gz /tmp/pip.tar.gz
 RUN set -eux; \
     mkdir /tmp/pip; \
     tar -xzf /tmp/pip.tar.gz -C /tmp/pip --strip-components=1; \
@@ -72,7 +76,10 @@ RUN set -eux; \
 
 FROM debian:trixie-slim AS python-node-runtime
 ARG NPM_VERSION
-ARG DEBIAN_SNAPSHOT=20261004T000000Z
+# 20261021 is the oldest snapshot whose ca-certificates (20250419+deb13u1,
+# trixie-security) drops emSign ECC Root CA - G3; 20261019 still ships
+# 20250419, which trusts the compromised root (GHSA-6q48-6c7w-9gw2).
+ARG DEBIAN_SNAPSHOT=20261021T000000Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
@@ -127,10 +134,11 @@ RUN set -eux; \
 
 RUN --mount=type=bind,from=pip-revendored,source=/dist,target=/tmp/pip-dist \
     set -eux; \
-    pip_version="$(python3 -m pip --version | cut -d' ' -f2)"; \
+    # Install the single re-vendored wheel, whatever its version: it replaces
+    # the pip bundled with the base image, whose version need not match it.
     python3 -m pip install --no-deps --no-index --no-cache-dir --force-reinstall \
         --disable-pip-version-check --root-user-action=ignore \
-        "/tmp/pip-dist/pip-${pip_version}-py3-none-any.whl"
+        /tmp/pip-dist/pip-*-py3-none-any.whl
 
 ####################################################################################
 # Builder (source mode)
@@ -154,9 +162,9 @@ ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
 ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 
 # uv 0.11.5+ embeds python-build-standalone 20260408 metadata, which is the
-# first release with the PT_GNU_STACK fix. Pin to 0.12.15 (latest eligible at time of
+# first release with the PT_GNU_STACK fix. Pin to 0.13.5 (latest eligible at time of
 # writing) rather than :latest so builds are reproducible.
-COPY --from=ghcr.io/astral-sh/uv:0.12.15 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
 
 RUN groupadd -g ${GID} ${USERNAME} \
  && useradd -m -u ${UID} -g ${GID} -s /usr/sbin/nologin ${USERNAME} \
@@ -245,13 +253,13 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     ARCH=$(uname -m); \
     case "$ARCH" in \
-      x86_64|amd64) NARCH=x64; NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6;; \
-      aarch64|arm64) NARCH=arm64; NODE_SHA256=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2;; \
+      x86_64|amd64) NARCH=x64; NODE_SHA256=6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6;; \
+      aarch64|arm64) NARCH=arm64; NODE_SHA256=dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e;; \
       *) echo "Unsupported architecture for ACP providers: '$ARCH'" >&2; exit 1;; \
     esac; \
-    NODE_TARBALL="/tmp/node-v24.21.0-linux-${NARCH}.tar.xz"; \
+    NODE_TARBALL="/tmp/node-v24.22.1-linux-${NARCH}.tar.xz"; \
     curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused \
-        "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
+        "https://nodejs.org/dist/v24.22.1/node-v24.22.1-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
     echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
     tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL"; \
     rm -f "$NODE_TARBALL"; \
@@ -439,7 +447,7 @@ RUN set -eux; \
     echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Keep uv as part of the full development environment, but not binary-minimal.
-COPY --from=ghcr.io/astral-sh/uv:0.12.15 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
 
 # Fail fast on a typo'd capability name before spending any time on the
 # installs below (each block only checks for ITS OWN keyword's presence, so
@@ -496,6 +504,23 @@ RUN set -eux; \
     mv ${RELEASE_TAG}-linux-${arch} ${OPENVSCODE_SERVER_ROOT}; \
     cp ${OPENVSCODE_SERVER_ROOT}/bin/remote-cli/openvscode-server ${OPENVSCODE_SERVER_ROOT}/bin/remote-cli/code; \
     rm -f ${RELEASE_TAG}-linux-${arch}.tar.gz; \
+    \
+    # Replace the bundled Node.js (22.21.1 in v1.109.5) with 22.23.4, which
+    # fixes the Brotli decoder overflow CVE-2026-111497. No OpenVSCode Server
+    # release bundles a fixed Node yet; drop this once one does.
+    case "${arch}" in \
+      x64) NARCH=x64; NODE_SHA256=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce;; \
+      arm64) NARCH=arm64; NODE_SHA256=6287aa46b6c375d816e63ae66d024fbbfd70404825aabdfdf898a970871d2f4b;; \
+      armhf) NARCH=armv7l; NODE_SHA256=c9057c6a3b8fbb9651ed115c1e96d4a7281b7b9c9ca89fa05865c98ed7ffd437;; \
+      *) echo "Unsupported architecture for OpenVSCode Node: '${arch}'" >&2; exit 1;; \
+    esac; \
+    NODE_TARBALL="/tmp/node-v22.23.4-linux-${NARCH}.tar.xz"; \
+    wget -nv -O "$NODE_TARBALL" "https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-${NARCH}.tar.xz"; \
+    echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
+    tar -xJf "$NODE_TARBALL" -O "node-v22.23.4-linux-${NARCH}/bin/node" > ${OPENVSCODE_SERVER_ROOT}/node; \
+    chmod 755 ${OPENVSCODE_SERVER_ROOT}/node; \
+    rm -f "$NODE_TARBALL"; \
+    ${OPENVSCODE_SERVER_ROOT}/node --version; \
     \
     # Set proper ownership
     chown -R ${USERNAME}:${USERNAME} ${OPENVSCODE_SERVER_ROOT}

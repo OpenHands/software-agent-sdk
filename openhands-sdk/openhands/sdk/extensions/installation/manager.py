@@ -8,7 +8,7 @@ from pathlib import Path
 from openhands.sdk.extensions.fetch import (
     SourceType,
     fetch_with_resolution,
-    parse_extension_source,
+    resolve_extension_source,
 )
 from openhands.sdk.extensions.installation.info import InstallationInfo
 from openhands.sdk.extensions.installation.interface import (
@@ -164,12 +164,12 @@ class InstallationManager[T: ExtensionProtocol]:
     ) -> T:
         """Load the fetched extension, named after its repository if it is one.
 
-        A remote source without ``repo_path`` is fetched to the root of its
+        A remote source without an explicit or embedded subpath is fetched to its
         clone cache, ``<repo>-<hash>``.  A loader that infers the name from the
         directory (a plugin without a manifest) must see ``<repo>`` instead, as
         it would for a local directory, so load from a copy with that name.
         """
-        source_type, url = parse_extension_source(source)
+        source_type, url, repo_path = resolve_extension_source(source, repo_path)
         if repo_path or source_type == SourceType.LOCAL:
             return self.installation_interface.load_from_dir(fetched_path)
 

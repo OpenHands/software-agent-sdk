@@ -70,6 +70,8 @@ export interface OpenHandsAgentProfile extends AgentProfileBase {
    * catalog). `[]` = all discovered skills; an unknown name is a no-op.
    */
   disabled_skills?: string[];
+  /** Public-catalog skills to load; `null` = all, `[]` = none. User/project skills are unaffected. */
+  public_skills?: string[] | null;
   /** Replaces the built-in persona, keeping capability guidance; needs `profile_persona_v1`. */
   persona?: string | null;
   system_message_suffix: string | null;
@@ -159,7 +161,8 @@ export interface AgentProfileDiagnostics {
   resolved_mcp_config_keys?: string[];
   dangling_mcp_server_refs: string[];
 
-  // Skill selection (OpenHands only): the deny-list and what reaches the agent.
+  // Skill selection (OpenHands only): public allow-list, deny-list, and resolved skills.
+  public_skills?: string[] | null;
   disabled_skills?: string[];
   resolved_skills?: string[];
 

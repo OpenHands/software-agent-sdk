@@ -43,7 +43,7 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 - `F15.diff-commit`: `commit=<sha>` returns the file as that commit changed it, read from git objects: `original` from the first parent (empty for the root commit or an added file), `modified` from the commit (empty for a file it deleted), also for files no longer on disk and for abbreviated SHAs.
 - `F15.diff-errors`: `ref` together with `commit` is 400, a non-hex `commit` 422, an unknown commit or ref 400, a missing file 400, a file over 1 MiB 400, and no `path` 422.
 - `F15.diff-whitespace`: an unchanged file with leading indentation or trailing blank lines diffs to identical `original` and `modified`, so a file that `changes` does not list shows no diff.
-- `F15.diff-deleted-file`: the working-tree diff of a file that `changes` lists as `DELETED` returns its base text as `original` and `""` as `modified`; today it is 400 `File does not exist`.
+- `F15.diff-deleted-file`: the working-tree diff of a file that `changes` lists as `DELETED` returns its base text as `original` and `""` as `modified`; a path missing both on disk and at the base is still 400 `File does not exist`.
 - `F15.commits`: `commits` lists the history newest first with `sha`, `short_sha`, `subject`, `author` and an ISO 8601 `timestamp`, `has_more` tells whether `limit` cut it, and `limit` outside 1..200 is 422.
 - `F15.commit-changes`: `commits/{sha}/changes` lists one commit's files against its first parent (the root commit as all `ADDED`, a rename as `DELETED` plus `ADDED`), accepts abbreviated SHAs, answers 400 for an unknown SHA and 422 for a non-hex or shorter-than-4 SHA.
 - `F15.scoped`: the four conversation-scoped routes on a conversation whose workspace is the fixture repository return exactly what the global routes return.
@@ -56,7 +56,8 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 - `F15.repo-search-errors`: `gitlab` and `bitbucket` are 400 (not supported), an unknown or missing `provider` is 422, and `limit` outside 1..100 is 422.
 - `F15.repo-search-unreachable`: when GitHub cannot be reached the search is 502 with the generic masked body and no token in it.
 - `F15.repo-search-timeout`: when GitHub does not answer within 15 s the search is 504 with the masked body `GitHub repository search timed out` and no token in it.
-- `F15.repo-search-github`: with a real GitHub token, search lists the token's repositories with a `page:offset` cursor and a case-insensitive `query` filter, and an invalid token is passed through as 401.
+- `F15.repo-search-github`: with a real GitHub token, search lists the token's repositories with a `page:offset` cursor and a case-insensitive `query` filter.
+- `F15.repo-search-rejected-token`: a provider's HTTP 401 for a rejected token is passed through as 401 with a generic error, without exposing the token.
 
 ## How to get to it (agent POV)
 
@@ -430,30 +431,27 @@ Preconditions:
   `modified`, `"\n".join(text.splitlines())`. The commit-mode diff
   strips both sides alike, so it shows no phantom change but loses the
   whitespace.
-- **Diff of a deleted file (`F15.diff-deleted-file`), known bug.** `changes`
-  lists a deleted file; the diff the Changes tab opens for it fails.
+- **Diff of a deleted file (`F15.diff-deleted-file`).** `changes` lists a
+  deleted file; the diff the Changes tab opens for it shows the deletion.
   ```sh
   cp -r "$REPO" "$F/deleted"
   rm "$F/deleted/src/util.py"
   control-agent-server api GET /api/git/changes --query path="$F/deleted" --expect 200 \
     --check 2.status eq DELETED --check 2.path eq src/util.py
   control-agent-server api GET /api/git/diff --query path="$F/deleted/src/util.py" --expect 200 \
-    --check original eq "$(git -C "$REPO" show HEAD:src/util.py)" --check modified eq '' --save F15.diff-deleted-file/diff  # bug: status eq 400 && response.body.detail contains 'File does not exist'
+    --check original eq "$(git -C "$REPO" show HEAD:src/util.py)" --check modified eq '' --save F15.diff-deleted-file/diff
   ```
   Expected: the base text as `original` and `""` as `modified`, as the
-  commit-mode diff already does for deleted files. Actual:
-  `400 {"detail": "File does not exist: .../src/util.py"}`: `get_git_diff`
-  checks the disk before it looks at git. The old side of a working-tree
-  rename fails the same way. No route returns a working-tree-deleted file's
-  base text, so the Changes tab lists a deletion it cannot show. The SDK
-  unit test `test_get_git_diff_deleted_file` currently pins the
-  `GitPathError`, so a fix updates it too.
+  commit-mode diff does for deleted files; the old side of a working-tree
+  rename diffs the same way. `get_git_diff` reads a path missing from disk
+  from the base ref and answers `File does not exist` only when the base has
+  no file there either (`F15.diff-errors/missing`).
 - **Commit history (`F15.commits`).**
   ```sh
   control-agent-server api GET /api/git/commits --query path="$REPO" --expect 200 --check commits len-eq 2 \
     --check has_more eq false --check commits.0.sha eq "$C2" --check commits.0.subject eq 'Add util' \
     --check commits.0.short_sha eq "$(git -C "$REPO" log -1 --format=%h)" --check commits.0.author eq 'QA Verify' \
-    --check commits.0.timestamp matches '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$' \
+    --check commits.0.timestamp matches '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(Z|[+-]\d\d:\d\d)$' \
     --check commits.1.sha eq "$C1" --check commits.1.subject eq 'Initial commit' --save F15.commits/all
   control-agent-server api GET /api/git/commits --query path="$REPO" --query limit=1 --expect 200 --check commits len-eq 1 \
     --check commits.0.sha eq "$C2" --check has_more eq true --save F15.commits/limit-1
@@ -748,13 +746,20 @@ Preconditions:
   504 after about 15 s (between 14 and 30), with the masked 5xx body
   `{"detail": "Internal Server Error", "exception": "504: GitHub repository search timed out"}`
   and no token in it.
-- **Live GitHub listing (`F15.repo-search-github`), blocked.** Needs a GitHub
-  token with repository read access in `$QA_GITHUB_TOKEN` and egress that
-  allows `GET https://api.github.com/user/repos`. On the machine this was
-  mapped on, the egress proxy answers 403 for that path whatever the token,
-  and the server passed that 403 through as `403 {"detail": "GitHub repository search failed"}`.
+- **Live GitHub listing (`F15.repo-search-github`).**
+  Needs: `network`
+
+  Set `$QA_GITHUB_TOKEN` to a GitHub token with read access to at least three
+  repositories, including one named `agent-sdk`. Egress must allow
+  `GET https://api.github.com/user/repos`. The token travels through stdin;
+  the command-scoped `OPENHANDS_API_KEY` also registers that value with the
+  CLI's redactor, so neither the exchange nor a failure prints it. This
+  recipe only reads GitHub; its settings writes are on the owned local run.
   ```sh
-  control-agent-server api PUT /api/settings/secrets --json "{\"name\": \"github_token\", \"value\": \"$QA_GITHUB_TOKEN\"}" --expect 200
+  : "${QA_GITHUB_TOKEN:?Set a repository-read token before running this recipe}"
+  trap 'control-agent-server api DELETE /api/settings/secrets/github_token --expect 200 >/dev/null 2>&1 || true' EXIT
+  python3 -c 'import json, os; print(json.dumps({"name":"github_token","value":os.environ["QA_GITHUB_TOKEN"]}))' \
+    | env OPENHANDS_API_KEY="$QA_GITHUB_TOKEN" control-agent-server api PUT /api/settings/secrets --stdin --expect 200 --quiet
   NEXT=$(control-agent-server api GET /api/git/repositories/search --query provider=github --query limit=2 --expect 200 \
     --check missing_token eq false --check items len-eq 2 --check items.0.git_provider eq github \
     --check next_page_id eq 1:2 --save F15.repo-search-github/page-1 --field next_page_id)
@@ -762,15 +767,91 @@ Preconditions:
     --expect 200 --check items len-ge 1 --save F15.repo-search-github/page-2
   control-agent-server api GET /api/git/repositories/search --query provider=github --query query=AGENT-SDK --query limit=5 \
     --expect 200 --check items.0.full_name matches '(?i)agent-sdk'
-  control-agent-server api PUT /api/settings/secrets --json '{"name": "github_token", "value": "qa-f15-not-a-real-token"}' --expect 200
-  control-agent-server api GET /api/git/repositories/search --query provider=github --expect 401 \
-    --check detail eq 'GitHub repository search failed' --save F15.repo-search-github/bad-token
   control-agent-server api DELETE /api/settings/secrets/github_token --expect 200
+  trap - EXIT
   ```
   Two repositories per page with a `1:2` cursor (page 1, offset 2) that
-  continues the listing, a case-insensitive `query` match on `full_name`, and
-  GitHub's 401 for a bad token passed through (403 also passes through; other
-  4xx become 400, 5xx 502, a timeout 504).
+  continues the listing and a case-insensitive `query` match on `full_name`.
+  Some managed egress proxies inject credentials even when a request supplies
+  an invalid token; use the deterministic provider rejection below to prove
+  the server's 401 behavior independently of that environment policy.
+- **Rejected provider token (`F15.repo-search-rejected-token`).** A local TLS
+  fixture receives the server's GitHub request through an owned CONNECT proxy
+  and returns a provider 401. It never contacts GitHub and uses only a fake
+  token; the preceding recipe proves the real provider's successful path.
+  ```sh
+  cat > "$F/reject-github.py" <<'PY'
+  import datetime, json, pathlib, socketserver, ssl, sys
+  from cryptography import x509
+  from cryptography.hazmat.primitives import hashes, serialization
+  from cryptography.hazmat.primitives.asymmetric import rsa
+  from cryptography.x509.oid import NameOID
+  root = pathlib.Path(sys.argv[1])
+  key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+  name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'api.github.com')])
+  now = datetime.datetime.now(datetime.timezone.utc)
+  cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+      .public_key(key.public_key()).serial_number(x509.random_serial_number())
+      .not_valid_before(now - datetime.timedelta(minutes=1))
+      .not_valid_after(now + datetime.timedelta(days=1))
+      .add_extension(x509.SubjectAlternativeName([x509.DNSName('api.github.com')]), critical=False)
+      .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+      .sign(key, hashes.SHA256()))
+  (root / 'reject-cert.pem').write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+  (root / 'reject-key.pem').write_bytes(key.private_bytes(serialization.Encoding.PEM,
+      serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+  context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+  context.load_cert_chain(root / 'reject-cert.pem', root / 'reject-key.pem')
+  def headers(conn):
+      value = b''
+      while b'\r\n\r\n' not in value:
+          chunk = conn.recv(4096)
+          if not chunk: raise ConnectionError('incomplete request')
+          value += chunk
+      return value.decode('latin1')
+  class Handler(socketserver.BaseRequestHandler):
+      def handle(self):
+          if not headers(self.request).startswith('CONNECT api.github.com:443 '):
+              self.request.sendall(b'HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
+              return
+          self.request.sendall(b'HTTP/1.1 200 Connection Established\r\n\r\n')
+          with context.wrap_socket(self.request, server_side=True) as conn:
+              request = headers(conn)
+              assert request.startswith('GET /user/repos?')
+              assert 'authorization: bearer qa-f15-rejected-token' in request.lower()
+              (root / 'reject-observed.json').write_text(json.dumps({'request': 'GET /user/repos', 'fake_token_received': True, 'returned_status': 401}))
+              body = b'{"message":"Bad credentials"}'
+              conn.sendall(b'HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: ' + str(len(body)).encode() + b'\r\nConnection: close\r\n\r\n' + body)
+  with socketserver.ThreadingTCPServer(('127.0.0.1', 0), Handler) as server:
+      (root / 'reject-port').write_text(str(server.server_address[1]))
+      server.serve_forever()
+  PY
+  uv run --quiet python "$F/reject-github.py" "$F" > "$F/reject-log" 2>&1 &
+  REJECT_PID=$!
+  trap 'kill "$REJECT_PID" 2>/dev/null || true; control-agent-server api DELETE /api/settings/secrets/github_token --expect 200 >/dev/null 2>&1 || true; control-agent-server restart --reset-config >/dev/null 2>&1 || true' EXIT
+  for i in $(seq 1 100); do test -s "$F/reject-port" && break; sleep 0.1; done
+  REJECT_PROXY="http://127.0.0.1:$(cat "$F/reject-port")"
+  control-agent-server api PUT /api/settings/secrets --json '{"name":"github_token","value":"qa-f15-rejected-token"}' --expect 200
+  control-agent-server restart --env HTTPS_PROXY="$REJECT_PROXY" --env https_proxy="$REJECT_PROXY" \
+    --env HTTP_PROXY="$REJECT_PROXY" --env http_proxy="$REJECT_PROXY" \
+    --env "SSL_CERT_FILE=$F/reject-cert.pem" --env NO_PROXY=localhost,127.0.0.1 --env no_proxy=localhost,127.0.0.1
+  control-agent-server doctor
+  control-agent-server api GET /api/git/repositories/search --query provider=github --expect 401 \
+    --check detail eq 'GitHub repository search failed' --check . not-contains qa-f15-rejected-token --save F15.repo-search-rejected-token/rejected
+  control-agent-server assert --json "$F/reject-observed.json" --check request eq 'GET /user/repos' \
+    --check fake_token_received eq true --check returned_status eq 401
+  cp "$F/reject-observed.json" "$AGENT_SERVER_VERIFY_RUN/evidence/F15.repo-search-rejected-token/provider.json"
+  control-agent-server api DELETE /api/settings/secrets/github_token --expect 200
+  kill "$REJECT_PID"
+  wait "$REJECT_PID" || true
+  control-agent-server restart --reset-config
+  control-agent-server doctor
+  trap - EXIT
+  ```
+  The fixture confirms that the fake credential reached the provider and that
+  it returned 401. The live server preserves that status and returns only its
+  generic error. Source policy also preserves 403, maps other 4xx to 400 and
+  5xx to 502; connection failure and timeout are covered above.
 
 ## Gotchas
 

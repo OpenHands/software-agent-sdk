@@ -2,22 +2,63 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
+from typing import Any, Literal
+from urllib.parse import parse_qsl
+
 import httpx
 from fastmcp.client.auth import OAuth
 from mcp.client.auth.utils import (
     build_oauth_authorization_server_metadata_discovery_urls,
     build_protected_resource_metadata_discovery_urls,
+    create_client_registration_request,
     create_oauth_metadata_request,
     handle_auth_metadata_response,
     handle_protected_resource_response,
 )
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.exceptions import MCPError
 
 
 logger = get_logger(__name__)
 
 _DISCOVERY_TIMEOUT = httpx.Timeout(10.0)
+
+_TokenEndpointAuthMethod = Literal["none", "client_secret_post", "client_secret_basic"]
+
+# Most preferred first: a public client is never issued a secret to keep.
+_TOKEN_ENDPOINT_AUTH_METHODS: tuple[_TokenEndpointAuthMethod, ...] = (
+    "none",
+    "client_secret_post",
+    "client_secret_basic",
+)
+
+
+def _preferred_token_endpoint_auth_method(
+    supported: list[str] | None,
+) -> _TokenEndpointAuthMethod | None:
+    for method in _TOKEN_ENDPOINT_AUTH_METHODS:
+        if method in (supported or ()):
+            return method
+    return None
+
+
+def _without_client_id_when_basic(request: httpx.Request) -> httpx.Request:
+    """Drop ``client_id`` from the form body of a Basic-authenticated request.
+
+    RFC 6749 section 2.3.1 forbids combining the ``Authorization`` header with
+    body credentials, and strict servers reject the mix as using multiple
+    authentication methods.
+    """
+    if not request.headers.get("Authorization", "").startswith("Basic "):
+        return request
+    data = dict(parse_qsl(request.content.decode(), keep_blank_values=True))
+    data.pop("client_id", None)
+    headers = request.headers.copy()
+    headers.pop("Content-Length", None)
+    return httpx.Request(request.method, request.url, data=data, headers=headers)
 
 
 class MCPOAuth(OAuth):
@@ -35,12 +76,71 @@ class MCPOAuth(OAuth):
     ``_refresh_token`` runs under upstream's context lock after
     ``_initialize()`` restored the stored tokens and expiry, so discovery only
     happens when a refresh is actually about to be attempted.
+
+    Dynamic client registration asks for a token endpoint auth method the
+    authorization server advertises, preferring a public client. Upstream
+    sends none, so servers fall back to the RFC 7591 default
+    ``client_secret_basic`` and issue a secret. Token requests that do use
+    Basic auth leave ``client_id`` out of the body, which upstream always
+    includes and which strict servers reject.
     """
+
+    async def async_auth_flow(
+        self, request: httpx.Request
+    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        async with aclosing(super().async_auth_flow(request)) as flow:
+            outgoing = await anext(flow)
+            while True:
+                response = yield self._with_supported_auth_method(outgoing)
+                try:
+                    outgoing = await flow.asend(response)
+                except StopAsyncIteration:
+                    return
+
+    def _with_supported_auth_method(self, request: httpx.Request) -> httpx.Request:
+        """Rebuild the registration request around a supported auth method.
+
+        Any other request, an explicitly configured method and a server that
+        advertises no known method all pass through unchanged.
+        """
+        context = self.context
+        if (
+            context.client_info is not None
+            or context.oauth_metadata is None
+            or context.client_metadata.token_endpoint_auth_method is not None
+        ):
+            return request
+        method = _preferred_token_endpoint_auth_method(
+            context.oauth_metadata.token_endpoint_auth_methods_supported
+        )
+        if method is None or request.url != self._registration_request().url:
+            return request
+        context.client_metadata.token_endpoint_auth_method = method
+        return self._registration_request()
+
+    def _registration_request(self) -> httpx.Request:
+        return create_client_registration_request(
+            self.context.oauth_metadata,
+            self.context.client_metadata,
+            self.context.get_authorization_base_url(self.context.server_url),
+        )
+
+    async def _exchange_token_authorization_code(
+        self,
+        auth_code: str,
+        code_verifier: str,
+        *,
+        token_data: dict[str, Any] | None = None,
+    ) -> httpx.Request:
+        request = await super()._exchange_token_authorization_code(
+            auth_code, code_verifier, token_data=token_data
+        )
+        return _without_client_id_when_basic(request)
 
     async def _refresh_token(self) -> httpx.Request:
         if self.context.oauth_metadata is None:
             await self._discover_oauth_metadata()
-        return await super()._refresh_token()
+        return _without_client_id_when_basic(await super()._refresh_token())
 
     async def _discover_oauth_metadata(self) -> None:
         """Populate the resource and authorization-server metadata.
@@ -83,3 +183,21 @@ class MCPOAuth(OAuth):
                 server_url,
                 exc,
             )
+
+
+class NonInteractiveMCPOAuth(MCPOAuth):
+    """``MCPOAuth`` that only uses the stored tokens and refreshes them.
+
+    When no stored token is usable, FastMCP starts a new authorization: it
+    preflights the authorization URL with a loopback redirect URI, and if the
+    server rejects that URI it clears the token storage and registers a new
+    client before opening a browser. Nobody can complete that flow for an
+    unattended client, so this one fails the connection instead and leaves
+    the stored state for the user to replace by authorizing again.
+    """
+
+    async def redirect_handler(self, authorization_url: str) -> None:  # noqa: ARG002
+        raise MCPError(
+            f"MCP server {self.mcp_url} must be authorized again: its stored "
+            "OAuth tokens are missing or could not be refreshed."
+        )

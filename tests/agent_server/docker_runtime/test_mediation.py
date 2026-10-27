@@ -52,7 +52,7 @@ async def _forward(
 ) -> tuple[dict[str, Any], Any, RuntimeIdentity]:
     registry = cast(DockerConversationRegistry, SimpleNamespace(config=runtime_config))
     body = request.model_dump(mode="json", context={"expose_secrets": True})
-    payload, launched = await _prepare_forward(body, registry, existing=existing)
+    payload, launched, _ = await _prepare_forward(body, registry, existing=existing)
     provisioning = RuntimeProvisioningStore(runtime_config)
     identity = provisioning.create(uuid4())
     return payload(identity.cipher), launched, identity
@@ -147,7 +147,7 @@ async def test_every_encrypted_field_reaches_the_container_decryptable(
     body = request.model_dump(mode="json", context={"cipher": runtime_config.cipher})
     registry = cast(DockerConversationRegistry, SimpleNamespace(config=runtime_config))
 
-    payload, _ = await _prepare_forward(body, registry, existing=False)
+    payload, _, _ = await _prepare_forward(body, registry, existing=False)
     identity = RuntimeProvisioningStore(runtime_config).create(uuid4())
     received = StartConversationRequest.model_validate(
         payload(identity.cipher), context={"cipher": identity.cipher}

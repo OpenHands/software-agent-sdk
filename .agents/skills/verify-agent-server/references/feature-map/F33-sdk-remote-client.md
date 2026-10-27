@@ -31,7 +31,7 @@ Routes: none
 - `F33.workspace-settings`: `get_llm()` resolves the server's active LLM profile with a usable key, `get_llm(profile_name=...)` a named one (unknown names raise `FileNotFoundError`), `get_secrets()` returns `LookupSecret` references without values, and `get_mcp_config()` is empty on a fresh server.
 - `F33.async-workspace`: `AsyncRemoteWorkspace` runs a command, starts, reads and stops a background command, uploads and downloads a file, reads git changes, a git diff and server info, and closes its client on context exit.
 - `F33.workspace-runtime-scope`: a `RemoteWorkspace(runtime_conversation_id=...)` routes through `/api/conversations/{id}/...`: commands default to the conversation's workspace and land in its own bash history, paths outside that workspace are refused with 422, and an unknown conversation gives 404.
-- `F33.workspace-runtime-lifecycle`: `get_runtime_session_key()` and `release_runtime()` hand out a scoped worker key and stop a conversation's runtime on a server with a Docker conversation runtime.
+- `F33.workspace-runtime-lifecycle`: synchronous and asynchronous `get_runtime_session_key()` obtain a distinct worker key that authenticates a real child command; `release_runtime()` removes its container while conversation history stays readable, and reprovision permits the second SDK variant to repeat the lifecycle.
 - `F33.conversation-create`: `Conversation(agent, workspace=RemoteWorkspace)` returns a `RemoteConversation` that creates the server conversation with the agent, working directory, tags and `max_iteration_per_run`; `send_message` stores the message without running and the agent's key is not echoed back.
 - `F33.conversation-create-request`: `RemoteConversation.create(workspace, StartConversationRequest(...))` creates the conversation with the requested id from server-built `agent_settings`, tags and iteration limit, and runs its `initial_message`; repeating the same request returns the same conversation and adds no conversation or message.
 - `F33.conversation-create-profile`: `RemoteConversation.create(workspace, StartConversationRequest(agent_profile_id=...))` builds the agent from a saved agent profile (its LLM profile, tool selection and system message suffix), records the launched profile and runs the `initial_message` to `finished`; `get_secrets(agent_profile_id=...)` returns only the profile's `secret_refs`.
@@ -668,28 +668,96 @@ Preconditions:
   Without `cwd` the scoped command runs in the conversation's workspace; it
   is in the conversation's bash history and not in the host's; the upload and
   the `cwd` outside the workspace are 422, an unknown conversation 404.
-- **Runtime key and release (`F33.workspace-runtime-lifecycle`), blocked.**
-  Needs an Agent Server whose conversation runtime is Docker (`docker` is not
-  available on the machines this map was proven on).
+- **Runtime key and release (`F33.workspace-runtime-lifecycle`).**
+  Needs: `docker`
 
-  Requires: `F33.conversation-create`
+  Pull the selected image first. This uses an isolated Docker-runtime server,
+  the same pinned minimal image and optional `AGENT_SERVER_VERIFY_DOCKER_IMAGE`
+  override as F12. The outer server and SDK use this checkout; the child can
+  be a released image, so both its identity and version are recorded. The
+  placeholder LLM is never invoked.
   ```sh
-  control-agent-server exec --env PYTHONPATH="$F33" --env CID="$IDLE" --save F33.workspace-runtime-lifecycle/probe -- .venv/bin/python - <<'PY'
+  IMAGE=${AGENT_SERVER_VERIFY_DOCKER_IMAGE:-ghcr.io/openhands/agent-server:1.55.1-python-minimal}
+  docker image inspect "$IMAGE" >/dev/null
+  DK=$(control-agent-server launch --new --name f33-docker-lifecycle --print-run \
+    --config-json "$(jq -nc --arg image "$IMAGE" '{conversation_runtime:"docker",conversation_image:$image,enable_browser:false,conversation_container_memory:"1g"}')")
+  trap 'control-agent-server stop --run "$DK" >/dev/null 2>&1 || true' EXIT
+  control-agent-server doctor --run "$DK"
+  control-agent-server exec --run "$DK" --save F33.workspace-runtime-lifecycle/image -- \
+    docker image inspect --format '{{.Id}} {{json .RepoDigests}}' "$IMAGE"
+  RUNTIME_CID=$(control-agent-server api POST /api/conversations --run "$DK" --expect 201 --timeout 180 --field id \
+    --json '{"agent":{"llm":{"model":"openai/qa-no-call","api_key":"qa-placeholder"},"tools":[]},"autotitle":false}' \
+    --save F33.workspace-runtime-lifecycle/create)
+  control-agent-server api POST "/api/conversations/$RUNTIME_CID/events" --run "$DK" --expect 200 --check success eq true \
+    --json '{"role":"user","content":[{"type":"text","text":"QA_F33_RUNTIME_RETAINED"}],"run":false}'
+  RUNTIME_OWNER=$(python3 -c 'import hashlib,sys; r=sys.argv[1]; print(hashlib.sha256(f"{r}/server/workspace/conversations\0{r}/home/.openhands".encode()).hexdigest()[:24])' "$DK")
+  for MODE in sync async; do
+    if [ "$MODE" = async ]; then
+      control-agent-server api POST "/api/conversations/$RUNTIME_CID/runtime/reprovision" --run "$DK" \
+        --expect 200 --check runtime_status eq available --timeout 180 --save F33.workspace-runtime-lifecycle/reprovision
+    fi
+    CONTAINER=$(docker ps -q --filter "label=ai.openhands.runtime-owner=$RUNTIME_OWNER")
+    control-agent-server assert --value "$CONTAINER" --check . matches '^[0-9a-f]{12}$'
+    CHILD_URL="http://$(docker port "$CONTAINER" 8000/tcp)"
+    control-agent-server exec --run "$DK" --env CID="$RUNTIME_CID" --env CHILD_URL="$CHILD_URL" --env MODE="$MODE" \
+      --save "F33.workspace-runtime-lifecycle/$MODE-sdk" -- .venv/bin/python - <<'PY'
+  import asyncio
+  import json
   import os
   import uuid
-  import f33
+  from openhands.sdk.workspace import AsyncRemoteWorkspace, RemoteWorkspace
 
-  ws = f33.workspace("idle", runtime_conversation_id=uuid.UUID(os.environ["CID"]))
-  key = ws.get_runtime_session_key()
-  assert key and key != f33.KEY
-  ws.release_runtime()
-  f33.emit("lifecycle", released=True)
+  parent_key = os.environ["SESSION_API_KEY"]
+  args = dict(host=os.environ["AGENT_SERVER_URL"], api_key=parent_key,
+              working_dir="/workspace", runtime_conversation_id=uuid.UUID(os.environ["CID"]))
+
+  async def asynchronous():
+      async with AsyncRemoteWorkspace(**args) as ws:
+          key = await ws.get_runtime_session_key()
+          assert key and key != parent_key, "Expected a distinct child credential"
+          async with AsyncRemoteWorkspace(host=os.environ["CHILD_URL"], api_key=key,
+                                          working_dir="/workspace") as child:
+              info = await child.get_server_info()
+              result = await child.execute_command("printf qa-f33-runtime-key")
+              assert (result.exit_code, result.stdout) == (0, "qa-f33-runtime-key"), result
+          await ws.release_runtime()
+          return info
+
+  if os.environ["MODE"] == "async":
+      info = asyncio.run(asynchronous())
+  else:
+      with RemoteWorkspace(**args) as ws:
+          key = ws.get_runtime_session_key()
+          assert key and key != parent_key, "Expected a distinct child credential"
+          with RemoteWorkspace(host=os.environ["CHILD_URL"], api_key=key,
+                               working_dir="/workspace") as child:
+              info = child.get_server_info()
+              result = child.execute_command("printf qa-f33-runtime-key")
+              assert (result.exit_code, result.stdout) == (0, "qa-f33-runtime-key"), result
+          ws.release_runtime()
+  print(json.dumps(dict(mode=os.environ["MODE"], distinct_key=True, authenticated_command=True,
+                        released=True, child_info=info)))
   PY
-  control-agent-server api GET "/api/conversations/$IDLE" --expect 200
+    control-agent-server api GET "/api/conversations/$RUNTIME_CID/runtime" --run "$DK" --expect 200 \
+      --check runtime_status eq missing --check can_resume eq true --save "F33.workspace-runtime-lifecycle/$MODE-runtime-missing"
+    control-agent-server api GET "/api/conversations/$RUNTIME_CID" --run "$DK" --expect 200 --quiet \
+      --check id eq "$RUNTIME_CID" --save "F33.workspace-runtime-lifecycle/$MODE-catalog"
+    control-agent-server api GET "/api/conversations/$RUNTIME_CID/events/search" --run "$DK" --expect 200 \
+      --check items.1.llm_message.content.0.text eq QA_F33_RUNTIME_RETAINED --save "F33.workspace-runtime-lifecycle/$MODE-history"
+    control-agent-server api GET "/api/conversations/$RUNTIME_CID/runtime" --run "$DK" --expect 200 \
+      --check runtime_status eq missing --save "F33.workspace-runtime-lifecycle/$MODE-reads-did-not-resume"
+    control-agent-server assert --value "$(docker ps -aq --filter "label=ai.openhands.runtime-owner=$RUNTIME_OWNER")" --check . eq ''
+  done
+  control-agent-server api DELETE "/api/conversations/$RUNTIME_CID" --run "$DK" --expect 200 --save F33.workspace-runtime-lifecycle/delete
+  control-agent-server api GET "/api/conversations/$RUNTIME_CID" --run "$DK" --expect 404
+  control-agent-server stop --run "$DK"
   ```
-  On a Docker-runtime server the scoped key differs from the server key and
-  the release stops the container while the conversation stays readable. On
-  this local runtime the routes do not exist (see Gotchas).
+  Both SDK variants obtain a distinct worker key, authenticate an actual
+  command directly against the child, then release it. After each release
+  its running and stopped containers are absent, while catalog and retained
+  event reads succeed without reprovisioning. The key stays in process memory
+  and is never printed or saved. Local runtime servers lack these lifecycle
+  routes (see Gotchas).
 - **Send and run to completion (`F33.conversation-run`, `F33.conversation-callbacks`, `F33.conversation-stats`).**
   The agent writes a file; the probe counts the events its callback received.
   ```sh
@@ -1053,12 +1121,11 @@ Preconditions:
   stored event in the server's order plus the one full-state snapshot the
   socket sent on connect (never persisted), the 110 messages in order, and
   the first read of each state field equals the server's GET.
-- **Read the state twice (`F33.conversation-state-reread`), known bug.**
-  `RemoteState` validates its cached conversation info on every read, and
-  the discriminated-union validator pops `kind` from the dict it is given
-  (`openhands/sdk/utils/models.py`), so the first read of a polymorphic
-  field strips the cache. The correct behavior asserted here is that a
-  second read returns the same value.
+- **Read the state twice (`F33.conversation-state-reread`).**
+  `RemoteState` validates its cached conversation info on every read, so
+  validating a polymorphic field must not change the dict it is given: the
+  discriminated-union validator (`openhands/sdk/utils/models.py`) copies its
+  input before it removes `kind`, and a second read returns the same value.
 
   Requires: `F33.conversation-attach-large`
   ```sh
@@ -1087,14 +1154,13 @@ Preconditions:
   assert reads["agent"][0] == "Agent" and reads["is_confirmation_mode_active"][0] is True, reads
   f33.emit("reread", reads=reads, stable=all(first == second for first, second in reads.values()))
   PY
-  control-agent-server assert --json "$F33/reread.json" --check stable eq true  # bug: value.reads.confirmation_policy.1 eq 'error: ValidationError' && value.reads.security_analyzer.1 eq NoneType
+  control-agent-server assert --json "$F33/reread.json" --check stable eq true
   ```
   Each field is read on a freshly attached conversation, and every first
-  read is right (control). Today the second read of `confirmation_policy`
-  and `agent` raises `ValidationError` (`Unknown kind ''`), the second read
-  of `security_analyzer` returns `None`, and so the second
-  `is_confirmation_mode_active` is `False`. A full-state socket snapshot or
-  `state.refresh_from_server()` restores the cache until the next read.
+  read is right (control). The second reads return `AlwaysConfirm`,
+  `LLMSecurityAnalyzer` and `Agent` again, and `is_confirmation_mode_active`
+  stays `True`, without a socket snapshot or `state.refresh_from_server()`
+  in between.
 - **Ask, generate and set a title (`F33.conversation-ask-title`).**
 
   Requires: `F33.conversation-run`
@@ -2054,12 +2120,6 @@ Preconditions:
   without waiting for the client's handler. The client learns of the call
   only through callbacks, so a client tool called while the socket is down
   is missed by the handler (the reconnect gap above).
-- `RemoteState`'s polymorphic readers (`confirmation_policy`,
-  `security_analyzer`, `agent`) validate the cached conversation info in
-  place, so only the first read after a refresh is right
-  (`F33.conversation-state-reread`, known bug); call
-  `state.refresh_from_server()` before each read, or read once and keep the
-  value. `RemoteConversation.agent` (the attribute) is unaffected.
 - With a `stream=True` LLM the events socket also carries
   `StreamingDeltaEvent` frames: callbacks get them, the server stores none,
   and they stay out of `state.events` (`F33.conversation-streaming-state`);
