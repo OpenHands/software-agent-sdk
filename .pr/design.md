@@ -92,6 +92,17 @@ a version compare would reject a working endpoint.
   if `close()` itself is cancelled mid-teardown, it aborts and leaves the
   release to the worker/interrupt done callbacks so the permit is not returned
   under still-live work.
+- **A timed-out drain parks the rest of teardown.** The drain wait is bounded
+  (`DIRECT_TOOL_DRAIN_TIMEOUT_SECONDS`), because a command that ignores the
+  interrupt must not hold `close()` forever. On timeout the permit and the
+  conversation are *not* released: teardown hands the remainder to a
+  service-owned continuation that awaits the outstanding worker/interrupt
+  futures and only then closes the conversation and returns the permit. So a
+  worker that outlives the drain still counts against `max_concurrent_runs`
+  and keeps its executor to itself, and teardown still completes once the work
+  really stops. `close()` joins that continuation, so it returns with the
+  conversation fully torn down, which is what its callers (delete, eviction,
+  shutdown) rely on; a retry `close()` joins it too instead of draining twice.
 - **Teardown survives cancellation of the caller.** `close()` hands the teardown
   to a task the service owns and awaits it through `asyncio.shield`, so
   cancelling the caller (a cancelled DELETE, say) cannot abort teardown
@@ -202,6 +213,14 @@ i.e. pre-existing drift, not from this change.
   mid-worker and asserts teardown still finishes on its own — the conversation
   and executor are closed and the lease is released — and fails (times out) on
   the pre-fix head.
+- The bounded-drain timeouts have their own regressions:
+  `test_worker_timeout_keeps_permit_until_the_worker_stops` and
+  `test_interrupt_timeout_keeps_permit_until_the_interrupt_stops` hold a worker
+  (and, in the second, its offloaded interrupt) past a shortened drain and
+  assert a competing call is still 429, the conversation is still open and
+  `close()` has not returned; releasing the work lets `close()` finish and the
+  same call be admitted. Both fail (hang) on the pre-fix head, where the
+  timeout released the permit and closed the conversation under the live work.
 - `uv run pytest tests/agent_server tests/sdk/conversation tests/tools/terminal`
   -> passes locally (378 agent-server, 107 sdk/terminal) and in CI.
 - `npm run check:agent-server-api` -> clean; `ruff check` / `ruff format --check`
