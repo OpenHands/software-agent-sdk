@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import platform
 import signal
 import sys
 import tarfile
@@ -118,9 +119,44 @@ class _ArtifactHandler(BaseHTTPRequestHandler):
 
 
 requires_linux_backend = pytest.mark.skipif(
-    CanvasExtensionBackendManager.current_platform() is None,
+    sys.platform != "linux" or CanvasExtensionBackendManager.current_platform() is None,
     reason="backend artifact fixture only supports Linux amd64/arm64",
 )
+
+
+@pytest.mark.parametrize(
+    ("system", "machine", "expected"),
+    [
+        ("Linux", "x86_64", "linux-amd64"),
+        ("Linux", "amd64", "linux-amd64"),
+        ("Linux", "aarch64", "linux-arm64"),
+        ("Linux", "arm64", "linux-arm64"),
+        ("Windows", "AMD64", "windows-amd64"),
+        ("Windows", "x86_64", "windows-amd64"),
+        ("Windows", "ARM64", None),
+        ("Darwin", "x86_64", None),
+        ("Linux", "ppc64le", None),
+    ],
+)
+def test_current_platform_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+    system: str,
+    machine: str,
+    expected: str | None,
+):
+    monkeypatch.setattr(platform, "system", lambda: system)
+    monkeypatch.setattr(platform, "machine", lambda: machine)
+    assert CanvasExtensionBackendManager.current_platform() == expected
+
+
+def test_path_under_prefix_does_not_match_sibling_names(tmp_path: Path):
+    from openhands.agent_server.canvas_extensions.windows_job import path_under_prefix
+
+    root = tmp_path / "artifacts" / "my-extension"
+    root.mkdir(parents=True)
+    assert path_under_prefix(str(root / "sha" / "server"), root)
+    sibling = tmp_path / "artifacts" / "my-extension-other"
+    assert not path_under_prefix(str(sibling), root)
 
 
 @pytest.mark.asyncio
@@ -128,7 +164,7 @@ requires_linux_backend = pytest.mark.skipif(
     CanvasExtensionBackendManager.current_platform() is not None,
     reason="backend artifacts are supported on this platform",
 )
-async def test_backend_is_unsupported_on_non_linux_platform(tmp_path: Path):
+async def test_backend_is_unsupported_on_unknown_platform(tmp_path: Path):
     source = _write_backend_extension(tmp_path / "source" / "my-extension")
     installed_dir = tmp_path / "installed"
     install_canvas_extension(str(source), installed_dir=installed_dir)

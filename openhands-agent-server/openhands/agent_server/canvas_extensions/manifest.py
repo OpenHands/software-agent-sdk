@@ -90,7 +90,7 @@ class CanvasExtensionContributes(BaseModel):
         return v
 
 
-BackendPlatform = Literal["linux-amd64", "linux-arm64"]
+BackendPlatform = Literal["linux-amd64", "linux-arm64", "windows-amd64"]
 
 
 class CanvasExtensionBackendArtifact(BaseModel):

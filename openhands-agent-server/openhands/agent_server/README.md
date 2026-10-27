@@ -332,6 +332,10 @@ without this block remain browser-only and require no lifecycle calls.
       "linux-arm64": {
         "path": "backend/linux-arm64.tar.gz",
         "sha256": "<64 lowercase hex characters>"
+      },
+      "windows-amd64": {
+        "path": "backend/windows-amd64.tar.gz",
+        "sha256": "<64 lowercase hex characters>"
       }
     },
     "argv": [
@@ -370,18 +374,30 @@ client must call `prepare` and then `start`, each with the revision returned by
 - `DELETE .../backend/data`
 
 Status is one of `missing`, `stopped`, `starting`, `ready`, `unhealthy`, or
-`unsupported`. Linux amd64 and arm64 are supported when the matching artifact
-is declared. The server runs one owned process group per installed App, drains
-bounded logs continuously, and stops it on disable, uninstall, failed startup,
-or server shutdown. Disable and uninstall preserve mutable data; only the
-separate data endpoint deletes it.
+`unsupported`. Linux amd64, Linux arm64, and Windows x64 (`windows-amd64`) are
+supported when the matching artifact is declared. Other hosts, including
+Windows ARM, report `unsupported`. The backend process is independent of
+whether the App page is mounted: navigating away does not stop it.
+
+On Linux the server owns one process group per installed App. On Windows it
+owns the tree with a Job Object created with `KILL_ON_JOB_CLOSE`. In both
+cases it drains bounded logs continuously and stops the tree on disable,
+uninstall, failed startup, or server shutdown. If the Agent Server process
+exits without teardown on Windows, closing the job handle kills remaining
+descendants automatically; after restart, `reap_orphans` drops stale records
+and only signals a leftover process whose start time and image/command line
+still identify it as that App's backend (never a PID match alone). Disable and
+uninstall preserve mutable data; only the separate data endpoint deletes it.
 
 Backends receive no ambient agent-server environment. A manifest may inherit
 only the supported non-credential variables (`LANG`, `LC_ALL`, `LC_CTYPE`,
-`PATH`, `TMPDIR`, and `TZ`). Backend subprocesses are owned and constrained by
-these launch rules, but they are not OS-isolated; use a sandboxed Agent Server
-when operating untrusted code. Authenticated HTTP/WebSocket routing to a ready
-backend is intentionally outside this lifecycle contract.
+`PATH`, `TMPDIR`, and `TZ`). On Windows the process also receives the host
+`SYSTEMROOT` / `WINDIR` / `COMSPEC` family and a sandboxed `USERPROFILE` /
+`TEMP` under the backend data dir, which Win32 processes need to start.
+Backend subprocesses are owned and constrained by these launch rules, but they
+are not OS-isolated; use a sandboxed Agent Server when operating untrusted
+code. Authenticated HTTP/WebSocket routing to a ready backend is intentionally
+outside this lifecycle contract.
 
 ## API Documentation
 

@@ -324,6 +324,46 @@ jobs:
                   path: coverage-windows.dat
                   if-no-files-found: warn
 
+    windows-agent-server-backend-tests:
+        runs-on: windows-latest
+        timeout-minutes: 25
+        env:
+            PYTHONUTF8: '1'
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7.0.1
+              with: {fetch-depth: 0}
+
+            - name: Detect Agent Server backend lifecycle changes
+              id: changed
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+              with:
+                  files: |
+                      openhands-agent-server/**
+                      tests/agent_server/canvas_extensions/**
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
+            - name: Install deps
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Run Windows Agent Server backend lifecycle tests
+              if: steps.changed.outputs.any_changed == 'true'
+              run: |
+                  $env:CI = 'true'
+                  uv run python -m pytest -vvs `
+                    tests/agent_server/canvas_extensions/test_canvas_extension_backend.py `
+                    tests/agent_server/canvas_extensions/test_canvas_extension_backend_windows.py `
+                    tests/agent_server/canvas_extensions/test_canvas_extensions_manifest.py
 
     agent-server-tests:
         runs-on: blacksmith-2vcpu-ubuntu-2404

@@ -167,6 +167,47 @@ def test_manifest_round_trips_through_json_dict():
     assert manifest.model_dump() == payload
 
 
+def test_backend_artifacts_accept_windows_amd64_additively():
+    checksum = "a" * 64
+    artifact = {"path": "backend/tool.tar.gz", "sha256": checksum}
+    linux_only = _manifest(
+        backend={
+            "schema_version": 1,
+            "artifacts": {"linux-amd64": artifact},
+            "argv": ["{artifact_dir}/server"],
+        }
+    )
+    assert linux_only.backend is not None
+    assert set(linux_only.backend.artifacts) == {"linux-amd64"}
+
+    windows = _manifest(
+        backend={
+            "schema_version": 1,
+            "artifacts": {
+                "linux-amd64": artifact,
+                "linux-arm64": artifact,
+                "windows-amd64": artifact,
+            },
+            "argv": ["{artifact_dir}/server.exe", "--port={port}"],
+        }
+    )
+    assert windows.backend is not None
+    assert set(windows.backend.artifacts) == {
+        "linux-amd64",
+        "linux-arm64",
+        "windows-amd64",
+    }
+
+    with pytest.raises(ValidationError):
+        _manifest(
+            backend={
+                "schema_version": 1,
+                "artifacts": {"darwin-amd64": artifact},
+                "argv": ["{artifact_dir}/server"],
+            }
+        )
+
+
 def test_backend_artifact_accepts_local_or_remote_source():
     checksum = "a" * 64
     local = CanvasExtensionBackendArtifact(path="backend/tool.tar.gz", sha256=checksum)

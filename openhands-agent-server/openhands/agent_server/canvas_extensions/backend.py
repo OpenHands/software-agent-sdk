@@ -1,4 +1,12 @@
-"""Owned lifecycle for optional Canvas App backend subprocesses."""
+"""Owned lifecycle for optional Canvas App backend subprocesses.
+
+Linux hosts own each backend as a POSIX process group. Native Windows x64
+hosts own the tree with a Job Object (see ``windows_job``): stop / disable /
+uninstall / shutdown terminate the job, and an Agent Server crash closes the
+job handle so Windows kills remaining descendants. Recovery after restart
+still verifies process identity and never signals a PID merely because it
+matches a persisted run record.
+"""
 
 import asyncio
 import gzip
@@ -8,6 +16,7 @@ import platform
 import shutil
 import signal
 import socket
+import subprocess
 import tarfile
 import tempfile
 import time
@@ -31,6 +40,19 @@ from openhands.agent_server.canvas_extensions.manifest import (
     CanvasExtensionBackend,
     CanvasExtensionBackendArtifact,
     CanvasExtensionManifest,
+)
+from openhands.agent_server.canvas_extensions.windows_job import (
+    WindowsJob,
+    base_environment as windows_base_environment,
+    command_mentions_prefix,
+    path_under_prefix,
+    pid_alive as windows_pid_alive,
+    process_command_line,
+    process_image_path,
+    process_start_time as windows_process_start_time,
+    terminate_pid as windows_terminate_pid,
+    terminate_tree as windows_terminate_tree,
+    try_assign_job,
 )
 from openhands.sdk.utils.path import get_user_persistence_dir
 
@@ -89,7 +111,12 @@ class _PreparedState(BaseModel):
 
 
 class _RunRecord(BaseModel):
-    """Identifies a backend process group and the server that started it."""
+    """Identifies a backend process tree and the server that started it.
+
+    ``pgid`` is the POSIX process-group id (the session leader pid when
+    started with ``start_new_session=True``). On Windows it is the leader
+    pid of the Job Object that owns the tree.
+    """
 
     name: str
     pgid: int
@@ -99,7 +126,14 @@ class _RunRecord(BaseModel):
 
 
 def _process_start_time(pid: int) -> int | None:
-    """Return a process's start time in clock ticks since boot (Linux)."""
+    """Return a process identity timestamp that is stable for this boot.
+
+    Linux uses ``/proc/<pid>/stat`` start time in clock ticks. Windows uses
+    ``GetProcessTimes`` creation FILETIME. Either value plus the pid is the
+    identity ``reap_orphans`` compares against a persisted run record.
+    """
+    if os.name == "nt":
+        return windows_process_start_time(pid)
     try:
         stat = Path(f"/proc/{pid}/stat").read_text()
     except OSError:
@@ -123,6 +157,7 @@ class _Runtime:
         # status()/stop()/logs() while a backend is coming up.
         self.start_task: asyncio.Task[None] | None = None
         self.stop_requested = asyncio.Event()
+        self.job: WindowsJob | None = None
 
 
 class CanvasExtensionBackendManager:
@@ -172,13 +207,16 @@ class CanvasExtensionBackendManager:
 
     @staticmethod
     def current_platform() -> BackendPlatform | None:
-        if platform.system() != "Linux":
-            return None
+        system = platform.system()
         machine = platform.machine().lower()
-        if machine in {"x86_64", "amd64"}:
-            return "linux-amd64"
-        if machine in {"aarch64", "arm64"}:
-            return "linux-arm64"
+        if system == "Linux":
+            if machine in {"x86_64", "amd64"}:
+                return "linux-amd64"
+            if machine in {"aarch64", "arm64"}:
+                return "linux-arm64"
+            return None
+        if system == "Windows" and machine in {"amd64", "x86_64"}:
+            return "windows-amd64"
         return None
 
     def _backend_parts(
@@ -546,6 +584,8 @@ class CanvasExtensionBackendManager:
             if name in os.environ
         }
         environment["HOME"] = str(home)
+        if os.name == "nt":
+            environment.update(windows_base_environment(home))
         return environment
 
     @staticmethod
@@ -698,19 +738,36 @@ class CanvasExtensionBackendManager:
                 runtime.logs_truncated = False
                 runtime.stop_requested = asyncio.Event()
                 try:
-                    runtime.process = await asyncio.create_subprocess_exec(
-                        *self._expand_argv(backend, port, data_dir, artifact_dir),
-                        cwd=package_root,
-                        env=self._environment(backend, data_dir),
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        start_new_session=True,
-                    )
+                    argv = self._expand_argv(backend, port, data_dir, artifact_dir)
+                    env = self._environment(backend, data_dir)
+                    if os.name == "nt":
+                        flags = subprocess.CREATE_NEW_PROCESS_GROUP
+                        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+                            flags |= subprocess.CREATE_NO_WINDOW
+                        runtime.process = await asyncio.create_subprocess_exec(
+                            *argv,
+                            cwd=package_root,
+                            env=env,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            creationflags=flags,
+                        )
+                    else:
+                        runtime.process = await asyncio.create_subprocess_exec(
+                            *argv,
+                            cwd=package_root,
+                            env=env,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            start_new_session=True,
+                        )
                 except Exception as exc:
                     runtime.state = "unhealthy"
                     runtime.detail = str(exc)
                     await self._terminate_runtime(runtime)
                     return self._status_unlocked(name)
+                if os.name == "nt" and runtime.process.pid is not None:
+                    runtime.job = try_assign_job(runtime.process.pid)
                 self._write_run_record(name, runtime.process.pid)
                 runtime.drain_tasks = [
                     asyncio.create_task(
@@ -757,9 +814,13 @@ class CanvasExtensionBackendManager:
 
     def _runtime_group_alive(self, runtime: _Runtime) -> bool:
         process = runtime.process
-        return process is not None and (
-            process.returncode is None or self._group_alive(process.pid)
-        )
+        if process is None:
+            return False
+        if os.name == "nt":
+            if runtime.job is not None and runtime.job.active_processes() > 0:
+                return True
+            return process.returncode is None or windows_pid_alive(process.pid)
+        return process.returncode is None or self._group_alive(process.pid)
 
     async def _wait_for_group_exit(self, pgid: int, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
@@ -775,6 +836,9 @@ class CanvasExtensionBackendManager:
         if process is None:
             return
         pgid = process.pid
+        if os.name == "nt":
+            await self._terminate_windows_runtime(runtime)
+            return
         # Signal the whole group and wait for the *group* to drain, not just the
         # leader: a backend may fork descendants, and one that outlives (or is
         # forked just after) the leader keeps the group alive. Escalating only
@@ -793,6 +857,29 @@ class CanvasExtensionBackendManager:
             await process.wait()
         await self._finish_runtime(runtime)
         self._run_record_path(pgid).unlink(missing_ok=True)
+        runtime.process = None
+        runtime.port = None
+
+    async def _terminate_windows_runtime(self, runtime: _Runtime) -> None:
+        process = runtime.process
+        if process is None:
+            return
+        pid = process.pid
+        job = runtime.job
+        runtime.job = None
+        if job is not None:
+            job.terminate()
+            job.close()
+        else:
+            windows_terminate_tree(pid)
+        if process.returncode is None:
+            try:
+                await asyncio.wait_for(process.wait(), timeout=_STOP_TIMEOUT_SECONDS)
+            except TimeoutError:
+                windows_terminate_pid(pid)
+                await process.wait()
+        await self._finish_runtime(runtime)
+        self._run_record_path(pid).unlink(missing_ok=True)
         runtime.process = None
         runtime.port = None
 
@@ -820,14 +907,21 @@ class CanvasExtensionBackendManager:
     def _is_recorded_backend(self, record: _RunRecord) -> bool:
         if _process_start_time(record.pgid) != record.start_time:
             return False
+        artifact_root = self.artifacts_dir / record.name
+        if os.name == "nt":
+            image = process_image_path(record.pgid)
+            if image and path_under_prefix(image, artifact_root):
+                return True
+            command = process_command_line(record.pgid)
+            return bool(command and command_mentions_prefix(command, artifact_root))
         try:
             cmdline = Path(f"/proc/{record.pgid}/cmdline").read_bytes()
         except OSError:
             return False
-        prefix = f"{(self.artifacts_dir / record.name).resolve()}/"
         return any(
-            argument.decode(errors="replace").startswith(prefix)
+            path_under_prefix(argument.decode(errors="replace"), artifact_root)
             for argument in cmdline.split(b"\0")
+            if argument
         )
 
     async def reap_orphans(self) -> None:
@@ -835,6 +929,12 @@ class CanvasExtensionBackendManager:
 
         Call before serving requests: the in-memory runtimes are the only view
         `status`, `start` and `delete_data` have of a running backend.
+
+        On Windows, Job Objects with ``KILL_ON_JOB_CLOSE`` usually already
+        destroyed the tree when the previous server exited. This still walks
+        surviving records, verifies ownership (start time + image/command line
+        under the app's artifacts, never PID equality alone), and terminates
+        only a confirmed leftover tree.
         """
         for path in sorted(self.run_dir.glob("*.json")):
             try:
@@ -845,12 +945,22 @@ class CanvasExtensionBackendManager:
             if _process_start_time(record.server_pid) == record.server_start_time:
                 continue  # Its server is still running and owns it.
             if self._is_recorded_backend(record):
-                self._signal_group(record.pgid, signal.SIGTERM)
-                if not await self._wait_for_group_exit(
-                    record.pgid, _STOP_TIMEOUT_SECONDS
-                ):
-                    self._signal_group(record.pgid, signal.SIGKILL)
-                    await self._wait_for_group_exit(record.pgid, _STOP_TIMEOUT_SECONDS)
+                if os.name == "nt":
+                    windows_terminate_tree(record.pgid)
+                    deadline = time.monotonic() + _STOP_TIMEOUT_SECONDS
+                    while (
+                        windows_pid_alive(record.pgid) and time.monotonic() < deadline
+                    ):
+                        await asyncio.sleep(0.05)
+                else:
+                    self._signal_group(record.pgid, signal.SIGTERM)
+                    if not await self._wait_for_group_exit(
+                        record.pgid, _STOP_TIMEOUT_SECONDS
+                    ):
+                        self._signal_group(record.pgid, signal.SIGKILL)
+                        await self._wait_for_group_exit(
+                            record.pgid, _STOP_TIMEOUT_SECONDS
+                        )
             path.unlink(missing_ok=True)
 
     def has_running_backends(self) -> bool:
