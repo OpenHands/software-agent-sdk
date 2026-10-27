@@ -4,6 +4,7 @@ This validates RemoteConversation against actual REST + WebSocket endpoints,
 while keeping the LLM deterministic via monkeypatching.
 """
 
+import io
 import json
 import os
 import shutil
@@ -12,6 +13,7 @@ import tempfile
 import textwrap
 import threading
 import time
+import zipfile
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -31,6 +33,10 @@ from pydantic import SecretStr
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect
 
+from openhands.agent_server import (
+    config as config_module,
+    conversation_service as service_module,
+)
 from openhands.agent_server.__main__ import preload_modules
 from openhands.agent_server.config import load_config
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
@@ -382,6 +388,40 @@ def test_health_endpoints_return_ok_json(server_env):
             response = client.get(f"{server_env['host']}{endpoint}", timeout=1.0)
             assert response.status_code == 200
             assert response.json() == {"status": "ok"}
+
+
+def test_trajectory_downloads_are_independent(tmp_path, monkeypatch):
+    monkeypatch.setattr(config_module, "_default_config", None)
+    monkeypatch.setattr(service_module, "_conversation_service", None)
+    with live_server_env(tmp_path, monkeypatch) as server_env:
+        agent = Agent(
+            llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+            tools=[],
+        )
+        payload = {
+            "agent": agent.model_dump(mode="json", context={"expose_secrets": True}),
+            "workspace": {"working_dir": str(server_env["workspace_path"])},
+        }
+        with httpx.Client(base_url=server_env["host"]) as client:
+            start = client.post("/api/conversations", json=payload, timeout=10.0)
+            start.raise_for_status()
+            conversation_id = UUID(start.json()["id"])
+            download_path = f"/api/file/download-trajectory/{conversation_id}"
+            downloads = [client.get(download_path) for _ in range(5)]
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                downloads.extend(
+                    pool.map(lambda _: client.get(download_path), range(24))
+                )
+            for download in downloads:
+                download.raise_for_status()
+                with zipfile.ZipFile(io.BytesIO(download.content)) as archive:
+                    assert archive.testzip() is None
+                    assert (
+                        f"{conversation_id.hex}/base_state.json" in archive.namelist()
+                    )
+            assert not list(
+                (server_env["workspace_path"].parent / "conversations").glob("*.zip*")
+            )
 
 
 @pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix sockets")
