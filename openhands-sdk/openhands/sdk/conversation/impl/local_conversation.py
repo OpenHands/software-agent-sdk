@@ -16,7 +16,7 @@ from openhands.sdk.context.memory import load_memory
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
-from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.event_store import ROOT_PARENT_ID, EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
@@ -172,9 +172,16 @@ def _is_acp_prompt_message(event: Event) -> TypeGuard[MessageEvent]:
     )
 
 
-def _copy_event_for_fork(event: Event) -> Event:
+def _copy_event_for_fork(event: Event, source: EventLog) -> Event:
     # Mirrors persisted event loading and skips runtime-only fields like executors.
-    return Event.model_validate_json(event.model_dump_json(exclude_none=True))
+    copied = Event.model_validate_json(event.model_dump_json(exclude_none=True))
+    parent_id = copied.parent_id
+    if parent_id is None or parent_id == ROOT_PARENT_ID or parent_id in source:
+        return copied
+    # The parent's file was lost from the source log: link the copy to the
+    # event the source's own branch walk bridges to instead.
+    bridged = source._effective_parent_id(source.get_index(event.id), event)
+    return copied.model_copy(update={"parent_id": bridged})
 
 
 def _same_llm_config(a: LLM, b: LLM) -> bool:
@@ -939,7 +946,9 @@ class LocalConversation(BaseConversation):
                 fork_leaf = self._state.leaf_event_id
 
             for event in source_events:
-                fork_conv._state.events.append(_copy_event_for_fork(event))
+                fork_conv._state.events.append(
+                    _copy_event_for_fork(event, self._state.events)
+                )
             fork_conv._state.leaf_event_id = fork_leaf
             # A full fork inherits the source's empty-HEAD state; a branch slice
             # roots HEAD at a real event (from_event_id), so it is never empty.

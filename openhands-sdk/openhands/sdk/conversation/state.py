@@ -297,6 +297,28 @@ class ConversationState(OpenHandsModel):
                 return self._events.get_id(i)
         return None
 
+    def _repair_missing_leaf(self) -> bool:
+        """Move a persisted HEAD whose event file was lost onto a surviving event.
+
+        The lost event held its own parent, so the branch it was on cannot be
+        recovered; HEAD falls back to the lineage rule (the last real event, or
+        no HEAD for an empty log), and the warning says so. Returns whether
+        HEAD was moved.
+        """
+        lost = self.leaf_event_id
+        if lost is None or lost in self._events:
+            return False
+        self.leaf_event_id = None
+        self.leaf_event_id = self._resolve_active_leaf()
+        logger.warning(
+            "HEAD event '%s' is missing from the event log (its file was lost); "
+            "moved HEAD to '%s', the last surviving event. If HEAD was on "
+            "another branch, navigate back to it.",
+            lost,
+            self.leaf_event_id,
+        )
+        return True
+
     def active_branch(self, limit: int | None = None) -> list[Event]:
         """Raw events on the active branch (``path_to_root(leaf)``), root-first.
 
@@ -548,6 +570,7 @@ class ConversationState(OpenHandsModel):
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
             state._cipher = cipher
+            head_repaired = state._repair_missing_leaf()
 
             # Cold-load: rebuild the cached view with full property
             # enforcement — persisted events may come from an older code
@@ -556,6 +579,8 @@ class ConversationState(OpenHandsModel):
 
             # Commit runtime-provided values (may autosave)
             state._autosave_enabled = True
+            if head_repaired:  # persist it so the next load does not repeat it
+                state._save_base_state(file_store)
             # Agent: base_state.json is the single source of truth. When the
             # caller does not supply an agent (``agent is None``), keep the
             # persisted one untouched — this is what lets a persisted
