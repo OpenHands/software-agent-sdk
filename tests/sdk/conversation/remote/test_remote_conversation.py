@@ -1586,6 +1586,42 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    def test_run_waits_through_pausing_snapshot(self, mock_ws_client):
+        conversation_id = str(uuid.uuid4())
+        client = self.setup_mock_client(conversation_id)
+        original = client.request.side_effect
+        polls = []
+        started = False
+        mock_ws_client.return_value = Mock()
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        callback = mock_ws_client.call_args.kwargs["callback"]
+
+        def respond(method, url, **kwargs):
+            nonlocal started
+            response = original(method, url, **kwargs)
+            if method == "POST" and url.endswith("/run"):
+                started = True
+            if (
+                started
+                and method == "GET"
+                and url == f"/api/conversations/{conversation_id}"
+            ):
+                status = "pausing" if not polls else "paused"
+                polls.append(status)
+                response.json.return_value["execution_status"] = status
+                callback(self.full_state_event(status))
+            return response
+
+        client.request.side_effect = respond
+        try:
+            conversation.run(blocking=True, poll_interval=0.01, timeout=2)
+            assert polls == ["pausing", "paused"]
+        finally:
+            conversation.close()
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_remote_conversation_run_rest_hard_fallback_when_ws_silent(
         self, mock_ws_client
     ):
