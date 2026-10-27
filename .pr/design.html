@@ -1,424 +1,50 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pending conversation pauses — fork review</title>
+<title>Pending pauses — fork review</title>
 <style>
-:root{--fg:#1a1a1a;--muted:#5a5a5a;--subtle:#89897e;--bg:#fdfdfb;--card:#fff;--accent:#2b4eaa;--accent-soft:#e6ecfa;--rule:#e2e2dc;--code-bg:#f3f1ec;--warn:#b25b0e}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,sans-serif}.wrap{display:grid;grid-template-columns:200px minmax(0,1fr);gap:38px;max-width:1180px;margin:auto;padding:32px 28px 80px}nav{position:sticky;top:24px;align-self:start;font-size:13px}nav ol{padding-left:20px}a{color:var(--accent)}h1{font-size:32px;line-height:1.2}h2{margin-top:42px}h3{margin-top:30px}header{border-bottom:1px solid var(--rule)}.sub,.source,figcaption{color:var(--muted);font-size:13px}.source{overflow-wrap:anywhere}.warn{border-left:3px solid var(--warn);background:#fbf1e6;padding:12px 16px}code,pre{background:var(--code-bg);font:13px/1.5 ui-monospace,monospace}code{padding:2px 4px}pre{padding:14px;overflow:auto}svg{display:block;width:100%;height:auto;margin:14px 0}svg text{font:13px system-ui,sans-serif;fill:var(--fg)}svg .sub{font-size:11px;fill:var(--muted)}.old{fill:var(--code-bg);stroke:var(--subtle);stroke-dasharray:5 3}.new{fill:var(--accent-soft);stroke:var(--accent);stroke-width:2}table{border-collapse:collapse;width:100%;font-size:13px}td,th{text-align:left;vertical-align:top;border-bottom:1px solid var(--rule);padding:8px;overflow-wrap:anywhere}details{border:1px solid var(--rule);padding:8px 12px;margin:12px 0}summary{cursor:pointer}.pair{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:760px){.wrap{grid-template-columns:1fr}nav{position:static}.pair{grid-template-columns:1fr}}
-</style></head><body><div class="wrap"><nav><strong>Fork review · #4990</strong><ol>
-<li><a href="#contract">Status contract and compatibility</a></li><li><a href="#flow">Request versus completion</a></li>
-<li><a href="#implementation">Implementation by responsibility</a></li><li><a href="#evidence">Tests and runtime evidence</a></li><li><a href="#files">Changed files</a></li></ol></nav><main>
-<header><p class="sub">Scrates1/software-agent-sdk · draft review · 2026-10-27</p><h1>A pause request is not a completed pause</h1>
-<p>The current ACP turn may continue running tools after a pause request. This change exposes that interval as <code>PAUSING</code>, keeps clients waiting, and reports <code>PAUSED</code> at the boundary. Resume consumes the next queued prompt.</p></header>
-<section id="contract"><h2>1. Status becomes a truthful execution contract</h2><p class="warn">★ Draft compatibility decision: older Python clients reject <code>pausing</code>. This direct-status proposal needs a rollout or compatibility mechanism satisfying the repository's five-minor-release policy before upstream submission.</p>
-<div class="pair"><div><strong>Before</strong><pre>POST /pause → HTTP 200
-execution_status: "paused"
-ACP tools may still execute</pre></div><div><strong>After</strong><pre>POST /pause → HTTP 200
-execution_status: "pausing"
-step finishes → "paused" + PauseEvent</pre></div></div><p class="source">Enum and shared active-state predicate: <a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/openhands-sdk/openhands/sdk/conversation/state.py#L48">openhands-sdk/openhands/sdk/conversation/state.py:48</a></p></section>
-<section id="flow"><h2>2. Completion owns PAUSED and PauseEvent</h2><svg viewBox="0 0 760 112" role="img" aria-labelledby="overview-title overview-desc">
-<title id="overview-title">Before and after</title><desc id="overview-desc">RUNNING → PAUSED (request received) becomes RUNNING → PAUSING → PAUSED</desc>
-<defs><marker id="overview-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="var(--warn)"/></marker></defs>
-<g><rect x="10" y="12" width="330" height="88" rx="6" class="old"/><text x="26" y="38" class="sub">BEFORE</text><text x="26" y="69">RUNNING → PAUSED (request received)</text></g>
-<path d="M348,57 L400,57" stroke="var(--warn)" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#overview-arrow)"/>
-<g><rect x="410" y="12" width="340" height="88" rx="6" class="new"/><text x="426" y="38" class="sub">AFTER</text><text x="426" y="69">RUNNING → PAUSING → PAUSED</text></g></svg>
-<p>An ACP step is a whole remote prompt turn. <code>pause()</code> does not send <code>session/cancel</code>. <code>interrupt()</code> still requests cancellation. If execution fails while pausing, ERROR/STUCK is preserved. A stale active state after a server crash becomes ERROR using existing recovery; it is not automatically retried.</p></section>
-<section id="implementation"><h2>3. Each consumer agrees on active execution</h2><article id="local"><h3>Pause intent is completed at the step boundary</h3><p>The run loops share _finish_pending_pause(). It emits PauseEvent at a boundary and preserves ERROR/STUCK. Repeated requests are idempotent. IDLE pauses immediately; an existing confirmation wait is unchanged. The old ACP event-log scan is removed.</p>
-<p class="source">Before: <a href="https://github.com/Scrates1/software-agent-sdk/blob/d0d9d81324210414462fb676b377e0563a08a0cb/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L2776">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:2776</a><br>After: <a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L2806">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:2806</a></p>
-<svg viewBox="0 0 760 112" role="img" aria-labelledby="local-title local-desc">
-<title id="local-title">Before and after</title><desc id="local-desc">pause(): PAUSED + PauseEvent becomes pause(): PAUSING + pending intent</desc>
-<defs><marker id="local-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="var(--warn)"/></marker></defs>
-<g><rect x="10" y="12" width="330" height="88" rx="6" class="old"/><text x="26" y="38" class="sub">BEFORE</text><text x="26" y="69">pause(): PAUSED + PauseEvent</text></g>
-<path d="M348,57 L400,57" stroke="var(--warn)" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#local-arrow)"/>
-<g><rect x="410" y="12" width="340" height="88" rx="6" class="new"/><text x="426" y="38" class="sub">AFTER</text><text x="426" y="69">pause(): PAUSING + pending intent</text></g></svg><details><summary>Inspect this file's diff</summary><pre>diff --git a/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py b/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
-index 067674a68..71178cb57 100644
---- a/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
-+++ b/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py
-@@ -204,6 +204,7 @@ class LocalConversation(BaseConversation):
-     delete_on_close: bool = True
-     _arun_task: asyncio.Task[None] | None
-     _cancel_token: CancellationToken | None
-+    _pause_requested: bool
-     # True while run()/arun() executes an agent step while holding the state
-     # lock. A state-mutating tool (e.g. switch_llm) runs on a worker thread, so
-     # it must skip re-acquiring the lock the run loop holds while blocked
-@@ -331,6 +332,7 @@ class LocalConversation(BaseConversation):
-         self._cleanup_complete = False
-         self._arun_task = None
-         self._cancel_token = None
-+        self._pause_requested = False
-         self._step_holds_state_lock = False
-
-         # Store plugin specs for lazy loading (no IO in constructor)
-@@ -1978,6 +1980,7 @@ class LocalConversation(BaseConversation):
-         self._cancel_token = CancellationToken()
-
-         with self._state:
-+            self._pause_requested = False
-             if self._state.execution_status in [
-                 ConversationExecutionStatus.IDLE,
-                 ConversationExecutionStatus.PAUSED,
-@@ -1995,6 +1998,8 @@ class LocalConversation(BaseConversation):
-                     # Pause attempts to acquire the state lock
-                     # Before value can be modified step can be taken
-                     # Ensure step conditions are checked when lock is already acquired
-+                    if self._finish_pending_pause():
-+                        break
-                     if self._state.execution_status in [
-                         ConversationExecutionStatus.PAUSED,
-                         ConversationExecutionStatus.STUCK,
-@@ -2056,6 +2061,9 @@ class LocalConversation(BaseConversation):
-                         self._step_holds_state_lock = False
-                     iteration += 1
-
-+                    if self._finish_pending_pause():
-+                        break
-+
-                     # Check for non-finished terminal conditions
-                     # Note: We intentionally do NOT check for FINISHED status here.
-                     # This allows concurrent user messages to be processed:
-@@ -2145,6 +2153,8 @@ class LocalConversation(BaseConversation):
-             ) from e
-         finally:
-             self._cancel_token = None
-+            with self._state:
-+                self._pause_requested = False
-
-     @observe(name=&quot;conversation.arun&quot;)
-     async def arun(self) -&gt; None:
-@@ -2182,6 +2192,7 @@ class LocalConversation(BaseConversation):
-         await asyncio.to_thread(self._ensure_agent_ready)
-
-         with self._state:
-+            self._pause_requested = False
-             if isinstance(self.agent, ACPAgent) and self._state.execution_status in (
-                 ConversationExecutionStatus.FINISHED,
-                 ConversationExecutionStatus.IDLE,
-@@ -2216,6 +2227,8 @@ class LocalConversation(BaseConversation):
-                 acp_step_user_message_id: str | None = None
-                 acp_step_user_message: MessageEvent | None = None
-                 with self._state:
-+                    if self._finish_pending_pause():
-+                        break
-                     if self._state.execution_status in [
-                         ConversationExecutionStatus.PAUSED,
-                         ConversationExecutionStatus.STUCK,
-@@ -2335,6 +2348,9 @@ class LocalConversation(BaseConversation):
-                             self._step_holds_state_lock = False
-                         iteration += 1
-
-+                        if self._finish_pending_pause():
-+                            break
-+
-                         # astep releases the state lock for the LLM call, so a
-                         # message can land mid-step with status still RUNNING and
-                         # go unrecorded; without this rescan the loop would break
-@@ -2462,14 +2478,14 @@ class LocalConversation(BaseConversation):
-                         )
-                     break
-
--                acp_step_start_event_count = 0
-                 with self._state:
-+                    if self._finish_pending_pause():
-+                        break
-                     if self._state.execution_status in (
-                         ConversationExecutionStatus.PAUSED,
-                         ConversationExecutionStatus.STUCK,
-                     ):
-                         break
--                    acp_step_start_event_count = len(self._state.events)
-                     if acp_step_user_message_id is not None:
-                         self._state.agent_state = {
-                             **self._state.agent_state,
-@@ -2486,10 +2502,6 @@ class LocalConversation(BaseConversation):
-                 )
-                 with self._state:
-                     iteration += 1
--                    pause_requested_during_acp_step = any(
--                        isinstance(event, PauseEvent)
--                        for event in self._state.events[acp_step_start_event_count:]
--                    )
-                     updated_agent_state = dict(self._state.agent_state)
-                     if (
-                         updated_agent_state.get(ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID)
-@@ -2519,10 +2531,7 @@ class LocalConversation(BaseConversation):
-                         ConversationExecutionStatus.STUCK,
-                     ):
-                         break
--                    if pause_requested_during_acp_step:
--                        self._state.execution_status = (
--                            ConversationExecutionStatus.PAUSED
--                        )
-+                    if self._finish_pending_pause():
-                         break
-
-                     latest_acp_prompt_message_id = self._latest_acp_prompt_message_id()
-@@ -2603,6 +2612,12 @@ class LocalConversation(BaseConversation):
-                 )
-                 completed_cancelled_prompt = (
-                     self._state.execution_status == ConversationExecutionStatus.FINISHED
-+                    or (
-+                        self._state.execution_status
-+                        == ConversationExecutionStatus.PAUSING
-+                        and isinstance(self.agent, ACPAgent)
-+                        and self.agent._last_prompt_completed
-+                    )
-                 )
-                 if (
-                     superseded_by_new_message or completed_cancelled_prompt
-@@ -2670,6 +2685,8 @@ class LocalConversation(BaseConversation):
-             if self._cancel_token is not None and not self._cancel_token.is_cancelled:
-                 self._cancel_token = None
-             self._arun_task = None
-+            with self._state:
-+                self._pause_requested = False
-
-     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -&gt; None:
-         &quot;&quot;&quot;Set the confirmation policy and store it in conversation state.&quot;&quot;&quot;
-@@ -2773,6 +2790,19 @@ class LocalConversation(BaseConversation):
-                 )
-             )
-
-+    def _finish_pending_pause(self) -&gt; bool:
-+        &quot;&quot;&quot;Complete a requested pause at a step boundary, under the state lock.&quot;&quot;&quot;
-+        if not self._pause_requested:
-+            return False
-+        self._pause_requested = False
-+        if self._state.execution_status not in (
-+            ConversationExecutionStatus.ERROR,
-+            ConversationExecutionStatus.STUCK,
-+        ):
-+            self._state.execution_status = ConversationExecutionStatus.PAUSED
-+            self._on_event(PauseEvent())
-+        return True
-+
-     def pause(self) -&gt; None:
-         &quot;&quot;&quot;Pause agent execution.
-
-@@ -2780,23 +2810,19 @@ class LocalConversation(BaseConversation):
-         pause execution. The pause will take effect at the next iteration
-         of the run loop (between agent steps).
-
--        Note: If called during an LLM completion, the pause will not take
--        effect until the current LLM call completes.
-+        While the current step is executing, status is ``PAUSING``. Once it
-+        completes, status becomes ``PAUSED`` and a ``PauseEvent`` is emitted.
-+        An ACP step includes the entire remote prompt turn. Use ``interrupt()``
-+        to request cancellation of an in-flight async operation.
-         &quot;&quot;&quot;
-
--        if self._state.execution_status == ConversationExecutionStatus.PAUSED:
--            return
--
-         with self._state:
--            # Only pause when running or idle
--            if (
--                self._state.execution_status == ConversationExecutionStatus.IDLE
--                or self._state.execution_status == ConversationExecutionStatus.RUNNING
--            ):
--                self._state.execution_status = ConversationExecutionStatus.PAUSED
--                pause_event = PauseEvent()
--                self._on_event(pause_event)
--                logger.info(&quot;Agent execution pause requested&quot;)
-+            if self._state.execution_status == ConversationExecutionStatus.RUNNING:
-+                self._pause_requested = True
-+                self._state.execution_status = ConversationExecutionStatus.PAUSING
-+            elif self._state.execution_status == ConversationExecutionStatus.IDLE:
-+                self._pause_requested = True
-+                self._finish_pending_pause()
-
-     def interrupt(self) -&gt; None:
-         &quot;&quot;&quot;Immediately cancel an in-flight ``arun()``, including mid-LLM-call.
-</pre></details></article><article id="acp"><h3>Prompt completion survives a pending pause</h3><p>The successful finalizer records completion separately. LocalConversation can advance the prompt cursor even if interrupt() arrives during post-response credential cleanup. An unfinished interrupted prompt retains the existing retry behavior.</p>
-<p class="source">Before: <a href="https://github.com/Scrates1/software-agent-sdk/blob/d0d9d81324210414462fb676b377e0563a08a0cb/openhands-sdk/openhands/sdk/agent/acp_agent.py#L3824">openhands-sdk/openhands/sdk/agent/acp_agent.py:3824</a><br>After: <a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/openhands-sdk/openhands/sdk/agent/acp_agent.py#L3826">openhands-sdk/openhands/sdk/agent/acp_agent.py:3826</a></p>
-<svg viewBox="0 0 760 112" role="img" aria-labelledby="acp-title acp-desc">
-<title id="acp-title">Before and after</title><desc id="acp-desc">Finalizer always writes FINISHED becomes Finalizer preserves PAUSING</desc>
-<defs><marker id="acp-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="var(--warn)"/></marker></defs>
-<g><rect x="10" y="12" width="330" height="88" rx="6" class="old"/><text x="26" y="38" class="sub">BEFORE</text><text x="26" y="69">Finalizer always writes FINISHED</text></g>
-<path d="M348,57 L400,57" stroke="var(--warn)" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#acp-arrow)"/>
-<g><rect x="410" y="12" width="340" height="88" rx="6" class="new"/><text x="426" y="38" class="sub">AFTER</text><text x="426" y="69">Finalizer preserves PAUSING</text></g></svg><details><summary>Inspect this file's diff</summary><pre>diff --git a/openhands-sdk/openhands/sdk/agent/acp_agent.py b/openhands-sdk/openhands/sdk/agent/acp_agent.py
-index ea1fe4b54..889dc37ae 100644
---- a/openhands-sdk/openhands/sdk/agent/acp_agent.py
-+++ b/openhands-sdk/openhands/sdk/agent/acp_agent.py
-@@ -2027,6 +2027,8 @@ class ACPAgent(AgentBase):
-     _skills_root: Path | None = PrivateAttr(default=None)
-     _additional_directories_supported: bool = PrivateAttr(default=False)
-     _restart_session_on_next_turn: bool = PrivateAttr(default=False)
-+    # A completed prompt can still be PAUSING while async cleanup is pending.
-+    _last_prompt_completed: bool = PrivateAttr(default=False)
-     # Stream identity for the turn in flight; see stream_context.py. Held on
-     # the agent rather than threaded through the finalizers because the ACP
-     # turn already resolves through four of them.
-@@ -3903,7 +3905,9 @@ class ACPAgent(AgentBase):
-                 tool_call_id=tc_id,
-             )
-         )
--        state.execution_status = ConversationExecutionStatus.FINISHED
-+        self._last_prompt_completed = True
-+        if state.execution_status != ConversationExecutionStatus.PAUSING:
-+            state.execution_status = ConversationExecutionStatus.FINISHED
-
-     def _emit_turn_timeout(
-         self,
-@@ -4247,6 +4251,7 @@ class ACPAgent(AgentBase):
-         on_token: ConversationTokenCallbackType | None = None,
-         prompt_message: MessageEvent | None = None,
-     ) -&gt; None:
-+        self._last_prompt_completed = False
-         state = conversation.state
-
-         if self._restart_session_on_next_turn:
-</pre></details></article><article id="remote"><h3>Clients wait for execution to stop</h3><p>Both full WebSocket state snapshots and polling/status updates treat PAUSING as active. A completed pause releases the blocking client call; a concurrent /run remains HTTP 409.</p>
-<p class="source">Before: <a href="https://github.com/Scrates1/software-agent-sdk/blob/d0d9d81324210414462fb676b377e0563a08a0cb/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py#L1581">openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py:1581</a><br>After: <a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py#L1581">openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py:1581</a></p>
-<svg viewBox="0 0 760 112" role="img" aria-labelledby="remote-title remote-desc">
-<title id="remote-title">Before and after</title><desc id="remote-desc">Only RUNNING keeps run() waiting becomes RUNNING and PAUSING keep waiting</desc>
-<defs><marker id="remote-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="var(--warn)"/></marker></defs>
-<g><rect x="10" y="12" width="330" height="88" rx="6" class="old"/><text x="26" y="38" class="sub">BEFORE</text><text x="26" y="69">Only RUNNING keeps run() waiting</text></g>
-<path d="M348,57 L400,57" stroke="var(--warn)" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#remote-arrow)"/>
-<g><rect x="410" y="12" width="340" height="88" rx="6" class="new"/><text x="426" y="38" class="sub">AFTER</text><text x="426" y="69">RUNNING and PAUSING keep waiting</text></g></svg><details><summary>Inspect this file's diff</summary><pre>diff --git a/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py b/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py
-index 7eadd78e2..7dbecdf27 100644
---- a/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py
-+++ b/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py
-@@ -1209,7 +1209,7 @@ class RemoteConversation(BaseConversation):
-             except ValueError:
-                 return
-
--            if status != ConversationExecutionStatus.RUNNING:
-+            if not status.is_active():
-                 self._terminal_status_queue.put(status.value)
-
-         # Compose all callbacks into a single callback
-@@ -1580,7 +1580,10 @@ class RemoteConversation(BaseConversation):
-
-     def _handle_conversation_status(self, status: str | None, since: int = 0) -&gt; bool:
-         &quot;&quot;&quot;Handle non-running statuses; return True if the run is complete.&quot;&quot;&quot;
--        if status == ConversationExecutionStatus.RUNNING.value:
-+        if status in (
-+            ConversationExecutionStatus.RUNNING.value,
-+            ConversationExecutionStatus.PAUSING.value,
-+        ):
-             return False
-         if status == ConversationExecutionStatus.ERROR.value:
-             self._state.events.reconcile()
-</pre></details></article><article id="event"><h3>Active-state recovery includes pending pauses</h3><p>Loading persisted active state reuses the existing ERROR recovery path and orphan-action cleanup. Run and goal-loop guards share the active-state predicate. Auto-superseding an ACP prompt remains RUNNING-only so new messages do not override a pending pause.</p>
-<p class="source">Before: <a href="https://github.com/Scrates1/software-agent-sdk/blob/d0d9d81324210414462fb676b377e0563a08a0cb/openhands-agent-server/openhands/agent_server/event_service.py#L1426">openhands-agent-server/openhands/agent_server/event_service.py:1426</a><br>After: <a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/openhands-agent-server/openhands/agent_server/event_service.py#L1426">openhands-agent-server/openhands/agent_server/event_service.py:1426</a></p>
-<svg viewBox="0 0 760 112" role="img" aria-labelledby="event-title event-desc">
-<title id="event-title">Before and after</title><desc id="event-desc">Recover stale RUNNING only becomes Recover stale RUNNING or PAUSING</desc>
-<defs><marker id="event-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="var(--warn)"/></marker></defs>
-<g><rect x="10" y="12" width="330" height="88" rx="6" class="old"/><text x="26" y="38" class="sub">BEFORE</text><text x="26" y="69">Recover stale RUNNING only</text></g>
-<path d="M348,57 L400,57" stroke="var(--warn)" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#event-arrow)"/>
-<g><rect x="410" y="12" width="340" height="88" rx="6" class="new"/><text x="426" y="38" class="sub">AFTER</text><text x="426" y="69">Recover stale RUNNING or PAUSING</text></g></svg><details><summary>Inspect this file's diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/event_service.py b/openhands-agent-server/openhands/agent_server/event_service.py
-index f902d8040..4460ec2c6 100644
---- a/openhands-agent-server/openhands/agent_server/event_service.py
-+++ b/openhands-agent-server/openhands/agent_server/event_service.py
-@@ -1418,12 +1418,12 @@ class EventService:
-         # the pod during long conn.prompt() calls.
-         self._setup_acp_activity_heartbeat(self._conversation.agent)
-
--        # Any conversation loaded from disk with RUNNING status is stale. Active
-+        # Any conversation loaded from disk with an active status is stale. Active
-         # split-brain resumes are prevented earlier by the lease claim itself, so if
-         # we made it this far there is no live owner and the interrupted tool call
-         # should be surfaced back to the agent.
-         state = self._conversation.state
--        if state.execution_status == ConversationExecutionStatus.RUNNING:
-+        if state.execution_status.is_active():
-             state.execution_status = ConversationExecutionStatus.ERROR
-             # Crash recovery scans the full log, not the active branch: the
-             # process may have died between writing an event file and persisting
-@@ -1559,8 +1559,7 @@ class EventService:
-             # block this request behind it instead of answering at once.
-             if (self._run_task is not None and not self._run_task.done()) or (
-                 await self._get_execution_status()
--                == ConversationExecutionStatus.RUNNING
--            ):
-+            ).is_active():
-                 raise ValueError(&quot;conversation_already_running&quot;)
-             if self._closing:
-                 raise ValueError(&quot;inactive_service&quot;)
-@@ -1812,8 +1811,7 @@ class EventService:
-             # so reading execution status would block behind it.
-             if (self._run_task is not None and not self._run_task.done()) or (
-                 await self._get_execution_status()
--                == ConversationExecutionStatus.RUNNING
--            ):
-+            ).is_active():
-                 raise ValueError(&quot;conversation_already_running&quot;)
-             # Re-check after the await above: close() runs without _run_lock, so
-             # it may have begun teardown meanwhile (mirrors run()&#x27;s post-status
-@@ -2070,8 +2068,7 @@ class EventService:
-                 raise ValueError(&quot;goal_already_running&quot;)
-             if (self._run_task is not None and not self._run_task.done()) or (
-                 await self._get_execution_status()
--                == ConversationExecutionStatus.RUNNING
--            ):
-+            ).is_active():
-                 raise ValueError(&quot;conversation_already_running&quot;)
-             if self._closing:  # see start_goal_loop: close() may have begun teardown
-                 raise ValueError(&quot;inactive_service&quot;)
-</pre></details></article><article id="catalog"><h3>Startup also repairs the conversation catalog</h3><p>Startup visits stale PAUSING records before a client opens a conversation. Search results report ERROR after recovery. No automatic prompt replay is added.</p>
-<p class="source">Before: <a href="https://github.com/Scrates1/software-agent-sdk/blob/d0d9d81324210414462fb676b377e0563a08a0cb/openhands-agent-server/openhands/agent_server/conversation_service.py#L2244">openhands-agent-server/openhands/agent_server/conversation_service.py:2244</a><br>After: <a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/openhands-agent-server/openhands/agent_server/conversation_service.py#L2244">openhands-agent-server/openhands/agent_server/conversation_service.py:2244</a></p>
-<svg viewBox="0 0 760 112" role="img" aria-labelledby="catalog-title catalog-desc">
-<title id="catalog-title">Before and after</title><desc id="catalog-desc">Eager-load RUNNING records becomes Eager-load all active records</desc>
-<defs><marker id="catalog-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="var(--warn)"/></marker></defs>
-<g><rect x="10" y="12" width="330" height="88" rx="6" class="old"/><text x="26" y="38" class="sub">BEFORE</text><text x="26" y="69">Eager-load RUNNING records</text></g>
-<path d="M348,57 L400,57" stroke="var(--warn)" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#catalog-arrow)"/>
-<g><rect x="410" y="12" width="340" height="88" rx="6" class="new"/><text x="426" y="38" class="sub">AFTER</text><text x="426" y="69">Eager-load all active records</text></g></svg><details><summary>Inspect this file's diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/conversation_service.py b/openhands-agent-server/openhands/agent_server/conversation_service.py
-index 3da553a53..910c9a1cd 100644
---- a/openhands-agent-server/openhands/agent_server/conversation_service.py
-+++ b/openhands-agent-server/openhands/agent_server/conversation_service.py
-@@ -2235,13 +2235,13 @@ class ConversationService:
-         ]
-
-         # Preserve crash recovery semantics without hydrating every idle
--        # conversation. RUNNING records may contain an interrupted tool call;
-+        # conversation. Active records may contain an interrupted tool call;
-         # EventService.start() marks those records as ERROR and appends the
-         # corresponding recovery event. A live lease still prevents takeover.
-         running_ids = [
-             conversation_id
-             for conversation_id, record in self._conversation_records.items()
--            if record.execution_status == ConversationExecutionStatus.RUNNING
-+            if record.execution_status.is_active()
-         ]
-         for conversation_id in running_ids:
-             try:
-</pre></details></article><article id="runtime"><h3>Do not evict a runtime while it is pausing</h3><p>The existing idle eviction path uses is_active() rather than a RUNNING-only check. Retention is covered by the existing registry test with an observable stop operation; this is not a live Docker eviction test.</p>
-<p class="source">Before: <a href="https://github.com/Scrates1/software-agent-sdk/blob/d0d9d81324210414462fb676b377e0563a08a0cb/openhands-agent-server/openhands/agent_server/docker_runtime/registry.py#L379">openhands-agent-server/openhands/agent_server/docker_runtime/registry.py:379</a><br>After: <a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/openhands-agent-server/openhands/agent_server/docker_runtime/registry.py#L378">openhands-agent-server/openhands/agent_server/docker_runtime/registry.py:378</a></p>
-<svg viewBox="0 0 760 112" role="img" aria-labelledby="runtime-title runtime-desc">
-<title id="runtime-title">Before and after</title><desc id="runtime-desc">Protect RUNNING from idle TTL becomes Protect RUNNING and PAUSING</desc>
-<defs><marker id="runtime-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="var(--warn)"/></marker></defs>
-<g><rect x="10" y="12" width="330" height="88" rx="6" class="old"/><text x="26" y="38" class="sub">BEFORE</text><text x="26" y="69">Protect RUNNING from idle TTL</text></g>
-<path d="M348,57 L400,57" stroke="var(--warn)" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#runtime-arrow)"/>
-<g><rect x="410" y="12" width="340" height="88" rx="6" class="new"/><text x="426" y="38" class="sub">AFTER</text><text x="426" y="69">Protect RUNNING and PAUSING</text></g></svg><details><summary>Inspect this file's diff</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/docker_runtime/registry.py b/openhands-agent-server/openhands/agent_server/docker_runtime/registry.py
-index b17b1a0bd..10a4377d9 100644
---- a/openhands-agent-server/openhands/agent_server/docker_runtime/registry.py
-+++ b/openhands-agent-server/openhands/agent_server/docker_runtime/registry.py
-@@ -28,7 +28,6 @@ from openhands.agent_server.models import (
- from openhands.agent_server.persistence.store import _get_persistence_dir
- from openhands.agent_server.storage import Reclaimer
- from openhands.sdk.conversation.request import ConversationContainerOptions
--from openhands.sdk.conversation.state import ConversationExecutionStatus
- from openhands.sdk.logger import get_logger
- from openhands.sdk.utils.cipher import Cipher
- from openhands.sdk.utils.command import execute_command, sanitized_env
-@@ -391,10 +390,7 @@ class DockerConversationRegistry(ConversationRegistry):
-
-         for conversation_id, container in candidates:
-             info = await service.get_conversation(conversation_id)
--            if (
--                info is None
--                or info.execution_status == ConversationExecutionStatus.RUNNING
--            ):
-+            if info is None or info.execution_status.is_active():
-                 continue
-             async with self._lock:
-                 if self._containers.get(conversation_id) is not container:
-</pre></details></article>
-<h3>Mechanical API updates</h3><table><tr><th>Area</th><th>Change</th></tr><tr><td>state.py / TypeScript base.ts</td><td>Add PAUSING; Python is_active() covers RUNNING and PAUSING.</td></tr><tr><td>conversation_router.py</td><td>Explain the cooperative pause and ACP prompt boundary.</td></tr><tr><td>Generated TypeScript schema</td><td>Unchanged: it describes the pinned released image. Regenerate when that release pin advances.</td></tr></table></section>
-<section id="evidence"><h2>4. The regression fails before the fix and passes after it</h2><p class="source">Executable HTTP/WebSocket regression: <a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/tests/cross/test_acp_pause_live_server.py#L32">tests/cross/test_acp_pause_live_server.py:32</a></p>
-<table><tr><th>Check</th><th>Evidence</th></tr><tr><td>Baseline d0d9d8132</td><td>Same live-server scenario fails: <code>'paused' != 'pausing'</code>.</td></tr><tr><td>Final Python regression</td><td>2,204 passed; 6 deselected by repository defaults; 52 warnings.</td></tr><tr><td>TypeScript</td><td>396 tests passed; build and changed-file ESLint passed. Full ESLint has 3 errors in unchanged integration tests.</td></tr><tr><td>Actual SIGKILL and restart</td><td>PAUSING → ERROR in both catalog and direct GET. Prompt count stayed 1; only the first gated shell write occurred.</td></tr><tr><td>Documentation</td><td>Both Python snippets parsed; no full Mintlify render.</td></tr></table>
-<p>The protocol fixture runs a real stdio subprocess and shell writes. The interruption variant gates credential cleanup after the real ACP response. No hosted model or vendor ACP implementation was tested. Docker retention uses the repository's registry unit test.</p>
-<p>Commands, versions, expected failures and limitations: <a href="validation.json">validation.json</a>. Python also emitted an unawaited-coroutine warning from _apply_acp_model; the suite is not warning-clean.</p>
-<p><a href="https://github.com/Scrates1/docs/pull/1">Companion documentation draft</a>. These changes are for fork review only. Remove <code>.pr/</code> before merge; automatic cleanup is not verified in this fork.</p></section>
-<section id="files"><h2>5. Change inventory</h2><p>Implementation reviewed at <code>0f5aa74bc</code>; baseline <code>d0d9d8132</code>. Links stay pinned to these revisions.</p><table><tr><th>File</th><th>Diff</th></tr><tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/clients/typescript/src/types/base.ts">clients/typescript/src/types/base.ts</a></td><td>+1 / −0</td></tr><tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/openhands-agent-server/openhands/agent_server/conversation_router.py">openhands-agent-server/openhands/agent_server/conversation_router.py</a></td><td>+6 / −1</td></tr><tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/openhands-agent-server/openhands/agent_server/conversation_service.py">openhands-agent-server/openhands/agent_server/conversation_service.py</a></td><td>+2 / −2</td></tr><tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/openhands-agent-server/openhands/agent_server/docker_runtime/registry.py">openhands-agent-server/openhands/agent_server/docker_runtime/registry.py</a></td><td>+1 / −5</td></tr><tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/openhands-agent-server/openhands/agent_server/event_service.py">openhands-agent-server/openhands/agent_server/event_service.py</a></td><td>+5 / −8</td></tr><tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/openhands-sdk/openhands/sdk/agent/acp_agent.py">openhands-sdk/openhands/sdk/agent/acp_agent.py</a></td><td>+6 / −1</td></tr><tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py">openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py</a></td><td>+50 / −24</td></tr><tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py">openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py</a></td><td>+5 / −2</td></tr><tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/openhands-sdk/openhands/sdk/conversation/state.py">openhands-sdk/openhands/sdk/conversation/state.py</a></td><td>+5 / −0</td></tr><tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/tests/agent_server/docker_runtime/test_registry.py">tests/agent_server/docker_runtime/test_registry.py</a></td><td>+10 / −2</td></tr><tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/tests/agent_server/test_conversation_service.py">tests/agent_server/test_conversation_service.py</a></td><td>+24 / −0</td></tr><tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/tests/agent_server/test_event_service.py">tests/agent_server/test_event_service.py</a></td><td>+6 / −3</td></tr><tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/tests/cross/test_acp_pause_live_server.py">tests/cross/test_acp_pause_live_server.py</a></td><td>+132 / −0</td></tr><tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/tests/sdk/agent/fake_acp_pause_server.py">tests/sdk/agent/fake_acp_pause_server.py</a></td><td>+118 / −0</td></tr><tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/tests/sdk/conversation/local/test_confirmation_mode.py">tests/sdk/conversation/local/test_confirmation_mode.py</a></td><td>+2 / −2</td></tr><tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/tests/sdk/conversation/local/test_conversation_pause_functionality.py">tests/sdk/conversation/local/test_conversation_pause_functionality.py</a></td><td>+3 / −3</td></tr><tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/tests/sdk/conversation/local/test_conversation_pausing.py">tests/sdk/conversation/local/test_conversation_pausing.py</a></td><td>+78 / −0</td></tr><tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/tests/sdk/conversation/remote/test_remote_conversation.py">tests/sdk/conversation/remote/test_remote_conversation.py</a></td><td>+36 / −0</td></tr><tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80/tests/sdk/conversation/test_interrupt.py">tests/sdk/conversation/test_interrupt.py</a></td><td>+1 / −1</td></tr></table></section>
-</main></div></body></html>
+:root{--fg:#202124;--muted:#606368;--bg:#fdfdfb;--accent:#2b4eaa;--soft:#e6ecfa;--rule:#deded8;--warn:#a65b14}
+*{box-sizing:border-box}body{max-width:960px;margin:32px auto;padding:0 24px 64px;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,sans-serif}
+h1{line-height:1.2}h2{margin-top:32px}a{color:var(--accent)}nav,.source,figcaption{font-size:13px;color:var(--muted)}nav a{margin-right:16px}
+.warning{padding:12px 16px;background:#fff3e4;border-left:3px solid var(--warn)}code{font-size:.9em;background:#f0f0eb;padding:2px 4px}pre{overflow:auto;padding:12px;background:#f0f0eb}
+table{border-collapse:collapse;width:100%;font-size:14px}th,td{text-align:left;padding:10px;border-bottom:1px solid var(--rule);vertical-align:top}svg{width:100%;height:auto}svg text{font:14px system-ui;fill:var(--fg)}svg .sub{font-size:12px;fill:var(--muted)}
+</style></head><body>
+<header><p class="source">OpenHands SDK #4990 · draft in Scrates1's fork · 2026-10-27</p>
+<h1>Pause requests remain active until the step stops</h1>
+<p>An ACP step is a whole remote prompt turn. Tools may keep running after <code>/pause</code>; the API must expose that interval instead of reporting completion.</p></header>
+<nav><a href="#contract">1. Contract</a><a href="#changes">2. Responsibilities</a><a href="#evidence">3. Evidence</a></nav>
+<section id="contract"><h2>1. Distinguish the request from completion</h2>
+<p class="warning"><strong>Compatibility remains unresolved.</strong> Older Python clients reject <code>pausing</code>. The existing capability checks do not negotiate response enums. Before upstream release, agree a rollout or opt-in contract satisfying the five-minor-release policy. This fork draft is not ready for upstream submission.</p>
+<figure><svg viewBox="0 0 900 200" role="img" aria-labelledby="flow-title flow-desc">
+<title id="flow-title">Pause status before and after</title><desc id="flow-desc">Before: RUNNING becomes PAUSED on receipt. After: RUNNING becomes PAUSING on receipt and PAUSED at the step boundary; confirmation and failure outcomes remain visible.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="var(--accent)"/></marker></defs>
+<g><text x="12" y="37">Before</text><rect x="100" y="10" width="190" height="48" fill="var(--bg)" stroke="var(--muted)" stroke-dasharray="5 3"/><text x="148" y="40">RUNNING</text>
+<path d="M290 34H620" stroke="var(--muted)"/><text class="sub" x="350" y="25">pause request received</text><rect x="620" y="10" width="200" height="48" fill="var(--bg)" stroke="var(--muted)" stroke-dasharray="5 3"/><text x="688" y="40">PAUSED</text></g>
+<g><text x="12" y="120">After</text><rect x="100" y="92" width="190" height="48" fill="var(--soft)" stroke="var(--accent)"/><text x="148" y="122">RUNNING</text>
+<path d="M290 116H355" stroke="var(--accent)" marker-end="url(#arrow)"/><rect x="365" y="92" width="190" height="48" fill="var(--soft)" stroke="var(--accent)"/><text x="414" y="122">PAUSING</text>
+<path d="M555 116H610" stroke="var(--accent)" marker-end="url(#arrow)"/><rect x="620" y="92" width="200" height="48" fill="var(--soft)" stroke="var(--accent)"/><text x="688" y="122">PAUSED</text>
+<text class="sub" x="365" y="166">If approval is required: WAITING_FOR_CONFIRMATION</text><text class="sub" x="365" y="187">If execution fails: preserve ERROR / STUCK</text></g></svg>
+<figcaption>Only an actual pause emits PauseEvent. interrupt() retains its cancellation path.</figcaption></figure>
+<p class="source"><a href="https://github.com/Scrates1/software-agent-sdk/blob/b1f4b3fe8a92a71fd6dbbd4a6610366e4379b2e7/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L2790">Pause completion</a> · <a href="https://github.com/OpenHands/software-agent-sdk/blob/d0d9d81324210414462fb676b377e0563a08a0cb/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L2776">Baseline pause()</a></p>
+</section>
+<section id="changes"><h2>2. Keep status consumers consistent</h2>
+<table><tr><th>Responsibility</th><th>Change and reason</th></tr>
+<tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/b1f4b3fe8a92a71fd6dbbd4a6610366e4379b2e7/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L2790">Run loops</a></td><td>Track pause intent and complete it at a step boundary. Repeated requests do not duplicate PauseEvent. IDLE pauses immediately.</td></tr>
+<tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/b1f4b3fe8a92a71fd6dbbd4a6610366e4379b2e7/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L2370">Native confirmation</a></td><td>Reject an action superseded by a new message before pausing. Otherwise preserve WAITING_FOR_CONFIRMATION, so resume is not presented as approval.</td></tr>
+<tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/b1f4b3fe8a92a71fd6dbbd4a6610366e4379b2e7/openhands-sdk/openhands/sdk/agent/acp_agent.py#L3826">ACP finalization</a></td><td>Keep PAUSING until cleanup completes. Record successful completion separately so interruption during cleanup cannot replay the prompt.</td></tr>
+<tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/b1f4b3fe8a92a71fd6dbbd4a6610366e4379b2e7/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py#L1581">Remote waiting</a></td><td>HTTP polling and WebSocket updates keep waiting during PAUSING. Concurrent /run remains HTTP 409.</td></tr>
+<tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/b1f4b3fe8a92a71fd6dbbd4a6610366e4379b2e7/openhands-agent-server/openhands/agent_server/event_service.py#L1426">Startup recovery</a></td><td>Reuse active-state recovery for stale PAUSING. Catalog startup loads those records; they become ERROR without automatic replay.</td></tr>
+<tr><td><a href="https://github.com/Scrates1/software-agent-sdk/blob/b1f4b3fe8a92a71fd6dbbd4a6610366e4379b2e7/openhands-agent-server/openhands/agent_server/docker_runtime/registry.py#L378">Runtime retention</a></td><td>Exclude PAUSING from idle eviction. RUNNING and PAUSING share is_active().</td></tr>
+<tr><td>API types and docs</td><td>Add the Python/handwritten TypeScript enum value and describe the boundary. Generated TypeScript schema stays tied to its released server image pin.</td></tr></table>
+</section>
+<section id="evidence"><h2>3. Verify behavior before and after</h2>
+<ul><li><a href="https://github.com/Scrates1/software-agent-sdk/blob/b1f4b3fe8a92a71fd6dbbd4a6610366e4379b2e7/tests/cross/test_acp_pause_live_server.py#L32">HTTP/WebSocket ACP regression</a>: baseline reports paused while shell writes continue; fixed behavior waits, pauses, and resumes without replay. A second case interrupts post-response cleanup.</li>
+<li><a href="https://github.com/Scrates1/software-agent-sdk/blob/b1f4b3fe8a92a71fd6dbbd4a6610366e4379b2e7/tests/sdk/agent/test_message_during_streaming_arun.py#L344">Native confirmation regression</a>: both cases fail against d3a47c336 and pass after the fix. The tests reuse existing streaming/confirmation fixtures.</li>
+<li>Python: <strong>2206 passed</strong>, 6 deselected, 52 warnings. The suite also reports an unawaited-coroutine warning; it is not warning-clean.</li>
+<li>TypeScript is unchanged in this optimization: prior validation had 396 tests, build and changed-file ESLint passing; full ESLint had 3 errors in unchanged integration tests.</li>
+<li>Earlier real SIGKILL/restart check: PAUSING → ERROR in catalog and direct GET; one prompt and one shell write remained, with no automatic replay. Recovery code is unchanged in this optimization.</li></ul>
+<details><summary>Reproduce the regression checks</summary><pre>uv sync --frozen --dev
+uv run pytest tests/sdk/conversation tests/sdk/agent tests/agent_server/test_conversation_service.py tests/agent_server/test_event_service.py tests/agent_server/docker_runtime/test_registry.py tests/cross/test_acp_pause_live_server.py -q --timeout=60</pre>
+<p>Linux/Python 3.13.11; real HTTP/WebSocket and scripted stdio ACP, no hosted model or vendor ACP agent. The interruption test gates credential cleanup. Default markers exclude stress/acp_live/docker_live tests; retention is a registry unit test.</p></details>
+<p><a href="validation.json">Structured validation record</a> · <a href="https://github.com/Scrates1/docs/pull/1">Documentation draft</a></p>
+<p class="source">Sources pinned to b1f4b3fe8a92a71fd6dbbd4a6610366e4379b2e7, baseline d0d9d81324210414462fb676b377e0563a08a0cb. This temporary .pr page is removed through the verified cleanup workflow after merge. No upstream PR has been opened.</p>
+</section></body></html>

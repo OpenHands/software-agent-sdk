@@ -1,6 +1,6 @@
 {
   "base": "d0d9d81324210414462fb676b377e0563a08a0cb",
-  "implementation_head": "0f5aa74bcba132a363c5e5b0f55ed6f970ce8b80",
+  "implementation_head": "b1f4b3fe8a92a71fd6dbbd4a6610366e4379b2e7",
   "date": "2026-10-27",
   "environment": {
     "os": "Linux in Docker",
@@ -24,15 +24,20 @@
     {
       "scenario": "Pause then interrupt after ACP finalization",
       "result": "Completed prompt replayed; resumed run timed out before the completion bookkeeping fix"
+    },
+    {
+      "scenario": "Pause during native LLM: preserve approval and reject a superseded action",
+      "base": "d3a47c336838eab80dec06cca7e7b3b1a4905524",
+      "result": "Both final regression cases fail before the fix; both pass after it"
     }
   ],
   "green": {
     "python_command": "uv run pytest tests/sdk/conversation tests/sdk/agent tests/agent_server/test_conversation_service.py tests/agent_server/test_event_service.py tests/agent_server/docker_runtime/test_registry.py tests/cross/test_acp_pause_live_server.py -q --timeout=60",
     "python": {
-      "passed": 2204,
+      "passed": 2206,
       "deselected": 6,
       "warnings": 52,
-      "duration_seconds": 173.75
+      "duration_seconds": 174.31
     },
     "typescript": {
       "tests_passed": 396,
@@ -50,7 +55,8 @@
       ],
       "restart": "SIGKILL via control-agent-server restart --hard"
     },
-    "docs": "Both Python snippets parsed; diff reviewed; no full Mintlify render"
+    "docs": "Both Python snippets parsed; diff reviewed; no full Mintlify render",
+    "artifact_cleanup": "Fork pr-artifacts.yml verified active on 2026-10-27; temporary .pr content removed through cleanup PR"
   },
   "limits": [
     "Scripted ACP protocol subprocess; no hosted model or vendor ACP agent was exercised",
@@ -58,7 +64,6 @@
     "Repository defaults deselect stress, acp_live and docker_live markers",
     "Python emitted dependency/test warnings and an unawaited _apply_acp_model coroutine warning; not a warning-clean run",
     "Older clients reject pausing; upstream compatibility and rollout remain unresolved",
-    "Generated TypeScript schema remains pinned to the released server image",
-    "The fork cleanup workflow was not verified; remove .pr before merge"
+    "Generated TypeScript schema remains pinned to the released server image"
   ]
 }
