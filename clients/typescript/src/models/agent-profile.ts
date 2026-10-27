@@ -57,11 +57,6 @@ interface AgentProfileBase {
    * list its own provider credential to receive it.
    */
   secret_refs?: string[] | null;
-  /**
-   * Which of the user's connected built-in integrations to expose. `null` =
-   * all; `[]` = none; a non-null list = filter to the named integrations.
-   */
-  integration_refs?: string[] | null;
 }
 
 /** `agent_kind="openhands"` variant — references an LLM profile by name. */
@@ -154,11 +149,6 @@ export interface AgentProfileDiagnostics {
 
   /** Secret scope; `null` = unrestricted. */
   secret_refs?: string[] | null;
-  /**
-   * Which of the user's connected built-in integrations to expose. `null` =
-   * all; `[]` = none; a non-null list = filter to the named integrations.
-   */
-  integration_refs?: string[] | null;
 
   // OpenHands LLM reference.
   llm_profile_ref: string | null;
@@ -201,11 +191,6 @@ export interface LaunchedAgentProfile {
   revision: number;
   /** Launch-time secret allow-list, also enforced on resume. */
   secret_refs?: string[] | null;
-  /**
-   * Which of the user's connected built-in integrations to expose. `null` =
-   * all; `[]` = none; a non-null list = filter to the named integrations.
-   */
-  integration_refs?: string[] | null;
 }
 
 /**
