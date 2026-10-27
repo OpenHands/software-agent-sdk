@@ -34,7 +34,7 @@ from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import detached_delegate_context
 from openhands.sdk.security import ConfirmationPolicyBase
-from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
+from openhands.sdk.subagent.registry import AgentFactory
 from openhands.sdk.subagent.scope import (
     SubAgentScope,
     inherit_mcp_config,
@@ -216,7 +216,9 @@ class TaskManager:
                     f"Available tasks: {', '.join(sorted(self._tasks))}"
                 )
 
-            factory = get_agent_factory(subagent_type)
+            factory = self.parent_conversation._agent_registry.get_agent_factory(
+                subagent_type
+            )
             worker_agent = self._get_sub_agent_from_factory(factory)
             conversation_id = self._tasks[resume].conversation_id
             with detached_delegate_context() as link:
@@ -236,6 +238,9 @@ class TaskManager:
                         task_id=resume, subagent_type=subagent_type, link=link
                     ),
                     observability_tags=["delegate"],
+                    agent_definitions=(
+                        self.parent_conversation._agent_registry.get_registered_agent_definitions()
+                    ),
                 )
 
             self._set_confirmation_policy(
@@ -263,7 +268,9 @@ class TaskManager:
         1. ``factory.definition.max_iteration_per_run`` (from the agent definition)
         2. The parent conversation's ``max_iteration_per_run``
         """
-        factory = get_agent_factory(subagent_type)
+        factory = self.parent_conversation._agent_registry.get_agent_factory(
+            subagent_type
+        )
         worker_agent = self._get_sub_agent_from_factory(factory)
 
         effective_max_iter = (
@@ -342,6 +349,9 @@ class TaskManager:
                     task_id=task_id, subagent_type=subagent_type, link=link
                 ),
                 observability_tags=["delegate"],
+                agent_definitions=(
+                    parent._agent_registry.get_registered_agent_definitions()
+                ),
             )
 
     def _delegate_observability_metadata(
@@ -370,7 +380,9 @@ class TaskManager:
         Raises:
             ValueError: If the subagent type is invalid.
         """
-        factory = get_agent_factory(subagent_type)
+        factory = self.parent_conversation._agent_registry.get_agent_factory(
+            subagent_type
+        )
         return self._get_sub_agent_from_factory(factory)
 
     def _get_sub_agent_from_factory(self, factory: "AgentFactory") -> Agent:

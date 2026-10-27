@@ -97,7 +97,7 @@ def _observations(conversation: LocalConversation, kind: type) -> list:
 
 def _offered(parent: AgentBase, scope: dict[str, bool] | None) -> str:
     (tool,) = TaskToolSet.create(
-        conv_state=SimpleNamespace(agent=parent),  # type: ignore[arg-type]
+        conv_state=SimpleNamespace(agent=parent, _agent_registry=None),  # type: ignore[arg-type]
         sub_agent_scope=scope,
     )
     return tool.description
@@ -358,3 +358,34 @@ def test_a_scoped_task_tool_says_when_no_sub_agent_fits() -> None:
     assert "**shell**" not in description
     assert "register_agent" not in description
     assert "- None: every registered agent uses tools" in description
+
+
+def test_capability_scope_filters_conversation_owned_agents(tmp_path: Path) -> None:
+    definitions = [
+        AgentDefinition(name="allowed", description="Allowed helper", tools=["grep"]),
+        AgentDefinition(
+            name="blocked", description="Blocked helper", tools=["terminal"]
+        ),
+    ]
+    conversation = LocalConversation(
+        agent=_parent(
+            Tool(name="grep"),
+            Tool(name="task_tool_set", params={"sub_agent_scope": TOOLS_ONLY}),
+        ),
+        workspace=tmp_path,
+        agent_definitions=definitions,
+        visualizer=None,
+    )
+    try:
+        conversation.send_message("Prepare helpers")
+        description = conversation.agent.tools_map["task"].description
+        assert "**allowed**" in description
+        assert "**blocked**" not in description
+
+        manager = TaskManager(sub_agent_scope=SubAgentScope(tools=True))
+        manager.attach_parent(conversation)
+        assert manager._get_sub_agent("allowed").tools[0].name == "grep"
+        with pytest.raises(ValueError, match="which this agent does not have"):
+            manager._get_sub_agent("blocked")
+    finally:
+        conversation.close()

@@ -1370,6 +1370,7 @@ class EventService:
             observability_span_name=self.stored.observability_span_name,
             observability_parent_span_context=self.stored.observability_parent_span_context,
             mcp_tool_provider=self.mcp_tool_provider,
+            agent_definitions=self.stored.agent_definitions,
         )
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)

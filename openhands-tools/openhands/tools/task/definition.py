@@ -254,16 +254,23 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
         """
         from openhands.tools.task.impl import TaskExecutor, TaskManager
 
+        registry = conv_state._agent_registry
+        factory_info = registry.get_factory_info if registry else get_factory_info
+        definitions = (
+            registry.get_registered_agent_definitions()
+            if registry
+            else get_registered_agent_definitions()
+        )
         scope = SubAgentScope.model_validate(sub_agent_scope or {})
         registered = {
             d.name
-            for d in get_registered_agent_definitions()
+            for d in definitions
             if not scope.restricts or _offered(scope, conv_state.agent, d)
         }
         if not scope.restricts:
-            agent_types_info = get_factory_info()
+            agent_types_info = factory_info()
         elif registered:
-            agent_types_info = get_factory_info(lambda d: d.name in registered)
+            agent_types_info = factory_info(lambda d: d.name in registered)
         else:
             agent_types_info = (
                 "- None: every registered agent uses tools this agent does not have."

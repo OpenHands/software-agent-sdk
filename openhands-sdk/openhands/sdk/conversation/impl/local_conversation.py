@@ -107,6 +107,10 @@ from openhands.sdk.subagent import (
     register_file_agents,
     register_plugin_agents,
 )
+from openhands.sdk.subagent.registry import (
+    ConversationAgentRegistry,
+    agent_definition_to_factory,
+)
 from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
@@ -256,6 +260,7 @@ class LocalConversation(BaseConversation):
         stream_callbacks: list[StreamProgressCallbackType] | None = None,
         _parent_llm_call_context: LLMCallContext | None = None,
         _mcp_config_from_parent: bool = False,
+        agent_definitions: list[AgentDefinition] | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -323,6 +328,9 @@ class LocalConversation(BaseConversation):
                 servers are merged into it and no ``${VAR}`` is expanded again.
             profile_store_dir: Optional directory containing saved LLM profiles.
                 Defaults to ``~/.openhands/profiles``.
+            agent_definitions: Subagent definitions forwarded from a parent or
+                server. Persisted for resume; None keeps the saved definitions,
+                while an explicit list replaces them. Factories are rebuilt lazily.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -416,6 +424,12 @@ class LocalConversation(BaseConversation):
             cipher=cipher,
             tags=tags,
         )
+        self._agent_registry = ConversationAgentRegistry()
+        self._state._agent_registry = self._agent_registry
+        with self._state:
+            if agent_definitions is not None:
+                self._state.agent_definitions = list(agent_definitions)
+            self._agent_definitions = list(self._state.agent_definitions)
         # base_state.json is the source of truth for the agent. On resume with
         # ``agent=None`` the state holds the persisted agent; adopt it here so
         # ``self.agent`` and ``self._state.agent`` are the same object.
@@ -911,6 +925,7 @@ class LocalConversation(BaseConversation):
                 delete_on_close=self.delete_on_close,
                 tags=tags,
                 _parent_llm_call_context=self._llm_call_context,
+                agent_definitions=list(self._state.agent_definitions),
             )
 
             # Branch slice copies path_to_root(event) (root-first, re-rootable);
@@ -1281,6 +1296,7 @@ class LocalConversation(BaseConversation):
             register_plugin_agents(
                 agents=all_plugin_agents,
                 work_dir=self.workspace.working_dir,
+                registry=self._agent_registry,
             )
 
         # Combine explicit hook_config with plugin hooks
@@ -1524,6 +1540,7 @@ class LocalConversation(BaseConversation):
                 register_plugin_agents(
                     agents=plugin.agents,
                     work_dir=self.workspace.working_dir,
+                    registry=self._agent_registry,
                 )
             if plugin.hooks and not plugin.hooks.is_empty():
                 self._merge_runtime_plugin_hooks(plugin.hooks)
@@ -1549,8 +1566,7 @@ class LocalConversation(BaseConversation):
         """Discover and register file-based agents into the agent registry.
 
         Agents are loaded from Markdown definition files and registered via
-        `register_agent_if_absent`, so they never overwrite agents that were
-        already registered programmatically or by plugins.
+        the conversation registry, below programmatic and plugin priority.
 
         Registration order (highest to lowest priority):
           1. Programmatic `register_agent()` calls (already in the registry)
@@ -1562,7 +1578,28 @@ class LocalConversation(BaseConversation):
                 then `~/.openhands/agents/*.md`)
         """
         # register project-level and then user-level file-based agents
-        register_file_agents(self.workspace.working_dir)
+        register_file_agents(
+            self.workspace.working_dir,
+            registry=self._agent_registry,
+        )
+
+    def _register_agent_definitions(self) -> None:
+        """Restore forwarded definitions without rejecting valid peers."""
+        for agent_def in self._agent_definitions:
+            try:
+                factory = agent_definition_to_factory(
+                    agent_def, work_dir=self.workspace.working_dir
+                )
+                self._agent_registry.register_if_absent(
+                    agent_def.name, factory, agent_def
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to register agent definition '%s'",
+                    agent_def.name,
+                    exc_info=True,
+                )
+        self._agent_definitions.clear()
 
     def _ensure_agent_ready(self) -> None:
         """Ensure the agent is fully initialized with plugins and agents loaded.
@@ -1570,10 +1607,11 @@ class LocalConversation(BaseConversation):
         Performs one-time lazy initialization on the first `send_message()`
         or `run()` call.  The steps executed (in order) are:
 
-        1. Load plugins (merges skills, MCP config, and hooks).
-        2. Register file-based agents into the agent registry.
-        3. Initialize the agent with complete plugin config and hooks.
-        4. Register LLMs in the LLM registry.
+        1. Restore forwarded subagent definitions into the conversation registry.
+        2. Load plugins (merges skills, MCP config, and hooks).
+        3. Register file-based agents into the agent registry.
+        4. Initialize the agent with complete plugin config and hooks.
+        5. Register LLMs in the LLM registry.
 
         This preserves the design principle that constructors should not perform
         I/O or error-prone operations, while eliminating double initialization.
@@ -1593,6 +1631,8 @@ class LocalConversation(BaseConversation):
             # Re-check after acquiring lock in case another thread initialized
             if self._agent_ready:
                 return
+
+            self._register_agent_definitions()
 
             # Load plugins first (merges skills, MCP config, hooks)
             self._ensure_plugins_loaded()
