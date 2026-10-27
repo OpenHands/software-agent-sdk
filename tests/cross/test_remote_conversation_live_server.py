@@ -13,6 +13,7 @@ import textwrap
 import threading
 import time
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -23,6 +24,7 @@ import httpx
 import pytest
 import uvicorn
 from fastapi import WebSocket
+from filelock import FileLock
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
 from openai.types.responses import ResponseInputItemParam
 from pydantic import SecretStr
@@ -46,6 +48,8 @@ from openhands.sdk.event import (
     PauseEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.git.exceptions import GitCommandError
+from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.skills import Skill
 from openhands.sdk.subagent import AgentDefinition
@@ -505,6 +509,68 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> list[list[Message]]:
 
     monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
     return calls
+
+
+def test_child_launch_in_fresh_workspace_preserves_unborn_repository(
+    server_env, patched_llm
+):
+    workspace = server_env["workspace_path"] / "fresh-parent"
+    workspace.mkdir()
+    original_file = workspace / "parent.txt"
+    original_file.write_text("uncommitted parent work\n")
+    with httpx.Client(base_url=server_env["host"], timeout=30) as client:
+        parent_response = client.post(
+            "/api/conversations",
+            json={
+                "agent": {
+                    "llm": {"model": "gpt-4o-mini", "api_key": "test"},
+                    "tools": [],
+                },
+                "workspace": {"working_dir": str(workspace)},
+                "autotitle": False,
+            },
+        )
+        assert parent_response.status_code == 201
+        parent_id = parent_response.json()["id"]
+        assert (workspace / ".git").is_dir()
+        status_before = run_git_command(["git", "status", "--porcelain"], workspace)
+        head_before = run_git_command(["git", "symbolic-ref", "HEAD"], workspace)
+
+        response = client.post(
+            f"/api/conversations/{parent_id}/children",
+            json={"task": "Reply with ok."},
+        )
+        assert response.status_code == 201, response.text
+        child = response.json()
+        assert child["isolation"] == "shared"
+        assert child["workspace"] == str(workspace)
+        child_id = child["conversation_id"]
+        deadline = time.monotonic() + 10
+        while True:
+            child_info = client.get(f"/api/conversations/{child_id}").json()
+            if child_info["execution_status"] == "finished":
+                break
+            assert time.monotonic() < deadline, child_info["execution_status"]
+            time.sleep(0.05)
+        assert child_info["parent_conversation_id"] == parent_id
+        parent = client.get(f"/api/conversations/{parent_id}").json()
+        assert parent["sub_conversation_ids"] == [child_id]
+        assert (
+            run_git_command(["git", "symbolic-ref", "HEAD"], workspace) == head_before
+        )
+        assert (
+            run_git_command(["git", "status", "--porcelain"], workspace)
+            == status_before
+        )
+        with pytest.raises(GitCommandError):
+            run_git_command(["git", "rev-parse", "--verify", "HEAD"], workspace)
+        assert original_file.read_text() == "uncommitted parent work\n"
+        assert (
+            len(run_git_command(["git", "worktree", "list"], workspace).splitlines())
+            == 1
+        )
+        assert client.delete(f"/api/conversations/{child_id}").status_code == 200
+        assert client.delete(f"/api/conversations/{parent_id}").status_code == 200
 
 
 def test_remote_conversation_websocket_first_message_auth(
@@ -3053,3 +3119,52 @@ def test_interrupt_endpoint_cancels_running_conversation(
         assert events_resp.status_code == 200
         items = events_resp.json()["items"]
         assert len(items) >= 1, f"Expected at least one InterruptEvent, got: {items}"
+
+
+@pytest.mark.parametrize(
+    ("lock_file", "method", "path", "payload", "expected_status"),
+    [
+        ("profiles/.profiles.lock", "GET", "/v1/models", None, 200),
+        (
+            "profiles/.profiles.lock",
+            "PATCH",
+            "/api/settings",
+            {"active_profile": "qa-missing"},
+            404,
+        ),
+        (
+            "agent-profiles/.agent-profiles.lock",
+            "GET",
+            "/api/settings/secrets?agent_profile_id=qa-missing",
+            None,
+            404,
+        ),
+    ],
+)
+def test_profile_store_consumers_keep_live_server_responsive(
+    server_env, tmp_path, lock_file, method, path, payload, expected_status
+):
+    lock_path = tmp_path / ".openhands" / lock_file
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    held = FileLock(lock_path, thread_local=False)
+    held.acquire()
+    safety = threading.Timer(5.0, held.release)
+    safety.start()
+    try:
+        with (
+            httpx.Client(base_url=server_env["host"], timeout=10) as client,
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            waiting = executor.submit(client.request, method, path, json=payload)
+            time.sleep(0.3)
+            started = time.monotonic()
+            alive = client.get("/alive")
+            assert alive.status_code == 200
+            assert time.monotonic() - started < 2.0
+            assert not waiting.done()
+            held.release()
+            response = waiting.result(timeout=5)
+            assert response.status_code == expected_status, response.text
+    finally:
+        safety.cancel()
+        held.release(force=True)

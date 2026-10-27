@@ -34,6 +34,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -404,18 +405,23 @@ async def test_start_child_conversation_shares_workspace_outside_git_repo(
 
 
 @pytest.mark.asyncio
-async def test_start_child_conversation_uses_worktree_in_git_repo(tmp_path):
+@pytest.mark.parametrize("subdirectory", ["", "src/pkg"])
+async def test_start_child_conversation_uses_worktree_in_git_repo(
+    tmp_path, subdirectory
+):
     repo_dir = tmp_path / "repo"
     _init_git_repo(repo_dir)
+    workspace_dir = repo_dir / subdirectory
+    workspace_dir.mkdir(parents=True, exist_ok=True)
     request = StartChildConversationRequest(task="Fix the bug", isolation="worktree")
 
-    launch = await _launch_child(tmp_path, repo_dir, request)
+    launch = await _launch_child(tmp_path, workspace_dir, request)
 
     assert launch.result is not None
     child_id = launch.result.conversation_id
     expected_worktree = launch.worktree_root / str(child_id) / repo_dir.name
     assert launch.result.isolation == "worktree"
-    assert launch.result.workspace == str(expected_worktree)
+    assert launch.result.workspace == str(expected_worktree / subdirectory)
     assert (expected_worktree / ".git").exists()
     assert (
         run_git_command(
@@ -423,6 +429,42 @@ async def test_start_child_conversation_uses_worktree_in_git_repo(tmp_path):
         )
         == f"openhands/{child_id}"
     )
+
+
+@pytest.mark.asyncio
+async def test_start_child_conversation_uses_remote_default_with_unborn_head(tmp_path):
+    remote_dir = tmp_path / "remote"
+    _init_git_repo(remote_dir)
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    run_git_command(["git", "init", "-b", "main"], repo_dir)
+    run_git_command(["git", "remote", "add", "origin", str(remote_dir)], repo_dir)
+    run_git_command(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        repo_dir,
+    )
+
+    launch = await _launch_child(
+        tmp_path, repo_dir, StartChildConversationRequest(task="Write the docs")
+    )
+
+    assert launch.result is not None
+    assert launch.result.isolation == "worktree"
+    assert launch.result.workspace is not None
+    child_workspace = Path(launch.result.workspace)
+    assert child_workspace != repo_dir
+    assert (child_workspace / "README.md").read_text() == "# test repo\n"
+    assert run_git_command(
+        ["git", "rev-parse", "HEAD"], child_workspace
+    ) == run_git_command(["git", "rev-parse", "HEAD"], remote_dir)
+    assert (
+        run_git_command(
+            ["git", "rev-parse", "--abbrev-ref", "@{upstream}"], child_workspace
+        )
+        == "origin/main"
+    )
+    with pytest.raises(GitCommandError):
+        run_git_command(["git", "rev-parse", "--verify", "HEAD"], repo_dir)
 
 
 @pytest.mark.asyncio

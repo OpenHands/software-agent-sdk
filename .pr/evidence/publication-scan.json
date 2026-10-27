@@ -1,0 +1,93 @@
+{
+  "result": "pass",
+  "scanned_at": "2026-10-23T06:46:46.612722+00:00",
+  "files_scanned": 16,
+  "configured_secret_values_compared": 3,
+  "secret_values_printed": false,
+  "comparison": "Exact configured environment secret-value bytes (minimum six characters), common credential formats, private-directory names, and unnormalized absolute workspace/run paths.",
+  "private_files_read_or_copied": false,
+  "limitation": "Field allowlisting and independent source review also constrain the curated packet; this scan cannot prove absence of every unknown secret.",
+  "matches": [],
+  "files": [
+    {
+      "name": "README.md",
+      "bytes": 2207,
+      "sha256": "f16c638a895071ab8541898d8e55c7ec2ed164bfbc7e80082e2c7a61bb8db12f"
+    },
+    {
+      "name": "capability-lanes.json",
+      "bytes": 14728,
+      "sha256": "6a704b2454d48134b48e13740980f565e403e71f26e6e21825a1c055a72a75cf"
+    },
+    {
+      "name": "docker-results.json",
+      "bytes": 8469,
+      "sha256": "f9588b3681f9964dec299ec3cc705ad795fe148f7cfbdd17cf44277c669a3f64"
+    },
+    {
+      "name": "feature-results-scan.json",
+      "bytes": 2346,
+      "sha256": "793567dc1257cde8856d130f81480d368bb88b50614ddeab0b71da558f122329"
+    },
+    {
+      "name": "feature-results.json",
+      "bytes": 1033258,
+      "sha256": "f43725b5839871cd5df9e68f2657337b5631a7858f783c6a660e0be9a77c7e7d"
+    },
+    {
+      "name": "feature-results.md",
+      "bytes": 206239,
+      "sha256": "39bd6d3df56d76dac53bf76756d7a096befc66de1ad4853652eead9ad7c79f7b"
+    },
+    {
+      "name": "independent-review.json",
+      "bytes": 898,
+      "sha256": "9a70f38c9c2692c12283f0377ebf6bdca7b831a3055c635ea13791f7ba488e5b"
+    },
+    {
+      "name": "issue-39-skill-subpath.json",
+      "bytes": 6407,
+      "sha256": "48139055605f6ee8de7239df30f12f48ab225e7c8bde114b0eb14f0f3cfa93b9"
+    },
+    {
+      "name": "issue-40-quota-validation.json",
+      "bytes": 6163,
+      "sha256": "02543438e218f792cf294fea18bd9a32447ce5a70bf6c480618798b7de74c240"
+    },
+    {
+      "name": "issue-41-typescript-public-skills.json",
+      "bytes": 8582,
+      "sha256": "2bd5c08315151044ed913d4919c1415aeff1ecbd915b16f0d1d0e818a4e10783"
+    },
+    {
+      "name": "issue-42-child-unborn.json",
+      "bytes": 5477,
+      "sha256": "93b54f02b45be7118fd7c5c817d08481843e1f2dd47b9849f22651ad5b52bb9f"
+    },
+    {
+      "name": "provenance.json",
+      "bytes": 23466,
+      "sha256": "db63ce04b0114b2a5f5c671cb3815f297c52f6c590866783246bfbdfe57a65ff"
+    },
+    {
+      "name": "public-evidence-summary.md",
+      "bytes": 1401,
+      "sha256": "47fb392b097d354a0d8c06aa133e78ea4eee08bd68b7442bf7a8117ec35588d4"
+    },
+    {
+      "name": "retired-known-bugs.json",
+      "bytes": 17322,
+      "sha256": "66da2a5744a45684108bf7e4a62718f49849defb9fed26a8a5171202b2144f83"
+    },
+    {
+      "name": "review-notes.md",
+      "bytes": 3279,
+      "sha256": "bfff02382e2282041548faa509649c75e803d11337e4822e00cb324456554d93"
+    },
+    {
+      "name": "runtime-supplements.json",
+      "bytes": 11721,
+      "sha256": "12c2e24e396dc7b5e4f9b606a382acfd3196621a2b1508ce8818d2ffbf3ee089"
+    }
+  ]
+}
