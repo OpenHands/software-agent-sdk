@@ -1,0 +1,184 @@
+{
+  "proxy_version": "1.103.6",
+  "provider_route": "azure",
+  "results": [
+    {
+      "case": "baseline-azure-proxy",
+      "exit": 0,
+      "provider_calls": 3,
+      "provider_paths": [
+        "/openai/deployments/retry-probe/chat/completions?api-version=2024-10-21",
+        "/openai/deployments/retry-probe/chat/completions?api-version=2024-10-21",
+        "/openai/deployments/retry-probe/chat/completions?api-version=2024-10-21"
+      ],
+      "offsets": [
+        0.0,
+        8.066,
+        24.118
+      ],
+      "elapsed": 24.399,
+      "retry_module": "/Users/alonaking/Documents/All-Hands/worktrees/sdk-retry-after-148-base/openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py",
+      "events": [
+        {
+          "attempt": 1,
+          "maximum": 3,
+          "hints": {
+            "llm_provider-retry-after": "12"
+          }
+        },
+        {
+          "attempt": 2,
+          "maximum": 3,
+          "hints": {
+            "llm_provider-retry-after": "4"
+          }
+        }
+      ],
+      "response": {
+        "role": "assistant",
+        "content": [
+          {
+            "cache_prompt": false,
+            "type": "text",
+            "text": "OK"
+          }
+        ],
+        "tool_calls": null,
+        "tool_call_id": null,
+        "name": null,
+        "reasoning_content": null,
+        "thinking_blocks": [],
+        "responses_reasoning_item": null
+      }
+    },
+    {
+      "case": "baseline-async-azure-proxy",
+      "exit": 0,
+      "provider_calls": 3,
+      "provider_paths": [
+        "/openai/deployments/retry-probe/chat/completions?api-version=2024-10-21",
+        "/openai/deployments/retry-probe/chat/completions?api-version=2024-10-21",
+        "/openai/deployments/retry-probe/chat/completions?api-version=2024-10-21"
+      ],
+      "offsets": [
+        0.0,
+        8.038,
+        24.082
+      ],
+      "elapsed": 24.215,
+      "retry_module": "/Users/alonaking/Documents/All-Hands/worktrees/sdk-retry-after-148-base/openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py",
+      "events": [
+        {
+          "attempt": 1,
+          "maximum": 3,
+          "hints": {
+            "llm_provider-retry-after": "12"
+          }
+        },
+        {
+          "attempt": 2,
+          "maximum": 3,
+          "hints": {
+            "llm_provider-retry-after": "4"
+          }
+        }
+      ],
+      "response": {
+        "role": "assistant",
+        "content": [
+          {
+            "cache_prompt": false,
+            "type": "text",
+            "text": "OK"
+          }
+        ],
+        "tool_calls": null,
+        "tool_call_id": null,
+        "name": null,
+        "reasoning_content": null,
+        "thinking_blocks": [],
+        "responses_reasoning_item": null
+      }
+    },
+    {
+      "case": "candidate-azure-proxy",
+      "exit": 0,
+      "provider_calls": 2,
+      "provider_paths": [
+        "/openai/deployments/retry-probe/chat/completions?api-version=2024-10-21",
+        "/openai/deployments/retry-probe/chat/completions?api-version=2024-10-21"
+      ],
+      "offsets": [
+        0.0,
+        12.044
+      ],
+      "elapsed": 12.159,
+      "retry_module": "/Users/alonaking/Documents/All-Hands/worktrees/sdk-retry-after-148/openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py",
+      "events": [
+        {
+          "attempt": 1,
+          "maximum": 3,
+          "hints": {
+            "llm_provider-retry-after": "12"
+          }
+        }
+      ],
+      "response": {
+        "role": "assistant",
+        "content": [
+          {
+            "cache_prompt": false,
+            "type": "text",
+            "text": "OK"
+          }
+        ],
+        "tool_calls": null,
+        "tool_call_id": null,
+        "name": null,
+        "reasoning_content": null,
+        "thinking_blocks": [],
+        "responses_reasoning_item": null
+      }
+    },
+    {
+      "case": "candidate-async-azure-proxy",
+      "exit": 0,
+      "provider_calls": 2,
+      "provider_paths": [
+        "/openai/deployments/retry-probe/chat/completions?api-version=2024-10-21",
+        "/openai/deployments/retry-probe/chat/completions?api-version=2024-10-21"
+      ],
+      "offsets": [
+        0.0,
+        12.043
+      ],
+      "elapsed": 12.157,
+      "retry_module": "/Users/alonaking/Documents/All-Hands/worktrees/sdk-retry-after-148/openhands-sdk/openhands/sdk/llm/utils/retry_mixin.py",
+      "events": [
+        {
+          "attempt": 1,
+          "maximum": 3,
+          "hints": {
+            "llm_provider-retry-after": "12"
+          }
+        }
+      ],
+      "response": {
+        "role": "assistant",
+        "content": [
+          {
+            "cache_prompt": false,
+            "type": "text",
+            "text": "OK"
+          }
+        ],
+        "tool_calls": null,
+        "tool_call_id": null,
+        "name": null,
+        "reasoning_content": null,
+        "thinking_blocks": [],
+        "responses_reasoning_item": null
+      }
+    }
+  ]
+}

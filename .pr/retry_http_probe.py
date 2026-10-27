@@ -38,10 +38,15 @@ def probe(args):
     result_dir = Path(args.out).resolve()
     result_dir.mkdir(parents=True, exist_ok=True)
     calls = []
+    paths = []
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             assert request['messages'][0]['role'] == 'system'
+            if args.provider_route == 'azure':
+                assert self.path == '/openai/deployments/retry-probe/chat/completions?api-version=2024-10-21', self.path
+                assert self.headers.get('api-key') == 'local-test'
+            paths.append(self.path)
             now = time.monotonic()
             calls.append(now)
             remaining = 12 - (now - calls[0])
@@ -67,13 +72,17 @@ def probe(args):
                 sock.bind(('127.0.0.1', 0))
                 proxy_port = sock.getsockname()[1]
             config = Path(tmp)/'config.yaml'
+            upstream_base = f'http://127.0.0.1:{provider.server_port}'
+            if args.provider_route == 'openai':
+                upstream_base += '/v1'
+            azure_version = '      api_version: "2024-10-21"\n' if args.provider_route == 'azure' else ''
             config.write_text(f'''model_list:
   - model_name: retry-probe
     litellm_params:
-      model: openai/retry-probe
-      api_base: http://127.0.0.1:{provider.server_port}/v1
+      model: {args.provider_route}/retry-probe
+      api_base: {upstream_base}
       api_key: local-test
-litellm_settings:
+{azure_version}litellm_settings:
   num_retries: 3
 router_settings:
   retry_policy:
@@ -93,12 +102,17 @@ router_settings:
                             time.sleep(0.5)
                     else:
                         raise RuntimeError('Proxy startup timeout')
-                    for mode, checkout, asynchronous in [('baseline', args.baseline, False), ('candidate', args.candidate, False), ('candidate-async', args.candidate, True)]:
-                        if args.candidate_only and mode == 'baseline':
+                    cases = [('baseline', args.baseline, False), ('candidate', args.candidate, False), ('candidate-async', args.candidate, True)]
+                    if args.provider_route == 'azure':
+                        cases.insert(1, ('baseline-async', args.baseline, True))
+                    for mode, checkout, asynchronous in cases:
+                        if args.candidate_only and mode.startswith('baseline'):
                             continue
-                        for route, port in [('direct',provider.server_port),('proxy',proxy_port)]:
+                        routes = [('proxy', proxy_port)] if args.provider_route == 'azure' else [('direct', provider.server_port), ('proxy', proxy_port)]
+                        for route, port in routes:
                             calls.clear()
-                            name = f'{mode}-{route}'
+                            paths.clear()
+                            name = f'{mode}-{args.provider_route}-{route}'
                             output = result_dir/f'{name}.json'
                             env = dict(os.environ, OPENHANDS_SUPPRESS_BANNER='1', PYTHONPATH=os.pathsep.join(str(Path(checkout)/p) for p in ['openhands-sdk','openhands-tools','openhands-workspace','openhands-agent-server']))
                             command = [sys.executable, str(Path(__file__).resolve()),'client','--url',f'http://127.0.0.1:{port}/v1','--result',str(output)]
@@ -106,17 +120,19 @@ router_settings:
                                 command.append('--asynchronous')
                             with (result_dir/f'{name}.log').open('w') as client_log:
                                 completed = subprocess.run(command,env=env,cwd=tmp,stdout=client_log,stderr=subprocess.STDOUT,timeout=90)
-                            row={'case':name,'exit':completed.returncode,'provider_calls':len(calls),'offsets':[round(t-calls[0],3) for t in calls]}
+                            row={'case':name,'exit':completed.returncode,'provider_calls':len(calls),'provider_paths':list(paths),'offsets':[round(t-calls[0],3) for t in calls]}
                             if completed.returncode == 0:
                                 row.update(json.loads(output.read_text()))
                             results.append(row)
-                            (result_dir/'results.json').write_text(json.dumps({'proxy_version':args.proxy_version,'results':results},indent=2))
+                            (result_dir/'results.json').write_text(json.dumps({'proxy_version':args.proxy_version,'provider_route':args.provider_route,'results':results},indent=2))
                             print(json.dumps(row),flush=True)
                             assert completed.returncode == 0, row
                             assert Path(row['retry_module']).is_relative_to(Path(checkout)), row
-                            assert len(calls)==(3 if mode=='baseline' else 2), row
-                            if mode!='baseline':
+                            assert len(calls)==(3 if mode.startswith('baseline') else 2), row
+                            if not mode.startswith('baseline'):
                                 assert calls[1]-calls[0]>=12, row
+                            if route == 'proxy':
+                                assert row['events'][0]['hints'].get('llm_provider-retry-after') == '12', row
                 finally:
                     os.killpg(proxy.pid,signal.SIGTERM)
                     try:
@@ -135,6 +151,6 @@ if __name__ == '__main__':
     parser=argparse.ArgumentParser()
     sub=parser.add_subparsers(dest='action',required=True)
     c=sub.add_parser('client');c.add_argument('--url');c.add_argument('--result');c.add_argument('--asynchronous',action='store_true')
-    p=sub.add_parser('probe');p.add_argument('--baseline',required=True);p.add_argument('--candidate',required=True);p.add_argument('--out',required=True);p.add_argument('--proxy-version',default='1.103.6');p.add_argument('--candidate-only',action='store_true')
+    p=sub.add_parser('probe');p.add_argument('--baseline',required=True);p.add_argument('--candidate',required=True);p.add_argument('--out',required=True);p.add_argument('--proxy-version',default='1.103.6');p.add_argument('--candidate-only',action='store_true');p.add_argument('--provider-route',choices=['openai','azure'],default='openai')
     args=parser.parse_args()
     client(args) if args.action=='client' else probe(args)
