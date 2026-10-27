@@ -985,6 +985,10 @@ class EventService:
         if not isinstance(self._conversation.agent, ACPAgent):
             return (False, False)
         with self._conversation._state as state:
+            # Deliberately RUNNING only, not is_active(): once a pause is
+            # pending (PAUSING) the user's stop intent wins. Superseding here
+            # would interrupt and automatically re-run the new message, undoing
+            # the pause; instead the message stays queued until resume.
             if state.execution_status != ConversationExecutionStatus.RUNNING:
                 return (False, False)
             inflight_prompt_user_message_id = state.agent_state.get(

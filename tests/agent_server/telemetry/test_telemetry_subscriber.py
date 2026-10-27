@@ -200,13 +200,20 @@ async def test_view_only_rehydration_emits_nothing(factory, baseline):
     )
 
 
-async def test_a_run_interrupted_before_a_terminal_state_is_still_reported(factory):
-    """The crash-mid-run safety net must survive the noise fix."""
+@pytest.mark.parametrize("active", ["running", "pausing"])
+async def test_a_run_interrupted_before_a_terminal_state_is_still_reported(
+    factory, active
+):
+    """The crash-mid-run safety net must survive the noise fix.
+
+    The subscriber sees internal (unprojected) events, so a pending pause
+    arrives as ``pausing`` and must count as an observed run too.
+    """
     sink = CollectingSink()
     sub = make_subscriber(sink, factory)
 
     await sub(ConversationStateUpdateEvent(key="execution_status", value="idle"))
-    await sub(ConversationStateUpdateEvent(key="execution_status", value="running"))
+    await sub(ConversationStateUpdateEvent(key="execution_status", value=active))
     await sub.close()
 
     assert sink.names == [m.EventName.CONVERSATION_FAILED]
