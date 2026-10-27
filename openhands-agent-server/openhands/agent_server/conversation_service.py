@@ -384,12 +384,17 @@ def _compose_conversation_info(
     supports_runtime_model_switch = bool(
         agent_state.get("acp_supports_runtime_model_switch", False)
     )
+    unread = state.execution_status.is_terminal() and (
+        stored.last_read_at is None or stored.updated_at > stored.last_read_at
+    )
     return ConversationInfo(
         **state.model_dump(mode="json"),
         title=stored.title,
         metrics=stored.metrics,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
+        last_read_at=stored.last_read_at,
+        unread=unread,
         forked_from_conversation_id=stored.forked_from_conversation_id,
         forked_from_event_id=stored.forked_from_event_id,
         parent_conversation_id=stored.parent_conversation_id,
@@ -495,6 +500,7 @@ def _stored_metadata_signature(stored: StoredConversation) -> int:
             "metrics",
             "created_at",
             "updated_at",
+            "last_read_at",
             "forked_from_conversation_id",
             "forked_from_event_id",
             "parent_conversation_id",
@@ -1905,11 +1911,13 @@ class ConversationService:
 
         loop = asyncio.get_running_loop()
         state = await event_service.get_state()
-        update: dict[str, Any] = {"updated_at": utc_now()}
+        update: dict[str, Any] = {}
         if request.title is not None:
             update["title"] = request.title.strip()
         if request.tags is not None:
             update["tags"] = request.tags
+        if request.unread is not None:
+            update["last_read_at"] = None if request.unread else utc_now()
         # Persist first: a refused write (e.g. lost lease ownership) must leave
         # the in-memory metadata and state untouched.
         await event_service.save_meta(event_service.stored.model_copy(update=update))
@@ -1937,6 +1945,8 @@ class ConversationService:
             updated_fields.append("title")
         if request.tags is not None:
             updated_fields.append("tags")
+        if request.unread is not None:
+            updated_fields.append("unread")
         logger.info(
             "Successfully updated conversation %s (%s)",
             conversation_id,
@@ -2735,9 +2745,7 @@ class AutoTitleSubscriber(Subscriber):
                 )
                 if title and self.service.stored.title is None:
                     await self.service.save_meta(
-                        self.service.stored.model_copy(
-                            update={"title": title, "updated_at": utc_now()}
-                        )
+                        self.service.stored.model_copy(update={"title": title})
                     )
             except Exception:
                 logger.warning(

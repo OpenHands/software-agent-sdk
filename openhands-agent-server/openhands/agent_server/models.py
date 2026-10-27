@@ -121,6 +121,10 @@ class StoredConversation(ConversationConfig):
     metrics: MetricsSnapshot | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    last_read_at: datetime | None = Field(
+        default=None,
+        description="Most recent time the user marked this conversation as read",
+    )
     forked_from_conversation_id: OpenHandsUUID | None = Field(
         default=None,
         description=(
@@ -247,6 +251,16 @@ class _ConversationInfoBase(BaseModel):
     metrics: MetricsSnapshot | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    last_read_at: datetime | None = Field(
+        default=None,
+        description="Most recent time the user marked this conversation as read",
+    )
+    unread: bool = Field(
+        default=False,
+        description=(
+            "Whether terminal agent output is newer than the user's last read time"
+        ),
+    )
     # Plain ``UUID`` (not ``OpenHandsUUID``) so it JSON-serializes dashed, exactly
     # like the ``id`` field above — clients must be able to correlate the two.
     forked_from_conversation_id: UUID | None = Field(
@@ -529,6 +543,13 @@ class UpdateConversationRequest(BaseModel):
             "Key-value tags to set on the conversation. Keys must be lowercase "
             "alphanumeric. Values are arbitrary strings up to 256 characters. "
             "Replaces all existing tags when provided."
+        ),
+    )
+    unread: bool | None = Field(
+        default=None,
+        description=(
+            "Set the conversation read state. False marks it read; true marks it "
+            "unread."
         ),
     )
 
