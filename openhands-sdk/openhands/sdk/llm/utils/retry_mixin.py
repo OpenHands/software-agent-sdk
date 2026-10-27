@@ -1,5 +1,5 @@
 from collections.abc import Callable, Iterable
-from typing import Any, cast
+from typing import Any, Protocol, cast, runtime_checkable
 
 from tenacity import (
     RetryCallState,
@@ -18,6 +18,12 @@ logger = get_logger(__name__)
 
 # Helpful alias for listener signature: (attempt_number, max_retries) -> None
 RetryListener = Callable[[int, int, BaseException | None], None]
+
+
+@runtime_checkable
+class _HasStatusCode(Protocol):
+    @property
+    def status_code(self) -> object: ...
 
 
 class RetryMixin:
@@ -110,7 +116,7 @@ class RetryMixin:
                 else None
             )
             if exc is not None:
-                status = getattr(exc, "status_code", None)
+                status = exc.status_code if isinstance(exc, _HasStatusCode) else None
                 logger.warning(
                     "LLM request failed: exception_type=%s.%s status_code=%s "
                     "attempt=%d max_attempts=%d retry_eligible=%s will_retry=%s",

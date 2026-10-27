@@ -49,6 +49,31 @@ def test_failure_logging_explains_retry_decision(caplog, attempts, eligible):
     assert "secret-response-body" not in caplog.text
 
 
+@pytest.mark.parametrize("status", [None, 429, "private-status"])
+def test_failure_logging_handles_optional_status_safely(caplog, status):
+    class ProviderError(Exception):
+        status_code = status
+
+    error = (
+        RuntimeError("private-body")
+        if status is None
+        else ProviderError("private-body")
+    )
+
+    @RetryMixin().retry_decorator(num_retries=1, retry_exceptions=(Exception,))
+    def request():
+        raise error
+
+    with caplog.at_level(logging.WARNING), pytest.raises(type(error)):
+        request()
+
+    expected_status = status if isinstance(status, int) else None
+    assert f"status_code={expected_status}" in caplog.text
+    assert "will_retry=False" in caplog.text
+    assert "private-status" not in caplog.text
+    assert "private-body" not in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_async_retry_logs_failure_and_preserves_success(caplog):
     calls = 0
