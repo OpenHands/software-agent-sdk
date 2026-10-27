@@ -10,7 +10,9 @@ import pytest
 import pytest_asyncio
 
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.event_service import ConversationRunLimitExceeded
+from openhands.agent_server.event_service import (
+    ConversationRunLimitExceeded,
+)
 from openhands.agent_server.openai.service import _run_agent
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.conversation.request import StartConversationRequest
@@ -808,3 +810,133 @@ async def test_cancelled_close_still_tears_the_conversation_down(tmp_path, monke
         assert holder._conversation is None
         assert holder._lease is None
         assert holder._lease_generation is None
+
+
+async def test_worker_timeout_keeps_permit_until_the_worker_stops(
+    tmp_path, monkeypatch
+):
+    """A worker that outlives the drain must keep the permit, not release it.
+
+    Regression: when the worker did not exit within the drain timeout, teardown
+    released the permit and closed the conversation anyway. With
+    ``max_concurrent_runs=1`` a competing conversation could then use the
+    executor the abandoned worker was still running on, so the server ran two
+    live operations at the limit. The permit and the conversation must stay with
+    this service until the worker really exits, and teardown must then finish.
+    """
+    owner, create = await _terminal_services(tmp_path, 1)
+    async with owner:
+        holder = await create()
+        other = await create()
+        conversation = holder.get_conversation()
+        conversation._ensure_agent_ready()
+
+        worker_started = threading.Event()
+        worker_release = threading.Event()
+
+        def blocked_execute_tool(tool_name, action):
+            worker_started.set()
+            worker_release.wait(timeout=60)
+            return TerminalObservation.from_text("done", command="x")
+
+        monkeypatch.setattr(conversation, "execute_tool", blocked_execute_tool)
+        # Keep the bounded drain short: the assertion is that the permit
+        # outlives it, so a long wait would only slow the test down.
+        monkeypatch.setattr(
+            "openhands.agent_server.event_service.DIRECT_TOOL_DRAIN_TIMEOUT_SECONDS",
+            0.5,
+        )
+
+        direct = asyncio.create_task(
+            holder.execute_tool("terminal", {"kind": "TerminalAction", "command": "x"})
+        )
+        await asyncio.to_thread(worker_started.wait, 10)
+
+        close_task = asyncio.create_task(holder.close())
+        # Let the drain time out with the worker still blocked.
+        await wait_until(lambda: holder._teardown_continuation is not None)
+
+        # The worker is still live, so the permit must stay taken and the
+        # conversation must stay open: teardown is parked, not finished.
+        with pytest.raises(ConversationRunLimitExceeded):
+            await other.execute_tool(
+                "terminal", {"kind": "TerminalAction", "command": "y"}
+            )
+        assert holder.is_open()
+        assert close_task.done() is False
+
+        worker_release.set()
+        await asyncio.wait_for(close_task, timeout=30)
+        await asyncio.gather(direct, return_exceptions=True)
+
+        # Teardown finished once the worker exited: the conversation is closed,
+        # the permit is back, and the same call is admitted rather than refused.
+        await wait_until(lambda: not holder.is_open())
+        await wait_until(lambda: _free_run_permits(holder) == 1)
+        await other.execute_tool("terminal", {"kind": "TerminalAction", "command": "y"})
+
+
+async def test_interrupt_timeout_keeps_permit_until_the_interrupt_stops(
+    tmp_path, monkeypatch
+):
+    """An interrupt that outlives the drain must keep the permit too.
+
+    The same capacity gap as the worker timeout, on the offloaded
+    ``executor.interrupt()``: it outlives the worker and still uses the
+    executor, so teardown must wait for it rather than release capacity and
+    close the executor under it.
+    """
+    owner, create = await _terminal_services(tmp_path, 1)
+    async with owner:
+        holder = await create()
+        other = await create()
+        conversation = holder.get_conversation()
+        conversation._ensure_agent_ready()
+
+        worker_started = threading.Event()
+        worker_release = threading.Event()
+        interrupt_started = threading.Event()
+        interrupt_release = threading.Event()
+
+        def blocked_execute_tool(tool_name, action):
+            worker_started.set()
+            worker_release.wait(timeout=60)
+            return TerminalObservation.from_text("done", command="x")
+
+        def blocked_interrupt():
+            interrupt_started.set()
+            interrupt_release.wait(timeout=60)
+
+        monkeypatch.setattr(conversation, "execute_tool", blocked_execute_tool)
+        executor = conversation.agent.tools_map["terminal"].as_executable().executor
+        assert executor is not None
+        monkeypatch.setattr(executor, "interrupt", blocked_interrupt)
+        monkeypatch.setattr(
+            "openhands.agent_server.event_service.DIRECT_TOOL_DRAIN_TIMEOUT_SECONDS",
+            0.5,
+        )
+
+        direct = asyncio.create_task(
+            holder.execute_tool("terminal", {"kind": "TerminalAction", "command": "x"})
+        )
+        await asyncio.to_thread(worker_started.wait, 10)
+
+        close_task = asyncio.create_task(holder.close())
+        await asyncio.to_thread(interrupt_started.wait, 10)
+        await wait_until(lambda: holder._teardown_continuation is not None)
+
+        # The interrupt still holds the executor, so the permit must stay taken.
+        with pytest.raises(ConversationRunLimitExceeded):
+            await other.execute_tool(
+                "terminal", {"kind": "TerminalAction", "command": "y"}
+            )
+        assert close_task.done() is False
+
+        worker_release.set()
+        interrupt_release.set()
+        await asyncio.wait_for(close_task, timeout=30)
+        await asyncio.gather(direct, return_exceptions=True)
+
+        await wait_until(lambda: not holder.is_open())
+        await wait_until(lambda: _free_run_permits(holder) == 1)
+        await other.execute_tool("terminal", {"kind": "TerminalAction", "command": "y"})

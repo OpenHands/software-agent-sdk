@@ -96,6 +96,11 @@ LEASE_RENEW_INTERVAL_SECONDS = 15.0
 # Bounds initial-state push so subscribe_to_events does not stall on a
 # subscriber whose __call__ blocks (e.g. WS with a full TCP send buffer).
 INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
+# How long close() waits for a direct tool worker (and each offloaded
+# interrupt) before it hands the rest of teardown to a service-owned
+# continuation. The permit and the conversation stay with this service until
+# that work actually stops; only the wait is bounded.
+DIRECT_TOOL_DRAIN_TIMEOUT_SECONDS = 10.0
 
 
 logger = get_logger(__name__)
@@ -302,6 +307,11 @@ class EventService:
     # eviction, so nothing else would release them). Retained so a retry
     # close() joins the same teardown instead of starting a second one.
     _teardown_task: asyncio.Task[None] | None = field(default=None, init=False)
+    # Continuation that finishes teardown when a direct tool worker or
+    # interrupt outlives close()'s bounded drain. It keeps the conversation and
+    # its capacity permit until that work actually stops, so no competing
+    # conversation can use the executor or the permit underneath it.
+    _teardown_continuation: asyncio.Task[None] | None = field(default=None, init=False)
     _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     # Whether a direct tool execution is in flight (see execute_tool). Direct
     # calls are serialized per conversation and used by run()/start_goal_loop()
@@ -2327,6 +2337,14 @@ class EventService:
             task.add_done_callback(self._retrieve_teardown_result)
             self._teardown_task = task
         await asyncio.shield(task)
+        # If the drain timed out, teardown handed its remainder to a
+        # continuation that keeps the conversation and its capacity permit
+        # until the abandoned work really stops. Joining it means close()
+        # returns with the conversation fully torn down, which is what its
+        # callers (delete, eviction, shutdown) rely on.
+        continuation = self._teardown_continuation
+        if continuation is not None and not continuation.done():
+            await asyncio.shield(continuation)
 
     @staticmethod
     def _retrieve_teardown_result(task: asyncio.Task) -> None:
@@ -2343,6 +2361,13 @@ class EventService:
             logger.debug("Conversation teardown failed: %s", exc)
 
     async def _teardown(self) -> None:
+        continuation = self._teardown_continuation
+        if continuation is not None and not continuation.done():
+            # A previous teardown already handed its remainder to a continuation
+            # that is still finishing. Join it instead of draining and closing
+            # the conversation a second time.
+            await asyncio.shield(continuation)
+            return
         if self.bash_event_service is not None:
             await self.bash_event_service.close()
         # Abandon any in-flight direct tool call: it does not hold the
@@ -2355,15 +2380,50 @@ class EventService:
         # they settle below.
         self._direct_tool_abandon += 1
         self._direct_tool_in_flight = False
-        # A worker that has already entered the tool executor cannot be stopped
-        # by the bump, so interrupt the command (Ctrl+C for the terminal) and
-        # wait for the thread to return before the teardown below closes that
-        # executor. Without this the command loses its terminal mid-run or keeps
-        # writing after the conversation is deleted. The interrupt is offloaded
-        # (the PowerShell backend's scans block) and drained alongside the
-        # worker, so teardown never closes an executor an interrupt still uses.
+        pending = await self._drain_direct_tool_work()
+        if pending is not None:
+            # A worker or interrupt outlived the bounded drain. Closing the
+            # executor under it would let a competing conversation use it, and
+            # returning the permit would admit that conversation at the server
+            # limit while the old work still runs. Keep both with this service
+            # and finish teardown from a continuation the service owns, so
+            # capacity is released when the work really stops and not before.
+            self._teardown_continuation = asyncio.create_task(
+                self._finish_teardown_after(pending)
+            )
+            self._teardown_continuation.add_done_callback(
+                self._retrieve_teardown_result
+            )
+            return
+        await self._finish_teardown()
+
+    def _pending_direct_tool_work(self) -> list[asyncio.Future[Any]]:
+        """Direct tool futures that have not finished yet."""
+        pending: list[asyncio.Future[Any]] = []
+        worker = self._direct_tool_worker
+        if worker is not None and not worker.done():
+            pending.append(worker)
+        pending.extend(t for t in self._direct_tool_interrupt_tasks if not t.done())
+        return pending
+
+    async def _drain_direct_tool_work(self) -> list[asyncio.Future[Any]] | None:
+        """Interrupt and wait (bounded) for direct tool work to stop.
+
+        Returns ``None`` once the worker and every interrupt have settled.
+        Otherwise returns the futures that are still running, so teardown can
+        hand them to a continuation rather than close the executor under them.
+        """
         direct_worker = self._direct_tool_worker
         if direct_worker is not None and not direct_worker.done():
+            # A worker that has already entered the tool executor cannot be
+            # stopped by the abandon bump, so interrupt the command (Ctrl+C for
+            # the terminal) and wait for the thread to return before the
+            # teardown below closes that executor. Without this the command
+            # loses its terminal mid-run or keeps writing after the
+            # conversation is deleted. The interrupt is offloaded (the
+            # PowerShell backend's scans block) and drained alongside the
+            # worker, so teardown never closes an executor an interrupt still
+            # uses.
             if self._conversation is not None:
                 with suppress(Exception):
                     for tool in self._conversation.agent.tools_map.values():
@@ -2372,11 +2432,15 @@ class EventService:
                             if executor is not None:
                                 self._offload_direct_tool_interrupt(executor)
             try:
-                await asyncio.wait_for(asyncio.shield(direct_worker), timeout=10.0)
+                await asyncio.wait_for(
+                    asyncio.shield(direct_worker),
+                    timeout=DIRECT_TOOL_DRAIN_TIMEOUT_SECONDS,
+                )
             except TimeoutError:
                 logger.warning(
-                    "Direct tool worker did not exit within 10s of close(); "
-                    "continuing teardown"
+                    "Direct tool worker did not exit within %ss of close(); "
+                    "finishing teardown once it does",
+                    DIRECT_TOOL_DRAIN_TIMEOUT_SECONDS,
                 )
             except asyncio.CancelledError:
                 if not direct_worker.done():
@@ -2391,10 +2455,20 @@ class EventService:
             except Exception as exc:
                 logger.debug("Direct tool worker failed during close: %s", exc)
         await self._drain_direct_tool_interrupt()
-        # The worker and its interrupts have now settled or timed out. Return
-        # the permit held across the teardown: a worker that outlived its 10s
-        # drain is abandoned work, and leaving the permit to its done callback
-        # would let a permanently stuck thread shrink server capacity forever.
+        return self._pending_direct_tool_work() or None
+
+    async def _finish_teardown_after(self, pending: list[asyncio.Future[Any]]) -> None:
+        """Finish teardown once abandoned direct tool work has really stopped."""
+        # ``asyncio.wait`` neither raises on a cancelled future nor cancels the
+        # rest, so one abandoned call that ends in cancellation cannot abort the
+        # teardown of the others.
+        await asyncio.wait(pending)
+        await self._finish_teardown()
+
+    async def _finish_teardown(self) -> None:
+        # The worker and its interrupts have settled: return the permit held
+        # across the teardown, so the conversation stops counting against
+        # ``max_concurrent_runs``.
         self._release_direct_tool_slot()
         self._direct_tool_worker = None
         self._direct_tool_executor = None
@@ -2690,11 +2764,11 @@ class EventService:
 
         ``close()`` cannot close the executor while an offloaded
         ``executor.interrupt()`` still uses it, so this joins every interrupt
-        the same way ``close()`` joins the worker. The tracking list is not
-        cleared up front: if ``close()`` is itself cancelled mid-drain, the
-        still-running interrupts must stay tracked so their done callbacks
-        release the permit only once they really finish, rather than the
-        cancelled ``close()`` returning it under them.
+        the same way ``close()`` joins the worker. Finished entries are pruned;
+        a still-running one is kept tracked (whether it finished in time or
+        timed out) so ``_pending_direct_tool_work`` can hand it to the teardown
+        continuation and its done callback releases the permit only once it
+        really finishes.
         """
         for interrupt_task in list(self._direct_tool_interrupt_tasks):
             if interrupt_task.done():
@@ -2702,11 +2776,15 @@ class EventService:
                     interrupt_task.exception()
                 continue
             try:
-                await asyncio.wait_for(asyncio.shield(interrupt_task), timeout=10.0)
+                await asyncio.wait_for(
+                    asyncio.shield(interrupt_task),
+                    timeout=DIRECT_TOOL_DRAIN_TIMEOUT_SECONDS,
+                )
             except TimeoutError:
                 logger.warning(
-                    "Direct tool interrupt did not finish within 10s of close(); "
-                    "continuing teardown"
+                    "Direct tool interrupt did not finish within %ss of close(); "
+                    "finishing teardown once it does",
+                    DIRECT_TOOL_DRAIN_TIMEOUT_SECONDS,
                 )
             except asyncio.CancelledError:
                 # close() itself was cancelled while an interrupt still uses the
@@ -2718,7 +2796,9 @@ class EventService:
                 raise
             except Exception as exc:
                 logger.debug("Direct tool interrupt failed during close: %s", exc)
-        self._direct_tool_interrupt_tasks = []
+        self._direct_tool_interrupt_tasks = [
+            task for task in self._direct_tool_interrupt_tasks if not task.done()
+        ]
 
     async def execute_tool(self, tool_name: str, action: dict[str, Any]) -> Observation:
         """Execute one tool directly on the conversation, bypassing the agent loop.
