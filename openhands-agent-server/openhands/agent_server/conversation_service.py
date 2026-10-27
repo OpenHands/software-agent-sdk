@@ -2188,7 +2188,6 @@ class ConversationService:
                     "parent_conversation_id": parent_id,
                     "forked_from_conversation_id": None,
                     "forked_from_event_id": None,
-                    "legacy_max_budget_per_run": None,
                 }
             )
             info, _ = await self._launch_prepared_conversation(

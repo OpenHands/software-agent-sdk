@@ -1377,12 +1377,6 @@ class EventService:
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
         conversation.set_security_analyzer(self.stored.security_analyzer)
-        # Conversations created before the budget moved to base_state.json
-        # carry it in meta.json. Move it over once; meta.json drops it on the
-        # next save, so a later change or clear is not overwritten.
-        legacy_budget = self.stored.legacy_max_budget_per_run
-        if legacy_budget is not None and conversation.max_budget_per_run is None:
-            conversation.max_budget_per_run = legacy_budget
         # On resume the agent was unknown at construction time (loaded from
         # base_state.json), so decide token streaming now and disable it when the
         # resolved agent can't emit token callbacks.
@@ -1402,10 +1396,6 @@ class EventService:
                     binding,
                 )
         self._conversation._state.set_write_guard(self._write_guard)
-        if legacy_budget is not None:
-            await self.save_meta(
-                self.stored.model_copy(update={"legacy_max_budget_per_run": None})
-            )
 
         # Inert unless the deployment opted in (OH_LLM_API_KEY_REFRESH_URL plus
         # OH_LLM_API_KEY_REFRESH_BASE_URLS); see #5189.

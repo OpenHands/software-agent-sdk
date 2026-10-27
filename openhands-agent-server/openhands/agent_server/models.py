@@ -114,16 +114,6 @@ class StoredConversation(ConversationConfig):
     """
 
     required_runtime_credential_bindings: set[str] = Field(default_factory=set)
-    legacy_max_budget_per_run: float | None = Field(
-        default=None,
-        validation_alias="max_budget_per_run",
-        exclude=True,
-        description=(
-            "Budget read from a meta.json written before the budget moved to "
-            "base_state.json. Moved into the conversation state on load; never "
-            "written back."
-        ),
-    )
 
     id: OpenHandsUUID
     title: str | None = Field(
