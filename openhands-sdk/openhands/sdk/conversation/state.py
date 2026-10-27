@@ -111,6 +111,11 @@ class ConversationState(OpenHandsModel):
         description="Maximum number of iterations the agent can "
         "perform in a single run.",
     )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        description="USD limit on accumulated conversation LLM cost; "
+        "None means unbounded.",
+    )
     stuck_detection: bool = Field(
         default=True,
         description="Whether to enable stuck detection for the agent.",
@@ -485,6 +490,7 @@ class ConversationState(OpenHandsModel):
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
         file_store: FileStore | None = None,
+        max_budget_per_run: float | None = None,
     ) -> "ConversationState":
         """Create a new conversation state or resume from persistence.
 
@@ -510,6 +516,8 @@ class ConversationState(OpenHandsModel):
                 value is still stored on the state and used for environment
                 observation paths.
             max_iterations: Maximum iterations per run
+            max_budget_per_run: Accumulated LLM cost limit. None preserves a
+                resumed state's cap and leaves new conversations unbounded.
             stuck_detection: Whether to enable stuck detection
             cipher: Optional cipher for encrypting/decrypting secrets in
                     persisted state. If provided, secrets are encrypted when
@@ -585,6 +593,8 @@ class ConversationState(OpenHandsModel):
                 state.agent = agent
             state.workspace = workspace
             state.max_iterations = max_iterations
+            if max_budget_per_run is not None:
+                state.max_budget_per_run = max_budget_per_run
 
             # Note: stats are already deserialized from base_state.json above.
             # Do NOT reset stats here - this would lose accumulated metrics.
@@ -604,6 +614,7 @@ class ConversationState(OpenHandsModel):
             workspace=workspace,
             persistence_dir=persistence_dir,
             max_iterations=max_iterations,
+            max_budget_per_run=max_budget_per_run,
             stuck_detection=stuck_detection,
             tags=tags or {},
         )
