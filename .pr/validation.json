@@ -1,6 +1,6 @@
 {
   "base": "d0d9d81324210414462fb676b377e0563a08a0cb",
-  "implementation_head": "62fc57f0d5150b33dd1665d895a71b2717315b33",
+  "implementation_head": "5a8ae29011c599240861d5e49916f4b6b75113d3",
   "date": "2026-10-27",
   "environment": {
     "os": "Linux in Docker",
@@ -44,16 +44,23 @@
       "scenario": "TypeScript full_state followed by a paused field update",
       "base": "ecc2d02d4",
       "result": "Canonical full_state path remained pausing; existing legacy spelling passed. Fixing snapshot-key recognition passes all cases"
+    },
+    {
+      "scenario": "Review follow-up: FINISHED preserved, loop-less pauses, is_active() in gateway and telemetry",
+      "base": "f2b6459b2e3fdfedd07e498f9e3893b5cde4e421",
+      "result": "8 failed, 7 passed before the fix: native pause during the final LLM call turned FINISHED into PAUSED and the resume issued a second LLM call; ACP completed prompt with nothing queued reported PAUSED; pause() without a run loop stayed PAUSING; run() from stale PAUSING never set RUNNING; interrupt() fallback stayed PAUSING; gateway wait and telemetry ignored PAUSING as an observed run. All pass after the fix"
     }
   ],
   "green": {
-    "python_command": "uv run --no-sync pytest tests/sdk/conversation tests/sdk/agent tests/agent_server/test_conversation_service.py tests/agent_server/test_event_service.py tests/agent_server/docker_runtime/test_registry.py tests/agent_server/test_pausing_compatibility.py tests/agent_server/test_models.py tests/agent_server/test_event_router.py tests/agent_server/test_event_router_websocket.py tests/agent_server/test_webhook_subscriber.py tests/agent_server/test_websocket_first_message_auth.py tests/agent_server/test_session_socket.py tests/cross/test_acp_pause_live_server.py -q --timeout=60",
+    "python_command": "uv run --no-sync pytest tests/sdk/conversation tests/sdk/agent tests/agent_server/test_conversation_service.py tests/agent_server/test_event_service.py tests/agent_server/docker_runtime/test_registry.py tests/agent_server/test_pausing_compatibility.py tests/agent_server/test_models.py tests/agent_server/test_event_router.py tests/agent_server/test_event_router_websocket.py tests/agent_server/test_webhook_subscriber.py tests/agent_server/test_websocket_first_message_auth.py tests/agent_server/test_session_socket.py tests/agent_server/test_openai_gateway_reused_wait.py tests/agent_server/telemetry tests/cross/test_acp_pause_live_server.py -q --timeout=120",
     "python": {
-      "passed": 2367,
+      "passed": 2647,
       "deselected": 6,
       "warnings": 68,
-      "duration_seconds": 185.54
+      "duration_seconds": 224.88,
+      "note": "Run with GIT_DIR/GIT_WORK_TREE unset: the dev container exports them for the host worktree and git-based tests then commit into the real repository and fail"
     },
+    "changed_file_lint": "ruff format, ruff check, pycodestyle and pyright: 0 errors on the 11 changed files",
     "typescript": {
       "tests_passed": 400,
       "build": "passed",
