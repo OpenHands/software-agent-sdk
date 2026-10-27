@@ -566,7 +566,9 @@ class WindowsTerminal(TerminalInterface):
             seq = self._prompt_count()
 
             delivered = windows_console.send_console_ctrl_c(
-                self.process.pid, timeout=_CTRL_C_HELPER_TIMEOUT_SECONDS
+                self.process.pid,
+                timeout=_CTRL_C_HELPER_TIMEOUT_SECONDS,
+                shell_path=self.shell_path,
             )
             if not delivered:
                 logger.debug("Console Ctrl+C could not be delivered to PowerShell")
@@ -590,7 +592,9 @@ class WindowsTerminal(TerminalInterface):
             # Prompt still hasn't returned: try Ctrl+C once more after the tree
             # has been torn down, then give up and let the session recreate us.
             windows_console.send_console_ctrl_c(
-                self.process.pid, timeout=_CTRL_C_HELPER_TIMEOUT_SECONDS
+                self.process.pid,
+                timeout=_CTRL_C_HELPER_TIMEOUT_SECONDS,
+                shell_path=self.shell_path,
             )
             if self._wait_for_prompt_after(seq, _INTERRUPT_PROMPT_WAIT_SECONDS):
                 return True

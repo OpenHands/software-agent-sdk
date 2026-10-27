@@ -23,6 +23,7 @@ Everything here degrades gracefully: on failure the functions return
 
 from __future__ import annotations
 
+import base64
 import ctypes
 import subprocess
 import sys
@@ -35,23 +36,36 @@ logger = get_logger(__name__)
 
 IS_WINDOWS = sys.platform == "win32"
 
-# Source of the Ctrl+C helper.  It is executed with ``python -I -c`` so it
-# never imports anything from the SDK and starts in well under 100 ms.
-CTRL_C_HELPER_SOURCE = (
-    "import ctypes,sys\n"
-    "k=ctypes.WinDLL('kernel32',use_last_error=True)\n"
-    "k.AttachConsole.argtypes=[ctypes.c_uint32]\n"
-    "k.SetConsoleCtrlHandler.argtypes=[ctypes.c_void_p,ctypes.c_int]\n"
-    "k.GenerateConsoleCtrlEvent.argtypes=[ctypes.c_uint32,ctypes.c_uint32]\n"
-    "pid=int(sys.argv[1])\n"
-    "k.FreeConsole()\n"
-    "if not k.AttachConsole(pid):\n"
-    "    sys.exit(2)\n"
-    "k.SetConsoleCtrlHandler(None,1)\n"
-    "ok=k.GenerateConsoleCtrlEvent(0,0)\n"
-    "k.FreeConsole()\n"
-    "sys.exit(0 if ok else 3)\n"
-)
+# PowerShell is already required by the terminal backend. Unlike sys.executable,
+# it remains an interpreter when the server is a PyInstaller executable.
+CTRL_C_HELPER_SOURCE = """
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class ConsoleControl {
+    [DllImport("kernel32.dll")]
+    public static extern bool FreeConsole();
+    [DllImport("kernel32.dll")]
+    public static extern bool AttachConsole(uint pid);
+    [DllImport("kernel32.dll")]
+    public static extern bool SetConsoleCtrlHandler(IntPtr handler, bool ignore);
+    [DllImport("kernel32.dll")]
+    public static extern bool GenerateConsoleCtrlEvent(uint signal, uint group);
+}
+'@
+[ConsoleControl]::FreeConsole() | Out-Null
+if (-not [ConsoleControl]::AttachConsole($targetPid)) { exit 2 }
+try {
+    if (-not [ConsoleControl]::SetConsoleCtrlHandler([IntPtr]::Zero, $true)) {
+        exit 3
+    }
+    if (-not [ConsoleControl]::GenerateConsoleCtrlEvent(0, 0)) { exit 4 }
+} finally {
+    [ConsoleControl]::FreeConsole() | Out-Null
+}
+exit 0
+"""
 
 if IS_WINDOWS:
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -293,7 +307,9 @@ def descendant_pids(root_pid: int) -> list[int]:
     return result
 
 
-def send_console_ctrl_c(pid: int, timeout: float = 5.0) -> bool:
+def send_console_ctrl_c(
+    pid: int, timeout: float = 5.0, *, shell_path: str = "powershell.exe"
+) -> bool:
     """Broadcast CTRL_C_EVENT on the console that *pid* is attached to.
 
     Runs a tiny helper process (see :data:`CTRL_C_HELPER_SOURCE`).  Returns
@@ -303,15 +319,20 @@ def send_console_ctrl_c(pid: int, timeout: float = 5.0) -> bool:
     """
     if not IS_WINDOWS:
         return False
-    python = sys.executable
-    if not python:
-        logger.debug("No sys.executable available for the Ctrl+C helper")
-        return False
+    source = f"$targetPid = {pid}\n" + CTRL_C_HELPER_SOURCE
+    encoded = base64.b64encode(source.encode("utf-16le")).decode("ascii")
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     try:
         result = subprocess.run(
-            [python, "-I", "-c", CTRL_C_HELPER_SOURCE, str(pid)],
+            [
+                shell_path,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-EncodedCommand",
+                encoded,
+            ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,

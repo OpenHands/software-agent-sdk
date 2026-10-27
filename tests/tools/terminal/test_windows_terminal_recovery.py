@@ -12,6 +12,7 @@ corroborating product report OpenHands/OpenHands#17198.
 import os
 import platform
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Generator
@@ -109,7 +110,14 @@ def test_completion_detected_however_command_ends(
 # --------------------------------------------------------------------------- #
 # Interrupt recovers the session and kills the process subtree
 # --------------------------------------------------------------------------- #
-def test_ctrl_c_of_builtin_makes_session_ready(work_dir: str) -> None:
+@pytest.mark.parametrize("frozen", [False, True])
+def test_ctrl_c_of_builtin_makes_session_ready(
+    work_dir: str, monkeypatch: pytest.MonkeyPatch, frozen: bool
+) -> None:
+    if frozen:
+        monkeypatch.setattr(
+            sys, "executable", os.path.join(work_dir, "agent-server.exe")
+        )
     session = create_terminal_session(
         work_dir=work_dir,
         terminal_type="powershell",
@@ -117,6 +125,7 @@ def test_ctrl_c_of_builtin_makes_session_ready(work_dir: str) -> None:
     )
     try:
         session.initialize()
+        session.execute(TerminalAction(command="$env:OH_INTERRUPT_STATE='preserved'"))
         obs = session.execute(TerminalAction(command="Start-Sleep 120; 'never'"))
         assert obs.metadata.exit_code == -1
         assert session.prev_status == TerminalCommandStatus.NO_CHANGE_TIMEOUT
@@ -126,6 +135,10 @@ def test_ctrl_c_of_builtin_makes_session_ready(work_dir: str) -> None:
             TerminalCommandStatus.HARD_TIMEOUT,
         )
         _ready(session)
+        obs = session.execute(
+            TerminalAction(command="Write-Output $env:OH_INTERRUPT_STATE")
+        )
+        assert "preserved" in obs.text
     finally:
         session.close()
 
