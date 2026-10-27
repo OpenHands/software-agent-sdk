@@ -108,6 +108,71 @@
     "supports_runtime_model_switch": true,
     "supports_set_session_model": true
   },
+  "cursor": {
+    "agent_name_patterns": [
+      "cursor-agent",
+      "agent"
+    ],
+    "api_key_env_var": "CURSOR_API_KEY",
+    "available_models": [
+      {
+        "id": "default[]",
+        "label": "Auto"
+      },
+      {
+        "id": "composer-2.5[fast=true]",
+        "label": "Composer 2.5"
+      },
+      {
+        "id": "grok-4.6[effort=high,fast=true]",
+        "label": "Grok 4.6"
+      },
+      {
+        "id": "claude-opus-5[thinking=true,context=300k,effort=high,fast=false]",
+        "label": "Claude Opus 5"
+      },
+      {
+        "id": "claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]",
+        "label": "Claude Opus 4.8"
+      },
+      {
+        "id": "claude-sonnet-5[thinking=true,context=300k,effort=high]",
+        "label": "Claude Sonnet 5"
+      },
+      {
+        "id": "gpt-5.6-sol[context=272k,reasoning=medium,fast=false]",
+        "label": "GPT-5.6 Sol"
+      },
+      {
+        "id": "gpt-5.5[context=272k,reasoning=medium,fast=false]",
+        "label": "GPT-5.5"
+      },
+      {
+        "id": "gpt-5.3-codex[reasoning=medium,fast=false]",
+        "label": "GPT-5.3 Codex"
+      },
+      {
+        "id": "gemini-3.8-flash[reasoning_effort=high]",
+        "label": "Gemini 3.8 Flash"
+      }
+    ],
+    "base_url_env_var": "CURSOR_API_ENDPOINT",
+    "binary_name": "agent",
+    "data_dir_env_var": null,
+    "default_command": [
+      "agent",
+      "acp"
+    ],
+    "default_model": "default[]",
+    "default_session_mode": "agent",
+    "display_name": "Cursor",
+    "env_conflicts": [],
+    "file_secrets": [],
+    "key": "cursor",
+    "session_meta_key": null,
+    "supports_runtime_model_switch": true,
+    "supports_set_session_model": true
+  },
   "gemini-cli": {
     "agent_name_patterns": [
       "gemini-cli"
