@@ -1,16 +1,21 @@
 import httpx
+import pytest
 from litellm.exceptions import (
+    APIError,
     AuthenticationError,
     BadRequestError,
     ContentPolicyViolationError,
     InternalServerError,
+    NotFoundError,
     PermissionDeniedError,
 )
+from openai import OpenAIError
 
 from openhands.sdk.llm.exceptions import (
     LLMAuthenticationError,
     LLMBadRequestError,
     LLMContentPolicyViolationError,
+    LLMError,
     LLMMalformedConversationHistoryError,
     map_provider_exception,
 )
@@ -118,3 +123,69 @@ def test_passthrough_unknown_exception():
     e = MyCustom("random")
     mapped = map_provider_exception(e)
     assert mapped is e
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        (401, "LLMAuthenticationError"),
+        (403, "LLMAuthenticationError"),
+        (404, "LLMNotFoundError"),
+        (408, "LLMTimeoutError"),
+        (409, "LLMServiceUnavailableError"),
+        (418, "LLMBadRequestError"),
+        (429, "LLMRateLimitError"),
+        (503, "LLMServiceUnavailableError"),
+        (504, "LLMTimeoutError"),
+    ],
+)
+def test_generic_provider_status_maps_without_exposing_payload(status, code):
+    error = APIError(status, "private-provider-payload", PROVIDER, MODEL)
+
+    mapped = map_provider_exception(error)
+
+    assert isinstance(mapped, LLMError)
+    assert type(mapped).__name__ == code
+    assert "private-provider-payload" not in str(mapped)
+
+
+def test_model_not_found_has_safe_actionable_message():
+    error = NotFoundError("private-provider-payload", MODEL, PROVIDER)
+
+    mapped = map_provider_exception(error)
+
+    assert isinstance(mapped, LLMBadRequestError)
+    assert type(mapped).__name__ == "LLMNotFoundError"
+    assert "private-provider-payload" not in str(mapped)
+    assert "model" in str(mapped).lower()
+
+
+def test_unknown_provider_error_has_stable_safe_fallback():
+    error = OpenAIError("private-provider-payload")
+
+    mapped = map_provider_exception(error)
+
+    assert isinstance(mapped, LLMError)
+    assert type(mapped).__name__ == "LLMProviderError"
+    assert "private-provider-payload" not in str(mapped)
+
+
+def test_generic_provider_status_wins_over_misleading_message():
+    error = APIError(404, "invalid api key; prompt is too long", PROVIDER, MODEL)
+
+    assert type(map_provider_exception(error)).__name__ == "LLMNotFoundError"
+
+
+def test_http_status_error_uses_response_status():
+    response = httpx.Response(
+        404, request=httpx.Request("POST", "https://example.test")
+    )
+    error = httpx.HTTPStatusError(
+        "private-provider-payload", request=response.request, response=response
+    )
+
+    mapped = map_provider_exception(error)
+
+    assert isinstance(mapped, LLMBadRequestError)
+    assert type(mapped).__name__ == "LLMNotFoundError"
+    assert "private-provider-payload" not in str(mapped)

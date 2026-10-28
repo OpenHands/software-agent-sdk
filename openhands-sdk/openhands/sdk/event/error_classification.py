@@ -66,12 +66,15 @@ def classify_error(code: str, detail: str = "") -> ErrorClassification:
         return _failure(FailureKind.AUTH, user_action="settings")
     if code in {"LLMRateLimitError"}:
         return _failure(FailureKind.RATE_LIMIT, retryable=True, user_action="retry")
+    if code == "LLMProviderError":
+        return _failure(FailureKind.UNKNOWN, user_action="retry")
     # Budget exhaustion is a quota outcome; consumers can direct users to
     # raise the configured limit rather than treating this as an SDK failure.
     if code in {"MaxBudgetReached"}:
         return _failure(FailureKind.QUOTA, user_action="settings")
     if code in {
         "LLMBadRequestError",
+        "LLMNotFoundError",
         "ACPInitError",
         "ACPSpawnError",
         "ACPPromptError",
