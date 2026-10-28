@@ -37,19 +37,6 @@ import providersData from './acp-providers.json';
 export type ACPProviderKey = keyof typeof providersData;
 
 /**
- * One selectable model for a built-in ACP provider's model picker. Mirrors
- * `openhands.sdk.settings.acp_providers.ACPModelOption` field-for-field.
- *
- * @deprecated Ask the agent server with `ACPClient.discoverModels` instead.
- */
-export interface ACPModelOption {
-  /** Exact model identifier sent to the ACP server as `acp_model`. */
-  readonly id: string;
-  /** Human-readable label shown in the model picker (e.g. `"Claude Opus 4.7"`). */
-  readonly label: string;
-}
-
-/**
  * Declarative spec for one file-content credential a provider can consume
  * (e.g. Codex `auth.json`). Mirrors
  * `openhands.sdk.settings.acp_providers.ACPFileSecretSpec` field-for-field.
@@ -112,21 +99,6 @@ export interface ACPProviderInfo {
   readonly supports_runtime_model_switch: boolean;
   /** Top-level `_meta` key for model selection, or `null`. */
   readonly session_meta_key: string | null;
-  /**
-   * Curated `acp_model` candidates surfaced in this provider's model picker.
-   * Suggestions, not authoritative access checks — a custom `acp_model` is
-   * always allowed, and availability depends on the account's plan tier.
-   *
-   * @deprecated Ask the agent server with `ACPClient.discoverModels` instead.
-   */
-  readonly available_models: readonly ACPModelOption[];
-  /**
-   * Model ID preselected when none is configured (one of {@link available_models}),
-   * or `null` to let the ACP server pick its own default.
-   *
-   * @deprecated Ask the agent server with `ACPClient.discoverModels` instead.
-   */
-  readonly default_model: string | null;
   /** File-content credentials the agent server can materialise on disk. */
   readonly file_secrets: readonly ACPFileSecretSpec[];
   /**

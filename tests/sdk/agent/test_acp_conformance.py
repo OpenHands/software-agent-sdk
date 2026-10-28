@@ -36,11 +36,9 @@ from typing import Any
 
 import pytest
 from acp.client.connection import ClientSideConnection
-from acp.exceptions import RequestError as ACPRequestError
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
-    _apply_acp_model,
     _select_auth_method,
 )
 from openhands.sdk.conversation.state import ConversationState
@@ -69,11 +67,6 @@ pytestmark = pytest.mark.acp_live
 # provider's auth-method selection to pick an env-var-backed method and clear
 # the handshake; real inference would reject them, but no turn is ever sent.
 _BOGUS_KEY = "sk-acp-conformance-probe-0000000000000000000000000000"
-
-# Per-call deadline for the model-acceptance probe's set_config_option /
-# set_session_model round-trips — these are metadata writes, not inference
-# calls, so they should return in well under a second even cold.
-_MODEL_CALL_TIMEOUT = 15.0
 
 
 def _node_version() -> tuple[int, ...] | None:
@@ -223,7 +216,6 @@ def test_acp_conformance_probe(
         acp_command=list(provider.default_command),
         acp_server=provider.key,
         acp_isolate_data_dir=True,
-        acp_model=provider.default_model,
     )
     start = time.monotonic()
     try:
@@ -284,21 +276,12 @@ def test_acp_conformance_probe(
                 "the models capability"
             )
 
-        # The model reads back as requested.
-        if provider.default_model:
-            assert agent.current_model_id == provider.default_model, (
-                f"requested default_model={provider.default_model!r} but the "
-                f"live session reports current_model_id={agent.current_model_id!r} "
-                "(the id may no longer be accepted — see the model-acceptance "
-                "probe below)"
-            )
-
         # Mid-session set_model works when supports_runtime_model_switch.
         if provider.supports_runtime_model_switch:
             candidates = [
-                m.id
-                for m in provider.available_models
-                if m.id != agent.current_model_id
+                m.model_id
+                for m in agent.available_models
+                if m.model_id != agent.current_model_id
             ]
             if candidates:
                 target = candidates[0]
@@ -307,40 +290,5 @@ def test_acp_conformance_probe(
                     f"set_acp_model({target!r}) reported success but "
                     f"current_model_id is {agent.current_model_id!r}"
                 )
-
-        # Model-acceptance probe (#4830 P0-2): every curated available_models
-        # id and default_model must be *accepted* by the live protocol call,
-        # not merely appear in our own curated list.
-        session_id = agent._session_id
-        conn = agent._conn
-        assert session_id is not None
-        assert conn is not None
-        candidate_ids = list(
-            dict.fromkeys(
-                [m.id for m in provider.available_models]
-                + ([provider.default_model] if provider.default_model else [])
-            )
-        )
-        rejected: dict[str, str] = {}
-        for model_id in candidate_ids:
-            try:
-                agent._executor.run_async(
-                    _apply_acp_model(
-                        conn,
-                        session_id,
-                        model_id,
-                        agent_name=agent.agent_name,
-                        via_config_option=agent._model_via_config_option,
-                    ),
-                    timeout=_MODEL_CALL_TIMEOUT,
-                )
-            except (ACPRequestError, ValueError) as exc:
-                rejected[model_id] = str(exc)
-        assert not rejected, (
-            f"provider={provider.key} rejected curated model id(s) via the "
-            f"live protocol call (dead catalog entries — fix _CODEX_MODELS / "
-            f"_GEMINI_MODELS / _CLAUDE_MODELS or default_model in "
-            f"acp_providers.py): {rejected}"
-        )
     finally:
         agent.close()
