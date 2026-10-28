@@ -461,11 +461,12 @@ class LocalConversation(BaseConversation):
             if _parent_llm_call_context is not None
             else None
         )
-        effective_budget = (
-            max_budget_per_run
-            if max_budget_per_run is not None
-            else (inherited_budget.limit if inherited_budget is not None else None)
-        )
+
+        def effective_budget(own: float | None) -> float | None:
+            if own is not None:
+                return own
+            return inherited_budget.limit if inherited_budget is not None else None
+
         # Reject an ACP budget before ``ConversationState.create`` writes
         # ``base_state.json``. A later rejection would leave an orphaned state
         # file behind, so a retry with the same id but a different agent would
@@ -473,7 +474,7 @@ class LocalConversation(BaseConversation):
         # The resumed agent is not known until after ``create``, so only a
         # caller-supplied agent can be checked here; the resume path re-checks
         # once the persisted agent is loaded.
-        reject_acp_budget(agent, effective_budget)
+        reject_acp_budget(agent, effective_budget(max_budget_per_run))
         self._state = ConversationState.create(
             id=desired_id,
             agent=agent,
@@ -493,10 +494,12 @@ class LocalConversation(BaseConversation):
         # ``self.agent`` and ``self._state.agent`` are the same object.
         if agent is None:
             agent = self._state.agent
-            # Resume path: the persisted agent is known only now. No state file
-            # is created here (base_state.json already exists), so re-checking
-            # the budget cannot orphan anything.
-            reject_acp_budget(agent, effective_budget)
+            # Resume path: the persisted agent and cap are known only now. No
+            # state file is created here (base_state.json already exists), so
+            # re-checking cannot orphan anything. Read the cap from the state
+            # (``max_budget_per_run`` may be None while a cap persisted by an
+            # earlier write survives the reload).
+            reject_acp_budget(agent, effective_budget(self.max_budget_per_run))
             # The persisted agent carries client-tool ``Tool`` specs, but in a
             # fresh process the ``ClientTool`` *classes* are absent from the
             # global registry. Re-register them from the persisted specs so
@@ -815,6 +818,11 @@ class LocalConversation(BaseConversation):
 
     @max_budget_per_run.setter
     def max_budget_per_run(self, value: float | None) -> None:
+        # ACP prompts bypass the SDK's pre-call reservation, so a ceiling set
+        # here could never be enforced. Reject it before the persisted state is
+        # written; clearing (``None``) stays allowed.
+        if value is not None:
+            reject_acp_budget(self.agent, value)
         with self._state:
             self._state.max_budget_per_run = value
         # The ledger's ceiling follows the live cap so a change takes effect on
@@ -830,18 +838,32 @@ class LocalConversation(BaseConversation):
         return self.conversation_stats.get_combined_metrics().accumulated_cost
 
     def _install_budget_ledger(self) -> None:
-        """Build the reservation ledger for the current cap and recorded cost.
+        """Build or retune the reservation ledger for the current cap.
 
         The ledger's ceiling is the conversation's accumulated cost, so the
-        owner seeds its tree with the cost already recorded. Rebuilding on a cap
-        change (the ``max_budget_per_run`` setter) makes a raised or cleared
-        limit take effect on the next call. A conversation that only inherited a
-        parent's budget shares the parent's tree and must never reseed it, or a
-        delegate's own cap change would wipe the parent's settled totals.
+        owner seeds its tree with the cost already recorded. A conversation that
+        only inherited a parent's budget shares the parent's tree and must never
+        reseed it, or a delegate's own cap change would wipe the parent's
+        settled totals.
+
+        A live cap change must not rebuild the tree: reservations already held,
+        conservative charges retained for failed or unknown-cost attempts, and
+        descendant totals would be lost, so a later call could exceed the new
+        ceiling. When a ledger already exists it is retuned in place, which also
+        keeps the running conversation's captured call context and inherited
+        child views pointing at the same, updated tree.
         """
         cap = self.max_budget_per_run
+        existing = self._cost_budget
         if cap is not None and cap > 0:
-            if self._inherited_budget is not None:
+            if existing is not None and existing is not self._inherited_budget:
+                # A ledger this conversation created already exists (its own, or
+                # a child view of an inherited one). Retune it in place so
+                # in-flight reservations, retained conservative charges, and
+                # descendant totals survive, and inherited child views keep
+                # sharing the same, updated tree.
+                existing.set_limit(cap)
+            elif self._inherited_budget is not None:
                 # A subagent shares its parent's reservation pool so parent and
                 # children contend on one ceiling; the tightest limit applies.
                 self._cost_budget = self._inherited_budget.child(cap)
@@ -849,7 +871,7 @@ class LocalConversation(BaseConversation):
             else:
                 self._cost_budget = CostBudget(cap)
                 self._owns_budget = True
-                self._cost_budget.reseed(self._combined_cost_total())
+                self._seed_budget_ledger()
         else:
             # No cap shares an inherited tree; a non-positive cap (accepted by
             # the persisted state) is already met, so it needs no ledger and
@@ -859,6 +881,17 @@ class LocalConversation(BaseConversation):
         self._llm_call_context = replace(
             self._llm_call_context, cost_budget=self._cost_budget
         )
+
+    def _seed_budget_ledger(self) -> None:
+        """Seed the owning tree with the conversation's recorded cost.
+
+        Only a ledger this conversation owns is seeded: a conversation that
+        inherited a parent's budget shares the parent's tree and must never
+        reseed it, and a ledger holding in-flight reservations must not be reset
+        under them.
+        """
+        if self._owns_budget and self._cost_budget is not None:
+            self._cost_budget.reseed(self._combined_cost_total())
 
     def _latest_acp_prompt_message_id(self) -> str | None:
         """Id of the most recent ACP prompt message, or None if there is none."""
@@ -1096,6 +1129,10 @@ class LocalConversation(BaseConversation):
             # Reset or copy metrics
             if not reset_metrics:
                 fork_conv._state.stats = self._state.stats.model_copy(deep=True)
+                # The fork built its ledger from its then-empty stats; re-seed
+                # it now that the copied spend is visible, so the fork cannot
+                # reserve against a ceiling that ignores its inherited cost.
+                fork_conv._seed_budget_ledger()
 
             event_count = len(source_events)
 

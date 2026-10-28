@@ -363,6 +363,46 @@ async def test_rejected_acp_budget_does_not_orphan_worktree_or_branch(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_update_acp_conversation_rejects_budget(tmp_path):
+    """A cap PATCHed onto a running ACP conversation must be refused.
+
+    ACP prompts bypass the SDK's pre-call reservation, so accepting the cap
+    would promise enforcement the SDK cannot deliver. The refused update must
+    write nothing.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=ACPAgent(acp_command=["echo", "test"]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        info, _ = await service.start_conversation(request)
+        with pytest.raises(CostBudgetUnsupportedError):
+            await service.update_conversation(
+                info.id, UpdateConversationRequest(max_budget_per_run=1.0)
+            )
+
+        event_service = await service.get_event_service(info.id)
+        assert event_service is not None
+        # The refused PATCH left the live state untouched...
+        assert event_service.get_conversation().max_budget_per_run is None
+        # ...and nothing was persisted.
+        state = json.loads(
+            (conversations_dir / info.id.hex / "base_state.json").read_text()
+        )
+        assert state.get("max_budget_per_run") is None
+
+        # Clearing (an explicit null) is still accepted.
+        await service.update_conversation(
+            info.id, UpdateConversationRequest(max_budget_per_run=None)
+        )
+
+
+@pytest.mark.asyncio
 async def test_agent_tool_from_unimportable_module_rejects_create(tmp_path):
     """The create fails with a client error instead of every message failing."""
     conversations_dir = tmp_path / "conversations"

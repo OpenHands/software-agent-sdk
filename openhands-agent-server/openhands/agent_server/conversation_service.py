@@ -1926,6 +1926,11 @@ class ConversationService:
             update["tags"] = request.tags
         # Membership, not None: an explicit null removes the budget limit.
         budget_updated = "max_budget_per_run" in request.model_fields_set
+        if budget_updated and request.max_budget_per_run is not None:
+            # An ACP agent's prompts bypass pre-call reservation, so a ceiling
+            # set on a running ACP conversation could never be enforced. Reject
+            # it before ``save_meta`` so a refused update writes nothing.
+            reject_acp_budget(state.agent, request.max_budget_per_run)
         # Persist first: a refused write (e.g. lost lease ownership) must leave
         # the in-memory metadata and state untouched.
         await event_service.save_meta(event_service.stored.model_copy(update=update))

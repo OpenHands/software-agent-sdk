@@ -94,6 +94,20 @@ class CostBudget:
         view._subtree_reserved = 0.0
         return view
 
+    def set_limit(self, limit: float) -> None:
+        """Move this view's own ceiling without disturbing the tree.
+
+        Only the limit changes: reservations already held, conservative charges
+        retained for failed or unknown-cost attempts, and descendant totals all
+        stay. A live cap change therefore cannot admit a call that ignores work
+        already in flight, and a running call that references this same view
+        observes the new ceiling.
+        """
+        if limit <= 0:
+            raise ValueError("Cost budget limit must be strictly positive")
+        with self._tree.lock:
+            self._limit = limit
+
     def _sync(self) -> None:
         """Reset this view's totals if the tree was reseeded. Lock held."""
         generation = self._tree.generation

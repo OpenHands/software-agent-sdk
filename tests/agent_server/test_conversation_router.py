@@ -1915,6 +1915,31 @@ def test_update_conversation_not_found(
         client.app.dependency_overrides.clear()
 
 
+def test_update_conversation_budget_on_acp_is_422(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """An unenforceable ACP budget is a 422, not a silent 200."""
+
+    mock_conversation_service.update_conversation.side_effect = (
+        CostBudgetUnsupportedError("max_budget_per_run is unsupported for ACP agents")
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.patch(
+            f"/api/conversations/{sample_conversation_id}",
+            json={"max_budget_per_run": 1.0},
+        )
+
+        assert response.status_code == 422
+        assert "ACP" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_update_conversation_invalid_title(
     client, mock_conversation_service, sample_conversation_id
 ):

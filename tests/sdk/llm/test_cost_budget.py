@@ -191,6 +191,62 @@ def test_reseed_resets_descendant_subtree_totals():
     assert child.try_reserve(0.9) is not None
 
 
+def test_set_limit_preserves_in_flight_reservations():
+    """A live cap change must not drop reservations already held.
+
+    Regression: retuning a conversation's ceiling rebuilt the ledger, so an
+    in-flight reservation vanished and a later call could reserve against the
+    new ceiling as if the in-flight work did not exist.
+    """
+    budget = CostBudget(1.0)
+    reservation = budget.try_reserve(0.8)
+    assert reservation is not None
+
+    budget.set_limit(1.5)
+
+    # The in-flight $0.80 still counts: only $0.70 of headroom remains.
+    assert budget.live_total == pytest.approx(0.8)
+    assert budget.try_reserve(0.8) is None
+    assert budget.try_reserve(0.5) is not None
+
+
+def test_set_limit_preserves_retained_conservative_charges():
+    """A cap change must keep conservative charges from failed attempts.
+
+    Regression: rebuilding the ledger discarded the retained bound for an
+    unknown-cost attempt, letting a retry reuse allowance that was already
+    committed.
+    """
+    budget = CostBudget(1.0)
+    _settle(budget, 0.9)  # retained as budget usage for an unknown-cost attempt
+
+    budget.set_limit(1.5)
+
+    assert budget.spent == pytest.approx(0.9)
+    assert budget.try_reserve(0.7) is None
+    assert budget.try_reserve(0.6) is not None
+
+
+def test_set_limit_keeps_descendant_views_contending_on_one_tree():
+    parent = CostBudget(5.0)
+    child = parent.child(1.0)
+    _settle(child, 0.9)
+
+    parent.set_limit(2.0)
+
+    # The child keeps its own cap and the parent's raised cap still binds the
+    # whole tree.
+    assert child.spent == pytest.approx(0.9)
+    assert child.try_reserve(0.2) is None
+    assert parent.live_total == pytest.approx(0.9)
+
+
+def test_set_limit_rejects_non_positive_limit():
+    budget = CostBudget(1.0)
+    with pytest.raises(ValueError, match="strictly positive"):
+        budget.set_limit(0.0)
+
+
 def test_concurrent_reservations_cannot_overshoot():
     """A shared budget admits at most the calls that fit, even in parallel."""
     budget = CostBudget(1.0)

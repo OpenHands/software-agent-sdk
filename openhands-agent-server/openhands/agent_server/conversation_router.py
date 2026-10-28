@@ -750,7 +750,14 @@ async def update_conversation(
 
     This endpoint allows updating conversation details like title.
     """
-    updated = await conversation_service.update_conversation(conversation_id, request)
+    try:
+        updated = await conversation_service.update_conversation(
+            conversation_id, request
+        )
+    except CostBudgetUnsupportedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        ) from e
     if not updated:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return Success()

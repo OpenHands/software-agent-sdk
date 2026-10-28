@@ -300,3 +300,124 @@ def test_delegate_install_does_not_weaken_the_parent_ceiling():
         # The parent keeps its recorded spend; only $0.31 of headroom remains.
         assert parent_budget.live_total == pytest.approx(1.0)
         assert parent_budget.try_reserve(0.40) is None
+
+
+def test_live_cap_change_preserves_in_flight_reservation():
+    """Raising the cap mid-run must not forget an in-flight reservation.
+
+    Regression: ``_install_budget_ledger`` replaced the ledger on a cap change,
+    so a reservation held by the running conversation vanished and a later call
+    could reserve against the new ceiling as if the in-flight work did not exist.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        conv = _conversation(tmp, max_budget_per_run=1.0)
+        budget = conv._cost_budget
+        assert budget is not None
+
+        reservation = budget.try_reserve(0.8)
+        assert reservation is not None
+
+        conv.max_budget_per_run = 1.5
+
+        # The running conversation's captured context still points at the same,
+        # retuned ledger, and the in-flight $0.80 still counts.
+        assert conv._cost_budget is budget
+        assert conv.get_llm_call_context().cost_budget is budget
+        assert budget.live_total == pytest.approx(0.8)
+        assert budget.try_reserve(0.8) is None
+        assert budget.try_reserve(0.5) is not None
+
+
+def test_setting_budget_on_existing_acp_conversation_is_rejected():
+    """A cap PATCHed onto an ACP conversation must be refused, not unenforced."""
+    from openhands.sdk.agent.acp_agent import ACPAgent
+    from openhands.sdk.conversation.exceptions import CostBudgetUnsupportedError
+
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        conv = Conversation(
+            agent=ACPAgent(acp_command=["echo", "test"]),
+            workspace=str(tmp),
+            persistence_dir=str(tmp / "persist"),
+            visualizer=None,
+            delete_on_close=False,
+        )
+        with pytest.raises(CostBudgetUnsupportedError, match="ACP agents"):
+            conv.max_budget_per_run = 1.0
+        assert conv.max_budget_per_run is None
+        # Clearing stays allowed.
+        conv.max_budget_per_run = None
+
+
+def test_resumed_acp_conversation_rejects_persisted_budget():
+    """A persisted ACP cap must be rejected when the conversation is reloaded.
+
+    Regression: the resume path only checked the constructor argument, so a cap
+    written into ``base_state.json`` survived reload and stayed unenforced.
+    """
+    import json
+    from uuid import uuid4
+
+    from openhands.sdk.agent.acp_agent import ACPAgent
+    from openhands.sdk.conversation.exceptions import CostBudgetUnsupportedError
+
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        persist = tmp / "persist"
+        cid = uuid4()
+        # Write an ACP conversation whose persisted cap the SDK can no longer
+        # accept, as an older/other writer could have.
+        conv = Conversation(
+            agent=ACPAgent(acp_command=["echo", "test"]),
+            workspace=str(tmp),
+            persistence_dir=str(persist),
+            conversation_id=cid,
+            visualizer=None,
+            delete_on_close=False,
+        )
+        conv.close()
+        base = persist / cid.hex / "base_state.json"
+        data = json.loads(base.read_text())
+        data["max_budget_per_run"] = 1.0
+        base.write_text(json.dumps(data))
+
+        with pytest.raises(CostBudgetUnsupportedError, match="ACP agents"):
+            LocalConversation(
+                agent=None,
+                workspace=str(tmp),
+                persistence_dir=str(persist),
+                conversation_id=cid,
+                visualizer=None,
+                delete_on_close=False,
+            )
+
+
+def test_fork_with_copied_metrics_seeds_its_ledger():
+    """A fork that copies the source's cost must seed its ledger with it.
+
+    Regression: the fork built its ledger from its then-empty stats, so a fork
+    with ``reset_metrics=False`` could reserve a call against a ceiling that
+    ignored the cost it reported as accumulated.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        src = _conversation(tmp, max_budget_per_run=2.0)
+        from openhands.sdk.llm.utils.metrics import Metrics
+
+        metric = Metrics()
+        metric.accumulated_cost = 1.5
+        src._state.stats.usage_to_metrics["main"] = metric
+
+        fork = src.fork(reset_metrics=False)
+
+        assert (
+            fork.conversation_stats.get_combined_metrics().accumulated_cost
+            == pytest.approx(1.5)
+        )
+        fork_budget = fork._cost_budget
+        assert fork_budget is not None
+        # Only $0.50 of the $2.00 cap remains after the copied $1.50.
+        assert fork_budget.live_total == pytest.approx(1.5)
+        assert fork_budget.try_reserve(0.6) is None
+        assert fork_budget.try_reserve(0.5) is not None
