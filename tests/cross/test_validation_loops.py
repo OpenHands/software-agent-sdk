@@ -3,8 +3,11 @@
 import asyncio
 import json
 import uuid
+from collections.abc import Sequence
+from typing import ClassVar
 
 import pytest
+from pydantic import field_validator
 
 from openhands.sdk import Agent, Conversation, Tool
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
@@ -17,7 +20,65 @@ from openhands.sdk.event import ActionEvent, AgentErrorEvent, Event, MessageEven
 from openhands.sdk.event.llm_convertible.observation import ToolValidationError
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.testing import TestLLM
+from openhands.sdk.tool import (
+    Action,
+    Observation,
+    ToolDefinition,
+    ToolExecutor,
+    register_tool,
+)
 from openhands.tools.task_tracker import TaskTrackerTool
+
+
+class LevelAction(Action):
+    level: int
+
+    @field_validator("level")
+    @classmethod
+    def check_level(cls, value: int) -> int:
+        if not 1 <= value <= 5:
+            raise ValueError("level must be between 1 and 5")
+        return value
+
+
+class TitledLevelAction(LevelAction):
+    summary: str
+
+
+class LevelObservation(Observation):
+    @property
+    def to_llm_content(self) -> Sequence[TextContent]:
+        return [TextContent(text="ok")]
+
+
+class LevelExecutor(ToolExecutor[LevelAction, LevelObservation]):
+    def __call__(self, action, conversation=None):
+        return LevelObservation()
+
+
+class LevelTool(ToolDefinition[LevelAction, LevelObservation]):
+    name: ClassVar[str] = "validation_loop_level"
+    action: ClassVar[type[LevelAction]] = LevelAction
+
+    @classmethod
+    def create(cls, conv_state=None, **params):
+        return [
+            cls(
+                description="Sets a level",
+                action_type=cls.action,
+                observation_type=LevelObservation,
+                executor=LevelExecutor(),
+            )
+        ]
+
+
+class TitledLevelTool(LevelTool):
+    name: ClassVar[str] = "validation_loop_titled_level"
+    action: ClassVar[type[LevelAction]] = TitledLevelAction
+
+
+register_tool(LevelTool.name, LevelTool)
+register_tool(TitledLevelTool.name, TitledLevelTool)
 
 
 def plan_message(index, tasks, thought="Updating the plan."):
@@ -35,6 +96,19 @@ def plan_message(index, tasks, thought="Updating the plan."):
     )
 
 
+def call_message(calls, thought="Updating the plan."):
+    return Message(
+        role="assistant",
+        content=[TextContent(text=thought)],
+        tool_calls=[
+            MessageToolCall(
+                id=call_id, name=name, arguments=json.dumps(args), origin="completion"
+            )
+            for call_id, name, args in calls
+        ],
+    )
+
+
 def finished():
     return Message(role="assistant", content=[TextContent(text="Done.")])
 
@@ -43,9 +117,9 @@ def finished():
 def make_conversation(tmp_path):
     conversations = []
 
-    def create(messages, **kwargs):
+    def create(messages, tools=(TaskTrackerTool.name,), **kwargs):
         llm = TestLLM.from_messages(messages)
-        agent = Agent(llm=llm, tools=[Tool(name=TaskTrackerTool.name)])
+        agent = Agent(llm=llm, tools=[Tool(name=name) for name in tools])
         conv = Conversation(
             agent=agent,
             workspace=str(tmp_path),
@@ -308,3 +382,117 @@ def test_legacy_and_custom_validation_use_arguments(make_conversation, legacy, r
         if seen_errors == 4:
             break
     assert StuckDetector(state).is_stuck() is (not repair)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("thought", ["Setting the level.", ""])
+def test_reworded_summary_does_not_hide_custom_validator_loop(
+    make_conversation, asynchronous, thought
+):
+    # value_error falls back to argument comparison; the SDK's summary and
+    # security_risk fields are not part of the validated call.
+    messages = [
+        call_message(
+            [
+                (
+                    f"call_{i}",
+                    LevelTool.name,
+                    {"level": 9, "summary": f"Attempt {i}", "security_risk": "LOW"},
+                )
+            ],
+            thought,
+        )
+        for i in range(12)
+    ]
+    conv = make_conversation(messages, tools=(LevelTool.name,))
+    run(conv, asynchronous)
+    assert conv.state.execution_status == ConversationExecutionStatus.STUCK
+    assert len(errors(conv)) == 4
+    assert len(nudges(conv)) == 1
+
+
+def test_tool_owned_summary_changes_are_repairs(make_conversation):
+    messages = [
+        call_message(
+            [(f"call_{i}", TitledLevelTool.name, {"level": 9, "summary": f"T{i}"})]
+        )
+        for i in range(5)
+    ]
+    conv = make_conversation([*messages, finished()], tools=(TitledLevelTool.name,))
+    conv.run()
+    assert conv.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert len(errors(conv)) == 5
+    assert not nudges(conv)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("width", [2, 4, 6])
+def test_parallel_failures_in_one_response_do_not_stop_the_run(
+    make_conversation, asynchronous, width
+):
+    tasks = [{"title": "Example", "status": "blocked"}]
+    calls = [
+        (f"bad_{k}", TaskTrackerTool.name, {"command": "plan", "task_list": tasks})
+        for k in range(width)
+    ]
+    fixed = [
+        (
+            f"ok_{k}",
+            TaskTrackerTool.name,
+            {"command": "plan", "task_list": [{"title": f"T{k}", "status": "todo"}]},
+        )
+        for k in range(width)
+    ]
+    conv = make_conversation([call_message(calls), call_message(fixed), finished()])
+    run(conv, asynchronous)
+    assert conv.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert len(errors(conv)) == width
+    assert not nudges(conv)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("width", [2, 3, 8])
+def test_parallel_failure_loop_counts_responses(make_conversation, asynchronous, width):
+    messages = [
+        call_message(
+            [
+                (
+                    f"call_{i}_{k}",
+                    TaskTrackerTool.name,
+                    {
+                        "command": "plan",
+                        "task_list": [{"title": f"T{i}{k}", "status": "blocked"}],
+                    },
+                )
+                for k in range(width)
+            ]
+        )
+        for i in range(12)
+    ]
+    conv = make_conversation(messages)
+    run(conv, asynchronous)
+    assert conv.state.execution_status == ConversationExecutionStatus.STUCK
+    assert len(errors(conv)) == 4 * width
+    assert len(nudges(conv)) == 1
+    events = list(conv.state.events)
+    nudge_index = events.index(nudges(conv)[0])
+    assert sum(isinstance(e, AgentErrorEvent) for e in events[:nudge_index]) == (
+        3 * width
+    )
+
+
+def test_alternating_validation_failures_still_stop(make_conversation):
+    messages = [
+        plan_message(
+            i,
+            [{"status": "todo"}]
+            if i % 2
+            else [{"title": "Example", "status": "blocked"}],
+            f"Thought {i}",
+        )
+        for i in range(12)
+    ]
+    conv = make_conversation(messages)
+    conv.run()
+    assert conv.state.execution_status == ConversationExecutionStatus.STUCK
+    assert len(errors(conv)) == 6

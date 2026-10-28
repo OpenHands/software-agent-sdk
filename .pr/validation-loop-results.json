@@ -1,7 +1,7 @@
 {
   "runs": {
     "base-sync": {
-      "source": "/Users/alonaking/Documents/All-Hands/worktrees/sdk-validation-loops-149-base/openhands-sdk/openhands/sdk/conversation/stuck_detector.py",
+      "source": "/home/user/oh/workspace/sdk-validation-base/openhands-sdk/openhands/sdk/conversation/stuck_detector.py",
       "revision": "f7cbea4ff6210f8f665aacb166abfacfca6f8be0",
       "expect": "base",
       "asynchronous": false,
@@ -101,7 +101,7 @@
       ]
     },
     "base-async": {
-      "source": "/Users/alonaking/Documents/All-Hands/worktrees/sdk-validation-loops-149-base/openhands-sdk/openhands/sdk/conversation/stuck_detector.py",
+      "source": "/home/user/oh/workspace/sdk-validation-base/openhands-sdk/openhands/sdk/conversation/stuck_detector.py",
       "revision": "f7cbea4ff6210f8f665aacb166abfacfca6f8be0",
       "expect": "base",
       "asynchronous": true,
@@ -201,8 +201,8 @@
       ]
     },
     "candidate-sync": {
-      "source": "/Users/alonaking/Documents/All-Hands/worktrees/sdk-validation-loops-149/openhands-sdk/openhands/sdk/conversation/stuck_detector.py",
-      "revision": "f7cbea4ff6210f8f665aacb166abfacfca6f8be0",
+      "source": "/home/user/oh/workspace/software-agent-sdk/openhands-sdk/openhands/sdk/conversation/stuck_detector.py",
+      "revision": "188f58da6ca61fcded6830ecdcbffc77e2568675",
       "expect": "candidate",
       "asynchronous": false,
       "results": [
@@ -295,8 +295,8 @@
       ]
     },
     "candidate-async": {
-      "source": "/Users/alonaking/Documents/All-Hands/worktrees/sdk-validation-loops-149/openhands-sdk/openhands/sdk/conversation/stuck_detector.py",
-      "revision": "f7cbea4ff6210f8f665aacb166abfacfca6f8be0",
+      "source": "/home/user/oh/workspace/software-agent-sdk/openhands-sdk/openhands/sdk/conversation/stuck_detector.py",
+      "revision": "188f58da6ca61fcded6830ecdcbffc77e2568675",
       "expect": "candidate",
       "asynchronous": true,
       "results": [
@@ -391,7 +391,7 @@
   },
   "candidate_source_sha256": {
     "openhands-sdk/openhands/sdk/agent/agent.py": "34f04cff3195f64f59a0b5d9c1c197fb7c4a4ec201a6b42865105787f9c967f6",
-    "openhands-sdk/openhands/sdk/conversation/stuck_detector.py": "54e292eb04f8a96e61db45fa84dd9077745e6bb0be1a901abfd400861bb40290",
+    "openhands-sdk/openhands/sdk/conversation/stuck_detector.py": "f7ff4b2a6d857028e41bfaa92cbfb877b6c342447c7425c794fb149114c2bfb2",
     "openhands-sdk/openhands/sdk/event/llm_convertible/observation.py": "3d85108461485a0525b3fc271e5b144f86036bb396e766435799839585ac5b8a"
   },
   "locked_litellm": "1.93.0"

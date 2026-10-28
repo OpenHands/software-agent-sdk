@@ -51,10 +51,13 @@ done
 
 ## Regression and contract checks
 
-- `uv run pytest tests/cross/test_validation_loops.py tests/cross/test_stuck_detector.py tests/cross/test_stuck_detector_config.py tests/sdk/agent tests/sdk/conversation tests/sdk/event tests/sdk/context/view -n4 -q`: **2,222 passed**, including 26 new cases.
+- `uv run pytest tests/cross/test_validation_loops.py tests/cross/test_stuck_detector.py tests/cross/test_stuck_detector_config.py tests/sdk/agent tests/sdk/conversation tests/sdk/event tests/sdk/context/view -n4 -q`: **2,240 passed**, including 44 new cases.
 - Changed-file pre-commit: Ruff, pycodestyle, Pyright and repository gates pass.
 - `make test-server-schema`: deterministic export, OpenAPI type-quality check and schema validation pass.
 - Coverage includes thought/irrelevant-argument/index changes, alternating invalid values, progressive repairs, successful-call and user-message resets, sync/async execution, actual parallel validation emission, reordered/missing call associations, old-event loading and persisted conversation replay.
+- Argument-comparison fallback (custom `ValueError`/`assert` validators, legacy events) ignores the SDK's `summary` and `security_risk` fields, which are removed before validation; a tool that declares its own `summary` parameter keeps it in the comparison.
+- Parallel calls in one response count as one attempt in the action-error streak, so the model sees their errors before a nudge or stop. That streak's scan window grows by the events the widest response adds, so a loop of parallel invalid calls is nudged after three responses and stopped after four, like a single-call loop. The successful-action and alternating detectors likewise do not treat invalid parallel calls from a single response as a loop; sequential alternating validation failures are still stopped.
+- The candidate probe results above are unchanged after these two fixes; `validation-loop-results.json` records the updated candidate source hashes.
 
 `AgentErrorEvent.validation_errors` is optional. Its entries retain only Pydantic
 error code and location, not input values, exception context or error URLs. Old

@@ -66,13 +66,15 @@ class StuckDetector:
     def alternating_pattern_threshold(self) -> int:
         return self.thresholds.alternating_pattern
 
-    def _events_since_last_user_message(self) -> list[Event]:
+    def _events_since_last_user_message(
+        self, limit: int = MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION
+    ) -> list[Event]:
         """Events in the scan window, after the last user message (if any).
 
         Windowed rather than full-history to avoid materializing large
         file-backed event logs.
         """
-        events = self.state.active_branch(limit=MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION)
+        events = self.state.active_branch(limit=limit)
 
         last_user_msg_index = next(
             (
@@ -122,13 +124,9 @@ class StuckDetector:
             f"Events after last user message: {[type(e).__name__ for e in events]}"
         )
 
-        # action_error needs one extra pair to tell a fresh streak from one
-        # that already continued past the nudge (see get_action_error_nudge)
-        max_needed = max(
-            self.action_observation_threshold, self.action_error_threshold + 1
-        )
+        # action_error uses its own window (see _action_error_pairs)
         last_actions, last_observations = self._collect_actions_and_observations(
-            events, max_needed
+            events, self.action_observation_threshold
         )
 
         # Check all stuck patterns
@@ -137,7 +135,7 @@ class StuckDetector:
             return True
 
         # scenario 2: same action, errors
-        if self._is_stuck_repeating_action_error(last_actions, last_observations):
+        if self._is_stuck_repeating_action_error(*self._action_error_pairs(events)):
             return True
 
         # scenario 3: monologue
@@ -161,6 +159,8 @@ class StuckDetector:
     ) -> bool:
         # scenario 1: same action, same observation
         threshold = self.action_observation_threshold
+        if self._invalid_calls_share_response(last_actions[:threshold]):
+            return False
 
         # Check for a loop of identical action-observation pairs
         if len(last_actions) >= threshold and len(last_observations) >= threshold:
@@ -192,10 +192,40 @@ class StuckDetector:
 
         return False
 
+    def _action_error_pairs(
+        self, events: list[Event] | None = None
+    ) -> tuple[list[Event], list[Event]]:
+        """Actions and observations covering a full action-error streak.
+
+        The streak counts responses, and each parallel call adds an action and
+        an error, so widen the window by what the widest response adds over
+        the threshold plus the extra pair that follows a nudge. ``events`` is
+        the default window, when already loaded.
+        """
+        limit = MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION
+        while True:
+            if events is None:
+                events = self._events_since_last_user_message(limit)
+            last_actions, last_observations = self._collect_actions_and_observations(
+                events, len(events)
+            )
+            widths = Counter(
+                action.llm_response_id
+                for action in last_actions
+                if isinstance(action, ActionEvent)
+            )
+            needed = MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION + 2 * (
+                max(widths.values(), default=1) - 1
+            ) * (self.action_error_threshold + 1)
+            if needed <= limit:
+                return last_actions, last_observations
+            limit = needed
+            events = None
+
     def _action_error_streak(
         self, last_actions: list[Event], last_observations: list[Event]
     ) -> int:
-        """Length of the trailing run of one action repeatedly erroring."""
+        """Number of trailing responses that repeat one failing action."""
         if not last_actions or not last_observations:
             return 0
         reference = last_actions[0]
@@ -204,6 +234,7 @@ class StuckDetector:
         remaining = list(last_observations)
         reference_error: AgentErrorEvent | None = None
         streak = 0
+        counted_response: str | None = None
         for action in last_actions:
             if not isinstance(action, ActionEvent):
                 break
@@ -227,7 +258,10 @@ class StuckDetector:
                 reference, action, reference_error, observation
             ):
                 break
-            streak += 1
+            # Parallel calls are one attempt: the model sees their errors together.
+            if action.llm_response_id != counted_response:
+                counted_response = action.llm_response_id
+                streak += 1
         return streak
 
     def _same_error_action(
@@ -257,6 +291,45 @@ class StuckDetector:
                     )
         return self._event_eq(reference, action)
 
+    def _invalid_calls_share_response(self, actions: list[Event]) -> bool:
+        """Whether invalid calls being compared include parallel calls.
+
+        Invalid calls are compared without their thought, so parallel calls
+        can look like a loop before the model has seen any of their errors.
+        """
+        response_ids = [
+            action.llm_response_id
+            for action in actions
+            if isinstance(action, ActionEvent) and action.action is None
+        ]
+        return len(response_ids) != len(set(response_ids))
+
+    def _validated_arguments(self, event: ActionEvent) -> object:
+        """An invalid call's arguments as validation saw them.
+
+        The agent strips the SDK's ``security_risk`` and ``summary`` fields
+        before validating, so rewording them does not change the call.
+        """
+        try:
+            arguments = json.loads(event.tool_call.arguments)
+        except (ValueError, TypeError):
+            return event.tool_call.arguments
+        if not isinstance(arguments, dict):
+            return arguments
+        arguments.pop("security_risk", None)
+        if not self._tool_has_summary_param(event.tool_name):
+            arguments.pop("summary", None)
+        return arguments
+
+    def _tool_has_summary_param(self, tool_name: str) -> bool:
+        from openhands.sdk.agent.agent import _tool_has_summary_param
+
+        try:
+            tool = self.state.agent.tools_map.get(tool_name)
+        except RuntimeError:
+            return False
+        return tool is not None and _tool_has_summary_param(tool)
+
     def _is_stuck_repeating_action_error(
         self, last_actions: list[Event], last_observations: list[Event]
     ) -> bool:
@@ -274,11 +347,8 @@ class StuckDetector:
         error event (e.g. an empty/reasoning-only response added no new
         action) we've already nudged for it, so we don't re-fire.
         """
-        events = self._events_since_last_user_message()
         threshold = self.action_error_threshold
-        last_actions, last_observations = self._collect_actions_and_observations(
-            events, threshold + 1
-        )
+        last_actions, last_observations = self._action_error_pairs()
         if self._action_error_streak(last_actions, last_observations) != threshold:
             return None
 
@@ -359,6 +429,9 @@ class StuckDetector:
             if len(last_actions) == threshold and len(last_observations) == threshold:
                 break
 
+        if self._invalid_calls_share_response(last_actions):
+            return False
+
         if len(last_actions) == threshold and len(last_observations) == threshold:
             # Check alternating pattern: [A, B, A, B, A, B] where even/odd match
             actions_equal = all(
@@ -399,18 +472,11 @@ class StuckDetector:
         # For ActionEvents, compare the action content, ignoring IDs
         if isinstance(event1, ActionEvent) and isinstance(event2, ActionEvent):
             if event1.action is None and event2.action is None:
-                try:
-                    arguments_equal = json.loads(
-                        event1.tool_call.arguments
-                    ) == json.loads(event2.tool_call.arguments)
-                except (ValueError, TypeError):
-                    arguments_equal = (
-                        event1.tool_call.arguments == event2.tool_call.arguments
-                    )
                 return (
                     event1.source == event2.source
                     and event1.tool_name == event2.tool_name
-                    and arguments_equal
+                    and self._validated_arguments(event1)
+                    == self._validated_arguments(event2)
                 )
             return (
                 event1.source == event2.source
