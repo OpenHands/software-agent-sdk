@@ -121,6 +121,7 @@ from openhands.tools.terminal.constants import (
     TMUX_SOCKET_NAME,
     TMUX_SOCKET_OWNER_OPTION,
 )
+from openhands.tools.terminal.env import UTF8_FALLBACK_LOCALE, ensure_utf8_locale
 from openhands.tools.terminal.terminal.tmux_terminal import _socket_creation_lock
 
 
@@ -268,6 +269,8 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     tmux_tmpdir, tmux_tmpdir_was_defaulted, tmux_tmpdir_was_created = (
         _ensure_server_tmux_tmpdir()
     )
+    # Stale-session cleanup below queries tmux before any terminal exists.
+    locale_override = ensure_utf8_locale() if os.name == "posix" else None
     secret_resolution: local_secret_resolution | None = None
     try:
         # Clean up stale tmux sessions from previous server runs
@@ -442,6 +445,13 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                     os.environ.pop("TMUX_TMPDIR", None)
                 else:
                     os.environ["TMUX_TMPDIR"] = original_tmux_tmpdir
+        if locale_override is not None:
+            locale_name, original_locale = locale_override
+            if os.environ.get(locale_name) == UTF8_FALLBACK_LOCALE:
+                if original_locale is None:
+                    os.environ.pop(locale_name, None)
+                else:
+                    os.environ[locale_name] = original_locale
         if os.environ.get(V1_SESSION_API_KEY_ENV) != original_session_api_key:
             if original_session_api_key is None:
                 os.environ.pop(V1_SESSION_API_KEY_ENV, None)

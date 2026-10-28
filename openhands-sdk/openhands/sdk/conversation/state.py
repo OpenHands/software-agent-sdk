@@ -111,6 +111,11 @@ class ConversationState(OpenHandsModel):
         description="Maximum number of iterations the agent can "
         "perform in a single run.",
     )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        description="USD limit on accumulated conversation LLM cost; "
+        "None means unbounded.",
+    )
     stuck_detection: bool = Field(
         default=True,
         description="Whether to enable stuck detection for the agent.",
@@ -292,6 +297,28 @@ class ConversationState(OpenHandsModel):
                 return self._events.get_id(i)
         return None
 
+    def _repair_missing_leaf(self) -> bool:
+        """Move a persisted HEAD whose event file was lost onto a surviving event.
+
+        The lost event held its own parent, so the branch it was on cannot be
+        recovered; HEAD falls back to the lineage rule (the last real event, or
+        no HEAD for an empty log), and the warning says so. Returns whether
+        HEAD was moved.
+        """
+        lost = self.leaf_event_id
+        if lost is None or lost in self._events:
+            return False
+        self.leaf_event_id = None
+        self.leaf_event_id = self._resolve_active_leaf()
+        logger.warning(
+            "HEAD event '%s' is missing from the event log (its file was lost); "
+            "moved HEAD to '%s', the last surviving event. If HEAD was on "
+            "another branch, navigate back to it.",
+            lost,
+            self.leaf_event_id,
+        )
+        return True
+
     def active_branch(self, limit: int | None = None) -> list[Event]:
         """Raw events on the active branch (``path_to_root(leaf)``), root-first.
 
@@ -463,6 +490,7 @@ class ConversationState(OpenHandsModel):
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
         file_store: FileStore | None = None,
+        max_budget_per_run: float | None = None,
     ) -> "ConversationState":
         """Create a new conversation state or resume from persistence.
 
@@ -488,6 +516,8 @@ class ConversationState(OpenHandsModel):
                 value is still stored on the state and used for environment
                 observation paths.
             max_iterations: Maximum iterations per run
+            max_budget_per_run: Accumulated LLM cost limit. None preserves a
+                resumed state's cap and leaves new conversations unbounded.
             stuck_detection: Whether to enable stuck detection
             cipher: Optional cipher for encrypting/decrypting secrets in
                     persisted state. If provided, secrets are encrypted when
@@ -540,6 +570,7 @@ class ConversationState(OpenHandsModel):
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
             state._cipher = cipher
+            head_repaired = state._repair_missing_leaf()
 
             # Cold-load: rebuild the cached view with full property
             # enforcement — persisted events may come from an older code
@@ -548,6 +579,8 @@ class ConversationState(OpenHandsModel):
 
             # Commit runtime-provided values (may autosave)
             state._autosave_enabled = True
+            if head_repaired:  # persist it so the next load does not repeat it
+                state._save_base_state(file_store)
             # Agent: base_state.json is the single source of truth. When the
             # caller does not supply an agent (``agent is None``), keep the
             # persisted one untouched — this is what lets a persisted
@@ -560,6 +593,8 @@ class ConversationState(OpenHandsModel):
                 state.agent = agent
             state.workspace = workspace
             state.max_iterations = max_iterations
+            if max_budget_per_run is not None:
+                state.max_budget_per_run = max_budget_per_run
 
             # Note: stats are already deserialized from base_state.json above.
             # Do NOT reset stats here - this would lose accumulated metrics.
@@ -579,6 +614,7 @@ class ConversationState(OpenHandsModel):
             workspace=workspace,
             persistence_dir=persistence_dir,
             max_iterations=max_iterations,
+            max_budget_per_run=max_budget_per_run,
             stuck_detection=stuck_detection,
             tags=tags or {},
         )

@@ -7,17 +7,16 @@ worst case. ``CostBudget`` therefore *reserves* each call's worst-case cost
 before it is sent and settles it once the call completes, releasing the
 remainder when actual cost is known. Failed or unknown-cost attempts retain
 their bound; these conservative charges are budget usage, not billed cost.
-Settled + reserved is a live upper bound on what the current run can owe.
+Settled + reserved is a live upper bound on what the conversation can owe.
 
-A parent and its subagents share one reservation tree so they contend on one
-running total, but each ceiling is measured against the usage of the *subtree
-it governs*: a view's own ceiling sees only itself and its descendants, while
-an ancestor ceiling sees everything below it. A subagent's
-``max_budget_per_run`` therefore bounds that subagent's own work, and a
-delegate cannot spend past its parent's cap even when it declares a larger
-budget. The tree is reset at the start of each top-level run (see
-:meth:`reseed`), which makes ``max_budget_per_run`` a per-run ceiling rather
-than a lifetime cap.
+The ceiling is the conversation's *accumulated* LLM cost (``base_state.json``
+owns it), so a run seeds the ledger with cost already recorded. A parent and its
+subagents share one reservation tree so they contend on one running total, but
+each ceiling is measured against the usage of the *subtree it governs*: a view's
+own ceiling sees only itself and its descendants, while an ancestor ceiling sees
+everything below it. A subagent's ``max_budget_per_run`` therefore bounds that
+subagent's own work, and a delegate cannot spend past its parent's cap even when
+it declares a larger budget.
 
 Pre-call reservation only covers the LLM call wrappers that install a
 reservation (``LLM.completion``/``acompletion``/...). Agents that delegate to an
@@ -33,15 +32,18 @@ from dataclasses import dataclass
 
 
 class _Tree:
-    """Shared state for one budget tree: one lock and one reseed generation."""
+    """Shared state for one budget tree: one lock, one seed and one generation."""
 
-    __slots__ = ("lock", "generation")
+    __slots__ = ("lock", "generation", "seed")
 
-    def __init__(self) -> None:
+    def __init__(self, seed: float = 0.0) -> None:
         self.lock = threading.Lock()
-        # Bumped by ``reseed``. A view whose ``_generation`` lags this value
-        # discards its subtree totals on next access, so a fresh run starts from
-        # zero without walking the whole tree.
+        # Cost already accrued before the ledger's current generation, seeded
+        # from the conversation's accumulated cost. A view whose ``_generation``
+        # lags this value re-seeds from here on next access, so a fresh run
+        # starts from recorded spend without walking the whole tree.
+        self.seed = seed
+        # Bumped by ``reseed``.
         self.generation = 0
 
 
@@ -93,7 +95,7 @@ class CostBudget:
         return view
 
     def _sync(self) -> None:
-        """Discard this view's totals if the tree has been reseeded. Lock held."""
+        """Reset this view's totals if the tree was reseeded. Lock held."""
         generation = self._tree.generation
         if self._generation != generation:
             self._subtree_settled = 0.0
@@ -115,6 +117,16 @@ class CostBudget:
             node = node._parent
         return tightest
 
+    def _node_total(self, node: CostBudget) -> float:
+        """``node``'s subtree total, plus the tree seed for the root view only.
+
+        The seed is cost the owner accrued before the current generation. Only
+        the root's ceiling counts it, so a child's own ceiling is not charged
+        for the owner's (or a sibling's) earlier spending. Lock held.
+        """
+        seed = self._tree.seed if node._parent is None else 0.0
+        return seed + node._subtree_settled + node._subtree_reserved
+
     def _breached_limit(self, amount: float) -> float | None:
         """Tightest ceiling ``amount`` would breach, or ``None`` if it fits.
 
@@ -124,8 +136,7 @@ class CostBudget:
         node: CostBudget | None = self
         while node is not None:
             node._sync()
-            total = node._subtree_settled + node._subtree_reserved
-            if total + amount > node._limit:
+            if self._node_total(node) + amount > node._limit:
                 return node._limit
             node = node._parent
         return None
@@ -135,7 +146,8 @@ class CostBudget:
         """Settled budget usage in this subtree, including bounds for unknown work."""
         with self._tree.lock:
             self._sync()
-            return max(0.0, self._subtree_settled)
+            seed = self._tree.seed if self._parent is None else 0.0
+            return max(seed, 0.0) + max(0.0, self._subtree_settled)
 
     @property
     def reserved(self) -> float:
@@ -148,18 +160,18 @@ class CostBudget:
         """Live upper bound on subtree cost: settled + in-flight reservations."""
         with self._tree.lock:
             self._sync()
-            return self._subtree_settled + self._subtree_reserved
+            return max(self._node_total(self), 0.0)
 
-    def reseed(self) -> None:
-        """Start a fresh per-run allowance for the whole tree.
+    def reseed(self, seed: float = 0.0) -> None:
+        """Start a fresh allowance for the whole tree from ``seed``.
 
         Bumps the tree generation so every view resets its subtree totals on
-        next access, giving each top-level ``run()``/``arun()`` its own
-        ``max_budget_per_run`` allowance rather than inheriting earlier runs'
-        spend. A run that inherited a parent's budget shares the parent's
-        generation and must not reseed it mid-flight.
+        next access. ``seed`` is the cost already accrued before this allowance
+        began (the conversation's accumulated cost), so an accumulated-cost
+        ceiling keeps counting prior spend.
         """
         with self._tree.lock:
+            self._tree.seed = seed
             self._tree.generation += 1
 
     def try_reserve(self, amount: float) -> BudgetReservation | None:
@@ -201,7 +213,7 @@ class CostBudget:
         """Error detail if the live total has reached a ceiling, else ``None``."""
         with self._tree.lock:
             self._sync()
-            total = self._subtree_settled + self._subtree_reserved
+            total = self._node_total(self)
             limit = self._reached_limit()
         if limit is None:
             return None
@@ -212,7 +224,7 @@ class CostBudget:
         node: CostBudget | None = self
         while node is not None:
             node._sync()
-            if node._subtree_settled + node._subtree_reserved >= node._limit:
+            if self._node_total(node) >= node._limit:
                 return node._limit
             node = node._parent
         return None
@@ -221,7 +233,7 @@ class CostBudget:
         """Message for a reservation of ``amount`` that would exceed a ceiling."""
         with self._tree.lock:
             self._sync()
-            total = self._subtree_settled + self._subtree_reserved
+            total = self._node_total(self)
             limit = self._breached_limit(amount)
         return self._limit_detail(
             limit if limit is not None else self._limit,

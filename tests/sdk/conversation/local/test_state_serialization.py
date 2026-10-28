@@ -3,6 +3,7 @@
 import json
 import tempfile
 import uuid
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -1509,3 +1510,115 @@ def test_saved_conversation_with_retired_browser_kwarg_resumes(tmp_path, enabled
         )
     finally:
         conversation.close()
+
+
+@pytest.mark.parametrize("budget", [2.5, 0.0, -1.0])
+def test_local_budget_resumes_and_numeric_override_persists(tmp_path, mock_llm, budget):
+    with closing(
+        LocalConversation(
+            agent=Agent(llm=mock_llm, tools=[]),
+            workspace=tmp_path,
+            persistence_dir=tmp_path,
+            max_budget_per_run=budget,
+            delete_on_close=False,
+            visualizer=None,
+        )
+    ) as created:
+        conversation_id = created.id
+
+    with closing(
+        LocalConversation(
+            agent=None,
+            workspace=tmp_path,
+            persistence_dir=tmp_path,
+            conversation_id=conversation_id,
+            delete_on_close=False,
+            visualizer=None,
+        )
+    ) as resumed:
+        assert resumed.max_budget_per_run == budget
+
+    with closing(
+        LocalConversation(
+            agent=None,
+            workspace=tmp_path,
+            persistence_dir=tmp_path,
+            conversation_id=conversation_id,
+            max_budget_per_run=7.5,
+            delete_on_close=False,
+            visualizer=None,
+        )
+    ) as overridden:
+        assert overridden.max_budget_per_run == 7.5
+        saved = json.loads(
+            (tmp_path / conversation_id.hex / "base_state.json").read_text()
+        )
+        assert saved["max_budget_per_run"] == 7.5
+
+
+def test_local_budget_property_uses_persisted_state(tmp_path, mock_llm):
+    with closing(
+        LocalConversation(
+            agent=Agent(llm=mock_llm, tools=[]),
+            workspace=tmp_path,
+            persistence_dir=tmp_path,
+            max_budget_per_run=2.5,
+            delete_on_close=False,
+            visualizer=None,
+        )
+    ) as conversation:
+        path = tmp_path / conversation.id.hex / "base_state.json"
+        with conversation.state:
+            conversation.state.max_budget_per_run = 3.5
+        assert conversation.max_budget_per_run == 3.5
+
+        conversation.max_budget_per_run = 4.5
+        assert conversation.state.max_budget_per_run == 4.5
+        assert json.loads(path.read_text())["max_budget_per_run"] == 4.5
+
+        conversation.max_budget_per_run = None
+        assert conversation.state.max_budget_per_run is None
+        assert json.loads(path.read_text()).get("max_budget_per_run") is None
+        conversation_id = conversation.id
+
+    with closing(
+        LocalConversation(
+            agent=None,
+            workspace=tmp_path,
+            persistence_dir=tmp_path,
+            conversation_id=conversation_id,
+            delete_on_close=False,
+            visualizer=None,
+        )
+    ) as resumed:
+        assert resumed.max_budget_per_run is None
+
+
+def test_local_budget_old_snapshot_without_cap_resumes_unbounded(tmp_path, mock_llm):
+    with closing(
+        LocalConversation(
+            agent=Agent(llm=mock_llm, tools=[]),
+            workspace=tmp_path,
+            persistence_dir=tmp_path,
+            delete_on_close=False,
+            visualizer=None,
+        )
+    ) as created:
+        conversation_id = created.id
+    path = tmp_path / conversation_id.hex / "base_state.json"
+    saved = json.loads(path.read_text())
+    saved.pop("max_budget_per_run", None)
+    path.write_text(json.dumps(saved))
+
+    with closing(
+        LocalConversation(
+            agent=None,
+            workspace=tmp_path,
+            persistence_dir=tmp_path,
+            conversation_id=conversation_id,
+            delete_on_close=False,
+            visualizer=None,
+        )
+    ) as resumed:
+        assert resumed.max_budget_per_run is None
+        assert resumed.state.max_budget_per_run is None

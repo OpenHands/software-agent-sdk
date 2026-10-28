@@ -109,7 +109,8 @@ class StoredConversation(ConversationConfig):
     single source of truth for the agent / runtime state is
     ``ConversationState`` persisted to ``base_state.json``. Because
     ``StoredConversation`` is not a ``StartConversationRequest``, the agent
-    cannot silently re-appear in ``meta.json``.
+    cannot silently re-appear in ``meta.json``. The same holds for the
+    conversation budget (``max_budget_per_run``).
     """
 
     required_runtime_credential_bindings: set[str] = Field(default_factory=set)
@@ -172,13 +173,12 @@ class _ConversationInfoBase(BaseModel):
     )
     max_budget_per_run: float | None = Field(
         default=None,
-        gt=0,
         description=(
-            "Maximum cost in USD the agent may spend in a single run before "
-            "stopping. Pre-call and reservation-based on the SDK's LLM call "
-            "path; not supported for ACP agents, whose prompts bypass that path "
-            "(a budget supplied with an ACP agent is rejected). ``None`` leaves "
-            "the run unbounded."
+            "Hard cost ceiling in USD for the conversation's accumulated LLM "
+            "cost. On the SDK's LLM call path each call also reserves its "
+            "worst-case cost before being sent. Not supported for ACP agents "
+            "(a budget supplied with one is rejected). `None` means no budget "
+            "limit."
         ),
     )
     stuck_detection: bool = Field(
@@ -540,6 +540,16 @@ class UpdateConversationRequest(BaseModel):
             "Key-value tags to set on the conversation. Keys must be lowercase "
             "alphanumeric. Values are arbitrary strings up to 256 characters. "
             "Replaces all existing tags when provided."
+        ),
+    )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "New hard cost ceiling in USD. Applies to the running conversation "
+            "from its next step. Omit to leave unchanged; send `null` to remove "
+            "the limit."
         ),
     )
 

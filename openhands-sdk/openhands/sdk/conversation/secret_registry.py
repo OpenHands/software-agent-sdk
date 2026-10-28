@@ -15,6 +15,7 @@ from openhands.sdk.utils.masking import (
     PreserveDataUrls,
     SkipSecretMasking,
     field_has_marker,
+    field_is_literal,
 )
 from openhands.sdk.utils.models import OpenHandsModel
 
@@ -105,7 +106,9 @@ def _mask_model[ModelT: BaseModel](model: ModelT, mask: Callable[[str], str]) ->
         updates[name] = _mask_value(
             getattr(model, name),
             mask,
-            skip_secret_masking=field_has_marker(field, SkipSecretMasking),
+            skip_secret_masking=(
+                field_has_marker(field, SkipSecretMasking) or field_is_literal(field)
+            ),
             preserve_data_urls=field_has_marker(field, PreserveDataUrls),
         )
     return model.model_copy(update=updates)

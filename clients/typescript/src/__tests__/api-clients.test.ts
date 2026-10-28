@@ -2020,6 +2020,24 @@ describe('Auxiliary API clients', () => {
     await conversation.start({ initialMessage: 'hello' });
 
     const [, init] = (global.fetch as Mock).mock.calls[0];
+    expect(JSON.parse(init.body)).not.toHaveProperty('max_budget_per_run');
+  });
+
+  it('RemoteConversation.start clears a constructor budget with an explicit null', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: 'conv-123' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace, { maxBudgetPerRun: 2.5 });
+
+    await conversation.start({ initialMessage: 'hello', maxBudgetPerRun: null });
+
+    const [, init] = (global.fetch as Mock).mock.calls[0];
     expect(JSON.parse(init.body)).toMatchObject({
       max_budget_per_run: null,
     });

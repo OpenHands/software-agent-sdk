@@ -43,6 +43,12 @@ import type { HookConfig } from '../hooks';
  */
 export interface RemoteConversationOptions extends BaseConversationOptions {
   /**
+   * Positive USD limit on accumulated conversation cost, including earlier runs.
+   * Null means unbounded. A completed agent step may overshoot the limit.
+   * Enforced server-side before each LLM call.
+   */
+  maxBudgetPerRun?: number | null;
+  /**
    * Optional user ID to associate with server-side observability traces.
    */
   userId?: string;
@@ -52,11 +58,6 @@ export interface RemoteConversationOptions extends BaseConversationOptions {
    * (PreToolUse, PostToolUse, UserPromptSubmit, Stop, etc.).
    */
   hookConfig?: HookConfig;
-  /**
-   * Optional per-conversation cost ceiling in USD. Must be > 0 when set.
-   * Enforced server-side before each LLM call.
-   */
-  maxBudgetPerRun?: number;
   /**
    * Optional error callback for non-fatal errors (WebSocket issues, state update failures).
    * If not provided, these errors are silently ignored.
@@ -97,8 +98,8 @@ export class RemoteConversation implements IConversation {
   private onError?: ErrorCallbackType;
   private hookConfig?: HookConfig;
   private userId?: string;
-  private maxBudgetPerRun?: number;
   private maxIterations?: number;
+  private maxBudgetPerRun?: number | null;
   private stuckDetection?: boolean;
 
   constructor(
@@ -113,8 +114,8 @@ export class RemoteConversation implements IConversation {
     this._conversationId = options.conversationId;
     this.hookConfig = options.hookConfig;
     this.userId = options.userId;
-    this.maxBudgetPerRun = options.maxBudgetPerRun;
     this.maxIterations = options.maxIterations;
+    this.maxBudgetPerRun = options.maxBudgetPerRun;
     this.stuckDetection = options.stuckDetection;
 
     this.client = new HttpClient({
@@ -151,11 +152,14 @@ export class RemoteConversation implements IConversation {
     options: {
       initialMessage?: string;
       maxIterations?: number;
+      /**
+       * Per-conversation cost ceiling in USD. Must be > 0 when set; null or
+       * omitted means unbounded. Enforced server-side before each LLM call.
+       */
+      maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
       hookConfig?: HookConfig;
       userId?: string;
-      /** Per-conversation cost ceiling in USD. Must be > 0 when set. */
-      maxBudgetPerRun?: number;
     } = {}
   ): Promise<void> {
     if (this._conversationId) {
@@ -176,16 +180,21 @@ export class RemoteConversation implements IConversation {
       };
     }
 
-    // Start options take precedence over the constructor options
+    // Start options take precedence over the constructor options. A `null`
+    // passed to start() clears a constructor budget; omitting it keeps the
+    // constructor value.
     const hookConfig = options.hookConfig ?? this.hookConfig ?? undefined;
     const userId = options.userId ?? this.userId ?? undefined;
-    const maxBudgetPerRun = options.maxBudgetPerRun ?? this.maxBudgetPerRun;
+    const maxBudgetPerRun =
+      options.maxBudgetPerRun !== undefined
+        ? options.maxBudgetPerRun
+        : this.maxBudgetPerRun;
 
     const request: CreateConversationRequest = {
       agent: this.agent,
       initial_message: initialMessage,
       max_iterations: options.maxIterations || this.maxIterations || 500,
-      max_budget_per_run: maxBudgetPerRun ?? null,
+      max_budget_per_run: maxBudgetPerRun,
       stuck_detection: options.stuckDetection ?? this.stuckDetection ?? true,
       workspace: { type: 'local', working_dir: this.workspace.workingDir },
       hook_config: hookConfig ?? null,

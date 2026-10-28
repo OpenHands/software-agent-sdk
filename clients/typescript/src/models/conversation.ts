@@ -58,8 +58,8 @@ export interface ConversationInfo {
   persistence_dir: string;
   max_iterations?: number;
   /**
-   * Per-conversation cost ceiling in USD, or null/undefined when unbounded.
-   * Enforced server-side before each LLM call.
+   * USD limit on accumulated conversation cost, or null/undefined when
+   * unbounded. Enforced server-side before each LLM call.
    */
   max_budget_per_run?: number | null;
   stuck_detection?: boolean;
@@ -124,9 +124,8 @@ export interface CreateConversationRequest {
   initial_message?: Message;
   max_iterations: number;
   /**
-   * Per-conversation cost ceiling in USD. Must be > 0 when set; omit or pass
-   * null for an unbounded conversation. Enforced server-side before each LLM
-   * call.
+   * Positive USD limit on accumulated conversation cost; null means
+   * unbounded. Enforced server-side before each LLM call.
    */
   max_budget_per_run?: number | null;
   stuck_detection: boolean;
@@ -139,7 +138,7 @@ export interface CreateACPConversationRequest {
   agent: ACPAgentConfig;
   initial_message?: Message;
   max_iterations: number;
-  /** Per-conversation cost ceiling in USD; see {@link CreateConversationRequest}. */
+  /** Positive USD limit on accumulated conversation cost; null means unbounded. */
   max_budget_per_run?: number | null;
   stuck_detection: boolean;
   workspace: Record<string, unknown>;
@@ -150,6 +149,8 @@ export interface CreateACPConversationRequest {
 export interface UpdateConversationRequest {
   title?: string;
   tags?: Record<string, string>;
+  /** New positive USD limit; omit to keep it, null to remove the limit. */
+  max_budget_per_run?: number | null;
 }
 
 export interface StaticSecret {

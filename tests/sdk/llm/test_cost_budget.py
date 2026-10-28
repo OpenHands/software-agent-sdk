@@ -127,6 +127,44 @@ def test_child_ceiling_measures_only_its_own_subtree():
     assert child.try_reserve(1.30) is not None
 
 
+def test_seed_is_charged_only_to_the_root_ceiling():
+    """A reseeded tree's seed must not count against a child's own ceiling.
+
+    Regression: the owner seeds the shared tree with its accumulated cost; a
+    delegate's own cap was charged for that seed even though the delegate had
+    spent nothing, so an affordable child failed before its first request.
+    """
+    parent = CostBudget(5.0)
+    parent.reseed(1.5)  # owner's accumulated cost before the run
+    child = parent.child(1.31)
+
+    assert child.spent == pytest.approx(0.0)
+    assert child.live_total == pytest.approx(0.0)
+    # $1.30 fits the child's $1.31 cap; the $1.5 seed is the root's alone.
+    assert child.try_reserve(1.30) is not None
+    # The root still counts its seed.
+    assert parent.spent == pytest.approx(1.5)
+
+
+def test_child_reseed_does_not_weaken_an_ancestor_ceiling():
+    """A child must not reseed the shared tree out from under its parent.
+
+    Regression: installing a delegate's ledger reseeded the shared tree,
+    wiping the parent's settled totals and letting the parent spend past its
+    cap. Only the budget-owning conversation may reseed; see the
+    ``LocalConversation`` coverage in
+    ``tests/sdk/conversation/local/test_cost_budget_enforcement.py``.
+    """
+    parent = CostBudget(1.31)
+    _settle(parent, 1.0)
+    assert parent.live_total == pytest.approx(1.0)
+
+    child = parent.child(0.5)
+    # The parent's recorded spend still binds: only $0.31 of headroom remains.
+    assert parent.try_reserve(0.40) is None
+    assert child.try_reserve(0.5) is None
+
+
 def test_sibling_spend_does_not_consume_a_siblings_ceiling():
     parent = CostBudget(10.0)
     left = parent.child(1.0)

@@ -17,7 +17,7 @@ from openhands.sdk.context.memory import load_memory
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
-from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.event_store import ROOT_PARENT_ID, EventLog
 from openhands.sdk.conversation.exceptions import (
     ConversationRunError,
     CostBudgetUnsupportedError,
@@ -177,9 +177,16 @@ def _is_acp_prompt_message(event: Event) -> TypeGuard[MessageEvent]:
     )
 
 
-def _copy_event_for_fork(event: Event) -> Event:
+def _copy_event_for_fork(event: Event, source: EventLog) -> Event:
     # Mirrors persisted event loading and skips runtime-only fields like executors.
-    return Event.model_validate_json(event.model_dump_json(exclude_none=True))
+    copied = Event.model_validate_json(event.model_dump_json(exclude_none=True))
+    parent_id = copied.parent_id
+    if parent_id is None or parent_id == ROOT_PARENT_ID or parent_id in source:
+        return copied
+    # The parent's file was lost from the source log: link the copy to the
+    # event the source's own branch walk bridges to instead.
+    bridged = source._effective_parent_id(source.get_index(event.id), event)
+    return copied.model_copy(update={"parent_id": bridged})
 
 
 def reject_acp_budget(agent: AgentBase | None, effective_budget: float | None) -> None:
@@ -249,9 +256,8 @@ class LocalConversation(BaseConversation):
     _mcp_tool_provider: MCPToolProvider
     _mcp_config_from_parent: bool
     _llm_call_context: LLMCallContext
-    # Lifetime recorded cost at the last run start; ``max_budget_per_run`` is a
-    # per-run ceiling measured from here.
-    _budget_run_baseline: float
+    # Budget tree inherited from a delegating parent, if any.
+    _inherited_budget: CostBudget | None
 
     def __init__(
         self,
@@ -318,8 +324,12 @@ class LocalConversation(BaseConversation):
             hook_config: Optional hook configuration to auto-wire session hooks.
                 If plugins are loaded, their hooks are combined with this config.
             max_iteration_per_run: Maximum number of iterations per run
-            max_budget_per_run: Maximum cost in USD per run. Enforced before each
-                      LLM call by reserving the call's worst-case cost. Not
+            max_budget_per_run: Accumulated LLM cost limit (USD). Each SDK LLM
+                      call additionally reserves its worst-case cost before being
+                      sent, so the run cannot overshoot the ceiling by a whole
+                      step. On resume, None keeps the persisted cap; a number
+                      replaces it. Assign None to the conversation's
+                      max_budget_per_run property to clear a saved cap. Not
                       supported for ACP agents (their prompts bypass the SDK LLM
                       call path); passing a budget with one raises
                       :class:`CostBudgetUnsupportedError`.
@@ -473,6 +483,7 @@ class LocalConversation(BaseConversation):
             else None,
             file_store=file_store,
             max_iterations=max_iteration_per_run,
+            max_budget_per_run=max_budget_per_run,
             stuck_detection=stuck_detection,
             cipher=cipher,
             tags=tags,
@@ -578,29 +589,13 @@ class LocalConversation(BaseConversation):
         )
 
         self.max_iteration_per_run = max_iteration_per_run
-        # Hard cost ceiling (USD) per run; None disables it.
-        self.max_budget_per_run = max_budget_per_run
-        self._budget_run_baseline = 0.0
+        self._inherited_budget = inherited_budget
         self._cost_budget: CostBudget | None = None
         # True only for the conversation that created the budget; a conversation
         # that inherited a parent's budget shares its tree and must never
         # re-seed it mid-flight.
         self._owns_budget = False
-        if max_budget_per_run is not None:
-            if inherited_budget is not None:
-                # A subagent shares its parent's reservation pool so parent and
-                # children contend on one ceiling; the tightest limit applies.
-                self._cost_budget = inherited_budget.child(max_budget_per_run)
-            else:
-                self._cost_budget = CostBudget(max_budget_per_run)
-                self._owns_budget = True
-            self._llm_call_context = replace(
-                self._llm_call_context, cost_budget=self._cost_budget
-            )
-        elif inherited_budget is not None:
-            # No own ceiling, but inherit the parent's shared budget so a
-            # subagent still draws down the parent's allowance.
-            self._cost_budget = inherited_budget
+        self._install_budget_ledger()
 
         # Initialize stuck detector
         if stuck_detection:
@@ -814,20 +809,56 @@ class LocalConversation(BaseConversation):
         return self._state
 
     @property
+    def max_budget_per_run(self) -> float | None:
+        """The persisted accumulated-cost limit; None means unbounded."""
+        return self._state.max_budget_per_run
+
+    @max_budget_per_run.setter
+    def max_budget_per_run(self, value: float | None) -> None:
+        with self._state:
+            self._state.max_budget_per_run = value
+        # The ledger's ceiling follows the live cap so a change takes effect on
+        # the next call rather than only on the next run.
+        self._install_budget_ledger()
+
+    @property
     def conversation_stats(self):
         return self._state.stats
-
-    def _combined_cost(self) -> float:
-        """Recorded cost across the conversation's LLMs in the current run (USD).
-
-        Subtracts the run-start baseline so ``max_budget_per_run`` bounds the
-        current run rather than draining every later run with earlier spend.
-        """
-        return self._combined_cost_total() - self._budget_run_baseline
 
     def _combined_cost_total(self) -> float:
         """Lifetime recorded cost across the conversation's LLMs (USD)."""
         return self.conversation_stats.get_combined_metrics().accumulated_cost
+
+    def _install_budget_ledger(self) -> None:
+        """Build the reservation ledger for the current cap and recorded cost.
+
+        The ledger's ceiling is the conversation's accumulated cost, so the
+        owner seeds its tree with the cost already recorded. Rebuilding on a cap
+        change (the ``max_budget_per_run`` setter) makes a raised or cleared
+        limit take effect on the next call. A conversation that only inherited a
+        parent's budget shares the parent's tree and must never reseed it, or a
+        delegate's own cap change would wipe the parent's settled totals.
+        """
+        cap = self.max_budget_per_run
+        if cap is not None and cap > 0:
+            if self._inherited_budget is not None:
+                # A subagent shares its parent's reservation pool so parent and
+                # children contend on one ceiling; the tightest limit applies.
+                self._cost_budget = self._inherited_budget.child(cap)
+                self._owns_budget = False
+            else:
+                self._cost_budget = CostBudget(cap)
+                self._owns_budget = True
+                self._cost_budget.reseed(self._combined_cost_total())
+        else:
+            # No cap shares an inherited tree; a non-positive cap (accepted by
+            # the persisted state) is already met, so it needs no ledger and
+            # stops the run through the accumulated-cost check.
+            self._cost_budget = self._inherited_budget if cap is None else None
+            self._owns_budget = False
+        self._llm_call_context = replace(
+            self._llm_call_context, cost_budget=self._cost_budget
+        )
 
     def _latest_acp_prompt_message_id(self) -> str | None:
         """Id of the most recent ACP prompt message, or None if there is none."""
@@ -841,42 +872,24 @@ class LocalConversation(BaseConversation):
     def _budget_exceeded_detail(self) -> str | None:
         """Error detail if the run has hit its cost budget, else None.
 
-        Bounds spend across all of the conversation's LLMs (agent, condenser,
-        ...) in the current run, complementing the iteration cap which only
-        bounds step count. Uses live cost (recorded + in-flight reservations) so
-        a run in progress cannot slip past the ceiling between checks.
+        Bounds the conversation's accumulated LLM cost (agent, condenser, ...)
+        across all of its LLMs, complementing the iteration cap which only bounds
+        step count. The live total also counts in-flight reservations, so a run
+        in progress cannot slip past the ceiling between checks.
 
         """
-        if self._cost_budget is None:
+        max_budget = self.max_budget_per_run
+        if max_budget is None:
             return None
-        detail = self._cost_budget.exceeded_detail()
-        if detail is not None:
-            return detail
-        if self.max_budget_per_run is None:
-            # Inherited a parent's ceiling without one of its own; the shared
-            # tree already enforces it.
-            return None
-        spent = self._combined_cost()
-        if spent < self.max_budget_per_run:
+        spent = self._combined_cost_total()
+        if self._cost_budget is not None:
+            spent = max(spent, self._cost_budget.live_total)
+        if spent < max_budget:
             return None
         return (
-            f"Agent reached maximum budget limit (${self.max_budget_per_run:.4f}); "
-            f"accumulated cost ${spent:.4f}."
+            f"Agent reached maximum budget limit "
+            f"(${max_budget:.4f}); accumulated cost ${spent:.4f}."
         )
-
-    def _begin_budget_run(self) -> None:
-        """Start a fresh per-run budget allowance for a top-level run.
-
-        Records the run-start baseline and reseeds the tree, so each
-        ``run()``/``arun()`` gets its own ``max_budget_per_run`` allowance rather
-        than inheriting earlier runs' spend. A conversation that only inherited a
-        parent's budget shares the parent's tree and must not reseed it
-        mid-flight.
-        """
-        self._budget_run_baseline = self._combined_cost_total()
-        if self._owns_budget:
-            assert self._cost_budget is not None
-            self._cost_budget.reseed()
 
     def _emit_run_limit_error(self, code: str, detail: str) -> None:
         """Mark the run failed with a run-limit ConversationErrorEvent."""
@@ -1036,7 +1049,8 @@ class LocalConversation(BaseConversation):
                 # A fork is an independent conversation: inherit the source's
                 # non-budget call context but not its ceiling, so the fork's
                 # calls never reserve against the source's tree. Its own
-                # max_budget_per_run (copied from the source) starts fresh.
+                # max_budget_per_run (copied from the source) gets its own
+                # ledger seeded from the fork's recorded cost.
                 _parent_llm_call_context=replace(
                     self._llm_call_context, cost_budget=None
                 ),
@@ -1054,7 +1068,9 @@ class LocalConversation(BaseConversation):
                 fork_leaf = self._state.leaf_event_id
 
             for event in source_events:
-                fork_conv._state.events.append(_copy_event_for_fork(event))
+                fork_conv._state.events.append(
+                    _copy_event_for_fork(event, self._state.events)
+                )
             fork_conv._state.leaf_event_id = fork_leaf
             # A full fork inherits the source's empty-HEAD state; a branch slice
             # roots HEAD at a real event (from_event_id), so it is never empty.
@@ -2105,7 +2121,6 @@ class LocalConversation(BaseConversation):
         # Ensure agent is fully initialized (loads plugins and initializes agent)
         self._ensure_agent_ready()
         self._cancel_token = CancellationToken()
-        self._begin_budget_run()
 
         with self._state:
             if self._state.execution_status in [
@@ -2321,7 +2336,6 @@ class LocalConversation(BaseConversation):
         # self-deadlock that ReadTimeouts after 30s (agent-canvas#1072).
         # _ensure_agent_ready is thread-safe and already runs off-loop in run().
         await asyncio.to_thread(self._ensure_agent_ready)
-        self._begin_budget_run()
 
         with self._state:
             if isinstance(self.agent, ACPAgent) and self._state.execution_status in (

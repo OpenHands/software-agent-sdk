@@ -283,19 +283,6 @@ class ConversationConfig(BaseModel):
         description="If set, the max number of iterations the agent will run "
         "before stopping. This is useful to prevent infinite loops.",
     )
-    max_budget_per_run: float | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Maximum cost in USD the agent may spend in a single run before "
-            "stopping. Enforcement is pre-call and reservation-based: each LLM "
-            "call reserves its worst-case cost before being sent, so a run "
-            "cannot overshoot the budget by a whole step. Not supported for ACP "
-            "agents, whose prompts bypass the SDK's LLM call path — supplying a "
-            "budget with an ACP agent is rejected rather than accepted as an "
-            "unenforceable cap. ``None`` (the default) leaves the run unbounded."
-        ),
-    )
     stuck_detection: bool = Field(
         default=True,
         description="If true, the conversation will use stuck detection to "
@@ -457,9 +444,9 @@ class StartConversationRequest(ConversationConfig):
     server turns the source into the conversation's agent at launch; this model
     only checks that exactly one source is given.
 
-    Note: the agent lives here on the *request*, deliberately not on
+    Note: the agent and budget live here on the *request*, deliberately not on
     ``ConversationConfig``. The persisted record (``StoredConversation``) does
-    not carry the agent — its single source of truth is ``ConversationState`` /
+    not carry them — their single source of truth is ``ConversationState`` /
     ``base_state.json``.
     """
 
@@ -479,6 +466,20 @@ class StartConversationRequest(ConversationConfig):
         ),
     )
     agent: AgentBase = Field(default=cast(AgentBase, None))
+    max_budget_per_run: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "Hard cost ceiling in USD for the conversation's accumulated LLM "
+            "cost across all of its LLMs; `None` means no budget limit. On the "
+            "SDK's LLM call path each call also reserves its worst-case cost "
+            "before being sent, so a run cannot overshoot the ceiling by a whole "
+            "step. Not supported for ACP agents, whose prompts bypass that path "
+            "(a budget supplied with an ACP agent is rejected). When reached, "
+            "the run stops with a `MaxBudgetReached` error."
+        ),
+    )
     conversation_runtime: ConversationRuntime | None = Field(
         default=None,
         description=(

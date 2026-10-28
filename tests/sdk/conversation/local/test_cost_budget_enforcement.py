@@ -85,13 +85,14 @@ def test_run_completes_and_exposes_accumulated_cost_within_budget():
         assert cost == pytest.approx(0.02)
 
 
-def test_budget_is_per_run_not_lifetime():
-    """A second run gets a fresh allowance; earlier spend does not drain it."""
+def test_budget_is_accumulated_across_runs():
+    """The cap bounds accumulated cost: prior runs drain later runs' allowance."""
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
-        # Each run records 0.02; the provider's 128k input ceiling plus 2000
-        # output tokens reserves 1.30. A 1.31 allowance admits the later run
-        # only when its prior 0.02 does not count against the new reservation.
+        # A call's worst-case reservation is 1.30 (128k input ceiling plus 2000
+        # output tokens). A 1.31 cap admits the first run, which records 0.02.
+        # The second run's reservation (1.30) plus that recorded spend exceeds
+        # the cap, so the accumulated ceiling stops it.
         conv = _conversation(tmp, max_budget_per_run=1.31)
 
         def fake_completion(**kwargs):
@@ -107,8 +108,43 @@ def test_budget_is_per_run_not_lifetime():
             conv.send_message(Message(role="user", content=[TextContent(text="two")]))
             conv.run()
 
+        assert conv.state.execution_status == ConversationExecutionStatus.ERROR
+        codes = [
+            e.code for e in conv.state.events if isinstance(e, ConversationErrorEvent)
+        ]
+        assert "MaxBudgetReached" in codes
+        # Only the first run's cost was recorded; the second was denied pre-call.
+        cost = conv.conversation_stats.get_combined_metrics().accumulated_cost
+        assert cost == pytest.approx(0.02)
+
+
+def test_raising_budget_takes_effect_without_a_new_run():
+    """Raising the cap re-seeds the ledger, so a denied run can continue."""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        conv = _conversation(tmp, max_budget_per_run=1.31)
+
+        def fake_completion(**kwargs):
+            return _response_with_cost(kwargs.get("model", "gpt-4o-mini"))
+
+        with patch(
+            "openhands.sdk.llm.llm.litellm_completion", side_effect=fake_completion
+        ):
+            conv.send_message(Message(role="user", content=[TextContent(text="one")]))
+            conv.run()
+            assert conv.state.execution_status == ConversationExecutionStatus.FINISHED
+
+            conv.send_message(Message(role="user", content=[TextContent(text="two")]))
+            conv.run()
+            assert conv.state.execution_status == ConversationExecutionStatus.ERROR
+
+            # Raising the cap rebuilds the ledger against the accumulated cost,
+            # so the next call fits.
+            conv.max_budget_per_run = 5.0
+            conv.send_message(Message(role="user", content=[TextContent(text="three")]))
+            conv.run()
+
         assert conv.state.execution_status == ConversationExecutionStatus.FINISHED
-        # Lifetime cost still accumulates across runs, for reporting.
         cost = conv.conversation_stats.get_combined_metrics().accumulated_cost
         assert cost == pytest.approx(0.04)
 
@@ -221,3 +257,46 @@ def test_acp_delegate_without_inherited_budget_is_allowed():
             _parent_llm_call_context=parent.get_llm_call_context(),
         )
         assert conv._cost_budget is None
+
+
+def test_delegate_install_does_not_weaken_the_parent_ceiling():
+    """A delegate's ledger install must not reseed the shared budget tree.
+
+    Regression: ``_install_budget_ledger`` reseeded unconditionally, so
+    constructing a delegate child wiped the parent's settled totals and let the
+    parent spend past its cap. Only the budget-owning conversation may reseed.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        parent = _conversation(tmp, max_budget_per_run=1.31)
+        parent_budget = parent._cost_budget
+        assert parent_budget is not None
+        reservation = parent_budget.try_reserve(1.0)
+        assert reservation is not None
+        parent_budget.settle(reservation, 1.0)
+        assert parent_budget.live_total == pytest.approx(1.0)
+
+        # A delegate with its own cap shares the parent's tree.
+        LocalConversation(
+            agent=Agent(
+                llm=LLM(
+                    model="gpt-4o-mini",
+                    usage_id="sub",
+                    num_retries=0,
+                    input_cost_per_token=1e-5,
+                    output_cost_per_token=1e-5,
+                    max_output_tokens=2000,
+                ),
+                tools=[],
+            ),
+            workspace=str(tmp),
+            persistence_dir=str(tmp / "sub"),
+            max_budget_per_run=0.5,
+            visualizer=None,
+            delete_on_close=False,
+            _parent_llm_call_context=parent.get_llm_call_context(),
+        )
+
+        # The parent keeps its recorded spend; only $0.31 of headroom remains.
+        assert parent_budget.live_total == pytest.approx(1.0)
+        assert parent_budget.try_reserve(0.40) is None
