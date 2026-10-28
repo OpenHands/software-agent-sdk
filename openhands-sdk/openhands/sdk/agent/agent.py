@@ -238,6 +238,9 @@ class _ActionBatch:
     has_finish: bool
     blocked_reasons: dict[str, str] = field(default_factory=dict)
     results_by_id: dict[str, list[Event]] = field(default_factory=dict)
+    # Calls after FinishTool. Their ActionEvents are already in the event log, so
+    # each needs a result or the next step runs it as a pending action.
+    discarded: list[ActionEvent] = field(default_factory=list)
 
     @staticmethod
     def _truncate_at_finish(
@@ -279,7 +282,9 @@ class _ActionBatch:
         span_owner: object | None = None,
     ) -> _ActionBatch:
         """Truncate, partition blocked actions, execute the rest, return the batch."""
-        action_events, has_finish = cls._truncate_at_finish(action_events)
+        kept, has_finish = cls._truncate_at_finish(action_events)
+        discarded = action_events[len(kept) :]
+        action_events = kept
 
         blocked_reasons: dict[str, str] = {}
         executable: list[ActionEvent] = []
@@ -304,6 +309,7 @@ class _ActionBatch:
             has_finish=has_finish,
             blocked_reasons=blocked_reasons,
             results_by_id=results_by_id,
+            discarded=discarded,
         )
 
     @classmethod
@@ -323,7 +329,9 @@ class _ActionBatch:
         tool call runs in its own thread and multiple calls are
         dispatched concurrently via :func:`asyncio.gather`.
         """
-        action_events, has_finish = cls._truncate_at_finish(action_events)
+        kept, has_finish = cls._truncate_at_finish(action_events)
+        discarded = action_events[len(kept) :]
+        action_events = kept
 
         blocked_reasons: dict[str, str] = {}
         executable: list[ActionEvent] = []
@@ -348,6 +356,7 @@ class _ActionBatch:
             has_finish=has_finish,
             blocked_reasons=blocked_reasons,
             results_by_id=results_by_id,
+            discarded=discarded,
         )
 
     def emit(
@@ -378,6 +387,25 @@ class _ActionBatch:
             else:
                 for event in self.results_by_id[ae.id]:
                     on_event(event)
+
+        for ae in self.discarded:
+            error = AgentErrorEvent(
+                error=(
+                    "Tool call not executed: it came after the finish tool call "
+                    "in the same response."
+                ),
+                tool_name=ae.tool_name,
+                tool_call_id=ae.tool_call_id,
+                classification=AGENT_OUTCOME,
+            )
+            record_tool_result(
+                conversation,
+                name=extract_action_name(ae),
+                tool_call_id=ae.tool_call_id,
+                tool_input=ae.action,
+                tool_output=error.to_llm_message(),
+            )
+            on_event(error)
 
     def finalize(
         self,

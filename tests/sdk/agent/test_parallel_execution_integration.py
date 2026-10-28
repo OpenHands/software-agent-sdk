@@ -315,6 +315,45 @@ def test_finish_tool_truncates_subsequent_tools():
         )
 
 
+def test_tool_call_after_finish_never_runs_on_a_later_turn():
+    """A call discarded after FinishTool gets a result and stays unexecuted."""
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="")],
+                tool_calls=[
+                    _tool_call("call_finish", "finish", '{"message": "All done"}'),
+                    _tool_call(
+                        "call_after", "slow_tool", '{"delay": 0.01, "label": "after"}'
+                    ),
+                ],
+            ),
+            Message(role="assistant", content=[TextContent(text="Answered")]),
+        ]
+    )
+    agent = Agent(llm=llm, tools=[Tool(name="SlowTool")])
+
+    collected = []
+    conversation = Conversation(agent=agent, callbacks=[lambda e: collected.append(e)])
+    conversation.send_message(Message(role="user", content=[TextContent(text="Go")]))
+    conversation.run()
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="One more question")])
+    )
+    conversation.run()
+
+    results = [
+        e
+        for e in collected
+        if isinstance(e, (ObservationEvent, AgentErrorEvent))
+        and e.tool_call_id == "call_after"
+    ]
+    assert len(results) == 1
+    assert isinstance(results[0], AgentErrorEvent)
+    assert "not executed" in results[0].error
+
+
 def test_error_in_parallel_batch_preserves_other_results():
     """
     A failing tool in a parallel batch doesn't
