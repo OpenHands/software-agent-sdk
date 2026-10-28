@@ -51,6 +51,7 @@ from openhands.sdk.critic.impl.api import APIBasedCritic
 from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.mcp.config import dump_mcp_config
@@ -123,6 +124,67 @@ async def test_meta_json_has_no_agent_and_reload_uses_base_state(tmp_path):
         reloaded = await service2.get_conversation(conv_id)
         assert reloaded is not None
         assert reloaded.agent.llm.model == "gpt-4o"
+
+
+@pytest.mark.asyncio
+async def test_max_budget_per_run_update_survives_restart_and_fork(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=_sample_agent(),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        max_budget_per_run=3.0,
+    )
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        info, _ = await service.start_conversation(request)
+        assert info.max_budget_per_run == 3.0
+        await service.update_conversation(
+            info.id, UpdateConversationRequest(max_budget_per_run=7.5)
+        )
+        conv_id = info.id
+
+    async with ConversationService(conversations_dir=conversations_dir) as service2:
+        reloaded = await service2.get_conversation(conv_id)
+        assert reloaded is not None
+        assert reloaded.max_budget_per_run == 7.5
+        event_service = await service2.get_event_service(conv_id)
+        assert event_service is not None
+        assert event_service.get_conversation().max_budget_per_run == 7.5
+
+        fork = await service2.fork_conversation(conv_id)
+        assert fork is not None
+        assert fork.max_budget_per_run == 7.5
+
+        await service2.update_conversation(
+            conv_id, UpdateConversationRequest(max_budget_per_run=None)
+        )
+        cleared = await service2.get_conversation(conv_id)
+        assert cleared is not None
+        assert cleared.max_budget_per_run is None
+        assert event_service.get_conversation().max_budget_per_run is None
+
+
+@pytest.mark.asyncio
+async def test_max_budget_per_run_lives_only_in_base_state(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=_sample_agent(),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        max_budget_per_run=3.0,
+    )
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        info, _ = await service.start_conversation(request)
+        await service.update_conversation(
+            info.id, UpdateConversationRequest(max_budget_per_run=4.0)
+        )
+        conversation_dir = conversations_dir / info.id.hex
+        base_state = json.loads((conversation_dir / "base_state.json").read_text())
+        meta = json.loads((conversation_dir / "meta.json").read_text())
+        assert base_state["max_budget_per_run"] == 4.0
+        assert "max_budget_per_run" not in meta
 
 
 @pytest.mark.asyncio
@@ -2227,6 +2289,33 @@ class TestConversationServiceStartConversation:
         assert tip("HEAD", Path(workspace.working_dir)) == tip(expected_ref, repo_dir)
         assert plan.branch == f"{options.branch_prefix}{conversation_id}"
         assert guidance in plan.guidance
+
+    @pytest.mark.asyncio
+    async def test_start_conversation_rejects_missing_worktree_ref(
+        self, conversation_service, tmp_path
+    ):
+        repo_dir = tmp_path / "repo"
+        _init_git_repo(repo_dir)
+        conversation_id = uuid4()
+        request = StartConversationRequest(
+            conversation_id=conversation_id,
+            agent=_sample_agent(),
+            workspace=LocalWorkspace(working_dir=repo_dir),
+            worktree=True,
+            worktree_options=ConversationWorktreeOptions(
+                base="ref", ref="missing-branch"
+            ),
+        )
+
+        with pytest.raises(GitCommandError, match="missing-branch"):
+            await conversation_service.start_conversation(request)
+
+        assert not (
+            conversation_service.conversation_worktree_root / str(conversation_id)
+        ).exists()
+        assert not (
+            conversation_service.conversations_dir / conversation_id.hex
+        ).exists()
 
     def test_get_worktree_start_point_tolerates_fetch_failure(self, tmp_path):
         """If ``git fetch origin`` fails, fall back to cached refs.

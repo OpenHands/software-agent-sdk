@@ -567,14 +567,16 @@ class RemoteState(ConversationStateProtocol):
         conversation_id: str,
         conversation_info_base_path: str = CONVERSATIONS_PATH,
         events_base_path: str = CONVERSATIONS_PATH,
+        initial_state: dict | None = None,
     ):
         self._client = client
         self._conversation_id = conversation_id
         self._conversation_info_base_path = conversation_info_base_path
         self._events = RemoteEventsList(client, conversation_id, events_base_path)
 
-        # Cache for state information to avoid REST calls
-        self._cached_state = None
+        # Cache for state information to avoid REST calls. Seeded with the
+        # ConversationInfo the server returned on create/attach, when known.
+        self._cached_state = initial_state
         self._lock = threading.RLock()
 
     def _get_conversation_info(self) -> dict:
@@ -604,10 +606,8 @@ class RemoteState(ConversationStateProtocol):
         with self._lock:
             # Handle full state snapshot
             if event.key == FULL_STATE_KEY:
-                # Update cached state with the full snapshot
-                if self._cached_state is None:
-                    self._cached_state = {}
-                self._cached_state.update(event.value)
+                # Snapshots omit null fields, so merging would retain cleared values.
+                self._cached_state = dict(event.value)
             else:
                 # Handle individual field updates
                 if self._cached_state is None:
@@ -714,6 +714,11 @@ class RemoteState(ConversationStateProtocol):
         return ConversationStats.model_validate(stats_data)
 
     @property
+    def max_budget_per_run(self) -> float | None:
+        """The server's limit on accumulated conversation LLM cost."""
+        return self._get_conversation_info().get("max_budget_per_run")
+
+    @property
     def hook_config(self) -> HookConfig | None:
         """Get hook configuration (fetched from remote)."""
         info = self._get_conversation_info()
@@ -771,6 +776,7 @@ class RemoteConversation(BaseConversation):
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
+        max_budget_per_run: float | None = None,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
@@ -801,6 +807,9 @@ class RemoteConversation(BaseConversation):
             conversation_id: Optional existing conversation id to attach to
             callbacks: Optional callbacks to receive events (not yet streamed)
             max_iteration_per_run: Max iterations configured on server
+            max_budget_per_run: Optional hard cost ceiling (USD) enforced on
+                    the server. Only applied when creating a new conversation;
+                    read the current limit from ``max_budget_per_run``.
             stuck_detection: Whether to enable stuck detection on server
             stuck_detection_thresholds: Optional configuration for stuck detection
                       thresholds. Can be a StuckDetectionThresholds instance or
@@ -849,6 +858,7 @@ class RemoteConversation(BaseConversation):
         # this has to happen before ``_initialize_connection`` syncs events.
         attached_tool_module_qualnames: Mapping[str, str] = {}
 
+        initial_state: dict | None = None
         should_create = conversation_id is None
         if conversation_id is not None:
             # Try to attach to existing conversation
@@ -863,6 +873,7 @@ class RemoteConversation(BaseConversation):
                 should_create = True
             else:
                 info = resp.json()
+                initial_state = info
                 agent_payload = info.get("agent")
                 if agent_payload is not None:
                     remote_agent = _validate_remote_agent(agent_payload)
@@ -894,6 +905,7 @@ class RemoteConversation(BaseConversation):
                 ),
                 "initial_message": None,
                 "max_iterations": max_iteration_per_run,
+                "max_budget_per_run": max_budget_per_run,
                 "stuck_detection": stuck_detection,
                 # We need to convert RemoteWorkspace to LocalWorkspace for the server
                 "workspace": LocalWorkspace(
@@ -945,9 +957,10 @@ class RemoteConversation(BaseConversation):
                 CONVERSATIONS_PATH,
                 json=payload,
             )
-            data = resp.json()
+            info = resp.json()
+            initial_state = info
             # Expect a ConversationInfo
-            cid = data.get("id") or data.get("conversation_id")
+            cid = info.get("id") or info.get("conversation_id")
             if not cid:
                 raise RuntimeError(
                     "Invalid response from server: missing conversation id"
@@ -968,6 +981,7 @@ class RemoteConversation(BaseConversation):
             callbacks=callbacks,
             token_callbacks=token_callbacks,
             max_iteration_per_run=max_iteration_per_run,
+            initial_state=initial_state,
             client_tools=[*(client_tools or []), *attached_client_tools],
             visualizer=visualizer,
         )
@@ -1087,6 +1101,7 @@ class RemoteConversation(BaseConversation):
             conversation_id=uuid.UUID(info["id"]),
             callbacks=callbacks,
             max_iteration_per_run=info["max_iterations"],
+            initial_state=info,
             client_tools=[
                 ClientToolSpec.model_validate(spec)
                 for spec in info.get("client_tools") or []
@@ -1104,6 +1119,7 @@ class RemoteConversation(BaseConversation):
         callbacks: list[ConversationCallbackType] | None,
         max_iteration_per_run: int,
         client_tools: list[ClientToolSpec],
+        initial_state: dict | None = None,
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ),
@@ -1135,7 +1151,9 @@ class RemoteConversation(BaseConversation):
             ClientTool.from_spec(spec)
 
         # Initialize the remote state
-        self._state = RemoteState(self._client, str(self._id))
+        self._state = RemoteState(
+            self._client, str(self._id), initial_state=initial_state
+        )
 
         # Add default callback to maintain local event state
         default_callback = self._state.events.create_default_callback()
@@ -1332,6 +1350,11 @@ class RemoteConversation(BaseConversation):
     def state(self) -> RemoteState:
         """Access to remote conversation state."""
         return self._state
+
+    @property
+    def max_budget_per_run(self) -> float | None:
+        """The server's limit on accumulated conversation LLM cost."""
+        return self._state.max_budget_per_run
 
     @property
     def conversation_stats(self):

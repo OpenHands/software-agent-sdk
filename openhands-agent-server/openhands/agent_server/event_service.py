@@ -230,6 +230,8 @@ class EventService:
     # caller passes it here. On resume this is ``None`` and the agent is loaded
     # from base_state.json.
     agent: AgentBase | None = None
+    # Budget for a new conversation; base_state.json owns it from then on.
+    initial_max_budget_per_run: float | None = field(default=None, kw_only=True)
     cipher: Cipher | None = None
     mcp_tool_provider: MCPToolProvider | None = None
     credential_bindings: dict[str, VersionedCredentialBinding] = field(
@@ -1397,6 +1399,7 @@ class EventService:
             token_callbacks=([_token_streaming_callback] if streaming_enabled else []),
             stream_callbacks=[_publish_stream_progress],
             max_iteration_per_run=self.stored.max_iterations,
+            max_budget_per_run=self.initial_max_budget_per_run,
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
             secrets=self.stored.secrets,
@@ -2204,6 +2207,18 @@ class EventService:
             raise ValueError("inactive_service")
         await self._persist_mutation(
             lambda conversation: conversation.set_confirmation_policy(policy)
+        )
+
+    async def set_max_budget_per_run(self, max_budget_per_run: float | None) -> None:
+        """Set the conversation's cost ceiling, taking effect from its next step.
+
+        The value lives in the conversation state (base_state.json). The mutation
+        and durability flush run off loop; connected clients receive a state update.
+        """
+        await self._persist_mutation(
+            lambda conversation: setattr(
+                conversation, "max_budget_per_run", max_budget_per_run
+            )
         )
 
     async def set_security_analyzer(

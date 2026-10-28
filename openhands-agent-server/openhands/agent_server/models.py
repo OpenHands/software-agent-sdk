@@ -109,7 +109,8 @@ class StoredConversation(ConversationConfig):
     single source of truth for the agent / runtime state is
     ``ConversationState`` persisted to ``base_state.json``. Because
     ``StoredConversation`` is not a ``StartConversationRequest``, the agent
-    cannot silently re-appear in ``meta.json``.
+    cannot silently re-appear in ``meta.json``. The same holds for the
+    conversation budget (``max_budget_per_run``).
     """
 
     required_runtime_credential_bindings: set[str] = Field(default_factory=set)
@@ -168,6 +169,13 @@ class _ConversationInfoBase(BaseModel):
         gt=0,
         description=(
             "Maximum number of iterations the agent can perform in a single run."
+        ),
+    )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        description=(
+            "Hard cost ceiling in USD for the conversation's accumulated LLM "
+            "cost. `None` means no budget limit."
         ),
     )
     stuck_detection: bool = Field(
@@ -529,6 +537,16 @@ class UpdateConversationRequest(BaseModel):
             "Key-value tags to set on the conversation. Keys must be lowercase "
             "alphanumeric. Values are arbitrary strings up to 256 characters. "
             "Replaces all existing tags when provided."
+        ),
+    )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "New hard cost ceiling in USD. Applies to the running conversation "
+            "from its next step. Omit to leave unchanged; send `null` to remove "
+            "the limit."
         ),
     )
 

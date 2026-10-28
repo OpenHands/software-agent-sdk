@@ -379,7 +379,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     num_retries: int = Field(default=5, ge=0, json_schema_extra=field_meta())
     retry_multiplier: float = Field(default=8.0, ge=0, json_schema_extra=field_meta())
     retry_min_wait: int = Field(default=8, ge=0, json_schema_extra=field_meta())
-    retry_max_wait: int = Field(default=64, ge=0, json_schema_extra=field_meta())
+    retry_max_wait: int = Field(
+        default=64,
+        ge=0,
+        description=(
+            "Maximum retry wait in seconds. A longer provider Retry-After hint "
+            "stops retries instead of retrying before the requested delay."
+        ),
+        json_schema_extra=field_meta(),
+    )
 
     timeout: int | None = Field(
         default=300,

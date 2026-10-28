@@ -1150,6 +1150,7 @@ def test_fork_flushes_copied_state_before_return(
 ):
     conv = _make_conversation(tmp_path, TestLLM.from_messages([]))
     conv.send_message("source message")
+    conv.max_budget_per_run = 2.5
     fork_id = uuid.uuid4()
     original_flush = ConversationState.flush
     flushed: list[uuid.UUID] = []
@@ -1161,6 +1162,7 @@ def test_fork_flushes_copied_state_before_return(
     monkeypatch.setattr(ConversationState, "flush", record_flush)
     fork = conv.fork(conversation_id=fork_id)
     assert fork_id in flushed
+    assert fork.max_budget_per_run == 2.5
     fork.close()
     conv.close()
 
@@ -1170,6 +1172,7 @@ def test_fork_closes_owned_state_when_final_flush_fails(
 ):
     conv = _make_conversation(tmp_path, TestLLM.from_messages([]))
     conv.send_message("source message")
+    conv.max_budget_per_run = 2.5
     fork_id = uuid.uuid4()
     original_flush = ConversationState.flush
     original_close = LocalConversation.close
@@ -1191,6 +1194,7 @@ def test_fork_closes_owned_state_when_final_flush_fails(
         conv.fork(conversation_id=fork_id)
     assert len(closed_forks) == 1
     assert closed_forks[0]._cleanup_complete
+    assert closed_forks[0].max_budget_per_run == 2.5
     assert Path(str(conv._state.persistence_dir)).exists()
     conv.close()
 

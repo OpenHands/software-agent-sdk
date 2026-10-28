@@ -25,6 +25,7 @@ from openhands.tools.terminal.constants import (
 )
 from openhands.tools.terminal.env import (
     build_terminal_env,
+    ensure_utf8_locale,
     normalize_terminal_env,
 )
 from openhands.tools.terminal.metadata import CmdOutputMetadata
@@ -214,6 +215,8 @@ class TmuxTerminal(TerminalInterface):
         if self._initialized:
             return
 
+        # Before building env, so the shell gets the same locale as tmux.
+        ensure_utf8_locale()
         env = build_terminal_env(self._env)
         # Disable interactive pagers (git, man, systemctl, ...) so commands that
         # auto-launch `less` on a TTY don't capture the pane and wedge the session.

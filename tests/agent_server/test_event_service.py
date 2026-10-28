@@ -1021,7 +1021,7 @@ async def test_restart_flushes_reconciled_goal_before_start_publishes(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mutation", ["navigate", "policy"])
+@pytest.mark.parametrize("mutation", ["navigate", "policy", "budget", "clear_budget"])
 async def test_persisted_mutation_surfaces_fsync_failure_off_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
 ):
@@ -1043,6 +1043,8 @@ async def test_persisted_mutation_surfaces_fsync_failure_off_loop(
         await service.send_message(
             Message(role="user", content=[TextContent(text="hi")])
         )
+    elif mutation == "clear_budget":
+        await service.set_max_budget_per_run(2.5)
     entered = threading.Event()
     release = threading.Event()
     caller_thread = threading.current_thread().name
@@ -1057,8 +1059,12 @@ async def test_persisted_mutation_surfaces_fsync_failure_off_loop(
     monkeypatch.setattr(os, "fsync", failing_fsync)
     if mutation == "navigate":
         task = asyncio.create_task(service.navigate_to(None))
-    else:
+    elif mutation == "policy":
         task = asyncio.create_task(service.set_confirmation_policy(AlwaysConfirm()))
+    else:
+        task = asyncio.create_task(
+            service.set_max_budget_per_run(None if mutation == "clear_budget" else 2.5)
+        )
     try:
         assert await asyncio.to_thread(entered.wait, 10)
         heartbeat = asyncio.Event()
@@ -1074,8 +1080,9 @@ async def test_persisted_mutation_surfaces_fsync_failure_off_loop(
 
 
 @pytest.mark.asyncio
-async def test_cancelled_policy_mutation_settles_accepted_flush(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("mutation", ["policy", "budget", "clear_budget"])
+async def test_cancelled_persisted_mutation_settles_accepted_flush(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
 ):
     stored = StoredConversation(
         id=uuid4(),
@@ -1091,6 +1098,8 @@ async def test_cancelled_policy_mutation_settles_accepted_flush(
         lease_ttl_seconds=0,
     )
     await service.start()
+    if mutation == "clear_budget":
+        await service.set_max_budget_per_run(2.5)
     entered = threading.Event()
     release = threading.Event()
     original_fsync = os.fsync
@@ -1098,11 +1107,16 @@ async def test_cancelled_policy_mutation_settles_accepted_flush(
     def latched_fsync(fd: int) -> None:
         entered.set()
         if not release.wait(10):
-            raise TimeoutError("policy fsync latch was not released")
+            raise TimeoutError("mutation fsync latch was not released")
         original_fsync(fd)
 
     monkeypatch.setattr(os, "fsync", latched_fsync)
-    task = asyncio.create_task(service.set_confirmation_policy(AlwaysConfirm()))
+    if mutation == "policy":
+        task = asyncio.create_task(service.set_confirmation_policy(AlwaysConfirm()))
+    else:
+        task = asyncio.create_task(
+            service.set_max_budget_per_run(None if mutation == "clear_budget" else 2.5)
+        )
     try:
         assert await asyncio.to_thread(entered.wait, 10)
         task.cancel()
@@ -1120,7 +1134,10 @@ async def test_cancelled_policy_mutation_settles_accepted_flush(
     with pytest.raises(asyncio.CancelledError):
         await task
     conv = service.get_conversation()
-    assert isinstance(conv._state.confirmation_policy, AlwaysConfirm)
+    if mutation == "policy":
+        assert isinstance(conv._state.confirmation_policy, AlwaysConfirm)
+    else:
+        assert conv.max_budget_per_run == (None if mutation == "clear_budget" else 2.5)
     store = conv._state._fs
     assert isinstance(store, LocalFileStore)
     writer = store._durability
@@ -1141,7 +1158,9 @@ async def test_mutation_error_precedes_secondary_flush_error(event_service):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mutation", ["tags", "resume_secrets", "run_error"])
+@pytest.mark.parametrize(
+    "mutation", ["tags", "resume_secrets", "run_error", "budget", "clear_budget"]
+)
 async def test_server_direct_mutations_flush_before_completion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
 ):
@@ -1160,6 +1179,8 @@ async def test_server_direct_mutations_flush_before_completion(
         assert service is not None
         conversation = service.get_conversation()
         state = conversation._state
+        if mutation == "clear_budget":
+            await service.set_max_budget_per_run(2.5)
         entered = threading.Event()
         boundary = asyncio.Event()
         first_boundary: list[str] = []
@@ -1209,6 +1230,13 @@ async def test_server_direct_mutations_flush_before_completion(
             elif mutation == "resume_secrets":
                 await service.apply_resume_secrets(
                     {"fixture": StaticSecret(value=SecretStr("test-value"))}
+                )
+            elif mutation in ("budget", "clear_budget"):
+                await manager.update_conversation(
+                    info.id,
+                    UpdateConversationRequest(
+                        max_budget_per_run=(None if mutation == "clear_budget" else 2.5)
+                    ),
                 )
             else:
 

@@ -17,6 +17,7 @@ from pydantic.json_schema import SkipJsonSchema
 from rich.text import Text
 
 from openhands.sdk import ImageContent, TextContent
+from openhands.sdk.event.types import UnmaskedID
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent import (
     AgentDefinition,
@@ -75,7 +76,7 @@ class TaskAction(Action):
 class TaskObservation(Observation):
     """Observation from a task execution."""
 
-    task_id: str = Field(description="The unique identifier of the task.")
+    task_id: UnmaskedID = Field(description="The unique identifier of the task.")
     subagent: str = Field(description="The subagent of the task.")
     status: str = Field(description="The status of the task.")
 
