@@ -69,6 +69,8 @@
       "full_eslint": "Not rerun; previous full lint had 3 errors in unchanged integration tests"
     },
     "crash_recovery": {
+      "recorded_at": "62fc57f0d5150b33dd1665d895a71b2717315b33",
+      "rerun_after_review_follow_up": false,
       "before_crash": "pausing",
       "after_restart": "error",
       "catalog_after_restart": "error",
@@ -81,6 +83,9 @@
     "docs": "Both Python snippets parsed; diff reviewed; no full Mintlify render",
     "artifact_cleanup": "Fork pr-artifacts.yml verified active on 2026-10-27; temporary .pr content removed through cleanup PR",
     "legacy_client_live": {
+      "recorded_at": "62fc57f0d5150b33dd1665d895a71b2717315b33",
+      "rerun_after_review_follow_up": false,
+      "note": "The scripted HTTP/WebSocket pause/resume regression (tests/cross/test_acp_pause_live_server.py) was rerun on the new head and covers the same queued-message flow; the separate-process old-client and SIGKILL runs were not repeated",
       "source_ref": "v1.58.2",
       "source_commit": "d2ee0cdea60825608c2f8906eb54e1d4d264fb42",
       "isolation": "Unmodified SDK tag source in a separate process, using the current frozen dependency environment",

@@ -2866,6 +2866,12 @@ class LocalConversation(BaseConversation):
 
         with self._state:
             status = self._state.execution_status
+            # _run()/_arun() create the token before they set RUNNING and drop
+            # it once their loop exits (a cancelled token is kept, but that
+            # path always leaves PAUSED/ERROR, never RUNNING). RUNNING without
+            # a token is therefore a stale status with no step boundary to wait
+            # for. The token is written outside the state lock; a stale read
+            # only makes the pause land immediately instead of at the boundary.
             run_loop_active = self._cancel_token is not None
             if status == ConversationExecutionStatus.RUNNING and run_loop_active:
                 self._pause_requested = True
