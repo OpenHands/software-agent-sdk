@@ -480,17 +480,17 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   and the hanging round), `D` is 404, and with one run slot the next
   `/goal` on `W` is admitted and runs to `capped`: the deleted loop did not
   keep its slot. Nothing is recorded for `D` (it no longer exists).
-- **A resume after a failed last audit overruns the cap (`F11.goal-cap-overrun`), known bug.**
+- **A resume after a failed last audit stays within the cap (`F11.goal-cap-overrun`).**
   `J2`'s judge fails on a one-round goal; then its stub answers an
   incomplete verdict and the goal is resumed. `max_iterations` is documented
   as the hard cap on audit rounds and `GoalStatus.iteration` as "audit rounds
-  completed so far", so whatever the resume does, no status may report more
-  rounds than the cap; the resumed loop should end `capped` at 1 of 1 (or
-  cap at once). Today `GoalController.on_run_finished` counts the round
-  before the judge call, so the failed audit is recorded as `interrupted`
-  at 1 of 1 (a unit test pins the same count for a `/goal/stop` during the
-  judge call), and the resume runs another agent round and audit and ends
-  `capped` at 2 of 1.
+  completed so far", so no status may report more rounds than the cap.
+  `GoalController.on_run_finished` counts a round only once the judge has
+  returned a verdict, so the failed audit is recorded as `interrupted` at
+  0 of 1 (a `/goal/stop` during the judge call likewise keeps the earlier
+  count), and the resume re-runs that round and ends `capped` at 1 of 1.
+  A resume also keeps one round in hand when the stored count is already at
+  the cap (a status persisted by an older server), so it caps at the limit.
   ```sh
   control-agent-server ws start "/sockets/events/$J2" --name f11-j2 --duration 120
   control-agent-server api POST "/api/conversations/$J2/goal" --json '{"objective": "QA_F11 overrun objective", "max_iterations": 1}' --expect 200
@@ -501,13 +501,12 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   control-agent-server ws stop f11-j2
   control-agent-server conversation events "$J2" --key goal --contains '"active": false, "status": "interrupted"' --expect-count 1
   control-agent-server conversation events "$J2" --key goal --contains '"active": false, "status": "capped"' --expect-count 1
-  control-agent-server conversation events "$J2" --key goal --show 50 --full --save F11.goal-cap-overrun/goal-events | jq -e '[.events[].value | select(.iteration > .max_iterations)] | length == 0'  # bug: events contains '"status": "capped", "iteration": 2, "max_iterations": 1'
+  control-agent-server conversation events "$J2" --key goal --show 50 --full --save F11.goal-cap-overrun/goal-events | jq -e '[.events[].value | select(.iteration > .max_iterations)] | length == 0'
   ```
-  The arrange steps and positive controls hold (the failed audit recorded
-  one `interrupted` status, the resume was admitted and ended with one
-  `capped` status); the marked `jq` check fails today: the `capped` status
-  has `iteration: 2, max_iterations: 1` (the four statuses are `running`
-  0/1, `interrupted` 1/1, `running` 1/1, `capped` 2/1).
+  The failed audit records one `interrupted` status, the resume is
+  admitted and ends with one `capped` status, and no status reports
+  `iteration` above `max_iterations` (the four statuses are `running` 0/1,
+  `interrupted` 0/1, `running` 0/1, `capped` 1/1).
 - **A loop active at a restart ends "interrupted" (`F11.goal-restart-active`).**
   A graceful shutdown cancels the loop without recording a status
   (`_closing` is set); when the conversation is loaded again (the same holds
@@ -558,10 +557,10 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   and `error` do (`interrupted`). The goal is resumable after `interrupted`
   (and after a stale `running`), never after `complete` or `capped`.
 - `/goal/resume` sends a fixed resume prompt, not the objective, and keeps
-  the stored iteration count, so a resumed loop has fewer rounds left. The
-  round is counted before its judge call, so a failed or stopped audit
-  counts too, and resuming from the last round runs one more round past
-  the cap (`F11.goal-cap-overrun`).
+  the stored iteration count, so a resumed loop has fewer rounds left. A
+  round is counted only after its judge call returns, so a failed or
+  stopped audit does not count, and a resume never goes past the cap
+  (`F11.goal-cap-overrun`).
 - The loop reserves a run slot when it starts and keeps it until it ends,
   including judge calls between rounds; with `max_concurrent_runs` reached,
   `/goal` and `/goal/resume` are 429 and record nothing. Creating a

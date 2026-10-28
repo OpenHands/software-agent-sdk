@@ -26,6 +26,8 @@ updates:
 
     - package-ecosystem: npm
       directory: /clients/typescript
+      cooldown:
+          default-days: 7
       schedule:
           interval: weekly
       commit-message:

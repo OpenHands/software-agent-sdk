@@ -10,6 +10,7 @@ from openhands.sdk.llm.options.common import (
     apply_defaults_if_absent,
     apply_extra_body,
     apply_extra_headers,
+    is_openrouter,
 )
 
 
@@ -90,6 +91,7 @@ def select_responses_options(
         out,
         context,
         supports_prompt_cache_key=model_features.supports_prompt_cache_key,
+        openrouter=is_openrouter(llm),
     )
 
     return out

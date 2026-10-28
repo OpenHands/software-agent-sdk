@@ -41,6 +41,8 @@ from openhands.agent_server.models import (
     ConversationPage,
     ConversationSortOrder,
     LaunchedAgentProfile,
+    StartChildConversationRequest,
+    StartChildConversationResponse,
     StartConversationRequest,
     StoredConversation,
     UpdateConversationRequest,
@@ -57,12 +59,13 @@ from openhands.agent_server.telemetry import (
 )
 from openhands.agent_server.telemetry.sanitizer import model_family, safe_token
 from openhands.agent_server.utils import safe_rmtree, utc_now
-from openhands.sdk import LLM, Event, Message
+from openhands.sdk import LLM, Event, Message, TextContent
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.persistence_const import BASE_STATE
+from openhands.sdk.conversation.request import ConversationWorktreeOptions
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -107,7 +110,12 @@ def _build_worktree_guidance(
     worktree_root: Path,
     workspace_dir: Path,
     branch: str,
+    options: ConversationWorktreeOptions,
 ) -> str:
+    base_ref = {
+        "head": "the original workspace's current HEAD",
+        "ref": f"`{options.ref}`",
+    }.get(options.base, "the main/master branch")
     return (
         "This conversation uses a dedicated git worktree.\n"
         f"- Original workspace: {source_workspace}\n"
@@ -115,7 +123,7 @@ def _build_worktree_guidance(
         f"- Active workspace: {workspace_dir}\n"
         f"- Branch: {branch}\n"
         "Do all file and git work inside this worktree. Do your work on a new, "
-        "appropriately-named branch, based off the main/master branch, "
+        f"appropriately-named branch, based off {base_ref}, "
         "and do not switch back to the original workspace."
     )
 
@@ -139,6 +147,20 @@ def _local_branch_exists(repo_root: Path, branch: str) -> bool:
     return True
 
 
+def _fetch_origin(repo_root: Path) -> None:
+    """Refresh ``origin``'s refs for a worktree start point; keep cached ones on
+    failure."""
+    try:
+        run_git_command(["git", "fetch", "origin"], repo_root, timeout=60)
+    except GitCommandError as exc:
+        logger.warning(
+            "git fetch origin failed while choosing worktree start point "
+            "for %s; using cached refs. Error: %s",
+            repo_root,
+            exc,
+        )
+
+
 def _get_worktree_start_point(repo_root: Path) -> str:
     """Resolve the base ref a new conversation worktree should be created from.
 
@@ -151,19 +173,11 @@ def _get_worktree_start_point(repo_root: Path) -> str:
          exists locally.
       3. Local ``master`` if neither remote default nor local ``main`` is
          available.
-      4. Fall back to ``HEAD`` only when none of the above applies, so worktree
-         creation still succeeds on freshly initialized repos.
+      4. Fall back to ``HEAD`` only when none of the above applies. The planner
+         checks whether the selected ref resolves to a commit.
     """
     if _has_git_remote(repo_root):
-        try:
-            run_git_command(["git", "fetch", "origin"], repo_root, timeout=60)
-        except GitCommandError as exc:
-            logger.warning(
-                "git fetch origin failed while choosing worktree start point "
-                "for %s; using cached refs. Error: %s",
-                repo_root,
-                exc,
-            )
+        _fetch_origin(repo_root)
         try:
             ref = run_git_command(
                 ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
@@ -189,6 +203,8 @@ class _WorktreePlan:
     worktree_root: Path
     workspace_dir: Path
     branch: str
+    options: ConversationWorktreeOptions
+    start_point: str
 
     @property
     def guidance(self) -> str:
@@ -197,6 +213,7 @@ class _WorktreePlan:
             worktree_root=self.worktree_root,
             workspace_dir=self.workspace_dir,
             branch=self.branch,
+            options=self.options,
         )
 
 
@@ -204,7 +221,9 @@ def _plan_conversation_worktree(
     workspace: LocalWorkspace,
     conversation_id: UUID,
     conversation_worktree_root: Path,
+    options: ConversationWorktreeOptions | None,
 ) -> _WorktreePlan | None:
+    options = options or ConversationWorktreeOptions()
     source_workspace = Path(workspace.working_dir).resolve()
     try:
         validate_git_repository(source_workspace)
@@ -217,14 +236,39 @@ def _plan_conversation_worktree(
     except (GitCommandError, GitRepositoryError):
         return None
 
+    start_ref = _worktree_start_point(repo_root, options)
+    try:
+        run_git_command(
+            ["git", "rev-parse", "--verify", "--quiet", f"{start_ref}^{{commit}}"],
+            repo_root,
+            expected_failure=True,
+        )
+    except GitCommandError as exc:
+        if exc.exit_code == 1 and options.base != "ref":
+            return None
+        raise
+
     worktree_root = conversation_worktree_root / str(conversation_id) / repo_root.name
     return _WorktreePlan(
         repo_root=repo_root,
         source_workspace=source_workspace,
         worktree_root=worktree_root,
         workspace_dir=worktree_root / source_workspace.relative_to(repo_root),
-        branch=f"openhands/{conversation_id}",
+        branch=f"{options.branch_prefix}{conversation_id}",
+        options=options,
+        # Keep the ref so Git preserves remote branch tracking configuration.
+        start_point=start_ref,
     )
+
+
+def _worktree_start_point(repo_root: Path, options: ConversationWorktreeOptions) -> str:
+    if options.base == "head":
+        return "HEAD"
+    if options.base == "ref" and options.ref:
+        if _has_git_remote(repo_root):
+            _fetch_origin(repo_root)
+        return options.ref
+    return _get_worktree_start_point(repo_root)
 
 
 def _create_conversation_worktree(plan: _WorktreePlan) -> LocalWorkspace:
@@ -253,7 +297,7 @@ def _create_conversation_worktree(plan: _WorktreePlan) -> LocalWorkspace:
             "-b",
             plan.branch,
             str(plan.worktree_root),
-            _get_worktree_start_point(repo_root),
+            plan.start_point,
         ],
         repo_root,
     )
@@ -750,6 +794,11 @@ class ConversationService:
             for name, binding in self._credential_bindings.pop(stored.id, {}).items()
             if self._profile_allows_secret(stored, name)
         }
+        if not isinstance(agent, ACPAgent):
+            # Only ACP agents use file credential bindings; the live path
+            # refuses them for any other agent (CredentialBindingActivationTooLate).
+            # Drop a pending binding so a regular conversation never requires one.
+            return {}
         if (
             self._profile_allows_secret(stored, CODEX_AUTH_SECRET_NAME)
             and CODEX_AUTH_SECRET_NAME not in bindings
@@ -1564,7 +1613,10 @@ class ConversationService:
 
         worktree = (
             _plan_conversation_worktree(
-                request.workspace, conversation_id, self.conversation_worktree_root
+                request.workspace,
+                conversation_id,
+                self.conversation_worktree_root,
+                request.worktree_options,
             )
             if request.worktree
             else None
@@ -1644,6 +1696,7 @@ class ConversationService:
                 "agent_settings",
                 "agent_profile_id",
                 "agent_launch_additions",
+                "max_budget_per_run",
             },
         )
         launched_agent_profile = launched.profile or runtime_launched_profile
@@ -1666,29 +1719,65 @@ class ConversationService:
                 launched_agent_profile=launched_agent_profile,
                 **request_data,
             )
-        async with self._conversation_lifecycle(conversation_id):
-            # Re-check under the lock. Preparing ``stored`` above awaits, so a
+        initial_message = request.initial_message
+        return await self._launch_prepared_conversation(
+            stored,
+            launched,
+            run_slot=run_slot,
+            initial_message=(
+                Message(role=initial_message.role, content=initial_message.content)
+                if initial_message
+                else None
+            ),
+            reuse_request=request,
+            max_budget_per_run=request.max_budget_per_run,
+        )
+
+    async def _launch_prepared_conversation(
+        self,
+        stored: StoredConversation,
+        launched: LaunchedAgent,
+        *,
+        run_slot: RunSlot,
+        initial_message: Message | None,
+        reuse_request: StartConversationRequest | None = None,
+        max_budget_per_run: float | None = None,
+    ) -> tuple[ConversationInfo, bool]:
+        """Persist a prepared conversation, deliver its first message and notify.
+
+        The tail of a launch shared by a normal start and a child launch:
+        everything after the agent and ``stored`` configuration are prepared.
+        The caller acquires ``run_slot`` before preparing anything, so a full
+        server refuses the launch before a worktree or a persistence directory
+        exists; the slot is handed to the first run.
+
+        If the id already exists once the lifecycle lock is held (a client-chosen
+        id raced with a concurrent create), the existing conversation is reused
+        for ``reuse_request`` as ``start_conversation`` does; without a request
+        the collision is an error.
+        """
+        async with self._conversation_lifecycle(stored.id):
+            # Re-check under the lock. Preparing ``stored`` awaits, so a
             # concurrent create for this same id can have committed since the
-            # check at the top of this method. Without this the loser would
-            # start a second EventService for an id that already exists,
-            # re-running its initial message.
-            if self._has_conversation(conversation_id):
+            # caller's check. Without this the loser would start a second
+            # EventService for an id that already exists, re-running its
+            # initial message.
+            if self._has_conversation(stored.id):
+                if reuse_request is None:
+                    raise ValueError(f"Conversation with id {stored.id} already exists")
                 return await self._reuse_existing_conversation_locked(
-                    conversation_id, request
+                    stored.id, reuse_request
                 )
             # New conversation: the agent is written to base_state.json (its
             # single source of truth), not to meta.json. Pass it explicitly.
-            # ``new_agent`` is ``request.agent`` (decrypted when the request was
-            # secrets_encrypted).
             event_service = await self._start_event_service(
-                stored, is_new_conversation=True, launched=launched
+                stored,
+                is_new_conversation=True,
+                launched=launched,
+                max_budget_per_run=max_budget_per_run,
             )
-        initial_message = request.initial_message
-        if initial_message:
-            message = Message(
-                role=initial_message.role, content=initial_message.content
-            )
-            await event_service.send_message(message, False)
+        if initial_message is not None:
+            await event_service.send_message(initial_message, False)
             await event_service.run(run_slot=run_slot)
 
         state = await event_service.get_state()
@@ -1827,6 +1916,8 @@ class ConversationService:
             update["title"] = request.title.strip()
         if request.tags is not None:
             update["tags"] = request.tags
+        # Membership, not None: an explicit null removes the budget limit.
+        budget_updated = "max_budget_per_run" in request.model_fields_set
         # Persist first: a refused write (e.g. lost lease ownership) must leave
         # the in-memory metadata and state untouched.
         await event_service.save_meta(event_service.stored.model_copy(update=update))
@@ -1836,6 +1927,10 @@ class ConversationService:
             state = await loop.run_in_executor(
                 None, _update_state_tags_sync, state, request.tags
             )
+        if budget_updated:
+            # base_state.json owns the budget; the event service is loaded
+            # above, so this writes the live state under its lock.
+            await event_service.set_max_budget_per_run(request.max_budget_per_run)
         record = self._conversation_records.get(conversation_id)
         if record is not None:
             record.stored = event_service.stored
@@ -1854,6 +1949,8 @@ class ConversationService:
             updated_fields.append("title")
         if request.tags is not None:
             updated_fields.append("tags")
+        if budget_updated:
+            updated_fields.append("max_budget_per_run")
         logger.info(
             "Successfully updated conversation %s (%s)",
             conversation_id,
@@ -2009,6 +2106,107 @@ class ConversationService:
         state = await fork_event_service.get_state()
         return _compose_conversation_info(
             fork_event_service.stored, state, self._children_of(fork_conv_id)
+        )
+
+    async def start_child_conversation(
+        self,
+        parent_id: UUID,
+        request: StartChildConversationRequest,
+    ) -> StartChildConversationResponse | None:
+        """Start a child conversation on this server, derived from *parent_id*.
+
+        Like :meth:`fork_conversation`, the child inherits the parent's stored
+        configuration (secrets, client tools, plugins, hooks, tags, ...) and its
+        resolved agent, but it starts with a fresh event history: ``task`` is
+        delivered as the child's first user message. With
+        ``isolation="worktree"`` the child runs in a git worktree carved from
+        the parent's workspace when that workspace is a git repository with
+        a usable base commit; otherwise (or with ``isolation="shared"``) it
+        shares the parent's directory. The link is recorded via
+        ``parent_conversation_id``.
+
+        Returns ``None`` when *parent_id* does not exist.
+
+        Raises:
+            ConversationRunLimitExceeded: If all server run slots are occupied.
+                Nothing is persisted in that case.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+
+        parent_service = await self._get_or_load_event_service(parent_id)
+        if parent_service is None:
+            return None
+
+        # Admission first, as in a normal start: a full server refuses the
+        # launch before a worktree or the child's persistence directory exists.
+        with await RunSlot.acquire(self._run_semaphore) as run_slot:
+            parent_stored = parent_service.stored
+            parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
+            # A child spends under the same cap as its parent.
+            max_budget_per_run = parent_service.get_conversation().max_budget_per_run
+            child_id = uuid4()
+
+            # Reuse the worktree machinery of a regular start: a worktree is
+            # planned (and its guidance appended to the child's agent) only when
+            # the parent workspace has a usable git base commit; otherwise
+            # the child shares it.
+            worktree = (
+                _plan_conversation_worktree(
+                    parent_stored.workspace,
+                    child_id,
+                    self.conversation_worktree_root,
+                    None,
+                )
+                if request.isolation == "worktree"
+                else None
+            )
+            launched = await asyncio.to_thread(
+                lambda: finalize(
+                    parent_agent,
+                    live_launch_runtime(
+                        self.acp_skill_sourcing, enable_browser=self.enable_browser
+                    ),
+                    extra_suffixes=[worktree.guidance] if worktree else (),
+                )
+            )
+            workspace = (
+                _create_conversation_worktree(worktree)
+                if worktree is not None
+                else parent_stored.workspace
+            )
+            now = utc_now()
+            child_stored = parent_stored.model_copy(
+                update={
+                    "id": child_id,
+                    "workspace": workspace,
+                    "worktree": request.isolation == "worktree",
+                    "title": request.title,
+                    "metrics": None,
+                    "created_at": now,
+                    "updated_at": now,
+                    "parent_conversation_id": parent_id,
+                    "forked_from_conversation_id": None,
+                    "forked_from_event_id": None,
+                }
+            )
+            info, _ = await self._launch_prepared_conversation(
+                child_stored,
+                launched,
+                run_slot=run_slot,
+                max_budget_per_run=max_budget_per_run,
+                initial_message=Message(
+                    role="user", content=[TextContent(text=request.task)]
+                ),
+            )
+
+        return StartChildConversationResponse(
+            conversation_id=child_id,
+            parent_conversation_id=parent_id,
+            status=info.execution_status.value,
+            title=info.title,
+            workspace=str(workspace.working_dir),
+            isolation="worktree" if worktree is not None else "shared",
         )
 
     async def navigate_conversation(
@@ -2277,6 +2475,7 @@ class ConversationService:
         is_new_conversation: bool = False,
         launched: LaunchedAgent | None = None,
         persisted_agent: AgentBase | None = None,
+        max_budget_per_run: float | None = None,
     ) -> EventService:
         event_services = self._event_services
         if event_services is None:
@@ -2293,6 +2492,7 @@ class ConversationService:
             stored=stored,
             conversations_dir=self.conversations_dir,
             agent=launched.agent if launched is not None else None,
+            initial_max_budget_per_run=max_budget_per_run,
             cipher=self._cipher_for(stored.id),
             mcp_tool_provider=self.mcp_tool_provider,
             credential_bindings=credential_bindings,
@@ -2492,12 +2692,18 @@ def _generate_title_traced(
     llm: LLM | None,
     max_length: int,
     on_error: Callable[[Exception], None] | None = None,
+    prompt: str | None = None,
 ) -> str:
     call_context = (
         conversation.get_llm_call_context() if conversation else LLMCallContext()
     )
     return generate_title_from_message(
-        message, llm, max_length, call_context=call_context, on_error=on_error
+        message,
+        llm,
+        max_length,
+        call_context=call_context,
+        on_error=on_error,
+        prompt=prompt,
     )
 
 
@@ -2544,6 +2750,7 @@ class AutoTitleSubscriber(Subscriber):
                     title_llm,
                     50,
                     _on_title_error,
+                    self.service.stored.prompt,
                 )
                 if title and self.service.stored.title is None:
                     await self.service.save_meta(
@@ -2620,7 +2827,7 @@ class WebhookSubscriber(Subscriber):
         if self._buffer_full():
             if self._post_lock.locked():
                 # The in-flight _post_events re-checks the buffer when it is
-                # done; the timer covers a failed post.
+                # done and re-arms the timer if a post fails.
                 self._start_flush_timer()
                 return
             # Cancel timer since we're flushing due to buffer size
@@ -2648,6 +2855,9 @@ class WebhookSubscriber(Subscriber):
                 events_to_post, event_data = self._take_batch(events_remaining)
                 if not await self._post_batch(event_data):
                     self._requeue(events_to_post)
+                    # A timer that fired during the POST saw an empty queue
+                    # and exited, so arm one for the requeued events.
+                    self._start_flush_timer()
                     return
                 events_remaining -= len(events_to_post)
                 if not events_remaining and self._buffer_full():

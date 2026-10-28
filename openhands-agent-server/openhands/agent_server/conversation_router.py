@@ -29,6 +29,7 @@ from openhands.agent_server.conversation_service import (
     UnavailableAgentTool,
 )
 from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.event_service import CondensationUnavailable
 from openhands.agent_server.launch import launch_http_exception
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
@@ -44,6 +45,8 @@ from openhands.agent_server.models import (
     NavigateConversationRequest,
     SetConfirmationPolicyRequest,
     SetSecurityAnalyzerRequest,
+    StartChildConversationRequest,
+    StartChildConversationResponse,
     StartConversationRequest,
     StartGoalRequest,
     Success,
@@ -330,6 +333,11 @@ async def start_conversation(
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationInfo:
     """Start a conversation in the local environment."""
+    if request.conversation_runtime not in (None, "local"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="This server only runs local conversations",
+        )
     request = _request_with_observability_headers(
         request,
         span_name=x_openhands_observability_span_name,
@@ -365,7 +373,7 @@ async def pause_conversation(
     """Pause a conversation, allowing it to be resumed later."""
     paused = await conversation_service.pause_conversation(conversation_id)
     if not paused:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST)
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
     return Success()
 
 
@@ -385,7 +393,7 @@ async def interrupt_conversation(
     """
     interrupted = await conversation_service.interrupt_conversation(conversation_id)
     if not interrupted:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST)
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
     return Success()
 
 
@@ -399,7 +407,7 @@ async def delete_conversation(
     """Permanently delete a conversation."""
     deleted = await conversation_service.delete_conversation(conversation_id)
     if not deleted:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST)
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
     return Success()
 
 
@@ -743,7 +751,7 @@ async def update_conversation(
     """
     updated = await conversation_service.update_conversation(conversation_id, request)
     if not updated:
-        return Success(success=False)
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
     return Success()
 
 
@@ -765,14 +773,20 @@ async def ask_agent(
 
 @conversation_router.post(
     "/{conversation_id}/condense",
-    responses={404: {"description": "Item not found"}},
+    responses={
+        404: {"description": "Item not found"},
+        409: {"description": "The agent has no condenser that handles requests"},
+    },
 )
 async def condense_conversation(
     conversation_id: UUID,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> Success:
     """Force condensation of the conversation history."""
-    success = await conversation_service.condense(conversation_id)
+    try:
+        success = await conversation_service.condense(conversation_id)
+    except CondensationUnavailable as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if not success:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return Success()
@@ -824,6 +838,42 @@ async def fork_conversation(
     if not include_skills:
         info = trim_conversation_response_skills(info)
     return info
+
+
+@conversation_router.post(
+    "/{conversation_id}/children",
+    responses={
+        201: {"description": "Child conversation created"},
+        404: {"description": "Parent conversation not found"},
+        429: {"description": "Server conversation run capacity is full"},
+    },
+    status_code=status.HTTP_201_CREATED,
+)
+async def start_child_conversation(
+    conversation_id: UUID,
+    request: Annotated[StartChildConversationRequest, Body()],
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> StartChildConversationResponse:
+    """Start a child conversation of ``conversation_id`` on this server.
+
+    The child inherits the parent's configuration and workspace (optionally
+    isolated in a git worktree), is linked via ``parent_conversation_id`` and
+    receives ``task`` as its first user message. This is the default launcher
+    behind the ``start_child_conversation`` tool.
+    """
+    try:
+        result = await conversation_service.start_child_conversation(
+            conversation_id, request
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    if result is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, detail="Parent conversation not found"
+        )
+    return result
 
 
 @conversation_router.post(

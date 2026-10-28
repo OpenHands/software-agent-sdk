@@ -153,7 +153,7 @@ def _set_active_profile_if_matches(
 
 
 @profiles_router.get("", response_model=ProfileListResponse)
-async def list_profiles(request: Request) -> ProfileListResponse:
+def list_profiles(request: Request) -> ProfileListResponse:
     """List all saved LLM profiles.
 
     Returns the list of profiles along with the currently active profile name,
@@ -175,7 +175,7 @@ async def list_profiles(request: Request) -> ProfileListResponse:
 
 
 @profiles_router.get("/{name}", response_model=ProfileDetailResponse)
-async def get_profile(request: Request, name: ProfileName) -> ProfileDetailResponse:
+def get_profile(request: Request, name: ProfileName) -> ProfileDetailResponse:
     """Get a profile's configuration.
 
     Use the ``X-Expose-Secrets`` header to control secret exposure:
@@ -219,7 +219,7 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
     response_model=ProfileMutationResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def save_profile(
+def save_profile(
     request: Request,
     name: ProfileName,
     body: SaveProfileRequest,
@@ -342,6 +342,11 @@ async def validate_profile(
     """
     cipher = get_cipher(request)
     llm = decrypt_incoming_llm_secrets(body.llm, cipher) if cipher else body.llm
+    # Check a draft linked to a provider connection with the connection's
+    # credentials, as activation and ``switch_llm`` run it. No-op without
+    # ``provider_connection_id``; a dangling link is a 422 naming it.
+    with store_errors():
+        llm = get_llm_profile_store().resolve_provider_connection(llm, cipher=cipher)
 
     messages = [
         Message(
@@ -413,9 +418,7 @@ async def validate_profile(
 
 
 @profiles_router.delete("/{name}", response_model=ProfileMutationResponse)
-async def delete_profile(
-    request: Request, name: ProfileName
-) -> ProfileMutationResponse:
+def delete_profile(request: Request, name: ProfileName) -> ProfileMutationResponse:
     """Delete a saved profile (idempotent).
 
     Guarded by the agent-profile FK: returns 409 naming the referrers if any
@@ -435,7 +438,7 @@ async def delete_profile(
 
 
 @profiles_router.post("/{name}/rename", response_model=ProfileMutationResponse)
-async def rename_profile(
+def rename_profile(
     request: Request,
     name: ProfileName,
     body: RenameProfileRequest,
@@ -487,9 +490,7 @@ class ActivateProfileResponse(BaseModel):
 
 
 @profiles_router.post("/{name}/activate", response_model=ActivateProfileResponse)
-async def activate_profile(
-    request: Request, name: ProfileName
-) -> ActivateProfileResponse:
+def activate_profile(request: Request, name: ProfileName) -> ActivateProfileResponse:
     """Activate a saved LLM profile.
 
     This endpoint:
@@ -544,7 +545,11 @@ async def activate_profile(
         logger.error(f"Failed to activate profile: {e}")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Settings file is corrupted or encrypted with a different key",
+            detail=(
+                "Settings file is corrupted or encrypted with a different key: "
+                "restore that key as OH_SECRET_KEY or add it to "
+                "OH_PREVIOUS_SECRET_KEYS"
+            ),
         )
 
     logger.info(f"Activated profile '{name}'")
