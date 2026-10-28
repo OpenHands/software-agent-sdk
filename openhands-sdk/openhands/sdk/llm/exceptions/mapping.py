@@ -68,9 +68,8 @@ def map_provider_exception(exception: Exception) -> Exception:
         # Temporary SGLang fallback until the LiteLLM fix ships and is verified:
         # https://github.com/BerriAI/litellm/pull/48837 (issue #48836).
         # Remove this branch once our LiteLLM dependency includes that fix.
-        if (
-            "Requested token count exceeds the model's maximum context length"
-            in str(exception)
+        if "Requested token count exceeds the model's maximum context length" in str(
+            exception
         ):
             return LLMContextWindowExceedError(str(exception))
         return LLMBadRequestError(str(exception))
