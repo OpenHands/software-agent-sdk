@@ -125,6 +125,8 @@ a = Analysis(
         # ModuleNotFoundError: No module named 'binaryornot.data' in frozen builds.
         *collect_data_files("binaryornot"),
 
+        *collect_data_files("openhands.agent_server", includes=["code_server_proxy.cjs"]),
+
         # OpenHands SDK prompt templates (adjusted for shallow namespace layout)
         *collect_data_files("openhands.sdk.context.condenser", includes=["prompts/*.j2"]),
         *collect_data_files("openhands.sdk.context.prompts", includes=["templates/*.j2"]),

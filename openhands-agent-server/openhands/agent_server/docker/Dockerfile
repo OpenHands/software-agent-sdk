@@ -462,69 +462,40 @@ RUN set -eux; \
     done
 
 # --- VSCode Web ---
-# EDITOR/VISUAL/GIT_EDITOR/OPENVSCODE_SERVER_ROOT are declared unconditionally:
-# nothing execs `code` unless VSCode Web itself is running, so a dangling
-# path when `vscode` is excluded is harmless (same reasoning as CHROME_BIN
-# below, applied to VSCode).
 ENV EDITOR=code \
     VISUAL=code \
     GIT_EDITOR="code --wait" \
-    OPENVSCODE_SERVER_ROOT=/openhands/.openvscode-server
-ARG RELEASE_TAG="openvscode-server-v1.109.5"
-ARG RELEASE_ORG="gitpod-io"
-# The --mount=from=builder on the extensions RUN below is unconditional at
-# the Dockerfile level, so BuildKit still builds the full `builder` stage
-# (the entire SDK venv) even when `vscode` is excluded from
-# INSTALL_CAPABILITIES — the case check inside each RUN only decides what
-# lands in THIS image, not what gets built as a dependency. Excluding vscode
-# shrinks the result, not the build time.
+    CODE_SERVER_ROOT=/openhands/.code-server
+# Published 2026-10-08; digests from coder/code-server GitHub release assets.
+# Update the version and both architecture digests together.
+ARG CODE_SERVER_VERSION="4.141.0"
 RUN set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
       *,vscode,*) ;; \
-      *) echo "INSTALL_CAPABILITIES excludes vscode; skipping OpenVSCode Server"; exit 0;; \
+      *) echo "INSTALL_CAPABILITIES excludes vscode; skipping code-server"; exit 0;; \
     esac; \
-    \
-    # Create necessary directories
-    mkdir -p $(dirname ${OPENVSCODE_SERVER_ROOT}); \
-    \
-    # Determine architecture
-    arch=$(uname -m); \
-    if [ "${arch}" = "x86_64" ]; then \
-        arch="x64"; \
-    elif [ "${arch}" = "aarch64" ]; then \
-        arch="arm64"; \
-    elif [ "${arch}" = "armv7l" ]; then \
-        arch="armhf"; \
-    fi; \
-    \
-    # Download and install VSCode Server
-    wget https://github.com/${RELEASE_ORG}/openvscode-server/releases/download/${RELEASE_TAG}/${RELEASE_TAG}-linux-${arch}.tar.gz; \
-    tar -xzf ${RELEASE_TAG}-linux-${arch}.tar.gz; \
-    if [ -d "${OPENVSCODE_SERVER_ROOT}" ]; then rm -rf "${OPENVSCODE_SERVER_ROOT}"; fi; \
-    mv ${RELEASE_TAG}-linux-${arch} ${OPENVSCODE_SERVER_ROOT}; \
-    cp ${OPENVSCODE_SERVER_ROOT}/bin/remote-cli/openvscode-server ${OPENVSCODE_SERVER_ROOT}/bin/remote-cli/code; \
-    rm -f ${RELEASE_TAG}-linux-${arch}.tar.gz; \
-    \
-    # Set proper ownership
-    chown -R ${USERNAME}:${USERNAME} ${OPENVSCODE_SERVER_ROOT}
+    case "$(uname -m)" in \
+      x86_64) arch=amd64; sha256=65bcd20b524d03eb1b5adb7f360244599ef0e5b74089a46a982d32c074b97a29;; \
+      aarch64) arch=arm64; sha256=e5cc78da1d631c6cf6162f9b18eeaa8ee9d3239e1a88bb99d0602cdc5fa1852d;; \
+      *) echo "Unsupported code-server architecture" >&2; exit 1;; \
+    esac; \
+    wget -O /tmp/code-server.tar.gz "https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server-${CODE_SERVER_VERSION}-linux-${arch}.tar.gz"; \
+    echo "${sha256}  /tmp/code-server.tar.gz" | sha256sum -c -; \
+    mkdir -p "${CODE_SERVER_ROOT}"; \
+    tar -xzf /tmp/code-server.tar.gz -C "${CODE_SERVER_ROOT}" --strip-components=1; \
+    rm /tmp/code-server.tar.gz; \
+    cp "${CODE_SERVER_ROOT}/lib/vscode/bin/remote-cli/code-server" "${CODE_SERVER_ROOT}/lib/vscode/bin/remote-cli/code"; \
+    chown -R ${USERNAME}:${USERNAME} "${CODE_SERVER_ROOT}"
 
-# Kept as its own RUN, separate from the tarball download above: extensions
-# are actively-edited local source (unlike the pinned release tarball), so
-# splitting them keeps an extension-only change from invalidating the ~100MB
-# download's cache layer.
+# This bind mount builds the builder stage even when vscode is excluded.
 RUN --mount=type=bind,from=builder,source=/agent-server/openhands-agent-server/openhands/agent_server/vscode_extensions,target=/tmp/vscode_extensions \
     set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
       *,vscode,*) ;; \
       *) exit 0;; \
     esac; \
-    \
-    # Trailing slashes matter: OpenVSCode Server's tarball already ships its
-    # own extensions/ dir, so a bare `cp -r src dst` would nest src under the
-    # existing dst instead of merging into it the way `COPY` does.
-    mkdir -p ${OPENVSCODE_SERVER_ROOT}/extensions; \
-    cp -r /tmp/vscode_extensions/. ${OPENVSCODE_SERVER_ROOT}/extensions/; \
-    chown -R ${USERNAME}:${USERNAME} ${OPENVSCODE_SERVER_ROOT}/extensions
+    cp -r /tmp/vscode_extensions/. "${CODE_SERVER_ROOT}/lib/vscode/extensions/"; \
+    chown -R ${USERNAME}:${USERNAME} "${CODE_SERVER_ROOT}/lib/vscode/extensions"
 
 # --- Docker ---
 RUN set -eux; \
