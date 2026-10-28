@@ -82,6 +82,59 @@ def request_and_target():
 
 
 @pytest.mark.asyncio
+async def test_bridge_websocket_ignores_environment_proxies(monkeypatch):
+    """``*_PROXY`` env vars must not divert the upstream connection.
+
+    The upstream is always a loopback port published by the docker daemon, but
+    ``websockets.connect`` resolves proxy env vars by default — including
+    ``HTTPS_PROXY`` for ``ws://`` URIs — which leaves the events socket stalled
+    while REST to the same host stays direct.
+    """
+    import websockets
+
+    from openhands.agent_server.docker_runtime.proxy import bridge_websocket
+    from openhands.agent_server.docker_runtime.registry import (
+        ConversationContainer,
+    )
+
+    async def handler(upstream):
+        await upstream.send("upstream-open")
+        await upstream.close()
+
+    for name in (
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "WS_PROXY",
+        "ws_proxy",
+        "SOCKS_PROXY",
+        "socks_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "NO_PROXY",
+        "no_proxy",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    async with websockets.serve(handler, "127.0.0.1", 0) as server:
+        port = next(iter(server.sockets)).getsockname()[1]
+        # A dead proxy: every CONNECT attempt through it is refused.
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+
+        client, sent = await client_socket()
+        container = ConversationContainer(
+            f"http://127.0.0.1:{port}", "inner-key", "test-container"
+        )
+        await bridge_websocket(client, container, upstream_path="/sockets/events/x")
+
+    assert any(
+        message["type"] == "websocket.send" and "upstream-open" in message["text"]
+        for message in sent
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "failure", ["ReadTimeout", "WriteError", "RemoteProtocolError", "cancel"]
 )
@@ -111,6 +164,28 @@ async def test_http_setup_failure_closes_client_and_preserves_cancellation(
     if isinstance(raised.value, HTTPException):
         assert raised.value.status_code == 502
     assert client.is_closed
+
+
+@pytest.mark.asyncio
+async def test_http_client_bypasses_environment_proxies(monkeypatch):
+    """``httpx.AsyncClient`` must not resolve ``*_PROXY`` env vars for the
+    loopback container port."""
+    import httpx
+
+    from openhands.agent_server.docker_runtime import proxy
+
+    captured: dict = {}
+    real_client = httpx.AsyncClient
+
+    def spy(**kwargs):
+        captured.update(kwargs)
+        return real_client(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200))
+        )
+
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", spy)
+    await proxy.proxy_http(*request_and_target(), upstream_path="/api/test")
+    assert captured.get("trust_env") is False
 
 
 @pytest.mark.asyncio
