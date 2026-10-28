@@ -5,6 +5,7 @@ from rich.text import Text
 
 from openhands.sdk.event.base import N_CHAR_PREVIEW, LLMConvertibleEvent
 from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
+from openhands.sdk.event.error_origin import validated_grouping_key, validated_origin
 from openhands.sdk.event.types import EventID, SourceType, ToolCallID
 from openhands.sdk.llm import Message, TextContent, content_to_str
 from openhands.sdk.tool.schema import Observation
@@ -148,6 +149,21 @@ class AgentErrorEvent(ObservationBaseEvent):
         default=None,
         description="Safe structured error semantics for API consumers.",
     )
+    origin: str | None = Field(
+        default=None,
+        description=(
+            "Sanitized module and function of the failure site. "
+            "Omitted when no exception traceback is available."
+        ),
+    )
+    grouping_key: str | None = Field(
+        default=None,
+        description=(
+            "Stable key grouping the same module, function, and exception "
+            "class. Supplied by the producer. Not derived from the error "
+            "message. Omitted when no exception is available."
+        ),
+    )
 
     @model_validator(mode="after")
     def classify(self) -> "AgentErrorEvent":
@@ -158,6 +174,10 @@ class AgentErrorEvent(ObservationBaseEvent):
         expected, agent-correctable validation failure pass ``AGENT_ACTION``
         explicitly; unexpected exceptions and crash-recovery paths leave the
         default so telemetry treats them as diagnostics.
+
+        ``error`` is the scaffold message and is never used to derive
+        ``origin`` or ``grouping_key``. Unlike ``ConversationErrorEvent``,
+        this model has no stable ``code``, so a missing key stays missing.
         """
         if self.classification is None:
             object.__setattr__(
@@ -165,6 +185,12 @@ class AgentErrorEvent(ObservationBaseEvent):
                 "classification",
                 ErrorClassification(kind=FailureKind.UNKNOWN, retryable=False),
             )
+        origin = validated_origin(self.origin)
+        if origin != self.origin:
+            object.__setattr__(self, "origin", origin)
+        key = validated_grouping_key(self.grouping_key)
+        if key != self.grouping_key:
+            object.__setattr__(self, "grouping_key", key)
         return self
 
     @property

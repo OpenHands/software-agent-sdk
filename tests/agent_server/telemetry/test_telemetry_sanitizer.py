@@ -9,6 +9,7 @@ read, which is the whole guarantee.
 
 import json
 from dataclasses import asdict
+from types import TracebackType
 
 import pytest
 
@@ -16,6 +17,7 @@ from openhands.agent_server.telemetry.sanitizer import (
     COST_BOUNDS,
     COUNT_BOUNDS,
     DURATION_BOUNDS,
+    UNKNOWN_ERROR_CLASS,
     Bounds,
     bucket,
     model_family,
@@ -64,6 +66,93 @@ def test_fingerprint_distinguishes_different_error_types():
 
     value_fp = normalize_exception(_raise("v"))
     assert key_fp.error_fingerprint != value_fp.error_fingerprint
+
+
+def _raise_deep(*, nameless: int, named: int) -> BaseException:
+    """Outer nameless frames, then ``named`` distinct first-party frames.
+
+    The traceback chain starts at this function and walks inward, so the
+    nameless frames are the first links after this one.
+    """
+    named_ns: dict[str, object] = {"__name__": "openhands.sdk._fingerprint_budget"}
+    chunks = [f"def p{named - 1}():\n    raise RuntimeError('budget')\n"]
+    chunks.extend(f"def p{i}():\n    p{i + 1}()\n" for i in range(named - 2, -1, -1))
+    exec("".join(chunks), named_ns)
+
+    raiser = named_ns["p0"]
+    if nameless:
+        # No ``__name__``: these frames must not count as yielded names.
+        nameless_ns: dict[str, object] = {"p0": raiser}
+        chunks = ["def n0():\n    p0()\n"]
+        chunks.extend(f"def n{i}():\n    n{i - 1}()\n" for i in range(1, nameless))
+        exec("".join(chunks), nameless_ns)
+        raiser = nameless_ns[f"n{nameless - 1}"]
+    assert callable(raiser)
+    try:
+        raiser()
+    except RuntimeError as exc:
+        return exc
+    raise AssertionError("expected RuntimeError")
+
+
+def _truncate_links(tb: TracebackType | None, max_links: int) -> TracebackType:
+    frames: list[TracebackType] = []
+    current = tb
+    while current is not None and len(frames) < max_links:
+        frames.append(current)
+        current = current.tb_next
+    rebuilt: TracebackType | None = None
+    for frame in reversed(frames):
+        rebuilt = TracebackType(
+            rebuilt, frame.tb_frame, frame.tb_lasti, frame.tb_lineno
+        )
+    assert rebuilt is not None
+    return rebuilt
+
+
+def _named_budget_lineno(tb: TracebackType | None, budget: int) -> int:
+    """Line of the last named frame inside a yield budget that skips nameless."""
+    current = tb
+    yielded = 0
+    lineno: int | None = None
+    while current is not None and yielded < budget:
+        module = current.tb_frame.f_globals.get("__name__")
+        if isinstance(module, str) and module:
+            lineno = current.tb_lineno
+            yielded += 1
+        current = current.tb_next
+    assert lineno is not None
+    return lineno
+
+
+def test_fingerprint_counts_nameless_frames_against_the_link_budget():
+    """A frame with no module name still consumes one of the 256 links.
+
+    Skipping those frames would keep walking into later first-party frames and
+    change ``error_fingerprint`` for a traceback longer than 256 links.
+    """
+    exc = _raise_deep(nameless=60, named=300)
+    tb = exc.__traceback__
+    links = 0
+    named = 0
+    current = tb
+    while current is not None:
+        links += 1
+        module = current.tb_frame.f_globals.get("__name__")
+        if isinstance(module, str) and module:
+            named += 1
+        current = current.tb_next
+    assert links > 256
+    assert named > 256
+
+    full = normalize_exception(exc)
+    truncated = normalize_exception(
+        RuntimeError("budget").with_traceback(_truncate_links(tb, 256))
+    )
+    assert full.error_fingerprint == truncated.error_fingerprint
+    assert full.error_origin_lineno == truncated.error_origin_lineno
+    assert full.error_origin_module == "openhands.sdk._fingerprint_budget"
+    assert full.error_origin_lineno != _named_budget_lineno(tb, 256)
 
 
 def test_fingerprint_distinguishes_different_raise_sites():
@@ -183,6 +272,7 @@ def test_safe_token(value, expected):
 
 
 def test_safe_identifier_rejects_secret_and_path_shapes():
+    assert UNKNOWN_ERROR_CLASS == "UnknownError"
     assert safe_identifier("ValueError") == "ValueError"
     assert safe_identifier("openhands.sdk.Foo") == "openhands.sdk.Foo"
     assert safe_identifier(SECRET) == "UnknownError"

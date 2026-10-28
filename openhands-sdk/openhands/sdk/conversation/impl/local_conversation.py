@@ -51,6 +51,7 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
+from openhands.sdk.event.error_origin import origin_from_exception
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
@@ -2134,6 +2135,7 @@ class LocalConversation(BaseConversation):
                         detail=(
                             "Your LLM API key appears to be invalid or has expired."
                         ),
+                        origin=origin_from_exception(e),
                     )
                 )
             raise ConversationRunError(
@@ -2154,6 +2156,7 @@ class LocalConversation(BaseConversation):
                             source="environment",
                             code=e.__class__.__name__,
                             detail=str(e),
+                            origin=origin_from_exception(e),
                         )
                     )
 
@@ -2654,6 +2657,7 @@ class LocalConversation(BaseConversation):
                         detail=(
                             "Your LLM API key appears to be invalid or has expired."
                         ),
+                        origin=origin_from_exception(e),
                     )
                 )
             raise ConversationRunError(
@@ -2676,6 +2680,7 @@ class LocalConversation(BaseConversation):
                             source="environment",
                             code=e.__class__.__name__,
                             detail=str(e),
+                            origin=origin_from_exception(e),
                         )
                     )
             raise ConversationRunError(
