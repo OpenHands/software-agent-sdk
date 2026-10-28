@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 from urllib.error import URLError
-from urllib.request import urlopen
+from urllib.request import OpenerDirector, ProxyHandler, build_opener
 from uuid import UUID, uuid4
 
 from openhands.agent_server.config import V1_SESSION_API_KEY_ENV, Config
@@ -41,6 +41,12 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
+
+# Conversation containers are always reached on a loopback port published by
+# the docker daemon. urllib's default opener resolves ``*_PROXY`` environment
+# variables, so use an opener with an empty ProxyHandler to keep the health
+# check on the loopback channel.
+_LOOPBACK_OPENER: Final[OpenerDirector] = build_opener(ProxyHandler({}))
 
 _CONVERSATIONS_DIR: Final[str] = "/var/openhands/conversations"
 _PERSISTENCE_DIR: Final[str] = "/var/openhands/.openhands"
@@ -564,7 +570,9 @@ class DockerConversationRegistry(ConversationRegistry):
         deadline = time.monotonic() + self.config.conversation_container_startup_timeout
         while time.monotonic() < deadline:
             try:
-                with urlopen(container.host + "/health", timeout=1) as response:
+                with _LOOPBACK_OPENER.open(
+                    container.host + "/health", timeout=1
+                ) as response:
                     if 200 <= response.status < 300:
                         return
             except (URLError, TimeoutError, ConnectionError):
