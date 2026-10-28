@@ -253,6 +253,23 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     cp runc /out/runc; \
     /out/runc --version
 
+FROM golang:1.27.3-bookworm AS rootlesskit-source
+ARG ROOTLESSKIT_VERSION=v3.3.0
+ARG ROOTLESSKIT_REVISION=888c3189e9cdf34dcdb19011e1c7c34eb94b5393
+WORKDIR /src
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    set -eux; \
+    git init .; \
+    git remote add origin https://github.com/rootless-containers/rootlesskit.git; \
+    git fetch --depth 1 origin "${ROOTLESSKIT_REVISION}" "refs/tags/${ROOTLESSKIT_VERSION}:refs/tags/${ROOTLESSKIT_VERSION}"; \
+    test "$(git rev-parse "${ROOTLESSKIT_VERSION}^{commit}")" = "${ROOTLESSKIT_REVISION}"; \
+    git checkout --detach FETCH_HEAD; \
+    test "$(git rev-parse HEAD)" = "${ROOTLESSKIT_REVISION}"; \
+    mkdir -p /out; \
+    CGO_ENABLED=0 go build -trimpath -o /out/rootlesskit ./cmd/rootlesskit; \
+    /out/rootlesskit --version
+
 FROM debian:trixie-slim AS python-node-runtime
 ARG NPM_VERSION
 ARG DEBIAN_SNAPSHOT=20261025T235307Z
@@ -759,22 +776,13 @@ RUN set -eux; \
     echo '{"mtu": 1450}' > /etc/docker/daemon.json
 
 # docker-ce-rootless-extras still bundles RootlessKit 3.2.0 with vulnerable x/net.
-RUN set -eux; \
+RUN --mount=type=bind,from=rootlesskit-source,source=/out/rootlesskit,target=/tmp/rootlesskit \
+    set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
       *,docker,*) ;; \
       *) exit 0;; \
     esac; \
-    case "$(dpkg --print-architecture)" in \
-      amd64) arch=x86_64; sha256=0e757c8f80510d764df8c9a5f169805580b48d02329f0a200900e261ecec27ed;; \
-      arm64) arch=aarch64; sha256=7a159e79ef3e65e1f2702ab89537bb79de67b433428328b9626cf75786dbe43a;; \
-      *) echo "Unsupported RootlessKit architecture" >&2; exit 1;; \
-    esac; \
-    tmpdir=$(mktemp -d); \
-    curl -fsSL "https://github.com/rootless-containers/rootlesskit/releases/download/v3.3.0/rootlesskit-${arch}.tar.gz" -o "$tmpdir/rootlesskit.tar.gz"; \
-    echo "$sha256  $tmpdir/rootlesskit.tar.gz" | sha256sum -c -; \
-    tar -xzf "$tmpdir/rootlesskit.tar.gz" -C "$tmpdir" rootlesskit; \
-    install -m 0755 "$tmpdir/rootlesskit" /usr/bin/rootlesskit; \
-    rm -rf "$tmpdir"; \
+    install -m 0755 /tmp/rootlesskit /usr/bin/rootlesskit; \
     test "$(rootlesskit --version)" = "rootlesskit version 3.3.0"
 
 RUN --mount=type=bind,from=docker-buildx-source,source=/out/docker-buildx,target=/tmp/docker-buildx \
