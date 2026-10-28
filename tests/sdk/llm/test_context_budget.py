@@ -9,7 +9,7 @@ from pydantic import SecretStr
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.context.condenser.base import NoCondensationAvailableException
 from openhands.sdk.context.view import View
-from openhands.sdk.event import MessageEvent, SystemPromptEvent
+from openhands.sdk.event import LLMConvertibleEvent, MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.exceptions import LLMContextWindowExceedError
 from openhands.sdk.tool.builtins import FinishTool
@@ -121,7 +121,7 @@ def test_hard_reset_preserves_task_with_real_summary_transport(asynchronous):
             self.end_headers()
             self.wfile.write(payload)
 
-        def log_message(self, *_args):
+        def log_message(self, format: str, *args: object) -> None:
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -132,7 +132,7 @@ def test_hard_reset_preserves_task_with_real_summary_transport(asynchronous):
             update={"base_url": f"http://127.0.0.1:{server.server_port}/v1"}
         )
         condenser = LLMSummarizingCondenser(llm=llm, keep_first=2, max_size=10)
-        events = [
+        events: list[LLMConvertibleEvent] = [
             SystemPromptEvent(system_prompt=TextContent(text="Instructions"), tools=[])
         ]
         events.extend(
