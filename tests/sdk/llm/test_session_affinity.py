@@ -58,7 +58,9 @@ def test_explicit_body_session_id_wins(select_options, override_source):
     )
     kwargs = {"extra_body": body} if override_source == "call" else {}
     options = select_options(
-        llm, user_kwargs=kwargs, call_context=LLMCallContext(session_id="conversation-A")
+        llm,
+        user_kwargs=kwargs,
+        call_context=LLMCallContext(session_id="conversation-A"),
     )
 
     assert options["extra_body"] == body

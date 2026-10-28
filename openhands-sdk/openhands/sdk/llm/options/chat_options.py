@@ -10,7 +10,7 @@ from openhands.sdk.llm.options.common import (
     apply_defaults_if_absent,
     apply_extra_body,
     apply_extra_headers,
-    is_openrouter,
+    should_send_session_id_in_body,
 )
 
 
@@ -97,7 +97,7 @@ def select_chat_options(
         out,
         context,
         supports_prompt_cache_key=model_features.supports_prompt_cache_key,
-        openrouter=is_openrouter(llm),
+        openrouter=should_send_session_id_in_body(llm),
     )
 
     return out
