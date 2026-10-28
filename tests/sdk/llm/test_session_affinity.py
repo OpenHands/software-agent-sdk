@@ -9,6 +9,7 @@ from openhands.sdk.llm.call_context import llm_call_context_scope
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.options.chat_options import select_chat_options
 from openhands.sdk.llm.options.responses_options import select_responses_options
+from openhands.sdk.settings import OpenHandsAgentSettings
 
 
 @pytest.fixture(params=["chat", "responses"])
@@ -49,11 +50,12 @@ def test_session_body_policy(select_options, model, base_url, enabled, expected)
 
 
 @pytest.mark.parametrize("override_source", ["llm", "call"])
-def test_explicit_body_session_id_wins(select_options, override_source):
+@pytest.mark.parametrize("enabled", [True, False])
+def test_explicit_body_session_id_wins(select_options, override_source, enabled):
     body = {"session_id": "explicit", "provider": {"order": ["provider-A"]}}
     llm = LLM(
         model="litellm_proxy/router-alias",
-        send_session_id_in_body=True,
+        send_session_id_in_body=enabled,
         litellm_extra_body=body if override_source == "llm" else {},
     )
     kwargs = {"extra_body": body} if override_source == "call" else {}
@@ -112,3 +114,32 @@ def test_profile_round_trip_preserves_session_body_policy(tmp_path, select_optio
     )
 
     assert options["extra_body"]["session_id"] == "after-load"
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [("openrouter/provider/model", "legacy"), ("litellm_proxy/router-alias", None)],
+)
+def test_legacy_profile_preserves_automatic_policy(select_options, model, expected):
+    loaded = LLM.from_persisted({"model": model})
+    options = select_options(
+        loaded, user_kwargs={}, call_context=LLMCallContext(session_id="legacy")
+    )
+
+    assert options.get("extra_body", {}).get("session_id") == expected
+
+
+def test_agent_settings_round_trip_preserves_body_policy(select_options):
+    settings = OpenHandsAgentSettings(
+        llm=LLM(model="litellm_proxy/router-alias", send_session_id_in_body=True),
+        tools=[],
+    )
+    restored = OpenHandsAgentSettings.from_persisted(settings.model_dump(mode="json"))
+    agent = restored.create_agent()
+    options = select_options(
+        agent.llm,
+        user_kwargs={},
+        call_context=LLMCallContext(session_id="after-resume"),
+    )
+
+    assert options["extra_body"]["session_id"] == "after-resume"
