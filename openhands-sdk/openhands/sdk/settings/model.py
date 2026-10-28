@@ -1161,6 +1161,14 @@ class ConversationSettings(BaseModel):
         exclude=True,
         description="Hook configuration for lifecycle events.",
     )
+    hook_project_dir: str | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Directory command hooks run from, when it is not the workspace "
+            "working directory."
+        ),
+    )
     selected_repository: str | None = Field(
         default=None,
         exclude=True,
@@ -1422,6 +1430,8 @@ class ConversationSettings(BaseModel):
             payload.setdefault("plugins", self.plugins)
         if self.hook_config is not None:
             payload.setdefault("hook_config", self.hook_config)
+        if self.hook_project_dir is not None:
+            payload.setdefault("hook_project_dir", self.hook_project_dir)
         if self.observability_metadata is not None:
             payload.setdefault("observability_metadata", self.observability_metadata)
         if self.observability_tags is not None:

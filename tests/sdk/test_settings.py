@@ -3204,3 +3204,27 @@ def test_saved_acp_llm_is_discarded_without_leaking_credentials(schema_version) 
     assert settings.acp_model == "sonnet"
     assert "sk-old" not in settings.model_dump_json(context={"expose_secrets": True})
     assert settings.create_agent().llm.usage_id == ACP_SENTINEL_USAGE_ID
+
+
+def test_conversation_settings_forwards_hook_project_dir() -> None:
+    agent = Agent(llm=LLM(model="test-model", usage_id="test-llm"), tools=[])
+    workspace = LocalWorkspace(working_dir="/workspace/project")
+
+    request = ConversationSettings(
+        hook_project_dir="/workspace/project/repo"
+    ).create_request(StartConversationRequest, agent=agent, workspace=workspace)
+
+    assert request.hook_project_dir == "/workspace/project/repo"
+    assert request.model_dump()["hook_project_dir"] == "/workspace/project/repo"
+    # Persisted settings never carry it: it is a per-launch runtime field.
+    assert (
+        "hook_project_dir"
+        not in ConversationSettings(
+            hook_project_dir="/workspace/project/repo"
+        ).model_dump()
+    )
+
+    plain = ConversationSettings().create_request(
+        StartConversationRequest, agent=agent, workspace=workspace
+    )
+    assert plain.hook_project_dir is None
