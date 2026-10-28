@@ -1104,7 +1104,7 @@ def test_hard_context_reset_preserves_leading_system_prompt(mock_llm: LLM) -> No
     result = condenser.condense(view)
 
     assert isinstance(result, Condensation)
-    assert result.summary_offset == 1  # summary placed after the system prompt
+    assert result.summary_offset == 2  # system prompt and initial task preserved
     # The system prompt is retained, not forgotten.
     assert events[0].id not in result.forgotten_event_ids
     messages = _applied_messages(result, view)
@@ -1129,8 +1129,9 @@ async def test_ahard_context_reset_preserves_leading_system_prompt(
     result = await condenser.ahard_context_reset(view)
 
     assert isinstance(result, Condensation)
-    assert result.summary_offset == 1
+    assert result.summary_offset == 2
     assert events[0].id not in result.forgotten_event_ids
+    assert events[1].id not in result.forgotten_event_ids
     messages = _applied_messages(result, view)
     assert messages[0].role == "system"
 

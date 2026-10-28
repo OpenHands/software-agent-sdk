@@ -355,23 +355,32 @@ class LLMSummarizingCondenser(RollingCondenser):
         # Summary offset is the same as forgetting_start
         return forgotten_events, forgetting_start
 
+    def _hard_reset_prefix(self, view: View) -> int:
+        system_idx = _leading_system_prompt_index(view.events)
+        preserve = max(
+            self.keep_first, (system_idx + 1) if system_idx is not None else 0
+        )
+        preserve = view.manipulation_indices.find_next(preserve)
+        if preserve >= len(view.events):
+            raise NoCondensationAvailableException(
+                "No events after the protected prefix to condense"
+            )
+        return preserve
+
     @observe(ignore_inputs=["view", "agent_llm"])
     def hard_context_reset(
         self,
         view: View,
         agent_llm: LLM | None = None,  # noqa: ARG002
     ) -> Condensation | None:
-        """Perform a hard context reset by summarizing all events in the view.
+        """Summarize events after the protected prefix for a hard context reset.
 
         Depending on how the hard context reset is triggered, this may fail (e.g., if
         the view is too large for the summarizing LLM to handle). In that case, we keep
         trimming down the contents until a summary can be generated.
         """
-        # Preserve the leading SystemPromptEvent: it must stay at the head of the
-        # view so the request still opens with a system message. Summarize the
-        # events *after* it and insert the summary right behind it.
-        system_idx = _leading_system_prompt_index(view.events)
-        preserve = (system_idx + 1) if system_idx is not None else 0
+        # Hard recovery must honor the same protected prefix as ordinary condensation.
+        preserve = self._hard_reset_prefix(view)
         forgotten_events = view.events[preserve:]
         summary_offset = preserve
 
@@ -520,9 +529,8 @@ class LLMSummarizingCondenser(RollingCondenser):
         agent_llm: LLM | None = None,  # noqa: ARG002
     ) -> Condensation | None:
         """Async variant of :meth:`hard_context_reset`."""
-        # Preserve the leading SystemPromptEvent (see hard_context_reset).
-        system_idx = _leading_system_prompt_index(view.events)
-        preserve = (system_idx + 1) if system_idx is not None else 0
+        # Use the same atomic protected prefix as the synchronous path.
+        preserve = self._hard_reset_prefix(view)
         forgotten_events = view.events[preserve:]
         summary_offset = preserve
 
