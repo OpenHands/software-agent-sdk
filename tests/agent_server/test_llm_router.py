@@ -1,5 +1,6 @@
 """Tests for LLM router."""
 
+import httpx
 import litellm
 import pytest
 from fastapi.testclient import TestClient
@@ -164,10 +165,16 @@ def test_openai_subscription_models_endpoint_integration(client):
     assert response.status_code == 200
     data = response.json()
     assert data == {"vendor": "openai", "models": sorted(OPENAI_CODEX_MODELS)}
-    assert "gpt-5.6-sol" in data["models"]
-    assert "gpt-5.6-terra" in data["models"]
-    assert "gpt-5.6-luna" in data["models"]
-    assert "gpt-5.5" in data["models"]
+    assert {
+        "gpt-6.1-sol",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-6-astra",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+    } <= set(data["models"])
 
 
 def test_openai_subscription_status_endpoint_does_not_return_tokens(
@@ -208,6 +215,32 @@ def test_openai_subscription_status_endpoint_does_not_return_tokens(
     }
     assert "access_token" not in response.text
     assert "refresh_token" not in response.text
+
+
+def test_openai_subscription_status_offline_refresh_reads_disconnected(
+    client, monkeypatch
+):
+    """A refresh that cannot reach OpenAI reads as disconnected, not a 500."""
+    from openhands.agent_server import llm_router
+
+    class FakeAuth:
+        async def refresh_if_needed(self):
+            raise httpx.ConnectError("All connection attempts failed")
+
+        def get_credentials(self):
+            raise AssertionError("status must not read credentials after failure")
+
+    monkeypatch.setattr(llm_router, "_get_openai_subscription_auth", FakeAuth)
+
+    response = client.get("/api/llm/subscription/openai/status")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "vendor": "openai",
+        "connected": False,
+        "account_email": None,
+        "expires_at": None,
+    }
 
 
 def test_openai_subscription_device_start_returns_opaque_poll_token(

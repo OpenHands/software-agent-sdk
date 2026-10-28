@@ -16,7 +16,7 @@ from openhands.sdk.context.memory import load_memory
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
-from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.event_store import ROOT_PARENT_ID, EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
@@ -112,6 +112,7 @@ from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -171,9 +172,26 @@ def _is_acp_prompt_message(event: Event) -> TypeGuard[MessageEvent]:
     )
 
 
-def _copy_event_for_fork(event: Event) -> Event:
+def _copy_event_for_fork(event: Event, source: EventLog) -> Event:
     # Mirrors persisted event loading and skips runtime-only fields like executors.
-    return Event.model_validate_json(event.model_dump_json(exclude_none=True))
+    copied = Event.model_validate_json(event.model_dump_json(exclude_none=True))
+    parent_id = copied.parent_id
+    if parent_id is None or parent_id == ROOT_PARENT_ID or parent_id in source:
+        return copied
+    # The parent's file was lost from the source log: link the copy to the
+    # event the source's own branch walk bridges to instead.
+    bridged = source._effective_parent_id(source.get_index(event.id), event)
+    return copied.model_copy(update={"parent_id": bridged})
+
+
+def _same_llm_config(a: LLM, b: LLM) -> bool:
+    """Return whether two LLMs serialize to the same config, secrets included."""
+    if a is b:
+        return True
+    context = {"expose_secrets": True}
+    return a.model_dump(mode="json", context=context) == b.model_dump(
+        mode="json", context=context
+    )
 
 
 class LocalConversation(BaseConversation):
@@ -204,6 +222,7 @@ class LocalConversation(BaseConversation):
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _mcp_tool_provider: MCPToolProvider
+    _mcp_config_from_parent: bool
     _llm_call_context: LLMCallContext
 
     def __init__(
@@ -243,6 +262,7 @@ class LocalConversation(BaseConversation):
         profile_store_dir: str | Path | None = None,
         stream_callbacks: list[StreamProgressCallbackType] | None = None,
         _parent_llm_call_context: LLMCallContext | None = None,
+        _mcp_config_from_parent: bool = False,
         **_: object,
     ):
         """Initialize the conversation.
@@ -270,6 +290,9 @@ class LocalConversation(BaseConversation):
             hook_config: Optional hook configuration to auto-wire session hooks.
                 If plugins are loaded, their hooks are combined with this config.
             max_iteration_per_run: Maximum number of iterations per run
+            max_budget_per_run: Accumulated LLM cost limit. On resume, None keeps
+                the persisted cap; a number replaces it. Assign None to the
+                conversation's max_budget_per_run property to clear a saved cap.
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
@@ -305,6 +328,9 @@ class LocalConversation(BaseConversation):
                 for state and EventLog storage.
             _parent_llm_call_context: Runtime LLM context inherited by an internal
                 child conversation. Conversation-local identity is always replaced.
+            _mcp_config_from_parent: The agent's ``mcp_config`` is the resolved
+                config of a delegating parent. It is used as-is: no plugin MCP
+                servers are merged into it and no ``${VAR}`` is expanded again.
             profile_store_dir: Optional directory containing saved LLM profiles.
                 Defaults to ``~/.openhands/profiles``.
         """
@@ -325,6 +351,7 @@ class LocalConversation(BaseConversation):
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
+        self._mcp_config_from_parent = _mcp_config_from_parent
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
@@ -395,6 +422,7 @@ class LocalConversation(BaseConversation):
             else None,
             file_store=file_store,
             max_iterations=max_iteration_per_run,
+            max_budget_per_run=max_budget_per_run,
             stuck_detection=stuck_detection,
             cipher=cipher,
             tags=tags,
@@ -429,8 +457,14 @@ class LocalConversation(BaseConversation):
             # Single chokepoint: stamps parent_id (catching any event a hook
             # swapped in downstream of _tree_stamping) and advances HEAD.
             self._state.append_event(e)
+
+        def _track_last_user_message(e):
             # Track user MessageEvent IDs here so hook callbacks (which may
             # synthesize or alter user messages) are captured in one place.
+            # This runs after the caller-supplied callbacks: setting the field
+            # can emit a ConversationStateUpdateEvent through on_state_change
+            # (the agent server wires it to this chain), and that update must
+            # reach subscribers after the message that caused it.
             if isinstance(e, MessageEvent) and e.source == "user":
                 # Track the latest real user message ID for hook-blocked checks.
                 # Stop-hook feedback is emitted with source="environment".
@@ -444,7 +478,7 @@ class LocalConversation(BaseConversation):
         # list never run. The visualizer is prepended below and so still renders
         # ahead of persist — that is local terminal output, not an announcement
         # a client can act on.
-        composed_list = [_default_callback] + callback_list
+        composed_list = [_default_callback] + callback_list + [_track_last_user_message]
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
             # Use custom visualizer instance
@@ -490,8 +524,6 @@ class LocalConversation(BaseConversation):
         )
 
         self.max_iteration_per_run = max_iteration_per_run
-        # Hard cost ceiling (USD) for a run; None disables the budget check.
-        self.max_budget_per_run = max_budget_per_run
 
         # Initialize stuck detector
         if stuck_detection:
@@ -521,8 +553,8 @@ class LocalConversation(BaseConversation):
         # Idempotent with the create_request() lift; lower priority than
         # request.secrets (below). On resume, fill-if-absent so a persisted
         # value is never downgraded (or lost to redacted/no-cipher serialization).
-        if (ctx := getattr(self.agent, "agent_context", None)) is not None:
-            ctx_secrets = getattr(ctx, "secrets", None)
+        if self.agent is not None and self.agent.agent_context is not None:
+            ctx_secrets = self.agent.agent_context.secrets
             if ctx_secrets:
                 existing_sources = self._state.secret_registry.secret_sources
                 fill_secrets: dict[str, SecretValue] = {}
@@ -705,6 +737,16 @@ class LocalConversation(BaseConversation):
         return self._state
 
     @property
+    def max_budget_per_run(self) -> float | None:
+        """The persisted accumulated-cost limit; None means unbounded."""
+        return self._state.max_budget_per_run
+
+    @max_budget_per_run.setter
+    def max_budget_per_run(self, value: float | None) -> None:
+        with self._state:
+            self._state.max_budget_per_run = value
+
+    @property
     def conversation_stats(self):
         return self._state.stats
 
@@ -723,14 +765,15 @@ class LocalConversation(BaseConversation):
         Bounds total spend across all of the run's LLMs (agent, condenser, ...),
         complementing the iteration cap which only bounds step count.
         """
-        if self.max_budget_per_run is None:
+        max_budget = self.max_budget_per_run
+        if max_budget is None:
             return None
         spent = self.conversation_stats.get_combined_metrics().accumulated_cost
-        if spent < self.max_budget_per_run:
+        if spent < max_budget:
             return None
         return (
             f"Agent reached maximum budget limit "
-            f"(${self.max_budget_per_run:.4f}); accumulated cost ${spent:.4f}."
+            f"(${max_budget:.4f}); accumulated cost ${spent:.4f}."
         )
 
     def _emit_run_limit_error(self, code: str, detail: str) -> None:
@@ -815,7 +858,10 @@ class LocalConversation(BaseConversation):
                 if ``None``).
             agent: Agent for the fork. Defaults to a deep-copy of the
                 source agent.
-            title: Optional title for the forked conversation.
+            title: Deprecated. ``LocalConversation`` has no title field;
+                ``ConversationState`` does not store titles (they live on
+                ``StoredConversation`` in the agent-server layer). Passing a
+                value is accepted for backwards compatibility but has no effect.
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
@@ -830,6 +876,17 @@ class LocalConversation(BaseConversation):
         Raises:
             ValueError: If ``from_event_id`` is not an event in this conversation.
         """
+        if title is not None:
+            warn_deprecated(
+                "LocalConversation.fork() title parameter",
+                deprecated_in="1.54.0",
+                removed_in="1.60.0",
+                details=(
+                    "LocalConversation has no title field; titles are managed by "
+                    "StoredConversation in the agent-server layer."
+                ),
+                stacklevel=2,
+            )
         fork_id = conversation_id or uuid.uuid4()
         # Always deep-copy the agent (supplied or source) so the fork owns
         # its own object graph. Required because __init__ binds
@@ -869,6 +926,7 @@ class LocalConversation(BaseConversation):
                 persistence_dir=fork_persistence,
                 conversation_id=fork_id,
                 max_iteration_per_run=self.max_iteration_per_run,
+                max_budget_per_run=self.max_budget_per_run,
                 stuck_detection=self._stuck_detector is not None,
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
@@ -888,7 +946,9 @@ class LocalConversation(BaseConversation):
                 fork_leaf = self._state.leaf_event_id
 
             for event in source_events:
-                fork_conv._state.events.append(_copy_event_for_fork(event))
+                fork_conv._state.events.append(
+                    _copy_event_for_fork(event, self._state.events)
+                )
             fork_conv._state.leaf_event_id = fork_leaf
             # A full fork inherits the source's empty-HEAD state; a branch slice
             # roots HEAD at a real event (from_event_id), so it is never empty.
@@ -910,13 +970,6 @@ class LocalConversation(BaseConversation):
                 self._state.activated_path_rules
             )
             fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
-
-            # Copy title via tags if provided
-            if title is not None:
-                fork_conv._state.tags = {
-                    **fork_conv._state.tags,
-                    "title": title,
-                }
 
             # Reset or copy metrics
             if not reset_metrics:
@@ -1215,7 +1268,9 @@ class LocalConversation(BaseConversation):
         # - This is the ONLY place where defaults are applied (plugin loading preserves
         #   placeholders with expand_defaults=False to avoid double-expansion)
         # Agent Plugins servers are left literal (see expand_mcp_servers).
-        if merged_mcp:
+        if self._mcp_config_from_parent:
+            merged_mcp = dict(self.agent.mcp_config)
+        elif merged_mcp:
             # Pass the registry's lookup method as a callback - secrets are retrieved
             # lazily, one at a time, only when actually referenced in the config
             merged_mcp = expand_mcp_servers(
@@ -1579,6 +1634,13 @@ class LocalConversation(BaseConversation):
                     self._state,
                     on_event=self._on_event,
                 )
+
+                # Deliver any SessionStart additional_context now that
+                # init_state() has emitted the SystemPromptEvent, so the system
+                # prompt stays first in the LLM request. The hook processor
+                # collected it earlier during _ensure_plugins_loaded().
+                if self._hook_processor is not None:
+                    self._hook_processor.inject_pending_additional_context()
             except Exception:
                 self._close_runtime_tools(runtime_mcp_tools)
                 raise
@@ -1648,18 +1710,31 @@ class LocalConversation(BaseConversation):
         """Swap the agent's LLM to the given object.
 
         The caller owns ``llm.usage_id``; it is the registry key. If an
-        entry with that key already exists, the cached LLM is reused and
-        the passed ``llm`` is dropped — matching the rest of the
-        registry's "first-write-wins" contract.
+        entry with that key already exists and has the same config, the
+        cached LLM is reused. If its config differs (e.g. ``default``, which
+        agent initialization registers, posted with another model), the
+        passed ``llm`` replaces the entry and takes over the metrics already
+        recorded under that ``usage_id``.
 
         Args:
             llm: LLM to install on the agent.
         """
+        usage_id = llm.usage_id
         try:
-            new_llm = self.llm_registry.get(llm.usage_id)
+            registered = self.llm_registry.get(usage_id)
         except KeyError:
+            registered = None
+        if registered is not None and _same_llm_config(registered, llm):
+            new_llm = registered
+        else:
             new_llm = create_subscription_llm_from_config(llm)
+            if registered is not None:
+                self.llm_registry.remove(usage_id)
             self.llm_registry.add(new_llm)
+            if registered is not None:
+                # Keep one metrics object per usage_id: ConversationStats
+                # tracks the registered LLM's, so accrued usage is retained.
+                new_llm.restore_metrics(registered.metrics)
         # A switch_llm tool runs on a worker thread while run()/arun() holds the
         # state lock across the agent step on another thread, blocked awaiting
         # this very tool. Re-acquiring _state here would deadlock, so skip it:
@@ -1744,7 +1819,8 @@ class LocalConversation(BaseConversation):
 
         Raises:
             ValueError: If the conversation's agent is not an :class:`ACPAgent`,
-                or (for a live switch) the provider does not support runtime
+                if ``model`` is empty or whitespace-only (live or not), or
+                (for a live switch) the provider does not support runtime
                 model switching, or the ACP server rejects the switch.
             TimeoutError: If a live switch's ``session/set_model`` round-trip
                 exceeds ``acp_prompt_timeout`` seconds.
@@ -1753,6 +1829,10 @@ class LocalConversation(BaseConversation):
             raise ValueError(
                 "switch_acp_model is only supported for ACP conversations."
             )
+        # Check here, not only in set_acp_model: the pre-run path below skips
+        # that call and would persist a blank model unchecked.
+        if not model or not model.strip():
+            raise ValueError("model must be a non-empty string")
         with self._state:
             # With a live session, perform the protocol switch first; if it
             # fails we leave the persisted state untouched. Without one (pre
@@ -2802,9 +2882,9 @@ class LocalConversation(BaseConversation):
 
     def close(self) -> None:
         """Close the conversation and clean up all tool executors."""
-        if getattr(self, "_cleanup_complete", False):
+        if self._cleanup_complete:
             return
-        first_attempt = not getattr(self, "_cleanup_initiated", False)
+        first_attempt = not self._cleanup_initiated
         if first_attempt:
             self._cleanup_initiated = True
 
@@ -2819,7 +2899,7 @@ class LocalConversation(BaseConversation):
                 logger.debug(f"Could not register accumulated cost: {e}")
 
             logger.debug("Closing conversation and cleaning up tool executors")
-            hook_processor = getattr(self, "_hook_processor", None)
+            hook_processor = self._hook_processor
             if hook_processor is not None:
                 hook_processor.run_session_end()
             try:

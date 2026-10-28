@@ -92,6 +92,7 @@ export interface SkillInfo {
   type: 'repo' | 'knowledge' | 'agentskills';
   content: string;
   triggers: string[];
+  paths?: string[];
   source?: string | null;
   description?: string | null;
   is_agentskills_format?: boolean;
@@ -399,6 +400,8 @@ export interface MetaProfileMutationResponse {
 export interface ActivateMetaProfileResponse {
   name: string;
   message: string;
+  /** False when the agent settings cannot route (e.g. ACP), so nothing was activated. */
+  applied?: boolean;
 }
 
 export type ExposeSecretsMode = 'encrypted' | 'plaintext';

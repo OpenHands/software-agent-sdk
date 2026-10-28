@@ -25,10 +25,13 @@ Each record captures the static properties that are known at configuration time
                             provider authenticates from (Codex ``auth.json``,
                             Gemini Vertex SA JSON); see :class:`ACPFileSecretSpec`
 
-Callers outside the SDK (e.g. ``openhands-agent-server``, the ``OpenHands``
-frontend, and the ``@openhands/typescript-client`` mirror) can import
-:data:`ACP_PROVIDERS` and :func:`get_acp_provider` instead of maintaining their
-own copies of this metadata.
+The registry describes which harnesses exist, not which ones a deployment
+offers. Clients that surface a subset declare ``SURFACED_ACP_PROVIDERS``
+independently and enforce that policy themselves. Their consistency check is
+one-way: surfaced keys must be registry keys, so an upstream rename or removal
+fails while an addition is a no-op. Do not add a complementary not-surfaced
+list or deployment-policy field to this registry; either would couple every
+client to every upstream addition.
 """
 
 from __future__ import annotations

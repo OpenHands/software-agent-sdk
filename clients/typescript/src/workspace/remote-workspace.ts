@@ -126,11 +126,17 @@ export class RemoteWorkspace implements IWorkspace {
       timeout: (timeout + 10) * 1000,
     });
 
-    const bashOutput = response.data as { exit_code?: number; stdout?: string; stderr?: string };
+    const bashOutput = response.data as {
+      exit_code?: number | null;
+      stdout?: string | null;
+      stderr?: string | null;
+    };
 
     return {
       command,
-      exit_code: bashOutput.exit_code ?? 0,
+      // A missing exit code means the command did not report one; never treat
+      // it as success.
+      exit_code: bashOutput.exit_code ?? -1,
       stdout: bashOutput.stdout || '',
       stderr: bashOutput.stderr || '',
       timeout_occurred: false,

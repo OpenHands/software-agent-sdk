@@ -23,6 +23,7 @@ import inspect
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -106,6 +107,7 @@ from openhands.sdk.agent.acp_file_credentials import (
     write_secret_file,
 )
 from openhands.sdk.agent.acp_models import ACPModelInfo
+from openhands.sdk.agent.acp_skills import render_skill_catalog, write_skill_files
 from openhands.sdk.agent.acp_tracing import ACPTurnTrace
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.stream_context import StreamContext
@@ -126,7 +128,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.mcp.config import MCPOAuthAuthCredential, MCPServer
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.settings.acp_providers import (
     ACP_PROVIDERS,
@@ -672,20 +674,65 @@ def _extract_session_models(
 _ACPMcpServer = HttpMcpServer | SseMcpServer | McpServerStdio | AcpMcpServer
 
 
+def _oauth_bearer_header(auth: MCPOAuthAuthCredential, name: str) -> dict[str, str]:
+    """Forward a stored OAuth2 access token as an ``Authorization`` header.
+
+    The ACP subprocess owns its own MCP transport and has no access to the
+    FastMCP token store the native path uses, so the token persisted in the
+    connection's ``auth.state`` is the only credential available here. Without
+    this the server is forwarded as a bare URL and the ACP agent reports it is
+    not logged in (``codex mcp login ...``).
+
+    A missing or expired token still forwards what exists: a 401 from the
+    server is more actionable than an unauthenticated URL. Both cases are
+    logged so the drop is not silent.
+    """
+    state = auth.state
+    token = state.tokens.access_token if state is not None and state.tokens else None
+    if token is None:
+        logger.warning(
+            "ACP MCP server %r has an OAuth2 connection with no stored access "
+            "token; forwarding it unauthenticated",
+            name,
+        )
+        return {}
+    if (
+        state is not None
+        and state.token_expires_at is not None
+        and state.token_expires_at <= time.time()
+    ):
+        logger.warning(
+            "ACP MCP server %r has an expired OAuth2 access token; the ACP path "
+            "cannot refresh it, forwarding it as-is",
+            name,
+        )
+    return {"Authorization": f"Bearer {token.get_secret_value()}"}
+
+
 def _remote_mcp_headers(server: MCPServer, name: str) -> list[HttpHeader]:
-    """Convert remote MCP headers/auth into ACP's header-only representation."""
+    """Convert remote MCP headers/auth into ACP's header-only representation.
+
+    Header-compatible auth (api key / bearer / basic / explicit headers)
+    converts directly. OAuth2 does not -- ``to_http_headers()`` returns ``None``
+    because the native path materializes tokens through FastMCP's token store --
+    so its stored access token is forwarded explicitly instead.
+    """
     headers = [
         HttpHeader(name=name, value=value.get_secret_value())
         for name, value in (server.headers or {}).items()
     ]
 
-    auth_headers = server.auth.to_http_headers() if server.auth is not None else {}
+    auth = server.auth
+    if isinstance(auth, MCPOAuthAuthCredential):
+        auth_headers = _oauth_bearer_header(auth, name)
+    else:
+        auth_headers = auth.to_http_headers() if auth is not None else {}
     if auth_headers is None:
         logger.warning(
             "ACP MCP server %r uses unsupported remote MCP auth type %r; "
             "only header-compatible auth can be forwarded",
             name,
-            type(server.auth).__name__,
+            type(auth).__name__,
         )
         return headers
     headers.extend(
@@ -724,7 +771,8 @@ def _mcp_config_to_acp_servers(
     with a warning rather than failing init — one misconfigured server should
     not sink the whole conversation.  ``env`` / ``headers`` maps are converted
     to the protocol's ``[{name, value}]`` list form; header-compatible auth
-    credentials are also converted to headers.
+    credentials, and the stored access token of an OAuth2 connection, are also
+    converted to headers.
     """
     caps = normalize_mcp_capabilities(mcp_capabilities)
     http_ok = caps.http
@@ -1974,6 +2022,10 @@ class ACPAgent(AgentBase):
     # "installed"            — already in subprocess history; skip further injection
     _suffix_install_state: str = PrivateAttr(default="unused")
     _installed_suffix: str | None = PrivateAttr(default=None)
+    # Skills written to disk and listed by path in the prompt, not inlined.
+    _skill_locations: dict[str, Path] = PrivateAttr(default_factory=dict)
+    _skills_root: Path | None = PrivateAttr(default=None)
+    _additional_directories_supported: bool = PrivateAttr(default=False)
     _restart_session_on_next_turn: bool = PrivateAttr(default=False)
     # Stream identity for the turn in flight; see stream_context.py. Held on
     # the agent rather than threaded through the finalizers because the ACP
@@ -2285,6 +2337,7 @@ class ACPAgent(AgentBase):
 
         # Render the suffix once, pulling secrets from the conversation's
         # secret_registry to match the regular Agent's get_dynamic_context().
+        self._materialize_skills(state)
         self._installed_suffix = self._render_suffix(state)
         # A prior session id means we may be resuming; used by ``truly_resumed``
         # below to decide whether the model state reported for this launch
@@ -2447,6 +2500,25 @@ class ACPAgent(AgentBase):
             )
         )
 
+    def _skill_directories(self) -> list[str] | None:
+        if self._skills_root and self._additional_directories_supported:
+            return [str(self._skills_root)]
+        return None
+
+    def _materialize_skills(self, state: ConversationState) -> None:
+        self._skill_locations = {}
+        self._skills_root = None
+        context = self.agent_context
+        if context is None or not context.skills:
+            return
+        _, available = context._partition_skills()
+        if not available:
+            return
+        root = self._acp_file_secret_dir(state, "skills")
+        shutil.rmtree(root, ignore_errors=True)
+        self._skill_locations = write_skill_files(root, available)
+        self._skills_root = root
+
     def _render_suffix(self, state: ConversationState) -> str | None:
         """Render the system suffix once, including secrets from the registry.
 
@@ -2487,12 +2559,23 @@ class ACPAgent(AgentBase):
             if not secret_infos:
                 return None
             agent_context = AgentContext(current_datetime=None)
-        elif agent_context.secrets:
+        listed = [s for s in agent_context.skills if s.name in self._skill_locations]
+        if listed:
+            agent_context = agent_context.model_copy(
+                update={"skills": [s for s in agent_context.skills if s not in listed]}
+            )
+        if agent_context.secrets:
             # The registry already carries these (and their descriptions), so
             # clear the agent_context copy to advertise from the registry alone
             # rather than re-merging a redundant second source.
             agent_context = agent_context.model_copy(update={"secrets": {}})
-        return agent_context.to_acp_prompt_context(additional_secret_infos=secret_infos)
+        rendered = agent_context.to_acp_prompt_context(
+            additional_secret_infos=secret_infos
+        )
+        if not listed:
+            return rendered
+        catalog = render_skill_catalog(listed, self._skill_locations)
+        return f"{rendered}\n\n{catalog}" if rendered else catalog
 
     def _present_file_secret_names(self, state: ConversationState) -> set[str]:
         """Reserved file-content secret names supplied for this conversation.
@@ -3115,6 +3198,15 @@ class ACPAgent(AgentBase):
                 if init_response.agent_capabilities is not None
                 else None
             )
+            session_caps = (
+                init_response.agent_capabilities.session_capabilities
+                if init_response.agent_capabilities is not None
+                else None
+            )
+            self._additional_directories_supported = (
+                session_caps is not None
+                and session_caps.additional_directories is not None
+            )
             acp_mcp_servers = _mcp_config_to_acp_servers(self.mcp_config, mcp_caps)
             if acp_mcp_servers:
                 logger.info(
@@ -3210,6 +3302,7 @@ class ACPAgent(AgentBase):
                     load_response = await conn.load_session(
                         cwd=working_dir,
                         session_id=prior_session_id,
+                        additional_directories=self._skill_directories(),
                         mcp_servers=acp_mcp_servers,
                     )
                     session_id = prior_session_id
@@ -3255,6 +3348,7 @@ class ACPAgent(AgentBase):
                 session_meta = build_session_model_meta(agent_name, self.acp_model)
                 response = await conn.new_session(
                     cwd=working_dir,
+                    additional_directories=self._skill_directories(),
                     mcp_servers=acp_mcp_servers,
                     **session_meta,
                 )
