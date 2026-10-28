@@ -512,7 +512,7 @@ def normalize_tool_call(
                 normalized_arguments = {
                     key: value
                     for key, value in arguments.items()
-                    if key in {"security_risk", "summary"}
+                    if key in {"security_risk", "summary", "description", "instruction"}
                 }
                 if not original_command:
                     normalized_arguments["command"] = base_name
@@ -529,12 +529,18 @@ def normalize_tool_call(
             )
             if terminal_command is not None:
                 normalized_tool_name = "terminal"
-                # Preserve only terminal-relevant arguments (security_risk, summary)
+                # Preserve terminal-relevant arguments (security_risk, summary, aliases)
                 # along with the generated command
+                passthrough_keys = {
+                    "security_risk",
+                    "summary",
+                    "description",
+                    "instruction",
+                }
                 normalized_arguments = {
                     key: value
                     for key, value in normalized_arguments.items()
-                    if key in {"security_risk", "summary"}
+                    if key in passthrough_keys
                 }
                 normalized_arguments["command"] = terminal_command
 

@@ -102,6 +102,39 @@ logger = get_logger(__name__)
 maybe_init_laminar()
 
 
+def _tool_has_param(tool: ToolDefinition | None, param_name: str) -> bool:
+    """Return True if the tool's own schema declares ``param_name`` as a parameter.
+
+    Checks regular tool action_type model_fields (including aliases and
+    validation_aliases), response_schema properties, and MCP tool inputSchema so
+    callers can avoid popping or modifying parameters that belong to the tool.
+    """
+    if tool is None:
+        return False
+    from openhands.sdk.tool.schema import _extract_field_allowed_keys
+
+    for fname, f in tool.action_type.model_fields.items():
+        if param_name in _extract_field_allowed_keys(fname, f):
+            return True
+    if (
+        hasattr(tool.action_type, "mcp_schema_alias_specs")
+        and tool.action_type.mcp_schema_alias_specs
+        and param_name in tool.action_type.mcp_schema_alias_specs
+    ):
+        return True
+    if tool.response_schema is not None:
+        from openhands.sdk.tool.tool import _response_schema_json
+
+        schema = _response_schema_json(tool.response_schema)
+        if param_name in schema.get("properties", {}):
+            return True
+    if isinstance(tool, MCPToolDefinition):
+        props = tool.mcp_tool.inputSchema.get("properties", {})
+        if param_name in props:
+            return True
+    return False
+
+
 def _tool_has_summary_param(tool: ToolDefinition) -> bool:
     """Return True if the tool's own schema declares ``summary`` as a parameter.
 
@@ -109,13 +142,7 @@ def _tool_has_summary_param(tool: ToolDefinition) -> bool:
     so that ``_extract_summary`` can avoid popping the field when it belongs
     to the tool (e.g. Jira's ticket title).
     """
-    if "summary" in tool.action_type.model_fields:
-        return True
-    if isinstance(tool, MCPToolDefinition):
-        props = tool.mcp_tool.inputSchema.get("properties", {})
-        if "summary" in props:
-            return True
-    return False
+    return _tool_has_param(tool, "summary")
 
 
 # Maximum number of events to scan during init_state defensive checks.
@@ -1299,9 +1326,41 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         summary = arguments.pop("summary", None)
 
+        # Check common aliases for summary (e.g. description, instruction)
+        # when the tool does not declare them as real parameters
+        summary_aliases = ("description", "instruction")
+        for alias in summary_aliases:
+            if alias in arguments:
+                if tool is None or not _tool_has_param(tool, alias):
+                    alias_val = arguments.pop(alias)
+                    if (
+                        (summary is None or not str(summary).strip())
+                        and isinstance(alias_val, str)
+                        and alias_val.strip()
+                    ):
+                        summary = alias_val.strip()
+                        logger.info(
+                            "Canonicalized tool argument alias %r -> 'summary'"
+                            " for tool '%s'",
+                            alias,
+                            tool_name,
+                        )
+                    elif summary is None or not str(summary).strip():
+                        logger.warning(
+                            "Dropped invalid non-string tool argument %r for tool '%s'",
+                            alias,
+                            tool_name,
+                        )
+                    else:
+                        logger.warning(
+                            "Dropped redundant tool argument %r for tool '%s'",
+                            alias,
+                            tool_name,
+                        )
+
         # If valid summary provided by LLM, use it
         if summary is not None and isinstance(summary, str) and summary.strip():
-            return summary
+            return summary.strip()
 
         # Generate default summary: {tool_name}: {arguments}
         args_str = json.dumps(arguments)
