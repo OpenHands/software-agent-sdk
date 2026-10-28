@@ -124,7 +124,6 @@ from litellm.utils import (
 from tenacity import retry_if_exception, retry_if_exception_type
 
 from openhands.sdk.llm.exceptions import (
-    LLMContextWindowExceedError,
     LLMContextWindowTooSmallError,
     LLMNoResponseError,
     is_prompt_cache_too_small,
@@ -446,27 +445,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="The maximum number of input tokens. "
         "Note that this is currently unused, and the value at runtime is actually"
         " the total tokens in OpenAI (e.g. 128,000 tokens for GPT-4).",
-        json_schema_extra=field_meta(),
-    )
-    max_context_tokens: int | None = Field(
-        default=None,
-        ge=1,
-        description=(
-            "Optional joint input/output context limit for Chat Completions. "
-            "Counts the finalized prompt including tool schemas and reserves the "
-            "requested maximum output tokens before sending. Over-budget requests "
-            "raise LLMContextWindowExceedError for conversation condensation. "
-            "Token counts are estimates unless a matching chat-template tokenizer "
-            "is configured. Does not apply to the Responses API."
-        ),
-        json_schema_extra=field_meta(),
-    )
-    context_token_safety_margin: int = Field(
-        default=0,
-        ge=0,
-        description=(
-            "Extra tokens reserved within max_context_tokens for estimation error."
-        ),
         json_schema_extra=field_meta(),
     )
     max_output_tokens: int | None = Field(
@@ -1509,10 +1487,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             [] if use_mock_tools else cc_tools,
         )
 
-        self._check_context_budget(
-            formatted_messages, call_kwargs.get("tools") or [], call_kwargs
-        )
-
         # 4) request context for telemetry (always include context_window for metrics)
         # Always pass context_window so metrics are tracked even when
         # logging is disabled.
@@ -1628,10 +1602,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Shared post-formatting steps for :meth:`_prepare_responses_params`
         and :meth:`_aprepare_responses_params`.
         """
-        if self.max_context_tokens is not None:
-            raise ValueError(
-                "max_context_tokens is only supported for Chat Completions"
-            )
         # Defensive copy — select_responses_options may mutate kwargs.
         kwargs = dict(kwargs)
 
@@ -3253,42 +3223,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
             cc_tools = []
 
-        return self._count_formatted_tokens(formatted_messages, cc_tools)
-
-    def _check_context_budget(
-        self,
-        formatted_messages: list[dict[str, Any]],
-        tools: list[ChatCompletionToolParam],
-        call_kwargs: dict[str, Any],
-    ) -> None:
-        if self.max_context_tokens is None:
-            return
-        output_tokens = call_kwargs.get(
-            "max_tokens", call_kwargs.get("max_completion_tokens")
-        )
-        if not isinstance(output_tokens, int) or output_tokens <= 0:
-            raise ValueError(
-                "max_context_tokens requires a positive output token limit"
-            )
-        input_tokens = self._count_formatted_tokens(formatted_messages, tools)
-        if input_tokens <= 0:
-            raise ValueError("Cannot measure prompt for max_context_tokens")
-        if (
-            input_tokens + output_tokens + self.context_token_safety_margin
-            > self.max_context_tokens
-        ):
-            raise LLMContextWindowExceedError(
-                f"Prompt ({input_tokens} tokens) plus requested output "
-                f"({output_tokens} tokens) plus safety margin "
-                f"({self.context_token_safety_margin} tokens) exceeds context limit "
-                f"({self.max_context_tokens} tokens)"
-            )
-
-    def _count_formatted_tokens(
-        self,
-        formatted_messages: list[dict[str, Any]],
-        cc_tools: list[ChatCompletionToolParam],
-    ) -> int:
         template_count = self._get_chat_template_token_count(
             formatted_messages, cc_tools
         )
