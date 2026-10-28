@@ -2436,15 +2436,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         api_key_value: str | None = None
         extra_headers: dict[str, str] = {}
         if self.is_subscription:
+            from openhands.sdk.llm.auth.credentials import (
+                SubscriptionBrokerCredentialStore,
+            )
             from openhands.sdk.llm.auth.openai import OpenAISubscriptionAuth
 
             auth = OpenAISubscriptionAuth(
                 credential_store=self._subscription_credential_store
             )
+            brokered = isinstance(
+                auth._credential_store, SubscriptionBrokerCredentialStore
+            )
             credentials = self._subscription_credentials
-            if credentials is None or credentials.is_expired():
+            if brokered or credentials is None or credentials.is_expired():
                 credentials = auth.refresh_if_needed_sync()
-            if credentials is None:
+            if credentials is None and not brokered:
                 credentials = self._subscription_credentials
             if credentials is None:
                 raise ValueError("OpenAI subscription login is required")
@@ -2465,13 +2471,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if not self.is_subscription:
             return self._get_litellm_auth_values()
 
+        from openhands.sdk.llm.auth.credentials import SubscriptionBrokerCredentialStore
         from openhands.sdk.llm.auth.openai import OpenAISubscriptionAuth
 
         auth = OpenAISubscriptionAuth(
             credential_store=self._subscription_credential_store
         )
         credentials = await auth.refresh_if_needed()
-        if credentials is None:
+        if credentials is None and not isinstance(
+            auth._credential_store, SubscriptionBrokerCredentialStore
+        ):
             credentials = self._subscription_credentials
         if credentials is None:
             raise ValueError("OpenAI subscription login is required")
