@@ -580,29 +580,26 @@ def _with_codex_base_url(
 # (codex-acp, claude-agent-acp 0.44+) rather than the UNSTABLE ``models``
 # capability + ``session/set_model`` (gemini-cli, older codex/claude).
 _MODEL_CONFIG_OPTION_ID = "model"
-_CODEX_REASONING_EFFORTS: Final[frozenset[str]] = frozenset(
-    {"low", "medium", "high", "xhigh"}
-)
-
-
-def _codex_model_config_options(model: str) -> tuple[tuple[str, str], ...]:
-    """Map combined Canvas Codex model IDs to codex-acp config options."""
-    base_model, sep, effort = model.rpartition("/")
-    if sep and base_model and effort in _CODEX_REASONING_EFFORTS:
-        return (
-            (_MODEL_CONFIG_OPTION_ID, base_model),
-            ("reasoning_effort", effort),
-        )
-    return ((_MODEL_CONFIG_OPTION_ID, model),)
 
 
 def _model_config_options(
     agent_name: str | None,
     model: str,
 ) -> tuple[tuple[str, str], ...]:
+    """Map a model id to ``set_config_option`` calls.
+
+    A combined ``<model>/<effort>`` id is split into the ``model`` selection
+    plus the provider's effort config option (see
+    :meth:`ACPProviderInfo.split_model_effort`).
+    """
     provider = detect_acp_provider_by_agent_name(agent_name or "")
-    if provider is not None and provider.key == "codex":
-        return _codex_model_config_options(model)
+    if provider is not None and provider.effort_config_id is not None:
+        base_model, effort = provider.split_model_effort(model)
+        if effort is not None:
+            return (
+                (_MODEL_CONFIG_OPTION_ID, base_model),
+                (provider.effort_config_id, effort),
+            )
     return ((_MODEL_CONFIG_OPTION_ID, model),)
 
 
@@ -618,20 +615,38 @@ async def _apply_acp_model(
     advertised: ``set_config_option(configId="model")`` for configOptions-based
     servers (codex-acp, claude-agent-acp 0.44+), else ``set_session_model``.
 
-    The model id is normally the bare preset id listed by the server. For
-    Codex, callers may still pass a combined Canvas id such as ``gpt-5.5/high``;
-    codex-acp exposes reasoning effort as a separate config option, so split it
-    only on the config-options mechanism.
+    The model id is normally the bare preset id listed by the server. Callers
+    may still pass a combined id such as ``gpt-5.5/high`` or ``opus[1m]/high``;
+    providers that declare an ``effort_config_id`` expose effort as a separate
+    config option, so split it only on the config-options mechanism. Effort is
+    applied after the model and best-effort: a server may reject it for a model
+    without effort support (claude-agent-acp drops the option for Haiku), and
+    that must not undo or misreport the model switch that already succeeded.
 
     agent-client-protocol 0.12.1 removed ``ClientSideConnection.set_session_model``;
     :class:`_ACPClientConnection` restores it, and a connection without it
     no-ops rather than raising ``AttributeError``.
     """
     if via_config_option:
-        for config_id, value in _model_config_options(agent_name, model):
-            await conn.set_config_option(
-                config_id=config_id, value=value, session_id=session_id
-            )
+        (model_option, *effort_options) = _model_config_options(agent_name, model)
+        await conn.set_config_option(
+            config_id=model_option[0], value=model_option[1], session_id=session_id
+        )
+        for config_id, value in effort_options:
+            try:
+                await conn.set_config_option(
+                    config_id=config_id, value=value, session_id=session_id
+                )
+            except ACPRequestError as e:
+                logger.warning(
+                    "ACP server %s rejected %s=%r for model %r (%s); "
+                    "keeping the model at the server's default effort",
+                    agent_name,
+                    config_id,
+                    value,
+                    model_option[1],
+                    e,
+                )
     elif supports_legacy_model_switch(conn):
         await conn.set_session_model(model_id=model, session_id=session_id)  # type: ignore[attr-defined]
 
@@ -1837,7 +1852,9 @@ class ACPAgent(AgentBase):
             "Model for the ACP server to use (e.g. 'sonnet' or 'gpt-5.5'). "
             "Applied via the protocol — set_config_option(model) for "
             "configOptions-based servers (codex, claude), else "
-            "set_session_model. If None, the server picks its default."
+            "set_session_model. Codex and Claude also accept "
+            "'<model>/<effort>' (e.g. 'gpt-5.5/high' or 'opus[1m]/high') "
+            "to set reasoning effort. If None, the server picks its default."
         ),
     )
     acp_resume_session_id: str | None = Field(

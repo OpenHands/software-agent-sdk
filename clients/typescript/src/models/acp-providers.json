@@ -38,6 +38,14 @@
     "default_model": "opus[1m]",
     "default_session_mode": "bypassPermissions",
     "display_name": "Claude Code",
+    "effort_config_id": "effort",
+    "effort_levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
     "env_conflicts": [
       {
         "dominant": "CLAUDE_CODE_OAUTH_TOKEN",
@@ -92,6 +100,13 @@
     "default_model": "gpt-5.5",
     "default_session_mode": "agent-full-access",
     "display_name": "Codex",
+    "effort_config_id": "reasoning_effort",
+    "effort_levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+    ],
     "env_conflicts": [],
     "file_secrets": [
       {
@@ -156,6 +171,8 @@
     "default_model": "auto",
     "default_session_mode": "default",
     "display_name": "Gemini CLI",
+    "effort_config_id": null,
+    "effort_levels": [],
     "env_conflicts": [],
     "file_secrets": [
       {
@@ -194,6 +211,8 @@
     "default_model": null,
     "default_session_mode": "yolo",
     "display_name": "Kimi Code",
+    "effort_config_id": null,
+    "effort_levels": [],
     "env_conflicts": [],
     "file_secrets": [
       {
@@ -258,6 +277,8 @@
     "default_model": "opencode/big-pickle",
     "default_session_mode": "build",
     "display_name": "OpenCode",
+    "effort_config_id": null,
+    "effort_levels": [],
     "env_conflicts": [],
     "file_secrets": [],
     "key": "opencode",
@@ -306,6 +327,8 @@
     "default_model": null,
     "default_session_mode": null,
     "display_name": "Pi",
+    "effort_config_id": null,
+    "effort_levels": [],
     "env_conflicts": [],
     "file_secrets": [
       {
