@@ -356,6 +356,14 @@ class ConversationConfig(BaseModel):
             "hooks."
         ),
     )
+    hook_project_dir: str | None = Field(
+        default=None,
+        description=(
+            "Directory command hooks run from and report as OPENHANDS_PROJECT_DIR. "
+            "Defaults to the workspace working directory; set it when the "
+            "workspace holds several repositories and the hooks belong to one."
+        ),
+    )
     tags: ConversationTags = Field(
         default_factory=dict,
         description=(

@@ -1863,3 +1863,35 @@ class TestAgentPluginsMCPExpansion:
         assert merged.args == literal_args
         assert mcp_tools_created[-1]["portable-server"].args == literal_args
         conversation.close()
+
+
+def test_hook_project_dir_reaches_the_hook_callback(tmp_path: Path, basic_agent):
+    """The hook project dir is handed to the hook callback; by default there is none."""
+    workspace = tmp_path / "workspace"
+    repo = workspace / "repo"
+    repo.mkdir(parents=True)
+    hook_config = HookConfig(
+        pre_tool_use=[
+            HookMatcher(matcher="*", hooks=[HookDefinition(command="echo test")])
+        ]
+    )
+    processor = MagicMock()
+
+    for hook_project_dir, expected in ((repo, str(repo)), (None, None)):
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            hook_config=hook_config,
+            hook_project_dir=hook_project_dir,
+            visualizer=None,
+        )
+        with patch(
+            "openhands.sdk.conversation.impl.local_conversation.create_hook_callback",
+            return_value=(processor, processor.on_event),
+        ) as mock_create_hook_callback:
+            conversation._ensure_plugins_loaded()
+
+        kwargs = mock_create_hook_callback.call_args.kwargs
+        assert kwargs["working_dir"] == str(workspace)
+        assert kwargs["project_dir"] == expected
+        conversation.close()

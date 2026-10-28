@@ -411,3 +411,22 @@ async def test_stream_progress_reaches_its_own_subscribers(event_service, tmp_pa
 
     assert progress.frames == [StreamStarted("item-1", 1, 3)]
     assert on_the_event_bus.events == []
+
+
+@pytest.mark.asyncio
+async def test_start_passes_hook_project_dir(event_service, tmp_path):
+    (tmp_path / "workspace").mkdir(exist_ok=True)
+    repo = str(tmp_path / "workspace" / "repo")
+    event_service.stored.hook_project_dir = repo
+
+    with _mock_local_conversation() as MockConv:
+        mock_conv = MagicMock()
+        mock_conv.state = MagicMock()
+        mock_conv.state.execution_status = "idle"
+        mock_conv._state = MagicMock()
+        mock_conv._on_event = MagicMock()
+        MockConv.return_value = mock_conv
+
+        await event_service.start()
+
+        assert MockConv.call_args.kwargs["hook_project_dir"] == repo

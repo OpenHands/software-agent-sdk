@@ -612,6 +612,29 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    def test_remote_conversation_sends_hook_project_dir(self, mock_ws_client):
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+        mock_ws_client.return_value = Mock()
+
+        RemoteConversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            hook_project_dir="/workspace/project/repo",
+        )
+
+        create_call = next(
+            call
+            for call in mock_client_instance.request.call_args_list
+            if call[0][0] == "POST" and call[0][1] == "/api/conversations"
+        )
+        assert create_call.kwargs["json"]["hook_project_dir"] == (
+            "/workspace/project/repo"
+        )
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_remote_conversation_plugin_source_redacted_placeholder_kept(
         self, mock_ws_client
     ):
