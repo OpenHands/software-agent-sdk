@@ -5,6 +5,7 @@ when tool_concurrency_limit > 1, including event ordering, state transitions,
 FinishTool truncation, and blocked action handling.
 """
 
+import asyncio
 import threading
 import time
 from collections.abc import Sequence
@@ -15,7 +16,10 @@ from pydantic import Field, ValidationError
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
-from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.testing import TestLLM
@@ -25,7 +29,6 @@ from openhands.sdk.tool.tool import DeclaredResources, ToolDefinition
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.base import BaseConversation
-    from openhands.sdk.conversation.state import ConversationState
 
 
 # --- Test tools ---
@@ -315,7 +318,8 @@ def test_finish_tool_truncates_subsequent_tools():
         )
 
 
-def test_tool_call_after_finish_never_runs_on_a_later_turn():
+@pytest.mark.parametrize("use_arun", [False, True], ids=["run", "arun"])
+def test_tool_call_after_finish_never_runs_on_a_later_turn(use_arun):
     """A call discarded after FinishTool gets a result and stays unexecuted."""
     llm = TestLLM.from_messages(
         [
@@ -336,13 +340,29 @@ def test_tool_call_after_finish_never_runs_on_a_later_turn():
 
     collected = []
     conversation = Conversation(agent=agent, callbacks=[lambda e: collected.append(e)])
+
+    def run() -> None:
+        if use_arun:
+            asyncio.run(conversation.arun())
+        else:
+            conversation.run()
+
     conversation.send_message(Message(role="user", content=[TextContent(text="Go")]))
-    conversation.run()
+    run()
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert ConversationState.get_unmatched_actions(conversation.state.events) == []
+
     conversation.send_message(
         Message(role="user", content=[TextContent(text="One more question")])
     )
-    conversation.run()
+    run()
 
+    assert not any(
+        isinstance(e, ObservationEvent)
+        and isinstance(e.observation, SlowObservation)
+        and e.observation.label == "after"
+        for e in collected
+    )
     results = [
         e
         for e in collected
