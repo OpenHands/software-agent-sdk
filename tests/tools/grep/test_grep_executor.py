@@ -13,9 +13,9 @@ from pathlib import Path
 import pytest
 
 import openhands.tools.grep.impl as grep_impl
-from openhands.tools.grep import GrepAction
+from openhands.tools.grep import GrepAction, GrepObservation
 from openhands.tools.grep.impl import GrepExecutor
-from openhands.tools.utils import _check_grep_available
+from openhands.tools.utils import _check_grep_available, _check_ripgrep_available
 
 
 def test_grep_executor_initialization():
@@ -183,6 +183,150 @@ def test_grep_executor_include_filter_still_skips_hidden_directories():
 
         assert observation.is_error is False
         assert observation.matches == [str(visible.resolve())]
+
+
+@pytest.fixture
+def include_tree(tmp_path: Path) -> Path:
+    """Create a directory tree for include-pattern tests."""
+    (tmp_path / "root.ts").write_text("needle")
+    (tmp_path / "other.tsx").write_text("needle")
+    (tmp_path / "notes.js").write_text("needle")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "direct.ts").write_text("needle")
+    (tmp_path / "sub" / "deep").mkdir()
+    (tmp_path / "sub" / "deep" / "nested.ts").write_text("needle")
+    (tmp_path / ".hidden").mkdir()
+    (tmp_path / ".hidden" / "secret.ts").write_text("needle")
+    return tmp_path
+
+
+def _matched_names(observation: GrepObservation, root: Path) -> list[str]:
+    paths = (Path(path).relative_to(root).as_posix() for path in observation.matches)
+    return sorted(paths)
+
+
+def test_grep_executor_include_glob_without_braces(include_tree, monkeypatch):
+    """Existing single-suffix include behavior is unchanged."""
+    monkeypatch.setattr(grep_impl, "_check_ripgrep_available", lambda: False)
+    monkeypatch.setattr(grep_impl, "_check_grep_available", lambda: False)
+    executor = GrepExecutor(working_dir=str(include_tree))
+
+    action = GrepAction(pattern="needle", include="*.ts")
+    observation = executor(action)
+
+    assert observation.is_error is False
+    assert _matched_names(observation, include_tree) == [
+        "root.ts",
+        "sub/deep/nested.ts",
+        "sub/direct.ts",
+    ]
+
+
+def test_grep_executor_python_include_brace_glob(include_tree):
+    """Test that `*.{ts,tsx}` include patterns work in the Python fallback."""
+    executor = GrepExecutor(working_dir=str(include_tree))
+    action = GrepAction(pattern="needle", include="*.{ts,tsx}")
+    observation = executor._execute_with_python_search(action, include_tree)
+
+    assert observation.is_error is False
+    assert _matched_names(observation, include_tree) == [
+        "other.tsx",
+        "root.ts",
+        "sub/deep/nested.ts",
+        "sub/direct.ts",
+    ]
+
+
+@pytest.mark.skipif(not _check_ripgrep_available(), reason="ripgrep not available")
+def test_grep_executor_ripgrep_include_brace_glob(include_tree):
+    """Test that `*.{ts,tsx}` include patterns work in the ripgrep backend."""
+    executor = GrepExecutor(working_dir=str(include_tree))
+    action = GrepAction(pattern="needle", include="*.{ts,tsx}")
+    observation = executor._execute_with_ripgrep(action, include_tree)
+
+    assert observation.is_error is False
+    assert _matched_names(observation, include_tree) == [
+        "other.tsx",
+        "root.ts",
+        "sub/deep/nested.ts",
+        "sub/direct.ts",
+    ]
+
+
+def test_grep_executor_python_include_path_patterns(include_tree):
+    """Test that includes with path separators match relative to the search root."""
+    executor = GrepExecutor(working_dir=str(include_tree))
+
+    direct = executor._execute_with_python_search(
+        GrepAction(pattern="needle", include="sub/*.ts"), include_tree
+    )
+    assert _matched_names(direct, include_tree) == ["sub/direct.ts"]
+
+    recursive = executor._execute_with_python_search(
+        GrepAction(pattern="needle", include="**/*.ts"), include_tree
+    )
+    assert _matched_names(recursive, include_tree) == [
+        "root.ts",
+        "sub/deep/nested.ts",
+        "sub/direct.ts",
+    ]
+
+
+@pytest.mark.skipif(not _check_grep_available(), reason="grep not available")
+def test_grep_executor_system_grep_include_brace_glob(include_tree):
+    """Test that brace and path includes work in the system grep backend."""
+    executor = GrepExecutor(working_dir=str(include_tree))
+
+    brace_action = GrepAction(pattern="needle", include="*.{ts,tsx}")
+    grep_observation = executor._execute_with_system_grep(brace_action, include_tree)
+    python_observation = executor._execute_with_python_search(
+        brace_action, include_tree
+    )
+    assert set(grep_observation.matches) == set(python_observation.matches)
+    assert _matched_names(grep_observation, include_tree) == [
+        "other.tsx",
+        "root.ts",
+        "sub/deep/nested.ts",
+        "sub/direct.ts",
+    ]
+
+    path_action = GrepAction(pattern="needle", include="sub/*.ts")
+    grep_observation = executor._execute_with_system_grep(path_action, include_tree)
+    assert _matched_names(grep_observation, include_tree) == ["sub/direct.ts"]
+
+
+@pytest.mark.skipif(not _check_ripgrep_available(), reason="ripgrep not available")
+def test_grep_executor_ripgrep_include_path_patterns(include_tree):
+    """Test that ripgrep applies path-bearing includes relative to the search root."""
+    executor = GrepExecutor(working_dir=str(include_tree))
+
+    direct = executor._execute_with_ripgrep(
+        GrepAction(pattern="needle", include="sub/*.ts"), include_tree
+    )
+    assert _matched_names(direct, include_tree) == ["sub/direct.ts"]
+
+    recursive = executor._execute_with_ripgrep(
+        GrepAction(pattern="needle", include="**/*.ts"), include_tree
+    )
+    assert _matched_names(recursive, include_tree) == [
+        "root.ts",
+        "sub/deep/nested.ts",
+        "sub/direct.ts",
+    ]
+
+
+def test_grep_executor_include_brace_glob_without_matches(include_tree, monkeypatch):
+    """A brace include that matches nothing still reports a filtered empty result."""
+    monkeypatch.setattr(grep_impl, "_check_ripgrep_available", lambda: False)
+    monkeypatch.setattr(grep_impl, "_check_grep_available", lambda: False)
+    executor = GrepExecutor(working_dir=str(include_tree))
+
+    observation = executor(GrepAction(pattern="needle", include="*.{md,mdx}"))
+
+    assert observation.is_error is False
+    assert observation.matches == []
+    assert "No files found" in observation.text
+    assert "(filtered by '*.{md,mdx}')" in observation.text
 
 
 @pytest.mark.skipif(not _check_grep_available(), reason="grep not available")

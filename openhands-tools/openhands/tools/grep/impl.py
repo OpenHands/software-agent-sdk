@@ -1,9 +1,9 @@
 """Grep tool executor implementation."""
 
-import fnmatch
 import os
 import re
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,6 +23,102 @@ from openhands.tools.utils import (
 
 
 logger = get_logger(__name__)
+
+_BRACE_GROUP = re.compile(r"\{([^{}]*)\}")
+
+
+def _expand_braces(pattern: str) -> list[str]:
+    """Expand `{a,b}` alternatives, including nested groups, into plain globs."""
+    match = _BRACE_GROUP.search(pattern)
+    if match is None:
+        return [pattern]
+    expanded: list[str] = []
+    for alternative in match.group(1).split(","):
+        expanded.extend(
+            _expand_braces(
+                pattern[: match.start()] + alternative + pattern[match.end() :]
+            )
+        )
+    return list(dict.fromkeys(expanded))
+
+
+def _character_class_end(pattern: str, start: int) -> int | None:
+    """Return the index of the `]` closing the class opened at `start`."""
+    i = start + 1
+    if i < len(pattern) and pattern[i] in "!^":
+        i += 1
+    if i < len(pattern) and pattern[i] == "]":
+        i += 1
+    while i < len(pattern) and pattern[i] != "]":
+        i += 1
+    return i if i < len(pattern) else None
+
+
+def _glob_to_regex(pattern: str) -> str:
+    """Translate a glob so `*` and `?` stay within one path segment.
+
+    A `**` covering a whole path segment matches zero or more segments, which
+    mirrors how both ripgrep and gitignore treat globstar patterns.
+    """
+    regex: list[str] = []
+    i = 0
+    while i < len(pattern):
+        char = pattern[i]
+        if char == "*":
+            star_start = i
+            while i < len(pattern) and pattern[i] == "*":
+                i += 1
+            whole_segment = star_start == 0 or pattern[star_start - 1] == "/"
+            if i - star_start >= 2 and whole_segment and i == len(pattern):
+                regex.append(".*")
+            elif i - star_start >= 2 and whole_segment and pattern[i] == "/":
+                regex.append("(?:[^/]*/)*")
+                i += 1
+            else:
+                regex.append("[^/]*")
+        elif char == "?":
+            regex.append("[^/]")
+            i += 1
+        elif char == "[":
+            end = _character_class_end(pattern, i)
+            if end is None:
+                regex.append(re.escape(char))
+                i += 1
+            else:
+                body = pattern[i + 1 : end]
+                if body.startswith("!"):
+                    body = "^" + body[1:]
+                body = body.replace("\\", "\\\\")
+                regex.append(f"[{body}]")
+                i = end + 1
+        else:
+            regex.append(re.escape(char))
+            i += 1
+    return "".join(regex)
+
+
+@lru_cache(maxsize=256)
+def _compile_include_patterns(
+    include_pattern: str,
+) -> tuple[tuple[re.Pattern[str], bool], ...]:
+    """Compile an include pattern into (regex, match-against-full-path) pairs.
+
+    Like ripgrep, globs containing a `/` are matched against the path relative
+    to the search root; globs without one are matched against the file name.
+    """
+    return tuple(
+        (re.compile(_glob_to_regex(glob)), "/" in glob)
+        for glob in _expand_braces(include_pattern)
+    )
+
+
+def _include_pattern_matches(relative_path: str, include_pattern: str) -> bool:
+    filename = relative_path.rpartition("/")[2]
+    for regex, match_relative_path in _compile_include_patterns(include_pattern):
+        candidate = relative_path if match_relative_path else filename
+        if regex.fullmatch(candidate):
+            return True
+    return False
 
 
 class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
@@ -161,7 +257,8 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
 
         filename = relative_parts[-1] if relative_parts else path.name
         if include_pattern:
-            return fnmatch.fnmatch(filename, include_pattern)
+            relative_path = "/".join(relative_parts) if relative_parts else path.name
+            return _include_pattern_matches(relative_path, include_pattern)
         return not filename.startswith(".")
 
     def _match_mtime(self, path: Path) -> float:
@@ -238,6 +335,8 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
         if action.include:
             cmd.extend(["-g", action.include])
 
+        # ripgrep resolves path-bearing globs against its working directory,
+        # so run it from the search root to keep include patterns relative to it.
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -245,6 +344,7 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             timeout=30,
             check=False,
             env=sanitized_env(),
+            cwd=search_path,
         )
 
         matches = []
