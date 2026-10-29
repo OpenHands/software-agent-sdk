@@ -33,6 +33,16 @@ from openhands.sdk.tool import Tool
 from openhands.tools.terminal import TerminalAction, TerminalTool
 
 
+def _reject_duplicate_guard_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Reject conflicting duplicate JSON members before authorizing a command."""
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate HOL Guard verdict key")
+        result[key] = value
+    return result
+
+
 class HolGuardSecurityAnalyzer(SecurityAnalyzerBase):
     """Classify OpenHands terminal actions with the local HOL Guard CLI."""
 
@@ -53,8 +63,9 @@ class HolGuardSecurityAnalyzer(SecurityAnalyzerBase):
                     self.guard_executable,
                     "command",
                     "test",
-                    terminal_action.command,
                     "--json",
+                    "--",
+                    terminal_action.command,
                 ],
                 cwd=self.workspace,
                 capture_output=True,
@@ -64,11 +75,34 @@ class HolGuardSecurityAnalyzer(SecurityAnalyzerBase):
             )
             if result.returncode != 0:
                 return SecurityRisk.HIGH
-            payload = json.loads(result.stdout)
-        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            payload = json.loads(
+                result.stdout, object_pairs_hook=_reject_duplicate_guard_keys
+            )
+        except (OSError, subprocess.SubprocessError, ValueError, RecursionError):
             return SecurityRisk.HIGH
 
         if not isinstance(payload, dict):
+            return SecurityRisk.HIGH
+
+        # Classification cannot override an explicit runtime stop.
+        decision = payload.get("decision")
+        if ("continue" in payload and payload["continue"] is not True) or (
+            "decision" in payload
+            and (not isinstance(decision, str) or decision.strip().lower() != "allow")
+        ):
+            return SecurityRisk.HIGH
+        policy_action = payload.get("policy_action")
+        if "policy_action" in payload and (
+            not isinstance(policy_action, str)
+            or policy_action.strip().lower() not in {"allow", "not_run"}
+        ):
+            return SecurityRisk.HIGH
+        hook_output = payload.get("hookSpecificOutput")
+        if "hookSpecificOutput" in payload and (
+            not isinstance(hook_output, dict)
+            or hook_output.get("hookEventName") != "PreToolUse"
+            or hook_output.get("permissionDecision") != "allow"
+        ):
             return SecurityRisk.HIGH
 
         minimum_action = str(payload.get("minimum_action") or "").lower()
