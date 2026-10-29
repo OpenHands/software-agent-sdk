@@ -325,7 +325,9 @@ gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
 
 <TESTING>
 - AFTER you edit ONE file, you should run pre-commit hook on that file via `uv run pre-commit run --files [filepath]` to make sure you didn't break it.
-- Don't write TOO MUCH test, you should write just enough to cover edge cases.
+- For each behavior you add or change, test at least one failure or edge input it must handle (invalid or missing input, legacy or persisted data, an error from a dependency, cancellation), not only the success path. Keep it focused: one test per case is enough.
+- Take expected values from the issue, the spec, or the documented contract, not from what the code returns today. A test whose expectation was copied from the implementation passes on the bug.
+- For a bug fix, the regression test must fail without the fix.
 - Check how we perform tests in .github/workflows/tests.yml
 - Put unit tests under the corresponding domain folder in `tests/` (e.g., `tests/sdk`, `tests/tools`, `tests/workspace`). For example, changes to `openhands-sdk/openhands/sdk/tool/tool.py` should be covered in `tests/sdk/tool/test_tool.py`.
 - DON'T write TEST CLASSES unless absolutely necessary!
