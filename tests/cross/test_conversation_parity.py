@@ -281,23 +281,33 @@ def _security_analyzer_before_run(conversation: BaseConversation) -> dict[str, A
     return {"hook_processor_is_none": conversation.hook_processor is None}
 
 
-def _condense_without_condenser(conversation: BaseConversation) -> dict[str, Any]:
-    conversation.send_message("Answer.")
-    conversation.run()
-    try:
-        conversation.condense()
-    except Exception as error:  # the outcome itself is what we compare
-        return {"condense": type(error).__name__}
-    return {"condense": None}
+@dataclass(frozen=True)
+class Raised:
+    """An exception a call raised, as the set of types a caller could catch."""
+
+    types: frozenset[str]
+
+    @classmethod
+    def of(cls, error: Exception) -> "Raised":
+        return cls(frozenset(c.__name__ for c in type(error).__mro__))
+
+    def caught_by_handlers_for(self, expected: "Raised") -> bool:
+        return expected.types <= self.types
 
 
-def _outcome(call: Callable[[], Any]) -> str:
-    """Name what a call did: "returned" or the exception type it raised."""
+def _outcome(call: Callable[[], Any]) -> "str | Raised":
+    """Return "returned", or the exception the call raised."""
     try:
         call()
     except Exception as error:  # the outcome itself is what we compare
-        return type(error).__name__
+        return Raised.of(error)
     return "returned"
+
+
+def _condense_without_condenser(conversation: BaseConversation) -> dict[str, Any]:
+    conversation.send_message("Answer.")
+    conversation.run()
+    return {"condense": _outcome(conversation.condense)}
 
 
 def _run_expecting_trouble(conversation: BaseConversation) -> dict[str, Any]:
@@ -514,13 +524,6 @@ KNOWN_DIVERGENCES: dict[str, str] = {
     "execute_tool_directly": (
         "RemoteConversation.execute_tool raises NotImplementedError by design."
     ),
-    "condense_without_condenser": (
-        "Local raises ValueError; remote raises httpx.HTTPStatusError (409)."
-    ),
-    "calls_in_the_wrong_state": (
-        "navigate_to an unknown event: local raises ValueError; remote raises "
-        "httpx.HTTPStatusError (404)."
-    ),
     "iteration_limit_reached": (
         "Both end in ERROR, but local run() returns while remote run() raises "
         "ConversationRunError."
@@ -660,6 +663,17 @@ def _agent() -> Agent:
     return Agent(llm=llm, tools=[Tool(name="ParityEchoTool")])
 
 
+def _same_for_callers(local: Any, remote: Any) -> bool:
+    """Equal, except that remote may raise a subclass of the local exception."""
+    if isinstance(local, Raised) and isinstance(remote, Raised):
+        return remote.caught_by_handlers_for(local)
+    if isinstance(local, dict) and isinstance(remote, dict):
+        return local.keys() == remote.keys() and all(
+            _same_for_callers(local[key], remote[key]) for key in local
+        )
+    return local == remote
+
+
 def _observe(
     conversation: BaseConversation,
     scenario: Scenario,
@@ -725,7 +739,9 @@ def test_local_and_remote_conversations_match(
 
     assert remote_events == local_events
     assert remote_status == local_status
-    assert remote_returned == local_returned
+    assert _same_for_callers(local_returned, remote_returned), (
+        f"local: {local_returned}\nremote: {remote_returned}"
+    )
 
 
 def test_every_public_conversation_member_is_covered() -> None:
