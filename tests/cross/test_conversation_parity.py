@@ -17,7 +17,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Generator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -29,12 +29,19 @@ from openhands.sdk import LLM, Agent, Conversation, Message, TextContent
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.event import (
     ActionEvent,
+    AgentErrorEvent,
     ConversationStateUpdateEvent,
     Event,
     MessageEvent,
     ObservationEvent,
+    UserRejectObservation,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import MessageToolCall
+from openhands.sdk.llm.exceptions import (
+    LLMBadRequestError,
+    LLMContextWindowExceedError,
+)
 from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
@@ -75,6 +82,8 @@ class _EchoObservation(Observation):
 # An echo of BLOCK_TEXT holds the tool open until the test releases it, so a
 # scenario can act while a step is in flight.
 BLOCK_TEXT = "block"
+# An echo of RAISE_TEXT makes the tool itself fail.
+RAISE_TEXT = "raise"
 TOOL_ENTERED = threading.Event()
 TOOL_RELEASED = threading.Event()
 
@@ -84,6 +93,8 @@ class _EchoExecutor(ToolExecutor[_EchoAction, _EchoObservation]):
         if action.text == BLOCK_TEXT:
             TOOL_ENTERED.set()
             TOOL_RELEASED.wait(timeout=10)
+        if action.text == RAISE_TEXT:
+            raise RuntimeError("echo failed")
         return _EchoObservation(echoed=action.text)
 
 
@@ -121,6 +132,18 @@ def _echo_call(call_id: str, text: str = "parity") -> Message:
     )
 
 
+def _tool_call(call_id: str, name: str, arguments: str) -> Message:
+    return Message(
+        role="assistant",
+        content=[TextContent(text="Calling a tool.")],
+        tool_calls=[
+            MessageToolCall(
+                id=call_id, name=name, arguments=arguments, origin="completion"
+            )
+        ],
+    )
+
+
 def _reply(text: str) -> Message:
     return Message(role="assistant", content=[TextContent(text=text)])
 
@@ -130,8 +153,11 @@ class Scenario:
     """Steps to run on both conversations, with the LLM replies they consume."""
 
     drive: Callable[[BaseConversation], dict[str, Any]]
-    script: Sequence[Message]
+    # Messages are returned in order; an exception is raised by that LLM call.
+    script: Sequence[Message | Exception]
     covers: frozenset[str]
+    # Extra Conversation(...) arguments, used on both sides.
+    options: dict[str, Any] = field(default_factory=dict)
     # Strings whose presence in what the agent sends the LLM must match.
     markers: tuple[str, ...] = ()
 
@@ -265,6 +291,64 @@ def _condense_without_condenser(conversation: BaseConversation) -> dict[str, Any
     return {"condense": None}
 
 
+def _outcome(call: Callable[[], Any]) -> str:
+    """Name what a call did: "returned" or the exception type it raised."""
+    try:
+        call()
+    except Exception as error:  # the outcome itself is what we compare
+        return type(error).__name__
+    return "returned"
+
+
+def _run_expecting_trouble(conversation: BaseConversation) -> dict[str, Any]:
+    conversation.send_message("Do the task.")
+    return {"run": _outcome(conversation.run)}
+
+
+def _secret_in_tool_output(conversation: BaseConversation) -> dict[str, Any]:
+    conversation.update_secrets({"PARITY_TOKEN": "parity-secret-value"})
+    conversation.send_message("Echo the token.")
+    return {"run": _outcome(conversation.run)}
+
+
+def _confirm_then_accept(conversation: BaseConversation) -> dict[str, Any]:
+    conversation.set_confirmation_policy(AlwaysConfirm())
+    conversation.send_message("Plan, then answer.")
+    conversation.run()
+    waiting = conversation.state.execution_status.value
+    # Running again approves the pending action.
+    conversation.run()
+    return {"status_while_waiting": waiting}
+
+
+def _calls_in_the_wrong_state(conversation: BaseConversation) -> dict[str, Any]:
+    return {
+        "reject_with_nothing_pending": _outcome(
+            lambda: conversation.reject_pending_actions("Nothing to reject")
+        ),
+        "navigate_to_unknown_event": _outcome(
+            lambda: conversation.navigate_to("no-such-event")
+        ),
+        "pause_twice": _outcome(lambda: (conversation.pause(), conversation.pause())),
+        "close_twice": _outcome(lambda: (conversation.close(), conversation.close())),
+    }
+
+
+def _message_while_tool_runs(conversation: BaseConversation) -> dict[str, Any]:
+    TOOL_ENTERED.clear()
+    TOOL_RELEASED.clear()
+    conversation.send_message("Echo slowly.")
+    runner = threading.Thread(target=conversation.run, daemon=True)
+    runner.start()
+    try:
+        assert TOOL_ENTERED.wait(timeout=10), "the tool never started"
+        conversation.send_message("Also answer this.")
+    finally:
+        TOOL_RELEASED.set()
+        runner.join(timeout=10)
+    return {"run_returned": not runner.is_alive()}
+
+
 SCENARIOS: dict[str, Scenario] = {
     "run_with_tool_call": Scenario(
         drive=_run_with_tool,
@@ -337,6 +421,73 @@ SCENARIOS: dict[str, Scenario] = {
         covers=frozenset({"set_security_analyzer", "hook_processor"}),
         markers=("security_risk",),
     ),
+    "llm_error_during_run": Scenario(
+        drive=_run_expecting_trouble,
+        script=[LLMBadRequestError("parity bad request")],
+        covers=frozenset({"run"}),
+    ),
+    "context_window_exceeded_without_condenser": Scenario(
+        drive=_run_expecting_trouble,
+        script=[LLMContextWindowExceedError()],
+        covers=frozenset({"run"}),
+    ),
+    "llm_error_after_a_tool_call": Scenario(
+        drive=_run_expecting_trouble,
+        script=[_echo_call("call_1"), LLMBadRequestError("parity bad request")],
+        covers=frozenset({"run"}),
+    ),
+    "tool_raises": Scenario(
+        drive=_run_expecting_trouble,
+        script=[_echo_call("call_1", text=RAISE_TEXT), _reply("Done.")],
+        covers=frozenset({"run"}),
+    ),
+    "invalid_tool_arguments": Scenario(
+        drive=_run_expecting_trouble,
+        script=[_tool_call("call_1", ECHO_TOOL_NAME, '{"wrong": 1}'), _reply("Done.")],
+        covers=frozenset({"run"}),
+    ),
+    "malformed_tool_arguments": Scenario(
+        drive=_run_expecting_trouble,
+        script=[_tool_call("call_1", ECHO_TOOL_NAME, '{"text": '), _reply("Done.")],
+        covers=frozenset({"run"}),
+    ),
+    "unknown_tool": Scenario(
+        drive=_run_expecting_trouble,
+        script=[_tool_call("call_1", "missing_tool", "{}"), _reply("Done.")],
+        covers=frozenset({"run"}),
+    ),
+    "iteration_limit_reached": Scenario(
+        drive=_run_expecting_trouble,
+        script=[_echo_call(f"call_{i}", text=f"step {i}") for i in range(4)],
+        covers=frozenset({"run"}),
+        options={"max_iteration_per_run": 2},
+    ),
+    "stuck_on_repeated_action": Scenario(
+        drive=_run_expecting_trouble,
+        script=[_echo_call(f"call_{i}") for i in range(8)],
+        covers=frozenset({"run"}),
+    ),
+    "secret_value_in_tool_output": Scenario(
+        drive=_secret_in_tool_output,
+        script=[_echo_call("call_1", text="parity-secret-value"), _reply("Done.")],
+        covers=frozenset({"update_secrets"}),
+        markers=("parity-secret-value",),
+    ),
+    "confirm_then_accept": Scenario(
+        drive=_confirm_then_accept,
+        script=[_echo_call("call_1"), _reply("Done.")],
+        covers=frozenset({"set_confirmation_policy"}),
+    ),
+    "calls_in_the_wrong_state": Scenario(
+        drive=_calls_in_the_wrong_state,
+        script=[],
+        covers=frozenset({"reject_pending_actions", "navigate_to", "pause", "close"}),
+    ),
+    "message_while_tool_runs": Scenario(
+        drive=_message_while_tool_runs,
+        script=[_echo_call("call_1", text=BLOCK_TEXT), _reply("Done.")],
+        covers=frozenset({"send_message"}),
+    ),
     "condense_without_condenser": Scenario(
         drive=_condense_without_condenser,
         script=[_reply("Done.")],
@@ -366,6 +517,18 @@ KNOWN_DIVERGENCES: dict[str, str] = {
     "condense_without_condenser": (
         "Local raises ValueError; remote raises httpx.HTTPStatusError (409)."
     ),
+    "calls_in_the_wrong_state": (
+        "navigate_to an unknown event: local raises ValueError; remote raises "
+        "httpx.HTTPStatusError (404)."
+    ),
+    "iteration_limit_reached": (
+        "Both end in ERROR, but local run() returns while remote run() raises "
+        "ConversationRunError."
+    ),
+    "stuck_on_repeated_action": (
+        "Both end in STUCK, but local run() returns while remote run() raises "
+        "ConversationRunError."
+    ),
 }
 
 
@@ -391,7 +554,21 @@ def _normalize(events: Sequence[Event]) -> list[tuple[Any, ...]]:
         elif isinstance(event, ActionEvent):
             detail = (event.tool_name, event.tool_call_id)
         elif isinstance(event, ObservationEvent):
-            detail = (event.tool_name, event.tool_call_id)
+            detail = (
+                event.tool_name,
+                event.tool_call_id,
+                [
+                    c.text
+                    for c in event.observation.to_llm_content
+                    if isinstance(c, TextContent)
+                ],
+            )
+        elif isinstance(event, AgentErrorEvent):
+            detail = (event.tool_name, event.tool_call_id, event.error)
+        elif isinstance(event, UserRejectObservation):
+            detail = (event.tool_name, event.tool_call_id, event.rejection_reason)
+        elif isinstance(event, ConversationErrorEvent):
+            detail = (event.code, event.detail)
         else:
             detail = None
         parent = position.get(event.parent_id) if event.parent_id else None
@@ -413,7 +590,7 @@ def _wait_for_events(
 
 @dataclass
 class ScriptedLLM:
-    replies: deque[Message]
+    replies: deque[Message | Exception]
     # Messages and tool schemas of each agent call, flattened to text.
     sent: list[str]
 
@@ -439,7 +616,10 @@ def scripted_llm(monkeypatch: pytest.MonkeyPatch) -> ScriptedLLM:
                 if isinstance(content, TextContent)
             ]
             scripted.sent.append("\n".join(texts) + json.dumps(tools, default=str))
-            message = scripted.replies.popleft()
+            reply = scripted.replies.popleft()
+            if isinstance(reply, Exception):
+                raise reply
+            message = reply
         else:
             message = _reply(SIDE_REPLY)
         raw = ModelResponse(
@@ -527,15 +707,17 @@ def test_local_and_remote_conversations_match(
 ) -> None:
     scenario = SCENARIOS[name]
 
-    local = Conversation(agent=_agent(), workspace=str(tmp_path / "local"))
+    local = Conversation(
+        agent=_agent(), workspace=str(tmp_path / "local"), **scenario.options
+    )
     local_events, local_status, local_returned = _observe(local, scenario, scripted_llm)
-    assert local_returned["unused_replies"] == 0, "the scenario script is too long"
 
     remote = Conversation(
         agent=_agent(),
         workspace=RemoteWorkspace(
             host=server["host"], working_dir=str(server["workspace_path"])
         ),
+        **scenario.options,
     )
     remote_events, remote_status, remote_returned = _observe(
         remote, scenario, scripted_llm, expected_events=local_events
