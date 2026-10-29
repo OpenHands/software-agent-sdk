@@ -203,7 +203,7 @@ class _SessionSubscriber(Subscriber[Event]):
         self.writer.send(frame)
 
     def _seq_of(self, event: Event) -> int | None:
-        """The event's index in the log, or None if it is not persisted.
+        """The event's seq (its on-disk index), or None if it is not persisted.
 
         By lookup, never by type: most ``ConversationStateUpdateEvent`` *are*
         appended, so treating the type as transient would strip their ``seq``
@@ -212,7 +212,7 @@ class _SessionSubscriber(Subscriber[Event]):
         so only anything *else* missing is worth warning about.
         """
         try:
-            return self.events.get_index(event.id)
+            idx = self.events.get_index(event.id)
         except KeyError:
             if not isinstance(event, ConversationStateUpdateEvent):
                 logger.warning(
@@ -221,6 +221,7 @@ class _SessionSubscriber(Subscriber[Event]):
                     event.id,
                 )
             return None
+        return self.events.get_seq(idx)
 
     def go_live(self, through_seq: int | None) -> None:
         """Flush the buffer, dropping anything already replayed from disk."""
@@ -275,7 +276,7 @@ class _ProgressSubscriber(Subscriber[StreamProgress]):
 
 
 def _read_page(events: EventLog, start: int, stop: int) -> list[tuple[int, Event]]:
-    """Read one page by index, skipping unreadable events.
+    """Read one page by index as ``(seq, event)``, skipping unreadable events.
 
     A corrupt or half-written file should cost one event, not the connection —
     same tolerance as ``EventService._get_searchable_event``.
@@ -283,7 +284,7 @@ def _read_page(events: EventLog, start: int, stop: int) -> list[tuple[int, Event
     page: list[tuple[int, Event]] = []
     for idx in range(start, stop):
         try:
-            page.append((idx, events[idx]))
+            page.append((events.get_seq(idx), events[idx]))
         except (OSError, UnicodeDecodeError, ValidationError, IndexError):
             # OSError also covers the transient read errors EventLog warns
             # about on networked filesystems.
@@ -397,15 +398,15 @@ async def session_socket(
             logger.warning("session_socket_progress_limit: %s", conversation_id)
 
         length = len(events)
-        through_seq = length - 1 if length else None
+        through_seq = events.get_seq(length - 1) if length else None
 
         if not writer.send(SyncFrame(from_seq=after_seq, through_seq=through_seq)):
             return
 
         replayed = False
         if after_seq is not None and through_seq is not None:
-            start = max(after_seq + 1, 0)
-            if not await _replay(events, start, through_seq + 1, writer):
+            start = events.index_after_seq(after_seq)
+            if not await _replay(events, start, length, writer):
                 return
             replayed = True
 

@@ -183,7 +183,7 @@ async def get_settings(request: Request) -> SettingsResponse:
 
 
 @settings_router.patch(SETTINGS_PATH, response_model=SettingsResponse)
-async def update_settings(
+def update_settings(
     request: Request, payload: SettingsUpdateRequest
 ) -> SettingsResponse:
     """Update settings with partial changes.
@@ -496,7 +496,7 @@ async def delete_mcp_server(request: Request, settings_key: str) -> SettingsResp
 
 
 @settings_router.get(SECRETS_PATH, response_model=SecretsListResponse)
-async def list_secrets(
+def list_secrets(
     request: Request, agent_profile_id: str | None = None
 ) -> SecretsListResponse:
     """List available secret names, optionally scoped by an agent profile."""
