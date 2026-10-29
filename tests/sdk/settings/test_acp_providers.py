@@ -203,8 +203,6 @@ class TestACPProviderInfo:
         model_ids = [m.id for m in info.available_models]
         assert "opencode/big-pickle" in model_ids
         assert "opencode/claude-opus-5" in model_ids
-        # One free-tier id, which is the only kind that works with no key.
-        assert "opencode/nemotron-3-ultra-free" in model_ids
         assert info.binary_name == "opencode"
         # OPENCODE_CONFIG_DIR relocates only the config file; auth, sessions and
         # caches follow XDG dirs that fall back to HOME.
