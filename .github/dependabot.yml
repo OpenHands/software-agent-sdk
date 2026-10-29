@@ -10,7 +10,7 @@ updates:
       directory: /
       schedule:
           interval: cron
-          cronjob: "0 * * * *"
+          cronjob: 0 * * * *
       commit-message:
           prefix: chore(deps)
 
@@ -20,7 +20,7 @@ updates:
       directory: /
       schedule:
           interval: cron
-          cronjob: "0 * * * *"
+          cronjob: 0 * * * *
       cooldown:
           default-days: 7
       commit-message:
@@ -32,6 +32,6 @@ updates:
           default-days: 7
       schedule:
           interval: cron
-          cronjob: "0 * * * *"
+          cronjob: 0 * * * *
       commit-message:
           prefix: chore(deps)
