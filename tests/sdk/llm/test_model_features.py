@@ -16,7 +16,9 @@ from litellm import get_supported_openai_params
 from litellm.utils import supports_vision
 
 from openhands.sdk.llm.utils.model_features import (
+    REASONING_EFFORT_MODEL_OVERRIDES,
     VISION_MODEL_OVERRIDES,
+    _normalized_supported_openai_params,
     get_features,
     model_matches,
 )
@@ -89,6 +91,18 @@ def test_model_matches(name, pattern, expected):
         ("litellm_proxy/staging/gpt-5", True),
         ("litellm_proxy/test/o1", True),
         ("unknown-model", False),
+        # LiteLLM >=1.105 says any model missing from its OpenAI catalog takes
+        # reasoning_effort; fine-tunes and custom servers mostly do not.
+        ("openai/gpt-4o", False),
+        ("ft:gpt-4o-2024-08-06", False),
+        ("openai/ft:gpt-4o-2024-08-06:acme::AbC123", False),
+        ("openai/ft:o4-mini-2025-04-16:acme::AbC123", True),
+        ("openai/Qwen/Qwen3-Coder-30B-A3B-Instruct", False),
+        ("openai/gpt-5-custom-deployment", True),
+        # The kimi-k3 override applies to every host, not only Moonshot.
+        ("deepinfra/moonshotai/Kimi-K3", True),
+        ("litellm_proxy/deepinfra/moonshotai/Kimi-K3", True),
+        ("perplexity/perplexity/kimi-k3", True),
     ],
 )
 def test_reasoning_effort_support(model, expected_reasoning):
@@ -440,6 +454,14 @@ def test_kimi_k3_supports_vision(model: str):
 )
 def test_litellm_vision_support_is_exposed_as_model_feature(model: str):
     assert get_features(model).supports_vision is True
+
+
+def test_reasoning_effort_overrides_are_not_redundant():
+    for pattern, litellm_model in REASONING_EFFORT_MODEL_OVERRIDES.items():
+        params = _normalized_supported_openai_params(litellm_model)
+        assert "reasoning_effort" not in params, (
+            f"Remove {pattern!r}: LiteLLM now supports {litellm_model!r}"
+        )
 
 
 def test_vision_overrides_are_not_redundant():
