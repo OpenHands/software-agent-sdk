@@ -14,15 +14,20 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import httpx
 import pytest
 import pytest_asyncio
+from fastapi import FastAPI
 from pydantic import SecretStr
 
 from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import (
     CondensationUnavailable,
+    ConversationBusyError,
+    DirectToolNotAllowedError,
     EventService,
+    InvalidToolActionError,
     RunSlot,
     _log_emit_failure,
 )
@@ -34,6 +39,7 @@ from openhands.agent_server.models import (
     StoredConversation,
 )
 from openhands.agent_server.pub_sub import Subscriber
+from openhands.agent_server.server_details_router import server_details_router
 from openhands.sdk import LLM, Agent, AgentBase, Conversation, Message
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.context.condenser import NoOpCondenser
@@ -65,6 +71,7 @@ from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.tool import Tool
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace import LocalWorkspace
@@ -3117,6 +3124,766 @@ class _SyncOnlyAgent(AgentBase):
 
     def step(self, conversation, on_event, on_token=None):
         pass
+
+
+class TestEventServiceDirectToolExecution:
+    """Lifecycle and validation boundaries of EventService.execute_tool.
+
+    The route tests cover the HTTP mapping with a mocked service; these cover
+    the service's own admission and validation, which is where the reviewer's
+    four findings live.
+    """
+
+    @staticmethod
+    def _service_with_terminal_conversation(event_service, tmp_path):
+        """Attach a real conversation whose only tool is the terminal."""
+        conversation = LocalConversation(
+            agent=Agent(
+                llm=LLM(model="gpt-4o", api_key=SecretStr("test"), usage_id="t"),
+                tools=[Tool(name="terminal")],
+            ),
+            workspace=str(tmp_path),
+            stuck_detection=False,
+        )
+        event_service._conversation = conversation
+        return conversation
+
+    @pytest.mark.asyncio
+    async def test_execute_tool_validates_action_against_named_tool(
+        self, event_service, tmp_path
+    ):
+        """An action for another tool is rejected, not handed to the executor.
+
+        This is the reviewer's repro: a ``GrepAction`` payload with
+        ``tool_name="terminal"`` used to reach ``TerminalExecutor`` and 500.
+        """
+        self._service_with_terminal_conversation(event_service, tmp_path)
+        try:
+            with pytest.raises(InvalidToolActionError):
+                await event_service.execute_tool(
+                    "terminal", {"kind": "GrepAction", "pattern": "x"}
+                )
+        finally:
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_execute_tool_rejects_tools_outside_the_allowlist(
+        self, event_service, tmp_path
+    ):
+        """A tool that cannot run directly is refused before the executor."""
+        self._service_with_terminal_conversation(event_service, tmp_path)
+        try:
+            with pytest.raises(DirectToolNotAllowedError):
+                await event_service.execute_tool(
+                    "not_directly_executable", {"kind": "TerminalAction"}
+                )
+        finally:
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_execute_tool_rejects_a_foreign_kind_before_the_executor(
+        self, event_service, tmp_path
+    ):
+        """A payload whose declared ``kind`` is another tool is rejected.
+
+        ``TerminalAction`` is built on ``Action``, so a payload for a different
+        tool can carry fields that happen to validate (a stray ``command``).
+        The explicit ``kind`` check is what stops it reaching the executor.
+        """
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        ran: list[str] = []
+
+        def record(tool_name, action):
+            ran.append(tool_name)
+            return TerminalObservation.from_text("done", command="x")
+
+        conversation.execute_tool = record  # type: ignore[method-assign]
+        try:
+            with pytest.raises(InvalidToolActionError, match="GrepAction"):
+                await event_service.execute_tool(
+                    "terminal", {"kind": "GrepAction", "command": "echo hi"}
+                )
+            assert ran == []
+            assert event_service._direct_tool_in_flight is False
+        finally:
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_action_without_a_kind_is_rejected(self, event_service, tmp_path):
+        """A payload must declare its ``kind``; a bare body is a 422, not a run.
+
+        The request model documents ``kind`` as the discriminator, and the map
+        states a bare ``{"command": ...}`` is 422. Validation must enforce that
+        rather than accepting any body that happens to validate as the named
+        tool's action type.
+        """
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        ran: list[str] = []
+
+        def record(tool_name, action):
+            ran.append(tool_name)
+            return TerminalObservation.from_text("done", command="x")
+
+        conversation.execute_tool = record  # type: ignore[method-assign]
+        try:
+            with pytest.raises(InvalidToolActionError, match="kind"):
+                await event_service.execute_tool("terminal", {"command": "echo hi"})
+            assert ran == []
+            assert event_service._direct_tool_in_flight is False
+        finally:
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_admission_is_serialized_with_run_under_the_run_lock(
+        self, event_service, tmp_path
+    ):
+        """A run admitted while the direct status read is pending must win.
+
+        The status read awaits a worker thread and releases the event loop. If
+        admission did not share ``_run_lock`` with run(), a run could start
+        during that window and both would then use the executor at once. Here
+        the run is admitted while the direct call is still deciding, so the
+        direct call must lose and refuse.
+        """
+        self._service_with_terminal_conversation(event_service, tmp_path)
+        status_read = threading.Event()
+        release_status = threading.Event()
+
+        def slow_status():
+            status_read.set()
+            release_status.wait(timeout=30)
+            return ConversationExecutionStatus.IDLE
+
+        with patch.object(
+            type(event_service),
+            "_get_execution_status",
+            new_callable=AsyncMock,
+            side_effect=slow_status,
+        ):
+            try:
+                direct = asyncio.create_task(
+                    event_service.execute_tool(
+                        "terminal", {"kind": "TerminalAction", "command": "echo a"}
+                    )
+                )
+                # Wait until the direct call is inside the status read (holding
+                # _run_lock), then let the run be admitted once it proceeds.
+                await asyncio.to_thread(status_read.wait, 10)
+                run = asyncio.create_task(event_service.run())
+                release_status.set()
+                results = await asyncio.gather(direct, run, return_exceptions=True)
+                # The direct call either loses to the run (busy) or the run
+                # loses to it (busy); they must never both be admitted.
+                busy = [
+                    r
+                    for r in results
+                    if isinstance(r, (ConversationBusyError, ValueError))
+                ]
+                assert busy, results
+            finally:
+                release_status.set()
+                await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_cancel_returns_without_waiting_and_close_drains_the_worker(
+        self, event_service, tmp_path
+    ):
+        """Cancelling is prompt; teardown joins the sync worker.
+
+        Cancelling the awaiting request cannot stop the worker thread, and
+        blocking the cancel on it would hold the request open. Instead the
+        cancel returns at once, the service keeps ownership of the worker, and
+        close() interrupts and awaits it so the executor is not torn down
+        underneath a still-running command.
+        """
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+
+        def slow_execute_tool(tool_name, action):
+            started.set()
+            release.wait(timeout=30)
+            finished.set()
+            return TerminalObservation.from_text("done", command="x")
+
+        conversation.execute_tool = slow_execute_tool  # type: ignore[method-assign]
+        task = asyncio.create_task(
+            event_service.execute_tool(
+                "terminal", {"kind": "TerminalAction", "command": "echo a"}
+            )
+        )
+        await asyncio.to_thread(started.wait, 10)
+        task.cancel()
+        # The cancel path returns promptly even though the worker is blocked.
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert finished.is_set() is False
+        assert event_service._direct_tool_in_flight is True
+
+        # close() joins the worker: it must not return while the worker runs.
+        close_task = asyncio.create_task(event_service.close())
+        await asyncio.sleep(0.2)
+        assert close_task.done() is False
+        release.set()
+        await asyncio.wait_for(close_task, timeout=10)
+        assert finished.is_set()
+        assert event_service._direct_tool_in_flight is False
+
+    @pytest.mark.asyncio
+    async def test_execute_tool_rejects_concurrent_direct_call(
+        self, event_service, tmp_path
+    ):
+        """A second direct call is refused while one is in flight."""
+        self._service_with_terminal_conversation(event_service, tmp_path)
+        started = threading.Event()
+        release = threading.Event()
+        calls: list[tuple[str, object]] = []
+
+        def slow_execute_tool(tool_name, action):
+            calls.append((tool_name, action))
+            started.set()
+            release.wait(timeout=30)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        event_service._conversation.execute_tool = slow_execute_tool  # type: ignore[method-assign]
+        try:
+            first = asyncio.create_task(
+                event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo a"}
+                )
+            )
+            await asyncio.to_thread(started.wait, 10)
+            with pytest.raises(ConversationBusyError):
+                await event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo b"}
+                )
+            release.set()
+            await first
+            assert [c[0] for c in calls] == ["terminal"]
+        finally:
+            release.set()
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_run_refused_while_direct_call_in_flight(
+        self, event_service, tmp_path
+    ):
+        """A run cannot start underneath a direct call (the reverse overlap)."""
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_execute_tool(tool_name, action):
+            started.set()
+            release.wait(timeout=30)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        conversation.execute_tool = slow_execute_tool  # type: ignore[method-assign]
+        with patch.object(
+            type(event_service),
+            "_get_execution_status",
+            new_callable=AsyncMock,
+            return_value=ConversationExecutionStatus.IDLE,
+        ):
+            try:
+                first = asyncio.create_task(
+                    event_service.execute_tool(
+                        "terminal", {"kind": "TerminalAction", "command": "echo a"}
+                    )
+                )
+                await asyncio.to_thread(started.wait, 10)
+                with pytest.raises(ConversationBusyError):
+                    await event_service.run()
+                release.set()
+                await first
+            finally:
+                release.set()
+                await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_direct_call_does_not_run_the_tool(
+        self, event_service, tmp_path
+    ):
+        """A worker whose request was cancelled exits without running the tool.
+
+        The worker is held before it reads the generation, so the abandon bump
+        lands first and the released worker must find its generation stale.
+        """
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        ran: list[str] = []
+        blocked = threading.Event()
+        release = threading.Event()
+        original_run = event_service._run_direct_tool_sync
+
+        def blocked_run(*args, **kwargs):
+            blocked.set()
+            release.wait(timeout=30)
+            return original_run(*args, **kwargs)
+
+        event_service._run_direct_tool_sync = blocked_run  # type: ignore[method-assign]
+
+        def record(tool_name, action):
+            ran.append(tool_name)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        conversation.execute_tool = record  # type: ignore[method-assign]
+        try:
+            task = asyncio.create_task(
+                event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo a"}
+                )
+            )
+            await asyncio.to_thread(blocked.wait, 10)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # The worker is released after the cancellation; even so, it must
+            # not run the tool because its generation is stale.
+            release.set()
+            for _ in range(100):
+                if event_service._direct_tool_in_flight is False:
+                    break
+                await asyncio.sleep(0.05)
+            assert ran == []
+            assert event_service._direct_tool_in_flight is False
+        finally:
+            release.set()
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_cancel_after_worker_started_keeps_conversation_busy_until_done(
+        self, event_service, tmp_path
+    ):
+        """A cancelled call whose worker already started stays busy until it exits.
+
+        Cancelling the request cannot stop the synchronous worker, so the
+        conversation must not be handed to a later direct call while that worker
+        still holds the executor.
+        """
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_execute_tool(tool_name, action):
+            started.set()
+            release.wait(timeout=30)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        conversation.execute_tool = slow_execute_tool  # type: ignore[method-assign]
+        try:
+            task = asyncio.create_task(
+                event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo a"}
+                )
+            )
+            await asyncio.to_thread(started.wait, 10)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # The worker is still blocked in the executor: a new direct call must
+            # not be admitted alongside it.
+            assert event_service._direct_tool_in_flight is True
+            with pytest.raises(ConversationBusyError):
+                await event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo b"}
+                )
+            release.set()
+            # Once the worker returns, the conversation is free again.
+            for _ in range(100):
+                if event_service._direct_tool_in_flight is False:
+                    break
+                await asyncio.sleep(0.05)
+            assert event_service._direct_tool_in_flight is False
+        finally:
+            release.set()
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_close_interrupts_and_drains_a_running_direct_call(
+        self, event_service, tmp_path
+    ):
+        """close() interrupts the command and waits before closing its executor.
+
+        Regression: the generation bump only stops a worker that has not
+        reached the executor yet. A worker already inside ``execute_tool`` kept
+        running while close() closed the terminal under it, so a setup command
+        lost its terminal or kept writing after the conversation was deleted.
+        """
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        conversation._ensure_agent_ready()
+        executor = conversation.agent.tools_map["terminal"].as_executable().executor
+        interrupts: list[str] = []
+        executor.interrupt = lambda: interrupts.append("interrupt")  # type: ignore[method-assign]
+
+        started = threading.Event()
+        finished = threading.Event()
+
+        def slow_execute_tool(tool_name, action):
+            started.set()
+            for _ in range(600):
+                if interrupts:
+                    break
+                time.sleep(0.05)
+            finished.set()
+            return TerminalObservation.from_text("done", command=action.command)
+
+        conversation.execute_tool = slow_execute_tool  # type: ignore[method-assign]
+        task = asyncio.create_task(
+            event_service.execute_tool(
+                "terminal", {"kind": "TerminalAction", "command": "echo a"}
+            )
+        )
+        await asyncio.to_thread(started.wait, 10)
+        await event_service.close()
+        # close() must not return until the worker has really exited, or the
+        # teardown would close the executor mid-command.
+        assert interrupts == ["interrupt"]
+        assert finished.is_set()
+        result = await task
+        assert result.command == "echo a"
+
+    @pytest.mark.asyncio
+    async def test_close_abandons_in_flight_direct_call(self, event_service, tmp_path):
+        """close() releases the conversation without letting the tool run.
+
+        A worker still queued when close() begins must not reach the executor
+        once released, and must not leave the conversation busy.
+        """
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        ran: list[str] = []
+        started = threading.Event()
+        release = threading.Event()
+        original_run = event_service._run_direct_tool_sync
+
+        def blocked_run(*args, **kwargs):
+            started.set()
+            release.wait(timeout=30)
+            return original_run(*args, **kwargs)
+
+        event_service._run_direct_tool_sync = blocked_run  # type: ignore[method-assign]
+
+        def record(tool_name, action):
+            ran.append(tool_name)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        conversation.execute_tool = record  # type: ignore[method-assign]
+        task = asyncio.create_task(
+            event_service.execute_tool(
+                "terminal", {"kind": "TerminalAction", "command": "echo a"}
+            )
+        )
+        await asyncio.to_thread(started.wait, 10)
+        # close() abandons the queued worker, then releases it by waiting for
+        # it to exit.
+        close_task = asyncio.create_task(event_service.close())
+        await asyncio.sleep(0.2)
+        release.set()
+        await asyncio.gather(task, close_task, return_exceptions=True)
+        assert ran == []
+        assert event_service._direct_tool_in_flight is False
+
+    @pytest.mark.asyncio
+    async def test_successful_direct_call_releases_the_conversation(
+        self, event_service, tmp_path
+    ):
+        """A completed direct call does not leave the conversation busy.
+
+        Regression: the in-flight flag was only cleared on the error paths, so
+        the first successful call locked out every later call with 409 and kept
+        ``is_idle_evictable()`` false for the life of the conversation.
+        """
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        calls: list[str] = []
+
+        def record(tool_name, action):
+            calls.append(action.command)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        conversation.execute_tool = record  # type: ignore[method-assign]
+        try:
+            first = await event_service.execute_tool(
+                "terminal", {"kind": "TerminalAction", "command": "echo a"}
+            )
+            assert first.command == "echo a"
+            assert event_service._direct_tool_in_flight is False
+            assert event_service.is_idle_evictable() is True
+
+            # A second call must be admitted, not refused as busy.
+            second = await event_service.execute_tool(
+                "terminal", {"kind": "TerminalAction", "command": "echo b"}
+            )
+            assert second.command == "echo b"
+            assert calls == ["echo a", "echo b"]
+        finally:
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_invalid_action_releases_the_conversation(
+        self, event_service, tmp_path
+    ):
+        """A rejected action must not leave the conversation stuck busy."""
+        self._service_with_terminal_conversation(event_service, tmp_path)
+        try:
+            with pytest.raises(InvalidToolActionError):
+                await event_service.execute_tool(
+                    "terminal", {"kind": "GrepAction", "pattern": "x"}
+                )
+            assert event_service._direct_tool_in_flight is False
+            assert event_service.is_idle_evictable() is True
+        finally:
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_in_flight_direct_call_is_not_idle_evictable(
+        self, event_service, tmp_path
+    ):
+        """Idle eviction must not tear down a conversation mid-direct-call."""
+        self._service_with_terminal_conversation(event_service, tmp_path)
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_execute_tool(tool_name, action):
+            started.set()
+            release.wait(timeout=30)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        event_service._conversation.execute_tool = slow_execute_tool  # type: ignore[method-assign]
+        try:
+            assert event_service.is_idle_evictable() is True
+            task = asyncio.create_task(
+                event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo a"}
+                )
+            )
+            await asyncio.to_thread(started.wait, 10)
+            assert event_service.is_idle_evictable() is False
+            release.set()
+            await task
+        finally:
+            release.set()
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_cancel_offloads_interrupt_off_the_event_loop(
+        self, event_service, tmp_path
+    ):
+        """A cancelled direct call must not run the executor interrupt inline.
+
+        The PowerShell backend's interrupt performs blocking child-process
+        scans (up to 5s each). Running it on the event loop stalls every request
+        on that loop -- ``/alive`` included -- so the cancel path offloads it and
+        an unrelated coroutine must keep running while the interrupt blocks.
+        """
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        conversation._ensure_agent_ready()
+        executor = conversation.agent.tools_map["terminal"].as_executable().executor
+
+        loop_thread_id = threading.get_ident()
+        interrupt_thread_ids: list[int] = []
+        interrupt_entered = threading.Event()
+        interrupt_release = threading.Event()
+
+        def blocking_interrupt():
+            interrupt_thread_ids.append(threading.get_ident())
+            interrupt_entered.set()
+            interrupt_release.wait(timeout=30)
+
+        executor.interrupt = blocking_interrupt  # type: ignore[method-assign]
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_execute_tool(tool_name, action):
+            started.set()
+            release.wait(timeout=30)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        conversation.execute_tool = slow_execute_tool  # type: ignore[method-assign]
+        try:
+            task = asyncio.create_task(
+                event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo a"}
+                )
+            )
+            await asyncio.to_thread(started.wait, 10)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # The cancel returned while the interrupt is still blocked: it did
+            # not wait for the scans. Prove the interrupt really is in flight.
+            await asyncio.to_thread(interrupt_entered.wait, 10)
+            assert interrupt_release.is_set() is False
+
+            # The event loop is not stalled: a real /alive probe on this loop
+            # still answers promptly while the interrupt blocks.
+            alive_app = FastAPI()
+            alive_app.include_router(server_details_router)
+            transport = httpx.ASGITransport(app=alive_app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as http:
+                response = await asyncio.wait_for(http.get("/alive"), timeout=1)
+            assert response.status_code == 200
+            assert response.json() == {"status": "ok"}
+            # And the blocking work ran on a worker thread, not the loop.
+            assert interrupt_thread_ids
+            assert all(ident != loop_thread_id for ident in interrupt_thread_ids)
+        finally:
+            interrupt_release.set()
+            release.set()
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_close_drains_offloaded_interrupt_before_teardown(
+        self, event_service, tmp_path
+    ):
+        """close() must join an offloaded interrupt before tearing down.
+
+        A cancellation offloads the interrupt to a worker thread, so teardown
+        could otherwise close the conversation while that thread still uses the
+        executor. close() owns the drain: it must not finish until the interrupt
+        returns.
+        """
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        conversation._ensure_agent_ready()
+        executor = conversation.agent.tools_map["terminal"].as_executable().executor
+
+        order: list[str] = []
+        interrupt_entered = threading.Event()
+        interrupt_release = threading.Event()
+
+        def blocking_interrupt():
+            interrupt_entered.set()
+            interrupt_release.wait(timeout=30)
+            order.append("interrupt")
+
+        executor.interrupt = blocking_interrupt  # type: ignore[method-assign]
+
+        original_conversation_close = conversation.close
+
+        def recording_conversation_close():
+            order.append("conversation.close")
+            original_conversation_close()
+
+        conversation.close = recording_conversation_close  # type: ignore[method-assign]
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_execute_tool(tool_name, action):
+            started.set()
+            release.wait(timeout=30)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        conversation.execute_tool = slow_execute_tool  # type: ignore[method-assign]
+        try:
+            task = asyncio.create_task(
+                event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo a"}
+                )
+            )
+            await asyncio.to_thread(started.wait, 10)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await asyncio.to_thread(interrupt_entered.wait, 10)
+
+            close_task = asyncio.create_task(event_service.close())
+            await asyncio.sleep(0.2)
+            # The interrupt is still blocked, so close() must not have reached
+            # conversation teardown yet.
+            assert close_task.done() is False
+            assert order == []
+
+            interrupt_release.set()
+            release.set()
+            await asyncio.wait_for(close_task, timeout=10)
+            # The interrupt drained before teardown closed the conversation.
+            assert order.count("interrupt") >= 1
+            assert order[-1] == "conversation.close"
+            assert event_service._direct_tool_interrupt_tasks == []
+        finally:
+            interrupt_release.set()
+            release.set()
+            await event_service.close()
+
+    @pytest.mark.asyncio
+    async def test_delayed_interrupt_keeps_the_conversation_busy(
+        self, event_service, tmp_path
+    ):
+        """A lingering interrupt must block admission until it finishes.
+
+        Reviewer's repro: the synchronous worker returns first, then the
+        offloaded interrupt keeps scanning for the terminal process. If the
+        in-flight guard cleared at worker exit, a new direct call (or run) would
+        be admitted while the old scan can still signal and kill its process.
+        The guard must outlive the interrupt.
+        """
+        conversation = self._service_with_terminal_conversation(event_service, tmp_path)
+        conversation._ensure_agent_ready()
+        executor = conversation.agent.tools_map["terminal"].as_executable().executor
+
+        interrupt_entered = threading.Event()
+        interrupt_release = threading.Event()
+
+        def blocking_interrupt():
+            interrupt_entered.set()
+            interrupt_release.wait(timeout=30)
+
+        executor.interrupt = blocking_interrupt  # type: ignore[method-assign]
+
+        started = threading.Event()
+        worker_release = threading.Event()
+
+        def slow_execute_tool(tool_name, action):
+            started.set()
+            worker_release.wait(timeout=30)
+            return TerminalObservation.from_text("done", command=action.command)
+
+        conversation.execute_tool = slow_execute_tool  # type: ignore[method-assign]
+        try:
+            task = asyncio.create_task(
+                event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo a"}
+                )
+            )
+            await asyncio.to_thread(started.wait, 10)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await asyncio.to_thread(interrupt_entered.wait, 10)
+
+            # Now let the synchronous worker exit *while* the interrupt is still
+            # blocked: this is the reviewer's ordering.
+            worker_release.set()
+            for _ in range(100):
+                if event_service._direct_tool_worker is None:
+                    break
+                await asyncio.sleep(0.05)
+            assert event_service._direct_tool_worker is None
+
+            # The worker has exited, but its interrupt still runs: the
+            # conversation must stay busy so the next command is not admitted
+            # under the lingering scan.
+            assert event_service._direct_tool_in_flight is True
+            assert event_service.is_idle_evictable() is False
+            with pytest.raises(ConversationBusyError):
+                await event_service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "echo b"}
+                )
+
+            # Once the interrupt finishes, the conversation is free again.
+            interrupt_release.set()
+            for _ in range(100):
+                if event_service._direct_tool_in_flight is False:
+                    break
+                await asyncio.sleep(0.05)
+            assert event_service._direct_tool_in_flight is False
+        finally:
+            worker_release.set()
+            interrupt_release.set()
+            await event_service.close()
 
 
 class TestEventServiceClose:

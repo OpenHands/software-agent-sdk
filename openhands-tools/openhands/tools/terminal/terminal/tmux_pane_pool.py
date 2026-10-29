@@ -109,6 +109,15 @@ class TmuxPanePool:
     )
     _semaphore: threading.Semaphore = field(init=False, repr=False)
 
+    # Identity ids of panes currently checked out, so a pinned pane can be
+    # waited for without racing a semaphore shared with the other panes.
+    _in_use: set[int] = field(default_factory=set, init=False, repr=False)
+    # Set once the pool is restricted to a single pane (see ``pin``).
+    _pinned: PooledTmuxTerminal | None = field(default=None, init=False, repr=False)
+    # Signals a pinned checkin. Built on _lock so a waiter can re-test
+    # _in_use atomically.
+    _availability: threading.Condition = field(init=False, repr=False)
+
     _initialized: bool = field(default=False, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
     _initial_window: libtmux.Window | None = field(default=None, init=False, repr=False)
@@ -118,6 +127,7 @@ class TmuxPanePool:
             raise ValueError(f"max_panes must be >= 1, but got {self.max_panes}.")
         self.env = normalize_terminal_env(self.env)
         self._semaphore = threading.Semaphore(self.max_panes)
+        self._availability = threading.Condition(self._lock)
 
     def initialize(self) -> None:
         """Create the tmux session (panes are lazily added on checkout)."""
@@ -157,11 +167,14 @@ class TmuxPanePool:
             return
         self._closed = True
 
-        with self._lock:
+        with self._availability:
             for terminal in self._all_panes:
                 terminal._closed = True
             self._all_panes.clear()
             self._available.clear()
+            self._in_use.clear()
+            self._pinned = None
+            self._availability.notify_all()
 
         # Kill the entire tmux session (destroys all windows/panes at once).
         # We deliberately skip per-terminal close() because that also calls
@@ -219,8 +232,32 @@ class TmuxPanePool:
         logger.debug(f"Created pooled pane #{len(self._all_panes)}: {active_pane}")
         return terminal
 
+    def _acquire_pinned(self, timeout: float | None) -> PooledTmuxTerminal:
+        """Wait until the pinned pane is free, then mark it in use."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._availability:
+            while True:
+                if self._closed or self._pinned is None:
+                    raise RuntimeError(
+                        "TmuxPanePool is not initialized or already closed"
+                    )
+                terminal = self._pinned
+                if id(terminal) not in self._in_use:
+                    self._in_use.add(id(terminal))
+                    return terminal
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    raise TimeoutError(
+                        f"No pane available within {timeout}s "
+                        "(pool pinned to a single pane)"
+                    )
+                self._availability.wait(timeout=remaining)
+
     def checkout(self, timeout: float | None = None) -> PooledTmuxTerminal:
         """Check out a pane from the pool, blocking if all are busy.
+
+        Once the pool is pinned (see :meth:`pin`), every checkout returns that
+        one pane and blocks until it is free.
 
         Args:
             timeout: Max seconds to wait. None means wait forever.
@@ -235,6 +272,9 @@ class TmuxPanePool:
         if not self._initialized or self._closed:
             raise RuntimeError("TmuxPanePool is not initialized or already closed")
 
+        if self._pinned is not None:
+            return self._acquire_pinned(timeout)
+
         if timeout is None:
             self._semaphore.acquire()
         elif not self._semaphore.acquire(timeout=timeout):
@@ -245,26 +285,68 @@ class TmuxPanePool:
         with self._lock:
             if self._available:
                 terminal = self._available.popleft()
+                self._in_use.add(id(terminal))
                 logger.debug(f"Checked out existing pane: {terminal.pane}")
                 return terminal
 
             # Create a new pane (still under max_panes thanks to semaphore)
             terminal = self._create_pane()
             self._all_panes.append(terminal)
+            self._in_use.add(id(terminal))
             logger.debug(f"Checked out new pane: {terminal.pane}")
             return terminal
 
     def checkin(self, terminal: PooledTmuxTerminal) -> None:
         """Return a pane to the pool."""
-        with self._lock:
+        if terminal is self._pinned:
+            # The pinned pane is admitted by the availability condition, not by
+            # the semaphore, so returning it must not release a semaphore token.
+            with self._availability:
+                self._in_use.discard(id(terminal))
+                self._availability.notify_all()
+            logger.debug(f"Checked in pinned pane: {terminal.pane}")
+            return
+
+        with self._availability:
             if terminal not in self._all_panes:
                 logger.warning("Attempted to checkin a pane not from this pool")
                 return
+            self._in_use.discard(id(terminal))
             if not self._closed:
                 self._available.append(terminal)
+            self._availability.notify_all()
 
         self._semaphore.release()
         logger.debug(f"Checked in pane: {terminal.pane}")
+
+    def pin(self, terminal: PooledTmuxTerminal) -> None:
+        """Restrict this pool to *terminal* for the rest of its life.
+
+        A workspace bootstrap script mutates shell state (exports, functions,
+        aliases, the working directory) that is local to the pane it ran on.
+        Pinning the pool to that pane keeps the state visible to every later
+        command, instead of stranding it behind a fresh pane created for a
+        parallel call. Concurrency drops to one pane as a result, which is the
+        trade for not silently losing setup state.
+
+        Non-blocking: a checkout that arrives while the pinned pane is busy
+        waits for it (see :meth:`checkout`).
+
+        Args:
+            terminal: A pane created by this pool, typically the one that ran
+                the setup command.
+        """
+        with self._lock:
+            if self._closed or terminal not in self._all_panes:
+                logger.warning("Ignoring pin request for a foreign or closed pane")
+                return
+            self._pinned = terminal
+        logger.info(f"TmuxPanePool pinned to pane {terminal.pane}")
+
+    @property
+    def is_pinned(self) -> bool:
+        """Whether the pool has been restricted to a single pane."""
+        return self._pinned is not None
 
     def replace(self, old_terminal: PooledTmuxTerminal) -> PooledTmuxTerminal:
         """Replace a checked-out pane with a fresh one.
@@ -275,7 +357,7 @@ class TmuxPanePool:
         returned **in its place** — the semaphore count is unchanged
         because we swap 1-for-1.
         """
-        with self._lock:
+        with self._availability:
             # Create the replacement pane BEFORE killing the old window,
             # because tmux destroys the session when the last window dies.
             new_terminal = self._create_pane()
@@ -285,6 +367,13 @@ class TmuxPanePool:
                 self._all_panes.remove(old_terminal)
             if old_terminal in self._available:
                 self._available.remove(old_terminal)
+            if self._pinned is old_terminal:
+                # Keep the restriction: the replacement inherits the pin.
+                self._pinned = new_terminal
+            self._in_use.discard(id(old_terminal))
+            self._in_use.add(id(new_terminal))
+            # A pinned checkout may be waiting for the pane being replaced.
+            self._availability.notify_all()
 
         # Capture IDs before killing (repr would fail after kill).
         old_pane_id = old_terminal.pane.pane_id

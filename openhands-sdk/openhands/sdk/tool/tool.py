@@ -326,6 +326,21 @@ class ToolExecutor[ActionT, ObservationT](ABC):
         """
         pass
 
+    def on_direct_execution(self) -> None:
+        """Called after this tool ran outside the agent loop.
+
+        ``LocalConversation.execute_tool`` runs a tool directly instead of
+        through the agent loop. That path is used for pre-run setup, so a tool
+        may need to make the state the direct call established visible to the
+        agent's later calls. The terminal tool overrides this to keep a
+        bootstrap script's shell state reachable from every later command.
+
+        Called on the thread that ran the tool, after it returned.
+
+        The default is a no-op.
+        """
+        pass
+
 
 class ExecutableTool(Protocol):
     """Protocol for tools that are guaranteed to have a non-None executor.

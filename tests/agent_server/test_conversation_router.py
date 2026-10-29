@@ -9,12 +9,20 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from openhands.agent_server.api import _add_exception_handlers
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.event_service import CondensationUnavailable, EventService
+from openhands.agent_server.event_service import (
+    CondensationUnavailable,
+    ConversationBusyError,
+    ConversationRunLimitExceeded,
+    DirectToolNotAllowedError,
+    EventService,
+    InvalidToolActionError,
+)
 from openhands.agent_server.launch import launch_source
 from openhands.agent_server.models import (
     ConversationInfo,
@@ -40,13 +48,29 @@ from openhands.sdk.marketplace.registry import (
 from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
+from openhands.sdk.tool import Action, Observation
 from openhands.sdk.workspace import LocalWorkspace
+
+
+class RouterExecuteToolTestAction(Action):
+    """Action for the execute_tool endpoint tests."""
+
+    value: str = "test"
+
+
+class RouterExecuteToolTestObservation(Observation):
+    """Observation for the execute_tool endpoint tests."""
+
+    result: str = ""
 
 
 @pytest.fixture
 def client():
     """Create a test client for the FastAPI app without authentication."""
     app = FastAPI()
+    # Install the production exception handlers so status mapping (e.g.
+    # ConversationBusyError -> 409) is exercised as it ships.
+    _add_exception_handlers(app)
     app.include_router(conversation_router, prefix="/api")
     # switch_llm reads request.app.state.config to get the optional cipher;
     # populate it with a no-cipher config so unrelated tests don't 503.
@@ -1377,6 +1401,74 @@ def test_start_goal_in_conversation_rejects_busy_loop(
         response = client.post(
             f"/api/conversations/{sample_conversation_id}/goal",
             json={"objective": "build x"},
+        )
+        assert response.status_code == 409
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_run_conversation_rejects_in_flight_direct_call(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """/run returns 409, not 500, while a direct tool call is in flight.
+
+    ``ConversationBusyError`` inherits from ``RuntimeError``, so it must be
+    caught explicitly; the route's ``ValueError`` handler does not cover it.
+    """
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.run.side_effect = ConversationBusyError(
+        "A direct tool execution is in flight; retry when it finishes"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/run",
+        )
+        assert response.status_code == 409
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_goal_rejects_in_flight_direct_call(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """/goal returns 409, not 500, while a direct tool call is in flight."""
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.start_goal_loop.side_effect = ConversationBusyError(
+        "A direct tool execution is in flight; retry when it finishes"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/goal",
+            json={"objective": "build x"},
+        )
+        assert response.status_code == 409
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_resume_goal_rejects_in_flight_direct_call(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """/goal/resume returns 409, not 500, while a direct tool call is in flight."""
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.resume_goal_loop.side_effect = ConversationBusyError(
+        "A direct tool execution is in flight; retry when it finishes"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/goal/resume",
         )
         assert response.status_code == 409
     finally:
@@ -3111,6 +3203,198 @@ def test_ask_agent_unknown_conversation_returns_404(
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Conversation not found"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_execute_tool_returns_observation(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """execute_tool returns the tool's observation and forwards name and action."""
+    mock_conversation_service.execute_tool.return_value = (
+        RouterExecuteToolTestObservation.from_text(
+            "executed: world", result="executed_world"
+        )
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/execute_tool",
+            json={
+                "tool_name": "terminal",
+                "action": {"kind": "TerminalAction", "command": "echo world"},
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["observation"]["result"] == "executed_world"
+        args = mock_conversation_service.execute_tool.call_args
+        assert args.args[0] == sample_conversation_id
+        assert args.args[1] == "terminal"
+        # The action reaches the service as a plain JSON payload; validation
+        # against the selected tool's action type happens server-side.
+        assert args.args[2] == {"kind": "TerminalAction", "command": "echo world"}
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_execute_tool_rejects_action_of_another_tool(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """A payload that is not valid for the named tool is a 422, not a 500."""
+    mock_conversation_service.execute_tool.side_effect = InvalidToolActionError(
+        "1 validation error for TerminalAction\ncommand\n  Field required"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/execute_tool",
+            json={"tool_name": "terminal", "action": {"kind": "GrepAction"}},
+        )
+
+        assert response.status_code == 422
+        assert "TerminalAction" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_execute_tool_rejects_unsupported_tool(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """Tools that cannot run directly are refused with 422."""
+    mock_conversation_service.execute_tool.side_effect = DirectToolNotAllowedError(
+        "Tool 'file_editor' cannot be executed directly; supported tools: terminal"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/execute_tool",
+            json={"tool_name": "file_editor", "action": {"kind": "FileEditorAction"}},
+        )
+
+        assert response.status_code == 422
+        assert "file_editor" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_execute_tool_busy_returns_409(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """A run or another direct call in flight is a 409, not a 500."""
+    mock_conversation_service.execute_tool.side_effect = ConversationBusyError(
+        "Conversation is running; stop it before executing a tool directly"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/execute_tool",
+            json={
+                "tool_name": "terminal",
+                "action": {"kind": "TerminalAction", "command": "echo hi"},
+            },
+        )
+
+        assert response.status_code == 409
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_execute_tool_capacity_exhausted_returns_429(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """A full server run budget is a 429, not a 500.
+
+    Direct calls draw on ``max_concurrent_runs``, so an exhausted server must
+    surface the shared capacity error as 429 like ``POST /run`` does.
+    """
+    mock_conversation_service.execute_tool.side_effect = ConversationRunLimitExceeded(
+        "Conversation run limit reached. Retry the request later."
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/execute_tool",
+            json={
+                "tool_name": "terminal",
+                "action": {"kind": "TerminalAction", "command": "echo hi"},
+            },
+        )
+
+        assert response.status_code == 429
+        assert "run limit" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_execute_tool_unknown_conversation_returns_404(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """execute_tool returns 404, not 500, when the conversation does not exist."""
+    mock_conversation_service.execute_tool.return_value = None
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/execute_tool",
+            json={
+                "tool_name": "terminal",
+                "action": {"kind": "TerminalAction", "command": "echo hi"},
+            },
+        )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Conversation not found"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_execute_tool_unknown_tool_returns_422(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """An unknown tool name is a 422 naming the tool, not a 500."""
+    mock_conversation_service.execute_tool.side_effect = KeyError(
+        "Tool 'missing' not found. Available tools: ['terminal']"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/execute_tool",
+            json={
+                "tool_name": "missing",
+                "action": {"kind": "TerminalAction", "command": "echo hi"},
+            },
+        )
+
+        assert response.status_code == 422
+        assert "missing" in response.json()["detail"]
     finally:
         client.app.dependency_overrides.clear()
 

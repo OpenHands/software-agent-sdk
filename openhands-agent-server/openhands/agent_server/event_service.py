@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import Any, Final, cast
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -85,6 +85,7 @@ from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
+from openhands.sdk.tool.schema import Observation
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.files import atomic_write_text
@@ -95,6 +96,11 @@ LEASE_RENEW_INTERVAL_SECONDS = 15.0
 # Bounds initial-state push so subscribe_to_events does not stall on a
 # subscriber whose __call__ blocks (e.g. WS with a full TCP send buffer).
 INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
+# How long close() waits for a direct tool worker (and each offloaded
+# interrupt) before it hands the rest of teardown to a service-owned
+# continuation. The permit and the conversation stay with this service until
+# that work actually stops; only the wait is bounded.
+DIRECT_TOOL_DRAIN_TIMEOUT_SECONDS = 10.0
 
 
 logger = get_logger(__name__)
@@ -102,6 +108,40 @@ logger = get_logger(__name__)
 
 class ConversationRunLimitExceeded(RuntimeError):
     """The server has no capacity to start another conversation run."""
+
+
+class ConversationBusyError(RuntimeError):
+    """The conversation is already busy with a run or another direct tool call."""
+
+
+class DirectToolNotAllowedError(ValueError):
+    """The named tool may not be executed through the direct tool endpoint.
+
+    The endpoint runs a tool outside the agent loop, without the confirmation
+    policy or the security analyzer, and appends no event of its own (a
+    conversation that has never run still emits the initialization
+    ``SystemPromptEvent``). Only tools whose direct execution is meaningful (see
+    ``DIRECT_EXECUTION_TOOLS``) are accepted; the rest are refused so a generic
+    "run any tool" channel is not exposed.
+    """
+
+
+class InvalidToolActionError(ValueError):
+    """The action payload is not valid for the tool named by ``tool_name``.
+
+    The route maps this to 422, so an action belonging to a different tool is
+    reported as a client error instead of reaching an executor that cannot
+    handle it.
+    """
+
+
+# Tools that may be executed through POST /conversations/{id}/execute_tool.
+# Direct execution exists for pre-run setup, so this is deliberately a small
+# allowlist rather than every registered tool: a generic channel would let a
+# caller dispatch tools such as ClientTool, which only report that they were
+# dispatched (there is no ActionEvent to actually deliver them), and would skip
+# the tool hooks and conversation audit events the agent loop records.
+DIRECT_EXECUTION_TOOLS: Final[frozenset[str]] = frozenset({"terminal"})
 
 
 class CondensationUnavailable(ValueError):
@@ -263,7 +303,48 @@ class EventService:
     # so a later Stop/Pause cannot be overwritten by an automatic restart.
     _explicit_interrupt_generation: int = field(default=0, init=False)
     _closing: bool = field(default=False, init=False)
+    # The service-owned teardown task. close() awaits it through a shield so a
+    # cancelled caller cannot abort teardown partway and strand the
+    # conversation, its executor and its lease (``_closing`` blocks idle
+    # eviction, so nothing else would release them). Retained so a retry
+    # close() joins the same teardown instead of starting a second one.
+    _teardown_task: asyncio.Task[None] | None = field(default=None, init=False)
+    # Continuation that finishes teardown when a direct tool worker or
+    # interrupt outlives close()'s bounded drain. It keeps the conversation and
+    # its capacity permit until that work actually stops, so no competing
+    # conversation can use the executor or the permit underneath it.
+    _teardown_continuation: asyncio.Task[None] | None = field(default=None, init=False)
     _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    # Whether a direct tool execution is in flight (see execute_tool). Direct
+    # calls are serialized per conversation and used by run()/start_goal_loop()
+    # to refuse starting a run underneath one.
+    _direct_tool_in_flight: bool = field(default=False, init=False)
+    # Bumped when a direct execution is abandoned (request cancelled or close
+    # began) so the operation's worker thread can stop waiting and let the
+    # thread exit.
+    _direct_tool_abandon: int = field(default=0, init=False)
+    # The worker future of a direct execution that has reached the tool
+    # executor. close() interrupts and awaits it so teardown cannot close the
+    # executor out from under a command that is still running.
+    _direct_tool_worker: asyncio.Future[Any] | None = field(default=None, init=False)
+    # Executor of the in-flight direct tool, used to interrupt a blocked command
+    # when the request is cancelled (close() interrupts through the tool map).
+    _direct_tool_executor: Any = field(default=None, init=False)
+    # Offloaded ``executor.interrupt()`` calls for cancelled direct calls. The
+    # PowerShell backend's interrupt performs blocking child-process scans, so
+    # it must not run on the event loop; close() drains these alongside
+    # ``_direct_tool_worker`` so teardown cannot close the executor while an
+    # interrupt still uses it. A list, not a single future: a cancellation's
+    # interrupt can still be running when close() offloads its own, and both
+    # must be joined before teardown.
+    _direct_tool_interrupt_tasks: list[asyncio.Future[Any]] = field(
+        default_factory=list, init=False
+    )
+    # Server-wide capacity permit held by an in-flight direct call. A direct
+    # call consumes the same ``max_concurrent_runs`` budget as a run, so it
+    # cannot bypass the server limit and queue unboundedly in the process
+    # default executor.
+    _direct_tool_slot: RunSlot | None = field(default=None, init=False)
     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
     _lease: ConversationLease | None = field(default=None, init=False)
     _lease_generation: int | None = field(default=None, init=False)
@@ -1565,6 +1646,13 @@ class EventService:
                 == ConversationExecutionStatus.RUNNING
             ):
                 raise ValueError("conversation_already_running")
+            if self._direct_tool_in_flight:
+                # A direct call runs a tool outside the agent loop; letting a
+                # run start underneath it would put two things in the same
+                # conversation and executor at once.
+                raise ConversationBusyError(
+                    "A direct tool execution is in flight; retry when it finishes"
+                )
             if self._closing:
                 raise ValueError("inactive_service")
             # Re-check: the status read above can yield to a late stop too.
@@ -1818,6 +1906,10 @@ class EventService:
                 == ConversationExecutionStatus.RUNNING
             ):
                 raise ValueError("conversation_already_running")
+            if self._direct_tool_in_flight:
+                raise ConversationBusyError(
+                    "A direct tool execution is in flight; retry when it finishes"
+                )
             # Re-check after the await above: close() runs without _run_lock, so
             # it may have begun teardown meanwhile (mirrors run()'s post-status
             # _closing re-check) -- avoid spawning a task close() won't cancel.
@@ -2076,6 +2168,10 @@ class EventService:
                 == ConversationExecutionStatus.RUNNING
             ):
                 raise ValueError("conversation_already_running")
+            if self._direct_tool_in_flight:
+                raise ConversationBusyError(
+                    "A direct tool execution is in flight; retry when it finishes"
+                )
             if self._closing:  # see start_goal_loop: close() may have begun teardown
                 raise ValueError("inactive_service")
             self._goal_loop_outcome = None
@@ -2225,12 +2321,171 @@ class EventService:
         await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
 
     async def close(self):
-        if self.bash_event_service is not None:
-            await self.bash_event_service.close()
+        """Tear the conversation down, surviving cancellation of the caller.
+
+        The teardown runs on a task the service owns and is awaited through a
+        shield, so cancelling the caller (a cancelled DELETE request, for
+        example) does not abort it partway. ``_closing`` blocks idle eviction,
+        so a half-finished teardown would leave the conversation, its executor
+        and its lease allocated with no path to release them. A retry
+        ``close()`` joins the same task.
+        """
+        # Close admission synchronously, before the teardown task starts, so no
+        # new work slips in during the window where the task is only scheduled.
         self._closing = True
         self._explicit_interrupt_generation += 1
         self._rerun_requested = False
         self._acp_internal_rerun_requested = False
+        task = self._teardown_task
+        if task is None or task.done():
+            # A finished teardown (successful or not) is replaced rather than
+            # joined: a failed one must be retryable so the remaining cleanup
+            # can still run, which is how a failed close() behaved before.
+            task = asyncio.create_task(self._teardown())
+            task.add_done_callback(self._retrieve_teardown_result)
+            self._teardown_task = task
+        await asyncio.shield(task)
+        # If the drain timed out, teardown handed its remainder to a
+        # continuation that keeps the conversation and its capacity permit
+        # until the abandoned work really stops. Always observe its result --
+        # including when it has already finished -- so a failed cleanup is
+        # reported instead of the caller treating the conversation as closed.
+        continuation = self._teardown_continuation
+        if continuation is not None:
+            await asyncio.shield(continuation)
+            self._teardown_continuation = None
+
+    @staticmethod
+    def _retrieve_teardown_result(task: asyncio.Task) -> None:
+        """Retrieve a detached teardown's outcome.
+
+        A cancelled caller stops awaiting the shielded teardown, so nothing
+        would retrieve its exception and the loop would report it as never
+        retrieved. The exception still propagates to a caller that awaits.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.debug("Conversation teardown failed: %s", exc)
+
+    async def _teardown(self) -> None:
+        continuation = self._teardown_continuation
+        if continuation is not None:
+            if not continuation.done():
+                # A previous teardown already handed its remainder to a
+                # continuation that is still finishing. Join it instead of
+                # draining and closing the conversation a second time.
+                await asyncio.shield(continuation)
+                return
+            # A continuation that already finished was superseded by this fresh
+            # attempt: drop it so a retry does not replay its stale outcome
+            # after the cleanup below succeeds.
+            self._teardown_continuation = None
+        if self.bash_event_service is not None:
+            await self.bash_event_service.close()
+        # Abandon any in-flight direct tool call: it does not hold the
+        # conversation state lock, so it would otherwise keep running (and keep
+        # holding the executor) through the teardown below. The bump makes a
+        # worker that has not reached the executor yet exit without touching it.
+        # The server-wide permit is *not* returned here: the worker and any
+        # interrupt it offloaded are still live on the executor, so the
+        # conversation must keep counting against ``max_concurrent_runs`` until
+        # they settle below.
+        self._direct_tool_abandon += 1
+        self._direct_tool_in_flight = False
+        pending = await self._drain_direct_tool_work()
+        if pending is not None:
+            # A worker or interrupt outlived the bounded drain. Closing the
+            # executor under it would let a competing conversation use it, and
+            # returning the permit would admit that conversation at the server
+            # limit while the old work still runs. Keep both with this service
+            # and finish teardown from a continuation the service owns, so
+            # capacity is released when the work really stops and not before.
+            self._teardown_continuation = asyncio.create_task(
+                self._finish_teardown_after(pending)
+            )
+            self._teardown_continuation.add_done_callback(
+                self._retrieve_teardown_result
+            )
+            return
+        await self._finish_teardown()
+
+    def _pending_direct_tool_work(self) -> list[asyncio.Future[Any]]:
+        """Direct tool futures that have not finished yet."""
+        pending: list[asyncio.Future[Any]] = []
+        worker = self._direct_tool_worker
+        if worker is not None and not worker.done():
+            pending.append(worker)
+        pending.extend(t for t in self._direct_tool_interrupt_tasks if not t.done())
+        return pending
+
+    async def _drain_direct_tool_work(self) -> list[asyncio.Future[Any]] | None:
+        """Interrupt and wait (bounded) for direct tool work to stop.
+
+        Returns ``None`` once the worker and every interrupt have settled.
+        Otherwise returns the futures that are still running, so teardown can
+        hand them to a continuation rather than close the executor under them.
+        """
+        direct_worker = self._direct_tool_worker
+        if direct_worker is not None and not direct_worker.done():
+            # A worker that has already entered the tool executor cannot be
+            # stopped by the abandon bump, so interrupt the command (Ctrl+C for
+            # the terminal) and wait for the thread to return before the
+            # teardown below closes that executor. Without this the command
+            # loses its terminal mid-run or keeps writing after the
+            # conversation is deleted. The interrupt is offloaded (the
+            # PowerShell backend's scans block) and drained alongside the
+            # worker, so teardown never closes an executor an interrupt still
+            # uses.
+            if self._conversation is not None:
+                with suppress(Exception):
+                    for tool in self._conversation.agent.tools_map.values():
+                        with suppress(Exception):
+                            executor = getattr(tool.as_executable(), "executor", None)
+                            if executor is not None:
+                                self._offload_direct_tool_interrupt(executor)
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(direct_worker),
+                    timeout=DIRECT_TOOL_DRAIN_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "Direct tool worker did not exit within %ss of close(); "
+                    "finishing teardown once it does",
+                    DIRECT_TOOL_DRAIN_TIMEOUT_SECONDS,
+                )
+            except asyncio.CancelledError:
+                if not direct_worker.done():
+                    # close() itself was cancelled before the worker settled.
+                    # Do not return the permit here: the worker's done callback
+                    # owns the release and returns it once the worker (and any
+                    # interrupt it offloaded) actually exits, so capacity is
+                    # neither over-allocated now nor leaked.
+                    raise
+                # The worker itself reported cancellation (its generation was
+                # stale): it has already exited, so teardown can continue.
+            except Exception as exc:
+                logger.debug("Direct tool worker failed during close: %s", exc)
+        await self._drain_direct_tool_interrupt()
+        return self._pending_direct_tool_work() or None
+
+    async def _finish_teardown_after(self, pending: list[asyncio.Future[Any]]) -> None:
+        """Finish teardown once abandoned direct tool work has really stopped."""
+        # ``asyncio.wait`` neither raises on a cancelled future nor cancels the
+        # rest, so one abandoned call that ends in cancellation cannot abort the
+        # teardown of the others.
+        await asyncio.wait(pending)
+        await self._finish_teardown()
+
+    async def _finish_teardown(self) -> None:
+        # The worker and its interrupts have settled: return the permit held
+        # across the teardown, so the conversation stops counting against
+        # ``max_concurrent_runs``.
+        self._release_direct_tool_slot()
+        self._direct_tool_worker = None
+        self._direct_tool_executor = None
         # Drop any pin held by a supersede window that is being torn down, then
         # return this conversation's session permit; close() cancels the runs
         # that would otherwise have done so, and a leaked permit would shrink
@@ -2329,6 +2584,372 @@ class EventService:
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._conversation.ask_agent, question)
+
+    def _resolve_direct_tool(self, tool_name: str) -> tuple[Any, Any, dict[str, Any]]:
+        """Resolve the direct tool call: the tool, its action type, and its schema.
+
+        Returns:
+            (tool, action_type, json_schema)
+
+        Raises:
+            ValueError: If the service is inactive.
+            DirectToolNotAllowedError: If the tool is not allowed to be run
+                directly.
+            KeyError: If the agent has no tool by that name.
+        """
+        conversation = self._conversation
+        if not conversation:
+            raise ValueError("inactive_service")
+        if tool_name not in DIRECT_EXECUTION_TOOLS:
+            allowed = ", ".join(sorted(DIRECT_EXECUTION_TOOLS))
+            raise DirectToolNotAllowedError(
+                f"Tool '{tool_name}' cannot be executed directly; "
+                f"supported tools: {allowed}"
+            )
+        # ``LocalConversation.execute_tool`` initializes the agent on first use,
+        # so resolve through it to work on a conversation whose agent has not
+        # run yet (the pre-run setup case this endpoint exists for).
+        conversation._ensure_agent_ready()
+        tool = conversation.agent.tools_map.get(tool_name)
+        if tool is None:
+            available = list(conversation.agent.tools_map)
+            raise KeyError(
+                f"Tool '{tool_name}' not found. Available tools: {available}"
+            )
+        return tool, tool.action_type, tool.action_type.model_json_schema()
+
+    def _validate_direct_action(
+        self, tool_name: str, action_type: type[Any], payload: dict[str, Any]
+    ) -> Any:
+        """Bind the payload to the selected tool's action type.
+
+        The transport type carries no discriminator, so validation here is what
+        keeps a payload for another tool from reaching an executor that cannot
+        handle it. The ``kind`` is required and checked explicitly rather than
+        relying on the discriminator's assertion, which is stripped under
+        ``python -O``: without it a payload cannot be attributed to the named
+        tool on the wire.
+        """
+        declared_kind = payload.get("kind")
+        if declared_kind is None:
+            raise InvalidToolActionError(
+                f"Action for tool '{tool_name}' must declare its 'kind' "
+                f"(expected '{action_type.__name__}')"
+            )
+        if declared_kind != action_type.__name__:
+            raise InvalidToolActionError(
+                f"Action kind '{declared_kind}' does not belong to tool "
+                f"'{tool_name}' (expected '{action_type.__name__}')"
+            )
+        try:
+            action = action_type.model_validate(payload)
+        except ValidationError as exc:
+            raise InvalidToolActionError(str(exc)) from exc
+        if not isinstance(action, action_type):
+            raise InvalidToolActionError(
+                f"Action is not valid for tool '{tool_name}': expected "
+                f"{action_type.__name__}"
+            )
+        return action
+
+    def _run_direct_tool_sync(
+        self,
+        generation: int,
+        tool_name: str,
+        action_type: type[Any],
+        payload: dict[str, Any],
+    ) -> Observation:
+        """Validate and run one direct tool call, synchronously."""
+        if generation != self._direct_tool_abandon:
+            raise asyncio.CancelledError("direct tool execution abandoned")
+        if self._closing or not self._conversation:
+            raise ValueError("inactive_service")
+        action = self._validate_direct_action(tool_name, action_type, payload)
+        return self._conversation.execute_tool(tool_name, action)
+
+    def _end_direct_tool_sync(self, generation: int) -> None:
+        """Release the in-flight flag if this call still owns it.
+
+        Ownership here means the call was never abandoned, so it has no
+        offloaded interrupt of its own and the flag can be cleared directly.
+        (An abandoned call has bumped the generation and transferred its
+        release to the worker/interrupt callbacks.)
+        """
+        if generation == self._direct_tool_abandon:
+            self._direct_tool_in_flight = False
+            self._release_direct_tool_slot()
+
+    def _release_direct_tool_slot(self) -> None:
+        """Return the server-wide capacity permit a direct call was admitted on."""
+        slot = self._direct_tool_slot
+        if slot is None:
+            return
+        self._direct_tool_slot = None
+        slot.release()
+
+    def _release_direct_tool_if_settled(self) -> None:
+        """Clear the in-flight guard once the worker *and* its interrupts are done.
+
+        A cancelled call offloads ``executor.interrupt()``. On the PowerShell
+        backend that interrupt keeps scanning for the terminal process after
+        the synchronous worker returns, so clearing the guard at worker exit
+        alone would admit a new command (or a run) whose process the lingering
+        scan can then signal and kill. The guard must therefore outlive the
+        interrupt, not just the worker: admission (``execute_tool``, ``run``,
+        ``start_goal_loop``) and ``is_idle_evictable`` all read this one flag.
+        """
+        worker = self._direct_tool_worker
+        if worker is not None and not worker.done():
+            return
+        if any(not task.done() for task in self._direct_tool_interrupt_tasks):
+            return
+        self._direct_tool_in_flight = False
+        self._release_direct_tool_slot()
+
+    def _direct_tool_worker_done(self, worker: Any) -> None:
+        """Release the conversation once a direct tool worker has really exited.
+
+        The flag is also cleared here, not only by the request, because
+        cancelling the request cannot stop the synchronous worker: the worker
+        holds the executor until it returns, so a later direct call must not be
+        admitted before then. Release is deferred further while an offloaded
+        interrupt still uses the executor (see
+        ``_release_direct_tool_if_settled``). Retrieving the exception keeps an
+        abandoned worker's ``CancelledError`` from surfacing as an
+        unretrieved-future warning.
+        """
+        if self._direct_tool_worker is worker:
+            self._direct_tool_worker = None
+            self._direct_tool_executor = None
+        self._release_direct_tool_if_settled()
+        with suppress(BaseException):
+            worker.exception()
+
+    @staticmethod
+    def _interrupt_executor_sync(executor: Any) -> None:
+        """Run ``executor.interrupt()`` on a worker thread.
+
+        The PowerShell backend's interrupt performs two blocking child-process
+        scans, each able to wait up to five seconds for a subprocess, so calling
+        it on the event loop would stall unrelated requests (``/alive`` among
+        them) for the duration.
+        """
+        with suppress(BaseException):
+            executor.interrupt()
+
+    def _direct_tool_interrupt_done(self, task: asyncio.Future[Any]) -> None:
+        """Release the guard once an offloaded interrupt has finished.
+
+        The interrupt outlives the worker it belongs to, so the in-flight guard
+        must not clear until this fires; otherwise a later command could start
+        while the interrupt still scans for (and can signal) the terminal
+        process. The exception is retrieved here so a failed interrupt does not
+        surface as an unretrieved-future warning.
+        """
+        with suppress(BaseException):
+            task.exception()
+        self._release_direct_tool_if_settled()
+
+    def _offload_direct_tool_interrupt(self, executor: Any) -> None:
+        """Interrupt a direct call's executor off the event loop.
+
+        Retains the future in ``_direct_tool_interrupt_tasks`` so close() can
+        drain it before teardown, and so the in-flight guard can outlive it
+        (see ``_release_direct_tool_if_settled``). Already-finished entries are
+        pruned here (and their result retrieved) so repeated cancellations do
+        not accumulate them.
+        """
+        retained: list[asyncio.Future[Any]] = []
+        for task in self._direct_tool_interrupt_tasks:
+            if task.done():
+                with suppress(BaseException):
+                    task.exception()
+            else:
+                retained.append(task)
+        interrupt = asyncio.get_running_loop().run_in_executor(
+            None, self._interrupt_executor_sync, executor
+        )
+        interrupt.add_done_callback(self._direct_tool_interrupt_done)
+        retained.append(interrupt)
+        self._direct_tool_interrupt_tasks = retained
+
+    async def _drain_direct_tool_interrupt(self) -> None:
+        """Wait for offloaded interrupts to finish before executor teardown.
+
+        ``close()`` cannot close the executor while an offloaded
+        ``executor.interrupt()`` still uses it, so this joins every interrupt
+        the same way ``close()`` joins the worker. Finished entries are pruned;
+        a still-running one is kept tracked (whether it finished in time or
+        timed out) so ``_pending_direct_tool_work`` can hand it to the teardown
+        continuation and its done callback releases the permit only once it
+        really finishes.
+        """
+        for interrupt_task in list(self._direct_tool_interrupt_tasks):
+            if interrupt_task.done():
+                with suppress(BaseException):
+                    interrupt_task.exception()
+                continue
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(interrupt_task),
+                    timeout=DIRECT_TOOL_DRAIN_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "Direct tool interrupt did not finish within %ss of close(); "
+                    "finishing teardown once it does",
+                    DIRECT_TOOL_DRAIN_TIMEOUT_SECONDS,
+                )
+            except asyncio.CancelledError:
+                # close() itself was cancelled while an interrupt still uses the
+                # executor. Abort teardown rather than close the executor under
+                # it; the interrupt's done callback owns the permit and returns
+                # it once the interrupt actually finishes. The tasks stay
+                # tracked so ``_release_direct_tool_if_settled`` still waits on
+                # them.
+                raise
+            except Exception as exc:
+                logger.debug("Direct tool interrupt failed during close: %s", exc)
+        self._direct_tool_interrupt_tasks = [
+            task for task in self._direct_tool_interrupt_tasks if not task.done()
+        ]
+
+    async def execute_tool(self, tool_name: str, action: dict[str, Any]) -> Observation:
+        """Execute one tool directly on the conversation, bypassing the agent loop.
+
+        The tool runs through the conversation's own executor, so state that
+        lives in the executor (for example a terminal session) is shared with
+        the agent's later calls. Intended for pre-run setup such as sourcing a
+        repository bootstrap script.
+
+        This bypasses confirmation policy and the security analyzer, as
+        ``LocalConversation.execute_tool`` does by design, and appends no event
+        to the conversation. On a conversation that has never run, the call
+        first initializes the agent, which emits a ``SystemPromptEvent``. Because
+        it is a setup mechanism rather than a way to drive the agent, direct
+        calls are serialized per conversation and cannot overlap a run in either
+        direction.
+
+        Raises:
+            ValueError: If the service is inactive.
+            DirectToolNotAllowedError: If the tool is not allowed to run
+                directly.
+            KeyError: If the agent has no tool by that name.
+            ConversationBusyError: If a run or another direct call is already
+                using this conversation.
+            ConversationRunLimitExceeded: If the server-wide run budget is
+                full, so a direct call cannot bypass ``max_concurrent_runs``.
+            InvalidToolActionError: If the payload is not valid for the tool.
+        """
+        conversation = self._conversation
+        if not conversation or self._closing:
+            raise ValueError("inactive_service")
+
+        # Admission shares ``_run_lock`` with run()/start_goal_loop() so the
+        # check-and-set cannot interleave with a run being admitted: without the
+        # lock, this call could read the status as idle, a run could start while
+        # the read is pending, and both would then use the executor at once.
+        async with self._run_lock:
+            if self._closing or not self._conversation:
+                raise ValueError("inactive_service")
+            if self._direct_tool_in_flight:
+                raise ConversationBusyError(
+                    "Another direct tool execution is already in flight"
+                )
+            # ``_run_task`` first: a live run holds the state lock across its
+            # step, so reading execution status would block behind it.
+            if (self._run_task is not None and not self._run_task.done()) or (
+                await self._get_execution_status()
+                == ConversationExecutionStatus.RUNNING
+            ):
+                raise ConversationBusyError(
+                    "Conversation is running; stop it before executing a tool directly"
+                )
+            if self._closing or self._conversation is not conversation:
+                raise ValueError("inactive_service")
+            # A direct call is real work on the server, so it consumes the same
+            # server-wide run budget as a run. Without this, direct calls from
+            # many conversations bypass ``max_concurrent_runs`` and queue
+            # unboundedly in the process-wide default executor. Acquisition is
+            # non-blocking and does not suspend, so it is safe under the lock.
+            self._direct_tool_slot = await RunSlot.acquire(self._run_semaphore)
+            self._direct_tool_in_flight = True
+            generation = self._direct_tool_abandon
+
+        loop = asyncio.get_running_loop()
+        worker: asyncio.Future[Observation] | None = None
+        resolve_future: asyncio.Future[Any] | None = None
+        try:
+            # Track the resolve stage too: it runs ``_ensure_agent_ready`` in a
+            # thread, and close() must wait for that to finish before it closes
+            # the conversation.
+            resolve_future = loop.run_in_executor(
+                None, self._resolve_direct_tool, tool_name
+            )
+            self._direct_tool_worker = resolve_future
+            tool, action_type, schema = await asyncio.shield(resolve_future)
+            self._direct_tool_executor = getattr(tool, "executor", None)
+            worker = loop.run_in_executor(
+                None,
+                self._run_direct_tool_sync,
+                generation,
+                tool_name,
+                action_type,
+                action,
+            )
+            # Publish the worker so close() can interrupt it and wait for the
+            # command to finish before tearing the executor down. The done
+            # callback clears the flag only when the worker has really exited,
+            # which is what keeps a later direct call out while an abandoned
+            # worker still holds the executor.
+            self._direct_tool_worker = worker
+            worker.add_done_callback(self._direct_tool_worker_done)
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            if worker is None:
+                # Cancelled while resolving the tool. The resolve future is
+                # shielded, so ``_ensure_agent_ready`` keeps initializing
+                # plugins and tools on its thread even though the request is
+                # gone. That is live work that will use the executor, so the
+                # permit must outlive it exactly as it does for a cancelled
+                # worker: transfer the release to the resolve future's
+                # completion instead of letting the finally below return it
+                # while initialization still runs.
+                if resolve_future is not None and not resolve_future.done():
+                    self._direct_tool_abandon += 1
+                    resolve_future.add_done_callback(self._direct_tool_worker_done)
+                raise
+            # Cancelling the request cannot stop the synchronous worker, so
+            # abandon it: the generation bump makes a queued worker exit without
+            # touching the executor, and the flag is released when the worker
+            # actually finishes rather than now, so a later direct call is not
+            # admitted while the abandoned worker still holds the executor.
+            # ``worker.cancel()`` is deliberately not called: it marks the
+            # future done at once (the thread keeps running), which would fire
+            # the release callback too early.
+            #
+            # The worker is interrupted so a disconnected client does not leave
+            # a long command running, but this handler does not await it: the
+            # worker keeps its lifecycle owner in the service
+            # (``_direct_tool_worker``, with the done callback above), and
+            # close()/delete interrupts and awaits it before closing the
+            # executor. Blocking here would hold the request open for as long as
+            # the command ignores the interrupt.
+            #
+            # The interrupt itself is offloaded: on the PowerShell backend it
+            # performs blocking child-process scans (up to 5s each), and running
+            # it inline would stall every request on this event loop. close()
+            # drains the offloaded task alongside the worker.
+            self._direct_tool_abandon += 1
+            executor = self._direct_tool_executor
+            if executor is not None:
+                self._offload_direct_tool_interrupt(executor)
+            raise
+        finally:
+            # Success, a resolve/validation failure, or a cancellation that
+            # predates the worker: release the flag. It is a no-op after the
+            # abandon above, which transferred the release to the worker.
+            self._end_direct_tool_sync(generation)
 
     async def condense(self) -> None:
         """Force condensation of the conversation history.
@@ -2476,6 +3097,7 @@ class EventService:
             self._closing
             or run_active
             or goal_active
+            or self._direct_tool_in_flight
             or self._rerun_requested
             or self._acp_internal_rerun_requested
             or self.has_external_subscribers()

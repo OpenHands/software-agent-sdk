@@ -6,6 +6,10 @@
  */
 
 import { HttpClient } from '../client/http-client';
+import {
+  AgentServerFeatureRequirements,
+  assertAgentServerSupports,
+} from '../client/agent-server-compatibility';
 import { WebSocketCallbackClient, ErrorCallbackType } from '../events/websocket-client';
 import { RemoteState } from './remote-state';
 import { RemoteWorkspace } from '../workspace/remote-workspace';
@@ -28,6 +32,9 @@ import {
   UpdateSecretsRequest,
   AskAgentRequest,
   AskAgentResponse,
+  ToolAction,
+  ExecuteToolRequest,
+  ExecuteToolResponse,
   SetSecurityAnalyzerRequest,
   AgentResponseResult,
   ForkConversationRequest,
@@ -306,6 +313,30 @@ export class RemoteConversation implements IConversation {
       request
     );
     return response.data.response;
+  }
+
+  /**
+   * Execute one tool directly on this conversation, bypassing the agent loop.
+   *
+   * Intended for pre-run setup: the tool runs through the conversation's own
+   * executor, so state such as the terminal session is shared with the agent's
+   * later calls. Requires an agent-server that exposes the endpoint.
+   *
+   * @param toolName - Name of the tool, as it appears in the agent's tool map.
+   * @param action - The tool's action, discriminated by `kind`.
+   * @returns The tool's own observation, with its tool-specific fields intact.
+   */
+  async executeTool(
+    toolName: string,
+    action: ToolAction
+  ): Promise<ExecuteToolResponse['observation']> {
+    await assertAgentServerSupports(this.client, AgentServerFeatureRequirements.executeTool);
+    const request: ExecuteToolRequest = { tool_name: toolName, action };
+    const response = await this.client.post<ExecuteToolResponse>(
+      `/api/conversations/${this.id}/execute_tool`,
+      request
+    );
+    return response.data.observation;
   }
 
   /**

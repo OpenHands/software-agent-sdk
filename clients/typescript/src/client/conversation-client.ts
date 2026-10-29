@@ -1,5 +1,9 @@
 import { HttpClient, HttpError } from './http-client';
-import { getCachedAgentServerInfo } from './agent-server-compatibility';
+import {
+  AgentServerFeatureRequirements,
+  assertAgentServerSupports,
+  getCachedAgentServerInfo,
+} from './agent-server-compatibility';
 import { ConversationExecutionStatus, LLM, Success } from '../types/base';
 import type {
   AgentResponseResult,
@@ -13,6 +17,8 @@ import type {
   ConversationRuntimeInfo,
   ConversationSearchRequest,
   ConversationSearchResponse,
+  ExecuteToolRequest,
+  ExecuteToolResponse,
   ForkConversationRequest,
   NavigateConversationRequest,
   SetConfirmationPolicyRequest,
@@ -280,6 +286,25 @@ export class ConversationClient {
     const response = await this.client.post<AskAgentResponse>(
       `/api/conversations/${conversationId}/ask_agent`,
       { question }
+    );
+    return response.data;
+  }
+
+  /**
+   * Execute one tool directly on a conversation, bypassing the agent loop.
+   *
+   * Intended for pre-run setup: the tool runs through the conversation's own
+   * executor, so state such as the terminal session is shared with the agent's
+   * later calls. Requires an agent-server that exposes the endpoint.
+   */
+  async executeTool(
+    conversationId: string,
+    request: ExecuteToolRequest
+  ): Promise<ExecuteToolResponse> {
+    await assertAgentServerSupports(this.client, AgentServerFeatureRequirements.executeTool);
+    const response = await this.client.post<ExecuteToolResponse>(
+      `/api/conversations/${conversationId}/execute_tool`,
+      request
     );
     return response.data;
   }

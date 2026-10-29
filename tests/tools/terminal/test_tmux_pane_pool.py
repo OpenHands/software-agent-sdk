@@ -166,6 +166,95 @@ def test_replace_fresh_pane_runs_commands(pool, cmd):
     pool.checkin(new)
 
 
+# -- Pinning ----------------------------------------------------------------
+
+
+def test_pin_restricts_every_checkout_to_the_pinned_pane(pool):
+    """Once pinned, checkout keeps returning the same pane."""
+    t1 = pool.checkout()
+    pool.checkin(t1)
+    pool.pin(t1)
+    assert pool.is_pinned
+
+    t2 = pool.checkout()
+    assert t2 is t1
+    pool.checkin(t2)
+    t3 = pool.checkout()
+    assert t3 is t1
+    pool.checkin(t3)
+
+
+def test_pinned_checkout_waits_for_a_busy_pane(pool):
+    """A pinned pane in use blocks the next checkout until it is returned."""
+    t1 = pool.checkout()
+    pool.checkin(t1)
+    pool.pin(t1)
+
+    held = pool.checkout()
+    assert held is t1
+    with pytest.raises(TimeoutError):
+        pool.checkout(timeout=0.2)
+
+    pool.checkin(held)
+    again = pool.checkout(timeout=2.0)
+    assert again is t1
+    pool.checkin(again)
+
+
+def test_replace_inherits_the_pin(pool):
+    """Replacing the pinned pane keeps the pool restricted to its successor."""
+    old = pool.checkout()
+    pool.pin(old)
+
+    new = pool.replace(old)
+    assert new is not old
+    assert pool.is_pinned
+    # The caller keeps holding the replacement, as the pane context manager
+    # expects, so it must be checked in before another checkout can have it.
+    pool.checkin(new)
+
+    got = pool.checkout(timeout=5.0)
+    assert got is new
+    pool.checkin(got)
+
+
+def test_close_releases_a_waiting_pinned_checkout(tmp_path):
+    """close() wakes a checkout blocked on a pinned pane instead of hanging."""
+    pool = TmuxPanePool(work_dir=str(tmp_path), max_panes=2)
+    pool.initialize()
+    t1 = pool.checkout()
+    pool.checkin(t1)
+    pool.pin(t1)
+    held = pool.checkout()
+    errors: list[Exception] = []
+
+    def waiter():
+        try:
+            pool.checkout(timeout=10.0)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    thread = threading.Thread(target=waiter)
+    thread.start()
+    time.sleep(0.2)
+    pool.close()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], RuntimeError)
+    # Keep the reference alive so close() teardown is the only closer.
+    assert held is t1
+
+
+def test_pin_ignores_a_foreign_pane(pool):
+    """A pane from another pool is not accepted as the pin target."""
+    from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
+
+    fake = TmuxTerminal.__new__(TmuxTerminal)
+    pool.pin(fake)
+    assert pool.is_pinned is False
+
+
 # -- Concurrent execution ---------------------------------------------------
 
 

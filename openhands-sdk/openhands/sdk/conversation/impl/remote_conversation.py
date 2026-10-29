@@ -22,7 +22,7 @@ from openhands.sdk.conversation.base import BaseConversation, ConversationStateP
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.request import StartConversationRequest
-    from openhands.sdk.tool.schema import Action, Observation
+    from openhands.sdk.tool.schema import Action
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import (
@@ -71,6 +71,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
 from openhands.sdk.tool.client_tool import ClientTool, ClientToolSpec
+from openhands.sdk.tool.schema import Observation
 from openhands.sdk.utils.redact import http_error_log_content
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
@@ -1924,27 +1925,50 @@ class RemoteConversation(BaseConversation):
         )
         self._state.refresh_from_server()
 
-    def execute_tool(self, tool_name: str, action: "Action") -> "Observation":
+    def execute_tool(self, tool_name: str, action: "Action") -> Observation:
         """Execute a tool directly without going through the agent loop.
 
-        Note: This method is not yet supported for RemoteConversation.
-        Tool execution for remote conversations happens on the server side
-        during the normal agent loop.
+        The server runs the tool through this conversation's own executor, so
+        state that lives in the executor (for example a terminal session) is
+        shared with the agent's later calls. This is what makes a pre-run
+        setup script's ``export``/``source`` survive into the agent's terminal.
+
+        This bypasses the agent loop's confirmation policy and security
+        analyzer, and appends no event, matching ``LocalConversation``. On a
+        conversation that has never run, the server initializes the agent first,
+        which emits a ``SystemPromptEvent``.
+
+        Note: The agent server accepts only tools it allows to run directly
+        (currently ``terminal``), and validates the action against that tool's
+        own action type. Direct calls are serialized per conversation and
+        cannot overlap a run, so this is for **pre-run** setup: a call while
+        ``run()`` is in flight is refused with 409.
 
         Args:
             tool_name: The name of the tool to execute
             action: The action to pass to the tool executor
 
+        Returns:
+            The observation returned by the tool execution, deserialized into
+            the tool's own observation type when the client has that tool
+            module loaded.
+
         Raises:
-            NotImplementedError: Always, as this feature is not yet supported
-                for remote conversations.
+            httpx.HTTPStatusError: If the server rejects the request, e.g. 404
+                for an unknown conversation, 409 while a run or another direct
+                call is in flight, or 422 for an unknown/unsupported tool or an
+                action that is not valid for that tool.
         """
-        raise NotImplementedError(
-            "execute_tool is not yet supported for RemoteConversation. "
-            "Tool execution for remote conversations happens on the server side "
-            "during the normal agent loop. Use LocalConversation for direct "
-            "tool execution."
+        response = _send_request(
+            self._client,
+            "POST",
+            f"{CONVERSATIONS_PATH}/{self._id}/execute_tool",
+            json={
+                "tool_name": tool_name,
+                "action": action.model_dump(mode="json"),
+            },
         )
+        return Observation.model_validate(response.json()["observation"])
 
     def close(self) -> None:
         """Close the conversation and clean up resources.

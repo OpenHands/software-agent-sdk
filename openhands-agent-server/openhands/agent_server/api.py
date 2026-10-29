@@ -61,7 +61,10 @@ from openhands.agent_server.dependencies import (
     check_session_api_key,
     check_workspace_session,
 )
-from openhands.agent_server.event_service import ConversationRunLimitExceeded
+from openhands.agent_server.event_service import (
+    ConversationBusyError,
+    ConversationRunLimitExceeded,
+)
 from openhands.agent_server.file_router import file_discovery_router, file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
@@ -735,6 +738,16 @@ def _add_exception_handlers(api: FastAPI) -> None:
         _request: Request, exc: ConversationRunLimitExceeded
     ) -> JSONResponse:
         return JSONResponse(status_code=429, content={"detail": str(exc)})
+
+    @api.exception_handler(ConversationBusyError)
+    async def _busy_handler(
+        _request: Request, exc: ConversationBusyError
+    ) -> JSONResponse:
+        # A direct tool execution holds the conversation; the caller should
+        # retry, so this is a conflict rather than a server fault. Registered
+        # centrally so every entry point that can admit a run (``/run``,
+        # ``/goal``, ``/events`` with ``run=true``) answers 409, not 500.
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @api.exception_handler(ConversationOwnershipLostError)
     async def _ownership_lost_handler(

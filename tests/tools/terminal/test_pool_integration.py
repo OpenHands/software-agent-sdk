@@ -111,6 +111,42 @@ class TestConcurrentExecution:
         )
 
 
+class TestDirectExecutionPinning:
+    def test_direct_execution_pins_the_pool_to_the_setup_pane(self, pool_executor):
+        """A bootstrap export survives later commands, including parallel ones.
+
+        Without pinning, a concurrent call could be handed a fresh pane that
+        never sourced the script, and silently miss the exported variable.
+        """
+        obs = pool_executor(TerminalAction(command="export QA_MARK=hello", timeout=10))
+        assert obs.exit_code == 0
+
+        pool_executor.on_direct_execution()
+        assert pool_executor._pool is not None
+        assert pool_executor._pool.is_pinned
+
+        results: dict[int, str] = {}
+        errors: list[Exception] = []
+
+        def run(idx: int) -> None:
+            try:
+                action = TerminalAction(command='printf "%s" "$QA_MARK"', timeout=30)
+                results[idx] = pool_executor(action).text
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=run, args=(i,)) for i in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+
+        assert not errors, f"Errors during parallel execution: {errors}"
+        assert len(results) == 3
+        for idx in range(3):
+            assert "hello" in results[idx], results[idx]
+
+
 class TestTmuxPoolRecovery:
     def test_shell_exit_returns_actionable_error_and_rebuilds_pool(self, pool_executor):
         obs = pool_executor(TerminalAction(command="exit 7", timeout=1.0))

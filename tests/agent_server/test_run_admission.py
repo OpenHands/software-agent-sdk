@@ -10,13 +10,18 @@ import pytest
 import pytest_asyncio
 
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.event_service import ConversationRunLimitExceeded
+from openhands.agent_server.event_service import (
+    ConversationRunLimitExceeded,
+    EventService,
+)
 from openhands.agent_server.openai.service import _run_agent
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.testing import TestLLM
+from openhands.sdk.tool import Tool
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.terminal import TerminalObservation
 from tests.agent_server.stress.scripts import start_conversation_with_test_llm
 
 
@@ -446,3 +451,567 @@ async def test_terminal_status_implies_released_permit(tmp_path, monkeypatch):
             await service.wait_for_run_completion(10)
             == ConversationExecutionStatus.FINISHED
         )
+
+
+@asynccontextmanager
+async def _direct_capacity(tmp_path, monkeypatch, max_concurrent_runs):
+    """Conversations whose direct tool call and run both block on one event.
+
+    Both admission paths draw on the shared ``_run_semaphore``, so the same
+    release event lets a test hold capacity on either side and observe what the
+    other side is refused.
+    """
+    state = SimpleNamespace(active=0, peak=0, entered=0)
+    lock = threading.Lock()
+    release = threading.Event()
+    services = []
+
+    def enter():
+        with lock:
+            state.active += 1
+            state.entered += 1
+            state.peak = max(state.peak, state.active)
+
+    def leave():
+        with lock:
+            state.active -= 1
+
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations",
+        max_concurrent_runs=max_concurrent_runs,
+    ) as owner:
+
+        async def create():
+            info, _ = await owner.start_conversation(
+                StartConversationRequest(
+                    agent=Agent(
+                        llm=LLM(model="gpt-4o", usage_id="test"),
+                        tools=[Tool(name="terminal")],
+                    ),
+                    workspace=LocalWorkspace(working_dir=str(tmp_path)),
+                    autotitle=False,
+                )
+            )
+            service = await owner.get_event_service(info.id)
+            assert service is not None and service._conversation is not None
+            conversation = service._conversation
+
+            def execute_tool(tool_name, action):
+                enter()
+                try:
+                    assert release.wait(timeout=30)
+                    return TerminalObservation.from_text("done", command="x")
+                finally:
+                    leave()
+
+            async def arun():
+                enter()
+                try:
+                    while not release.is_set():
+                        await asyncio.sleep(0.01)
+                finally:
+                    leave()
+
+            conversation.execute_tool = execute_tool  # type: ignore[method-assign]
+            monkeypatch.setattr(conversation, "arun", arun)
+            services.append(service)
+            return service
+
+        try:
+            yield SimpleNamespace(create=create, state=state, release=release)
+        finally:
+            release.set()
+            await asyncio.gather(
+                *(s.wait_for_run_completion(5) for s in services if s.is_open())
+            )
+
+
+async def test_direct_tool_calls_share_the_server_run_limit(tmp_path, monkeypatch):
+    """Direct calls from many conversations count against one server budget.
+
+    Each conversation serializes its own direct calls, but nothing bounds the
+    total across conversations: without a shared permit, every conversation can
+    submit a direct call at once and queue unbounded work in the process
+    default executor, bypassing ``max_concurrent_runs``.
+    """
+    async with _direct_capacity(tmp_path, monkeypatch, 2) as capacity:
+        services = [await capacity.create() for _ in range(4)]
+        tasks = [
+            asyncio.create_task(
+                service.execute_tool(
+                    "terminal", {"kind": "TerminalAction", "command": "x"}
+                )
+            )
+            for service in services
+        ]
+        # The two admitted calls stay blocked in the tool; the other two must be
+        # refused rather than queueing in the executor.
+        await wait_until(
+            lambda: sum(t.done() for t in tasks) == 2 and capacity.state.active == 2
+        )
+        refused = [t for t in tasks if t.done()]
+        assert all(
+            isinstance(t.exception(), ConversationRunLimitExceeded) for t in refused
+        )
+        capacity.release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        assert capacity.state.peak == 2
+
+
+async def test_direct_tool_call_competes_with_a_run_for_capacity(tmp_path, monkeypatch):
+    """A direct call and a run draw on the same server-wide budget.
+
+    Holding the only permit on a direct call must refuse a run in another
+    conversation (429), and releasing the direct call must free the permit for
+    that run.
+    """
+    async with _direct_capacity(tmp_path, monkeypatch, 1) as capacity:
+        holder = await capacity.create()
+        other = await capacity.create()
+
+        direct = asyncio.create_task(
+            holder.execute_tool("terminal", {"kind": "TerminalAction", "command": "x"})
+        )
+        await wait_until(lambda: capacity.state.active == 1)
+
+        with pytest.raises(ConversationRunLimitExceeded):
+            await other.run()
+
+        capacity.release.set()
+        await direct
+        await other.run()
+        await wait_until(lambda: capacity.state.entered == 2)
+
+
+async def test_direct_call_keeps_its_permit_until_close_drains_it(
+    tmp_path, monkeypatch
+):
+    """A direct call being closed still occupies its server permit.
+
+    Regression: ``EventService.close()`` returned the permit before it waited
+    for the abandoned worker and its offloaded interrupt. With
+    ``max_concurrent_runs=1`` that freed the only slot while the closing worker
+    was still running, so a competing call in another conversation was admitted
+    alongside live work and the server exceeded its own budget. The permit must
+    be held until both settle.
+    """
+    async with _direct_capacity(tmp_path, monkeypatch, 1) as capacity:
+        holder = await capacity.create()
+        other = await capacity.create()
+
+        direct = asyncio.create_task(
+            holder.execute_tool("terminal", {"kind": "TerminalAction", "command": "x"})
+        )
+        await wait_until(lambda: capacity.state.active == 1)
+
+        close_task = asyncio.create_task(holder.close())
+        await asyncio.sleep(0.2)
+        assert close_task.done() is False
+
+        # The closing conversation still holds the only permit: a competing
+        # call in another conversation must be refused, not admitted next to
+        # the worker close() is still draining.
+        with pytest.raises(ConversationRunLimitExceeded):
+            await other.execute_tool(
+                "terminal", {"kind": "TerminalAction", "command": "y"}
+            )
+
+        capacity.release.set()
+        await asyncio.wait_for(close_task, timeout=10)
+        await asyncio.gather(direct, return_exceptions=True)
+
+        # Once close() has drained the worker the permit is returned, so the
+        # same call is admitted: the 429 was capacity, not a permanent refusal.
+        await other.execute_tool("terminal", {"kind": "TerminalAction", "command": "y"})
+        assert capacity.state.entered == 2
+
+
+async def _terminal_services(tmp_path, max_concurrent_runs):
+    """A ``ConversationService`` owner plus a factory for terminal conversations."""
+    owner = ConversationService(
+        conversations_dir=tmp_path / "conversations",
+        max_concurrent_runs=max_concurrent_runs,
+    )
+
+    async def create():
+        info, _ = await owner.start_conversation(
+            StartConversationRequest(
+                agent=Agent(
+                    llm=LLM(model="gpt-4o", usage_id="test"),
+                    tools=[Tool(name="terminal")],
+                ),
+                workspace=LocalWorkspace(working_dir=str(tmp_path)),
+                autotitle=False,
+            )
+        )
+        service = await owner.get_event_service(info.id)
+        assert service is not None and service._conversation is not None
+        return service
+
+    return owner, create
+
+
+def _free_run_permits(service) -> int:
+    """Permits still available on the conversation's shared run semaphore."""
+    semaphore = service._run_semaphore
+    assert semaphore is not None
+    return semaphore._value
+
+
+async def test_cancelled_resolve_keeps_its_permit_until_initialization_finishes(
+    tmp_path, monkeypatch
+):
+    """A direct call cancelled while resolving the tool still holds its permit.
+
+    Regression: ``_end_direct_tool_sync`` released the permit on the
+    ``worker is None`` cancellation branch, but the resolve future is shielded,
+    so ``_ensure_agent_ready`` kept initializing plugins and tools on its
+    thread. With ``max_concurrent_runs=1`` a competing call in another
+    conversation was admitted next to that live initialization. The permit must
+    be held until the resolve future actually finishes.
+    """
+    owner, create = await _terminal_services(tmp_path, 1)
+    async with owner:
+        holder = await create()
+        other = await create()
+
+        resolve_started = threading.Event()
+        resolve_release = threading.Event()
+        real_resolve = holder._resolve_direct_tool
+
+        def blocked_resolve(tool_name):
+            resolve_started.set()
+            resolve_release.wait(timeout=30)
+            return real_resolve(tool_name)
+
+        monkeypatch.setattr(holder, "_resolve_direct_tool", blocked_resolve)
+
+        direct = asyncio.create_task(
+            holder.execute_tool("terminal", {"kind": "TerminalAction", "command": "x"})
+        )
+        await asyncio.to_thread(resolve_started.wait, 10)
+        direct.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await direct
+
+        # The resolve thread is still blocked in initialization, so the only
+        # permit must stay taken.
+        with pytest.raises(ConversationRunLimitExceeded):
+            await other.execute_tool(
+                "terminal", {"kind": "TerminalAction", "command": "y"}
+            )
+
+        resolve_release.set()
+        await wait_until(lambda: _free_run_permits(holder) == 1)
+
+        # The permit came back once initialization finished, so the same call is
+        # admitted rather than stranded.
+        await other.execute_tool("terminal", {"kind": "TerminalAction", "command": "y"})
+
+
+async def test_cancelled_close_keeps_its_permit_until_the_worker_exits(
+    tmp_path, monkeypatch
+):
+    """Cancelling close() must not return the permit under a live worker.
+
+    Regression: a cancellation at close()'s worker wait was swallowed, so
+    close() continued into ``_release_direct_tool_slot()`` while the worker was
+    still running. With ``max_concurrent_runs=1`` a competing call in another
+    conversation was admitted alongside that live work. Cancellation must abort
+    the teardown and leave the release to the worker's done callback.
+    """
+    owner, create = await _terminal_services(tmp_path, 1)
+    async with owner:
+        holder = await create()
+        other = await create()
+        conversation = holder.get_conversation()
+        conversation._ensure_agent_ready()
+
+        worker_started = threading.Event()
+        worker_release = threading.Event()
+
+        def blocked_execute_tool(tool_name, action):
+            worker_started.set()
+            worker_release.wait(timeout=30)
+            return TerminalObservation.from_text("done", command="x")
+
+        monkeypatch.setattr(conversation, "execute_tool", blocked_execute_tool)
+
+        direct = asyncio.create_task(
+            holder.execute_tool("terminal", {"kind": "TerminalAction", "command": "x"})
+        )
+        await asyncio.to_thread(worker_started.wait, 10)
+
+        close_task = asyncio.create_task(holder.close())
+        await asyncio.sleep(0.2)
+        close_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await close_task
+
+        # The worker is still blocked, so the permit must not have been returned
+        # by the cancelled close().
+        with pytest.raises(ConversationRunLimitExceeded):
+            await other.execute_tool(
+                "terminal", {"kind": "TerminalAction", "command": "y"}
+            )
+
+        worker_release.set()
+        await asyncio.gather(direct, return_exceptions=True)
+        await wait_until(lambda: _free_run_permits(holder) == 1)
+
+        await other.execute_tool("terminal", {"kind": "TerminalAction", "command": "y"})
+
+
+async def test_cancelled_close_still_tears_the_conversation_down(tmp_path, monkeypatch):
+    """Cancelling close() must not strand the conversation mid-teardown.
+
+    Regression: a cancellation at close()'s worker wait re-raised out of
+    ``close()``, so the rest of teardown never ran. The completion callbacks
+    returned the run permit, but the conversation, its executor and its lease
+    stayed allocated, and ``_closing`` blocked idle eviction, so nothing could
+    release them. Teardown must be owned by the service and finish even though
+    the caller is gone.
+    """
+    owner, create = await _terminal_services(tmp_path, 1)
+    async with owner:
+        holder = await create()
+        conversation = holder.get_conversation()
+        conversation._ensure_agent_ready()
+
+        worker_started = threading.Event()
+        worker_release = threading.Event()
+
+        def blocked_execute_tool(tool_name, action):
+            worker_started.set()
+            worker_release.wait(timeout=30)
+            return TerminalObservation.from_text("done", command="x")
+
+        monkeypatch.setattr(conversation, "execute_tool", blocked_execute_tool)
+
+        direct = asyncio.create_task(
+            holder.execute_tool("terminal", {"kind": "TerminalAction", "command": "x"})
+        )
+        await asyncio.to_thread(worker_started.wait, 10)
+
+        close_task = asyncio.create_task(holder.close())
+        await asyncio.sleep(0.2)
+        close_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await close_task
+
+        # The worker is still live, so teardown is still pending.
+        assert holder.is_open()
+
+        worker_release.set()
+        await asyncio.gather(direct, return_exceptions=True)
+        # Teardown finishes on its own once the worker settles: the
+        # conversation and its executor are closed and the lease is released.
+        await wait_until(lambda: not holder.is_open())
+        await wait_until(lambda: _free_run_permits(holder) == 1)
+        assert holder._conversation is None
+        assert holder._lease is None
+        assert holder._lease_generation is None
+
+
+async def test_worker_timeout_keeps_permit_until_the_worker_stops(
+    tmp_path, monkeypatch
+):
+    """A worker that outlives the drain must keep the permit, not release it.
+
+    Regression: when the worker did not exit within the drain timeout, teardown
+    released the permit and closed the conversation anyway. With
+    ``max_concurrent_runs=1`` a competing conversation could then use the
+    executor the abandoned worker was still running on, so the server ran two
+    live operations at the limit. The permit and the conversation must stay with
+    this service until the worker really exits, and teardown must then finish.
+    """
+    owner, create = await _terminal_services(tmp_path, 1)
+    async with owner:
+        holder = await create()
+        other = await create()
+        conversation = holder.get_conversation()
+        conversation._ensure_agent_ready()
+
+        worker_started = threading.Event()
+        worker_release = threading.Event()
+
+        def blocked_execute_tool(tool_name, action):
+            worker_started.set()
+            worker_release.wait(timeout=60)
+            return TerminalObservation.from_text("done", command="x")
+
+        monkeypatch.setattr(conversation, "execute_tool", blocked_execute_tool)
+        # Keep the bounded drain short: the assertion is that the permit
+        # outlives it, so a long wait would only slow the test down.
+        monkeypatch.setattr(
+            "openhands.agent_server.event_service.DIRECT_TOOL_DRAIN_TIMEOUT_SECONDS",
+            0.5,
+        )
+
+        direct = asyncio.create_task(
+            holder.execute_tool("terminal", {"kind": "TerminalAction", "command": "x"})
+        )
+        await asyncio.to_thread(worker_started.wait, 10)
+
+        close_task = asyncio.create_task(holder.close())
+        # Let the drain time out with the worker still blocked.
+        await wait_until(lambda: holder._teardown_continuation is not None)
+
+        # The worker is still live, so the permit must stay taken and the
+        # conversation must stay open: teardown is parked, not finished.
+        with pytest.raises(ConversationRunLimitExceeded):
+            await other.execute_tool(
+                "terminal", {"kind": "TerminalAction", "command": "y"}
+            )
+        assert holder.is_open()
+        assert close_task.done() is False
+
+        worker_release.set()
+        await asyncio.wait_for(close_task, timeout=30)
+        await asyncio.gather(direct, return_exceptions=True)
+
+        # Teardown finished once the worker exited: the conversation is closed,
+        # the permit is back, and the same call is admitted rather than refused.
+        await wait_until(lambda: not holder.is_open())
+        await wait_until(lambda: _free_run_permits(holder) == 1)
+        await other.execute_tool("terminal", {"kind": "TerminalAction", "command": "y"})
+
+
+async def test_failed_teardown_continuation_is_reported_and_retryable(
+    tmp_path, monkeypatch
+):
+    """A continuation that fails after the drain must not pass as a clean close.
+
+    Regression: ``close()`` skipped a continuation that had already finished, so
+    a cleanup failure in it was never observed. The caller then treated the
+    conversation as closed while it (and its lease) was still open, and
+    ``delete_conversation`` removed the record and directory regardless. The
+    result must be observed even when it is already complete, and a retry must
+    re-run the cleanup without replaying the stale failure.
+    """
+    owner, create = await _terminal_services(tmp_path, 1)
+    async with owner:
+        holder = await create()
+        conversation = holder.get_conversation()
+        conversation._ensure_agent_ready()
+
+        worker_started = threading.Event()
+        worker_release = threading.Event()
+
+        def blocked_execute_tool(tool_name, action):
+            worker_started.set()
+            worker_release.wait(timeout=60)
+            return TerminalObservation.from_text("done", command="x")
+
+        monkeypatch.setattr(conversation, "execute_tool", blocked_execute_tool)
+        monkeypatch.setattr(
+            "openhands.agent_server.event_service.DIRECT_TOOL_DRAIN_TIMEOUT_SECONDS",
+            0.5,
+        )
+
+        # Fail the continuation's cleanup on its first run, the way a subscriber
+        # raising inside ``PubSub.close()`` would. Failing synchronously makes
+        # the continuation complete before close() inspects it, which is the
+        # window this regression covers.
+        real_after = EventService._finish_teardown_after
+        attempts = {"n": 0}
+
+        async def failing_after(self, pending):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise RuntimeError("subscriber failed during close")
+            await real_after(self, pending)
+
+        monkeypatch.setattr(EventService, "_finish_teardown_after", failing_after)
+
+        direct = asyncio.create_task(
+            holder.execute_tool("terminal", {"kind": "TerminalAction", "command": "x"})
+        )
+        await asyncio.to_thread(worker_started.wait, 10)
+
+        close_task = asyncio.create_task(holder.close())
+        # Let the drain time out and park the continuation, which then fails.
+        await wait_until(lambda: holder._teardown_continuation is not None)
+        worker_release.set()
+
+        # The continuation failed, so close() must report it rather than
+        # silently reporting success while the conversation is still open.
+        with pytest.raises(RuntimeError, match="subscriber failed"):
+            await asyncio.wait_for(close_task, timeout=30)
+        await asyncio.gather(direct, return_exceptions=True)
+        assert holder.is_open()
+
+        # A retry re-runs the cleanup and succeeds, without replaying the stale
+        # failure from the first attempt.
+        await asyncio.wait_for(holder.close(), timeout=30)
+        await wait_until(lambda: not holder.is_open())
+        await wait_until(lambda: _free_run_permits(holder) == 1)
+        assert holder._conversation is None
+        assert holder._lease is None
+        assert attempts["n"] == 1
+
+
+async def test_interrupt_timeout_keeps_permit_until_the_interrupt_stops(
+    tmp_path, monkeypatch
+):
+    """An interrupt that outlives the drain must keep the permit too.
+
+    The same capacity gap as the worker timeout, on the offloaded
+    ``executor.interrupt()``: it outlives the worker and still uses the
+    executor, so teardown must wait for it rather than release capacity and
+    close the executor under it.
+    """
+    owner, create = await _terminal_services(tmp_path, 1)
+    async with owner:
+        holder = await create()
+        other = await create()
+        conversation = holder.get_conversation()
+        conversation._ensure_agent_ready()
+
+        worker_started = threading.Event()
+        worker_release = threading.Event()
+        interrupt_started = threading.Event()
+        interrupt_release = threading.Event()
+
+        def blocked_execute_tool(tool_name, action):
+            worker_started.set()
+            worker_release.wait(timeout=60)
+            return TerminalObservation.from_text("done", command="x")
+
+        def blocked_interrupt():
+            interrupt_started.set()
+            interrupt_release.wait(timeout=60)
+
+        monkeypatch.setattr(conversation, "execute_tool", blocked_execute_tool)
+        executor = conversation.agent.tools_map["terminal"].as_executable().executor
+        assert executor is not None
+        monkeypatch.setattr(executor, "interrupt", blocked_interrupt)
+        monkeypatch.setattr(
+            "openhands.agent_server.event_service.DIRECT_TOOL_DRAIN_TIMEOUT_SECONDS",
+            0.5,
+        )
+
+        direct = asyncio.create_task(
+            holder.execute_tool("terminal", {"kind": "TerminalAction", "command": "x"})
+        )
+        await asyncio.to_thread(worker_started.wait, 10)
+
+        close_task = asyncio.create_task(holder.close())
+        await asyncio.to_thread(interrupt_started.wait, 10)
+        await wait_until(lambda: holder._teardown_continuation is not None)
+
+        # The interrupt still holds the executor, so the permit must stay taken.
+        with pytest.raises(ConversationRunLimitExceeded):
+            await other.execute_tool(
+                "terminal", {"kind": "TerminalAction", "command": "y"}
+            )
+        assert close_task.done() is False
+
+        worker_release.set()
+        interrupt_release.set()
+        await asyncio.wait_for(close_task, timeout=30)
+        await asyncio.gather(direct, return_exceptions=True)
+
+        await wait_until(lambda: not holder.is_open())
+        await wait_until(lambda: _free_run_permits(holder) == 1)
+        await other.execute_tool("terminal", {"kind": "TerminalAction", "command": "y"})

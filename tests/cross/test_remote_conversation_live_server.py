@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -34,7 +34,15 @@ from websockets.sync.client import connect
 
 from openhands.agent_server.__main__ import preload_modules
 from openhands.agent_server.config import load_config
-from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
+from openhands.sdk import (
+    LLM,
+    Agent,
+    AgentContext,
+    Conversation,
+    Message,
+    TextContent,
+    Tool,
+)
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.event import (
@@ -67,11 +75,12 @@ from openhands.sdk.subagent.registry import (
     register_agent_if_absent,
 )
 from openhands.sdk.testing import TestLLM
-from openhands.sdk.tool import Tool
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace import RemoteWorkspace
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.grep.definition import GrepAction
+from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
 from openhands.workspace.docker.workspace import find_available_tcp_port
 
 
@@ -1504,6 +1513,352 @@ def test_stop_bash_command_endpoint_with_live_server(server_env):
         time.sleep(0.2)
     else:
         pytest.fail(f"command {command_id} did not finish after stop")
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="The terminal tool depends on the Unix tmux backend.",
+)
+def test_execute_tool_live_server_persists_environment(
+    server_env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Run a workspace setup script through the conversation's own terminal.
+
+    This is the round trip the issue asks for: the script is executed on the
+    server through the conversation's persistent terminal tool, so the
+    variables it exports are visible to a later terminal action in the same
+    conversation.
+    """
+    workspace_dir = server_env["workspace_path"]
+    script = workspace_dir / ".openhands" / "setup.sh"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("export EXECUTE_TOOL_LIVE_MARKER=visible\n")
+
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[Tool(name="terminal")])
+    workspace = RemoteWorkspace(host=server_env["host"], working_dir=str(workspace_dir))
+    conversation: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    try:
+        source = conversation.execute_tool(
+            "terminal",
+            TerminalAction(command=f"source {script}", timeout=30.0),
+        )
+        assert isinstance(source, TerminalObservation)
+        assert source.exit_code == 0
+        assert source.is_error is False
+
+        check = conversation.execute_tool(
+            "terminal",
+            TerminalAction(
+                command='printf "%s" "$EXECUTE_TOOL_LIVE_MARKER"', timeout=30.0
+            ),
+        )
+        assert isinstance(check, TerminalObservation)
+        assert check.exit_code == 0
+        assert "visible" in check.text
+    finally:
+        conversation.close()
+
+
+def test_execute_tool_live_server_rejects_action_of_another_tool(
+    server_env, tmp_path: Path
+):
+    """A payload for another tool is a 422, never a 500 from the executor.
+
+    The reviewer's repro: a valid ``GrepAction`` with ``tool_name="terminal"``
+    validated against the global action hierarchy and reached
+    ``TerminalExecutor``.
+    """
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[Tool(name="terminal")])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    conversation: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    try:
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            conversation.execute_tool(
+                "terminal",
+                GrepAction(pattern="x", path="."),  # type: ignore[arg-type]
+            )
+        assert exc_info.value.response.status_code == 422
+        assert "TerminalAction" in exc_info.value.response.text
+    finally:
+        conversation.close()
+
+
+def test_execute_tool_live_server_second_call_is_admitted(server_env, tmp_path: Path):
+    """A completed direct call releases the conversation for the next one.
+
+    Regression: the first success used to leave the in-flight flag set, so
+    every later call was refused with 409.
+    """
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[Tool(name="terminal")])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    conversation: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    try:
+        for _ in range(3):
+            observation = conversation.execute_tool(
+                "terminal", TerminalAction(command="echo ok", timeout=30.0)
+            )
+            assert isinstance(observation, TerminalObservation)
+            assert observation.exit_code == 0
+    finally:
+        conversation.close()
+
+
+def test_execute_tool_live_server_errors(server_env, tmp_path: Path):
+    """Errors are client-visible and specific, and execute nothing."""
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[Tool(name="terminal")])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    conversation: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    try:
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            conversation.execute_tool(
+                "not_a_tool", TerminalAction(command="echo hi", timeout=30.0)
+            )
+        assert exc_info.value.response.status_code == 422
+        assert "not_a_tool" in exc_info.value.response.text
+
+        # An action that omits its discriminator is a 422 too: the request model
+        # documents 'kind' as the discriminator, so a bare body must not run.
+        with httpx.Client() as client:
+            response = client.post(
+                f"{server_env['host']}/api/conversations/{conversation.id}"
+                "/execute_tool",
+                json={"tool_name": "terminal", "action": {"command": "echo no-kind"}},
+                timeout=10.0,
+            )
+            assert response.status_code == 422
+            assert "kind" in response.json()["detail"]
+    finally:
+        conversation.close()
+
+    # An unknown conversation id is a 404, not a 500.
+    with httpx.Client() as client:
+        response = client.post(
+            f"{server_env['host']}/api/conversations/{uuid4()}/execute_tool",
+            json={
+                "tool_name": "terminal",
+                "action": {"kind": "TerminalAction", "command": "echo hi"},
+            },
+            timeout=10.0,
+        )
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Conversation not found"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="The terminal tool depends on the Unix tmux backend.",
+)
+def test_execute_tool_live_server_cancellation_does_not_stall_the_server(
+    server_env, tmp_path: Path
+):
+    """A dropped request interrupts its command without stalling the server.
+
+    The reviewer's Windows concern: cancellation runs ``executor.interrupt()``,
+    which on the PowerShell backend performs blocking child-process scans. This
+    is the real-server smoke test that the cancel path leaves the event loop
+    free: a slow direct call is abandoned, its interrupt runs, and an unrelated
+    ``/alive`` request still answers. The blocking scans are Windows-only, so
+    the discriminating case is the unit test that injects a blocking interrupt
+    (``test_cancel_offloads_interrupt_off_the_event_loop``); this one confirms
+    the wiring on a live server.
+    """
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[Tool(name="terminal")])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    conversation: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+    conversation_id = conversation.id
+
+    try:
+        with httpx.Client(base_url=server_env["host"]) as client:
+            # Start a slow direct call, then drop the request. The server keeps
+            # owning the worker and offloads the interrupt.
+            with pytest.raises((httpx.ReadTimeout, httpx.ReadError)):
+                client.post(
+                    f"/api/conversations/{conversation_id}/execute_tool",
+                    json={
+                        "tool_name": "terminal",
+                        "action": {
+                            "kind": "TerminalAction",
+                            "command": "sleep 30",
+                            "timeout": 120,
+                        },
+                    },
+                    timeout=1.0,
+                )
+            # The abandoned command's interrupt runs off the loop: /alive
+            # answers while it is still in flight.
+            alive = client.get("/alive", timeout=5.0)
+            assert alive.status_code == 200
+            assert alive.json() == {"status": "ok"}
+    finally:
+        # close() drains the worker and the offloaded interrupt before teardown.
+        conversation.close()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="The terminal tool depends on the Unix tmux backend.",
+)
+def test_execute_tool_live_server_shares_the_run_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A direct call consumes the server-wide run budget, so a full server is 429.
+
+    Regression: direct calls bypassed ``max_concurrent_runs`` entirely, so
+    every conversation could submit one at once and queue unbounded work.
+    """
+    with live_server_env(
+        tmp_path, monkeypatch, config_overrides={"max_concurrent_runs": 1}
+    ) as server_env:
+        llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+        agent = Agent(llm=llm, tools=[Tool(name="terminal")])
+        holder: RemoteConversation = Conversation(
+            agent=agent,
+            workspace=RemoteWorkspace(
+                host=server_env["host"],
+                working_dir=str(server_env["workspace_path"]),
+            ),
+        )
+        waiter: RemoteConversation = Conversation(
+            agent=agent,
+            workspace=RemoteWorkspace(
+                host=server_env["host"],
+                working_dir=str(server_env["workspace_path"]),
+            ),
+        )
+
+        try:
+            # Warm both conversations first: a conversation is created lazily on
+            # its first call, and a create itself reserves a run slot, so
+            # creating one while the other holds the only permit would refuse
+            # the create rather than the direct call under test.
+            for conversation in (holder, waiter):
+                warmup = conversation.execute_tool(
+                    "terminal", TerminalAction(command="echo warmup", timeout=30.0)
+                )
+                assert isinstance(warmup, TerminalObservation)
+                assert warmup.exit_code == 0
+
+            with httpx.Client(base_url=server_env["host"]) as client:
+                # Hold the only permit on a slow direct call in one thread. The
+                # command touches a marker once it is actually running, i.e.
+                # after the server admitted the call and took the only permit;
+                # waiting for it removes the race where the probe below wins the
+                # permit first, refuses the holder, and then is admitted itself.
+                marker = tmp_path / "holder_running"
+                holder_thread = threading.Thread(
+                    target=holder.execute_tool,
+                    args=(
+                        "terminal",
+                        TerminalAction(
+                            command=f"touch {marker} && sleep 5", timeout=60.0
+                        ),
+                    ),
+                )
+                holder_thread.start()
+                try:
+                    marker_deadline = time.monotonic() + 30
+                    while time.monotonic() < marker_deadline and not marker.exists():
+                        time.sleep(0.05)
+                    assert marker.exists(), (
+                        "the holding direct call never started running"
+                    )
+
+                    deadline = time.monotonic() + 30
+                    response: httpx.Response | None = None
+                    while time.monotonic() < deadline:
+                        response = client.post(
+                            f"/api/conversations/{waiter.id}/execute_tool",
+                            json={
+                                "tool_name": "terminal",
+                                "action": {
+                                    "kind": "TerminalAction",
+                                    "command": "echo blocked",
+                                },
+                            },
+                            timeout=10.0,
+                        )
+                        if response.status_code == 429:
+                            break
+                        time.sleep(0.2)
+                    assert response is not None and response.status_code == 429, (
+                        "a direct call was admitted while the only run permit "
+                        "was held; direct calls bypass max_concurrent_runs"
+                    )
+                    assert response.json()["detail"] == (
+                        "Conversation run limit reached. Retry the request later."
+                    )
+                finally:
+                    holder_thread.join(timeout=60)
+
+                # The permit is returned once the holder finishes, so the same
+                # call is admitted now: the 429 was capacity, not a refusal.
+                observation = waiter.execute_tool(
+                    "terminal", TerminalAction(command="echo admitted", timeout=30.0)
+                )
+                assert isinstance(observation, TerminalObservation)
+                assert observation.exit_code == 0
+        finally:
+            waiter.close()
+            holder.close()
+
+
+def test_execute_tool_live_server_requires_auth_and_masks_secrets(
+    authenticated_server_env, tmp_path: Path
+):
+    """The route needs the session key, and observations mask registered secrets."""
+    # An unauthenticated caller is rejected before anything runs.
+    with httpx.Client() as client:
+        response = client.post(
+            f"{authenticated_server_env['host']}"
+            f"/api/conversations/{uuid4()}/execute_tool",
+            json={
+                "tool_name": "terminal",
+                "action": {"kind": "TerminalAction", "command": "echo hi"},
+            },
+            timeout=10.0,
+        )
+        assert response.status_code == 401
+
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[Tool(name="terminal")])
+    workspace = RemoteWorkspace(
+        host=authenticated_server_env["host"],
+        working_dir=str(authenticated_server_env["workspace_path"]),
+        api_key=authenticated_server_env["api_key"],
+    )
+    conversation: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    try:
+        conversation.update_secrets({"EXECUTE_TOOL_LIVE_SECRET": "s3cret-value"})
+        observation = conversation.execute_tool(
+            "terminal",
+            TerminalAction(
+                command='printf "%s" "$EXECUTE_TOOL_LIVE_SECRET"', timeout=30.0
+            ),
+        )
+        assert isinstance(observation, TerminalObservation)
+        assert observation.exit_code == 0
+        assert "s3cret-value" not in observation.text
+        assert "<secret-hidden>" in observation.text
+    finally:
+        conversation.close()
 
 
 def test_file_upload_endpoint_with_live_server(server_env, tmp_path: Path):
