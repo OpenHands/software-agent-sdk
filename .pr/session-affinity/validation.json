@@ -72,19 +72,19 @@
       "sanitization": "local filesystem paths replaced with placeholders; results unchanged"
     },
     {
-      "file": "evidence/pytest-sdk-targeted-20261029.log",
+      "file": "evidence/pytest-sdk-targeted-20261029.txt",
       "original_sha256": "b0a812284bd30d8f79bdd101e20cb557e517b61ac983fff2aecdac84ffc615de",
       "published_sha256": "8946af823e6efae18a03b991a127aa3642d2a0e32a650a02558e17f37e924f2f",
       "sanitization": "local filesystem paths replaced with placeholders; results unchanged"
     },
     {
-      "file": "evidence/precommit-with-litellm-20261029.log",
+      "file": "evidence/precommit-with-litellm-20261029.txt",
       "original_sha256": "3e023819bbbe91ed390828da8c633b662a29e6ed1e2cd04ad834b84ae1baf2b6",
       "published_sha256": "3e023819bbbe91ed390828da8c633b662a29e6ed1e2cd04ad834b84ae1baf2b6",
       "sanitization": "local filesystem paths replaced with placeholders; results unchanged"
     },
     {
-      "file": "evidence/persisted-settings-compat-20261029.log",
+      "file": "evidence/persisted-settings-compat-20261029.txt",
       "original_sha256": "385b0fd21cfd24adc706c8f2d1ab9e2570349deb5cd0fa9b4ab7bb0286b9e45b",
       "published_sha256": "385b0fd21cfd24adc706c8f2d1ab9e2570349deb5cd0fa9b4ab7bb0286b9e45b",
       "sanitization": "local filesystem paths replaced with placeholders; results unchanged"
