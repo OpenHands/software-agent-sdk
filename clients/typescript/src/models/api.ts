@@ -92,6 +92,7 @@ export interface SkillInfo {
   type: 'repo' | 'knowledge' | 'agentskills';
   content: string;
   triggers: string[];
+  paths?: string[];
   source?: string | null;
   description?: string | null;
   is_agentskills_format?: boolean;

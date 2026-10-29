@@ -2100,7 +2100,7 @@ def test_acp_resolve_command_keeps_npx_when_binary_absent(
         "npx",
         "-y",
         "--prefer-offline",
-        "@agentclientprotocol/codex-acp@1.10.0",
+        "@agentclientprotocol/codex-acp@2.2.2",
     ]
 
 
