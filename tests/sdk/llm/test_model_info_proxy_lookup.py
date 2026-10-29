@@ -20,6 +20,7 @@ from unittest.mock import patch
 import litellm
 import pytest
 from litellm import model_cost
+from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.options.chat_options import select_chat_options
@@ -405,12 +406,10 @@ def test_proxy_projects_only_string_list_allowance(local_proxy, allowed):
         "supports_reasoning_effort": False,
         "_capability_source": "proxy",
     }
-    if (
-        isinstance(allowed, list)
-        and allowed
-        and all(isinstance(item, str) for item in allowed)
-    ):
-        expected["allowed_openai_params"] = allowed
+    if isinstance(allowed, list):
+        string_params = [item for item in allowed if isinstance(item, str)]
+        if string_params:
+            expected["allowed_openai_params"] = string_params
     assert info == expected
 
 

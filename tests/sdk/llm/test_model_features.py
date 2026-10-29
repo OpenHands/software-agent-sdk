@@ -670,7 +670,9 @@ def test_advertised_request_param_enables_only_its_capability(param, capability)
         )
     )
 
-    assert {k for k in without if without[k] != advertised[k]} == {capability}
+    # ``sources`` records the provenance change alongside the capability.
+    changed = {k for k in without if without[k] != advertised[k]} - {"sources"}
+    assert changed == {capability}
     assert advertised[capability] is True
 
 
@@ -712,12 +714,14 @@ def test_advertised_param_precedence():
         ).supports_reasoning_effort
         is False
     )
+    # Generic ``supports_reasoning`` alone does not authorize the exact
+    # ``reasoning_effort`` request param in this PR's consolidated resolver.
     assert (
         get_features(
             _UNKNOWN_PROXY_ALIAS,
             model_info={"allowed_openai_params": [], "supports_reasoning": True},
         ).supports_reasoning_effort
-        is True
+        is False
     )
 
 

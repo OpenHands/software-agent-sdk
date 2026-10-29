@@ -22,8 +22,8 @@ def _merge_raw_model_metadata(model_info: Mapping[str, Any]) -> dict[str, Any]:
     key = model_info.get("key")
     raw = model_cost.get(key) if isinstance(key, str) else None
     if not isinstance(raw, dict):
-        return dict(model_info)
-    return {**raw, **model_info}
+        return {**model_info, "_capability_source": "litellm"}
+    return {**raw, **model_info, "_capability_source": "litellm"}
 
 
 # Pricing fields copied from the underlying model so a custom proxy alias
