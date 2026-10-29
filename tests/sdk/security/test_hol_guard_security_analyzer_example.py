@@ -93,7 +93,7 @@ def test_explicitly_benign_terminal_command_is_low_risk(
     assert risk == SecurityRisk.LOW
     assert calls == [
         (
-            ["hol-guard", "command", "test", "pwd", "--json"],
+            ["hol-guard", "command", "test", "--json", "--", "pwd"],
             {
                 "cwd": "/workspace",
                 "capture_output": True,
@@ -207,3 +207,69 @@ def test_non_terminal_and_terminal_input_actions_fail_closed() -> None:
         analyzer.security_risk(_event(TerminalAction(command="C-c", is_input=True)))
         == SecurityRisk.HIGH
     )
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"continue": False},
+        {"continue": "false"},
+        {"decision": "deny"},
+        {"decision": None},
+        {"policy_action": "review"},
+        {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny"}},
+        {"hookSpecificOutput": {"hookEventName": "PostToolUse", "permissionDecision": "allow"}},
+    ],
+)
+def test_conflicting_guard_verdict_is_high_risk(
+    monkeypatch: pytest.MonkeyPatch,
+    override: dict[str, Any],
+) -> None:
+    """A benign classification must never override an explicit stop signal."""
+    verdict = {
+        "minimum_action": "allow",
+        "classification": {"explicitly_benign": True},
+        **override,
+    }
+    monkeypatch.setattr(example.subprocess, "run", lambda *_a, **_kw: _completed(verdict))
+    risk = example.HolGuardSecurityAnalyzer().security_risk(
+        _event(TerminalAction(command="pwd"))
+    )
+    assert risk == SecurityRisk.HIGH
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        '{"classification":{"explicitly_benign":true},"minimum_action":"review","minimum_action":"allow"}',
+        '{"classification":{"explicitly_benign":false,"explicitly_benign":true},"minimum_action":"allow"}',
+        '{"classification":{"explicitly_benign":true},"minimum_action":"allow","continue":false,"continue":true}',
+        "[" * 20000 + "]" * 20000,
+    ],
+)
+def test_duplicate_or_overdeep_guard_json_is_high_risk(
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: str,
+) -> None:
+    monkeypatch.setattr(example.subprocess, "run", lambda *_a, **_kw: _completed(stdout))
+    risk = example.HolGuardSecurityAnalyzer().security_risk(
+        _event(TerminalAction(command="pwd"))
+    )
+    assert risk == SecurityRisk.HIGH
+
+
+def test_guard_cli_command_starting_with_hyphen_is_positional(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return _completed({"minimum_action": "allow", "classification": {"explicitly_benign": True}})
+
+    monkeypatch.setattr(example.subprocess, "run", fake_run)
+    risk = example.HolGuardSecurityAnalyzer().security_risk(
+        _event(TerminalAction(command="-n"))
+    )
+    assert risk == SecurityRisk.LOW
+    assert calls == [["hol-guard", "command", "test", "--json", "--", "-n"]]
