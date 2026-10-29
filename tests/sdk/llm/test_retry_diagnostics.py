@@ -1,4 +1,5 @@
 import logging
+from typing import ClassVar
 
 import pytest
 from litellm.exceptions import APIError
@@ -174,3 +175,42 @@ async def test_malformed_provider_response_recovers_on_async_retry():
 
     assert await request() == "ok"
     assert calls == 2
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.asyncio
+async def test_long_retry_after_logs_no_retry(caplog, asynchronous):
+    class RateLimitedError(Exception):
+        status_code = 429
+        headers: ClassVar[dict[str, str]] = {"retry-after": "300"}
+
+    calls = 0
+    policy = RetryMixin().retry_decorator(
+        num_retries=3,
+        retry_exceptions=(RateLimitedError,),
+        retry_min_wait=0,
+        retry_max_wait=64,
+    )
+
+    def fail():
+        nonlocal calls
+        calls += 1
+        raise RateLimitedError("private-response-body")
+
+    @policy
+    def request():
+        fail()
+
+    @policy
+    async def async_request():
+        fail()
+
+    with caplog.at_level(logging.WARNING), pytest.raises(RateLimitedError):
+        if asynchronous:
+            await async_request()
+        else:
+            request()
+
+    assert calls == 1
+    assert "retry_eligible=True will_retry=False" in caplog.text
+    assert "private-response-body" not in caplog.text

@@ -119,6 +119,8 @@ class RetryMixin:
             else retry_exceptions
         )
 
+        stop = stop_after_attempt(num_retries) | _StopBeforeLongWait(retry_max_wait)
+
         def diagnosed_retry(retry_state: RetryCallState) -> bool:
             eligible = retry_condition(retry_state)
             exc = (
@@ -137,7 +139,7 @@ class RetryMixin:
                     retry_state.attempt_number,
                     num_retries,
                     eligible,
-                    eligible and retry_state.attempt_number < num_retries,
+                    eligible and not stop(retry_state),
                 )
             return eligible
 
@@ -151,9 +153,7 @@ class RetryMixin:
 
         retry_decorator: Callable[[Callable[..., Any]], Callable[..., Any]] = retry(
             before_sleep=before_sleep,
-            stop=(
-                stop_after_attempt(num_retries) | _StopBeforeLongWait(retry_max_wait)
-            ),
+            stop=stop,
             reraise=True,
             retry=diagnosed_retry,
             wait=wait,
