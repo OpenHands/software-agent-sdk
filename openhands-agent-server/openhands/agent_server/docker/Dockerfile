@@ -220,7 +220,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     test "$(git rev-parse "${CONTAINERD_VERSION}^{commit}")" = "${CONTAINERD_REVISION}"; \
     git checkout --detach FETCH_HEAD; \
     test "$(git rev-parse HEAD)" = "${CONTAINERD_REVISION}"; \
-    go get golang.org/x/net@v0.60.0; \
+    go get golang.org/x/net@v0.60.0 github.com/go-jose/go-jose/v4@v4.1.6; \
     go mod tidy; \
     go mod vendor; \
     make bin/containerd bin/ctr bin/containerd-shim-runc-v2 \
