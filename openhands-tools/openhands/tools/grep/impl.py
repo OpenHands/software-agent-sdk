@@ -72,8 +72,12 @@ def _glob_to_regex(pattern: str) -> str:
             if i - star_start >= 2 and whole_segment and i == len(pattern):
                 regex.append(".*")
             elif i - star_start >= 2 and whole_segment and pattern[i] == "/":
-                regex.append("(?:[^/]*/)*")
                 i += 1
+                # `**/**/` matches the same paths as `**/`, and adjacent
+                # repetitions would otherwise backtrack catastrophically.
+                while pattern.startswith("**/", i):
+                    i += 3
+                regex.append("(?:[^/]*/)*")
             else:
                 regex.append("[^/]*")
         elif char == "?":

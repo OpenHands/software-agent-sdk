@@ -315,6 +315,32 @@ def test_grep_executor_ripgrep_include_path_patterns(include_tree):
     ]
 
 
+def test_grep_executor_include_repeated_globstar_segments_is_fast(tmp_path: Path):
+    """Adjacent `**/` segments must not cause catastrophic regex backtracking."""
+    deep_dir = tmp_path
+    for level in range(14):
+        deep_dir = deep_dir / f"level{level}"
+    deep_dir.mkdir(parents=True)
+    (deep_dir / "deep.ts").write_text("needle")
+
+    executor = GrepExecutor(working_dir=str(tmp_path))
+    include = "**/" * 20
+
+    start = time.monotonic()
+    matching = executor._execute_with_python_search(
+        GrepAction(pattern="needle", include=include + "*.ts"), tmp_path
+    )
+    non_matching = executor._execute_with_python_search(
+        GrepAction(pattern="needle", include=include + "*.zzz"), tmp_path
+    )
+    elapsed = time.monotonic() - start
+
+    expected = "/".join(f"level{level}" for level in range(14)) + "/deep.ts"
+    assert _matched_names(matching, tmp_path) == [expected]
+    assert non_matching.matches == []
+    assert elapsed < 1.0
+
+
 def test_grep_executor_include_brace_glob_without_matches(include_tree, monkeypatch):
     """A brace include that matches nothing still reports a filtered empty result."""
     monkeypatch.setattr(grep_impl, "_check_ripgrep_available", lambda: False)
