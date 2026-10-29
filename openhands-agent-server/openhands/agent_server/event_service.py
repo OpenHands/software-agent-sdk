@@ -807,7 +807,13 @@ class EventService:
             if state.execution_status != ConversationExecutionStatus.ERROR:
                 state.execution_status = ConversationExecutionStatus.ERROR
 
-    def _publish_error_event_sync(self, exc: BaseException) -> None:
+    def _publish_error_event_sync(
+        self,
+        exc: BaseException,
+        *,
+        code: str | None = None,
+        classification: ErrorClassification | None = None,
+    ) -> None:
         """Emit a ConversationErrorEvent so the UI sees the failure detail.
 
         For LLM/runtime failures that would otherwise only reach the logs — the
@@ -819,8 +825,9 @@ class EventService:
         try:
             error_event = ConversationErrorEvent(
                 source="environment",
-                code=type(exc).__name__,
+                code=code or type(exc).__name__,
                 detail=str(exc),
+                classification=classification,
             )
             with self._conversation._state:
                 self._conversation._on_event(error_event)
