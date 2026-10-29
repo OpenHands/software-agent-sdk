@@ -45,8 +45,8 @@ vendor = pathlib.Path("/usr/local/lib/python3.13/site-packages/pip/_vendor")
 pkgs = {
     "urllib3": ("2.7.0", "2.8.0", "https://files.pythonhosted.org/packages/py3/u/urllib3/urllib3-2.8.0-py3-none-any.whl",
                 "0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3"),
-    "msgpack": ("1.1.2", "1.2.1", "https://files.pythonhosted.org/packages/source/m/msgpack/msgpack-1.2.1.tar.gz",
-                "04c721c2c7448767e9e3f2520a475663d8ee0f09c31890f6d2bd70fd636a9647"),
+    "msgpack": ("1.1.2", "1.2.3", "https://files.pythonhosted.org/packages/source/m/msgpack/msgpack-1.2.3.tar.gz",
+                "32edb81a2b5eb7cd7c9d941b2bfbbb082fd2cd09e0e725930316af6b708db186"),
 }
 
 
@@ -272,7 +272,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM debian:trixie-slim AS python-node-runtime
 ARG NPM_VERSION
-ARG DEBIAN_SNAPSHOT=20261025T235307Z
+ARG DEBIAN_SNAPSHOT=20261029T211301Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
