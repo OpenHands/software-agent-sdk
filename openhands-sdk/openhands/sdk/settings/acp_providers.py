@@ -420,8 +420,7 @@ _PI_MODELS: tuple[ACPModelOption, ...] = (
 # and the offered set is credential-dependent, but unlike Kimi's it is not
 # *user-defined*: these are OpenCode Zen ids, the catalogue that
 # ``OPENCODE_API_KEY`` — the provider's own credential — unlocks, so a curated
-# list is meaningful. Without a key the server offers only the free tier, which
-# is why ``nemotron-3-ultra-free`` is kept. A user may still configure any
+# list is meaningful. A user may still configure any
 # ``<provider>/<model>`` the CLI knows (e.g. ``anthropic/...`` with
 # ANTHROPIC_API_KEY supplied as a conversation secret).
 _OPENCODE_MODELS: tuple[ACPModelOption, ...] = (
@@ -431,9 +430,6 @@ _OPENCODE_MODELS: tuple[ACPModelOption, ...] = (
     ACPModelOption(id="opencode/gpt-5.5", label="GPT-5.5"),
     ACPModelOption(id="opencode/gemini-3.1-pro", label="Gemini 3.1 Pro"),
     ACPModelOption(id="opencode/kimi-k3", label="Kimi K3"),
-    ACPModelOption(
-        id="opencode/nemotron-3-ultra-free", label="Nemotron 3 Ultra (free)"
-    ),
 )
 
 

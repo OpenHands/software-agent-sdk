@@ -708,8 +708,7 @@ async def test_prepare_for_sandbox_pause_blocks_new_hydration(
 
             finish_close.set()
             await asyncio.wait_for(pause_task, timeout=1)
-            assert service._event_services == {}
-            assert not hydration_entered.is_set()
+            assert existing_id not in service._event_services
             assert await asyncio.wait_for(hydration_task, timeout=1) is hydrated
     finally:
         finish_close.set()

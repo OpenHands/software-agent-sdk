@@ -36,8 +36,8 @@ ARG INSTALL_CAPABILITIES=vscode,browser,docker
 # stages below when needed. Package upgrades resolve against a dated snapshot so
 # newly published Debian packages have a three-day observation period.
 ####################################################################################
-FROM python:3.13.15-slim-trixie AS python-runtime
-# pip 26.2.1 (latest) vendors urllib3 2.7.0 and msgpack 1.1.2; swap in fixed releases, re-vendored as pip does.
+FROM python:3.13.18-slim-trixie AS python-runtime
+# pip 26.2.2 vendors urllib3 2.7.0 and msgpack 1.1.2; swap in fixed releases, re-vendored as pip does.
 RUN python3 <<'PY'
 import hashlib, io, json, pathlib, re, shutil, tarfile, urllib.request, zipfile
 
@@ -94,15 +94,27 @@ for name, (old, new, url, sha256) in pkgs.items():
         if c["name"] == name:
             c["version"] = new
     (vendor / "bom.cdx.json").write_text(json.dumps(bom, indent=2))
+
+# setuptools 70.3.0's pkg_resources is only imported when _PIP_USE_IMPORTLIB_METADATA=0.
+shutil.rmtree(vendor / "pkg_resources")
+sub(vendor / "vendor.txt", "setuptools==70.3.0\n", "")
+ref = "pkg:pypi/setuptools@70.3.0"
+bom = json.loads((vendor / "bom.cdx.json").read_text())
+bom["components"] = [c for c in bom["components"] if c.get("bom-ref") != ref]
+bom["dependencies"] = [d for d in bom["dependencies"] if d["ref"] != ref]
+for d in bom["dependencies"]:
+    d["dependsOn"] = [x for x in d.get("dependsOn", []) if x != ref]
+assert ref not in json.dumps(bom)
+(vendor / "bom.cdx.json").write_text(json.dumps(bom, indent=2))
 PY
 RUN set -eux; \
     vendor=/usr/local/lib/python3.13/site-packages/pip/_vendor; \
     find "$vendor/urllib3" "$vendor/msgpack" -name __pycache__ -prune -exec rm -rf {} +; \
     python3 -m compileall -q "$vendor/urllib3" "$vendor/msgpack"; \
-    python3 -c 'from pip._vendor import msgpack, requests, urllib3; from pip._vendor.cachecontrol import serialize; assert urllib3.__version__ == "2.8.0" and msgpack.version == (1, 2, 1)'; \
+    python3 -c 'from pip._vendor import msgpack, requests, urllib3; from pip._vendor.cachecontrol import serialize; assert urllib3.__version__ == "2.8.0" and msgpack.version == (1, 2, 1); import importlib.util as u; assert u.find_spec("pip._vendor.pkg_resources") is None'; \
     python3 -m pip --version
 
-FROM node:24.21.0-trixie-slim AS node-runtime
+FROM node:24.22.1-trixie-slim AS node-runtime
 
 ####################################################################################
 # Patched npm packages
@@ -122,19 +134,19 @@ RUN set -eux; \
             rm "/tmp/$tarball"; \
         done; \
     }; \
-    fetch npm undici@6.28.1 brace-expansion@5.0.12; \
-    fetch openvscode undici@7.29.1 shell-quote@1.11.0 lodash-es@4.18.0 picomatch@4.0.4; \
+    fetch npm undici@6.29.1 brace-expansion@5.0.12; \
+    fetch openvscode undici@7.30.1 shell-quote@1.11.0 lodash-es@4.18.0 picomatch@4.0.4; \
     fetch openvscode socks@2.8.10 ip-address@10.3.1; \
     rm -rf /root/.npm
 
 ####################################################################################
 # Source-built CLI tools
 #
-# The latest gh, Docker Buildx, and Docker Compose releases still ship Go
-# binaries with vulnerable embedded modules. Build those releases with patched
+# The latest gh, Docker Buildx, Docker Compose, containerd and runc releases
+# still ship Go binaries with vulnerable embedded modules. Build those releases with patched
 # Go toolchains/modules until upstream publishes rebuilt binaries.
 ####################################################################################
-FROM golang:1.27.2-bookworm AS github-cli-source
+FROM golang:1.27.3-bookworm AS github-cli-source
 ARG GH_CLI_VERSION=v2.102.0
 ARG GH_CLI_REVISION=fc4b137cdef0a6bd28fd461b7cf9c84a5812a8cd
 WORKDIR /src
@@ -147,14 +159,14 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     test "$(git rev-parse "${GH_CLI_VERSION}^{commit}")" = "${GH_CLI_REVISION}"; \
     git checkout --detach FETCH_HEAD; \
     test "$(git rev-parse HEAD)" = "${GH_CLI_REVISION}"; \
-    go mod edit -go=1.27.2 -toolchain=none -require=golang.org/x/net@v0.60.0; \
+    go mod edit -go=1.27.3 -toolchain=none -require=golang.org/x/net@v0.60.0; \
     go mod tidy; \
     BUILD_DATE=$(TZ=UTC git show -s --format=%cd --date=format-local:%Y-%m-%d HEAD); \
     mkdir -p /out; \
     CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X github.com/cli/cli/v2/internal/build.Version=${GH_CLI_VERSION#v} -X github.com/cli/cli/v2/internal/build.Date=${BUILD_DATE}" -o /out/gh ./cmd/gh; \
     /out/gh --version
 
-FROM golang:1.26.9-bookworm AS docker-buildx-source
+FROM golang:1.26.10-bookworm AS docker-buildx-source
 ARG DOCKER_BUILDX_VERSION=v0.38.0
 ARG DOCKER_BUILDX_REVISION=0dbe87f36ed472fe36b6796c3f70b4210a731fc5
 WORKDIR /src
@@ -167,13 +179,13 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     test "$(git rev-parse "${DOCKER_BUILDX_VERSION}^{commit}")" = "${DOCKER_BUILDX_REVISION}"; \
     git checkout --detach FETCH_HEAD; \
     test "$(git rev-parse HEAD)" = "${DOCKER_BUILDX_REVISION}"; \
-    go mod edit -go=1.26.9 -toolchain=none -require=golang.org/x/net@v0.60.0 -require=github.com/moby/go-archive@v0.3.0; \
+    go mod edit -go=1.26.10 -toolchain=none -require=golang.org/x/net@v0.60.0 -require=github.com/moby/go-archive@v0.3.0; \
     go mod download golang.org/x/net github.com/moby/go-archive; \
     mkdir -p /out; \
     CGO_ENABLED=0 GOFLAGS=-mod=mod go build -trimpath -ldflags "-s -w -X github.com/docker/buildx/version.Version=${DOCKER_BUILDX_VERSION} -X github.com/docker/buildx/version.Revision=${DOCKER_BUILDX_REVISION} -X github.com/docker/buildx/version.Package=github.com/docker/buildx" -o /out/docker-buildx ./cmd/buildx; \
     /out/docker-buildx version
 
-FROM golang:1.26.9-bookworm AS docker-compose-source
+FROM golang:1.26.10-bookworm AS docker-compose-source
 ARG DOCKER_COMPOSE_VERSION=v5.6.0
 ARG DOCKER_COMPOSE_REVISION=42f48072bbf92ee9b0e43f9fdf2008d03546e7ca
 WORKDIR /src
@@ -186,15 +198,81 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     test "$(git rev-parse "${DOCKER_COMPOSE_VERSION}^{commit}")" = "${DOCKER_COMPOSE_REVISION}"; \
     git checkout --detach FETCH_HEAD; \
     test "$(git rev-parse HEAD)" = "${DOCKER_COMPOSE_REVISION}"; \
-    go mod edit -go=1.26.9 -toolchain=none -require=golang.org/x/net@v0.60.0; \
+    go mod edit -go=1.26.10 -toolchain=none -require=golang.org/x/net@v0.60.0; \
     go mod tidy; \
     mkdir -p /out; \
     CGO_ENABLED=0 go build -trimpath -tags e2e -ldflags "-s -w -X github.com/docker/compose/v5/internal.Version=${DOCKER_COMPOSE_VERSION}" -o /out/docker-compose ./cmd; \
     /out/docker-compose version
 
+FROM golang:1.27.3-bookworm AS containerd-source
+ARG CONTAINERD_VERSION=v2.4.2
+ARG CONTAINERD_REVISION=b7a25261e029d68978bbf290df0a62fc819b3c51
+WORKDIR /src
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends libbtrfs-dev; \
+    rm -rf /var/lib/apt/lists/*; \
+    git init .; \
+    git remote add origin https://github.com/containerd/containerd.git; \
+    git fetch --depth 1 origin "${CONTAINERD_REVISION}" "refs/tags/${CONTAINERD_VERSION}:refs/tags/${CONTAINERD_VERSION}"; \
+    test "$(git rev-parse "${CONTAINERD_VERSION}^{commit}")" = "${CONTAINERD_REVISION}"; \
+    git checkout --detach FETCH_HEAD; \
+    test "$(git rev-parse HEAD)" = "${CONTAINERD_REVISION}"; \
+    go get golang.org/x/net@v0.60.0 github.com/go-jose/go-jose/v4@v4.1.6; \
+    go mod tidy; \
+    go mod vendor; \
+    make bin/containerd bin/ctr bin/containerd-shim-runc-v2 \
+        VERSION="${CONTAINERD_VERSION}" REVISION="${CONTAINERD_REVISION}" PACKAGE=containerd; \
+    mkdir -p /out; \
+    cp bin/containerd bin/ctr bin/containerd-shim-runc-v2 /out/; \
+    /out/containerd --version
+
+FROM golang:1.27.3-bookworm AS runc-source
+ARG RUNC_VERSION=v1.5.2
+ARG RUNC_REVISION=29dd3dc2b13b4123162e5fe132504bb4b15569f1
+WORKDIR /src
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends libseccomp-dev; \
+    rm -rf /var/lib/apt/lists/*; \
+    git init .; \
+    git remote add origin https://github.com/opencontainers/runc.git; \
+    git fetch --depth 1 origin "${RUNC_REVISION}" "refs/tags/${RUNC_VERSION}:refs/tags/${RUNC_VERSION}"; \
+    test "$(git rev-parse "${RUNC_VERSION}^{commit}")" = "${RUNC_REVISION}"; \
+    git checkout --detach FETCH_HEAD; \
+    test "$(git rev-parse HEAD)" = "${RUNC_REVISION}"; \
+    go get golang.org/x/net@v0.60.0; \
+    go mod tidy; \
+    go mod vendor; \
+    make runc RUNC_BUILDTAGS=-libpathrs; \
+    mkdir -p /out; \
+    cp runc /out/runc; \
+    /out/runc --version
+
+FROM golang:1.27.3-bookworm AS rootlesskit-source
+ARG ROOTLESSKIT_VERSION=v3.3.0
+ARG ROOTLESSKIT_REVISION=888c3189e9cdf34dcdb19011e1c7c34eb94b5393
+WORKDIR /src
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    set -eux; \
+    git init .; \
+    git remote add origin https://github.com/rootless-containers/rootlesskit.git; \
+    git fetch --depth 1 origin "${ROOTLESSKIT_REVISION}" "refs/tags/${ROOTLESSKIT_VERSION}:refs/tags/${ROOTLESSKIT_VERSION}"; \
+    test "$(git rev-parse "${ROOTLESSKIT_VERSION}^{commit}")" = "${ROOTLESSKIT_REVISION}"; \
+    git checkout --detach FETCH_HEAD; \
+    test "$(git rev-parse HEAD)" = "${ROOTLESSKIT_REVISION}"; \
+    mkdir -p /out; \
+    CGO_ENABLED=0 go build -trimpath -o /out/rootlesskit ./cmd/rootlesskit; \
+    /out/rootlesskit --version
+
 FROM debian:trixie-slim AS python-node-runtime
 ARG NPM_VERSION
-ARG DEBIAN_SNAPSHOT=20261012T234422Z
+ARG DEBIAN_SNAPSHOT=20261025T235307Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
@@ -276,10 +354,8 @@ ARG USERNAME UID GID ENABLE_VERTEX
 ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
 ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 
-# uv 0.11.5+ embeds python-build-standalone 20260408 metadata, which is the
-# first release with the PT_GNU_STACK fix. Pin to 0.12.15 (latest eligible at time of
-# writing) rather than :latest so builds are reproducible.
-COPY --from=ghcr.io/astral-sh/uv:0.12.15 /uv /uvx /bin/
+# Managed Python must include the non-executable-stack fix for glibc/seccomp.
+COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /uvx /bin/
 
 RUN groupadd -g ${GID} ${USERNAME} \
  && useradd -m -u ${UID} -g ${GID} -s /usr/sbin/nologin ${USERNAME} \
@@ -296,8 +372,8 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-se
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
     EXTRA_FLAGS=""; \
     if [ "$ENABLE_VERTEX" = "1" ]; then EXTRA_FLAGS="--extra vertex"; fi; \
-    uv python install 3.13 && \
-    uv venv --python-preference only-managed --python 3.13 .venv && \
+    uv python install 3.13.18 && \
+    uv venv --python-preference only-managed --python 3.13.18 .venv && \
     uv sync --frozen --no-editable --managed-python --extra boto3 $EXTRA_FLAGS && \
     readlink -f .venv/bin/python | grep -q '^/agent-server/uv-managed-python/'
 
@@ -369,13 +445,13 @@ RUN --mount=type=bind,from=npm-patches,source=/npm-patches/npm,target=/tmp/npm-p
     rm -rf /var/lib/apt/lists/*; \
     ARCH=$(uname -m); \
     case "$ARCH" in \
-      x86_64|amd64) NARCH=x64; NODE_SHA256=d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307;; \
-      aarch64|arm64) NARCH=arm64; NODE_SHA256=fff4078c5def658577f92c88db7db3bc0072924bfb93fe52c1e744a54e94abb8;; \
+      x86_64|amd64) NARCH=x64; NODE_SHA256=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce;; \
+      aarch64|arm64) NARCH=arm64; NODE_SHA256=6287aa46b6c375d816e63ae66d024fbbfd70404825aabdfdf898a970871d2f4b;; \
       *) echo "Unsupported architecture for ACP providers: '$ARCH'" >&2; exit 1;; \
     esac; \
-    NODE_TARBALL="/tmp/node-v22.23.2-linux-${NARCH}.tar.xz"; \
+    NODE_TARBALL="/tmp/node-v22.23.4-linux-${NARCH}.tar.xz"; \
     curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused \
-        "https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
+        "https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
     echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
     tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL"; \
     rm -f "$NODE_TARBALL"; \
@@ -626,7 +702,22 @@ RUN --mount=type=bind,from=npm-patches,source=/npm-patches/openvscode,target=/tm
     cp ${OPENVSCODE_SERVER_ROOT}/bin/remote-cli/openvscode-server ${OPENVSCODE_SERVER_ROOT}/bin/remote-cli/code; \
     rm -f ${RELEASE_TAG}-linux-${arch}.tar.gz; \
     \
-    # The latest release (1.109.5) bundles vulnerable undici, shell-quote, lodash-es, picomatch and ip-address.
+    # The latest release (1.109.5) bundles Node 22.21.1; swap in a fixed 22.x.
+    case "${arch}" in \
+      x64) narch=x64; NODE_SHA256=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce;; \
+      arm64) narch=arm64; NODE_SHA256=6287aa46b6c375d816e63ae66d024fbbfd70404825aabdfdf898a970871d2f4b;; \
+      armhf) narch=armv7l; NODE_SHA256=c9057c6a3b8fbb9651ed115c1e96d4a7281b7b9c9ca89fa05865c98ed7ffd437;; \
+      *) echo "Unsupported architecture for OpenVSCode Node: '${arch}'" >&2; exit 1;; \
+    esac; \
+    NODE_TARBALL="/tmp/node-v22.23.4-linux-${narch}.tar.xz"; \
+    wget -nv -O "$NODE_TARBALL" "https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-${narch}.tar.xz"; \
+    echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
+    tar -xJf "$NODE_TARBALL" -O "node-v22.23.4-linux-${narch}/bin/node" > ${OPENVSCODE_SERVER_ROOT}/node; \
+    chmod 755 ${OPENVSCODE_SERVER_ROOT}/node; \
+    rm -f "$NODE_TARBALL"; \
+    test "$(${OPENVSCODE_SERVER_ROOT}/node --version)" = v22.23.4; \
+    \
+    # It also bundles vulnerable undici, shell-quote, lodash-es, picomatch and ip-address.
     for pkg in /tmp/npm-patches/*; do \
         dst="${OPENVSCODE_SERVER_ROOT}/node_modules/${pkg##*/}"; \
         test -d "$dst"; rm -rf "$dst"; cp -R "$pkg" "$dst"; \
@@ -685,26 +776,19 @@ RUN set -eux; \
     echo '{"mtu": 1450}' > /etc/docker/daemon.json
 
 # docker-ce-rootless-extras still bundles RootlessKit 3.2.0 with vulnerable x/net.
-RUN set -eux; \
+RUN --mount=type=bind,from=rootlesskit-source,source=/out/rootlesskit,target=/tmp/rootlesskit \
+    set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
       *,docker,*) ;; \
       *) exit 0;; \
     esac; \
-    case "$(dpkg --print-architecture)" in \
-      amd64) arch=x86_64; sha256=0e757c8f80510d764df8c9a5f169805580b48d02329f0a200900e261ecec27ed;; \
-      arm64) arch=aarch64; sha256=7a159e79ef3e65e1f2702ab89537bb79de67b433428328b9626cf75786dbe43a;; \
-      *) echo "Unsupported RootlessKit architecture" >&2; exit 1;; \
-    esac; \
-    tmpdir=$(mktemp -d); \
-    curl -fsSL "https://github.com/rootless-containers/rootlesskit/releases/download/v3.3.0/rootlesskit-${arch}.tar.gz" -o "$tmpdir/rootlesskit.tar.gz"; \
-    echo "$sha256  $tmpdir/rootlesskit.tar.gz" | sha256sum -c -; \
-    tar -xzf "$tmpdir/rootlesskit.tar.gz" -C "$tmpdir" rootlesskit; \
-    install -m 0755 "$tmpdir/rootlesskit" /usr/bin/rootlesskit; \
-    rm -rf "$tmpdir"; \
+    install -m 0755 /tmp/rootlesskit /usr/bin/rootlesskit; \
     test "$(rootlesskit --version)" = "rootlesskit version 3.3.0"
 
 RUN --mount=type=bind,from=docker-buildx-source,source=/out/docker-buildx,target=/tmp/docker-buildx \
     --mount=type=bind,from=docker-compose-source,source=/out/docker-compose,target=/tmp/docker-compose \
+    --mount=type=bind,from=containerd-source,source=/out,target=/tmp/containerd \
+    --mount=type=bind,from=runc-source,source=/out/runc,target=/tmp/runc \
     set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
       *,docker,*) ;; \
@@ -712,6 +796,10 @@ RUN --mount=type=bind,from=docker-buildx-source,source=/out/docker-buildx,target
     esac; \
     install -m 0755 /tmp/docker-buildx /usr/libexec/docker/cli-plugins/docker-buildx; \
     install -m 0755 /tmp/docker-compose /usr/libexec/docker/cli-plugins/docker-compose; \
+    install -m 0755 /tmp/containerd/containerd /tmp/containerd/ctr /tmp/containerd/containerd-shim-runc-v2 /usr/bin/; \
+    install -m 0755 /tmp/runc /usr/bin/runc; \
+    containerd --version; \
+    runc --version; \
     docker buildx version; \
     docker compose version
 

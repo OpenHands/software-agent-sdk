@@ -118,8 +118,8 @@ def test_python_image_uses_canonical_minimal_runtime() -> None:
     workflow_text = SERVER_WORKFLOW.read_text(encoding="utf-8")
 
     assert "FROM debian:trixie-slim AS python-node-runtime" in dockerfile_text
-    assert "FROM python:3.13.15-slim-trixie AS python-runtime" in dockerfile_text
-    assert "FROM node:24.21.0-trixie-slim AS node-runtime" in dockerfile_text
+    assert "FROM python:3.13.18-slim-trixie AS python-runtime" in dockerfile_text
+    assert "FROM node:24.22.1-trixie-slim AS node-runtime" in dockerfile_text
     assert "ARG BASE_IMAGE=python-node-runtime" in dockerfile_text
     assert re.search(r"ARG DEBIAN_SNAPSHOT=\d{8}T\d{6}Z", dockerfile_text)
     assert (
@@ -178,8 +178,8 @@ def test_source_built_cli_tools_use_patched_go_modules() -> None:
         assert version in dockerfile_text
         assert revision in dockerfile_text
 
-    assert "FROM golang:1.27.2-bookworm AS github-cli-source" in dockerfile_text
-    assert dockerfile_text.count("FROM golang:1.26.9-bookworm AS docker-") == 2
+    assert "FROM golang:1.27.3-bookworm AS github-cli-source" in dockerfile_text
+    assert dockerfile_text.count("FROM golang:1.26.10-bookworm AS docker-") == 2
     assert dockerfile_text.count("-require=golang.org/x/net@v0.60.0") == 3
     assert "-require=github.com/moby/go-archive@v0.3.0" in dockerfile_text
     assert "install -m 0755 /tmp/gh /usr/bin/gh" in dockerfile_text
