@@ -166,6 +166,28 @@ async def test_max_budget_per_run_update_survives_restart_and_fork(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_max_budget_per_run_lives_only_in_base_state(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=_sample_agent(),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        max_budget_per_run=3.0,
+    )
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        info, _ = await service.start_conversation(request)
+        await service.update_conversation(
+            info.id, UpdateConversationRequest(max_budget_per_run=4.0)
+        )
+        conversation_dir = conversations_dir / info.id.hex
+        base_state = json.loads((conversation_dir / "base_state.json").read_text())
+        meta = json.loads((conversation_dir / "meta.json").read_text())
+        assert base_state["max_budget_per_run"] == 4.0
+        assert "max_budget_per_run" not in meta
+
+
+@pytest.mark.asyncio
 async def test_server_resolved_tool_modules_are_persisted(tmp_path):
     """A lightweight creator need not import the runtime's tool modules."""
     conversations_dir = tmp_path / "conversations"

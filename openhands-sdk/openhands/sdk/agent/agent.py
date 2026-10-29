@@ -52,6 +52,7 @@ from openhands.sdk.event.condenser import (
 )
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
 from openhands.sdk.event.security import SecurityAnalysisEvent
+from openhands.sdk.event.types import ROOT_PARENT_ID, EventID
 from openhands.sdk.llm import (
     LLM,
     ImageContent,
@@ -561,12 +562,25 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             )
             return
 
+        # A damaged event log can lose the SystemPromptEvent's file. The first
+        # surviving event still names it as its parent, or names the copy that an
+        # earlier resume re-created under the same id.
+        restored_prompt_id: EventID | None = None
+        if has_user_message:
+            parent_id = state.events[0].parent_id
+            if parent_id is not None and parent_id in state.events:
+                parent = state.events[state.events.get_index(parent_id)]
+                if isinstance(parent, SystemPromptEvent):
+                    return
+            elif parent_id not in (None, ROOT_PARENT_ID):
+                restored_prompt_id = parent_id
+
         # Assert: A user message should never appear before the system prompt.
         #
         # NOTE: This is a best-effort check based on the first few events only.
         # Remote conversations can include a ConversationStateUpdateEvent near the
         # start, so we scan a small prefix window.
-        if has_user_message:
+        if has_user_message and restored_prompt_id is None:
             event_types = [type(e).__name__ for e in prefix_events]
             logger.error(
                 f"init_state: User message found in prefix before SystemPromptEvent! "
@@ -598,7 +612,29 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             if dynamic_context
             else None,
         )
-        on_event(event)
+        if restored_prompt_id is None:
+            on_event(event)
+            return
+
+        # Re-create it as an explicit root under its old id, so the surviving
+        # history hangs off it again; appending must not move HEAD onto it.
+        logger.warning(
+            "SystemPromptEvent '%s' is missing from the event log (its file was "
+            "lost); re-creating it as the root of the surviving history. "
+            "conversation_id=%s",
+            restored_prompt_id,
+            state.id,
+        )
+        head = state.active_branch(limit=1)
+        head_is_empty = state.head_is_empty
+        on_event(
+            event.model_copy(
+                update={"id": restored_prompt_id, "parent_id": ROOT_PARENT_ID}
+            )
+        )
+        state.leaf_event_id = head[-1].id if head else None
+        state.head_is_empty = head_is_empty
+        state.rebuild_view()
 
     def get_dynamic_context(self, state: ConversationState) -> str | None:
         """Get dynamic context for the system prompt, including secrets from state.
