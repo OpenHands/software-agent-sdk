@@ -290,7 +290,10 @@ def test_litellm_translates_claude_5_reasoning_to_adaptive_thinking(
         reasoning_effort="high",
     )
 
-    assert params["thinking"] == {"type": "adaptive", "display": "summarized"}
+    thinking = params["thinking"]
+    assert isinstance(thinking, dict)
+    assert thinking == {"type": "adaptive", "display": "summarized"}
+    assert "budget_tokens" not in thinking
 
 
 def test_bedrock_opus_4_8_strips_temp_top_p_without_thinking_block():
