@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from functools import cache
 from typing import Any, Literal
 
-from litellm import BadRequestError, get_llm_provider, get_supported_openai_params
+from litellm import get_llm_provider, get_supported_openai_params
+from litellm.exceptions import BadRequestError
 from litellm.utils import supports_vision as litellm_supports_vision
 
 from openhands.sdk.llm.utils.openhands_provider import OPENHANDS_PROVIDER_PREFIX
