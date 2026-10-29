@@ -8,6 +8,7 @@ from pathlib import Path
 import httpx
 import pytest
 import websockets
+from websockets.typing import Origin
 
 from openhands.agent_server.vscode_service import VSCodeService
 
@@ -45,7 +46,9 @@ async def test_real_editor_auth_paths_websocket_and_rotation(
             assert "SameSite=None" in secure.headers["set-cookie"]
             client.cookies.clear()
             folder = str(tmp_path / "space & hash# question?")
-            response = await client.get(service.get_vscode_url(base, folder))
+            vscode_url = service.get_vscode_url(base, folder)
+            assert vscode_url is not None
+            response = await client.get(vscode_url)
             assert response.status_code == 303
             assert "tkn=" not in response.headers["location"]
             assert "HttpOnly" in response.headers["set-cookie"]
@@ -60,18 +63,18 @@ async def test_real_editor_auth_paths_websocket_and_rotation(
             cookies = "; ".join(f"{k}={v}" for k, v in client.cookies.items())
             ws_url = base.replace("http", "ws") + path + "healthz"
             async with websockets.connect(
-                ws_url, additional_headers={"Cookie": cookies}, origin=base
+                ws_url, additional_headers={"Cookie": cookies}, origin=Origin(base)
             ) as ws:
                 await ws.send("ping")
                 assert await asyncio.wait_for(ws.recv(), 5)
             with pytest.raises(websockets.exceptions.InvalidStatus):
-                async with websockets.connect(ws_url, origin=base):
+                async with websockets.connect(ws_url, origin=Origin(base)):
                     pass
             with pytest.raises(websockets.exceptions.InvalidStatus):
                 async with websockets.connect(
                     ws_url,
                     additional_headers={"Cookie": cookies},
-                    origin="https://evil.invalid",
+                    origin=Origin("https://evil.invalid"),
                 ):
                     pass
             await service.set_connection_token("second-test-token")
@@ -80,9 +83,9 @@ async def test_real_editor_auth_paths_websocket_and_rotation(
             assert (
                 await client.get(path, params={"tkn": "first-test-token"})
             ).status_code == 401
-            assert (
-                await client.get(service.get_vscode_url(base, folder))
-            ).status_code == 303
+            vscode_url = service.get_vscode_url(base, folder)
+            assert vscode_url is not None
+            assert (await client.get(vscode_url)).status_code == 303
     finally:
         await service.stop()
     assert not service.is_running()
