@@ -218,7 +218,7 @@ def test_generate_title_with_llm_uses_default_for_blank_prompt(mock_completion, 
 
     user_prompt = get_completion_user_prompt(mock_completion)
     assert user_prompt.startswith("Generate a title (maximum 50 characters)")
-    assert "🐛 bugfix: Bug fixes" in user_prompt
+    assert "emoji" not in user_prompt.lower()
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")
