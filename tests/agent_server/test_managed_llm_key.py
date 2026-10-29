@@ -11,26 +11,30 @@ and that the registered hook actually feeds the SDK's re-resolution path.
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Literal
+from uuid import uuid4
 
 import pytest
 from litellm import ModelResponse
 from litellm.exceptions import AuthenticationError
 from pydantic import SecretStr
 
+from openhands.agent_server.event_service import EventService
 from openhands.agent_server.managed_llm_key import (
     REFRESH_BASE_URLS_ENV,
     REFRESH_HEADERS_ENV,
     REFRESH_URL_ENV,
     _load_headers,
     register_managed_llm_key_refresh,
-    register_managed_llm_key_refresh_on_llms,
 )
+from openhands.agent_server.models import StoredConversation
 from openhands.sdk import LLM, Agent
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.secret import (
     register_local_secret_resolver,
     unregister_local_secret_resolver,
 )
+from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.workspace import LocalWorkspace
 
 
 MANAGED_BASE_URL = "https://llm-proxy.example/v1"
@@ -86,7 +90,7 @@ def test_no_env_is_noop(monkeypatch):
     llm = _llm("m", MANAGED_BASE_URL)
     agent = _agent(llm)
 
-    assert register_managed_llm_key_refresh(agent) == 0
+    assert register_managed_llm_key_refresh(agent.get_all_llms()) == 0
     # Hook untouched: a 401 does not resolve a refreshed key.
     assert llm._resolve_refreshed_api_key(_auth_error()) is None
 
@@ -97,7 +101,7 @@ def test_registers_and_feeds_sdk_resolution(monkeypatch):
     llm = _llm("m", MANAGED_BASE_URL)
     agent = _agent(llm)
 
-    assert register_managed_llm_key_refresh(agent) == 1
+    assert register_managed_llm_key_refresh(agent.get_all_llms()) == 1
 
     with _served_key(REFRESH_URL, "fresh_key"):
         refreshed = llm._resolve_refreshed_api_key(_auth_error())
@@ -112,7 +116,7 @@ def test_scopes_to_managed_base_url(monkeypatch):
     agent = _agent(byok)
 
     # A BYOK LLM (different base_url) must not receive the managed hook.
-    assert register_managed_llm_key_refresh(agent) == 0
+    assert register_managed_llm_key_refresh(agent.get_all_llms()) == 0
     with _served_key(REFRESH_URL, "fresh_key"):
         assert byok._resolve_refreshed_api_key(_auth_error()) is None
 
@@ -131,7 +135,7 @@ def test_canonical_managed_provider_refreshes(monkeypatch, persisted):
             llm.model_dump_json(context={"expose_secrets": True})
         )
     assert llm.base_url is None
-    assert register_managed_llm_key_refresh(_agent(llm)) == 1
+    assert register_managed_llm_key_refresh([llm]) == 1
     keys = []
 
     def complete(**kwargs):
@@ -157,7 +161,7 @@ def test_skips_subscription_auth(monkeypatch):
     sub = _llm("sub", MANAGED_BASE_URL, auth_type="subscription")
     agent = _agent(sub)
 
-    assert register_managed_llm_key_refresh(agent) == 0
+    assert register_managed_llm_key_refresh(agent.get_all_llms()) == 0
 
 
 def test_without_allowlist_feature_stays_off(monkeypatch):
@@ -168,7 +172,7 @@ def test_without_allowlist_feature_stays_off(monkeypatch):
     llm = _llm("m", MANAGED_BASE_URL)
     agent = _agent(llm)
 
-    assert register_managed_llm_key_refresh(agent) == 0
+    assert register_managed_llm_key_refresh(agent.get_all_llms()) == 0
     with _served_key(REFRESH_URL, "fresh_key"):
         assert llm._resolve_refreshed_api_key(_auth_error()) is None
 
@@ -179,7 +183,7 @@ def test_blank_allowlist_feature_stays_off(monkeypatch):
     monkeypatch.setenv(REFRESH_BASE_URLS_ENV, " , ")
     llm = _llm("m", MANAGED_BASE_URL)
 
-    assert register_managed_llm_key_refresh(_agent(llm)) == 0
+    assert register_managed_llm_key_refresh([llm]) == 0
 
 
 def test_hook_failure_surfaces_original_error(monkeypatch):
@@ -189,7 +193,7 @@ def test_hook_failure_surfaces_original_error(monkeypatch):
     monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
     llm = _llm("m", MANAGED_BASE_URL)
     agent = _agent(llm)
-    assert register_managed_llm_key_refresh(agent) == 1
+    assert register_managed_llm_key_refresh(agent.get_all_llms()) == 1
 
     assert llm._resolve_refreshed_api_key(_auth_error()) is None
 
@@ -199,7 +203,7 @@ def test_empty_served_key_does_not_retry(monkeypatch):
     monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
     llm = _llm("m", MANAGED_BASE_URL)
     agent = _agent(llm)
-    assert register_managed_llm_key_refresh(agent) == 1
+    assert register_managed_llm_key_refresh(agent.get_all_llms()) == 1
 
     with _served_key(REFRESH_URL, "   "):
         # Whitespace-only body strips to empty -> no usable key -> no retry.
@@ -211,7 +215,7 @@ def test_base_url_match_ignores_trailing_slash(monkeypatch):
     # Allow-list has no trailing slash, LLM base_url does — must still match.
     monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
     llm = _llm("m", MANAGED_BASE_URL + "/")
-    assert register_managed_llm_key_refresh(_agent(llm)) == 1
+    assert register_managed_llm_key_refresh([llm]) == 1
 
 
 def test_allowlist_entry_trailing_slash_ignored(monkeypatch):
@@ -219,7 +223,7 @@ def test_allowlist_entry_trailing_slash_ignored(monkeypatch):
     # Allow-list has a trailing slash, LLM base_url does not — must still match.
     monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL + "/")
     llm = _llm("m", MANAGED_BASE_URL)
-    assert register_managed_llm_key_refresh(_agent(llm)) == 1
+    assert register_managed_llm_key_refresh([llm]) == 1
 
 
 def test_non_object_headers_env_is_ignored(monkeypatch):
@@ -229,7 +233,7 @@ def test_non_object_headers_env_is_ignored(monkeypatch):
     monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
     llm = _llm("m", MANAGED_BASE_URL)
 
-    assert register_managed_llm_key_refresh(_agent(llm)) == 1
+    assert register_managed_llm_key_refresh([llm]) == 1
     with _served_key(REFRESH_URL, "fresh_key"):
         refreshed = llm._resolve_refreshed_api_key(_auth_error())
     assert refreshed is not None
@@ -244,7 +248,7 @@ def test_bad_headers_env_is_ignored(monkeypatch):
     agent = _agent(llm)
 
     # Malformed headers must not break registration; the hook still resolves.
-    assert register_managed_llm_key_refresh(agent) == 1
+    assert register_managed_llm_key_refresh(agent.get_all_llms()) == 1
     with _served_key(REFRESH_URL, "fresh_key"):
         refreshed = llm._resolve_refreshed_api_key(_auth_error())
     assert refreshed is not None
@@ -269,69 +273,54 @@ def test_headers_bare_dollar_reference_expands(monkeypatch):
     }
 
 
-# ---------------------------------------------------------------------------
-# register_managed_llm_key_refresh_on_llms: used for LLMs not reached via
-# agent.get_all_llms(), notably the title-generation LLM loaded from a profile
-# store (OpenHands/software-agent-sdk#5528).
-# ---------------------------------------------------------------------------
-
-
-def test_on_llms_registers_and_feeds_sdk_resolution(monkeypatch):
-    # A profile-loaded title LLM (not part of any agent) must still self-heal.
+@pytest.mark.asyncio
+async def test_switched_llm_keeps_refresh_hook(monkeypatch, tmp_path):
+    """switch_llm on a loaded conversation re-registers the hook (#5890)."""
     monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
     monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
-    title_llm = _llm("title", MANAGED_BASE_URL)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    service = EventService(
+        stored=StoredConversation(
+            id=uuid4(),
+            workspace=LocalWorkspace(working_dir=str(workspace)),
+            confirmation_policy=NeverConfirm(),
+        ),
+        agent=_agent(_llm("loaded", MANAGED_BASE_URL)),
+        conversations_dir=tmp_path / "conversations",
+    )
+    await service.start()
+    try:
+        conversation = service.get_conversation()
 
-    assert register_managed_llm_key_refresh_on_llms([title_llm]) == 1
+        conversation.switch_llm(_llm("switched", MANAGED_BASE_URL))
+        switched = conversation.agent.llm
+        assert switched.usage_id == "switched"
+        with _served_key(REFRESH_URL, "fresh_key"):
+            refreshed = switched._resolve_refreshed_api_key(_auth_error())
+        assert refreshed is not None
+        assert refreshed.get_secret_value() == "fresh_key"
 
-    with _served_key(REFRESH_URL, "fresh_key"):
-        refreshed = title_llm._resolve_refreshed_api_key(_auth_error())
-    assert refreshed is not None
-    assert refreshed.get_secret_value() == "fresh_key"
+        # A switch to a BYOK base_url still gets no managed hook.
+        conversation.switch_llm(_llm("byok", BYOK_BASE_URL))
+        byok = conversation.agent.llm
+        assert byok.usage_id == "byok"
+        with _served_key(REFRESH_URL, "fresh_key"):
+            assert byok._resolve_refreshed_api_key(_auth_error()) is None
 
-
-def test_on_llms_scopes_to_managed_base_url(monkeypatch):
-    # A title LLM pointed at a direct provider (BYOK base_url) stays untouched.
-    monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
-    monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
-    byok_title = _llm("title", BYOK_BASE_URL)
-
-    assert register_managed_llm_key_refresh_on_llms([byok_title]) == 0
-    with _served_key(REFRESH_URL, "fresh_key"):
-        assert byok_title._resolve_refreshed_api_key(_auth_error()) is None
-
-
-def test_on_llms_noop_when_feature_off(monkeypatch):
-    # Feature disabled (no env): no hook, exact current behaviour preserved.
-    monkeypatch.delenv(REFRESH_URL_ENV, raising=False)
-    title_llm = _llm("title", MANAGED_BASE_URL)
-
-    assert register_managed_llm_key_refresh_on_llms([title_llm]) == 0
-    assert title_llm._resolve_refreshed_api_key(_auth_error()) is None
-
-
-def test_agent_wrapper_delegates_to_on_llms(monkeypatch):
-    # The agent entry point is a thin wrapper over the per-LLM helper.
-    monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
-    monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
-    llm = _llm("m", MANAGED_BASE_URL)
-
-    assert register_managed_llm_key_refresh(_agent(llm)) == 1
-    with _served_key(REFRESH_URL, "fresh_key"):
-        refreshed = llm._resolve_refreshed_api_key(_auth_error())
-    assert refreshed is not None
-    assert refreshed.get_secret_value() == "fresh_key"
-
-
-# ---------------------------------------------------------------------------
-# Integration tests for title LLM hook registration at call sites (C1, C2)
-# Added in response to mutation review that found the hook registration call
-# sites were not covered by tests.
-# ---------------------------------------------------------------------------
+        # Not opted in: a switch registers nothing.
+        monkeypatch.delenv(REFRESH_URL_ENV)
+        conversation.switch_llm(_llm("off", MANAGED_BASE_URL))
+        off = conversation.agent.llm
+        assert off.usage_id == "off"
+        with _served_key(REFRESH_URL, "fresh_key"):
+            assert off._resolve_refreshed_api_key(_auth_error()) is None
+    finally:
+        await service.close()
 
 
 def test_load_title_llm_registers_hook_on_managed_llm(monkeypatch):
-    """Title LLM loaded from profile store receives the refresh hook (C1)."""
+    """A profile-loaded title LLM receives the refresh hook."""
     from unittest.mock import Mock, patch
 
     monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
@@ -349,9 +338,8 @@ def test_load_title_llm_registers_hook_on_managed_llm(monkeypatch):
         mock_store.return_value.load.return_value = mock_llm
 
         with patch(
-            "openhands.agent_server.managed_llm_key.register_managed_llm_key_refresh_on_llms"
+            "openhands.agent_server.conversation_service.register_managed_llm_key_refresh"
         ) as mock_register:
-            # Track calls to register_managed_llm_key_refresh_on_llms
             mock_register.side_effect = lambda llms: hook_calls.append(list(llms))
 
             from openhands.agent_server.conversation_service import (
@@ -375,7 +363,7 @@ def test_load_title_llm_registers_hook_on_managed_llm(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_generate_title_registers_hook_on_managed_llm(monkeypatch):
-    """Title LLM passed to generate_title receives the refresh hook (C2)."""
+    """A title LLM passed to generate_title receives the refresh hook."""
     from unittest.mock import Mock, patch
 
     monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
@@ -391,9 +379,8 @@ async def test_generate_title_registers_hook_on_managed_llm(monkeypatch):
     from openhands.agent_server.event_service import EventService
 
     with patch(
-        "openhands.agent_server.event_service.register_managed_llm_key_refresh_on_llms"
+        "openhands.agent_server.event_service.register_managed_llm_key_refresh"
     ) as mock_register:
-        # Track calls to register_managed_llm_key_refresh_on_llms
         mock_register.side_effect = lambda llms: hook_calls.append(list(llms))
 
         # Create minimal EventService with mocked conversation

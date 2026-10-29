@@ -187,6 +187,8 @@ class Schema(DiscriminatedUnionMixin):
     """Base schema for input action / output observation."""
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
+    mcp_schema_alias_specs: ClassVar[dict[str, dict[str, Any]]] = {}
+    mcp_schema_alias_required: ClassVar[set[str]] = set()
 
     @classmethod
     def _discriminator_field_names(cls) -> set[str]:
@@ -221,9 +223,7 @@ class Schema(DiscriminatedUnionMixin):
                 if "required" in result and f in result["required"]:
                     result["required"].remove(f)
 
-        alias_specs: dict[str, dict[str, Any]] = getattr(
-            cls, "__mcp_schema_alias_specs__", {}
-        )
+        alias_specs: dict[str, dict[str, Any]] = cls.mcp_schema_alias_specs
         if alias_specs:
             result.setdefault("properties", {})
             for alias, spec in alias_specs.items():
@@ -232,9 +232,7 @@ class Schema(DiscriminatedUnionMixin):
                     full_schema.get("$defs", {}),
                 )
 
-            alias_required: set[str] = getattr(
-                cls, "__mcp_schema_alias_required__", set()
-            )
+            alias_required: set[str] = cls.mcp_schema_alias_required
             if alias_required:
                 required_fields = result.setdefault("required", [])
                 for alias in alias_required:
@@ -327,8 +325,8 @@ class Schema(DiscriminatedUnionMixin):
                 **field_definitions,
             )
         if alias_specs:
-            setattr(model, "__mcp_schema_alias_specs__", alias_specs)
-            setattr(model, "__mcp_schema_alias_required__", alias_required)
+            model.mcp_schema_alias_specs = alias_specs
+            model.mcp_schema_alias_required = alias_required
         return model
 
 

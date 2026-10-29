@@ -46,7 +46,7 @@ jobs:
             - name: Install Node.js
               uses: actions/setup-node@v7
               with:
-                  node-version: '22'
+                  node-version: '24'
 
             - name: Setup Apptainer
               uses: eWaterCycle/setup-apptainer@3f706d898c9db585b1d741b4692e66755f3a1b40 # v2

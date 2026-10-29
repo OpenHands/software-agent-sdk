@@ -51,6 +51,8 @@ from openhands.sdk.event.condenser import (
     CondensationRequest,
 )
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
+from openhands.sdk.event.security import SecurityAnalysisEvent
+from openhands.sdk.event.types import ROOT_PARENT_ID, EventID
 from openhands.sdk.llm import (
     LLM,
     ImageContent,
@@ -560,12 +562,25 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             )
             return
 
+        # A damaged event log can lose the SystemPromptEvent's file. The first
+        # surviving event still names it as its parent, or names the copy that an
+        # earlier resume re-created under the same id.
+        restored_prompt_id: EventID | None = None
+        if has_user_message:
+            parent_id = state.events[0].parent_id
+            if parent_id is not None and parent_id in state.events:
+                parent = state.events[state.events.get_index(parent_id)]
+                if isinstance(parent, SystemPromptEvent):
+                    return
+            elif parent_id not in (None, ROOT_PARENT_ID):
+                restored_prompt_id = parent_id
+
         # Assert: A user message should never appear before the system prompt.
         #
         # NOTE: This is a best-effort check based on the first few events only.
         # Remote conversations can include a ConversationStateUpdateEvent near the
         # start, so we scan a small prefix window.
-        if has_user_message:
+        if has_user_message and restored_prompt_id is None:
             event_types = [type(e).__name__ for e in prefix_events]
             logger.error(
                 f"init_state: User message found in prefix before SystemPromptEvent! "
@@ -597,7 +612,29 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             if dynamic_context
             else None,
         )
-        on_event(event)
+        if restored_prompt_id is None:
+            on_event(event)
+            return
+
+        # Re-create it as an explicit root under its old id, so the surviving
+        # history hangs off it again; appending must not move HEAD onto it.
+        logger.warning(
+            "SystemPromptEvent '%s' is missing from the event log (its file was "
+            "lost); re-creating it as the root of the surviving history. "
+            "conversation_id=%s",
+            restored_prompt_id,
+            state.id,
+        )
+        head = state.active_branch(limit=1)
+        head_is_empty = state.head_is_empty
+        on_event(
+            event.model_copy(
+                update={"id": restored_prompt_id, "parent_id": ROOT_PARENT_ID}
+            )
+        )
+        state.leaf_event_id = head[-1].id if head else None
+        state.head_is_empty = head_is_empty
+        state.rebuild_view()
 
     def get_dynamic_context(self, state: ConversationState) -> str | None:
         """Get dynamic context for the system prompt, including secrets from state.
@@ -624,6 +661,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         preset = self._prompt_preset or PromptPreset.DEFAULT
         return create_registry(preset).build(ctx).dynamic
 
+    @staticmethod
+    def _mark_conversation_finished(state: ConversationState) -> None:
+        state.execution_status = ConversationExecutionStatus.FINISHED
+
     def _execute_actions(
         self,
         conversation: LocalConversation,
@@ -647,11 +688,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             check_iterative_refinement=lambda ae: (
                 self._check_iterative_refinement(conversation, ae)
             ),
-            mark_finished=lambda: setattr(
-                state,
-                "execution_status",
-                ConversationExecutionStatus.FINISHED,
-            ),
+            mark_finished=lambda: self._mark_conversation_finished(state),
         )
 
     async def _aexecute_actions(
@@ -682,11 +719,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             check_iterative_refinement=lambda ae: (
                 self._check_iterative_refinement(conversation, ae)
             ),
-            mark_finished=lambda: setattr(
-                state,
-                "execution_status",
-                ConversationExecutionStatus.FINISHED,
-            ),
+            mark_finished=lambda: self._mark_conversation_finished(state),
         )
 
     @observe(name="agent.step", ignore_inputs=["state", "on_event"])
@@ -1128,40 +1161,70 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 )
 
     def _requires_user_confirmation(
-        self, state: ConversationState, action_events: list[ActionEvent]
+        self,
+        state: ConversationState,
+        action_events: list[ActionEvent],
+        on_event: ConversationCallbackType | None = None,
     ) -> bool:
-        """
-        Decide whether user confirmation is needed to proceed.
+        """Analyze actions and record the verdict before applying the policy."""
+        risks, event = self._analyze_for_confirmation(state, action_events)
+        if event is not None and on_event is not None:
+            on_event(state.secret_registry.mask_secrets_in_model(event))
+        return self._set_confirmation_status(state, risks)
 
-        Rules:
-            1. Confirmation mode is enabled
-            2. Every action requires confirmation
-            3. A single `FinishAction` never requires confirmation
-            4. A single `ThinkAction` never requires confirmation
-        """
+    async def _arequires_user_confirmation(
+        self,
+        conversation: LocalConversation,
+        state: ConversationState,
+        action_events: list[ActionEvent],
+        on_event: ConversationCallbackType,
+    ) -> bool:
+        """Resolve audit secrets without blocking the loop or holding state."""
+        risks, event = self._analyze_for_confirmation(state, action_events)
+        if event is not None:
+            while True:
+                sources = dict(state.secret_registry.secret_sources)
+                async with conversation._released_state_lock_during_io():
+                    event = await asyncio.to_thread(
+                        state.secret_registry.mask_secrets_in_model, event
+                    )
+                if sources == state.secret_registry.secret_sources:
+                    break
+            on_event(event)
+        return self._set_confirmation_status(state, risks)
+
+    def _analyze_for_confirmation(
+        self, state: ConversationState, action_events: list[ActionEvent]
+    ) -> tuple[list[risk.SecurityRisk], SecurityAnalysisEvent | None]:
         # A single `FinishAction` or `ThinkAction` never requires confirmation
         if len(action_events) == 1 and isinstance(
             action_events[0].action, (FinishAction, ThinkAction)
         ):
-            return False
+            return [], None
 
-        # If there are no actions there is nothing to confirm
-        if len(action_events) == 0:
-            return False
+        if not action_events:
+            return [], None
 
-        # If a security analyzer is registered, use it to grab the risks of the actions
-        # involved. If not, we'll set the risks to UNKNOWN.
-        if state.security_analyzer is not None:
-            risks = [
-                risk
-                for _, risk in state.security_analyzer.analyze_pending_actions(
-                    action_events
-                )
-            ]
-        else:
-            risks = [risk.SecurityRisk.UNKNOWN] * len(action_events)
+        if state.security_analyzer is None:
+            return [risk.SecurityRisk.UNKNOWN] * len(action_events), None
 
-        # Grab the confirmation policy from the state and pass in the risks.
+        analyses = state.security_analyzer.analyze_actions(action_events)
+        event = SecurityAnalysisEvent(
+            analyzer=state.security_analyzer.__class__.__name__,
+            policy=state.confirmation_policy.__class__.__name__,
+            risks={action.id: analysis.risk for action, analysis in analyses},
+            details={
+                action.id: analysis.details
+                for action, analysis in analyses
+                if analysis.details is not None
+            },
+        )
+        return [analysis.risk for _, analysis in analyses], event
+
+    @staticmethod
+    def _set_confirmation_status(
+        state: ConversationState, risks: list[risk.SecurityRisk]
+    ) -> bool:
         if any(state.confirmation_policy.should_confirm(risk) for risk in risks):
             state.execution_status = (
                 ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
@@ -1563,7 +1626,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             condenser_config = self.condenser.model_dump(
                 exclude={"llm"}, exclude_none=True
             )
-            condenser_llm_obj = getattr(self.condenser, "llm", None)
+            condenser_llm_obj = self.condenser.get_llm()
             condenser_llm = (
                 condenser_llm_obj.model if condenser_llm_obj is not None else "N/A"
             )

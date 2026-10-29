@@ -49,6 +49,7 @@ def expand_variable_references(
     check_env: bool = False,
     expand_defaults: bool = True,
     support_unbraced: bool = False,
+    on_unresolved: Callable[[str], None] | None = None,
 ) -> Any:
     """Expand variable references in data structures.
 
@@ -73,6 +74,8 @@ def expand_variable_references(
         check_env: If True, check os.environ for unresolved variables.
         expand_defaults: If True, apply default values for unresolved variables.
         support_unbraced: If True, support $VAR syntax in addition to ${VAR}.
+        on_unresolved: Called with the name of each reference that has no
+            default and that no source resolved; the reference is kept as is.
 
     Returns:
         Data with variable references expanded.
@@ -108,6 +111,8 @@ def expand_variable_references(
             return default_value
 
         # Return original if not found (preserves placeholder)
+        if on_unresolved is not None and default_value is None:
+            on_unresolved(var_name)
         return match.group(0)
 
     def expand_value(value: Any) -> Any:
@@ -179,6 +184,7 @@ def expand_mcp_variables(
     get_secret: SecretLookup | None = None,
     *,  # keyword-only after this (PEP 3102)
     expand_defaults: bool = True,
+    on_unresolved: Callable[[str], None] | None = None,
 ) -> dict:
     """Expand variables in MCP configuration.
 
@@ -201,6 +207,7 @@ def expand_mcp_variables(
         expand_defaults: If True, apply default values for unresolved variables.
             If False, preserve ${VAR:-default} as-is for later expansion.
             This allows deferred expansion when secrets are not yet available.
+        on_unresolved: See ``expand_variable_references``.
 
     Returns:
         Configuration with variables expanded.
@@ -215,6 +222,7 @@ def expand_mcp_variables(
         check_env=True,
         expand_defaults=expand_defaults,
         support_unbraced=False,
+        on_unresolved=on_unresolved,
     )
 
     if not isinstance(expanded_config, dict):
@@ -225,6 +233,8 @@ def expand_mcp_variables(
 def expand_mcp_servers(
     servers: Mapping[str, MCPServer],
     get_secret: SecretLookup | None = None,
+    *,
+    on_unresolved: Callable[[str], None] | None = None,
 ) -> dict[str, MCPServer]:
     """Expand ``${VAR}`` placeholders in MCP servers, applying defaults.
 
@@ -244,6 +254,7 @@ def expand_mcp_servers(
         {},
         get_secret=get_secret,
         expand_defaults=True,
+        on_unresolved=on_unresolved,
     )
     return {**servers, **coerce_mcp_config(expanded["mcpServers"])}
 
@@ -591,36 +602,40 @@ def update_skills_repository(
     repo_url: str,
     ref: str,
     cache_dir: Path,
+    strict: bool = False,
 ) -> Path | None:
     """Clone or update the local skills repository.
 
-    Uses the shared git caching infrastructure from openhands.sdk.git.cached_repo.
-    When updating, performs: fetch -> checkout ref -> reset --hard to origin/ref.
+    The shared Git cache resolves ``ref`` to a commit and uses a detached
+    checkout.
 
     Args:
         repo_url: URL of the skills repository.
         ref: Branch name, tag, or full commit SHA to checkout.
         cache_dir: Directory where the repository should be cached.
+        strict: If True, return None when an existing clone cannot be updated
+            (e.g. the fetch fails offline) instead of the stale clone.
 
     Returns:
         Path to the local repository if successful, None otherwise.
     """
     repo_path = cache_dir / "public-skills"
-    return try_cached_clone_or_update(repo_url, repo_path, ref=ref, update=True)
+    return try_cached_clone_or_update(
+        repo_url, repo_path, ref=ref, update=True, strict=strict
+    )
 
 
-def is_skills_repo_pinned(repo_path: Path) -> bool:
-    """Return True if the local skills repo is pinned to a fixed ref.
+def is_skills_repo_pinned(repo_path: Path, ref: str | None = None) -> bool:
+    """Return whether ``ref`` is a cached tag or object ID.
 
-    A pinned ref is one that cannot change over time — a tag or a specific
-    commit SHA. After checking out such a ref the repository is left in
-    detached HEAD state, which is the signal used here.
-
-    Returns False on any git error so callers can safely treat the result
-    as ``False`` (i.e., keep polling) when the state cannot be determined.
+    Public skills treat tags and object IDs as pinned. Branches and other named
+    refs stay refreshable. Without ``ref``, use the legacy detached-HEAD check.
+    Returns False when the ref cannot be classified.
     """
     try:
-        return GitHelper().get_current_branch(repo_path) is None
+        if ref is None:
+            return GitHelper().get_current_branch(repo_path) is None
+        return GitHelper().requested_ref_is_pinned(repo_path, ref)
     except Exception:
         return False
 
@@ -642,15 +657,18 @@ def discover_skill_resources(skill_dir: Path) -> SkillResources:
     # Import here to avoid circular dependency
     from openhands.sdk.skills.skill import SkillResources
 
-    resources = SkillResources(skill_root=to_posix_path(skill_dir.resolve()))
-
+    collected: dict[str, list[str]] = {}
     for resource_type in RESOURCE_DIRECTORIES:
         resource_dir = skill_dir / resource_type
         if resource_dir.is_dir():
-            files = _list_resource_files(resource_dir, resource_type)
-            setattr(resources, resource_type, files)
+            collected[resource_type] = _list_resource_files(resource_dir, resource_type)
 
-    return resources
+    return SkillResources(
+        skill_root=to_posix_path(skill_dir.resolve()),
+        scripts=collected.get("scripts", []),
+        references=collected.get("references", []),
+        assets=collected.get("assets", []),
+    )
 
 
 def _list_resource_files(

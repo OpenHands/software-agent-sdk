@@ -15,6 +15,8 @@ from openhands.sdk.conversation.request import (  # re-export for backward compa
     ACPEnabledAgent as ACPEnabledAgent,
     ConversationConfig as ConversationConfig,
     SendMessageRequest as SendMessageRequest,
+    StartChildConversationRequest as StartChildConversationRequest,
+    StartChildConversationResponse as StartChildConversationResponse,
     StartConversationRequest as StartConversationRequest,
 )
 from openhands.sdk.conversation.secret_registry import SecretRegistry
@@ -107,7 +109,8 @@ class StoredConversation(ConversationConfig):
     single source of truth for the agent / runtime state is
     ``ConversationState`` persisted to ``base_state.json``. Because
     ``StoredConversation`` is not a ``StartConversationRequest``, the agent
-    cannot silently re-appear in ``meta.json``.
+    cannot silently re-appear in ``meta.json``. The same holds for the
+    conversation budget (``max_budget_per_run``).
     """
 
     required_runtime_credential_bindings: set[str] = Field(default_factory=set)
@@ -166,6 +169,13 @@ class _ConversationInfoBase(BaseModel):
         gt=0,
         description=(
             "Maximum number of iterations the agent can perform in a single run."
+        ),
+    )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        description=(
+            "Hard cost ceiling in USD for the conversation's accumulated LLM "
+            "cost. `None` means no budget limit."
         ),
     )
     stuck_detection: bool = Field(
@@ -444,6 +454,10 @@ class Success(BaseModel):
     success: bool = True
 
 
+class FileUploadResult(Success):
+    file_size: int = Field(description="Number of bytes written to the destination")
+
+
 class EventPage(OpenHandsModel):
     items: list[Event]
     next_page_id: str | None = None
@@ -525,6 +539,25 @@ class UpdateConversationRequest(BaseModel):
             "Replaces all existing tags when provided."
         ),
     )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "New hard cost ceiling in USD. Applies to the running conversation "
+            "from its next step. Omit to leave unchanged; send `null` to remove "
+            "the limit."
+        ),
+    )
+
+    @field_validator("title")
+    @classmethod
+    def _reject_blank_title(cls, v: str | None) -> str | None:
+        # The service stores title.strip(); a whitespace-only title would
+        # erase the stored title to "" instead of failing like "" does.
+        if v is not None and not v.strip():
+            raise ValueError("title must not be blank")
+        return v
 
 
 class ForkConversationRequest(BaseModel):

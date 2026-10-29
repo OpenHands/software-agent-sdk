@@ -23,6 +23,7 @@ from openhands.agent_server.docker_runtime.proxy import (
 from openhands.agent_server.docker_runtime.registry import (
     ConversationContainer,
     DockerConversationRegistry,
+    RuntimeArchivedError,
 )
 from openhands.agent_server.launch import (
     forward_to_runtime,
@@ -39,6 +40,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.agent_server.utils import safe_rmtree
+from openhands.sdk.conversation.request import ConversationContainerOptions
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, ResolvedLaunch
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
@@ -63,6 +65,10 @@ async def _container(
         raise HTTPException(404, "Conversation not found")
     try:
         return await registry.get_or_create(conversation_id)
+    except RuntimeArchivedError as exc:
+        raise HTTPException(
+            410, "Conversation runtime was archived; its history is read-only"
+        ) from exc
     except Exception as exc:
         logger.exception("Could not start conversation container %s", conversation_id)
         raise HTTPException(502, "Could not start conversation container") from exc
@@ -122,6 +128,8 @@ async def start_conversation(
         raise HTTPException(400, "Invalid JSON body") from exc
     if not isinstance(body, dict):
         raise HTTPException(422, "Expected a JSON object")
+    if body.pop("conversation_runtime", None) not in (None, "docker"):
+        raise HTTPException(422, "This server only runs docker conversations")
 
     workspace = body.get("workspace")
     if workspace is not None and (
@@ -151,10 +159,19 @@ async def start_conversation(
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     try:
-        payload, launched = await _prepare_forward(body, registry, existing=existing)
+        payload, launched, options = await _prepare_forward(
+            body, registry, existing=existing
+        )
         identity = registry.provisioning.create(conversation_id, host_workspace)
+        updates: dict[str, Any] = {}
         if launched is not None and identity.launched_agent_profile is None:
-            identity = identity.model_copy(update={"launched_agent_profile": launched})
+            updates["launched_agent_profile"] = launched
+        # Fixed once the container accepted the conversation; until then a
+        # retried start may change them.
+        if not existing and identity.container != options:
+            updates["container"] = options
+        if updates:
+            identity = identity.model_copy(update=updates)
             registry.provisioning.save(identity)
         container = await registry.get_or_create(conversation_id)
         async with httpx.AsyncClient(timeout=60) as client:
@@ -194,7 +211,11 @@ async def start_conversation(
 
 async def _prepare_forward(
     body: dict[str, Any], registry: DockerConversationRegistry, *, existing: bool
-) -> tuple[Callable[[Cipher], dict[str, Any]], LaunchedAgentProfile | None]:
+) -> tuple[
+    Callable[[Cipher], dict[str, Any]],
+    LaunchedAgentProfile | None,
+    ConversationContainerOptions | None,
+]:
     """Resolve the start request with this host's stores; the container finalizes.
 
     The profile of a conversation that already exists is not resolved again:
@@ -230,7 +251,7 @@ async def _prepare_forward(
         )
 
     launched = source.profile if isinstance(source, ResolvedLaunch) else None
-    return payload, launched
+    return payload, launched, start.container
 
 
 @docker_conversation_router.get(
@@ -301,6 +322,7 @@ async def delete_conversation(conversation_id: UUID, request: Request) -> Respon
     try:
         await registry.stop(conversation_id)
         registry.provisioning.manifest_path(conversation_id).unlink(missing_ok=True)
+        registry.archived_marker(conversation_id).unlink(missing_ok=True)
         await asyncio.to_thread(
             safe_rmtree, registry.provisioning.runtime_dir(conversation_id)
         )
@@ -339,7 +361,10 @@ async def proxy_conversation(
         raise HTTPException(501, "This operation is unavailable in Docker runtime mode")
     registry = get_registry(request)
     container = await _container(registry, conversation_id)
-    upstream_path = _upstream_path(request, request.url.path)
+    upstream_path = _upstream_path(
+        request,
+        f"/api/conversations/{conversation_id}" + (f"/{tail}" if tail else ""),
+    )
     if tail == "secrets" and request.method == "POST":
         try:
             update = UpdateSecretsRequest.model_validate_json(await request.body())

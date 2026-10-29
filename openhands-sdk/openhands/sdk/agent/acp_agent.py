@@ -23,6 +23,7 @@ import inspect
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -32,7 +33,6 @@ from collections.abc import (
     Callable,
     Collection,
     Generator,
-    Iterable,
     Sequence,
 )
 from concurrent.futures import Future
@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
 from acp.client.connection import ClientSideConnection
 from acp.exceptions import RequestError as ACPRequestError
 from acp.helpers import image_block, text_block
+from acp.meta import AGENT_METHODS
 from acp.schema import (
     AcpMcpServer,
     AgentMessageChunk,
@@ -57,6 +58,8 @@ from acp.schema import (
     ImageContentBlock,
     KillTerminalResponse,
     McpServerStdio,
+    NewSessionRequest,
+    NewSessionResponse,
     PermissionOption,
     PromptResponse,
     ReadTextFileResponse,
@@ -73,15 +76,26 @@ from acp.schema import (
     WriteTextFileResponse,
 )
 from acp.transports import default_environment
+from acp.utils import request_model
 from pydantic import (
     Field,
     PrivateAttr,
     SecretStr,
+    ValidationError,
     ValidationInfo,
     field_serializer,
     field_validator,
 )
 
+from openhands.sdk.agent.acp_contracts import (
+    ACPLegacySessionModels,
+    extract_session_models,
+    is_model_dumpable,
+    normalize_acp_error,
+    normalize_auth_method,
+    normalize_mcp_capabilities,
+    supports_legacy_model_switch,
+)
 from openhands.sdk.agent.acp_file_credentials import (
     ACPFileCredentialLifecycle,
     ACPFileCredentialNeedsReauthError,
@@ -93,6 +107,7 @@ from openhands.sdk.agent.acp_file_credentials import (
     write_secret_file,
 )
 from openhands.sdk.agent.acp_models import ACPModelInfo
+from openhands.sdk.agent.acp_skills import render_skill_catalog, write_skill_files
 from openhands.sdk.agent.acp_tracing import ACPTurnTrace
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.stream_context import StreamContext
@@ -113,7 +128,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.mcp.config import MCPOAuthAuthCredential, MCPServer
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.settings.acp_providers import (
     ACP_PROVIDERS,
@@ -409,7 +424,9 @@ def _auth_selection_failure_reason(
     # which the runtime does not have. Named so the log says why the method was
     # never a candidate rather than implying a missing credential.
     terminal_ids = sorted(
-        m.id for m in auth_methods if getattr(m, "type", None) == "terminal"
+        m.id
+        for m in (normalize_auth_method(raw) for raw in auth_methods)
+        if m.type == "terminal"
     )
     if terminal_ids:
         reasons.append(
@@ -589,31 +606,6 @@ def _model_config_options(
     return ((_MODEL_CONFIG_OPTION_ID, model),)
 
 
-def _model_config_option(response: Any) -> Any | None:
-    """Return the ``model`` ``configOptions`` select off a session response.
-
-    Newer ACP CLIs dropped the UNSTABLE ``models`` capability and expose model
-    selection as a ``configOptions`` entry with ``id == "model"`` (``type ==
-    "select"``), switched via ``session/set_config_option`` instead of
-    ``session/set_model``. Returns that option (carrying ``options`` and
-    ``current_value``) or ``None`` when the server uses neither / the old
-    mechanism. ``getattr`` keeps it tolerant of partial structures.
-
-    The ``agent-client-protocol`` Python lib wraps each entry in a
-    ``SessionConfigOption`` ``RootModel`` on 0.8.x (access via ``.root``) but
-    lists the union members directly on 0.10.x; unwrap ``.root`` so detection
-    works on either.
-    """
-    for raw in getattr(response, "config_options", None) or []:
-        opt = getattr(raw, "root", raw)
-        if (
-            getattr(opt, "type", None) == "select"
-            and getattr(opt, "id", None) == _MODEL_CONFIG_OPTION_ID
-        ):
-            return opt
-    return None
-
-
 async def _apply_acp_model(
     conn: ClientSideConnection,
     session_id: str,
@@ -631,28 +623,17 @@ async def _apply_acp_model(
     codex-acp exposes reasoning effort as a separate config option, so split it
     only on the config-options mechanism.
 
-    agent-client-protocol 0.12.1 dropped the UNSTABLE ``models`` extension from
-    the ACP schema and removed ``ClientSideConnection.set_session_model``. A live
-    0.12 connection therefore has no legacy RPC to call, so the ``else`` branch
-    only invokes it when the connection actually exposes the method (test
-    doubles do; real 0.12 connections do not) and otherwise no-ops rather than
-    raising ``AttributeError``.
+    agent-client-protocol 0.12.1 removed ``ClientSideConnection.set_session_model``;
+    :class:`_ACPClientConnection` restores it, and a connection without it
+    no-ops rather than raising ``AttributeError``.
     """
     if via_config_option:
         for config_id, value in _model_config_options(agent_name, model):
             await conn.set_config_option(
                 config_id=config_id, value=value, session_id=session_id
             )
-    elif hasattr(conn, "set_session_model"):
-        await conn.set_session_model(  # type: ignore[attr-defined]
-            model_id=model, session_id=session_id
-        )
-
-
-def _usable_models(infos: Iterable[ACPModelInfo]) -> list[ACPModelInfo]:
-    """Drop entries without a usable ``model_id`` — an empty/missing id is an
-    invalid picker option and an unusable model-switch target."""
-    return [info for info in infos if info.model_id]
+    elif supports_legacy_model_switch(conn):
+        await conn.set_session_model(model_id=model, session_id=session_id)  # type: ignore[attr-defined]
 
 
 def _extract_session_models(
@@ -682,52 +663,76 @@ def _extract_session_models(
     configOptions select, ``False`` for the ``models`` capability, and
     ``default_via_config_option`` when the response carries neither (the
     resume-path default for a ``load_session`` that omits the model block).
-
-    ``getattr`` keeps the helper tolerant of agents that emit a partial
-    structure.
     """
-    if response is None:
-        return None, None, default_via_config_option
-    # Prefer configOptions when an adapter advertises both it and the legacy
-    # ``models`` extension. The ``model`` select carries the same state, with
-    # each option's ``value`` as the model id (== the ``set_config_option`` target).
-    opt = _model_config_option(response)
-    if opt is not None:
-        current = getattr(opt, "current_value", None)
-        current = current if isinstance(current, str) and current else None
-        options = getattr(opt, "options", None) or []
-        usable = _usable_models(
-            ACPModelInfo.from_protocol(o, id_attr="value") for o in options
-        )
-        return current, usable, True
-    models = getattr(response, "models", None)
-    if models is not None:
-        current = getattr(models, "current_model_id", None)
-        current = current if isinstance(current, str) and current else None
-        raw = getattr(models, "available_models", None) or []
-        usable = _usable_models(ACPModelInfo.from_protocol(m) for m in raw)
-        return current, usable, False
-    return None, None, default_via_config_option
+    state = extract_session_models(
+        response, default_via_config_option=default_via_config_option
+    )
+    return state.current_model_id, state.available_models, state.via_config_option
 
 
 # The ACP MCP server union accepted by new_session() / load_session().
 _ACPMcpServer = HttpMcpServer | SseMcpServer | McpServerStdio | AcpMcpServer
 
 
+def _oauth_bearer_header(auth: MCPOAuthAuthCredential, name: str) -> dict[str, str]:
+    """Forward a stored OAuth2 access token as an ``Authorization`` header.
+
+    The ACP subprocess owns its own MCP transport and has no access to the
+    FastMCP token store the native path uses, so the token persisted in the
+    connection's ``auth.state`` is the only credential available here. Without
+    this the server is forwarded as a bare URL and the ACP agent reports it is
+    not logged in (``codex mcp login ...``).
+
+    A missing or expired token still forwards what exists: a 401 from the
+    server is more actionable than an unauthenticated URL. Both cases are
+    logged so the drop is not silent.
+    """
+    state = auth.state
+    token = state.tokens.access_token if state is not None and state.tokens else None
+    if token is None:
+        logger.warning(
+            "ACP MCP server %r has an OAuth2 connection with no stored access "
+            "token; forwarding it unauthenticated",
+            name,
+        )
+        return {}
+    if (
+        state is not None
+        and state.token_expires_at is not None
+        and state.token_expires_at <= time.time()
+    ):
+        logger.warning(
+            "ACP MCP server %r has an expired OAuth2 access token; the ACP path "
+            "cannot refresh it, forwarding it as-is",
+            name,
+        )
+    return {"Authorization": f"Bearer {token.get_secret_value()}"}
+
+
 def _remote_mcp_headers(server: MCPServer, name: str) -> list[HttpHeader]:
-    """Convert remote MCP headers/auth into ACP's header-only representation."""
+    """Convert remote MCP headers/auth into ACP's header-only representation.
+
+    Header-compatible auth (api key / bearer / basic / explicit headers)
+    converts directly. OAuth2 does not -- ``to_http_headers()`` returns ``None``
+    because the native path materializes tokens through FastMCP's token store --
+    so its stored access token is forwarded explicitly instead.
+    """
     headers = [
         HttpHeader(name=name, value=value.get_secret_value())
         for name, value in (server.headers or {}).items()
     ]
 
-    auth_headers = server.auth.to_http_headers() if server.auth is not None else {}
+    auth = server.auth
+    if isinstance(auth, MCPOAuthAuthCredential):
+        auth_headers = _oauth_bearer_header(auth, name)
+    else:
+        auth_headers = auth.to_http_headers() if auth is not None else {}
     if auth_headers is None:
         logger.warning(
             "ACP MCP server %r uses unsupported remote MCP auth type %r; "
             "only header-compatible auth can be forwarded",
             name,
-            type(server.auth).__name__,
+            type(auth).__name__,
         )
         return headers
     headers.extend(
@@ -766,10 +771,12 @@ def _mcp_config_to_acp_servers(
     with a warning rather than failing init — one misconfigured server should
     not sink the whole conversation.  ``env`` / ``headers`` maps are converted
     to the protocol's ``[{name, value}]`` list form; header-compatible auth
-    credentials are also converted to headers.
+    credentials, and the stored access token of an OAuth2 connection, are also
+    converted to headers.
     """
-    http_ok = bool(getattr(mcp_capabilities, "http", False))
-    sse_ok = bool(getattr(mcp_capabilities, "sse", False))
+    caps = normalize_mcp_capabilities(mcp_capabilities)
+    http_ok = caps.http
+    sse_ok = caps.sse
     result: list[_ACPMcpServer] = []
     for name, server in mcp_config.items():
         if not server.enabled:
@@ -1026,7 +1033,7 @@ def _serialize_tool_content(content: list[Any] | None) -> list[dict[str, Any]] |
     for content_block in content:
         block_dict = (
             content_block.model_dump(mode="json")
-            if hasattr(content_block, "model_dump")
+            if is_model_dumpable(content_block)
             else content_block
         )
         if (
@@ -1042,6 +1049,47 @@ def _serialize_tool_content(content: list[Any] | None) -> list[dict[str, Any]] |
             }
         result.append(block_dict)
     return result
+
+
+class _NewSessionResponse(NewSessionResponse):
+    models: ACPLegacySessionModels | None = None
+
+    @field_validator("models", mode="before")
+    @classmethod
+    def _drop_malformed_models(cls, value: Any) -> Any:
+        try:
+            return ACPLegacySessionModels.model_validate(value)
+        except ValidationError:
+            return None
+
+
+# ``@final`` is typing-only; nothing but these two calls is overridden.
+class _ACPClientConnection(ClientSideConnection):  # pyright: ignore[reportGeneralTypeIssues]
+    """Restore the UNSTABLE model calls ACP 0.12 dropped; gemini-cli needs them."""
+
+    async def new_session(  # type: ignore[override]
+        self,
+        cwd: str,
+        additional_directories: list[str] | None = None,
+        mcp_servers: list[Any] | None = None,
+        **kwargs: Any,
+    ) -> NewSessionResponse:
+        return await request_model(
+            self._conn,
+            AGENT_METHODS["session_new"],
+            NewSessionRequest(
+                cwd=cwd,
+                additional_directories=additional_directories,
+                mcp_servers=mcp_servers or [],
+                field_meta=kwargs or None,
+            ),
+            _NewSessionResponse,
+        )
+
+    async def set_session_model(self, *, model_id: str, session_id: str) -> None:
+        await self._conn.send_request(
+            "session/set_model", {"sessionId": session_id, "modelId": model_id}
+        )
 
 
 async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
@@ -1136,10 +1184,11 @@ def _stringify_acp_error_data(data: Any) -> str:
 
 def _acp_error_text(exc: BaseException) -> str:
     """Lowercased message + data text used for substring classification."""
+    info = normalize_acp_error(exc)
     if isinstance(exc, ACPRequestError):
-        data_str = _stringify_acp_error_data(getattr(exc, "data", None))
-        return f"{exc} {data_str}".lower()
-    return str(exc).lower()
+        data_str = _stringify_acp_error_data(info.data)
+        return f"{info.message} {data_str}".lower()
+    return info.message.lower()
 
 
 def _acp_error_indicates_auth(exc: BaseException) -> bool:
@@ -1149,8 +1198,10 @@ def _acp_error_indicates_auth(exc: BaseException) -> bool:
     auth marker is an upstream 401/403 the server collapsed into a generic internal
     error.  Either way the client should offer re-authentication.
     """
-    if isinstance(exc, ACPRequestError) and getattr(exc, "code", None) == -32000:
-        return True
+    if isinstance(exc, ACPRequestError):
+        info = normalize_acp_error(exc)
+        if info.code == -32000:
+            return True
     text = _acp_error_text(exc)
     return any(marker in text for marker in _ACP_AUTH_ERROR_MARKERS) or bool(
         _ACP_AUTH_HTTP_CODES_RE.search(text)
@@ -1171,9 +1222,10 @@ def _acp_error_detail(
     secret values) before it leaves, and capped to the 500-char event limit.
     """
     if isinstance(exc, ACPRequestError):
-        code = getattr(exc, "code", None)
-        message = str(exc)
-        data_str = _stringify_acp_error_data(getattr(exc, "data", None))
+        info = normalize_acp_error(exc)
+        code = info.code
+        message = info.message
+        data_str = _stringify_acp_error_data(info.data)
         detail = f"[{code}] {message}" if code is not None else message
         if data_str and data_str != message:
             detail = f"{detail}: {data_str}"
@@ -1970,6 +2022,10 @@ class ACPAgent(AgentBase):
     # "installed"            — already in subprocess history; skip further injection
     _suffix_install_state: str = PrivateAttr(default="unused")
     _installed_suffix: str | None = PrivateAttr(default=None)
+    # Skills written to disk and listed by path in the prompt, not inlined.
+    _skill_locations: dict[str, Path] = PrivateAttr(default_factory=dict)
+    _skills_root: Path | None = PrivateAttr(default=None)
+    _additional_directories_supported: bool = PrivateAttr(default=False)
     _restart_session_on_next_turn: bool = PrivateAttr(default=False)
     # Stream identity for the turn in flight; see stream_context.py. Held on
     # the agent rather than threaded through the finalizers because the ACP
@@ -2281,6 +2337,7 @@ class ACPAgent(AgentBase):
 
         # Render the suffix once, pulling secrets from the conversation's
         # secret_registry to match the regular Agent's get_dynamic_context().
+        self._materialize_skills(state)
         self._installed_suffix = self._render_suffix(state)
         # A prior session id means we may be resuming; used by ``truly_resumed``
         # below to decide whether the model state reported for this launch
@@ -2443,6 +2500,25 @@ class ACPAgent(AgentBase):
             )
         )
 
+    def _skill_directories(self) -> list[str] | None:
+        if self._skills_root and self._additional_directories_supported:
+            return [str(self._skills_root)]
+        return None
+
+    def _materialize_skills(self, state: ConversationState) -> None:
+        self._skill_locations = {}
+        self._skills_root = None
+        context = self.agent_context
+        if context is None or not context.skills:
+            return
+        _, available = context._partition_skills()
+        if not available:
+            return
+        root = self._acp_file_secret_dir(state, "skills")
+        shutil.rmtree(root, ignore_errors=True)
+        self._skill_locations = write_skill_files(root, available)
+        self._skills_root = root
+
     def _render_suffix(self, state: ConversationState) -> str | None:
         """Render the system suffix once, including secrets from the registry.
 
@@ -2483,12 +2559,23 @@ class ACPAgent(AgentBase):
             if not secret_infos:
                 return None
             agent_context = AgentContext(current_datetime=None)
-        elif agent_context.secrets:
+        listed = [s for s in agent_context.skills if s.name in self._skill_locations]
+        if listed:
+            agent_context = agent_context.model_copy(
+                update={"skills": [s for s in agent_context.skills if s not in listed]}
+            )
+        if agent_context.secrets:
             # The registry already carries these (and their descriptions), so
             # clear the agent_context copy to advertise from the registry alone
             # rather than re-merging a redundant second source.
             agent_context = agent_context.model_copy(update={"secrets": {}})
-        return agent_context.to_acp_prompt_context(additional_secret_infos=secret_infos)
+        rendered = agent_context.to_acp_prompt_context(
+            additional_secret_infos=secret_infos
+        )
+        if not listed:
+            return rendered
+        catalog = render_skill_catalog(listed, self._skill_locations)
+        return f"{rendered}\n\n{catalog}" if rendered else catalog
 
     def _present_file_secret_names(self, state: ConversationState) -> set[str]:
         """Reserved file-content secret names supplied for this conversation.
@@ -3067,7 +3154,7 @@ class ACPAgent(AgentBase):
                 _log_acp_subprocess_stderr(process.stderr)
             )
 
-            conn = ClientSideConnection(
+            conn = _ACPClientConnection(
                 client,
                 process.stdin,  # write to subprocess
                 filtered_reader,  # read filtered output
@@ -3110,6 +3197,15 @@ class ACPAgent(AgentBase):
                 init_response.agent_capabilities.mcp_capabilities
                 if init_response.agent_capabilities is not None
                 else None
+            )
+            session_caps = (
+                init_response.agent_capabilities.session_capabilities
+                if init_response.agent_capabilities is not None
+                else None
+            )
+            self._additional_directories_supported = (
+                session_caps is not None
+                and session_caps.additional_directories is not None
             )
             acp_mcp_servers = _mcp_config_to_acp_servers(self.mcp_config, mcp_caps)
             if acp_mcp_servers:
@@ -3206,6 +3302,7 @@ class ACPAgent(AgentBase):
                     load_response = await conn.load_session(
                         cwd=working_dir,
                         session_id=prior_session_id,
+                        additional_directories=self._skill_directories(),
                         mcp_servers=acp_mcp_servers,
                     )
                     session_id = prior_session_id
@@ -3251,6 +3348,7 @@ class ACPAgent(AgentBase):
                 session_meta = build_session_model_meta(agent_name, self.acp_model)
                 response = await conn.new_session(
                     cwd=working_dir,
+                    additional_directories=self._skill_directories(),
                     mcp_servers=acp_mcp_servers,
                     **session_meta,
                 )
@@ -4597,8 +4695,10 @@ class ACPAgent(AgentBase):
                     logger.debug("Error killing ACP process: %s", kill_error)
             self._process = None
 
-        for task_attr in ("_stdout_filter_task", "_stderr_log_task"):
-            task = getattr(self, task_attr)
+        for task_name, task in (
+            ("stdout filter task", self._stdout_filter_task),
+            ("stderr log task", self._stderr_log_task),
+        ):
             if task is not None:
                 task.cancel()
                 if self._executor is not None:
@@ -4607,8 +4707,9 @@ class ACPAgent(AgentBase):
                             self._await_cancelled_task, task, timeout=5.0
                         )
                     except Exception as e:
-                        logger.debug("Error stopping %s: %s", task_attr, e)
-                setattr(self, task_attr, None)
+                        logger.debug("Error stopping %s: %s", task_name, e)
+        self._stdout_filter_task = None
+        self._stderr_log_task = None
 
         credential_failures = self._release_file_credentials_collect()
         failures.update(credential_failures)
