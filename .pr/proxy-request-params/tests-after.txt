@@ -1,0 +1,2 @@
+$ uv run pytest tests/sdk/llm/test_model_info_proxy_lookup.py tests/sdk/llm/test_model_features.py -q   # branch
+============================= 241 passed in 6.29s ==============================

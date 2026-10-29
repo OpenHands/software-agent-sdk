@@ -18,9 +18,6 @@ Each record captures the static properties that are known at configuration time
 - ``supports_runtime_model_switch``  whether the server supports a protocol-level
                                   model switch for runtime, mid-conversation use
 - ``session_meta_key``      top-level ``_meta`` key for model selection (or ``None``)
-- ``available_models``      deprecated curated model list; ask the server with
-                            :func:`~openhands.sdk.agent.acp_model_discovery.discover_acp_models`
-- ``default_model``         deprecated curated default model (or ``None``)
 - ``file_secrets``          reserved "file-content" credential secrets the
                             provider authenticates from (Codex ``auth.json``,
                             Gemini Vertex SA JSON); see :class:`ACPFileSecretSpec`
@@ -51,24 +48,6 @@ from openhands.sdk.settings.acp_install_catalog import (
     GEMINI_CLI_VERSION as GEMINI_CLI_VERSION,
     KIMI_CODE_VERSION as KIMI_CODE_VERSION,
 )
-from openhands.sdk.utils.deprecation import warn_deprecated
-
-
-_ASK_THE_ACP_SERVER = (
-    "Ask the ACP server for its models instead: POST /api/acp/models, or "
-    "openhands.sdk.agent.acp_model_discovery.discover_acp_models()."
-)
-
-
-@dataclass(frozen=True)
-class ACPModelOption:
-    """One curated model for a built-in ACP provider's picker (deprecated)."""
-
-    id: str
-    """Exact model identifier sent to the ACP server as ``acp_model``."""
-
-    label: str
-    """Human-readable label shown in the model picker (e.g. ``"Claude Opus 4.7"``)."""
 
 
 class ACPFileSecretSpec(BaseModel):
@@ -256,29 +235,6 @@ class ACPProviderInfo:
     - ``None``         — codex-acp, gemini-cli, pi-acp
     """
 
-    available_models: tuple[ACPModelOption, ...] = field(
-        default=(), compare=False, repr=False
-    )
-    """Deprecated: ask the ACP server with ``discover_acp_models`` instead.
-
-    Curated list of models surfaced in this provider's ``acp_model`` picker.
-
-    These mirror the runtime picker values for each built-in harness, but are
-    suggestions — not authoritative access checks. A user can still configure a
-    custom ``acp_model`` the list does not contain, and actual availability
-    depends on the account's plan tier. Empty for providers without a curated
-    list (e.g. forward-compatible entries).
-    """
-
-    default_model: str | None = field(default=None, compare=False, repr=False)
-    """Deprecated: ask the ACP server with ``discover_acp_models`` instead.
-
-    Model ID preselected when no ``acp_model`` is configured, or ``None``.
-
-    When set, it must be one of the :attr:`available_models` ids. ``None`` lets
-    the ACP server pick its own default.
-    """
-
     supports_runtime_model_switch: bool = False
     """``True`` if the server supports the ``session/set_model`` protocol call
     for **runtime, mid-conversation model switching**.
@@ -349,138 +305,6 @@ class ACPProviderInfo:
     :class:`~openhands.sdk.agent.ACPAgent` only for the provider that declares
     them — see :class:`ACPEnvConflictSpec`.
     """
-
-    def __getattribute__(self, name: str) -> Any:
-        if name == "available_models":
-            warn_deprecated(
-                "ACPProviderInfo.available_models",
-                deprecated_in="1.54.0",
-                removed_in="1.59.0",
-                details=_ASK_THE_ACP_SERVER,
-                stacklevel=3,
-            )
-        elif name == "default_model":
-            warn_deprecated(
-                "ACPProviderInfo.default_model",
-                deprecated_in="1.54.0",
-                removed_in="1.59.0",
-                details=_ASK_THE_ACP_SERVER,
-                stacklevel=3,
-            )
-        return object.__getattribute__(self, name)
-
-
-def _deprecated_model_option() -> type[ACPModelOption]:
-    warn_deprecated(
-        "ACPModelOption",
-        deprecated_in="1.54.0",
-        removed_in="1.59.0",
-        details=_ASK_THE_ACP_SERVER,
-        stacklevel=4,
-    )
-    return ACPModelOption
-
-
-# ---------------------------------------------------------------------------
-# Curated ``acp_model`` candidate lists for the built-in providers.
-#
-# These are suggestions for the model picker, mirroring each harness's own
-# runtime ``/model`` options. They are not authoritative access checks —
-# availability ultimately depends on the user's plan tier, and a custom
-# ``acp_model`` outside these lists is always allowed.
-# ---------------------------------------------------------------------------
-
-# Model IDs the Claude Code CLI accepts, mirroring the ``model`` configOptions
-# select claude-agent-acp reports at ``session/new`` (the short aliases the CLI's
-# own ``/model`` menu offers, switched via ``set_config_option``).
-# ``opus[1m]`` is the SDK-documented version-agnostic 1M-context alias and the
-# CLI's own default (``currentValue``); ``default`` is the CLI's recommended tier
-# for the account. ``claude-opus-5`` is the explicit full model pin for users who
-# want Opus 5 rather than the provider-dependent alias. The ``/model`` menu is
-# dynamic/account-dependent and the CLI validates ``set_config_option(model)``
-# against the live select — it rejects an absent id (e.g. ``sonnet`` on accounts
-# without it), so these are pre-session suggestions, not ground truth; a rejected
-# id degrades to the server default.
-_CLAUDE_MODELS: tuple[ACPModelOption, ...] = (
-    ACPModelOption(id="default", label="Default (recommended)"),
-    ACPModelOption(id="opus[1m]", label="Claude Opus (1M)"),
-    ACPModelOption(id="claude-opus-5", label="Claude Opus 5"),
-    ACPModelOption(id="sonnet", label="Claude Sonnet"),
-    ACPModelOption(id="haiku", label="Claude Haiku"),
-)
-
-# Bare preset ids advertised by the Codex app server through
-# ``@agentclientprotocol/codex-acp``. The reasoning-effort tier is a
-# separate ``reasoning_effort`` configOption, not part of the model id, so it is
-# not encoded here. GPT-5.6 variants are rollout/account-dependent suggestions;
-# the adapter's live model list remains authoritative.
-#
-# ``gpt-5.6`` (bare), ``gpt-5.4``, and ``gpt-5.4-mini`` are dead entries the
-# live server's ``set_config_option`` rejects with "Invalid params" (#4830
-# P0-2 model-acceptance probe caught this) and have been removed; only the
-# GPT-5.6 tier's suffixed variants are live.
-_CODEX_MODELS: tuple[ACPModelOption, ...] = (
-    ACPModelOption(id="gpt-6-astra", label="GPT-6 Astra"),
-    ACPModelOption(id="gpt-5.6-sol", label="GPT-5.6 Sol"),
-    ACPModelOption(id="gpt-5.6-terra", label="GPT-5.6 Terra"),
-    ACPModelOption(id="gpt-5.6-luna", label="GPT-5.6 Luna"),
-    ACPModelOption(id="gpt-5.5", label="GPT-5.5"),
-)
-
-# Model IDs accepted by ``@google/gemini-cli --acp``. Mirrors the
-# ``availableModels`` the CLI reports at ``session/new`` on the pinned version
-# (gemini-cli 0.46.0). ``auto`` delegates version selection to the CLI's
-# router; the explicit ``gemini-*`` entries pin to a specific snapshot. The CLI
-# also accepts ids outside this list (it remaps them at generation), so these
-# are curated suggestions, not an access check.
-_GEMINI_MODELS: tuple[ACPModelOption, ...] = (
-    ACPModelOption(id="auto", label="Auto"),
-    # gemini-cli 0.46 surfaces the pro-preview as ``gemini-3.1-pro-preview`` once
-    # the Gemini 3.1 launch flag is on (``PREVIEW_GEMINI_3_1_MODEL``), falling
-    # back to ``gemini-3-pro-preview`` (``PREVIEW_GEMINI_MODEL``) otherwise — keep
-    # both so the picker matches either rollout state.
-    ACPModelOption(id="gemini-3.1-pro-preview", label="Gemini 3.1 Pro (preview)"),
-    ACPModelOption(id="gemini-3-pro-preview", label="Gemini 3 Pro (preview)"),
-    ACPModelOption(id="gemini-3-flash-preview", label="Gemini 3 Flash (preview)"),
-    ACPModelOption(id="gemini-3.1-flash-lite", label="Gemini 3.1 Flash Lite"),
-    ACPModelOption(id="gemini-2.5-pro", label="Gemini 2.5 Pro"),
-    ACPModelOption(id="gemini-2.5-flash", label="Gemini 2.5 Flash"),
-)
-
-# Pi model ids are ``<pi-provider>/<model-id>`` and the live catalogue depends on
-# which upstream credential is configured — pi surfaces only providers it can
-# authenticate. These mirror the Anthropic entries pi reports at ``session/new``
-# under ``ANTHROPIC_API_KEY`` (the credential channel ``api_key_env_var``
-# provisions); an ``acp_model`` outside the list, e.g. ``openai/gpt-5.5`` on an
-# OpenAI key, is still accepted.
-_PI_MODELS: tuple[ACPModelOption, ...] = (
-    ACPModelOption(id="anthropic/claude-opus-5", label="Claude Opus 5"),
-    ACPModelOption(id="anthropic/claude-opus-4-8", label="Claude Opus 4.8"),
-    ACPModelOption(id="anthropic/claude-sonnet-5", label="Claude Sonnet 5"),
-    ACPModelOption(id="anthropic/claude-sonnet-4-6", label="Claude Sonnet 4.6"),
-    ACPModelOption(id="anthropic/claude-haiku-4-5", label="Claude Haiku 4.5"),
-)
-
-# Model IDs accepted by ``opencode acp``, mirroring the ``model`` configOptions
-# select OpenCode reports at ``session/new``. Every id is ``<provider>/<model>``
-# and the offered set is credential-dependent, but unlike Kimi's it is not
-# *user-defined*: these are OpenCode Zen ids, the catalogue that
-# ``OPENCODE_API_KEY`` — the provider's own credential — unlocks, so a curated
-# list is meaningful. Without a key the server offers only the free tier, which
-# is why ``nemotron-3-ultra-free`` is kept. A user may still configure any
-# ``<provider>/<model>`` the CLI knows (e.g. ``anthropic/...`` with
-# ANTHROPIC_API_KEY supplied as a conversation secret).
-_OPENCODE_MODELS: tuple[ACPModelOption, ...] = (
-    ACPModelOption(id="opencode/big-pickle", label="Big Pickle"),
-    ACPModelOption(id="opencode/claude-opus-5", label="Claude Opus 5"),
-    ACPModelOption(id="opencode/claude-sonnet-5", label="Claude Sonnet 5"),
-    ACPModelOption(id="opencode/gpt-5.5", label="GPT-5.5"),
-    ACPModelOption(id="opencode/gemini-3.1-pro", label="Gemini 3.1 Pro"),
-    ACPModelOption(id="opencode/kimi-k3", label="Kimi K3"),
-    ACPModelOption(
-        id="opencode/nemotron-3-ultra-free", label="Nemotron 3 Ultra (free)"
-    ),
-)
 
 
 # ---------------------------------------------------------------------------
@@ -570,9 +394,6 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             supports_set_session_model=True,
             supports_runtime_model_switch=True,
             session_meta_key="claudeCode",
-            available_models=_CLAUDE_MODELS,
-            # The CLI's own default (model configOptions ``currentValue``).
-            default_model="opus[1m]",
             binary_name=ACP_INSTALL_CATALOG["claude-code"].binary_name,
             data_dir_env_var="CLAUDE_CONFIG_DIR",
             # Keyed on the credential itself, NOT on CLAUDE_CONFIG_DIR: the
@@ -598,8 +419,6 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             supports_set_session_model=True,
             supports_runtime_model_switch=True,
             session_meta_key=None,
-            available_models=_CODEX_MODELS,
-            default_model="gpt-5.5",
             file_secrets=_CODEX_FILE_SECRETS,
             binary_name=ACP_INSTALL_CATALOG["codex"].binary_name,
             data_dir_env_var="CODEX_HOME",
@@ -619,13 +438,6 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             supports_set_session_model=True,
             supports_runtime_model_switch=True,
             session_meta_key=None,
-            available_models=_GEMINI_MODELS,
-            # Match the Gemini CLI's own auto-router rather than a manually
-            # pinned snapshot. Pinning e.g. ``gemini-2.5-pro`` here would make
-            # downstream clients persist a value that bypasses the CLI's
-            # auto-routing. ``auto`` is the router id the CLI reports in its
-            # 0.46.0 ``availableModels``.
-            default_model="auto",
             file_secrets=_GEMINI_FILE_SECRETS,
             binary_name=ACP_INSTALL_CATALOG["gemini-cli"].binary_name,
             # Gemini CLI has no dedicated config-dir var; it hard-codes
@@ -656,18 +468,6 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             supports_set_session_model=True,
             supports_runtime_model_switch=True,
             session_meta_key=None,
-            # Deliberately uncurated. Unlike the other three, Kimi's model
-            # ids are a property of the credential, not the plan tier: an
-            # account login offers ``kimi-code/*`` aliases, while a
-            # config.toml provider offers whatever alias the user named
-            # (verified on 0.38.0 — the ``model`` select returned the
-            # user-chosen key). A static list would therefore be wrong, not
-            # merely incomplete, for anyone not on an account login. Clients
-            # render the picker from the live session's model select instead;
-            # ``default_model=None`` leaves the CLI to pick its own default,
-            # which it resolves against whatever provider is configured.
-            available_models=(),
-            default_model=None,
             file_secrets=_KIMI_FILE_SECRETS,
             binary_name=ACP_INSTALL_CATALOG["kimi-code"].binary_name,
             # ``KIMI_CODE_HOME`` relocates the ``~/.kimi-code`` data root.
@@ -691,11 +491,6 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             supports_set_session_model=True,
             supports_runtime_model_switch=True,
             session_meta_key=None,
-            available_models=_PI_MODELS,
-            # pi preselects a model from whichever catalogue the configured
-            # credential unlocks, so there is no id that is right for every
-            # account — leave the choice to the server.
-            default_model=None,
             file_secrets=_PI_FILE_SECRETS,
             binary_name=ACP_INSTALL_CATALOG["pi"].binary_name,
             data_dir_env_var="HOME",
@@ -728,10 +523,6 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # three plausible keys); the configOptions select is the only path
             # that takes effect.
             session_meta_key=None,
-            available_models=_OPENCODE_MODELS,
-            # The CLI's own default (model configOptions ``currentValue``),
-            # both with and without a key.
-            default_model="opencode/big-pickle",
             # No ``file_secrets``: OpenCode reads its whole auth store from
             # OPENCODE_AUTH_CONTENT when set, ahead of the on-disk auth.json, so
             # the credential rides the ordinary env-var channel.

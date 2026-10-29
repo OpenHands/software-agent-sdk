@@ -26,7 +26,7 @@ from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
 from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
-from openhands.sdk.llm import LLM, Message
+from openhands.sdk.llm import LLM, Message, TextContent
 
 
 # Regex matching raw ASCII control characters (U+0000–U+001F) that are
@@ -560,6 +560,34 @@ def normalize_tool_call(
     return normalized_tool_name, normalized_arguments
 
 
+_TRAILING_ASSISTANT_NUDGE = (
+    "Your previous response has already been delivered to the user. If the user "
+    "sent a new message above that your previous response did not address, "
+    "respond to it now. Otherwise, continue the task."
+)
+
+
+def _ensure_trailing_user_message(messages: list[Message]) -> None:
+    """Append a request-only user turn when the history ends with the assistant.
+
+    A user message that lands while the LLM call is in flight is recorded before
+    the agent's reply (``astep`` releases the state lock for the network wait),
+    so the continued run would otherwise send ``[..., user, assistant]``. Chat
+    APIs expect the final turn to be a user turn, and Anthropic rejects a
+    trailing assistant message on models without prefill support. The nudge is
+    not persisted: it only shapes this request.
+    """
+    if not messages or messages[-1].role != "assistant":
+        return
+    logger.warning(
+        "LLM history ends with an assistant message; appending a user turn so "
+        "the request does not end with assistant prefill."
+    )
+    messages.append(
+        Message(role="user", content=[TextContent(text=_TRAILING_ASSISTANT_NUDGE)])
+    )
+
+
 @overload
 def prepare_llm_messages(
     view: View,
@@ -630,6 +658,7 @@ def prepare_llm_messages(
     if additional_messages:
         messages.extend(additional_messages)
 
+    _ensure_trailing_user_message(messages)
     return messages
 
 
@@ -665,4 +694,5 @@ async def aprepare_llm_messages(
     if additional_messages:
         messages.extend(additional_messages)
 
+    _ensure_trailing_user_message(messages)
     return messages
