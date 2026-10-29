@@ -524,14 +524,14 @@ KNOWN_DIVERGENCES: dict[str, str] = {
     "execute_tool_directly": (
         "RemoteConversation.execute_tool raises NotImplementedError by design."
     ),
-    "iteration_limit_reached": (
-        "Both end in ERROR, but local run() returns while remote run() raises "
-        "ConversationRunError."
-    ),
-    "stuck_on_repeated_action": (
-        "Both end in STUCK, but local run() returns while remote run() raises "
-        "ConversationRunError."
-    ),
+}
+
+# Differences that BaseConversation documents, checked exactly: scenario ->
+# (returned key, local outcome, exception remote raises). See the
+# BaseConversation.run docstring.
+DOCUMENTED_DIFFERENCES: dict[str, tuple[str, str, str]] = {
+    "iteration_limit_reached": ("run", "returned", "ConversationRunError"),
+    "stuck_on_repeated_action": ("run", "returned", "ConversationRunError"),
 }
 
 
@@ -739,6 +739,12 @@ def test_local_and_remote_conversations_match(
 
     assert remote_events == local_events
     assert remote_status == local_status
+    if name in DOCUMENTED_DIFFERENCES:
+        key, local_outcome, remote_error = DOCUMENTED_DIFFERENCES[name]
+        assert local_returned.pop(key) == local_outcome
+        remote_outcome = remote_returned.pop(key)
+        assert isinstance(remote_outcome, Raised)
+        assert remote_error in remote_outcome.types
     assert _same_for_callers(local_returned, remote_returned), (
         f"local: {local_returned}\nremote: {remote_returned}"
     )

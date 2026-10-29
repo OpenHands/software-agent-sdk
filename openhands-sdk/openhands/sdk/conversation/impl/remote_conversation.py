@@ -1409,7 +1409,9 @@ class RemoteConversation(BaseConversation):
                 (only used when blocking=True). Default is 3600 seconds.
 
         Raises:
-            ConversationRunError: If the run fails or times out.
+            ConversationRunError: If the run fails or times out, including when
+                it ends in ``ERROR`` (e.g. the iteration limit) or ``STUCK``.
+                ``LocalConversation.run()`` returns with that status instead.
         """
         # Disarm and drain any stale terminal status events from previous runs
         # before arming for the new one. _run_armed gates full-state WS snapshots
