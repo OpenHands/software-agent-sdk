@@ -111,7 +111,7 @@ RUN set -eux; \
     vendor=/usr/local/lib/python3.13/site-packages/pip/_vendor; \
     find "$vendor/urllib3" "$vendor/msgpack" -name __pycache__ -prune -exec rm -rf {} +; \
     python3 -m compileall -q "$vendor/urllib3" "$vendor/msgpack"; \
-    python3 -c 'from pip._vendor import msgpack, requests, urllib3; from pip._vendor.cachecontrol import serialize; assert urllib3.__version__ == "2.8.0" and msgpack.version == (1, 2, 1); import importlib.util as u; assert u.find_spec("pip._vendor.pkg_resources") is None'; \
+    python3 -c 'from pip._vendor import msgpack, requests, urllib3; from pip._vendor.cachecontrol import serialize; assert urllib3.__version__ == "2.8.0" and msgpack.version == (1, 2, 3); import importlib.util as u; assert u.find_spec("pip._vendor.pkg_resources") is None'; \
     python3 -m pip --version
 
 FROM node:24.22.1-trixie-slim AS node-runtime
