@@ -262,6 +262,22 @@ def _optional_bool(source: Mapping[str, Any] | None, key: str) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+ALLOWED_OPENAI_PARAMS_KEY = "allowed_openai_params"
+
+_REQUEST_PARAM_CAPABILITIES: dict[str, str] = {
+    "supports_reasoning_effort": "reasoning_effort",
+    "supports_prompt_cache_key": "prompt_cache_key",
+    "supports_prompt_cache_retention": "prompt_cache_retention",
+}
+
+
+def _advertised_request_params(metadata: Mapping[str, Any] | None) -> frozenset[str]:
+    params = (metadata or {}).get(ALLOWED_OPENAI_PARAMS_KEY)
+    if not isinstance(params, (list, tuple)):
+        return frozenset()
+    return frozenset(p for p in params if isinstance(p, str))
+
+
 def get_features(
     model: str | None,
     model_info: Mapping[str, Any] | None = None,
@@ -297,17 +313,15 @@ def get_features(
         return fallback
 
     declared_params = metadata.get("supported_openai_params")
-    allowed_params = metadata.get("allowed_openai_params")
     if _optional_bool(metadata, "supports_reasoning_effort") is None:
         if isinstance(declared_params, (list, tuple)):
             metadata["supports_reasoning_effort"] = (
                 "reasoning_effort" in declared_params
             )
-        if (
-            isinstance(allowed_params, (list, tuple))
-            and "reasoning_effort" in allowed_params
-        ):
-            metadata["supports_reasoning_effort"] = True
+    advertised = _advertised_request_params(metadata)
+    for capability, param in _REQUEST_PARAM_CAPABILITIES.items():
+        if param in advertised and _optional_bool(metadata, capability) is None:
+            metadata[capability] = True
     reasoning = "reasoning_effort" in supported_params
     if metadata.get("supports_reasoning") is False:
         reasoning = False

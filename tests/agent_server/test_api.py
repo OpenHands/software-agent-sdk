@@ -786,6 +786,41 @@ class TestServiceParallelization:
             assert os.environ["TMUX_TMPDIR"] == str(user_tmux_tmpdir)
             assert user_tmux_tmpdir.is_dir()
 
+    @pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix")
+    @pytest.mark.parametrize(
+        ("inherited", "overridden"),
+        [({"LC_ALL": "C"}, "LC_ALL"), ({"LANG": "C"}, "LC_CTYPE")],
+    )
+    async def test_lifespan_sets_and_restores_utf8_locale(
+        self, short_tmp_path, monkeypatch, no_locale_env, inherited, overridden
+    ):
+        """A non-UTF-8 locale is replaced while serving and restored after."""
+        for name, value in inherited.items():
+            monkeypatch.setenv(name, value)
+        original = os.environ.get(overridden)
+        monkeypatch.setattr(
+            "openhands.agent_server.api._default_server_tmux_tmpdir",
+            lambda: short_tmp_path / "tmux",
+        )
+        mock_conversation_service = AsyncMock()
+
+        with (
+            patch(
+                "openhands.agent_server.api.ConversationService.get_instance",
+                return_value=mock_conversation_service,
+            ),
+            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
+            patch(
+                "openhands.agent_server.api.get_tool_preload_service", return_value=None
+            ),
+        ):
+            mock_app = AsyncMock()
+            mock_app.state = SimpleNamespace(config=Config())
+            async with api_lifespan(mock_app):
+                assert os.environ[overridden] == "C.UTF-8"
+
+            assert os.environ.get(overridden) == original
+
     async def test_lifespan_removes_substitute_for_too_deep_tmux_tmpdir(
         self, deep_tmp_path, short_tmp_path, monkeypatch
     ):

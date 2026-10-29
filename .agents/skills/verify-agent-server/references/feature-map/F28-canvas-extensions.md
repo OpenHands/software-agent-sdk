@@ -1049,10 +1049,11 @@ Preconditions:
 - The backend routes never 404: an unknown or broken app reports `missing`,
   a browser-only app `unsupported`, and prepare/start/stop/logs/data answer
   200 with that state. Only a non-kebab-case name is 422.
-- The revision is the git commit for git installs and
-  `sha256:<hash of the manifest JSON>` for local ones, so editing an installed
-  manifest of a local install changes the revision (and needs a new prepare),
-  while a git install's revision does not change.
+- The revision is `sha256:<hash of the resolved git ref plus manifest JSON>`
+  for all installs (the ref is empty for local sources). Changing either the
+  resolved ref or installed manifest changes the revision and requires fresh
+  preparation and secret consent. Previously persisted bare-git-SHA approvals
+  no longer match and require fresh preparation.
 - `prepare` and `start` do not consult `enabled`: a disabled app can be
   prepared and started (the README makes `prepare` with the exact revision the
   explicit gate; disabling and uninstalling stop the backend). `prepare` also
@@ -1095,3 +1096,14 @@ Preconditions:
   Linux host where the CLI and the server share a network and pid namespace;
   an attached remote server cannot be checked this way. The browser route to
   a backend (`/app-backends/...`) belongs to the bridge family.
+
+
+### Revision-bound secret consent and enable lifecycle
+
+Managed Apps accept `revision` and optional exact `secret_refs` on PATCH enabled=true.
+Explicit enable consent prepares and starts the backend, waits for readiness, and
+only then marks the app enabled. Failure stops it and leaves enabled=false.
+Disable stops the process and active bridge sessions while retaining same-revision
+secret consent. Explicit secret-grant DELETE also disables and clears consent.
+Install and ordinary mounts never start code. Browser-only toggles are unchanged.
+The prepare/start endpoints remain diagnostic APIs, not normal Canvas controls.
