@@ -1,0 +1,93 @@
+{
+  "scope": "Part 1 of OpenHands/software-agent-sdk#6283 only",
+  "runtime_code_revision": "4ad59291eee35a92778d99af0ea669d33fb1d5bd",
+  "upstream_baseline": "c216b6074b2ca1e744e2a0326eab4a9ec2a39294",
+  "environment": {
+    "platform": "macOS arm64",
+    "python": "3.12.14",
+    "sdk": "1.59.0",
+    "litellm": "1.93.0",
+    "setup": "scoped SDK/test environment; frozen registry artifacts; local native build; full workspace make build not completed"
+  },
+  "results": {
+    "targeted_pytest": {
+      "passed": 140,
+      "seconds": 5.58
+    },
+    "changed_file_precommit": "passed including Pyright",
+    "persisted_settings": {
+      "golden_fixtures": 29,
+      "published_baseline_payloads": 8
+    },
+    "public_http": "upstream sync/async fail body-ID assertion; candidate opt-in passes",
+    "router_adapter": "real LiteLLM Router/OpenRouter adapter via synchronous local relay; sync and async SDK clients pass",
+    "responses_http": "sync and async pass with explicit call contexts and override priority"
+  },
+  "not_verified": [
+    "full LiteLLM proxy_server deployment processing/auth/hooks",
+    "real OpenRouter service or cache/cost improvements",
+    "full workspace make build"
+  ],
+  "files": [
+    {
+      "file": "evidence/public-http-baseline-sync-20261029.json",
+      "original_sha256": "31699c73d3d228eb7db547250fbf54ff4d082b66c035ddb43990c02fe7445207",
+      "published_sha256": "31699c73d3d228eb7db547250fbf54ff4d082b66c035ddb43990c02fe7445207",
+      "sanitization": "local filesystem paths replaced with placeholders; results unchanged"
+    },
+    {
+      "file": "evidence/public-http-baseline-async-20261029.json",
+      "original_sha256": "44210549441f3091f44dcc02535238ab276a75105db8c811de9650b31bde639b",
+      "published_sha256": "44210549441f3091f44dcc02535238ab276a75105db8c811de9650b31bde639b",
+      "sanitization": "local filesystem paths replaced with placeholders; results unchanged"
+    },
+    {
+      "file": "evidence/public-http-candidate-sync-20261029.json",
+      "original_sha256": "b7f05c489f10844c02841b7729115ef5fd1029199392df7815f8a41b1b12a55e",
+      "published_sha256": "b7f05c489f10844c02841b7729115ef5fd1029199392df7815f8a41b1b12a55e",
+      "sanitization": "local filesystem paths replaced with placeholders; results unchanged"
+    },
+    {
+      "file": "evidence/public-http-candidate-async-20261029.json",
+      "original_sha256": "c6491a9929303ec4569242fcea71abab570a109fc6af9364e58d17c6bbb619ad",
+      "published_sha256": "c6491a9929303ec4569242fcea71abab570a109fc6af9364e58d17c6bbb619ad",
+      "sanitization": "local filesystem paths replaced with placeholders; results unchanged"
+    },
+    {
+      "file": "evidence/router-forwarding-sync-20261029.json",
+      "original_sha256": "8540dcf3f35f9e05ad2bc80b05894f001fc8ec86ccdd0d698311ff2a7aaf2f90",
+      "published_sha256": "8540dcf3f35f9e05ad2bc80b05894f001fc8ec86ccdd0d698311ff2a7aaf2f90",
+      "sanitization": "local filesystem paths replaced with placeholders; results unchanged"
+    },
+    {
+      "file": "evidence/router-forwarding-async-client-20261029.json",
+      "original_sha256": "a0e573542aa07a373de084e5c1d94c642e657e86dd6856599a9ec66033d36748",
+      "published_sha256": "a0e573542aa07a373de084e5c1d94c642e657e86dd6856599a9ec66033d36748",
+      "sanitization": "local filesystem paths replaced with placeholders; results unchanged"
+    },
+    {
+      "file": "evidence/responses-http-20261029.json",
+      "original_sha256": "f4ba224a661791a3d8e7f9b607eeea8025c847fb834ff5a18b845421f4189054",
+      "published_sha256": "f4ba224a661791a3d8e7f9b607eeea8025c847fb834ff5a18b845421f4189054",
+      "sanitization": "local filesystem paths replaced with placeholders; results unchanged"
+    },
+    {
+      "file": "evidence/pytest-sdk-targeted-20261029.log",
+      "original_sha256": "b0a812284bd30d8f79bdd101e20cb557e517b61ac983fff2aecdac84ffc615de",
+      "published_sha256": "8946af823e6efae18a03b991a127aa3642d2a0e32a650a02558e17f37e924f2f",
+      "sanitization": "local filesystem paths replaced with placeholders; results unchanged"
+    },
+    {
+      "file": "evidence/precommit-with-litellm-20261029.log",
+      "original_sha256": "3e023819bbbe91ed390828da8c633b662a29e6ed1e2cd04ad834b84ae1baf2b6",
+      "published_sha256": "3e023819bbbe91ed390828da8c633b662a29e6ed1e2cd04ad834b84ae1baf2b6",
+      "sanitization": "local filesystem paths replaced with placeholders; results unchanged"
+    },
+    {
+      "file": "evidence/persisted-settings-compat-20261029.log",
+      "original_sha256": "385b0fd21cfd24adc706c8f2d1ab9e2570349deb5cd0fa9b4ab7bb0286b9e45b",
+      "published_sha256": "385b0fd21cfd24adc706c8f2d1ab9e2570349deb5cd0fa9b4ab7bb0286b9e45b",
+      "sanitization": "local filesystem paths replaced with placeholders; results unchanged"
+    }
+  ]
+}

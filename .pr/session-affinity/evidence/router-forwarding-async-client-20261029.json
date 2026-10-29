@@ -1,0 +1,65 @@
+{
+  "git_head": "4ad59291eee35a92778d99af0ea669d33fb1d5bd",
+  "sdk_version": "1.59.0",
+  "litellm_version": "1.93.0",
+  "asynchronous": true,
+  "enable_body": true,
+  "conversation_ids": {
+    "first": "d0cadf8d-6d0c-4ccf-b363-a6a4f11ac2ce",
+    "second": "bb4e5cb2-1359-45a1-a4df-009fdbaaeb85"
+  },
+  "requests": [
+    {
+      "path": "/v1/chat/completions",
+      "header_session_id": null,
+      "body_session_id": null,
+      "prompt_cache_key": null
+    },
+    {
+      "path": "/v1/chat/completions",
+      "header_session_id": "d0cadf8d-6d0c-4ccf-b363-a6a4f11ac2ce",
+      "body_session_id": "d0cadf8d-6d0c-4ccf-b363-a6a4f11ac2ce",
+      "prompt_cache_key": null
+    },
+    {
+      "path": "/v1/chat/completions",
+      "header_session_id": "bb4e5cb2-1359-45a1-a4df-009fdbaaeb85",
+      "body_session_id": "bb4e5cb2-1359-45a1-a4df-009fdbaaeb85",
+      "prompt_cache_key": null
+    },
+    {
+      "path": "/v1/chat/completions",
+      "header_session_id": "d0cadf8d-6d0c-4ccf-b363-a6a4f11ac2ce",
+      "body_session_id": "d0cadf8d-6d0c-4ccf-b363-a6a4f11ac2ce",
+      "prompt_cache_key": null
+    }
+  ],
+  "upstream_requests": [
+    {
+      "path": "/v1/chat/completions",
+      "header_session_id": null,
+      "body_session_id": null,
+      "prompt_cache_key": null
+    },
+    {
+      "path": "/v1/chat/completions",
+      "header_session_id": null,
+      "body_session_id": "bb4e5cb2-1359-45a1-a4df-009fdbaaeb85",
+      "prompt_cache_key": null
+    },
+    {
+      "path": "/v1/chat/completions",
+      "header_session_id": null,
+      "body_session_id": "d0cadf8d-6d0c-4ccf-b363-a6a4f11ac2ce",
+      "prompt_cache_key": null
+    },
+    {
+      "path": "/v1/chat/completions",
+      "header_session_id": null,
+      "body_session_id": "d0cadf8d-6d0c-4ccf-b363-a6a4f11ac2ce",
+      "prompt_cache_key": null
+    }
+  ],
+  "conversation_body_id_contract_passed": true,
+  "scope": "SDK -> local relay -> real LiteLLM Router/OpenRouter adapter -> HTTP stub. Full proxy server and real OpenRouter/cache not tested. Relay Router calls are synchronous."
+}
