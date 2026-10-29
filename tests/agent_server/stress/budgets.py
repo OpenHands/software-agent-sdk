@@ -81,6 +81,15 @@ class EventLoopResponsivenessBudget:
 
 
 @dataclass(frozen=True, slots=True)
+class HistoricalRegressionBudget:
+    # Injected blocking work is over 3x the existing 150 ms canary ceiling.
+    blocking_work_s: float = 0.5
+    probe_interval_s: float = 0.01
+    n_conversations: int = 4
+    per_call_latency_s: float = 0.2
+
+
+@dataclass(frozen=True, slots=True)
 class SlowWebhookBudget:
     webhook_delay_s: float = 2.0
     # Conversation must complete within this multiple of the no-webhook
@@ -135,13 +144,25 @@ class LeaseContentionBudget:
     settle_timeout_s: float = 5.0
 
 
+@dataclass(frozen=True, slots=True)
+class LifecycleIsolationBudget:
+    # Enough simultaneous operations to expose a process-wide lifecycle lock
+    # without making teardown expensive on shared CI runners.
+    n_unrelated_conversations: int = 4
+    # A blocked close is intentionally unbounded. Unrelated lifecycle work must
+    # still finish within this deliberately loose CI-tolerant deadline.
+    unrelated_operations_timeout_s: float = 5.0
+
+
 PARALLEL_SUBAGENTS = ParallelSubagentBudget()
 CONVERSATION_LISTING = ConversationListingBudget()
 CONCURRENT_CONVERSATIONS = ConcurrentConversationsBudget()
 LONG_RUNNING_COMMAND = LongRunningCommandBudget()
 EVENT_LOOP_RESPONSIVENESS = EventLoopResponsivenessBudget()
+HISTORICAL_REGRESSIONS = HistoricalRegressionBudget()
 SLOW_WEBHOOK = SlowWebhookBudget()
 SLOW_WEBSOCKET_CONSUMER = SlowWebsocketConsumerBudget()
 WEBSOCKET_RECONNECT_STORM = WebsocketReconnectStormBudget()
 HIGH_VOLUME_BASH_OUTPUT = HighVolumeBashOutputBudget()
 LEASE_CONTENTION = LeaseContentionBudget()
+LIFECYCLE_ISOLATION = LifecycleIsolationBudget()
