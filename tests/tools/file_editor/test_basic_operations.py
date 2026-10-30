@@ -18,7 +18,7 @@ from openhands.tools.file_editor.utils.constants import (
     DIRECTORY_CONTENT_TRUNCATED_NOTICE,
     TEXT_FILE_CONTENT_TRUNCATED_NOTICE,
 )
-from tests.platform_utils import symlink_or_skip
+from tests.platform_utils import supports_posix_execute_bits, symlink_or_skip
 
 from .conftest import (
     assert_successful_result,
@@ -82,6 +82,78 @@ def test_file_editor_happy_path(temp_file):
     with open(temp_file) as f:
         content = f.read()
     assert "This is a sample file." in content
+
+
+@pytest.mark.parametrize("command", ["str_replace", "insert"])
+@pytest.mark.parametrize("link_kind", ["relative", "absolute", "chain"])
+def test_edit_and_undo_preserve_file_symlink(tmp_path, command, link_kind):
+    editor = FileEditor(workspace_root=str(tmp_path))
+    target = tmp_path / "canonical" / "settings.py"
+    target.parent.mkdir()
+    original = "enabled = False\n# Keep this comment.\n"
+    target.write_text(original, encoding="utf-8")
+    if supports_posix_execute_bits():
+        target.chmod(0o755)
+    original_mode = target.stat().st_mode
+
+    link = tmp_path / "settings.py"
+    if link_kind == "relative":
+        symlink_or_skip(target.relative_to(tmp_path), link)
+    elif link_kind == "absolute":
+        symlink_or_skip(target, link)
+    else:
+        intermediate = tmp_path / "middle.py"
+        symlink_or_skip(target.relative_to(tmp_path), intermediate)
+        symlink_or_skip(Path(intermediate.name), link)
+    original_link = link.readlink()
+
+    if command == "str_replace":
+        result = editor(
+            command="str_replace", path=str(link), old_str="False", new_str="True"
+        )
+        expected = original.replace("False", "True")
+    else:
+        result = editor(
+            command="insert", path=str(link), insert_line=1, new_str="retries = 3"
+        )
+        expected = "enabled = False\nretries = 3\n# Keep this comment.\n"
+
+    assert_successful_result(result, str(link))
+    assert result.old_content == original
+    assert result.new_content == expected
+    assert link.is_symlink()
+    assert link.readlink() == original_link
+    assert target.read_text(encoding="utf-8") == expected
+    assert link.read_text(encoding="utf-8") == expected
+    assert target.stat().st_mode == original_mode
+
+    undo = editor(command="undo_edit", path=str(link))
+    assert_successful_result(undo, str(link))
+    assert undo.old_content == expected
+    assert undo.new_content == original
+    assert link.is_symlink()
+    assert link.readlink() == original_link
+    assert target.read_text(encoding="utf-8") == original
+    assert target.stat().st_mode == original_mode
+
+
+@pytest.mark.parametrize("target_parent_exists", [True, False])
+def test_create_at_dangling_symlink_keeps_existing_behavior(
+    tmp_path, target_parent_exists
+):
+    target = tmp_path / "canonical" / "missing.txt"
+    if target_parent_exists:
+        target.parent.mkdir()
+    link = tmp_path / "new.txt"
+    symlink_or_skip(target, link)
+
+    result = file_editor(command="create", path=str(link), file_text="new content")
+
+    assert_successful_result(result, str(link))
+    assert result.prev_exist is False
+    assert not link.is_symlink()
+    assert link.read_text(encoding="utf-8") == "new content"
+    assert not target.exists()
 
 
 def test_file_editor_view_operation(temp_file):
