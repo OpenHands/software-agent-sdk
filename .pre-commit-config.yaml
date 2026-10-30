@@ -62,3 +62,11 @@ repos:
             types: [python]
             pass_filenames: true
             always_run: false
+          - id: check-shared-oracle-tests
+            name: Forbid expected values computed by the code under test's dependency
+            entry: uv
+            args: [run, python, scripts/check_shared_oracle_tests.py]
+            language: system
+            files: ^tests/.*test_[^/]*\.py$
+            pass_filenames: true
+            always_run: false
