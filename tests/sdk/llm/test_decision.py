@@ -190,13 +190,19 @@ def test_rate_limit_is_retried_then_succeeds(provider):
     assert result.noul("urgent").probability == 0.93
 
 
-def test_rate_limit_exhaustion_raises_sdk_error(provider):
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+async def test_rate_limit_exhaustion_raises_sdk_error(provider, use_async):
     base_url, replies, requests = provider
     for _ in range(2):
         replies.append((429, {"error": {"message": "slow down"}}))
+    model = _model(base_url, num_retries=2)
 
     with pytest.raises(LLMRateLimitError):
-        _model(base_url, num_retries=2).decide("x", QUESTIONS)
+        if use_async:
+            await model.adecide("x", QUESTIONS)
+        else:
+            model.decide("x", QUESTIONS)
 
     assert len(requests) == 2
 
@@ -265,3 +271,22 @@ def test_decision_call_emits_a_span_nested_under_the_active_span(
     assert attrs["gen_ai.response.model"] == "jev-1.13.0"
     assert attrs["gen_ai.usage.input_tokens"] == 1000
     assert attrs["gen_ai.usage.cost"] > 0
+
+
+def test_reply_without_usage_records_zero_tokens_and_no_cost(provider, lmnr_exporter):
+    from lmnr import Laminar
+
+    base_url, replies, _ = provider
+    replies.append((200, {k: v for k, v in REPLY.items() if k != "usage"}))
+    model = _model(base_url)
+
+    with Laminar.start_as_current_span(name="agent-step"):
+        result = model.decide("x", QUESTIONS)
+
+    assert result.noul("urgent").probability == 0.93
+    assert model.metrics.accumulated_cost == 0
+    attrs = {s.name: s for s in lmnr_exporter.get_finished_spans()}[
+        f"decision.{MODEL}"
+    ].attributes
+    assert attrs["gen_ai.usage.input_tokens"] == 0
+    assert "gen_ai.usage.cost" not in attrs
