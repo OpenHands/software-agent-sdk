@@ -15,7 +15,7 @@ from openhands.sdk.llm import (
     Noul,
     Score,
 )
-from openhands.sdk.llm.exceptions import LLMRateLimitError
+from openhands.sdk.llm.exceptions import LLMRateLimitError, LLMResponseError
 
 
 MODEL = "typesafe/jev-latest"
@@ -148,7 +148,7 @@ def test_api_key_is_redacted_unless_secrets_are_exposed():
     assert restored.api_key.get_secret_value() == "sk-secret"
 
 
-def test_answer_accessor_rejects_the_wrong_question_type(provider):
+def test_answer_accessor_rejects_wrong_type_and_unknown_name(provider):
     base_url, replies, _ = provider
     replies.append((200, REPLY))
 
@@ -156,6 +156,22 @@ def test_answer_accessor_rejects_the_wrong_question_type(provider):
 
     with pytest.raises(TypeError, match="not a ChoiceAnswer"):
         result.choice("urgent")
+    with pytest.raises(KeyError, match="'impact', 'team', 'urgent'"):
+        result.noul("nope")
+
+
+def test_missing_answer_raises_without_retry_and_keeps_usage(provider):
+    base_url, replies, requests = provider
+    answers = {k: v for k, v in REPLY["answers"].items() if k != "team"}
+    replies.append((200, {**REPLY, "answers": answers}))
+    model = _model(base_url, num_retries=3)
+
+    with pytest.raises(LLMResponseError, match="no answer for: team"):
+        model.decide("x", QUESTIONS)
+
+    assert len(requests) == 1
+    usage = model.metrics.accumulated_token_usage
+    assert usage is not None and usage.prompt_tokens == 1000
 
 
 def test_rate_limit_is_retried_then_succeeds(provider):

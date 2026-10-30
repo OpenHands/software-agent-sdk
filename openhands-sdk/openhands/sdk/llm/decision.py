@@ -30,6 +30,7 @@ from pydantic import (
 from tenacity import retry_if_exception, retry_if_exception_type
 
 from openhands.sdk.llm.exceptions import (
+    LLMResponseError,
     is_quota_exhaustion_error,
     map_provider_exception,
 )
@@ -128,7 +129,9 @@ class DecisionResult(BaseModel):
         return self._answer(name, ScoreAnswer)
 
     def _answer[A: BaseModel](self, name: str, kind: type[A]) -> A:
-        answer = self.answers[name]
+        answer = self.answers.get(name)
+        if answer is None:
+            raise KeyError(f"No answer named {name!r}; answers: {sorted(self.answers)}")
         if not isinstance(answer, kind):
             raise TypeError(
                 f"Question {name!r} has a {type(answer).__name__}, "
@@ -291,12 +294,16 @@ class DecisionModel(BaseModel, RetryMixin):
             )
 
             def annotate(response: DecisionsResponse, latency: float) -> DecisionResult:
-                return self._finish(response, latency, span)
+                return self._finish(response, latency, span, questions)
 
             yield annotate
 
     def _finish(
-        self, response: DecisionsResponse, latency: float, span: Any
+        self,
+        response: DecisionsResponse,
+        latency: float,
+        span: Any,
+        questions: Mapping[str, Question],
     ) -> DecisionResult:
         response_id = uuid.uuid4().hex
         self._metrics.add_response_latency(latency, response_id)
@@ -327,6 +334,12 @@ class DecisionModel(BaseModel, RetryMixin):
         if isinstance(cost, int | float) and cost > 0:
             attributes["gen_ai.usage.cost"] = float(cost)
         _set_attributes(span, attributes)
+
+        missing = [name for name in questions if name not in answers]
+        if missing:
+            raise LLMResponseError(
+                f"Decision model returned no answer for: {', '.join(missing)}"
+            )
 
         return DecisionResult(
             answers=answers,
