@@ -4,6 +4,7 @@ from typing import Literal, get_args
 
 from openhands.sdk.skills import (
     KeywordTrigger,
+    PathTrigger,
     Skill,
     TaskTrigger,
 )
@@ -201,6 +202,19 @@ class TestSkillToSkillInfo:
         assert "Deployment instructions with ${env}" in info.content
         assert info.triggers == ["/deploy"]
         assert info.source == "/tasks/deploy.md"
+
+    def test_path_skill_to_info_carries_paths(self):
+        """Path-triggered skills expose their globs; others get an empty list."""
+        skill = Skill(
+            name="repo-rules",
+            content="Rules",
+            trigger=PathTrigger(paths=["app/repositories/**"]),
+        )
+        info = skill.to_skill_info()
+
+        assert info.paths == ["app/repositories/**"]
+        assert info.triggers == []
+        assert Skill(name="x", content="y").to_skill_info().paths == []
 
     def test_skill_info_with_none_values(self):
         """Test SkillInfo handles None values correctly."""
