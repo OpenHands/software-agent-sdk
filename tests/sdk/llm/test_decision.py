@@ -6,17 +6,29 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 
 import pytest
+from litellm.types.decisions import DecisionsResponse
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from pydantic import SecretStr
+from pydantic import PrivateAttr, SecretStr
 
 from openhands.sdk.llm import (
     Choice,
+    ChoiceAnswer,
     DecisionModel,
+    DecisionReply,
+    DecisionUsage,
     Noul,
+    NoulAnswer,
     NoulCriteria,
     Score,
+    ScoreAnswer,
 )
-from openhands.sdk.llm.exceptions import LLMRateLimitError, LLMResponseError
+from openhands.sdk.llm.exceptions import (
+    LLMAuthenticationError,
+    LLMRateLimitError,
+    LLMResponseError,
+    LLMServiceUnavailableError,
+    LLMTimeoutError,
+)
 
 
 MODEL = "typesafe/jev-latest"
@@ -146,6 +158,9 @@ async def test_decide_sends_questions_and_returns_typed_answers(provider, use_as
         "1": "Workaround available",
         "2": "Work blocked",
     }
+
+    assert result.model == "jev-1.13.0"
+    assert isinstance(result.raw_response, DecisionsResponse)
 
     usage = result.metrics.accumulated_token_usage
     assert usage is not None
@@ -391,4 +406,177 @@ def test_reply_without_usage_records_zero_tokens_and_no_cost(provider, lmnr_expo
         f"decision.{MODEL}"
     ].attributes
     assert attrs["gen_ai.usage.input_tokens"] == 0
+    assert "gen_ai.usage.cost" not in attrs
+
+
+class ScriptedDecisionModel(DecisionModel):
+    """A provider LiteLLM lacks, added through the public send()/asend() hook.
+
+    Each attempt pops the next scripted reply or exception, so the tests drive
+    DecisionModel's real retry, metrics, span and error-mapping code.
+    """
+
+    _script: deque = PrivateAttr(default_factory=deque)
+    _calls: list = PrivateAttr(default_factory=list)
+
+    def send(self, state, questions):
+        return self._next("send", state, questions)
+
+    async def asend(self, state, questions):
+        return self._next("asend", state, questions)
+
+    def _next(self, method, state, questions):
+        self._calls.append((method, state, dict(questions)))
+        step = self._script.popleft()
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+
+CUSTOM_REPLY = DecisionReply(
+    answers={
+        "urgent": NoulAnswer(probability=0.8),
+        "team": ChoiceAnswer(
+            choice="billing",
+            confidence=0.6,
+            probabilities={"billing": 0.8, "technical": 0.2},
+        ),
+        "impact": ScoreAnswer(
+            score=0.5,
+            confidence=0.4,
+            probabilities={"0": 0.5, "1": 0.5, "2": 0.0},
+            legend={"0": "Cosmetic", "1": "Workaround available", "2": "Work blocked"},
+        ),
+    },
+    model="acme-decider-2.1",
+    usage=DecisionUsage(input_tokens=50, output_tokens=2, cache_read_tokens=10),
+    cost=0.25,
+    raw_response={"id": "acme-123"},
+)
+
+
+def _scripted(*steps, **kwargs) -> ScriptedDecisionModel:
+    model = ScriptedDecisionModel(
+        model="acme-decider", retry_min_wait=0, retry_max_wait=0, **kwargs
+    )
+    model._script.extend(steps)
+    return model
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+async def test_custom_send_returns_typed_result_with_metrics(use_async):
+    model = _scripted(CUSTOM_REPLY)
+    state = {"ticket": "PDF export fails"}
+
+    if use_async:
+        result = await model.adecide(state, QUESTIONS)
+    else:
+        result = model.decide(state, QUESTIONS)
+
+    assert model._calls == [("asend" if use_async else "send", state, QUESTIONS)]
+    assert result.answers == CUSTOM_REPLY.answers
+    assert result.choice("team").choice == "billing"
+    assert result.model == "acme-decider-2.1"
+    assert result.raw_response == {"id": "acme-123"}
+    usage = result.metrics.accumulated_token_usage
+    assert usage is not None
+    assert (usage.prompt_tokens, usage.completion_tokens) == (50, 2)
+    assert usage.cache_read_tokens == 10
+    assert result.metrics.accumulated_cost == 0.25
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+async def test_custom_send_retries_transient_sdk_errors(use_async):
+    model = _scripted(
+        LLMRateLimitError("slow down"),
+        LLMTimeoutError("timed out"),
+        LLMServiceUnavailableError("down"),
+        CUSTOM_REPLY,
+        num_retries=4,
+    )
+
+    if use_async:
+        result = await model.adecide("x", QUESTIONS)
+    else:
+        result = model.decide("x", QUESTIONS)
+
+    assert len(model._calls) == 4
+    assert result.noul("urgent").probability == 0.8
+
+
+@pytest.mark.parametrize(
+    "error",
+    [LLMAuthenticationError("bad key"), ValueError("unknown option")],
+    ids=["sdk-error", "other-error"],
+)
+def test_custom_send_errors_that_are_not_transient_raise_unchanged(error):
+    model = _scripted(error, CUSTOM_REPLY, num_retries=3)
+
+    with pytest.raises(type(error)) as raised:
+        model.decide("x", QUESTIONS)
+
+    assert raised.value is error
+    assert len(model._calls) == 1
+
+
+def test_custom_send_missing_answer_raises_without_retry():
+    answers = {k: v for k, v in CUSTOM_REPLY.answers.items() if k != "impact"}
+    model = _scripted(CUSTOM_REPLY.model_copy(update={"answers": answers}))
+
+    with pytest.raises(LLMResponseError, match="no answer for: impact"):
+        model.decide("x", QUESTIONS)
+
+    assert len(model._calls) == 1
+
+
+def test_litellm_question_limit_does_not_apply_to_a_custom_send():
+    questions = {f"q{i}": Noul(instructions="Is it urgent?") for i in range(200)}
+    reply = DecisionReply(
+        answers={name: NoulAnswer(probability=0.5) for name in questions}
+    )
+
+    result = _scripted(reply).decide("x", questions)
+
+    assert len(result.answers) == 200
+
+
+def test_custom_send_emits_the_decision_span(lmnr_exporter):
+    from lmnr import Laminar
+
+    with Laminar.start_as_current_span(name="agent-step"):
+        _scripted(CUSTOM_REPLY).decide("x", QUESTIONS)
+
+    spans = {s.name: s for s in lmnr_exporter.get_finished_spans()}
+    decision = spans["decision.acme-decider"]
+    assert decision.parent is not None
+    assert decision.parent.span_id == spans["agent-step"].context.span_id
+    attrs = decision.attributes
+    assert attrs["gen_ai.request.model"] == "acme-decider"
+    assert attrs["gen_ai.response.model"] == "acme-decider-2.1"
+    assert attrs["gen_ai.usage.input_tokens"] == 50
+    assert attrs["gen_ai.usage.output_tokens"] == 2
+    assert attrs["gen_ai.usage.cost"] == 0.25
+    assert json.loads(attrs["decision.answers"])["team"]["choice"] == "billing"
+
+
+def test_custom_reply_without_model_usage_or_cost(lmnr_exporter):
+    from lmnr import Laminar
+
+    reply = DecisionReply(answers=CUSTOM_REPLY.answers)
+    model = _scripted(reply)
+
+    with Laminar.start_as_current_span(name="agent-step"):
+        result = model.decide("x", QUESTIONS)
+
+    assert result.model is None
+    assert result.raw_response is None
+    assert result.metrics.accumulated_cost == 0
+    assert model.metrics.token_usages == []
+    attrs = {s.name: s for s in lmnr_exporter.get_finished_spans()}[
+        "decision.acme-decider"
+    ].attributes
+    assert "gen_ai.response.model" not in attrs
+    assert "gen_ai.usage.input_tokens" not in attrs
     assert "gen_ai.usage.cost" not in attrs

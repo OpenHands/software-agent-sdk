@@ -1,10 +1,14 @@
-"""Decision models: typed, classifier-style questions answered through LiteLLM.
+"""Decision models: typed, classifier-style questions and answers.
 
 A decision model takes a ``state`` and a map of named questions and returns one
 typed answer per question (a probability, a choice, or a score) rather than
 generated text. It sits next to :class:`LLM` and reuses its retry, exception
 mapping, metrics and observability conventions, but it does not go through the
 chat completion path.
+
+Questions and answers are SDK types. LiteLLM is the default provider, and it
+is used only inside :meth:`DecisionModel.send` and :meth:`DecisionModel.asend`.
+A subclass can override those two methods to call a provider LiteLLM lacks.
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from typing import Annotated, Any, ClassVar, Final, Literal, cast
+from typing import Annotated, Any, ClassVar, Final, Literal
 
 from litellm import asystemone as litellm_asystemone, systemone as litellm_systemone
 from litellm.types.decisions import MAX_DECISION_QUESTIONS, DecisionsResponse
@@ -30,7 +34,11 @@ from pydantic import (
 from tenacity import retry_if_exception, retry_if_exception_type
 
 from openhands.sdk.llm.exceptions import (
+    LLMError,
+    LLMRateLimitError,
     LLMResponseError,
+    LLMServiceUnavailableError,
+    LLMTimeoutError,
     is_quota_exhaustion_error,
     map_provider_exception,
 )
@@ -47,9 +55,11 @@ logger = get_logger(__name__)
 __all__ = [
     "Choice",
     "ChoiceAnswer",
-    "DecisionModel",
-    "DecisionResult",
     "DecisionJSON",
+    "DecisionModel",
+    "DecisionReply",
+    "DecisionResult",
+    "DecisionUsage",
     "Noul",
     "NoulAnswer",
     "NoulCriteria",
@@ -59,6 +69,15 @@ __all__ = [
 ]
 
 _MAX_SCORE_LEVELS: Final[int] = 10
+
+# SDK errors that a custom send() raises for failures worth retrying, on top
+# of the LiteLLM errors LLM already retries.
+_RETRY_EXCEPTIONS: Final[tuple[type[Exception], ...]] = (
+    *LLM_RETRY_EXCEPTIONS,
+    LLMRateLimitError,
+    LLMTimeoutError,
+    LLMServiceUnavailableError,
+)
 
 # Instructions and criteria may be plain text or JSON structure, which keeps
 # the question apart from the context and examples that guide it.
@@ -129,14 +148,35 @@ class ScoreAnswer(BaseModel):
 Answer = NoulAnswer | ChoiceAnswer | ScoreAnswer
 
 
+class DecisionUsage(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
+
+class DecisionReply(BaseModel):
+    """One provider reply in SDK types, as returned by ``DecisionModel.send``.
+
+    ``model`` is the versioned model that answered. ``usage`` and ``cost`` are
+    ``None`` when the provider does not report them. ``raw_response`` keeps the
+    provider's own payload for debugging.
+    """
+
+    answers: dict[str, Answer]
+    model: str | None = None
+    usage: DecisionUsage | None = None
+    cost: float | None = None
+    raw_response: Any = None
+
+
 class DecisionResult(BaseModel):
     """Answers keyed like the questions, plus the call's metrics."""
 
     answers: dict[str, Answer]
+    model: str | None = Field(description="The versioned model that answered.")
     metrics: MetricsSnapshot
-    raw_response: DecisionsResponse
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(arbitrary_types_allowed=True)
+    raw_response: Any = Field(default=None, description="The provider's payload.")
 
     def noul(self, name: str) -> NoulAnswer:
         return self._answer(name, NoulAnswer)
@@ -159,35 +199,19 @@ class DecisionResult(BaseModel):
         return answer
 
 
-def _convert_answer(answer: Any) -> Answer:
-    match answer.type:
-        case "noul":
-            return NoulAnswer(probability=answer.noul)
-        case "choice":
-            return ChoiceAnswer(
-                choice=answer.choice,
-                confidence=answer.confidence,
-                probabilities=dict(answer.probabilities),
-            )
-        case "score":
-            return ScoreAnswer(
-                score=answer.score,
-                confidence=answer.confidence,
-                probabilities=dict(answer.probabilities),
-                legend=dict(answer.legend),
-            )
-    raise ValueError(f"Unsupported decision answer type: {answer.type!r}")
-
-
 class DecisionModel(BaseModel, RetryMixin):
-    """Ask typed questions of a decision model through LiteLLM.
+    """Ask typed questions of a decision model.
 
-    ``model`` is a LiteLLM model string for a decision provider. Like
-    :class:`LLM`, the SDK holds no per-provider knowledge: routing, wire format
-    and pricing all belong to LiteLLM.
+    By default ``model`` is a LiteLLM model string and LiteLLM owns routing,
+    wire format and pricing, as it does for :class:`LLM`. To use a provider
+    LiteLLM lacks, subclass and override :meth:`send` (and :meth:`asend` for
+    :meth:`adecide`). Retries, error mapping, metrics and the
+    ``decision.<model>`` span still apply.
     """
 
-    model: str = Field(description="LiteLLM model string of a decision model.")
+    model: str = Field(
+        description="Decision model name; a LiteLLM model string by default."
+    )
     api_key: str | SecretStr | None = Field(default=None, description="API key.")
     base_url: str | None = Field(default=None, description="Custom API base URL.")
     timeout: int | None = Field(
@@ -223,48 +247,57 @@ class DecisionModel(BaseModel, RetryMixin):
         """Answer every question about ``state`` in one call.
 
         Questions run in parallel against the same state, so ask all of them
-        at once. LiteLLM accepts at most ``MAX_DECISION_QUESTIONS`` (128) per
-        call; split larger sets across calls that send the same state.
+        at once. Through LiteLLM a call takes at most ``MAX_DECISION_QUESTIONS``
+        (128) questions; split larger sets across calls with the same state.
         """
-        kwargs = self._call_kwargs(state, questions)
 
         @self._retry_decorator()
         def _one_attempt() -> DecisionResult:
-            with self._observed_call(questions) as annotate:
+            with self._observed_call(questions) as finish:
                 started = time.time()
-                response = cast(DecisionsResponse, litellm_systemone(**kwargs))
-                return annotate(response, time.time() - started)
+                reply = self.send(state, questions)
+                return finish(reply, time.time() - started)
 
         try:
             return _one_attempt()
         except Exception as e:
-            mapped = map_provider_exception(e)
-            if mapped is not e:
-                raise mapped from e
-            raise
+            raise _sdk_error(e) from e
 
     async def adecide(
         self, state: Any, questions: Mapping[str, Question]
     ) -> DecisionResult:
         """Async :meth:`decide`."""
-        kwargs = self._call_kwargs(state, questions)
 
         @self._retry_decorator()
         async def _one_attempt() -> DecisionResult:
-            with self._observed_call(questions) as annotate:
+            with self._observed_call(questions) as finish:
                 started = time.time()
-                response = cast(DecisionsResponse, await litellm_asystemone(**kwargs))
-                return annotate(response, time.time() - started)
+                reply = await self.asend(state, questions)
+                return finish(reply, time.time() - started)
 
         try:
             return await _one_attempt()
         except Exception as e:
-            mapped = map_provider_exception(e)
-            if mapped is not e:
-                raise mapped from e
-            raise
+            raise _sdk_error(e) from e
 
-    def _call_kwargs(
+    def send(self, state: Any, questions: Mapping[str, Question]) -> DecisionReply:
+        """Make one provider request; :meth:`decide` calls this once per attempt.
+
+        The default sends through LiteLLM. Override it to call another
+        provider. Raise ``LLMRateLimitError``, ``LLMTimeoutError`` or
+        ``LLMServiceUnavailableError`` for failures worth retrying.
+        """
+        response = litellm_systemone(**self._litellm_kwargs(state, questions))
+        return _reply_from_litellm(response)
+
+    async def asend(
+        self, state: Any, questions: Mapping[str, Question]
+    ) -> DecisionReply:
+        """Async :meth:`send`, used by :meth:`adecide`."""
+        response = await litellm_asystemone(**self._litellm_kwargs(state, questions))
+        return _reply_from_litellm(response)
+
+    def _litellm_kwargs(
         self, state: Any, questions: Mapping[str, Question]
     ) -> dict[str, Any]:
         if len(questions) > MAX_DECISION_QUESTIONS:
@@ -289,7 +322,7 @@ class DecisionModel(BaseModel, RetryMixin):
 
     def _retry_decorator(self) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         retryable = (
-            retry_if_exception_type(LLM_RETRY_EXCEPTIONS)
+            retry_if_exception_type(_RETRY_EXCEPTIONS)
             | retry_if_exception(is_transient_http_error)
         ) & retry_if_exception(lambda e: not is_quota_exhaustion_error(e))
         return self.retry_decorator(
@@ -303,12 +336,12 @@ class DecisionModel(BaseModel, RetryMixin):
     @contextmanager
     def _observed_call(
         self, questions: Mapping[str, Question]
-    ) -> Iterator[Callable[[DecisionsResponse, float], DecisionResult]]:
-        """One attempt: a span that is current while LiteLLM runs.
+    ) -> Iterator[Callable[[DecisionReply, float], DecisionResult]]:
+        """One attempt: a span that is current while the provider runs.
 
-        Yields a function that records the response on the metrics and the span
-        and returns the SDK result. The state is deliberately not recorded on
-        the span, because it may carry sensitive content.
+        Yields a function that records the reply on the metrics and the span
+        and returns the result. The state is deliberately not recorded on the
+        span, because it may carry sensitive content.
         """
         # Lazy: observability imports openhands.sdk.event, which imports llm.
         from openhands.sdk.observability.laminar import llm_call_span
@@ -326,59 +359,108 @@ class DecisionModel(BaseModel, RetryMixin):
                 },
             )
 
-            def annotate(response: DecisionsResponse, latency: float) -> DecisionResult:
-                return self._finish(response, latency, span, questions)
+            def finish(reply: DecisionReply, latency: float) -> DecisionResult:
+                return self._finish(reply, latency, span, questions)
 
-            yield annotate
+            yield finish
 
     def _finish(
         self,
-        response: DecisionsResponse,
+        reply: DecisionReply,
         latency: float,
         span: Any,
         questions: Mapping[str, Question],
     ) -> DecisionResult:
         response_id = uuid.uuid4().hex
         self._metrics.add_response_latency(latency, response_id)
-        cost = response.hidden_params.get("response_cost")
-        if isinstance(cost, int | float) and cost > 0:
-            self._metrics.add_cost(float(cost))
-        usage = response.usage
+        cost = reply.cost
+        if cost is not None and cost > 0:
+            self._metrics.add_cost(cost)
+        usage = reply.usage
         if usage is not None:
             self._metrics.add_token_usage(
                 prompt_tokens=usage.input_tokens,
                 completion_tokens=usage.output_tokens,
-                cache_read_tokens=usage.cached_tokens,
+                cache_read_tokens=usage.cache_read_tokens,
                 cache_write_tokens=usage.cache_write_tokens,
                 context_window=0,
                 response_id=response_id,
             )
 
-        answers = {name: _convert_answer(a) for name, a in response.answers.items()}
-        answers_json = json.dumps({name: a.model_dump() for name, a in answers.items()})
+        answers_json = json.dumps(
+            {name: a.model_dump() for name, a in reply.answers.items()}
+        )
         attributes: dict[str, Any] = {
             "decision.answers": answers_json,
             "lmnr.span.output": answers_json,
-            "gen_ai.response.model": response.model,
         }
+        if reply.model is not None:
+            attributes["gen_ai.response.model"] = reply.model
         if usage is not None:
             attributes["gen_ai.usage.input_tokens"] = usage.input_tokens
             attributes["gen_ai.usage.output_tokens"] = usage.output_tokens
-        if isinstance(cost, int | float) and cost > 0:
-            attributes["gen_ai.usage.cost"] = float(cost)
+        if cost is not None and cost > 0:
+            attributes["gen_ai.usage.cost"] = cost
         _set_attributes(span, attributes)
 
-        missing = [name for name in questions if name not in answers]
+        missing = [name for name in questions if name not in reply.answers]
         if missing:
             raise LLMResponseError(
                 f"Decision model returned no answer for: {', '.join(missing)}"
             )
 
         return DecisionResult(
-            answers=answers,
+            answers=reply.answers,
+            model=reply.model,
             metrics=self._metrics.get_snapshot(),
-            raw_response=response,
+            raw_response=reply.raw_response,
         )
+
+
+def _sdk_error(e: Exception) -> Exception:
+    """SDK errors, including those a custom send() raises, pass through."""
+    if isinstance(e, LLMError):
+        return e
+    return map_provider_exception(e)
+
+
+def _reply_from_litellm(response: DecisionsResponse) -> DecisionReply:
+    cost = response.hidden_params.get("response_cost")
+    usage = response.usage
+    return DecisionReply(
+        answers={name: _answer_from_litellm(a) for name, a in response.answers.items()},
+        model=response.model,
+        usage=None
+        if usage is None
+        else DecisionUsage(
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=usage.cached_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+        ),
+        cost=float(cost) if isinstance(cost, int | float) else None,
+        raw_response=response,
+    )
+
+
+def _answer_from_litellm(answer: Any) -> Answer:
+    match answer.type:
+        case "noul":
+            return NoulAnswer(probability=answer.noul)
+        case "choice":
+            return ChoiceAnswer(
+                choice=answer.choice,
+                confidence=answer.confidence,
+                probabilities=dict(answer.probabilities),
+            )
+        case "score":
+            return ScoreAnswer(
+                score=answer.score,
+                confidence=answer.confidence,
+                probabilities=dict(answer.probabilities),
+                legend=dict(answer.legend),
+            )
+    raise ValueError(f"Unsupported decision answer type: {answer.type!r}")
 
 
 def _dump_questions(questions: Mapping[str, Question]) -> dict[str, Any]:
