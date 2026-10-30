@@ -28,6 +28,7 @@ import threading
 import time
 import uuid
 import weakref
+from enum import Enum
 from collections.abc import (
     Awaitable,
     Callable,
@@ -1292,6 +1293,18 @@ def _classify_acp_turn_error(exc: BaseException) -> str:
     return "ACPPromptError"
 
 
+class PermissionMode(str, Enum):
+    """How ACP permission requests are resolved.
+
+    - AUTO: return options[0] immediately (headless default, backward compatible).
+    - ASK: route to a registered permission_callback that returns the user-chosen option_id.
+      If no callback is registered, falls back to AUTO so ASK mode is safe to enable.
+    """
+
+    AUTO = "auto"
+    ASK = "ask"
+
+
 class _OpenHandsACPBridge:
     """Bridge between OpenHands and ACP that accumulates session updates.
 
@@ -1344,6 +1357,18 @@ class _OpenHandsACPBridge:
         self.accumulated_tool_calls: list[dict[str, Any]] = []
         # Emits the LLM/TOOL spans an ACP turn would otherwise never produce.
         self.trace = ACPTurnTrace(acp_server=None, model_id=None)
+        # Permission resolution mode. AUTO keeps the historical headless
+        # behaviour (auto-approve). ASK delegates to permission_callback if
+        # one is registered, otherwise falls back to AUTO. Default AUTO so
+        # existing callers see zero behaviour change.
+        self.permission_mode: PermissionMode = PermissionMode.AUTO
+        # Optional async callback invoked when permission_mode == ASK.
+        # Signature: async def callback(options: list[PermissionOption]) -> str
+        # (returns the chosen option_id). If not registered, ASK falls back
+        # to AUTO so the bridge never deadlocks.
+        self.permission_callback: Callable[
+            [list[PermissionOption]], Awaitable[str]
+        ] | None = None
         self.on_token: Any = None  # ConversationTokenCallbackType | None
         # Live event sink — fired from session_update as ACP tool-call
         # updates arrive, so the event stream reflects real subprocess
@@ -1658,14 +1683,35 @@ class _OpenHandsACPBridge:
         options: list[PermissionOption],
         **kwargs: Any,  # noqa: ARG002
     ) -> RequestPermissionResponse:
-        """Auto-approve all permission requests from the ACP server."""
-        # Pick the first option (usually "allow once")
-        option_id = options[0].option_id if options else "allow_once"
-        logger.info(
-            "ACP auto-approving permission: %s (option: %s)",
-            tool_call,
-            option_id,
-        )
+        """Resolve an ACP permission request.
+
+        Behaviour depends on ``self.permission_mode``:
+
+        - AUTO (default, backward compatible): immediately selects
+          ``options[0]`` — the historical headless auto-approve.
+        - ASK: routes to ``self.permission_callback``, if one is registered,
+          so a human-facing front end can present the options to the user.
+          When no callback is registered, ASK falls back to AUTO so enabling
+          the mode cannot deadlock a headless bridge.
+        """
+        option_id: str
+        if (
+            self.permission_mode == PermissionMode.ASK
+            and self.permission_callback is not None
+        ):
+            option_id = await self.permission_callback(options)
+            logger.info(
+                "ACP permission answered by callback: %s (option: %s)",
+                tool_call,
+                option_id,
+            )
+        else:
+            option_id = options[0].option_id if options else "allow_once"
+            logger.info(
+                "ACP auto-approving permission: %s (option: %s)",
+                tool_call,
+                option_id,
+            )
         return RequestPermissionResponse(
             outcome=AllowedOutcome(outcome="selected", option_id=option_id),
         )
