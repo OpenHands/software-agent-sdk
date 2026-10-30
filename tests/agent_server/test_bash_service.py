@@ -24,6 +24,7 @@ from openhands.agent_server.server_details_router import (
     mark_initialization_complete,
     server_details_router,
 )
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 
 
 @pytest_asyncio.fixture
@@ -550,3 +551,92 @@ async def test_run_retention_cleanup_loop_purges_old_events(tmp_path: Path):
     assert len(service._get_event_files_by_pattern("*")) == 0, (
         "Old event file should have been purged by the retention loop"
     )
+
+
+_SECRET_IN_COMMAND = "printf %s 'header.payload.signature' > /tmp/token"
+
+
+def _only_file(directory: Path) -> Path:
+    [path] = list(directory.iterdir())
+    return path
+
+
+@pytest.mark.asyncio
+async def test_event_files_are_encrypted_at_rest_with_a_cipher(tmp_path: Path):
+    """With a cipher, nothing of a command or its output is readable on the
+    volume; the service still serves the event."""
+    events_dir = tmp_path / "bash_events"
+    service = BashEventService(bash_events_dir=events_dir, cipher=Cipher("k" * 32))
+    command = BashCommand(command=_SECRET_IN_COMMAND)
+    output = BashOutput(command_id=command.id, stdout="ghp_" + "a" * 36)
+
+    service._save_event_to_file(command)
+    service._save_event_to_file(output)
+
+    for path in events_dir.iterdir():
+        text = path.read_text()
+        assert text.startswith(FERNET_TOKEN_PREFIX)
+        assert "header.payload.signature" not in text
+        assert "ghp_" not in text
+    loaded = await service.get_bash_event(command.id.hex)
+    assert isinstance(loaded, BashCommand)
+    assert loaded.command == _SECRET_IN_COMMAND
+    loaded_output = await service.get_bash_event(output.id.hex)
+    assert isinstance(loaded_output, BashOutput)
+    assert loaded_output.stdout == output.stdout
+
+
+@pytest.mark.asyncio
+async def test_plaintext_event_files_from_before_encryption_still_load(
+    tmp_path: Path,
+):
+    events_dir = tmp_path / "bash_events"
+    command = BashCommand(command="echo ok")
+    BashEventService(bash_events_dir=events_dir)._save_event_to_file(command)
+    assert _only_file(events_dir).read_text().startswith("{")
+
+    service = BashEventService(bash_events_dir=events_dir, cipher=Cipher("k" * 32))
+
+    loaded = await service.get_bash_event(command.id.hex)
+    assert isinstance(loaded, BashCommand)
+    assert loaded.command == "echo ok"
+
+
+@pytest.mark.asyncio
+async def test_event_files_survive_a_key_rotation(tmp_path: Path):
+    """A resume rotates the session key and keeps the old one as a previous
+    key, so events written before the rotation still read."""
+    events_dir = tmp_path / "bash_events"
+    command = BashCommand(command="echo ok")
+    BashEventService(
+        bash_events_dir=events_dir, cipher=Cipher("old-key" * 5)
+    )._save_event_to_file(command)
+
+    service = BashEventService(
+        bash_events_dir=events_dir,
+        cipher=Cipher("new-key" * 5, previous_keys=["old-key" * 5]),
+    )
+
+    loaded = await service.get_bash_event(command.id.hex)
+    assert isinstance(loaded, BashCommand)
+
+
+@pytest.mark.asyncio
+async def test_encrypted_event_file_is_skipped_without_a_usable_key(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    """No cipher, or the wrong key: the file is reported and skipped, never
+    raised on and never served as garbage."""
+    events_dir = tmp_path / "bash_events"
+    command = BashCommand(command="echo ok")
+    BashEventService(
+        bash_events_dir=events_dir, cipher=Cipher("k" * 32)
+    )._save_event_to_file(command)
+
+    caplog.set_level(logging.ERROR)
+    without_cipher = BashEventService(bash_events_dir=events_dir)
+    assert await without_cipher.get_bash_event(command.id.hex) is None
+    wrong_key = BashEventService(bash_events_dir=events_dir, cipher=Cipher("x" * 32))
+    assert await wrong_key.get_bash_event(command.id.hex) is None
+    assert "no cipher is configured" in caplog.text
+    assert "does not decrypt with any key" in caplog.text
