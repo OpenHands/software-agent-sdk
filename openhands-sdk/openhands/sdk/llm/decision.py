@@ -28,22 +28,21 @@ from pydantic import (
     SecretStr,
     field_serializer,
     field_validator,
+    model_validator,
 )
-from tenacity import retry_if_exception, retry_if_exception_type
 
 from openhands.sdk.llm.exceptions import (
+    LLMBadRequestError,
     LLMError,
     LLMRateLimitError,
     LLMResponseError,
     LLMServiceUnavailableError,
     LLMTimeoutError,
-    is_quota_exhaustion_error,
     map_provider_exception,
 )
-from openhands.sdk.llm.exceptions.classifier import is_transient_http_error
 from openhands.sdk.llm.llm import LLM_RETRY_EXCEPTIONS
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
-from openhands.sdk.llm.utils.retry_mixin import RetryMixin
+from openhands.sdk.llm.utils.retry_mixin import RetryMixin, transient_error_condition
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
@@ -67,6 +66,14 @@ __all__ = [
 ]
 
 _MAX_SCORE_LEVELS: Final[int] = 10
+_SECRET_FIELDS: Final[tuple[str, ...]] = (
+    "api_key",
+    "aws_access_key_id",
+    "aws_secret_access_key",
+    "aws_session_token",
+)
+# LiteLLM's ChoiceQuestion caps criteria at 255 but exports no constant for it.
+_LITELLM_MAX_CHOICE_OPTIONS: Final[int] = 255
 
 # SDK errors that a custom send() raises for failures worth retrying, on top
 # of the LiteLLM errors LLM already retries.
@@ -88,13 +95,9 @@ class NoulCriteria(BaseModel):
     true: DecisionJSON | None = None
     false: DecisionJSON | None = None
 
-    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
-
 
 class _QuestionBase(BaseModel):
-    instructions: DecisionJSON
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
+    instructions: DecisionJSON | None = None
 
 
 class Noul(_QuestionBase):
@@ -103,12 +106,21 @@ class Noul(_QuestionBase):
     type: Literal["noul"] = "noul"
     criteria: NoulCriteria | None = None
 
+    @model_validator(mode="after")
+    def _require_instructions_or_criteria(self) -> "Noul":
+        if self.instructions is None and self.criteria is None:
+            raise ValueError("A Noul requires instructions or criteria")
+        return self
+
 
 class Choice(_QuestionBase):
-    """Pick one option from a closed set. ``criteria`` maps option to meaning."""
+    """Pick one option from a closed set.
+
+    ``criteria`` maps each option to an optional description of it.
+    """
 
     type: Literal["choice"] = "choice"
-    criteria: Mapping[str, DecisionJSON] = Field(min_length=1)
+    criteria: Mapping[str, DecisionJSON | None] = Field(min_length=1)
 
 
 class Score(_QuestionBase):
@@ -142,6 +154,12 @@ class ScoreAnswer(BaseModel):
 
 Answer = NoulAnswer | ChoiceAnswer | ScoreAnswer
 
+_ANSWER_TYPES: Final[dict[str, type[Answer]]] = {
+    "noul": NoulAnswer,
+    "choice": ChoiceAnswer,
+    "score": ScoreAnswer,
+}
+
 
 class DecisionUsage(BaseModel):
     input_tokens: int = 0
@@ -166,7 +184,11 @@ class DecisionReply(BaseModel):
 
 
 class DecisionResult(BaseModel):
-    """Answers keyed like the questions, plus the call's metrics."""
+    """Answers keyed like the questions.
+
+    ``metrics`` is a snapshot of the model's running totals, as in
+    ``LLMResponse``, not the cost of this call alone.
+    """
 
     answers: dict[str, Answer]
     model: str | None = Field(description="The versioned model that answered.")
@@ -209,6 +231,22 @@ class DecisionModel(BaseModel, RetryMixin):
     )
     api_key: str | SecretStr | None = Field(default=None, description="API key.")
     base_url: str | None = Field(default=None, description="Custom API base URL.")
+    custom_llm_provider: str | None = Field(
+        default=None, description="LiteLLM provider, when the model string lacks it."
+    )
+    extra_headers: dict[str, str] | None = Field(
+        default=None, description="HTTP headers to forward to the provider."
+    )
+    safety_identifier: str | None = Field(
+        default=None, description="Stable end-user identifier for abuse monitoring."
+    )
+    aws_access_key_id: str | SecretStr | None = None
+    aws_secret_access_key: str | SecretStr | None = None
+    aws_session_token: str | SecretStr | None = None
+    aws_region_name: str | None = None
+    aws_profile_name: str | None = None
+    aws_role_name: str | None = None
+    aws_session_name: str | None = None
     timeout: int | None = Field(
         default=300, ge=0, description="HTTP timeout per attempt, in seconds."
     )
@@ -222,12 +260,12 @@ class DecisionModel(BaseModel, RetryMixin):
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 
-    @field_validator("api_key")
+    @field_validator(*_SECRET_FIELDS)
     @classmethod
     def _validate_secrets(cls, v: str | SecretStr | None, info) -> SecretStr | None:
         return validate_secret(v, info)
 
-    @field_serializer("api_key", when_used="always")
+    @field_serializer(*_SECRET_FIELDS, when_used="always")
     def _serialize_secrets(self, v: SecretStr | None, info):
         return serialize_secret(v, info)
 
@@ -256,7 +294,10 @@ class DecisionModel(BaseModel, RetryMixin):
         try:
             return _one_attempt()
         except Exception as e:
-            raise _sdk_error(e) from e
+            mapped = _sdk_error(e)
+            if mapped is e:
+                raise
+            raise mapped from e
 
     async def adecide(
         self, state: Any, questions: Mapping[str, Question]
@@ -273,7 +314,10 @@ class DecisionModel(BaseModel, RetryMixin):
         try:
             return await _one_attempt()
         except Exception as e:
-            raise _sdk_error(e) from e
+            mapped = _sdk_error(e)
+            if mapped is e:
+                raise
+            raise mapped from e
 
     def send(self, state: Any, questions: Mapping[str, Question]) -> DecisionReply:
         """Make one provider request; :meth:`decide` calls this once per attempt.
@@ -295,34 +339,37 @@ class DecisionModel(BaseModel, RetryMixin):
     def _litellm_kwargs(
         self, state: Any, questions: Mapping[str, Question]
     ) -> dict[str, Any]:
-        if len(questions) > MAX_DECISION_QUESTIONS:
-            raise ValueError(
-                f"{len(questions)} questions exceed LiteLLM's limit of "
-                f"{MAX_DECISION_QUESTIONS} per call; split them across calls "
-                "with the same state"
-            )
-        api_key = self.api_key
-        assert api_key is None or isinstance(api_key, SecretStr)
+        _check_litellm_limits(questions)
         return {
             "model": self.model,
             "state": state,
             "questions": _dump_questions(questions),
-            "api_key": api_key.get_secret_value() if api_key else None,
+            "api_key": _secret_value(self.api_key),
             "api_base": self.base_url,
             "timeout": self.timeout,
+            "custom_llm_provider": self.custom_llm_provider,
+            "extra_headers": self.extra_headers,
+            "safety_identifier": self.safety_identifier,
             "drop_params": self.drop_params,
-            # The SDK owns retries, as in LLM.
-            "max_retries": 0,
+            **self._aws_kwargs(),
         }
 
+    def _aws_kwargs(self) -> dict[str, str]:
+        kwargs = {
+            "aws_access_key_id": _secret_value(self.aws_access_key_id),
+            "aws_secret_access_key": _secret_value(self.aws_secret_access_key),
+            "aws_session_token": _secret_value(self.aws_session_token),
+            "aws_region_name": self.aws_region_name,
+            "aws_profile_name": self.aws_profile_name,
+            "aws_role_name": self.aws_role_name,
+            "aws_session_name": self.aws_session_name,
+        }
+        return {key: value for key, value in kwargs.items() if value}
+
     def _retry_decorator(self) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        retryable = (
-            retry_if_exception_type(_RETRY_EXCEPTIONS)
-            | retry_if_exception(is_transient_http_error)
-        ) & retry_if_exception(lambda e: not is_quota_exhaustion_error(e))
         return self.retry_decorator(
             num_retries=self.num_retries,
-            retry_exceptions=retryable,
+            retry_exceptions=transient_error_condition(_RETRY_EXCEPTIONS),
             retry_min_wait=self.retry_min_wait,
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
@@ -342,17 +389,23 @@ class DecisionModel(BaseModel, RetryMixin):
         from openhands.sdk.observability.laminar import llm_call_span
 
         with llm_call_span(f"decision.{self.model}") as span:
-            dumped = _dump_questions(questions)
-            _set_attributes(
-                span,
-                {
-                    "gen_ai.request.model": self.model,
-                    "decision.questions": json.dumps(dumped),
-                    # Laminar renders lmnr.span.input/output as the span's
-                    # Input and Output panes. The state stays out, as above.
-                    "lmnr.span.input": json.dumps({"questions": dumped}),
-                },
-            )
+            if span is not None:
+                questions_json = _to_json(_dump_questions(questions))
+                # Laminar renders lmnr.span.input/output as the span's Input
+                # and Output panes. The state stays out, as above.
+                span_input = (
+                    None
+                    if questions_json is None
+                    else f'{{"questions": {questions_json}}}'
+                )
+                _set_attributes(
+                    span,
+                    {
+                        "gen_ai.request.model": self.model,
+                        "decision.questions": questions_json,
+                        "lmnr.span.input": span_input,
+                    },
+                )
 
             def finish(reply: DecisionReply, latency: float) -> DecisionResult:
                 return self._finish(reply, latency, span, questions)
@@ -368,8 +421,8 @@ class DecisionModel(BaseModel, RetryMixin):
     ) -> DecisionResult:
         response_id = uuid.uuid4().hex
         self._metrics.add_response_latency(latency, response_id)
-        cost = reply.cost
-        if cost is not None and cost > 0:
+        cost = reply.cost if reply.cost is not None and reply.cost > 0 else None
+        if cost is not None:
             self._metrics.add_cost(cost)
         usage = reply.usage
         if usage is not None:
@@ -382,27 +435,23 @@ class DecisionModel(BaseModel, RetryMixin):
                 response_id=response_id,
             )
 
-        answers_json = json.dumps(
-            {name: a.model_dump() for name, a in reply.answers.items()}
-        )
-        attributes: dict[str, Any] = {
-            "decision.answers": answers_json,
-            "lmnr.span.output": answers_json,
-        }
-        if reply.model is not None:
-            attributes["gen_ai.response.model"] = reply.model
-        if usage is not None:
-            attributes["gen_ai.usage.input_tokens"] = usage.input_tokens
-            attributes["gen_ai.usage.output_tokens"] = usage.output_tokens
-        if cost is not None and cost > 0:
-            attributes["gen_ai.usage.cost"] = cost
-        _set_attributes(span, attributes)
-
-        missing = [name for name in questions if name not in reply.answers]
-        if missing:
-            raise LLMResponseError(
-                f"Decision model returned no answer for: {', '.join(missing)}"
+        if span is not None:
+            answers_json = _to_json(
+                {name: a.model_dump() for name, a in reply.answers.items()}
             )
+            _set_attributes(
+                span,
+                {
+                    "decision.answers": answers_json,
+                    "lmnr.span.output": answers_json,
+                    "gen_ai.response.model": reply.model,
+                    "gen_ai.usage.input_tokens": usage and usage.input_tokens,
+                    "gen_ai.usage.output_tokens": usage and usage.output_tokens,
+                    "gen_ai.usage.cost": cost,
+                },
+            )
+
+        _check_answers(questions, reply.answers)
 
         return DecisionResult(
             answers=reply.answers,
@@ -410,6 +459,54 @@ class DecisionModel(BaseModel, RetryMixin):
             metrics=self._metrics.get_snapshot(),
             raw_response=reply.raw_response,
         )
+
+
+def _secret_value(secret: str | SecretStr | None) -> str | None:
+    assert secret is None or isinstance(secret, SecretStr)
+    return secret.get_secret_value() if secret else None
+
+
+def _check_litellm_limits(questions: Mapping[str, Question]) -> None:
+    if len(questions) > MAX_DECISION_QUESTIONS:
+        raise LLMBadRequestError(
+            f"{len(questions)} questions exceed LiteLLM's limit of "
+            f"{MAX_DECISION_QUESTIONS} per call; split them across calls "
+            "with the same state"
+        )
+    for name, question in questions.items():
+        if (
+            isinstance(question, Choice)
+            and len(question.criteria) > _LITELLM_MAX_CHOICE_OPTIONS
+        ):
+            raise LLMBadRequestError(
+                f"Choice {name!r} has {len(question.criteria)} options; LiteLLM "
+                f"accepts at most {_LITELLM_MAX_CHOICE_OPTIONS}"
+            )
+
+
+def _check_answers(
+    questions: Mapping[str, Question], answers: Mapping[str, Answer]
+) -> None:
+    missing = [name for name in questions if name not in answers]
+    wrong_type = [
+        f"{name} ({type(answers[name]).__name__}, "
+        f"expected {_ANSWER_TYPES[question.type].__name__})"
+        for name, question in questions.items()
+        if name in answers
+        and not isinstance(answers[name], _ANSWER_TYPES[question.type])
+    ]
+    unexpected = [name for name in answers if name not in questions]
+    problems = [
+        f"{label}: {', '.join(names)}"
+        for label, names in (
+            ("no answer for", missing),
+            ("wrong answer type for", wrong_type),
+            ("answers nobody asked for", unexpected),
+        )
+        if names
+    ]
+    if problems:
+        raise LLMResponseError(f"Decision model returned {'; '.join(problems)}")
 
 
 def _sdk_error(e: Exception) -> Exception:
@@ -463,11 +560,21 @@ def _dump_questions(questions: Mapping[str, Question]) -> dict[str, Any]:
     return {name: q.model_dump(exclude_none=True) for name, q in questions.items()}
 
 
-def _set_attributes(span: Any, attributes: Mapping[str, Any]) -> None:
-    if span is None:
-        return
+def _to_json(value: Any) -> str | None:
+    """JSON for a span attribute, or None; tracing must never fail the call."""
     try:
-        for key, value in attributes.items():
-            span.set_attribute(key, value)
+        return json.dumps(value, default=str)
     except Exception:
-        logger.debug("Failed to annotate decision span", exc_info=True)
+        logger.debug("Failed to serialize decision span attribute", exc_info=True)
+        return None
+
+
+def _set_attributes(span: Any, attributes: Mapping[str, Any]) -> None:
+    """Set each attribute that has a value; one rejected key skips only itself."""
+    for key, value in attributes.items():
+        if value is None:
+            continue
+        try:
+            span.set_attribute(key, value)
+        except Exception:
+            logger.debug("Failed to set decision span attribute %s", key, exc_info=True)

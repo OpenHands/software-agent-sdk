@@ -1,3 +1,4 @@
+import datetime
 import json
 import threading
 from collections import deque
@@ -8,7 +9,7 @@ from threading import Thread
 import pytest
 from litellm.types.decisions import DecisionsResponse
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from pydantic import PrivateAttr, SecretStr
+from pydantic import PrivateAttr, SecretStr, ValidationError
 
 from openhands.sdk.llm import (
     Choice,
@@ -22,8 +23,10 @@ from openhands.sdk.llm import (
     Score,
     ScoreAnswer,
 )
+from openhands.sdk.llm.decision import _set_attributes
 from openhands.sdk.llm.exceptions import (
     LLMAuthenticationError,
+    LLMBadRequestError,
     LLMRateLimitError,
     LLMResponseError,
     LLMServiceUnavailableError,
@@ -75,14 +78,24 @@ REPLY = {
 def provider() -> Iterator[tuple[str, deque, list]]:
     replies: deque = deque()
     requests: list = []
+    unexpected: list = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append(
-                {"path": self.path, "auth": self.headers["Authorization"], "body": body}
+                {
+                    "path": self.path,
+                    "auth": self.headers["Authorization"],
+                    "headers": dict(self.headers),
+                    "body": body,
+                }
             )
-            status, reply = replies.popleft()
+            if replies:
+                status, reply = replies.popleft()
+            else:
+                unexpected.append(body)
+                status, reply = 500, {"error": {"message": "unexpected extra request"}}
             payload = json.dumps(reply).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
@@ -102,6 +115,7 @@ def provider() -> Iterator[tuple[str, deque, list]]:
         server.shutdown()
         server.server_close()
         thread.join()
+    assert unexpected == [], f"{len(unexpected)} request(s) beyond the scripted replies"
 
 
 def _model(base_url: str, **kwargs) -> DecisionModel:
@@ -245,27 +259,100 @@ def test_structured_instructions_and_criteria_are_sent_as_given(provider):
     assert result.score("risk").legend == {"0": levels[0], "1": levels[1]}
 
 
-def test_more_questions_than_litellm_accepts_fail_before_any_request(provider):
+@pytest.mark.parametrize(
+    ("questions", "message"),
+    [
+        (
+            {f"q{i}": Noul(instructions="Is it urgent?") for i in range(129)},
+            "129 questions exceed LiteLLM's limit of 128",
+        ),
+        (
+            {"team": Choice(criteria={f"team-{i}": None for i in range(256)})},
+            "Choice 'team' has 256 options; LiteLLM accepts at most 255",
+        ),
+    ],
+    ids=["questions", "choice-options"],
+)
+def test_requests_over_litellm_limits_fail_before_any_request(
+    provider, questions, message
+):
     base_url, _, requests = provider
-    questions = {f"q{i}": Noul(instructions="Is it urgent?") for i in range(129)}
 
-    with pytest.raises(ValueError, match="129 questions exceed LiteLLM's limit of 128"):
-        _model(base_url).decide("state", questions)
+    with pytest.raises(LLMBadRequestError, match=message):
+        _model(base_url, num_retries=3).decide("state", questions)
 
     assert requests == []
 
 
-def test_api_key_is_redacted_unless_secrets_are_exposed():
-    model = DecisionModel(model=MODEL, api_key="sk-secret")
+def test_questions_accept_the_shapes_litellm_accepts(provider):
+    base_url, replies, requests = provider
+    replies.append(
+        (
+            200,
+            {
+                **REPLY,
+                "answers": {
+                    "urgent": REPLY["answers"]["urgent"],
+                    "team": REPLY["answers"]["team"],
+                },
+            },
+        )
+    )
+    questions = {
+        "urgent": Noul(criteria=NoulCriteria(true="Work is blocked")),
+        "team": Choice(criteria={"billing": None, "technical": "Broken features"}),
+    }
+
+    _model(base_url).decide("x", questions)
+
+    assert requests[0]["body"]["questions"] == {
+        "urgent": {"type": "noul", "criteria": {"true": "Work is blocked"}},
+        "team": {
+            "type": "choice",
+            "criteria": {"billing": None, "technical": "Broken features"},
+        },
+    }
+
+
+def test_noul_requires_instructions_or_criteria():
+    with pytest.raises(ValidationError, match="requires instructions or criteria"):
+        Noul()
+
+
+def test_provider_options_reach_litellm(provider):
+    base_url, replies, requests = provider
+    replies.append((200, REPLY))
+    model = _model(
+        base_url,
+        extra_headers={"X-Tenant": "acme"},
+        aws_secret_access_key="aws-secret",
+        aws_region_name="us-east-1",
+    )
+
+    model.decide("x", QUESTIONS)
+
+    assert requests[0]["headers"]["X-Tenant"] == "acme"
+    kwargs = model._litellm_kwargs("x", QUESTIONS)
+    assert kwargs["aws_secret_access_key"] == "aws-secret"
+    assert kwargs["aws_region_name"] == "us-east-1"
+    assert "aws_access_key_id" not in kwargs
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["api_key", "aws_access_key_id", "aws_secret_access_key", "aws_session_token"],
+)
+def test_secrets_are_redacted_unless_exposed(field):
+    model = DecisionModel.model_validate({"model": MODEL, field: "sk-secret"})
 
     assert "sk-secret" not in model.model_dump_json()
     assert "sk-secret" not in repr(model)
-    assert model.model_dump(context={"expose_secrets": True})["api_key"] == "sk-secret"
-    restored = DecisionModel.model_validate(
-        model.model_dump(context={"expose_secrets": True})
-    )
-    assert isinstance(restored.api_key, SecretStr)
-    assert restored.api_key.get_secret_value() == "sk-secret"
+    exposed = model.model_dump(context={"expose_secrets": True})
+    assert exposed[field] == "sk-secret"
+    restored = DecisionModel.model_validate(exposed)
+    secret = restored.model_dump()[field]
+    assert isinstance(secret, SecretStr)
+    assert secret.get_secret_value() == "sk-secret"
 
 
 def test_answer_accessor_rejects_wrong_type_and_unknown_name(provider):
@@ -521,14 +608,97 @@ def test_custom_send_errors_that_are_not_transient_raise_unchanged(error):
     assert len(model._calls) == 1
 
 
-def test_custom_send_missing_answer_raises_without_retry():
-    answers = {k: v for k, v in CUSTOM_REPLY.answers.items() if k != "impact"}
-    model = _scripted(CUSTOM_REPLY.model_copy(update={"answers": answers}))
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+async def test_custom_send_error_keeps_its_cause(use_async):
+    inner = ConnectionError("TLS handshake")
+    error = LLMAuthenticationError("bad key")
+    error.__cause__ = inner
+    model = _scripted(error, num_retries=0)
 
-    with pytest.raises(LLMResponseError, match="no answer for: impact"):
+    with pytest.raises(LLMAuthenticationError) as raised:
+        if use_async:
+            await model.adecide("x", QUESTIONS)
+        else:
+            model.decide("x", QUESTIONS)
+
+    assert raised.value is error
+    assert raised.value.__cause__ is inner
+
+
+@pytest.mark.parametrize(
+    ("answers", "message"),
+    [
+        (
+            {k: v for k, v in CUSTOM_REPLY.answers.items() if k != "impact"},
+            "no answer for: impact",
+        ),
+        (
+            {**CUSTOM_REPLY.answers, "urgent": CUSTOM_REPLY.answers["team"]},
+            r"wrong answer type for: urgent \(ChoiceAnswer, expected NoulAnswer\)",
+        ),
+        (
+            {**CUSTOM_REPLY.answers, "extra": NoulAnswer(probability=0.1)},
+            "answers nobody asked for: extra",
+        ),
+    ],
+    ids=["missing", "wrong-type", "unexpected"],
+)
+def test_custom_send_answers_that_do_not_match_raise_without_retry(answers, message):
+    model = _scripted(
+        CUSTOM_REPLY.model_copy(update={"answers": answers}), num_retries=3
+    )
+
+    with pytest.raises(LLMResponseError, match=message):
         model.decide("x", QUESTIONS)
 
     assert len(model._calls) == 1
+    assert model.metrics.accumulated_cost == 0.25
+
+
+def test_question_values_that_are_not_json_do_not_fail_the_call(lmnr_exporter):
+    from lmnr import Laminar
+
+    questions = {"urgent": Noul(instructions={"since": datetime.date(2026, 1, 1)})}
+    reply = DecisionReply(answers={"urgent": NoulAnswer(probability=0.4)})
+
+    assert _scripted(reply).decide("x", questions).noul("urgent").probability == 0.4
+
+    with Laminar.start_as_current_span(name="agent-step"):
+        _scripted(reply).decide("x", questions)
+
+    attrs = {s.name: s for s in lmnr_exporter.get_finished_spans()}[
+        "decision.acme-decider"
+    ].attributes
+    assert json.loads(attrs["lmnr.span.input"]) == {
+        "questions": {
+            "urgent": {"type": "noul", "instructions": {"since": "2026-01-01"}}
+        }
+    }
+
+
+def test_a_rejected_span_attribute_skips_only_itself():
+    class PickySpan:
+        def __init__(self):
+            self.attributes = {}
+
+        def set_attribute(self, key, value):
+            if key == "decision.answers":
+                raise ValueError("too large")
+            self.attributes[key] = value
+
+    span = PickySpan()
+
+    _set_attributes(
+        span,
+        {
+            "decision.answers": "{}",
+            "gen_ai.response.model": "m",
+            "gen_ai.usage.cost": None,
+        },
+    )
+
+    assert span.attributes == {"gen_ai.response.model": "m"}
 
 
 def test_litellm_question_limit_does_not_apply_to_a_custom_send():
