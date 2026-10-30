@@ -424,7 +424,6 @@ class ConversationConfig(BaseModel):
     )
     prompt: str | None = Field(
         default=None,
-        max_length=2000,
         description=(
             "Optional prompt that replaces the default title-generation user "
             "message. Use {conversation_content} to place the first user "
