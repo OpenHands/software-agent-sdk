@@ -94,8 +94,8 @@ The convention:
    interface before and after when you touch one — signatures, schemas, or event shapes — and
    state the compatibility impact (additive, breaking, or behind a flag).
 2. Commit it under the temporary **`.pr/`** directory, e.g. `.pr/design.html`. This directory is
-   for PR-only artifacts. After a PR merges to `main`, `.github/workflows/pr-artifacts.yml`
-   automatically opens or updates a cleanup PR to remove the directory from `main`.
+   for PR-only artifacts. It stays on `main` after the PR merges, until the next release PR
+   removes it.
 3. Link it near the top of the PR description via htmlpreview, pointing at the fork and branch the
    PR is opened from so it renders before the PR is merged:
 

@@ -162,12 +162,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         default_factory=lambda: [tool.__name__ for tool in BUILT_IN_TOOLS],
         description=(
             "List of default tool class names to include. By default, the agent "
-            "includes 'FinishTool' and 'ThinkTool'. Set to an empty list to disable "
-            "all default tools, or provide a subset to include only specific ones. "
-            "Example: include_default_tools=['FinishTool'] to only include FinishTool, "
-            "or include_default_tools=[] to disable all default tools."
+            "includes 'FinishTool'. Set to an empty list to disable all default "
+            "tools, or provide a subset to include specific ones. Add 'ThinkTool' "
+            "explicitly to enable the think tool. "
+            "Example: include_default_tools=['FinishTool', 'ThinkTool'] to enable "
+            "the think tool, or include_default_tools=[] to disable all default "
+            "tools."
         ),
-        examples=[["FinishTool", "ThinkTool"], ["FinishTool"], []],
+        examples=[["FinishTool"], ["FinishTool", "ThinkTool"], []],
     )
     agent_context: AgentContext | None = Field(
         default=None,
