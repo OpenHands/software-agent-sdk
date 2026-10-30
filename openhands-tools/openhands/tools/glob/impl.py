@@ -4,11 +4,16 @@
 import glob as glob_module
 import os
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openhands.sdk.tool import ToolExecutor
 from openhands.sdk.utils import sanitized_env
+from openhands.tools.utils.path_containment import (
+    PathContainment,
+    PathOutsideWorkspaceError,
+)
 
 
 if TYPE_CHECKING:
@@ -29,13 +34,25 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
     - Fallback: Uses Python's glob.glob() for pattern matching
     """
 
-    def __init__(self, working_dir: str):
+    def __init__(
+        self,
+        working_dir: str,
+        restrict_to_workspace: bool = False,
+        allowed_roots: Sequence[str] | None = None,
+    ):
         """Initialize the glob executor.
 
         Args:
             working_dir: The working directory to use as the base for searches
+            restrict_to_workspace: Reject search paths outside the working
+                directory (and ``allowed_roots``) and drop results that
+                resolve outside them, e.g. through symlinks.
+            allowed_roots: Extra absolute directories allowed when restricted.
         """
         self.working_dir: Path = Path(working_dir).resolve()
+        self.containment: PathContainment | None = PathContainment.from_settings(
+            self.working_dir, restrict_to_workspace, allowed_roots
+        )
         self._ripgrep_available: bool = _check_ripgrep_available()
         if not self._ripgrep_available:
             _log_ripgrep_fallback_warning("glob", "Python glob module")
@@ -75,6 +92,18 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
                     extracted_path if extracted_path is not None else self.working_dir
                 )
 
+            if self.containment is not None:
+                try:
+                    self.containment.check(search_path)
+                except PathOutsideWorkspaceError as e:
+                    return GlobObservation.from_text(
+                        text=str(e),
+                        files=[],
+                        pattern=original_pattern,
+                        search_path=str(search_path),
+                        is_error=True,
+                    )
+
             if not search_path.is_dir():
                 return GlobObservation.from_text(
                     text=f"Search path '{search_path}' is not a valid directory",
@@ -88,6 +117,10 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
                 files, truncated = self._execute_with_ripgrep(pattern, search_path)
             else:
                 files, truncated = self._execute_with_glob(pattern, search_path)
+
+            if self.containment is not None:
+                # Patterns may contain ``..`` and symlinks may point outside.
+                files = [f for f in files if self._is_contained(f)]
 
             # Format content message
             if not files:
@@ -229,6 +262,13 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
             return sorted_files, truncated
         finally:
             os.chdir(original_cwd)
+
+    def _is_contained(self, file_path: str) -> bool:
+        assert self.containment is not None
+        try:
+            return self.containment.contains(Path(file_path).resolve())
+        except (OSError, RuntimeError):
+            return False
 
     @staticmethod
     def _extract_search_path_from_pattern(pattern: str) -> tuple[Path | None, str]:
