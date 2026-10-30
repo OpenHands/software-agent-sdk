@@ -505,6 +505,9 @@ jobs:
                       pyproject.toml
                       uv.lock
                       .github/workflows/tests.yml
+                      .github/scripts/remove_pr_artifacts.py
+                      .github/workflows/prepare-release.yml
+                      .github/workflows/precommit.yml
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'

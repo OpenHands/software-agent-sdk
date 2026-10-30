@@ -6,7 +6,10 @@ from fnmatch import fnmatchcase
 from functools import cache
 from typing import Any, Literal, cast
 
-from litellm import get_supported_openai_params
+from litellm import get_llm_provider, get_supported_openai_params
+from litellm.exceptions import BadRequestError
+from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
+from litellm.llms.openai.chat.gpt_transformation import OpenAIGPTConfig
 from litellm.utils import supports_vision as litellm_supports_vision
 
 from openhands.sdk.llm.utils.openhands_provider import OPENHANDS_PROVIDER_PREFIX
@@ -130,16 +133,45 @@ def _normalized_supported_openai_params(
     if not normalized:
         return frozenset()
 
-    params = get_supported_openai_params(
-        model=normalized,
-        custom_llm_provider=None,
-    )
+    # Split the provider prefix ourselves: LiteLLM >=1.105 checks the unsplit
+    # name against the OpenAI catalog, so `openai/gpt-4o` looks unknown and is
+    # reported as accepting `reasoning_effort`.
+    try:
+        bare_model, provider, _, _ = get_llm_provider(model=normalized)
+    except BadRequestError:
+        params = None
+    else:
+        if provider == "openai":
+            params = _openai_supported_params(bare_model)
+        else:
+            params = get_supported_openai_params(
+                model=bare_model,
+                custom_llm_provider=provider,
+            )
     if not params and provider_hint:
         params = get_supported_openai_params(
             model=normalized,
             custom_llm_provider=provider_hint,
         )
     return frozenset(params or ())
+
+
+def _openai_supported_params(model: str) -> list[str]:
+    """LiteLLM's param list for an ``openai`` model, minus its 1.105 guess.
+
+    LiteLLM >=1.105 assumes every model missing from its OpenAI catalog is a
+    proxy alias that accepts ``reasoning_effort``. Fine-tunes and custom
+    OpenAI-compatible servers are also missing from the catalog, and most do
+    not accept it, so only catalogued and GPT-5-series models keep it.
+    """
+    if model.startswith("ft:"):
+        model = model.split(":")[1]  # ft:<base>:<org>:<suffix>:<id>
+    params = get_supported_openai_params(model=model, custom_llm_provider="openai")
+    if OpenAIGPTConfig.is_openai_catalog_model(
+        model
+    ) or OpenAIGPT5Config.is_model_gpt_5_model(model):
+        return params or []
+    return [p for p in params or () if p != "reasoning_effort"]
 
 
 def _supports_prompt_cache_key_param(
@@ -312,8 +344,11 @@ def get_features(
         sources[key] = "discovery"
         return fallback
 
+    # Only an endpoint declaration may promote its declared param list to a
+    # capability; LiteLLM registry metadata is guarded discovery instead, so
+    # its 1.105 reasoning_effort guess cannot authorize the exact parameter.
     declared_params = metadata.get("supported_openai_params")
-    if _optional_bool(metadata, "supports_reasoning_effort") is None:
+    if endpoint and _optional_bool(metadata, "supports_reasoning_effort") is None:
         if isinstance(declared_params, (list, tuple)):
             metadata["supports_reasoning_effort"] = (
                 "reasoning_effort" in declared_params

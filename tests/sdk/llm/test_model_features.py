@@ -60,9 +60,8 @@ def test_model_matches(name, pattern, expected):
         ("gemini-1.5-pro", False),
         # DeepSeek Reasoner
         ("deepseek/deepseek-reasoner", True),
-        # Moonshot Kimi thinking models expose reasoning content but do not
-        # accept the reasoning_effort parameter.
-        ("moonshot/kimi-k2.5", False),
+        # LiteLLM >=1.105 forwards reasoning_effort to Moonshot reasoning models.
+        ("moonshot/kimi-k2.5", True),
         ("moonshot/kimi-k2-thinking", False),
         ("litellm_proxy/moonshot/kimi-k2-thinking", False),
         # Eval LiteLLM proxy wrapper should not affect capability detection.
@@ -90,6 +89,18 @@ def test_model_matches(name, pattern, expected):
         ("litellm_proxy/staging/gpt-5", True),
         ("litellm_proxy/test/o1", True),
         ("unknown-model", False),
+        # LiteLLM >=1.105 says any model missing from its OpenAI catalog takes
+        # reasoning_effort; fine-tunes and custom servers mostly do not.
+        ("openai/gpt-4o", False),
+        ("ft:gpt-4o-2024-08-06", False),
+        ("openai/ft:gpt-4o-2024-08-06:acme::AbC123", False),
+        ("openai/ft:o4-mini-2025-04-16:acme::AbC123", True),
+        ("openai/Qwen/Qwen3-Coder-30B-A3B-Instruct", False),
+        ("openai/gpt-5-custom-deployment", True),
+        # The kimi-k3 override applies to every host, not only Moonshot.
+        ("deepinfra/moonshotai/Kimi-K3", True),
+        ("litellm_proxy/deepinfra/moonshotai/Kimi-K3", True),
+        ("perplexity/perplexity/kimi-k3", True),
     ],
 )
 def test_reasoning_effort_support(model, expected_reasoning):
