@@ -1,0 +1,39 @@
+{
+  "git_head": "c216b6074b2ca1e744e2a0326eab4a9ec2a39294",
+  "sdk_version": "1.59.0",
+  "litellm_version": "1.93.0",
+  "asynchronous": true,
+  "enable_body": false,
+  "conversation_ids": {
+    "first": "17ec242a-ca88-40f9-bb74-9ae831ed003d",
+    "second": "e3908726-9078-4f5e-80f9-b50f3c7f8f3f"
+  },
+  "requests": [
+    {
+      "path": "/v1/chat/completions",
+      "header_session_id": null,
+      "body_session_id": null,
+      "prompt_cache_key": null
+    },
+    {
+      "path": "/v1/chat/completions",
+      "header_session_id": "17ec242a-ca88-40f9-bb74-9ae831ed003d",
+      "body_session_id": null,
+      "prompt_cache_key": null
+    },
+    {
+      "path": "/v1/chat/completions",
+      "header_session_id": "e3908726-9078-4f5e-80f9-b50f3c7f8f3f",
+      "body_session_id": null,
+      "prompt_cache_key": null
+    },
+    {
+      "path": "/v1/chat/completions",
+      "header_session_id": "17ec242a-ca88-40f9-bb74-9ae831ed003d",
+      "body_session_id": null,
+      "prompt_cache_key": null
+    }
+  ],
+  "conversation_body_id_contract_passed": false,
+  "scope": "SDK to local HTTP endpoint; no real proxy or OpenRouter/cache validation"
+}

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Conversation session IDs through an OpenRouter proxy</title>
+<style>body{font:16px/1.6 system-ui,sans-serif;max-width:960px;margin:40px auto;padding:0 24px;color:#18212b}h1,h2{line-height:1.2}code,pre{font-family:ui-monospace,monospace;background:#f1f4f7}pre{padding:16px;overflow:auto}table{border-collapse:collapse;width:100%}th,td{padding:10px;border:1px solid #d7dfe6;text-align:left}aside{border-left:4px solid #417ca5;padding:8px 16px;background:#f2f7fb}a{color:#175f99}.flow{padding:16px;border:1px solid #d7dfe6;border-radius:8px}</style>
+<h1>Conversation session IDs through an OpenRouter proxy</h1>
+<p>Addresses the session-ID forwarding portion of <a href="https://github.com/OpenHands/software-agent-sdk/issues/6283">#6283</a>. Tool-argument recovery, provider telemetry and stuck detection are outside this change.</p>
+<h2>Problem and behavior</h2>
+<p>The existing auto-detector sees the proxy alias and URL, so it cannot identify an upstream OpenRouter route. In the recorded public Conversation workflow, the baseline sends its conversation header but omits body <code>session_id</code>. An explicit option makes that topology configurable without storing dynamic state on a shared LLM.</p>
+<pre>llm = LLM(
+    model="litellm_proxy/your-openrouter-alias",
+    base_url=proxy_url,
+    send_session_id_in_body=True,
+)</pre>
+<table><tr><th>Value</th><th>Automatic body injection</th></tr><tr><td><code>None</code> (default)</td><td>Retain existing direct-OpenRouter detection.</td></tr><tr><td><code>True</code></td><td>Use the current conversation ID if available.</td></tr><tr><td><code>False</code></td><td>Disable automatic injection, including direct routes.</td></tr></table>
+<p>Explicit body IDs remain authoritative in every mode. No context means no generated ID. Existing header and prompt-cache-key behavior remains unchanged.</p>
+<h2>State ownership and compatibility</h2>
+<div class="flow">Conversation ID → immutable LLMCallContext → Agent step/astep → shared chat/Responses options policy → copy-on-write extra_body → configured proxy</div>
+<p>Only configuration lives on the LLM. Both options builders use the same helper and existing context injection. The nullable field is additive and defaults to the previous behavior. Profiles and persisted agent settings preserve the option; old payloads keep their old behavior. No dependency lock, schema migration or package version is changed by this feature.</p>
+<p>A model-capability override was considered but not implemented: this is a transport-topology policy, and existing auto-detection is sensitive to the endpoint URL. The public field name and tri-state policy remain explicit review choices.</p>
+<h2>Recorded validation</h2>
+<ul><li>140 focused SDK tests passed; changed-file pre-commit, including Pyright, passed.</li><li>Public Conversation → real LiteLLM transport → local HTTP: baseline sync/async fail the body-ID assertion; opt-in candidate passes, with shared-instance isolation and stable next-turn IDs.</li><li>Actual LiteLLM Router/OpenRouter adapter → upstream HTTP stub preserves IDs. The local relay's Router calls are synchronous, including when the SDK client is asynchronous.</li><li>Sync and async Responses HTTP, explicit overrides and empty context passed.</li><li>29 persisted golden fixtures and 8 published SDK/Agent Server 1.59.0 payloads passed.</li></ul>
+<p>See <a href="session-affinity/validation.json">the validation manifest</a> and the files it references. Logs have local filesystem paths replaced with placeholders; original and published hashes are recorded.</p>
+<h2>Reproduce</h2>
+<p>From the SDK repository root after installing its development dependencies:</p>
+<pre>LITELLM_LOCAL_MODEL_COST_MAP=True OPENHANDS_SUPPRESS_BANNER=1 \
+  .venv/bin/python .pr/session-affinity/reproduce_proxy_session.py \
+  --enable-body --output /tmp/candidate-sync.json
+# Add --asynchronous for the asynchronous workflow.</pre>
+<p>For the baseline, copy this helper outside the checkout, use the recorded upstream revision in a separate checkout/environment, omit <code>--enable-body</code>, and run it with that checkout as the current directory. It saves the request report before the expected assertion failure. The helper uses loopback endpoints and literal test keys.</p>
+<h2>Limits</h2>
+<aside>This verifies SDK serialization and Router/adapter forwarding against local HTTP endpoints. It does not run the complete LiteLLM proxy_server, call real OpenRouter, or measure cache/cost gains. Proxy auth/hooks/preprocessing still need deployment-specific validation. The environment was scoped to SDK testing; a full workspace make build is not claimed.</aside>
+<p>Related documentation describes the proxy's own forwarding responsibility and these limits. LiteLLM's deployment affinity and OpenRouter's provider affinity are separate layers; a missing body ID alone does not prove all existing affinity is absent.</p>
+</html>

@@ -1,0 +1,67 @@
+{
+  "scope": "LLM.responses/aresponses with explicit call contexts; local HTTP endpoint only",
+  "cases": [
+    {
+      "mode": "sync",
+      "requests": [
+        {
+          "path": "/v1/responses",
+          "header_session_id": null,
+          "body_session_id": null
+        },
+        {
+          "path": "/v1/responses",
+          "header_session_id": "A",
+          "body_session_id": "A"
+        },
+        {
+          "path": "/v1/responses",
+          "header_session_id": "B",
+          "body_session_id": "B"
+        },
+        {
+          "path": "/v1/responses",
+          "header_session_id": "A",
+          "body_session_id": "A"
+        },
+        {
+          "path": "/v1/responses",
+          "header_session_id": "A",
+          "body_session_id": "explicit"
+        }
+      ],
+      "passed": true
+    },
+    {
+      "mode": "async",
+      "requests": [
+        {
+          "path": "/v1/responses",
+          "header_session_id": null,
+          "body_session_id": null
+        },
+        {
+          "path": "/v1/responses",
+          "header_session_id": "A",
+          "body_session_id": "A"
+        },
+        {
+          "path": "/v1/responses",
+          "header_session_id": "B",
+          "body_session_id": "B"
+        },
+        {
+          "path": "/v1/responses",
+          "header_session_id": "A",
+          "body_session_id": "A"
+        },
+        {
+          "path": "/v1/responses",
+          "header_session_id": "A",
+          "body_session_id": "explicit"
+        }
+      ],
+      "passed": true
+    }
+  ]
+}

@@ -656,6 +656,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         json_schema_extra=field_meta(),
     )
 
+    send_session_id_in_body: bool | None = Field(
+        default=None,
+        description=(
+            "Send the conversation's session_id in the request body. "
+            "None (default) auto-detects direct OpenRouter routes. Set True "
+            "for OpenRouter behind a proxy, or False to disable automatic "
+            "body injection. Explicit session_id values in extra_body are "
+            "preserved. Only enable this for endpoints that accept session_id. "
+            "The x-litellm-session-id tracing header is unaffected."
+        ),
+        json_schema_extra=field_meta(),
+    )
+
     fallback_strategy: FallbackStrategy | None = Field(
         default=None,
         description=(
