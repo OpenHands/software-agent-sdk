@@ -268,7 +268,7 @@ Preconditions:
   profile file that is not JSON (written straight into the run's profile
   directory and removed again), 422 and 404 for the rest; `CID` keeps
   `openai/qa-f09-ws`.
-- **Switch to an edited profile (`F09.switch-profile-edited`), known bug.**
+- **Switch to an edited profile (`F09.switch-profile-edited`).**
   Switch an offline conversation to a profile, edit the profile, switch
   again.
   ```sh
@@ -280,19 +280,15 @@ Preconditions:
   control-agent-server api POST /api/profiles/qa-f09-edit --json '{"llm": {"model": "openai/qa-f09-edit-2", "api_key": "sk-qa-f09-edit", "base_url": "http://127.0.0.1:9/v1"}}' --expect 201
   control-agent-server api GET /api/profiles/qa-f09-edit --quiet --check config.model eq openai/qa-f09-edit-2
   control-agent-server api POST "/api/conversations/$EID/switch_profile" --json '{"profile_name": "qa-f09-edit"}' --expect 200 --save F09.switch-profile-edited/switch-again
-  control-agent-server api GET "/api/conversations/$EID" --quiet --check agent.llm.model eq openai/qa-f09-edit-2 --save F09.switch-profile-edited/get  # bug: status eq 200 && checks.0.actual eq openai/qa-f09-edit-1
+  control-agent-server api GET "/api/conversations/$EID" --quiet --check agent.llm.model eq openai/qa-f09-edit-2 --save F09.switch-profile-edited/get
   ```
   The first switch installs `openai/qa-f09-edit-1` and the profile then
-  reads back as `openai/qa-f09-edit-2`. Expected: the second switch installs
-  the edited config. Today it answers 200 and reinstalls `qa-f09-edit-1`:
-  `LocalConversation.switch_profile` looks up `profile:<name>` in the
-  conversation's LLM registry first and only reads the profile file on a
-  miss, so a fixed key or model never reaches a conversation that used the
-  profile before. The SDK docstring states the cache ("cached in the
-  registry under `profile:{profile_name}` after first load"), but the route
-  documents nothing and offers no way to refresh, so a REST consumer can
-  only apply the edit with `switch_llm` and a fresh `usage_id`. The profile
-  is deleted on exit.
+  reads back as `openai/qa-f09-edit-2`. The second switch installs the
+  edited config: `LocalConversation.switch_profile` reads the profile file
+  on every call and replaces the LLM registered under `profile:<name>` when
+  the profile changed, keeping the usage recorded under that id, so a fixed
+  key or model reaches a conversation that used the profile before. The
+  profile is deleted on exit.
 - **Switch onto a registered usage id (`F09.switch-llm-registered-usage-id`).**
   Forward the saved `deepseek-pro` profile's config, read with
   `X-Expose-Secrets: encrypted` (the per-conversation model switch the
@@ -769,8 +765,8 @@ Preconditions:
   posted config, replacing the registered entry when the config differs and
   keeping that id's usage in `stats.usage_to_metrics`
   (`F09.switch-llm-registered-usage-id`); an identical config reuses the
-  registered LLM, so switching back is cheap. `switch_profile` reuses the
-  copy cached under `profile:<name>` at its first use
+  registered LLM, so switching back is cheap. `switch_profile` re-reads the saved profile on every call and uses the
+  same replacement behavior under `profile:<name>`
   (`F09.switch-profile-edited`).
 - Usage is accounted per `usage_id` in `stats.usage_to_metrics`, but only
   for LLMs registered after the agent initialized
