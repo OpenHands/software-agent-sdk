@@ -41,6 +41,10 @@ class _FakeWebSocket:
     def __init__(self) -> None:
         self.sent: list[str] = []
         self.gate: asyncio.Event | None = None
+        self.closed_with: tuple[int, str] | None = None
+
+    async def close(self, code: int = 1000, reason: str | None = None) -> None:
+        self.closed_with = (code, reason or "")
 
     async def send_text(self, payload: str) -> None:
         if self.gate is not None:
@@ -433,3 +437,81 @@ async def test_a_dropped_progress_frame_does_not_drop_the_connection():
     )
     await _drain(writer)
     assert writer.closed
+
+
+@pytest.mark.asyncio
+async def test_subscriber_close_closes_socket_and_ends_inbound_loop():
+    """Delete and shutdown close the socket with their code, not leave it silent."""
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+    sub.go_live(None)
+
+    await sub.close_connection(4004, "Conversation deleted")
+
+    assert ws.closed_with == (4004, "Conversation deleted")
+    # The handler's inbound loop races this event; it must now be set.
+    assert writer.closed_event.is_set()
+    assert writer.drop_reason == "closing"
+
+
+@pytest.mark.asyncio
+async def test_subscriber_close_sends_queued_frames_before_closing():
+    """Frames already admitted reach the client ahead of the close code."""
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    sent_before_close: list[int] = []
+    original_close = ws.close
+
+    async def close(code: int = 1000, reason: str | None = None) -> None:
+        sent_before_close.append(len(ws.sent))
+        await original_close(code, reason)
+
+    original_send = ws.send_text
+
+    async def slow_send(payload: str) -> None:
+        await asyncio.sleep(0.01)  # a real socket send yields to the loop
+        await original_send(payload)
+
+    ws.close = close  # type: ignore[method-assign]
+    ws.send_text = slow_send  # type: ignore[method-assign]
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+    sub.go_live(None)
+    for i in range(3):
+        event = _msg(f"q{i}")
+        log.add(event)
+        await sub(event)
+
+    await sub.close_connection(4004, "Conversation deleted")
+
+    assert sent_before_close == [3]
+    assert ws.closed_with == (4004, "Conversation deleted")
+
+
+@pytest.mark.asyncio
+async def test_subscriber_close_is_bounded_for_stalled_peer(monkeypatch):
+    """A peer that stopped reading cannot hold up the delete or the shutdown."""
+    monkeypatch.setattr(
+        "openhands.agent_server.sockets.SUBSCRIBER_CLOSE_TIMEOUT_SECONDS", 0.05
+    )
+    ws, log = _FakeWebSocket(), _FakeEventLog()
+    ws.gate = asyncio.Event()  # never set: the writer is stuck mid-send
+
+    async def hang(code: int = 1000, reason: str | None = None) -> None:
+        await asyncio.Event().wait()
+
+    ws.close = hang  # type: ignore[method-assign]
+    writer = _ConnectionWriter(ws)  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
+    sub.go_live(None)
+    await sub(_msg("stuck"))
+    await _drain(writer)
+
+    await asyncio.wait_for(
+        sub.close_connection(4004, "Conversation deleted"), timeout=2
+    )
+
+    assert writer.closed_event.is_set()
