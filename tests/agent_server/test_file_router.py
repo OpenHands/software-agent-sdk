@@ -5,6 +5,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -16,7 +17,7 @@ from urllib.parse import quote, unquote
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import UploadFile
+from fastapi import HTTPException, UploadFile
 from fastapi.testclient import TestClient
 
 from openhands.agent_server import (
@@ -345,6 +346,89 @@ def test_upload_overwrites_existing_file(client, tmp_path):
     assert response.status_code == 200
     assert response.json()["file_size"] == len(new_content)
     assert target_path.read_bytes() == new_content
+
+
+class _FailingUpload:
+    """An upload whose stream fails after the first chunk, like a full disk."""
+
+    filename = "big.bin"
+
+    def __init__(self):
+        self._chunks = [b"x" * 8192]
+
+    async def read(self, size: int = -1) -> bytes:
+        if self._chunks:
+            return self._chunks.pop()
+        raise OSError(27, "File too large")
+
+
+async def test_failed_overwrite_keeps_previous_file(tmp_path):
+    """A failed overwrite leaves the previous file intact and no temp file behind."""
+    target_path = tmp_path / "existing.txt"
+    target_path.write_bytes(b"original content")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _upload_file(str(target_path), _FailingUpload())  # pyright: ignore[reportArgumentType]
+
+    assert exc_info.value.status_code == 500
+    assert target_path.read_bytes() == b"original content"
+    assert os.listdir(tmp_path) == ["existing.txt"]
+
+
+def test_upload_overwrite_keeps_file_mode(client, tmp_path):
+    """Overwriting a file keeps its permissions."""
+    target_path = tmp_path / "script.sh"
+    target_path.write_text("echo old")
+    target_path.chmod(0o750)
+
+    response = client.post(
+        "/api/file/upload",
+        params={"path": str(target_path)},
+        files={"file": ("script.sh", io.BytesIO(b"echo new"), "text/plain")},
+    )
+
+    assert response.status_code == 200
+    assert target_path.read_bytes() == b"echo new"
+    assert stat.S_IMODE(target_path.stat().st_mode) == 0o750
+
+
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: -1)() == 0,
+    reason="root can write read-only files",
+)
+def test_upload_does_not_overwrite_read_only_file(client, tmp_path):
+    """A read-only file is refused, as writing it in place was."""
+    target_path = tmp_path / "locked.txt"
+    target_path.write_text("keep me")
+    target_path.chmod(0o444)
+
+    response = client.post(
+        "/api/file/upload",
+        params={"path": str(target_path)},
+        files={"file": ("locked.txt", io.BytesIO(b"new"), "text/plain")},
+    )
+
+    assert response.status_code == 500
+    assert target_path.read_text() == "keep me"
+    assert os.listdir(tmp_path) == ["locked.txt"]
+
+
+def test_upload_through_symlink_replaces_link_target(client, tmp_path):
+    """Uploading to a symlink writes the file it points to, as before."""
+    real = tmp_path / "real.txt"
+    real.write_text("old")
+    link = tmp_path / "link.txt"
+    link.symlink_to(real)
+
+    response = client.post(
+        "/api/file/upload",
+        params={"path": str(link)},
+        files={"file": ("link.txt", io.BytesIO(b"new"), "text/plain")},
+    )
+
+    assert response.status_code == 200
+    assert link.is_symlink()
+    assert real.read_bytes() == b"new"
 
 
 def test_download_preserves_filename(client, tmp_path):

@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import errno
 import fnmatch
 import io
 import json
@@ -9,10 +10,11 @@ import subprocess
 import tarfile
 import tempfile
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 from typing import IO, Annotated, Any, Literal
 from urllib.parse import quote
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import (
     APIRouter,
@@ -83,6 +85,40 @@ _FILE_DOWNLOAD_RESPONSES: dict[int | str, dict[str, Any]] = {
 }
 
 
+@contextlib.contextmanager
+def _atomic_write(target_path: Path) -> Iterator[IO[bytes]]:
+    """Write to a temp file beside ``target_path``; move it into place on success.
+
+    The temp file is named ``.<name>.<random>.tmp``, as ``atomic_write_text``
+    names its own, so ``is_temp_file`` treats it as in progress. A failed or
+    interrupted write leaves any previous file intact and removes the temp
+    file. An overwrite keeps the previous file's permissions and (when allowed)
+    its owner, and a read-only file is still refused; a new file gets the usual
+    umask-based permissions. A symlink's target is replaced, as writing through
+    the link did.
+    """
+    dest = Path(os.path.realpath(target_path))
+    try:
+        previous = dest.stat()
+    except FileNotFoundError:
+        previous = None
+    if previous and stat.S_ISREG(previous.st_mode) and not os.access(dest, os.W_OK):
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(dest))
+    tmp_path = dest.with_name(f".{dest.name}.{uuid4().hex}.tmp")
+    try:
+        with open(tmp_path, "wb") as f:
+            yield f
+        if previous:
+            os.chmod(tmp_path, stat.S_IMODE(previous.st_mode))
+            with contextlib.suppress(OSError):
+                os.chown(tmp_path, previous.st_uid, previous.st_gid)
+        os.replace(tmp_path, dest)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
+
+
 async def _upload_file(path: str, file: UploadFile) -> FileUploadResult:
     """Internal helper to upload a file to the workspace."""
     update_last_execution_time()
@@ -103,7 +139,7 @@ async def _upload_file(path: str, file: UploadFile) -> FileUploadResult:
         # encrypted FS) cannot starve the event loop for the upload's
         # duration.
         file_size = 0
-        with open(target_path, "wb") as f:
+        with _atomic_write(target_path) as f:
             while chunk := await file.read(8192):  # Read in 8KB chunks
                 await asyncio.to_thread(f.write, chunk)
                 file_size += len(chunk)

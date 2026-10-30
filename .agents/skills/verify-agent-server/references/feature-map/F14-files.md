@@ -33,7 +33,7 @@ Routes: `GET /api/file/home`, `GET /api/file/search_subdirs`,
 - `F14.upload-errors`: an upload without the `file` part or without `path` is 422, and a relative `path` is 400 `Path must be absolute`.
 - `F14.upload-onto-directory`: uploading onto an existing directory, or to a path whose parent is a file, is a client error (400), as `create_directory` answers for the same collisions.
 - `F14.upload-size`: the SDK's `RemoteWorkspace.file_upload` and the TypeScript `RemoteWorkspace.fileUpload` report the uploaded `file_size`, as `LocalWorkspace.file_upload` does; the upload response carries it as `{"success": true, "file_size": N}`.
-- `F14.upload-atomic`: an overwrite that fails mid-write leaves the previous file intact; today the target is truncated before streaming and keeps a partial file.
+- `F14.upload-atomic`: an overwrite that fails mid-write leaves the previous file intact (the upload goes to a temporary file that replaces the target only on success).
 - `F14.download-errors`: downloading a missing file is 404 `File not found`, a directory 400 `Path is not a file`, a relative path 400.
 - `F14.mkdir`: `create_directory` creates missing parents, is idempotent and keeps existing contents, the new directory is listed by `search_subdirs`, and a path that is or runs through a file is 400.
 - `F14.home`: `GET /api/file/home` reports the server user's `HOME`, its visible top-level directories as case-insensitively sorted `favorites` (no files, no symlinks), `/` as the only location, and hidden directories only with `include_hidden=true`.
@@ -260,7 +260,7 @@ Preconditions:
   remote workspaces copy that `file_size` into their result, as
   `LocalWorkspace` reports it (the TypeScript `write_file` tool then says
   `Successfully wrote 70000 bytes`).
-- **Failed overwrite (`F14.upload-atomic`), known bug.** A second server
+- **Failed overwrite (`F14.upload-atomic`).** A second server
   (stopped by the trap) has its file-size limit lowered to 500 kB with
   `prlimit`, the way a full disk or a quota fails a write mid-stream, while a
   900 kB upload overwrites a small file. The limit is lifted before the final
@@ -281,16 +281,17 @@ Preconditions:
     --expect 5xx --check exception contains 'File too large' --save F14.upload-atomic/failed-overwrite
   prlimit --pid "$B2_PID" --fsize=unlimited:
   control-agent-server doctor --run "$B2"
-  control-agent-server assert --value "{\"same\": $(cmp -s "$F/v2.txt" "$AT/target.txt" && echo true || echo false), \"size\": $(wc -c < "$AT/target.txt")}" --check same eq true  # bug: value.same eq false && value.size eq 500000
+  control-agent-server assert --value "{\"same\": $(cmp -s "$F/v2.txt" "$AT/target.txt" && echo true || echo false), \"size\": $(wc -c < "$AT/target.txt"), \"leftovers\": $(find "$AT" -name '.*.tmp' | wc -l)}" \
+    --check same eq true --check leftovers eq 0
   ```
   Without the limit the 900 kB blob uploads intact (so the size alone is not
   the problem) and the small file is in place. Under the limit the overwrite
   fails with `500 ... [Errno 27] File too large`, and the server is healthy
   once the limit is lifted. Expected: the failed upload leaves `target.txt`
-  holding the previous small file (write to a temporary file, then rename).
-  Actual: `_upload_file` opens the target with `"wb"` before streaming, so
-  `target.txt` now holds the first 500000 bytes of the blob: the old content
-  is gone and a partial file is left behind.
+  holding the previous small file: `_upload_file` streams into a temporary
+  file beside the target, moves it into place with `os.replace` only when the
+  stream completes, and removes it on failure, so no `.*.tmp` file is
+  left in the directory.
 - **Download errors (`F14.download-errors`).** Missing file, directory,
   relative path, no path.
   ```sh
@@ -859,9 +860,9 @@ Preconditions:
   the multipart field must be named `file`. The response is
   `{"success": true, "file_size": N}`, the bytes written; the SDK and
   TypeScript consumers report that `file_size` (`F14.upload-size`).
-- Upload truncates the target before streaming, so a failed upload can leave
-  a partial file; it is not atomic (`F14.upload-atomic`). That recipe lowers
-  the second server's `RLIMIT_FSIZE` with `prlimit` (util-linux, Linux only);
+- Upload writes a temporary file beside the target and renames it into
+  place, so a failed upload keeps the previous file (`F14.upload-atomic`).
+  That recipe lowers the second server's `RLIMIT_FSIZE` with `prlimit` (util-linux, Linux only);
   Python ignores `SIGXFSZ`, so the write fails with `EFBIG` instead of
   killing the server. A body under 1 MB stays in Starlette's in-memory
   spool, so the limit hits the handler's write, not the multipart parser.
