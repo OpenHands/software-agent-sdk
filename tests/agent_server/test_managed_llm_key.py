@@ -18,6 +18,7 @@ from litellm import ModelResponse
 from litellm.exceptions import AuthenticationError
 from pydantic import SecretStr
 
+from openhands.agent_server.conversation_service import AutoTitleSubscriber
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.managed_llm_key import (
     REFRESH_BASE_URLS_ENV,
@@ -27,8 +28,10 @@ from openhands.agent_server.managed_llm_key import (
     register_managed_llm_key_refresh,
 )
 from openhands.agent_server.models import StoredConversation
+from openhands.agent_server.persistence import reset_stores
 from openhands.sdk import LLM, Agent
 from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.secret import (
     register_local_secret_resolver,
     unregister_local_secret_resolver,
@@ -319,82 +322,91 @@ async def test_switched_llm_keeps_refresh_hook(monkeypatch, tmp_path):
         await service.close()
 
 
-def test_load_title_llm_registers_hook_on_managed_llm(monkeypatch):
-    """A profile-loaded title LLM receives the refresh hook."""
-    from unittest.mock import Mock, patch
+def _resolves_served_key(llm: LLM) -> bool:
+    """True when ``llm``'s 401 resolves the served key (hook registered)."""
+    with _served_key(REFRESH_URL, "fresh_key"):
+        refreshed = llm._resolve_refreshed_api_key(_auth_error())
+    return refreshed is not None and refreshed.get_secret_value() == "fresh_key"
 
-    monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
-    monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
 
-    # Mock an LLM that would be returned by the profile store
-    mock_llm = Mock()
-    mock_llm.base_url = MANAGED_BASE_URL
+@pytest.fixture
+def title_profile_store(tmp_path, monkeypatch):
+    """Persist title-LLM profiles under ``tmp_path`` for the real profile store."""
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
+    reset_stores()
+    yield LLMProfileStore(base_dir=tmp_path / "profiles")
+    reset_stores()
 
-    hook_calls = []
 
-    with patch(
-        "openhands.agent_server.persistence.store.get_llm_profile_store"
-    ) as mock_store:
-        mock_store.return_value.load.return_value = mock_llm
+def _stored_conversation(workspace, title_llm_profile: str | None = None):
+    return StoredConversation(
+        id=uuid4(),
+        workspace=LocalWorkspace(working_dir=str(workspace)),
+        confirmation_policy=NeverConfirm(),
+        title_llm_profile=title_llm_profile,
+    )
 
-        with patch(
-            "openhands.agent_server.conversation_service.register_managed_llm_key_refresh"
-        ) as mock_register:
-            mock_register.side_effect = lambda llms: hook_calls.append(list(llms))
 
-            from openhands.agent_server.conversation_service import (
-                AutoTitleSubscriber,
-            )
+@pytest.mark.parametrize(
+    ("base_url", "opted_in", "expect_hook"),
+    [
+        (MANAGED_BASE_URL, True, True),
+        (BYOK_BASE_URL, True, False),
+        (MANAGED_BASE_URL, False, False),
+    ],
+)
+def test_auto_title_llm_refresh_hook(
+    monkeypatch, tmp_path, title_profile_store, base_url, opted_in, expect_hook
+):
+    """The profile-loaded title LLM is hooked iff it is a managed LLM (#5528)."""
+    if opted_in:
+        monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
+        monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
+    else:
+        monkeypatch.delenv(REFRESH_URL_ENV, raising=False)
+    title_profile_store.save(
+        "title-fast", _llm("title-llm", base_url), include_secrets=True
+    )
+    service = EventService(
+        stored=_stored_conversation(tmp_path, title_llm_profile="title-fast"),
+        conversations_dir=tmp_path / "conversations",
+    )
 
-            # Create a minimal mock service with the required attributes
-            service = Mock()
-            service.stored = Mock()
-            service.stored.title_llm_profile = "gpt-4o-mini-for-titles"
-            service.cipher = None
+    title_llm = AutoTitleSubscriber(service=service)._load_title_llm()
 
-            subscriber = AutoTitleSubscriber(service)
-            result_llm = subscriber._load_title_llm()
-
-            # Assert hook registration was called with the loaded LLM
-            assert result_llm is mock_llm
-            assert len(hook_calls) == 1
-            assert hook_calls[0][0] is mock_llm
+    assert title_llm is not None
+    assert title_llm.usage_id == "title-llm"
+    assert _resolves_served_key(title_llm) is expect_hook
 
 
 @pytest.mark.asyncio
-async def test_generate_title_registers_hook_on_managed_llm(monkeypatch):
-    """A title LLM passed to generate_title receives the refresh hook."""
-    from unittest.mock import Mock, patch
-
+async def test_generate_title_llm_refresh_hook(monkeypatch, tmp_path):
+    """An LLM passed to ``EventService.generate_title`` gets the hook."""
     monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
     monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    service = EventService(
+        stored=_stored_conversation(workspace),
+        agent=_agent(_llm("agent", MANAGED_BASE_URL)),
+        conversations_dir=tmp_path / "conversations",
+    )
+    await service.start()
+    try:
+        titled_with: list[LLM | None] = []
 
-    title_llm = Mock()
-    title_llm.base_url = MANAGED_BASE_URL
-    title_llm.usage_id = "title-llm-123"
+        def fake_generate_title(llm, max_length):
+            titled_with.append(llm)
+            return "A title"
 
-    hook_calls = []
-
-    # Import first, then patch at the location where it's used
-    from openhands.agent_server.event_service import EventService
-
-    with patch(
-        "openhands.agent_server.event_service.register_managed_llm_key_refresh"
-    ) as mock_register:
-        mock_register.side_effect = lambda llms: hook_calls.append(list(llms))
-
-        # Create minimal EventService with mocked conversation
-        service = Mock(spec=EventService)
-        service._conversation = Mock()
-        service._conversation.llm_registry.get.side_effect = KeyError("not found")
-        service._conversation.generate_title.return_value = "Test Title"
-
-        # Call generate_title through the service instance
-        result = await EventService.generate_title(
-            service, llm=title_llm, max_length=50
+        monkeypatch.setattr(
+            service.get_conversation(), "generate_title", fake_generate_title
         )
+        title_llm = _llm("title-llm", MANAGED_BASE_URL)
 
-        # Assert hook registration was called with the title LLM
-        assert result == "Test Title"
-        assert len(hook_calls) == 1
-        assert hook_calls[0][0] is title_llm
+        assert await service.generate_title(llm=title_llm) == "A title"
+
+        assert titled_with == [title_llm]
+        assert _resolves_served_key(title_llm)
+    finally:
+        await service.close()

@@ -2317,7 +2317,7 @@ class EventService:
                 resolved_llm = llm
 
         if resolved_llm is not None:
-            # Not owned by the agent, so start() never hooked it.
+            # Idempotent: a no-op re-hook when this is already an agent LLM.
             register_managed_llm_key_refresh([resolved_llm])
 
         loop = asyncio.get_running_loop()

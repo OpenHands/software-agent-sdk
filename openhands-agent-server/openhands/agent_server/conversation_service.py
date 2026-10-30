@@ -2794,7 +2794,7 @@ class AutoTitleSubscriber(Subscriber):
             )
             return None
 
-        # Not owned by the agent, so start() never hooked it.
+        # Profile-loaded, so the agent's start() never hooked it.
         register_managed_llm_key_refresh([title_llm])
         return title_llm
 

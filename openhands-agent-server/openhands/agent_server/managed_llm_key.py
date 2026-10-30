@@ -92,8 +92,9 @@ def _llm_is_in_scope(llm: LLM, managed_base_urls: set[str]) -> bool:
 def register_managed_llm_key_refresh(llms: Iterable[LLM]) -> int:
     """Register a refresh-on-401 hook on the given managed-proxy LLMs.
 
-    Pass ``agent.get_all_llms()`` for an agent, or any LLM the agent does not
-    own (e.g. a title LLM loaded from a profile).
+    On a 401 the hook re-fetches the current key from ``OH_LLM_API_KEY_REFRESH_URL``
+    and retries once. Pass ``agent.get_all_llms()`` for an agent, or any LLM the
+    agent does not own (e.g. a title LLM loaded from a profile).
 
     Returns the number of LLMs a hook was registered on (``0`` means the feature
     is off or no LLM matched). Safe to call unconditionally: it does nothing
