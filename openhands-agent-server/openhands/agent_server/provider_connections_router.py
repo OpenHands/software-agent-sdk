@@ -56,6 +56,15 @@ def _now() -> int:
     return int(time.time())
 
 
+def _require_usable_api_key(v: SecretStr | None) -> SecretStr | None:
+    # The stored model turns a blank or redacted key into None, so accepting one
+    # would create a keyless connection (POST) or wipe/corrupt the shared key
+    # (PATCH). Refuse it up front; the message must not echo the value.
+    if v is not None and (not v.get_secret_value().strip() or is_redacted_secret(v)):
+        raise ValueError("api_key must be a real key, not blank or redacted")
+    return v
+
+
 class ProviderConnectionCreateRequest(BaseModel):
     display_name: str = Field(..., min_length=1, max_length=128)
     provider: str = Field(default="custom", min_length=1, max_length=128)
@@ -64,15 +73,7 @@ class ProviderConnectionCreateRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    @field_validator("api_key", mode="after")
-    @classmethod
-    def _reject_blank_or_redacted_api_key(cls, v: SecretStr) -> SecretStr:
-        # A blank or redacted key would persist a connection that can never
-        # supply credentials; the masked placeholder is what redacted
-        # responses return, so it must not be accepted as a new key either.
-        if not v.get_secret_value().strip() or is_redacted_secret(v):
-            raise ValueError("api_key must not be blank or the redacted placeholder")
-        return v
+    _validate_api_key = field_validator("api_key")(_require_usable_api_key)
 
 
 class ProviderConnectionUpdateRequest(BaseModel):
@@ -83,21 +84,7 @@ class ProviderConnectionUpdateRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    @field_validator("api_key", mode="after")
-    @classmethod
-    def _reject_blank_or_redacted_api_key(cls, v: SecretStr | None) -> SecretStr | None:
-        # A blank key would wipe the shared credential, and the masked
-        # placeholder ("**********") is what GET-style redaction returns — a
-        # client echoing it back must not overwrite the stored key with it.
-        # Explicit null is left to the handler, which keeps its dedicated 422.
-        if v is None:
-            return v
-        if not v.get_secret_value().strip() or is_redacted_secret(v):
-            raise ValueError(
-                "api_key must not be blank or the redacted placeholder; "
-                "provide a new key to rotate it"
-            )
-        return v
+    _validate_api_key = field_validator("api_key")(_require_usable_api_key)
 
     @model_validator(mode="after")
     def _reject_null_required_fields(self) -> ProviderConnectionUpdateRequest:

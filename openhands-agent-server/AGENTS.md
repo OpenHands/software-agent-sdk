@@ -107,6 +107,17 @@ enough that a single new test function (or a few assertions added to an existing
 test) captures the expected behaviour.
 
 
+## Verifying API changes against a real server
+
+To prove an API change the way a consumer sees it (a real server process, real
+sockets, restarts and a real model), use the
+[`verify-agent-server`](../.agents/skills/verify-agent-server/SKILL.md) skill:
+`control-agent-server map owners --changed origin/main...HEAD` names the
+affected feature families, and `control-agent-server map run --file Fnn --fresh`
+replays a family's recipes. A new or changed route needs an owner in the
+feature map (`control-agent-server map coverage`).
+
+
 ## Concurrency / async safety
 
 - `ConversationState` uses a synchronous `FIFOLock`. In async agent-server code, never do `with conversation._state` directly on the event loop when the conversation may be running.
