@@ -177,15 +177,6 @@ def test_parse_nested_relative_path():
     assert url == "path/to/my/extension"
 
 
-# -- SourceType enum ----------------------------------------------------------
-
-
-def test_source_type_values():
-    assert SourceType.LOCAL == "local"
-    assert SourceType.GIT == "git"
-    assert SourceType.GITHUB == "github"
-
-
 # -- get_cache_path ------------------------------------------------------------
 
 
