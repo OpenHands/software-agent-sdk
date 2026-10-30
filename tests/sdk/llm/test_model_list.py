@@ -277,6 +277,7 @@ def test_verified_lists_keep_two_latest_versions_per_line():
             {"anthropic-claude-opus-5.5", "anthropic-claude-opus-5"},
             {"anthropic-claude-opus-4.8", "openai-gpt-6-astra"},
         ),
+        "coralbricks": ({"glm-5.3-fast", "deepseek-v4.1-flash-fast"}, set()),
     }
     assert set(expectations) == set(VERIFIED_MODELS) - {"openhands"}
     for provider, (present, absent) in expectations.items():
