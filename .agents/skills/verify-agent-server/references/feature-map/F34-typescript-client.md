@@ -380,14 +380,13 @@ Preconditions:
   the five bytes on disk are exactly the ones sent and `FileClient` reads them
   back unchanged; both upload responses report the byte count added by
   #5856, and the server's own download serves the `FileClient` upload.
-- **Binary download through RemoteWorkspace (`F34.workspace-binary-download`), known bug.**
-  `RemoteWorkspace.fileDownload` lets the transport parse the
-  `application/octet-stream` body as text, so `downloadAsBlob` and
-  `fileDownload` return UTF-8-decoded bytes (`clients/typescript/src/workspace/remote-workspace.ts:183`,
-  no `responseType`); `FileClient.downloadFile` asks for an `arrayBuffer`
-  and is right. The bullet writes its own five bytes, and the program first
-  reads them back exactly through `FileClient` (positive control), then
-  records what `downloadAsBlob` and `fileDownload` returned.
+- **Binary download through RemoteWorkspace (`F34.workspace-binary-download`).**
+  `RemoteWorkspace.fileDownload` asks the transport for a `Blob`, so
+  `downloadAsBlob` and `fileDownload` return the raw
+  `application/octet-stream` bytes, as `FileClient.downloadFile` does with its
+  `arrayBuffer`. The bullet writes its own five bytes (not valid UTF-8), and
+  the program first reads them back exactly through `FileClient` (positive
+  control), then records what `downloadAsBlob` and `fileDownload` returned.
   ```sh
   printf '\377\000\200\376A' > "$F34/files/qa-f34-bin.dat"
   test "$(od -An -tx1 "$F34/files/qa-f34-bin.dat" | tr -d ' \n')" = ff0080fe41
@@ -404,11 +403,10 @@ Preconditions:
   JS
   control-agent-server exec --timeout 60 --expect-output QA_F34_BINARY_READ --save F34.workspace-binary-download/program -- node "$F34/binary.mjs"
   cat "$F34/binary.json"
-  control-agent-server assert --json "$F34/binary.json" --check blob eq '[255, 0, 128, 254, 65]' --check file_size eq 5  # bug: value.file_size eq 11 && value.blob eq '[239, 191, 189, 0, 239, 191, 189, 239, 191, 189, 65]'
+  control-agent-server assert --json "$F34/binary.json" --check blob eq '[255, 0, 128, 254, 65]' --check file_size eq 5
   ```
-  Expected: the same five bytes and `file_size` 5. Today the blob holds 11
-  bytes (`[239,191,189,0,239,191,189,239,191,189,65]`: each invalid byte
-  became U+FFFD) and `file_size` is 11, while the file on disk has 5.
+  Expected: the same five bytes and `file_size` 5, the size on disk; no
+  invalid byte is replaced by U+FFFD.
 - **Conversation-scoped workspace (`F34.workspace-scoped`).** A workspace
   bound to `SCID`, the conversation from `Preconditions:` that never runs.
   ```sh
@@ -1477,9 +1475,9 @@ Preconditions:
 - `executeCommand` returns the server's joined output: output beyond 1 MiB
   is stored as several chunks server-side (`bash.searchEvents` lists them),
   and `execute_bash_command` concatenates them (`F13.execute-large-output`).
-- `RemoteWorkspace.fileDownload`, `downloadAsBlob` and `downloadAsText`
-  decode the body as text (`F34.workspace-binary-download`); use
-  `FileClient.downloadFile` for bytes.
+- `RemoteWorkspace.fileDownload` returns `content` as a `Blob` of the raw
+  bytes (`F34.workspace-binary-download`); `downloadAsText` decodes it as
+  UTF-8.
 - `GitChange['status']` (main entry, also exported as `GitChangeStatus`) is
   the server's `UPDATED|ADDED|DELETED|MOVED`, not lowercase words
   (`F34.workspace-git-types`).
