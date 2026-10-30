@@ -3,6 +3,8 @@
 from collections.abc import Sequence
 from typing import ClassVar
 
+import pytest
+
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
@@ -61,10 +63,10 @@ def _bad_tool_call(call_id: str) -> MessageToolCall:
     )
 
 
-def _bad_tool_call_message(call_id: str) -> Message:
+def _bad_tool_call_message(call_id: str, thought: str = "") -> Message:
     return Message(
         role="assistant",
-        content=[TextContent(text="")],
+        content=[TextContent(text=thought)],
         tool_calls=[_bad_tool_call(call_id)],
     )
 
@@ -82,10 +84,18 @@ def _make_conversation(
     return conversation
 
 
-def test_run_nudges_before_going_stuck_on_repeating_action_error():
+@pytest.mark.parametrize("vary_thought", [False, True])
+def test_run_nudges_before_going_stuck_on_repeating_action_error(vary_thought):
     """4 identical failing calls: nudge after the 3rd, hard STUCK after the 4th."""
     scripted_messages: list[Message | Exception] = [
-        _bad_tool_call_message(f"call_{i}") for i in range(4)
+        *[
+            _bad_tool_call_message(
+                f"call_{i}",
+                thought=f"Trying again, attempt {i}" if vary_thought else "",
+            )
+            for i in range(4)
+        ],
+        Message(role="assistant", content=[TextContent(text="Stopping now.")]),
     ]
     conversation = _make_conversation(scripted_messages)
     conversation.send_message(
@@ -197,3 +207,34 @@ def test_run_does_not_renudge_action_error_while_streak_is_frozen():
     assert isinstance(empty_corrective_nudge, TextContent)
     assert "always_error_tool" in action_error_nudge.text
     assert "did not include a function call" in empty_corrective_nudge.text
+
+
+def test_changed_arguments_do_not_trigger_action_error_nudge():
+    scripted_messages: list[Message | Exception] = [
+        *[
+            Message(
+                role="assistant",
+                content=[TextContent(text="Trying a different command")],
+                tool_calls=[
+                    MessageToolCall(
+                        id=f"call_{i}",
+                        name="always_error_tool",
+                        arguments=f'{{"command": "create_{i}"}}',
+                        origin="completion",
+                    )
+                ],
+            )
+            for i in range(4)
+        ],
+        Message(role="assistant", content=[TextContent(text="Stopping now.")]),
+    ]
+    conversation = _make_conversation(scripted_messages)
+    conversation.send_message("Create /tmp/foo.py")
+    conversation.run()
+
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert sum(isinstance(e, AgentErrorEvent) for e in conversation.state.events) == 4
+    assert not any(
+        isinstance(e, MessageEvent) and e.source == "environment"
+        for e in conversation.state.events
+    )
