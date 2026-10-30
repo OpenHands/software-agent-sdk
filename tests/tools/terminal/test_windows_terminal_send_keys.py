@@ -82,12 +82,39 @@ def test_single_line_input_ends_with_exactly_one_newline(command: str) -> None:
 
 
 @pytest.mark.parametrize("command", MULTILINE_COMMANDS + SINGLE_LINE_COMMANDS)
-def test_metadata_suffix_is_submitted_with_the_command(command: str) -> None:
-    """The PS1 metadata suffix rides along, so the marker can be parsed back."""
+def test_command_is_submitted_verbatim_without_a_suffix(command: str) -> None:
+    """The metadata block comes from the prompt function, not from the command.
+
+    A suffix appended to the command line is lost whenever the line does not
+    run to completion (Ctrl+C, ``throw``, ``-ErrorAction Stop``), so nothing
+    may be attached to what the model asked to run.
+    """
     sent = _sent_text(command)
 
-    assert "$oh1 = $?" in sent
-    assert sent.startswith(command.rstrip())
+    assert sent.rstrip("\n") == command.rstrip()
+    assert "###PS1" not in sent
+
+
+def test_init_script_never_echoes_the_markers() -> None:
+    """PowerShell echoes every line read from a pipe.
+
+    If the init script contained the literal markers, the echo of the script
+    itself would be mistaken for a prompt.
+    """
+    from openhands.tools.terminal.constants import (
+        CMD_OUTPUT_PS1_BEGIN,
+        CMD_OUTPUT_PS1_END,
+    )
+    from openhands.tools.terminal.terminal.windows_terminal import (
+        build_powershell_init_script,
+    )
+
+    script = build_powershell_init_script()
+
+    assert CMD_OUTPUT_PS1_BEGIN.strip() not in script
+    assert CMD_OUTPUT_PS1_END.strip() not in script
+    # every statement is a complete line: no ">>" continuation over the pipe
+    assert all(line.count("{") == line.count("}") for line in script.splitlines())
 
 
 @pytest.mark.parametrize("command", MULTILINE_COMMANDS + SINGLE_LINE_COMMANDS)
