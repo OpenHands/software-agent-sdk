@@ -1313,11 +1313,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             ),
         ):
             delta = event.delta
-            if delta:
+            # LiteLLM can bypass required-field validation with model_construct.
+            # Skip unidentified previews; finished output is collected separately.
+            item_id = event.item_id if "item_id" in event.model_fields_set else None
+            if delta and isinstance(item_id, str) and item_id:
                 # ModelResponseStream mints a fresh id per instance, and a
                 # changed chunk id reads as a retry (StreamContext._emit_delta).
                 delta_chunk = ModelResponseStream(
-                    id=event.item_id,
+                    id=item_id,
                     choices=[StreamingChoices(delta=Delta(content=delta))],
                 )
 
