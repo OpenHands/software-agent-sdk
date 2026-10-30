@@ -85,6 +85,14 @@ class MetaProfile(BaseModel):
             "prompts."
         ),
     )
+    run_router_at_conversation_start: bool = Field(
+        default=False,
+        description=(
+            "If True, automatically invoke the router on the first user message "
+            "of each new conversation. When False (the default), routing only "
+            "happens when the agent calls the classification tool."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_routing_mode(self) -> MetaProfile:
