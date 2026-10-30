@@ -15,6 +15,10 @@ from fastapi import (
 )
 from starlette.responses import JSONResponse
 
+from openhands.agent_server.conversation_serialization import (
+    conversation_event_dict_for_api,
+    conversation_event_for_api,
+)
 from openhands.agent_server.dependencies import get_event_service
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
@@ -129,9 +133,11 @@ async def search_conversation_events(
     return JSONResponse(
         {
             "items": [
-                dict(event)
+                conversation_event_dict_for_api(dict(event))
                 if isinstance(event, dict)
-                else event.model_dump(mode="json", exclude_none=True)
+                else conversation_event_for_api(event).model_dump(
+                    mode="json", exclude_none=True
+                )
                 for event in items
             ],
             "next_page_id": next_page_id,
@@ -196,7 +202,7 @@ async def get_conversation_event(
     event = await event_service.get_event(event_id)
     if event is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
-    return event
+    return conversation_event_for_api(event)
 
 
 @event_read_router.get("")
@@ -207,7 +213,7 @@ async def batch_get_conversation_events(
     """Get a batch of local events given their ids, returning null for any
     missing item."""
     events = await event_service.batch_get_events(event_ids)
-    return events
+    return [conversation_event_for_api(event) if event else None for event in events]
 
 
 @event_write_router.post(

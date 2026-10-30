@@ -987,6 +987,10 @@ class EventService:
         if not isinstance(self._conversation.agent, ACPAgent):
             return (False, False)
         with self._conversation._state as state:
+            # Deliberately RUNNING only, not is_active(): once a pause is
+            # pending (PAUSING) the user's stop intent wins. Superseding here
+            # would interrupt and automatically re-run the new message, undoing
+            # the pause; instead the message stays queued until resume.
             if state.execution_status != ConversationExecutionStatus.RUNNING:
                 return (False, False)
             inflight_prompt_user_message_id = state.agent_state.get(
@@ -1421,12 +1425,12 @@ class EventService:
         # the pod during long conn.prompt() calls.
         self._setup_acp_activity_heartbeat(self._conversation.agent)
 
-        # Any conversation loaded from disk with RUNNING status is stale. Active
+        # Any conversation loaded from disk with an active status is stale. Active
         # split-brain resumes are prevented earlier by the lease claim itself, so if
         # we made it this far there is no live owner and the interrupted tool call
         # should be surfaced back to the agent.
         state = self._conversation.state
-        if state.execution_status == ConversationExecutionStatus.RUNNING:
+        if state.execution_status.is_active():
             state.execution_status = ConversationExecutionStatus.ERROR
             # Crash recovery scans the full log, not the active branch: the
             # process may have died between writing an event file and persisting
@@ -1562,8 +1566,7 @@ class EventService:
             # block this request behind it instead of answering at once.
             if (self._run_task is not None and not self._run_task.done()) or (
                 await self._get_execution_status()
-                == ConversationExecutionStatus.RUNNING
-            ):
+            ).is_active():
                 raise ValueError("conversation_already_running")
             if self._closing:
                 raise ValueError("inactive_service")
@@ -1815,8 +1818,7 @@ class EventService:
             # so reading execution status would block behind it.
             if (self._run_task is not None and not self._run_task.done()) or (
                 await self._get_execution_status()
-                == ConversationExecutionStatus.RUNNING
-            ):
+            ).is_active():
                 raise ValueError("conversation_already_running")
             # Re-check after the await above: close() runs without _run_lock, so
             # it may have begun teardown meanwhile (mirrors run()'s post-status
@@ -2073,8 +2075,7 @@ class EventService:
                 raise ValueError("goal_already_running")
             if (self._run_task is not None and not self._run_task.done()) or (
                 await self._get_execution_status()
-                == ConversationExecutionStatus.RUNNING
-            ):
+            ).is_active():
                 raise ValueError("conversation_already_running")
             if self._closing:  # see start_goal_loop: close() may have begun teardown
                 raise ValueError("inactive_service")

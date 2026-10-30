@@ -370,7 +370,15 @@ async def pause_conversation(
     conversation_id: UUID,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> Success:
-    """Pause a conversation, allowing it to be resumed later."""
+    """Request a pause at the next agent step boundary.
+
+    During the migration window, a pending pause continues to report ``running``
+    through this API. It reports ``paused`` and emits a PauseEvent at the step
+    boundary unless confirmation is required or execution fails. An ACP step
+    spans the entire remote prompt turn. Use ``/interrupt`` to cancel in-flight
+    work. Clients should prepare to treat ``pausing`` as active work before that
+    value is exposed after an announced five-minor-release migration window.
+    """
     paused = await conversation_service.pause_conversation(conversation_id)
     if not paused:
         raise HTTPException(status.HTTP_404_NOT_FOUND)

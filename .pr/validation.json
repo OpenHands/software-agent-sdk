@@ -1,0 +1,150 @@
+{
+  "base": "d0d9d81324210414462fb676b377e0563a08a0cb",
+  "implementation_head": "5a8ae29011c599240861d5e49916f4b6b75113d3",
+  "date": "2026-10-27",
+  "environment": {
+    "os": "Linux in Docker",
+    "python": "3.13.11",
+    "dependency_install": "uv sync --frozen --dev"
+  },
+  "red": [
+    {
+      "scenario": "ACP pending pause unit tests",
+      "result": "2 failed: paused != pausing before the core fix"
+    },
+    {
+      "scenario": "HTTP/WebSocket ACP pause on baseline",
+      "result": "1 failed: paused != pausing",
+      "base": "d0d9d81324210414462fb676b377e0563a08a0cb"
+    },
+    {
+      "scenario": "Remote waiting / stale-state recovery / runtime retention",
+      "result": "Expected failures captured before the respective fixes"
+    },
+    {
+      "scenario": "Pause then interrupt after ACP finalization",
+      "result": "Completed prompt replayed; resumed run timed out before the completion bookkeeping fix"
+    },
+    {
+      "scenario": "Pause during native LLM: preserve approval and reject a superseded action",
+      "base": "d3a47c336838eab80dec06cca7e7b3b1a4905524",
+      "result": "Both final regression cases fail before the fix; both pass after it"
+    },
+    {
+      "scenario": "Public ACP prompt completion query across turns",
+      "base": "3091be279841f3d74218a79e369cf36151e7434c",
+      "result": "2 failed for missing property; getter-only implementation leaves 1 failure because the second sync prompt inherits completion; both pass after resetting at sync step entry"
+    },
+    {
+      "scenario": "Legacy response/event contract and active catalog filters",
+      "base": "25498fb37f7e03fc9cda24e6cd27eeacadcd2b27",
+      "result": "16 response/schema/event/live checks and 2 running-filter checks failed before projection"
+    },
+    {
+      "scenario": "TypeScript full_state followed by a paused field update",
+      "base": "ecc2d02d4",
+      "result": "Canonical full_state path remained pausing; existing legacy spelling passed. Fixing snapshot-key recognition passes all cases"
+    },
+    {
+      "scenario": "Review follow-up: FINISHED preserved, loop-less pauses, is_active() in gateway and telemetry",
+      "base": "f2b6459b2e3fdfedd07e498f9e3893b5cde4e421",
+      "result": "8 failed, 7 passed before the fix: native pause during the final LLM call turned FINISHED into PAUSED and the resume issued a second LLM call; ACP completed prompt with nothing queued reported PAUSED; pause() without a run loop stayed PAUSING; run() from stale PAUSING never set RUNNING; interrupt() fallback stayed PAUSING; gateway wait and telemetry ignored PAUSING as an observed run. All pass after the fix"
+    }
+  ],
+  "green": {
+    "python_command": "uv run --no-sync pytest tests/sdk/conversation tests/sdk/agent tests/agent_server/test_conversation_service.py tests/agent_server/test_event_service.py tests/agent_server/docker_runtime/test_registry.py tests/agent_server/test_pausing_compatibility.py tests/agent_server/test_models.py tests/agent_server/test_event_router.py tests/agent_server/test_event_router_websocket.py tests/agent_server/test_webhook_subscriber.py tests/agent_server/test_websocket_first_message_auth.py tests/agent_server/test_session_socket.py tests/agent_server/test_openai_gateway_reused_wait.py tests/agent_server/telemetry tests/cross/test_acp_pause_live_server.py -q --timeout=120",
+    "python": {
+      "passed": 2647,
+      "deselected": 6,
+      "warnings": 68,
+      "duration_seconds": 224.88,
+      "note": "Run with GIT_DIR/GIT_WORK_TREE unset: the dev container exports them for the host worktree and git-based tests then commit into the real repository and fail"
+    },
+    "changed_file_lint": "ruff format, ruff check, pycodestyle and pyright: 0 errors on the 11 changed files",
+    "typescript": {
+      "tests_passed": 400,
+      "build": "passed",
+      "changed_file_eslint": "passed",
+      "changed_file_prettier": "passed",
+      "full_eslint": "Not rerun; previous full lint had 3 errors in unchanged integration tests"
+    },
+    "crash_recovery": {
+      "recorded_at": "62fc57f0d5150b33dd1665d895a71b2717315b33",
+      "rerun_after_review_follow_up": false,
+      "before_crash": "pausing",
+      "after_restart": "error",
+      "catalog_after_restart": "error",
+      "prompt_count": 1,
+      "shell_writes": [
+        "1-1"
+      ],
+      "restart": "SIGKILL via control-agent-server restart --hard"
+    },
+    "docs": "Both Python snippets parsed; diff reviewed; no full Mintlify render",
+    "artifact_cleanup": "Fork pr-artifacts.yml verified active on 2026-10-27; temporary .pr content removed through cleanup PR",
+    "legacy_client_live": {
+      "recorded_at": "62fc57f0d5150b33dd1665d895a71b2717315b33",
+      "rerun_after_review_follow_up": false,
+      "note": "The scripted HTTP/WebSocket pause/resume regression (tests/cross/test_acp_pause_live_server.py) was rerun on the new head and covers the same queued-message flow; the separate-process old-client and SIGKILL runs were not repeated",
+      "source_ref": "v1.58.2",
+      "source_commit": "d2ee0cdea60825608c2f8906eb54e1d4d264fb42",
+      "isolation": "Unmodified SDK tag source in a separate process, using the current frozen dependency environment",
+      "result": "Real HTTP/WebSocket pause, continued shell writes, completed pause and resume; no early run return or completed prompt replay",
+      "status_events": [
+        "idle",
+        "running",
+        "running",
+        "running",
+        "paused",
+        "paused",
+        "running",
+        "finished",
+        "finished"
+      ],
+      "prompt_count": 2,
+      "shell_writes": [
+        "1-1",
+        "1-2",
+        "1-3",
+        "2-1",
+        "2-2",
+        "2-3"
+      ],
+      "cancel_requests": false
+    }
+  },
+  "compatibility_review": {
+    "baseline": "v1.58.2",
+    "oasdiff": "1.19.1 (same as CI; release checksum verified)",
+    "command": "AGENT_SERVER_REST_API_BASE_REF=d0d9d81324210414462fb676b377e0563a08a0cb uv run --no-sync python .github/scripts/check_agent_server_rest_api_breakage.py",
+    "exit_code": 0,
+    "result": "No breaking changes detected with the real v1.58.2 baseline; not a missing-baseline skip",
+    "fork_ci_job": "https://github.com/Scrates1/software-agent-sdk/actions/runs/40461145504/job/122045801381",
+    "fork_ci_caveat": "Earlier success skipped comparison: git archive v1.58.2 failed because the tag was unavailable in the fork",
+    "existing_checker_regression": "test_split_breaking_changes_separates_three_buckets: 1 passed; ordinary status additions remain breaking",
+    "historical_prs": [
+      "https://github.com/OpenHands/software-agent-sdk/pull/1391",
+      "https://github.com/OpenHands/software-agent-sdk/pull/1880",
+      "https://github.com/OpenHands/software-agent-sdk/pull/3964",
+      "https://github.com/OpenHands/software-agent-sdk/pull/2433",
+      "https://github.com/OpenHands/software-agent-sdk/pull/2464",
+      "https://github.com/OpenHands/software-agent-sdk/pull/3052"
+    ],
+    "follow_up": "Announce the exact notice release and earliest target at least five minor releases later; enable PAUSING responses in a separate reviewed change after the window",
+    "migration": {
+      "current_wire_status": "running for internal PAUSING",
+      "client_support": "Python and TypeScript accept PAUSING",
+      "notice_release": null,
+      "earliest_switch_release": null,
+      "automatic_switch": false
+    }
+  },
+  "limits": [
+    "Scripted ACP subprocess; no hosted model or vendor ACP agent exercised",
+    "Old-client integration uses released-tag source and current locked dependencies, not an independent historical dependency environment",
+    "Default markers exclude stress, acp_live and docker_live tests",
+    "Python has dependency/test warnings and unawaited-coroutine warnings; not a warning-clean run",
+    "Exact migration notice and target versions must be announced at release; this draft does not start the five-minor-release clock",
+    "Generated TypeScript schema remains pinned to the released server image"
+  ]
+}

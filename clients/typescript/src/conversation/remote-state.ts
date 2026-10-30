@@ -16,7 +16,8 @@ import {
 } from '../types/base';
 import { ConversationInfo } from '../models/conversation';
 
-const FULL_STATE_KEY = '__full_state__';
+const FULL_STATE_KEY = 'full_state';
+const LEGACY_FULL_STATE_KEY = '__full_state__';
 
 export interface ConversationStateUpdateEvent extends Event {
   kind: 'ConversationStateUpdateEvent';
@@ -86,7 +87,7 @@ export class RemoteState {
   async updateStateFromEvent(event: ConversationStateUpdateEvent): Promise<void> {
     await this.lock.acquire(async () => {
       // Handle full state snapshot
-      if (event.key === FULL_STATE_KEY) {
+      if (event.key === FULL_STATE_KEY || event.key === LEGACY_FULL_STATE_KEY) {
         if (this.cachedState === null) {
           this.cachedState = {} as ConversationInfo;
         }

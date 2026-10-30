@@ -33,6 +33,7 @@ from openhands.agent_server.bash_service import (
     get_default_bash_event_service,
 )
 from openhands.agent_server.config import Config, get_default_config
+from openhands.agent_server.conversation_serialization import conversation_event_for_api
 from openhands.agent_server.conversation_service import (
     ConversationService,
     CredentialBindingActivationRequired,
@@ -488,7 +489,9 @@ async def _send_event(event: Event, websocket: WebSocket):
         logger.debug("skip_sending_event_socket_disconnected: %r", event)
         return
     try:
-        await websocket.send_json(event.model_dump(mode="json", exclude_none=True))
+        await websocket.send_json(
+            conversation_event_for_api(event).model_dump(mode="json", exclude_none=True)
+        )
     except (RuntimeError, WebSocketDisconnect) as e:
         # Expected race: client disconnected between our state check and send.
         logger.debug("error_sending_event_disconnected: %r (%s)", event, e)

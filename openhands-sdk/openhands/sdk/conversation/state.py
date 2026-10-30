@@ -50,6 +50,7 @@ class ConversationExecutionStatus(str, Enum):
 
     IDLE = "idle"  # Conversation is ready to receive tasks
     RUNNING = "running"  # Conversation is actively processing
+    PAUSING = "pausing"  # Pause requested; the current step is still executing
     PAUSED = "paused"  # Conversation execution is paused by user
     WAITING_FOR_CONFIRMATION = (
         "waiting_for_confirmation"  # Conversation is waiting for user confirmation
@@ -58,6 +59,10 @@ class ConversationExecutionStatus(str, Enum):
     ERROR = "error"  # Conversation encountered an error (optional for future use)
     STUCK = "stuck"  # Conversation is stuck in a loop or unable to proceed
     DELETING = "deleting"  # Conversation is in the process of being deleted
+
+    def is_active(self) -> bool:
+        """Whether execution may still be in progress, including a pending pause."""
+        return self in (self.RUNNING, self.PAUSING)
 
     def is_terminal(self) -> bool:
         """Check if this status represents a terminal state.

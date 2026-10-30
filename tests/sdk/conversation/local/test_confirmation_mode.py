@@ -651,7 +651,8 @@ class TestConfirmationMode:
                 ConversationExecutionStatus.RUNNING
             )
 
-        # Pause from RUNNING should change status to PAUSED
+        # Pause from RUNNING without an active run loop completes immediately;
+        # only a live run() / arun() goes through PAUSING first.
         self.conversation.pause()
         assert (
             self.conversation._state.execution_status
