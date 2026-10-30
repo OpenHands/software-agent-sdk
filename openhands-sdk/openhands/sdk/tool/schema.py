@@ -186,7 +186,7 @@ def _process_schema_node(
 class Schema(DiscriminatedUnionMixin):
     """Base schema for input action / output observation."""
 
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="ignore", frozen=True)
     mcp_schema_alias_specs: ClassVar[dict[str, dict[str, Any]]] = {}
     mcp_schema_alias_required: ClassVar[set[str]] = set()
 
@@ -312,7 +312,7 @@ class Schema(DiscriminatedUnionMixin):
                 model_name,
                 __base__=cls,
                 __config__=ConfigDict(
-                    extra="forbid",
+                    extra="ignore",
                     frozen=True,
                     populate_by_name=True,
                 ),
