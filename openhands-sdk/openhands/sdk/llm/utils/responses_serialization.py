@@ -136,16 +136,20 @@ def _tool_to_responses_items(
         return []
 
     items: list[dict[str, Any]] = []
+    # Some Responses API backends reject multiple function_call_output items for the
+    # same call_id (observed with Perplexity's Response API), so all text parts of one
+    # tool result are combined into a single output item instead of one per part.
+    text_parts = [c.text for c in message.content if isinstance(c, TextContent)]
+    if text_parts:
+        items.append(
+            {
+                "type": "function_call_output",
+                "call_id": message.tool_call_id,
+                "output": message._maybe_truncate_tool_text("\n".join(text_parts)),
+            }
+        )
     for c in message.content:
-        if isinstance(c, TextContent):
-            items.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": message.tool_call_id,
-                    "output": message._maybe_truncate_tool_text(c.text),
-                }
-            )
-        elif isinstance(c, ImageContent) and vision_enabled:
+        if isinstance(c, ImageContent) and vision_enabled:
             for url in c.image_urls:
                 items.append(
                     {
