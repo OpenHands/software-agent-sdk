@@ -6,6 +6,8 @@ from openhands.sdk.conversation.types import StuckDetectionThresholds
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
+    Condensation,
+    CondensationRequest,
     CondensationSummaryEvent,
     Event,
     MessageEvent,
@@ -449,16 +451,30 @@ class StuckDetector:
 
         return False
 
-    def _is_stuck_context_window_error(self, _events: list[Event]) -> bool:
-        """Detects if we are stuck in a loop of context window errors.
+    def _is_stuck_context_window_error(self, events: list[Event]) -> bool:
+        """Detects a trailing loop of context-window-rejected calls.
 
-        This happens when we repeatedly get context window errors and try to trim,
-        but the trimming does not work, causing us to get more context window errors.
-        The pattern is repeated AgentCondensationObservation events without any other
-        events between them.
+        A context-window-rejected agent call emits a ``CondensationRequest``
+        and the condenser answers with a ``Condensation``, so the agent is
+        stuck when every event in the trailing window belongs to such
+        rejected-call/condensation cycles — no action, observation, or agent
+        message between them — because condensation never makes the prompt
+        fit. Proactive condensation (token or event pressure) emits only
+        ``Condensation``, so at least one ``CondensationRequest`` must be
+        present to match.
         """
-        # TODO: blocked by https://github.com/OpenHands/agent-sdk/issues/282
-        return False
+        saw_condensation_request = False
+        for event in reversed(events):
+            if isinstance(event, CondensationRequest):
+                saw_condensation_request = True
+            elif isinstance(event, Condensation):
+                continue
+            else:
+                # Any other event means the agent made progress (or the scan
+                # window starts mid-stream): the trailing run is not purely
+                # condensation cycles.
+                return False
+        return saw_condensation_request
 
     def _event_eq(self, event1: Event, event2: Event) -> bool:
         """
