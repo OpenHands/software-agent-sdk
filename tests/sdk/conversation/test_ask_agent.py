@@ -154,6 +154,48 @@ def test_local_conversation_ask_agent(mock_completion, tmp_path, agent):
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")
+def test_ask_agent_merges_question_into_trailing_user_message(
+    mock_completion, tmp_path, agent
+):
+    """Regression test for #5330: /btw must not split the trailing user turn.
+
+    A separate trailing user message invalidates the prompt-cache prefix
+    that a normal turn preserves by merging consecutive user blocks.
+    """
+    mock_completion.return_value = create_mock_llm_response("answer")
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+    conv.state.events.append(
+        SystemPromptEvent(
+            source="agent",
+            system_prompt=TextContent(text="You are a helpful assistant."),
+            tools=[],
+        )
+    )
+    conv.state.events.append(
+        MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[TextContent(text="My previous msg")],
+            ),
+        )
+    )
+
+    assert conv.ask_agent("My btw question?") == "answer"
+
+    messages = mock_completion.call_args.kwargs["messages"]
+    user_messages = [m for m in messages if m.role == "user"]
+    assert len(user_messages) == 1
+    texts = [c.text for c in user_messages[0].content if isinstance(c, TextContent)]
+    assert texts[0] == "My previous msg"
+    assert "My btw question?" in texts[-1]
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
 def test_ask_agent_llm_refreshes_after_switch_llm(mock_completion, tmp_path, agent):
     """switch_llm() invalidates the cached ask-agent-llm so /btw follows the switch.
 
