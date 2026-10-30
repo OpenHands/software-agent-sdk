@@ -1,6 +1,8 @@
 """Tests for Conversation constructor with secrets parameter."""
 
+import json
 import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -10,8 +12,10 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
+from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.llm import LLM
 from openhands.sdk.secret import SecretSource
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import RemoteWorkspace
 
 from .conftest import create_mock_http_client
@@ -345,3 +349,48 @@ def test_secrets_parameter_type_validation():
     with tempfile.TemporaryDirectory() as tmpdir:
         conv = Conversation(agent=agent, workspace=tmpdir, secrets=None)
         assert isinstance(conv, LocalConversation)
+
+
+def _persisted_secret_names(persistence_dir: str) -> set[str]:
+    """Secret names stored in base_state.json on disk, without a later save."""
+    [base_state] = Path(persistence_dir).rglob(BASE_STATE)
+    data = json.loads(base_state.read_text())
+    return set(data["secret_registry"]["secret_sources"])
+
+
+def test_update_secrets_saves_base_state_before_returning():
+    """Start-time and runtime secrets reach base_state.json right away (#4810)."""
+    agent = create_test_agent()
+    cipher = Cipher("test-secret-key")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conv = LocalConversation(
+            agent=agent,
+            workspace=tmpdir,
+            persistence_dir=tmpdir,
+            secrets={"START_TOKEN": "start-value"},
+            cipher=cipher,
+            visualizer=None,
+        )
+        assert _persisted_secret_names(tmpdir) == {"START_TOKEN"}
+
+        conv.update_secrets({"RUNTIME_TOKEN": "runtime-value"})
+        assert _persisted_secret_names(tmpdir) == {"START_TOKEN", "RUNTIME_TOKEN"}
+
+        conv.update_secrets({"START_TOKEN": "overridden"})
+        conv_id = conv.id
+        conv.close()
+
+        resumed = LocalConversation(
+            agent=agent,
+            workspace=tmpdir,
+            persistence_dir=tmpdir,
+            conversation_id=conv_id,
+            cipher=cipher,
+            visualizer=None,
+        )
+        registry = resumed.state.secret_registry
+        assert registry.get_secrets_as_env_vars("$START_TOKEN $RUNTIME_TOKEN") == {
+            "START_TOKEN": "overridden",
+            "RUNTIME_TOKEN": "runtime-value",
+        }
+        resumed.close()
