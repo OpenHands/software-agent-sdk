@@ -115,6 +115,7 @@ from openhands.agent_server.tool_router import tool_router
 from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.agent_server.workspaces_router import workspaces_router
+from openhands.sdk.llm.exceptions import LLMContextWindowTooSmallError
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.tool.registry import seal_tool_catalog, unseal_tool_catalog
 from openhands.sdk.utils.redact import sanitize_dict
@@ -789,6 +790,22 @@ def _add_exception_handlers(api: FastAPI) -> None:
             status_code=422,
             content={"detail": _sanitize_validation_errors(exc.errors())},
         )
+
+    @api.exception_handler(LLMContextWindowTooSmallError)
+    async def _context_window_too_small_handler(
+        request: Request, exc: LLMContextWindowTooSmallError
+    ) -> JSONResponse:
+        """A context window below the minimum is a rejected configuration.
+
+        ``LLM`` raises this from a model validator while the body is parsed,
+        before the route runs, so it has to be mapped here.
+        """
+        logger.info(
+            "Context window below minimum on %s %s",
+            request.method,
+            request.url.path,
+        )
+        return JSONResponse(status_code=422, content={"detail": exc.message})
 
     @api.exception_handler(Exception)
     async def _unhandled_exception_handler(
