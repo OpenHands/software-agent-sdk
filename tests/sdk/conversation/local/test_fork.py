@@ -194,6 +194,62 @@ def test_fork_preserves_metrics_when_requested():
         assert combined.accumulated_cost == pytest.approx(1.5)
 
 
+@pytest.mark.parametrize("reset_metrics", [False, True])
+@pytest.mark.parametrize("switch_before_message", [False, True])
+def test_fork_tracks_new_llm_usage(
+    tmp_path, request, reset_metrics, switch_before_message
+):
+    source = LocalConversation(agent=_agent(), workspace=tmp_path, visualizer=None)
+    request.addfinalizer(source.close)
+    source.send_message("source message")
+    source.agent.llm.metrics.add_cost(1.5)
+
+    fork = source.fork(reset_metrics=reset_metrics)
+    request.addfinalizer(fork.close)
+    if switch_before_message:
+        fork.switch_llm(
+            LLM(
+                model="gpt-4o-mini",
+                api_key=SecretStr("test-key"),
+                usage_id="fork-switch",
+            )
+        )
+    fork.send_message("fork message")
+    fork.agent.llm.metrics.add_cost(0.5)
+    fork.agent.llm.metrics.add_token_usage(
+        prompt_tokens=100,
+        completion_tokens=25,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        context_window=8000,
+        response_id="fork-response",
+    )
+
+    combined = fork.conversation_stats.get_combined_metrics()
+    assert combined.accumulated_cost == pytest.approx(0.5 if reset_metrics else 2.0)
+    assert combined.accumulated_token_usage is not None
+    assert combined.accumulated_token_usage.prompt_tokens == 100
+    assert combined.accumulated_token_usage.completion_tokens == 25
+
+    fork.switch_llm(
+        LLM(
+            model="gpt-4o-mini",
+            api_key=SecretStr("test-key"),
+            usage_id="later-switch",
+        )
+    )
+    fork.agent.llm.metrics.add_cost(0.25)
+    assert (
+        fork.conversation_stats.get_combined_metrics().accumulated_cost
+        == pytest.approx(0.75 if reset_metrics else 2.25)
+    )
+    assert (
+        source.conversation_stats.get_combined_metrics().accumulated_cost
+        == pytest.approx(1.5)
+    )
+    assert set(source.conversation_stats.usage_to_metrics) == {"test"}
+
+
 def test_fork_copies_agent_state():
     """agent_state dict should be carried over to the fork."""
     with tempfile.TemporaryDirectory() as tmpdir:
