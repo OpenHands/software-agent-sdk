@@ -51,6 +51,7 @@ from openhands.sdk.event.condenser import (
     CondensationRequest,
 )
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
+from openhands.sdk.event.llm_convertible.observation import ToolValidationError
 from openhands.sdk.event.security import SecurityAnalysisEvent
 from openhands.sdk.event.types import ROOT_PARENT_ID, EventID
 from openhands.sdk.llm import (
@@ -1322,6 +1323,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
         responses_reasoning_item: ReasoningItemModel | None = None,
         stream: StreamContext | None = None,
+        validation_errors: list[ToolValidationError] | None = None,
     ) -> None:
         try:
             json.loads(tool_call.arguments)
@@ -1361,6 +1363,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             tool_name=tool_name,
             tool_call_id=tool_call.id,
             classification=AGENT_OUTCOME,
+            validation_errors=validation_errors,
         )
         record_tool_result(
             conversation,
@@ -1489,6 +1492,18 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 thinking_blocks=thinking_blocks,
                 responses_reasoning_item=responses_reasoning_item,
                 stream=stream,
+                validation_errors=(
+                    [
+                        ToolValidationError(type=detail["type"], loc=detail["loc"])
+                        for detail in e.errors(
+                            include_url=False,
+                            include_context=False,
+                            include_input=False,
+                        )
+                    ]
+                    if isinstance(e, ValidationError)
+                    else None
+                ),
             )
             return
 

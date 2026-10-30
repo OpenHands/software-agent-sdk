@@ -2038,9 +2038,17 @@ class LocalConversation(BaseConversation):
 
         Can be paused between steps
 
+        Reaching the iteration limit or getting stuck does not raise: the run
+        returns with ``state.execution_status`` set to ``ERROR`` or ``STUCK``.
+        ``RemoteConversation.run()`` raises ``ConversationRunError`` instead.
+
         On return, deferred persistence has been flushed. State updates may
         become visible before this boundary; observing a terminal status alone
         is not a durability acknowledgment.
+
+        Raises:
+            ConversationRunError: If an error is raised during the run, such
+                as an LLM error.
         """
         with llm_call_context_scope(self._llm_call_context):
             try:

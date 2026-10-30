@@ -1,10 +1,12 @@
 """Owned lifecycle for optional Canvas App backend subprocesses."""
 
 import asyncio
+import codecs
 import gzip
 import hashlib
 import os
 import platform
+import re
 import shutil
 import signal
 import socket
@@ -32,7 +34,10 @@ from openhands.agent_server.canvas_extensions.manifest import (
     CanvasExtensionBackendArtifact,
     CanvasExtensionManifest,
 )
+from openhands.agent_server.persistence.store import SecretsStore, get_secrets_store
+from openhands.sdk.conversation.secret_registry import StreamOutputMask
 from openhands.sdk.utils.path import get_user_persistence_dir
+from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
 BackendState = Literal[
@@ -61,6 +66,13 @@ class BackendRevisionRequest(BaseModel):
     revision: str = Field(min_length=1)
 
 
+class BackendSecretGrantRequest(BackendRevisionRequest):
+    """Consent to the exact declared names, never credential values."""
+
+    model_config = {"extra": "forbid"}
+    secret_refs: list[str]
+
+
 class BackendStatus(BaseModel):
     """Current state of an installed Canvas App backend."""
 
@@ -68,6 +80,8 @@ class BackendStatus(BaseModel):
     state: BackendState
     revision: str | None = None
     prepared_revision: str | None = None
+    secret_refs: list[str] = Field(default_factory=list)
+    secret_grant_revision: str | None = None
     pid: int | None = None
     port: int | None = None
     detail: str | None = None
@@ -115,6 +129,7 @@ class _Runtime:
         self.revision: str | None = None
         self.state: BackendState = "stopped"
         self.detail: str | None = None
+        self.secret_values: tuple[bytes, ...] = ()
         self.logs: deque[bytes] = deque()
         self.log_bytes = 0
         self.logs_truncated = False
@@ -135,11 +150,13 @@ class CanvasExtensionBackendManager:
         *,
         allow_insecure_artifact_urls: bool = False,
         max_artifact_bytes: int = _MAX_ARTIFACT_BYTES,
+        secrets_store: SecretsStore | None = None,
     ) -> None:
         self.installed_dir = installed_dir or get_installed_canvas_extensions_dir()
         root = (
             state_dir or get_user_persistence_dir() / "canvas-extensions" / "backends"
         )
+        self.secrets_store = secrets_store
         self.state_dir = root
         self.artifacts_dir = root / "artifacts"
         self.downloads_dir = root / "downloads"
@@ -165,9 +182,9 @@ class CanvasExtensionBackendManager:
         manifest = self._manifest(name)
         if info is None or manifest is None:
             return None
-        if info.resolved_ref:
-            return info.resolved_ref
-        payload = manifest.model_dump_json(exclude_none=True).encode()
+        payload = (
+            str(info.resolved_ref or "") + manifest.model_dump_json(exclude_none=True)
+        ).encode()
         return f"sha256:{hashlib.sha256(payload).hexdigest()}"
 
     @staticmethod
@@ -218,8 +235,68 @@ class CanvasExtensionBackendManager:
         temporary.write_text(state.model_dump_json())
         os.replace(temporary, destination)
 
+    def _grant_path(self, name: str) -> Path:
+        return self.state_dir / "secret-grants" / f"{name}.json"
+
+    def _read_grant(self, name: str) -> BackendSecretGrantRequest | None:
+        try:
+            return BackendSecretGrantRequest.model_validate_json(
+                self._grant_path(name).read_text()
+            )
+        except (OSError, ValueError):
+            return None
+
+    def _grant_valid(self, name: str) -> bool:
+        manifest = self._manifest(name)
+        grant = self._read_grant(name)
+        return bool(
+            manifest
+            and manifest.backend
+            and grant
+            and grant.revision == self.revision(name)
+            and sorted(grant.secret_refs) == sorted(manifest.backend.secret_refs)
+        )
+
+    async def grant_secrets(
+        self, name: str, grant: BackendSecretGrantRequest
+    ) -> BackendStatus:
+        async with self._lock(name):
+            manifest = self._manifest(name)
+            if (
+                not manifest
+                or not manifest.backend
+                or grant.revision != self.revision(name)
+                or len(grant.secret_refs) != len(set(grant.secret_refs))
+                or sorted(grant.secret_refs) != sorted(manifest.backend.secret_refs)
+            ):
+                raise ValueError(
+                    "Grant must match installed revision and declared names"
+                )
+            destination = self._grant_path(name)
+            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            temporary = destination.with_suffix(".tmp")
+            temporary.write_text(grant.model_dump_json())
+            temporary.chmod(0o600)
+            os.replace(temporary, destination)
+            return self._status_unlocked(name)
+
+    async def revoke_secrets(self, name: str) -> BackendStatus:
+        async with self._lock(name):
+            self._grant_path(name).unlink(missing_ok=True)
+            runtime = self._runtimes.get(name)
+            if runtime:
+                runtime.stop_requested.set()
+                if runtime.start_task:
+                    runtime.start_task.cancel()
+                    runtime.start_task = None
+                await self._terminate_runtime(runtime)
+                runtime.state = "stopped"
+                runtime.detail = None
+            return self._status_unlocked(name)
+
     def invalidate_approval(self, name: str) -> None:
         self._approval_path(name).unlink(missing_ok=True)
+        self._grant_path(name).unlink(missing_ok=True)
 
     @staticmethod
     def _resolve_contained(root: Path, relative: str) -> Path:
@@ -470,6 +547,10 @@ class CanvasExtensionBackendManager:
             state=state,
             revision=revision,
             prepared_revision=prepared_revision,
+            secret_refs=manifest.backend.secret_refs
+            if manifest and manifest.backend
+            else [],
+            secret_grant_revision=revision if self._grant_valid(name) else None,
             pid=(
                 runtime.process.pid
                 if runtime and runtime.process and runtime.process.returncode is None
@@ -489,6 +570,13 @@ class CanvasExtensionBackendManager:
 
     async def _refresh_unlocked(self, name: str) -> BackendStatus:
         runtime = self._runtimes.get(name)
+        if runtime and runtime.process and runtime.revision != self.revision(name):
+            runtime.stop_requested.set()
+            if runtime.start_task:
+                runtime.start_task.cancel()
+                runtime.start_task = None
+            await self._terminate_runtime(runtime)
+            runtime.state = "stopped"
         if runtime and runtime.process and runtime.process.returncode is not None:
             returncode = runtime.process.returncode
             runtime.port = None
@@ -585,13 +673,33 @@ class CanvasExtensionBackendManager:
     ) -> None:
         if stream is None:
             return
-        while chunk := await stream.read(8192):
-            entry = label + chunk
-            runtime.logs.append(entry)
-            runtime.log_bytes += len(entry)
-            while runtime.log_bytes > _MAX_LOG_BYTES and runtime.logs:
-                runtime.log_bytes -= len(runtime.logs.popleft())
-                runtime.logs_truncated = True
+        values = sorted(
+            (value.decode("utf-8") for value in runtime.secret_values),
+            key=len,
+            reverse=True,
+        )
+        pattern = (
+            re.compile("|".join(re.escape(value) for value in values))
+            if values
+            else None
+        )
+        masker = StreamOutputMask(pattern, max(map(len, values), default=0))
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        while True:
+            chunk = await stream.read(8192)
+            text = decoder.decode(chunk, final=not chunk)
+            output = masker.feed(text)
+            if not chunk:
+                output += masker.flush()
+            if output:
+                entry = label + output.encode("utf-8")
+                runtime.logs.append(entry)
+                runtime.log_bytes += len(entry)
+                while runtime.log_bytes > _MAX_LOG_BYTES and runtime.logs:
+                    runtime.log_bytes -= len(runtime.logs.popleft())
+                    runtime.logs_truncated = True
+            if not chunk:
+                return
 
     @staticmethod
     def _probe(url: str) -> bool:
@@ -645,9 +753,21 @@ class CanvasExtensionBackendManager:
 
     async def start(self, name: str, revision: str) -> BackendStatus:
         async with self._lock(name):
-            current = self._status_unlocked(name)
+            current = await self._refresh_unlocked(name)
             if current.state in {"missing", "unsupported"}:
                 return current
+            if revision != self.revision(name):
+                raise ValueError("approval revision does not match installed revision")
+            manifest = self._manifest(name)
+            if (
+                manifest
+                and manifest.backend
+                and manifest.backend.secret_refs
+                and not self._grant_valid(name)
+            ):
+                raise ValueError(
+                    "Backend secrets require an exact revision-bound grant"
+                )
             runtime = self._runtime(name)
             task = runtime.start_task
             if runtime.process and runtime.process.returncode is None:
@@ -685,6 +805,30 @@ class CanvasExtensionBackendManager:
                     )
                 if runtime.process is not None:
                     await self._terminate_runtime(runtime)
+                secret_environment: dict[str, str] = {}
+                if backend.secret_refs:
+                    store = self.secrets_store or get_secrets_store()
+                    for secret_name in backend.secret_refs:
+                        try:
+                            value = await asyncio.to_thread(
+                                store.get_secret, secret_name
+                            )
+                        except Exception:
+                            raise ValueError(
+                                "Backend secret store could not be read"
+                            ) from None
+                        if not value or "\x00" in value:
+                            raise ValueError(
+                                f"Backend secret is missing or invalid: {secret_name}"
+                            )
+                        secret_environment[secret_name] = value
+                runtime.secret_values = tuple(
+                    sorted(
+                        {value.encode() for value in secret_environment.values()},
+                        key=len,
+                        reverse=True,
+                    )
+                )
                 package_root = (self.installed_dir / name).resolve()
                 data_dir = self.data_dir / name
                 data_dir.mkdir(parents=True, exist_ok=True)
@@ -701,7 +845,10 @@ class CanvasExtensionBackendManager:
                     runtime.process = await asyncio.create_subprocess_exec(
                         *self._expand_argv(backend, port, data_dir, artifact_dir),
                         cwd=package_root,
-                        env=self._environment(backend, data_dir),
+                        env={
+                            **self._environment(backend, data_dir),
+                            **secret_environment,
+                        },
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                         start_new_session=True,
@@ -709,6 +856,10 @@ class CanvasExtensionBackendManager:
                 except Exception as exc:
                     runtime.state = "unhealthy"
                     runtime.detail = str(exc)
+                    for value in secret_environment.values():
+                        runtime.detail = runtime.detail.replace(
+                            value, REDACTED_SECRET_VALUE
+                        )
                     await self._terminate_runtime(runtime)
                     return self._status_unlocked(name)
                 self._write_run_record(name, runtime.process.pid)
@@ -795,6 +946,7 @@ class CanvasExtensionBackendManager:
         self._run_record_path(pgid).unlink(missing_ok=True)
         runtime.process = None
         runtime.port = None
+        runtime.secret_values = ()
 
     def _run_record_path(self, pgid: int) -> Path:
         return self.run_dir / f"{pgid}.json"
@@ -859,6 +1011,12 @@ class CanvasExtensionBackendManager:
             for runtime in self._runtimes.values()
         )
 
+    async def wait_until_ready(self, name: str) -> BackendStatus:
+        runtime = self._runtimes.get(name)
+        if runtime and runtime.start_task:
+            await runtime.start_task
+        return await self.status(name)
+
     async def stop(self, name: str) -> BackendStatus:
         task: asyncio.Task[None] | None = None
         async with self._lock(name):
@@ -906,7 +1064,12 @@ class CanvasExtensionBackendManager:
     def ready_endpoint(self, name: str) -> tuple[str, int] | None:
         """Internal registry boundary for the future authenticated router."""
         runtime = self._runtimes.get(name)
-        if runtime is None or runtime.state != "ready" or runtime.port is None:
+        if (
+            runtime is None
+            or runtime.state != "ready"
+            or runtime.port is None
+            or runtime.revision != self.revision(name)
+        ):
             return None
         # `state` is only reconciled by status()/start()/stop(); a backend that
         # crashed since then must not be dialed (the next status poll reports
