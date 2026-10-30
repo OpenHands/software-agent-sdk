@@ -18,6 +18,8 @@ from openhands.sdk.conversation import (
     ConversationExecutionStatus,
     LocalConversation,
     RemoteConversation,
+    WebSocketClient,
+    WebSocketClientFactory,
 )
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.event import Event, HookExecutionEvent, LLMConvertibleEvent
@@ -154,6 +156,8 @@ __all__ = [
     "BaseConversation",
     "LocalConversation",
     "RemoteConversation",
+    "WebSocketClient",
+    "WebSocketClientFactory",
     "ConversationExecutionStatus",
     "ConversationCallbackType",
     "Event",
