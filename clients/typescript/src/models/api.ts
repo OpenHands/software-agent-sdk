@@ -494,6 +494,7 @@ export interface FileSearchSubdirsOptions {
   limit?: number;
   /** Include hidden subdirectories (names starting with '.'). */
   includeHidden?: boolean;
+  signal?: AbortSignal;
 }
 
 export interface HooksRequest {
