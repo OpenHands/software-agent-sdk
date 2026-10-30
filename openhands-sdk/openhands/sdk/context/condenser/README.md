@@ -10,6 +10,11 @@ At regular intervals, or when requested by the agent or a user, the context wind
 
 The primary condensation strategy is implemented in the [LLM summarizing condenser](llm_summarizing_condenser.py). The remaining condensation infrastructure is used to facilitate rapid condenser prototyping and specialized downstream use cases.
 
+An alternative is implemented in the [CliffCompaction condenser](cliff_condenser.py):
+1. Long tool outputs are dropped, and tool calls are kept as signatures.
+2. A fixed head and the most recent turns are kept verbatim, and everything between them is replaced by a summary event.
+3. Each condensation summarizes only the events it forgets; any earlier summary is discarded.
+
 ## Event-Based Condensations and the View
 
 The conversation is an important source of state for the agent, and at the heart is an append-only event log. Events capture almost every non-environment state change, and the agent takes events from this log that subclass [`LLMConvertibleEvent`](../../event/base.py) and converts them to messages that can be sent to completion endpoints.
