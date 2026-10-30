@@ -251,6 +251,79 @@ def test_nonvision_model_can_use_vision_profile_tool(monkeypatch):
     assert "It shows a cat." in observation_content.text
 
 
+def test_vision_profile_tool_keeps_image_for_deepseek_vision_model(monkeypatch):
+    """The vision tool must hand the image to a DeepSeek vision profile.
+
+    Regression for #5523: the profile is now selected, but a forced string
+    serializer would drop the image before it reaches the model.
+    """
+    monkeypatch.setattr(
+        "openhands.sdk.agent.base.has_vision_profile_available", lambda: True
+    )
+    monkeypatch.setattr(
+        "openhands.sdk.tool.builtins.vision_inspect._candidate_vision_profiles",
+        lambda: ["Default"],
+    )
+    parent = cast(
+        CapturingTestLLM,
+        CapturingTestLLM.from_messages(
+            [
+                Message(
+                    role="assistant",
+                    content=[TextContent(text="I will inspect the image.")],
+                    tool_calls=[
+                        MessageToolCall(
+                            id="call_vision",
+                            name="inspect_image_with_vision",
+                            arguments=(
+                                '{"image_index": 0, "question": "What is shown?"}'
+                            ),
+                            origin="completion",
+                        )
+                    ],
+                ),
+                Message(
+                    role="assistant",
+                    content=[TextContent(text="The image shows a cat.")],
+                ),
+            ],
+            model="text-only-model",
+            disable_vision=True,
+        ),
+    )
+    vision = cast(
+        CapturingTestLLM,
+        CapturingTestLLM.from_messages(
+            [Message(role="assistant", content=[TextContent(text="It shows a cat.")])],
+            model="openhands/deepseek-v4.1-flash",
+        ),
+    )
+
+    def fake_get_or_create_profile_llm(self, profile_name, usage_id):
+        return vision
+
+    monkeypatch.setattr(
+        LocalConversation,
+        "get_or_create_profile_llm",
+        fake_get_or_create_profile_llm,
+    )
+
+    conversation = Conversation(agent=Agent(llm=parent, tools=[]))
+    conversation.send_message(_image_message())
+    conversation.run()
+
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert vision.call_count == 1
+    vision_messages, _ = vision.calls[0]
+    user_message = next(m for m in vision_messages if m.role == "user")
+    assert user_message.contains_image
+
+    serialized = vision.format_messages_for_llm(vision_messages)
+    user_payload = next(m for m in serialized if m["role"] == "user")
+    assert isinstance(user_payload["content"], list)
+    assert any(part.get("type") == "image_url" for part in user_payload["content"])
+
+
 def test_profile_helper_registers_auxiliary_vision_llm(monkeypatch):
     monkeypatch.setattr(
         "openhands.sdk.agent.base.has_vision_profile_available", lambda: False
