@@ -177,7 +177,7 @@ print(f"labels: {labels}")
 
 # Log the versioned model that answered: an alias like jev-latest moves when a
 # new release ships. Pin that version if you tune thresholds against it.
-print(f"\nanswered by: {result.raw_response.model}")
+print(f"\nanswered by: {result.model}")
 usage = decision_model.metrics.accumulated_token_usage
 assert usage is not None
 print(f"tokens: {usage.prompt_tokens} in, {usage.completion_tokens} out")
