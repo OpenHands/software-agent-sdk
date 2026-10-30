@@ -5,6 +5,7 @@ from functools import cache
 from typing import Any, Literal
 
 from litellm import get_supported_openai_params
+from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
 from litellm.utils import supports_vision as litellm_supports_vision
 
 from openhands.sdk.llm.utils.openhands_provider import OPENHANDS_PROVIDER_PREFIX
@@ -102,6 +103,35 @@ def _normalize_model_for_litellm(model: str | None) -> str | None:
 # resolution -- doing so re-introduces the 400 UnsupportedParamsError from #5325.
 _PASSTHROUGH_PROVIDERS: frozenset[str] = frozenset({"litellm_proxy", "openhands"})
 
+# Providers whose search price is optional for their ordinary model families:
+# a plain call searches only when the request enables a hosted tool, so the
+# token-only reservation stays a valid ceiling once such tools are refused.
+# ``bedrock_mantle`` hosts several vendor namespaces in one catalog.
+_ORDINARY_SEARCH_FAMILIES: dict[str, tuple[str, ...]] = {
+    "openai": ("gpt-", "o1", "o3", "o4"),
+    "azure": ("gpt-", "o1", "o3", "o4"),
+    "anthropic": ("claude-",),
+    "azure_ai": ("claude-",),
+    "bedrock": ("claude-",),
+    "bedrock_converse": ("claude-",),
+    "bedrock_mantle": ("claude-", "gpt-", "o1", "o3", "o4"),
+    "vertex_ai-anthropic_models": ("claude-",),
+}
+
+
+def _is_ordinary_search_family(resolved_name: str, families: tuple[str, ...]) -> bool:
+    """Whether a resolved catalog key leaf names an ordinary searchable family.
+
+    Bedrock keys prefix the id with a region and a vendor namespace
+    (``us.anthropic.claude-sonnet-5-5``, ``openai.gpt-5.5``). Every dot-suffix is
+    tried so the family is matched past those labels, while a suffix keeps the
+    id's own dots intact.
+    """
+    parts = resolved_name.split(".")
+    return any(
+        ".".join(parts[index:]).startswith(families) for index in range(len(parts))
+    )
+
 
 def _real_litellm_provider(
     model_info: Mapping[str, Any] | None,
@@ -125,6 +155,72 @@ def _real_litellm_provider(
     if not provider or provider in _PASSTHROUGH_PROVIDERS:
         return None
     return provider
+
+
+def has_unresolved_regional_endpoint_pricing(
+    model_info: Mapping[str, Any] | None,
+) -> bool:
+    """Vertex Claude needs a known premium to bound regional endpoint cost.
+
+    Older LiteLLM catalogs carry token prices but omit this provider's known
+    endpoint premium. Their rates alone cannot establish a safe ceiling.
+    """
+    info = model_info or {}
+    return _real_litellm_provider(info) == "vertex_ai-anthropic_models" and not any(
+        key.startswith("regional_endpoint_uplift_multiplier") and value is not None
+        for key, value in info.items()
+    )
+
+
+def has_unbounded_search_cost(
+    model: str | None,
+    *,
+    canonical_model: str | None = None,
+    model_info: Mapping[str, Any] | None = None,
+) -> bool:
+    """Identify search fees that a token-only budget cannot safely reserve.
+
+    A search price schedule alone is not proof that an ordinary call searches.
+    Ordinary GPT/o, Claude and Gemini chat/Responses routes search only when a
+    request enables a hosted tool. The caller must separately reject those tools
+    and opaque request overrides before using this distinction. Search-only
+    routes stay closed even when a dated catalog entry omits their search fee;
+    unknown fee-bearing routes stay closed too.
+    """
+    info = model_info or {}
+    catalog_key = info.get("key")
+    names = (
+        model,
+        canonical_model,
+        catalog_key if isinstance(catalog_key, str) else None,
+    )
+    provider = _real_litellm_provider(info)
+    for name in names:
+        normalized = _normalize_model_for_litellm(name) or ""
+        if model_matches(
+            normalized, ("gpt-4o-search-preview", "gpt-4o-mini-search-preview")
+        ) or OpenAIGPT5Config.is_model_gpt_5_search_model(normalized):
+            return True
+        resolved = normalized.split("/")[-1]
+        # Search-named routes search even without a hosted tool. This check
+        # must run before the fee-presence shortcut below: a dated catalog
+        # entry that omits the search fee cannot admit them.
+        if resolved.startswith("sonar") or "search" in resolved:
+            return True
+    if info.get("search_context_cost_per_query") is None:
+        return False
+    if not isinstance(catalog_key, str) or info.get("mode") not in {
+        "chat",
+        "responses",
+    }:
+        return True
+    resolved_name = (_normalize_model_for_litellm(catalog_key) or "").split("/")[-1]
+    families = _ORDINARY_SEARCH_FAMILIES.get(provider or "")
+    if families is not None:
+        return not _is_ordinary_search_family(resolved_name, families)
+    if provider in {"gemini", "vertex_ai", "vertex_ai-language-models"}:
+        return not resolved_name.startswith("gemini-")
+    return True
 
 
 @cache

@@ -1,0 +1,35 @@
+{
+  "source": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
+  "captured_utc": "2026-10-18T05:06:31.228170+00:00",
+  "catalog_sha256": "fdf7f01ddc8e96a7c792f8fa49960660d59027d125c0d888beb5ad47c09f0e65",
+  "model_info": {
+    "key": "gpt-4o-mini",
+    "cache_read_input_token_cost": 7.5e-08,
+    "cache_read_input_token_cost_priority": 1.25e-07,
+    "input_cost_per_token": 1.5e-07,
+    "input_cost_per_token_batches": 7.5e-08,
+    "input_cost_per_token_priority": 2.5e-07,
+    "litellm_provider": "openai",
+    "max_input_tokens": 128000,
+    "max_output_tokens": 16384,
+    "max_tokens": 16384,
+    "mode": "chat",
+    "output_cost_per_token": 6e-07,
+    "output_cost_per_token_batches": 3e-07,
+    "output_cost_per_token_priority": 1e-06,
+    "supports_function_calling": true,
+    "supports_parallel_function_calling": true,
+    "supports_pdf_input": true,
+    "supports_prompt_caching": true,
+    "supports_response_schema": true,
+    "supports_system_messages": true,
+    "supports_tool_choice": true,
+    "supports_vision": true,
+    "search_context_cost_per_query": {
+      "search_context_size_high": 0.025,
+      "search_context_size_low": 0.025,
+      "search_context_size_medium": 0.025
+    },
+    "source": "https://developers.openai.com/api/docs/pricing"
+  }
+}

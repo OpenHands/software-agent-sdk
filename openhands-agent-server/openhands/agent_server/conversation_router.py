@@ -56,6 +56,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.persistence import get_llm_profile_store
 from openhands.sdk import LLM
+from openhands.sdk.conversation.exceptions import CostBudgetUnsupportedError
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
     ConversationObservabilityMetadata,
@@ -349,7 +350,7 @@ async def start_conversation(
         info, is_new = await conversation_service.start_conversation(request)
     except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as e:
         raise launch_http_exception(e) from e
-    except ClientToolRegistrationError as e:
+    except (ClientToolRegistrationError, CostBudgetUnsupportedError) as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
         ) from e
@@ -749,7 +750,14 @@ async def update_conversation(
 
     This endpoint allows updating conversation details like title.
     """
-    updated = await conversation_service.update_conversation(conversation_id, request)
+    try:
+        updated = await conversation_service.update_conversation(
+            conversation_id, request
+        )
+    except CostBudgetUnsupportedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        ) from e
     if not updated:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return Success()

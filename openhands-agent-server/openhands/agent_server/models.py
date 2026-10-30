@@ -175,7 +175,10 @@ class _ConversationInfoBase(BaseModel):
         default=None,
         description=(
             "Hard cost ceiling in USD for the conversation's accumulated LLM "
-            "cost. `None` means no budget limit."
+            "cost. On the SDK's LLM call path each call also reserves its "
+            "worst-case cost before being sent. Not supported for ACP agents "
+            "(a budget supplied with one is rejected). `None` means no budget "
+            "limit."
         ),
     )
     stuck_detection: bool = Field(

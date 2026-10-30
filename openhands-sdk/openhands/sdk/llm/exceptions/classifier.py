@@ -18,6 +18,7 @@ from litellm.exceptions import (
 from openai import APIError as OpenAIAPIError, RateLimitError as OpenAIRateLimitError
 
 from .types import (
+    LLMBudgetExceededError,
     LLMContextWindowExceedError,
     LLMMalformedConversationHistoryError,
     LLMRateLimitError,
@@ -162,7 +163,7 @@ def _has_rate_limit_code(exception: BaseException, codes: Collection[str]) -> bo
 
 def is_budget_exceeded_error(exception: BaseException) -> bool:
     """Recognize explicit budget denials before or after SDK error mapping."""
-    if isinstance(exception, BudgetExceededError):
+    if isinstance(exception, (BudgetExceededError, LLMBudgetExceededError)):
         return True
     if not isinstance(exception, (OpenAIRateLimitError, LLMRateLimitError)):
         return False

@@ -57,7 +57,10 @@ export interface ConversationInfo {
   workspace: unknown;
   persistence_dir: string;
   max_iterations?: number;
-  /** USD limit on accumulated conversation cost; a completed step may overshoot. */
+  /**
+   * USD limit on accumulated conversation cost, or null/undefined when
+   * unbounded. Enforced server-side before each LLM call.
+   */
   max_budget_per_run?: number | null;
   stuck_detection?: boolean;
   conversation_stats?: ConversationStats;
@@ -120,7 +123,10 @@ export interface CreateConversationRequest {
   agent: AgentBase;
   initial_message?: Message;
   max_iterations: number;
-  /** Positive USD limit on accumulated conversation cost; null means unbounded. */
+  /**
+   * Positive USD limit on accumulated conversation cost; null means
+   * unbounded. Enforced server-side before each LLM call.
+   */
   max_budget_per_run?: number | null;
   stuck_detection: boolean;
   workspace: Record<string, unknown>;

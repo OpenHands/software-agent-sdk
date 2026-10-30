@@ -62,6 +62,11 @@ export class ACPConversationNamespace {
     options: {
       initialMessage?: string;
       maxIterations?: number;
+      /**
+       * Per-run cost ceiling in USD. The server rejects a budget on ACP
+       * conversations with HTTP 422 because their prompts bypass the SDK's
+       * pre-call cost enforcement.
+       */
       maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
       workingDir?: string;
@@ -208,6 +213,10 @@ export class ConversationManager {
     options: {
       initialMessage?: string;
       maxIterations?: number;
+      /**
+       * Per-run cost ceiling in USD. Must be > 0 when set; null or omitted
+       * means unbounded. Enforced server-side before each LLM call.
+       */
       maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
       workingDir?: string;
@@ -342,6 +351,11 @@ export class ConversationManager {
     options: {
       initialMessage?: string;
       maxIterations?: number;
+      /**
+       * Per-run cost ceiling in USD. The server rejects a budget on ACP
+       * conversations with HTTP 422 because their prompts bypass the SDK's
+       * pre-call cost enforcement.
+       */
       maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
       workingDir?: string;
@@ -360,7 +374,7 @@ export class ConversationManager {
       agent,
       initial_message: initialMessage,
       max_iterations: options.maxIterations || 500,
-      max_budget_per_run: options.maxBudgetPerRun,
+      max_budget_per_run: options.maxBudgetPerRun ?? null,
       stuck_detection: options.stuckDetection ?? true,
       workspace: { type: 'local', working_dir: options.workingDir || '/tmp' },
       user_id: options.userId ?? null,

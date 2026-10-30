@@ -471,11 +471,13 @@ class StartConversationRequest(ConversationConfig):
         gt=0,
         allow_inf_nan=False,
         description=(
-            "Hard cost ceiling in USD, checked against the conversation's "
-            "accumulated LLM cost across all of its LLMs after each agent step, "
-            "so a step may overshoot it. Despite the name, accumulated cost does "
-            "not reset between runs. When reached, the run stops with a "
-            "`MaxBudgetReached` error. `None` disables the check."
+            "Hard cost ceiling in USD for the conversation's accumulated LLM "
+            "cost across all of its LLMs; `None` means no budget limit. On the "
+            "SDK's LLM call path each call also reserves its worst-case cost "
+            "before being sent, so a run cannot overshoot the ceiling by a whole "
+            "step. Not supported for ACP agents, whose prompts bypass that path "
+            "(a budget supplied with an ACP agent is rejected). When reached, "
+            "the run stops with a `MaxBudgetReached` error."
         ),
     )
     conversation_runtime: ConversationRuntime | None = Field(

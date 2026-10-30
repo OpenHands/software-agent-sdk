@@ -6,7 +6,11 @@ from collections.abc import Iterator, MutableMapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.cost_budget import CostBudget
 
 
 @dataclass(frozen=True)
@@ -21,6 +25,8 @@ class LLMCallContext:
 
     prompt_cache_key: str | None = None
     session_id: str | None = None
+    # Per-conversation cost ceiling. ``None`` disables budget enforcement.
+    cost_budget: CostBudget | None = None
 
     def for_conversation(
         self,

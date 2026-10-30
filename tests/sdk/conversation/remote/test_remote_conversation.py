@@ -420,6 +420,22 @@ class TestRemoteConversation:
             expected_method
         ]
 
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_constructor_preserves_positional_stuck_detection(self, mock_ws_client):
+        client = self.setup_mock_client()
+
+        RemoteConversation(self.agent, self.workspace, None, None, None, 100, False)
+
+        create_call = next(
+            call
+            for call in client.request.call_args_list
+            if call.args == ("POST", "/api/conversations")
+        )
+        assert create_call.kwargs["json"]["stuck_detection"] is False
+        assert create_call.kwargs["json"]["max_budget_per_run"] is None
+
     @pytest.mark.parametrize(
         "budget_response",
         [

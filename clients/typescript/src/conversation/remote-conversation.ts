@@ -45,6 +45,7 @@ export interface RemoteConversationOptions extends BaseConversationOptions {
   /**
    * Positive USD limit on accumulated conversation cost, including earlier runs.
    * Null means unbounded. A completed agent step may overshoot the limit.
+   * Enforced server-side before each LLM call.
    */
   maxBudgetPerRun?: number | null;
   /**
@@ -151,6 +152,10 @@ export class RemoteConversation implements IConversation {
     options: {
       initialMessage?: string;
       maxIterations?: number;
+      /**
+       * Per-conversation cost ceiling in USD. Must be > 0 when set; null or
+       * omitted means unbounded. Enforced server-side before each LLM call.
+       */
       maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
       hookConfig?: HookConfig;
@@ -175,16 +180,21 @@ export class RemoteConversation implements IConversation {
       };
     }
 
-    // Start options take precedence over the constructor options
+    // Start options take precedence over the constructor options. A `null`
+    // passed to start() clears a constructor budget; omitting it keeps the
+    // constructor value.
     const hookConfig = options.hookConfig ?? this.hookConfig ?? undefined;
     const userId = options.userId ?? this.userId ?? undefined;
+    const maxBudgetPerRun =
+      options.maxBudgetPerRun !== undefined
+        ? options.maxBudgetPerRun
+        : this.maxBudgetPerRun;
 
     const request: CreateConversationRequest = {
       agent: this.agent,
       initial_message: initialMessage,
       max_iterations: options.maxIterations || this.maxIterations || 500,
-      max_budget_per_run:
-        options.maxBudgetPerRun !== undefined ? options.maxBudgetPerRun : this.maxBudgetPerRun,
+      max_budget_per_run: maxBudgetPerRun,
       stuck_detection: options.stuckDetection ?? this.stuckDetection ?? true,
       workspace: { type: 'local', working_dir: this.workspace.workingDir },
       hook_config: hookConfig ?? null,

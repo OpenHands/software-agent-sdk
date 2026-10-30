@@ -63,7 +63,10 @@ from openhands.sdk import LLM, Event, Message, TextContent
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.agent.base import AgentBase
-from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.impl.local_conversation import (
+    LocalConversation,
+    reject_acp_budget,
+)
 from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.request import ConversationWorktreeOptions
 from openhands.sdk.conversation.state import (
@@ -1649,6 +1652,11 @@ class ConversationService:
                 "The agent uses tools whose modules the agent server cannot "
                 f"import: {', '.join(missing_tools)}"
             )
+        # Reject an unenforceable ACP budget before the worktree/branch below
+        # exists. ``LocalConversation.__init__`` would also reject, but by then
+        # this method has already run ``git worktree add`` and the conversation
+        # is never registered, so ``delete_conversation`` could not clean it up.
+        reject_acp_budget(launched.agent, request.max_budget_per_run)
         workspace = (
             _create_conversation_worktree(worktree)
             if worktree is not None
@@ -1918,6 +1926,11 @@ class ConversationService:
             update["tags"] = request.tags
         # Membership, not None: an explicit null removes the budget limit.
         budget_updated = "max_budget_per_run" in request.model_fields_set
+        if budget_updated and request.max_budget_per_run is not None:
+            # An ACP agent's prompts bypass pre-call reservation, so a ceiling
+            # set on a running ACP conversation could never be enforced. Reject
+            # it before ``save_meta`` so a refused update writes nothing.
+            reject_acp_budget(state.agent, request.max_budget_per_run)
         # Persist first: a refused write (e.g. lost lease ownership) must leave
         # the in-memory metadata and state untouched.
         await event_service.save_meta(event_service.stored.model_copy(update=update))

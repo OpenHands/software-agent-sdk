@@ -45,6 +45,7 @@ constraints = [
 
 [manifest.dependency-groups]
 dev = [
+    { name = "boto3", specifier = ">=1.35.0" },
     { name = "griffe", extras = ["pypi"], specifier = ">=2.3.0" },
     { name = "packaging", specifier = ">=26.3" },
     { name = "pillow", specifier = ">=12.3.0" },
