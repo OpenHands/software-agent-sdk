@@ -52,6 +52,7 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
+from openhands.sdk.llm import Metrics, TokenUsage
 from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.profiles.resolver import ProfileNotFound
@@ -83,6 +84,8 @@ class OpenAIAgentRunResult:
     conversation_id: UUID
     final_response: str
     state: ConversationState
+    # Combined metrics before this request's turn; empty for a new conversation.
+    usage_baseline: Metrics
 
 
 def _profile_name_from_model(model: str) -> str:
@@ -402,8 +405,13 @@ def _raise_for_terminal_error(status_value: ConversationExecutionStatus) -> None
         )
 
 
-def _openai_usage_from_state(state: ConversationState) -> OpenAIUsage:
-    token_usage = state.stats.get_combined_metrics().accumulated_token_usage
+def _request_token_usage(result: OpenAIAgentRunResult) -> TokenUsage | None:
+    metrics = result.state.stats.get_combined_metrics()
+    return metrics.diff(result.usage_baseline).accumulated_token_usage
+
+
+def _openai_usage_from_result(result: OpenAIAgentRunResult) -> OpenAIUsage:
+    token_usage = _request_token_usage(result)
     if token_usage is None:
         return OpenAIUsage(
             prompt_tokens=0,
@@ -420,8 +428,10 @@ def _openai_usage_from_state(state: ConversationState) -> OpenAIUsage:
     )
 
 
-def _openai_response_usage_from_state(state: ConversationState) -> OpenAIResponseUsage:
-    token_usage = state.stats.get_combined_metrics().accumulated_token_usage
+def _openai_response_usage_from_result(
+    result: OpenAIAgentRunResult,
+) -> OpenAIResponseUsage:
+    token_usage = _request_token_usage(result)
     if token_usage is None:
         prompt_tokens = 0
         completion_tokens = 0
@@ -552,6 +562,7 @@ async def _run_agent(
     event_service = None
     conversation_id = reusable_conversation_id
     min_event_count: int | None = None
+    usage_baseline = Metrics()
 
     if reusable_conversation_id is not None:
         event_service = await conversation_service.get_event_service(
@@ -560,6 +571,7 @@ async def _run_agent(
         if event_service is not None:
             state_before = await event_service.get_state()
             min_event_count = len(state_before.events) + 1
+            usage_baseline = state_before.stats.get_combined_metrics().deep_copy()
             # Claim capacity before saving the message: a 429 must leave
             # nothing behind so an OpenAI client can retry the same request.
             run_slot = await event_service.reserve_run_slot()
@@ -615,6 +627,7 @@ async def _run_agent(
         conversation_id=conversation_id,
         final_response=final_response,
         state=state,
+        usage_baseline=usage_baseline,
     )
 
 
@@ -664,7 +677,7 @@ async def run_chat_completion(
                 ),
             )
         ],
-        usage=_openai_usage_from_state(agent_result.state),
+        usage=_openai_usage_from_result(agent_result),
     )
     return OpenAIChatCompletionResult(
         response=response,
@@ -743,7 +756,7 @@ async def run_response(
         status="completed",
         tool_choice="none",
         tools=[],
-        usage=_openai_response_usage_from_state(agent_result.state),
+        usage=_openai_response_usage_from_result(agent_result),
     )
     return OpenAIResponseResult(
         response=response,
