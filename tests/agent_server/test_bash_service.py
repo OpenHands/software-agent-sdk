@@ -19,7 +19,12 @@ from fastapi import FastAPI
 from openhands.agent_server import bash_router as bash_router_module
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
-from openhands.agent_server.models import BashCommand, BashEventSortOrder, BashOutput
+from openhands.agent_server.models import (
+    BashCommand,
+    BashEventSortOrder,
+    BashOutput,
+    ExecuteBashRequest,
+)
 from openhands.agent_server.server_details_router import (
     mark_initialization_complete,
     server_details_router,
@@ -235,6 +240,95 @@ async def test_stop_bash_command_idempotent_for_finished_and_unknown(
     for _ in range(2):
         stop = await client.post(f"/api/bash/bash_commands/{cmd_id}/stop")
         assert stop.status_code == 200, stop.text
+
+
+def _command_deadlines(wait_for) -> list[float | None]:
+    """Deadlines given to the wait on a command's gathered streams and exit."""
+    return [
+        call.kwargs["timeout"]
+        for call in wait_for.call_args_list
+        if isinstance(call.args[0], asyncio.Future)
+    ]
+
+
+def test_execute_bash_request_timeout_defaults_to_300_and_accepts_null():
+    assert ExecuteBashRequest.model_validate_json('{"command": "true"}').timeout == 300
+    request = ExecuteBashRequest.model_validate_json(
+        '{"command": "true", "timeout": null}'
+    )
+    assert request.timeout is None
+
+
+@posix_only
+@pytest.mark.timeout(30)
+async def test_bash_command_without_timeout_runs_until_stopped(
+    client: httpx.AsyncClient,
+    tmp_path: Path,
+):
+    ready = tmp_path / "shell_ready"
+    with patch(
+        "openhands.agent_server.bash_service.asyncio.wait_for",
+        wraps=asyncio.wait_for,
+    ) as wait_for:
+        resp = await client.post(
+            "/api/bash/start_bash_command",
+            json={"command": f"touch {ready}; sleep 30", "timeout": None},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["timeout"] is None
+        cmd_id = UUID(resp.json()["id"])
+
+        ready_deadline = time.monotonic() + 10
+        while not ready.exists():
+            assert time.monotonic() < ready_deadline, "shell never became ready"
+            await asyncio.sleep(0.1)
+    assert _command_deadlines(wait_for) == [None]
+    await asyncio.sleep(1.5)
+
+    items = (
+        await client.get(
+            "/api/bash/bash_events/search",
+            params={"command_id__eq": str(cmd_id)},
+        )
+    ).json()["items"]
+    assert not any(e.get("exit_code") is not None for e in items), items
+
+    stop = await client.post(f"/api/bash/bash_commands/{cmd_id}/stop")
+    assert stop.status_code == 200, stop.text
+    items = await _wait_for_command_exit(client, cmd_id)
+    assert [e["exit_code"] for e in items if e.get("exit_code") is not None] == [-15]
+
+
+async def test_bash_command_default_timeout_bounds_the_wait(
+    client: httpx.AsyncClient,
+):
+    with patch(
+        "openhands.agent_server.bash_service.asyncio.wait_for",
+        wraps=asyncio.wait_for,
+    ) as wait_for:
+        resp = await client.post(
+            "/api/bash/execute_bash_command", json={"command": "true"}
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["exit_code"] == 0
+    assert _command_deadlines(wait_for) == [300]
+
+
+async def test_execute_bash_command_rejects_null_timeout(client: httpx.AsyncClient):
+    resp = await client.post(
+        "/api/bash/execute_bash_command",
+        json={"command": "true", "timeout": None},
+    )
+
+    assert resp.status_code == 422, resp.text
+    assert "start_bash_command" in resp.json()["detail"]
+    commands = (
+        await client.get(
+            "/api/bash/bash_events/search", params={"kind__eq": "BashCommand"}
+        )
+    ).json()["items"]
+    assert commands == []
 
 
 async def test_bash_execution_error_log_omits_command(

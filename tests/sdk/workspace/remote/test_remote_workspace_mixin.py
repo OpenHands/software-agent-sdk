@@ -143,6 +143,32 @@ def test_execute_command_generator_basic_flow():
         assert result.timeout_occurred is False
 
 
+def test_start_command_generator_sends_null_timeout():
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", working_dir="workspace"
+    )
+
+    start_kwargs = next(mixin._start_command_generator("make build", None, None))
+
+    assert start_kwargs["json"] == {"command": "make build", "timeout": None}
+    assert "timeout" not in start_kwargs
+
+
+def test_execute_command_generator_rejects_none_timeout_before_starting():
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", working_dir="workspace"
+    )
+
+    generator = mixin._execute_command_generator(
+        "make build",
+        None,
+        None,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ValueError, match="start_command"):
+        next(generator)
+
+
 def test_execute_command_generator_without_cwd():
     """Test _execute_command_generator works without cwd parameter."""
     mixin = RemoteWorkspaceMixinHelper(

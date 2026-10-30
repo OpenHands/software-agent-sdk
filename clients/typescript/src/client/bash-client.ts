@@ -14,6 +14,9 @@ import {
 
 export type BashClientOptions = RuntimeServiceClientOptions;
 
+const wholeSeconds = (timeout: number | null): number | null =>
+  timeout === null ? null : Math.floor(timeout);
+
 export class BashClient {
   public readonly host: string;
   public readonly apiKey?: string;
@@ -70,7 +73,7 @@ export class BashClient {
   async startCommand(
     request: string | ExecuteBashRequest,
     cwd?: string,
-    timeout?: number
+    timeout?: number | null
   ): Promise<BashCommand> {
     const payload = this.normalizeRequest(request, cwd, timeout);
     const response = await this.client.post<BashCommand>('/api/bash/start_bash_command', payload);
@@ -83,6 +86,12 @@ export class BashClient {
     timeout?: number
   ): Promise<BashOutput> {
     const payload = this.normalizeRequest(request, cwd, timeout);
+    if (payload.timeout === null) {
+      throw new Error(
+        'executeCommand needs a timeout; to run a command until it is stopped, ' +
+          'use startCommand with a null timeout and stopCommand'
+      );
+    }
     const response = await this.client.post<BashOutput>('/api/bash/execute_bash_command', payload, {
       timeout: ((payload.timeout || 30) + 10) * 1000,
     });
@@ -116,19 +125,19 @@ export class BashClient {
   private normalizeRequest(
     request: string | ExecuteBashRequest,
     cwd?: string,
-    timeout?: number
+    timeout?: number | null
   ): ExecuteBashRequest {
     if (typeof request === 'string') {
       return {
         command: request,
         ...(cwd ? { cwd } : {}),
-        ...(timeout !== undefined ? { timeout: Math.floor(timeout) } : {}),
+        ...(timeout !== undefined ? { timeout: wholeSeconds(timeout) } : {}),
       };
     }
 
     return {
       ...request,
-      ...(request.timeout !== undefined ? { timeout: Math.floor(request.timeout) } : {}),
+      ...(request.timeout !== undefined ? { timeout: wholeSeconds(request.timeout) } : {}),
     };
   }
 }
