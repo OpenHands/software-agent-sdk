@@ -164,6 +164,7 @@ class HookExecutor:
     def __init__(
         self,
         working_dir: str | None = None,
+        project_dir: str | None = None,
         async_process_manager: AsyncProcessManager | None = None,
         llm: "LLM | None" = None,
         llm_getter: "Callable[[], LLM | None] | None" = None,
@@ -175,6 +176,9 @@ class HookExecutor:
         conversation_stats: "ConversationStats | None" = None,
     ):
         self.working_dir = working_dir or os.getcwd()
+        # Command hooks run here; working_dir may be its parent when the
+        # workspace holds several repositories.
+        self.project_dir = project_dir or self.working_dir
         self.async_process_manager = async_process_manager or AsyncProcessManager()
         self._llm = llm
         # Prefer a getter so agent hooks always use the conversation's *current*
@@ -478,7 +482,7 @@ class HookExecutor:
 
         # Prepare environment
         hook_env = sanitized_env()
-        hook_env["OPENHANDS_PROJECT_DIR"] = self.working_dir
+        hook_env["OPENHANDS_PROJECT_DIR"] = self.project_dir
         hook_env["OPENHANDS_SESSION_ID"] = event.session_id or ""
         hook_env["OPENHANDS_EVENT_TYPE"] = event.event_type
         if event.tool_name:
@@ -513,7 +517,7 @@ class HookExecutor:
                 process = subprocess.Popen(
                     command,
                     shell=True,
-                    cwd=self.working_dir,
+                    cwd=self.project_dir,
                     env=hook_env,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.DEVNULL,
@@ -552,7 +556,7 @@ class HookExecutor:
             result = subprocess.run(
                 command,
                 shell=True,
-                cwd=self.working_dir,
+                cwd=self.project_dir,
                 env=hook_env,
                 input=event_json,
                 capture_output=True,

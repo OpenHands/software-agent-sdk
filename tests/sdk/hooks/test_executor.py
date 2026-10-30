@@ -1,6 +1,7 @@
 """Tests for hook executor."""
 
 import json
+import os
 import subprocess
 from unittest import mock
 from unittest.mock import MagicMock, patch
@@ -1258,3 +1259,32 @@ class TestPromptHookExecution:
             )
 
         assert captured_model == "gpt-5.5"
+
+
+class TestHookProjectDir:
+    """Command hooks run from project_dir and report it as OPENHANDS_PROJECT_DIR."""
+
+    _COMMAND = python_command(
+        "import os; print(os.getcwd()); print(os.environ['OPENHANDS_PROJECT_DIR'])"
+    )
+
+    def _where(self, executor):
+        event = HookEvent(event_type=HookEventType.SESSION_START)
+        result = executor.execute(HookDefinition(command=self._COMMAND), event)
+        assert result.success
+        cwd, project_dir = result.stdout.splitlines()[:2]
+        return os.path.realpath(cwd), project_dir
+
+    def test_defaults_to_working_dir(self, tmp_path):
+        executor = HookExecutor(working_dir=str(tmp_path))
+
+        assert executor.project_dir == str(tmp_path)
+        assert self._where(executor) == (os.path.realpath(tmp_path), str(tmp_path))
+
+    def test_runs_from_project_dir_under_working_dir(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        executor = HookExecutor(working_dir=str(tmp_path), project_dir=str(repo))
+
+        assert executor.working_dir == str(tmp_path)
+        assert self._where(executor) == (os.path.realpath(repo), str(repo))

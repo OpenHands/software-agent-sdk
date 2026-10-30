@@ -432,6 +432,7 @@ class HookEventProcessor:
 def create_hook_callback(
     hook_config: HookConfig | None = None,
     working_dir: str | None = None,
+    project_dir: str | None = None,
     session_id: str | None = None,
     original_callback: Any = None,
     emit_hook_events: bool = True,
@@ -449,6 +450,8 @@ def create_hook_callback(
     Args:
         hook_config: Configuration for hooks to run.
         working_dir: Working directory for hook execution.
+        project_dir: Directory command hooks run from and report as
+            OPENHANDS_PROJECT_DIR. Defaults to working_dir.
         session_id: Session ID passed to hooks.
         original_callback: Callback to chain after hook processing.
         emit_hook_events: If True, emit HookExecutionEvent for each hook execution.
@@ -467,6 +470,7 @@ def create_hook_callback(
     hook_manager = HookManager(
         config=hook_config,
         working_dir=working_dir,
+        project_dir=project_dir,
         session_id=session_id,
         llm=llm,
         llm_getter=llm_getter,

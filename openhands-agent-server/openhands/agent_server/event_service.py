@@ -1366,6 +1366,7 @@ class EventService:
             secrets=self.stored.secrets,
             cipher=self.cipher,
             hook_config=self.stored.hook_config,
+            hook_project_dir=self.stored.hook_project_dir,
             tags=self.stored.tags,
             user_id=self.stored.user_id,
             observability_metadata=self.stored.observability_metadata,
