@@ -71,6 +71,17 @@ class TestAgentContext:
         assert context.disabled_skills == []
         assert {s.name for s in context.skills} == {"a", "b"}
 
+    def test_disabled_agents_defaults_empty(self):
+        """The default sub-agent deny-list disables nothing."""
+        assert AgentContext().disabled_agents == []
+
+    def test_disabled_agents_round_trips(self):
+        """The sub-agent deny-list survives serialization — it flows to the
+        server through StartConversationRequest, so it must not be excluded."""
+        context = AgentContext(disabled_agents=["explorer", "absent"])
+        reloaded = AgentContext.model_validate(context.model_dump())
+        assert reloaded.disabled_agents == ["explorer", "absent"]
+
     def test_get_system_message_suffix_no_repo_skills(self):
         """Test system message suffix with no repo skills but with triggered skills."""
         knowledge_skill = Skill(
