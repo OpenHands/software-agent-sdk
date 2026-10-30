@@ -36,6 +36,7 @@ from openhands.agent_server.local_storage import (
     conversation_worktree_dir,
     remove_conversation_worktree,
 )
+from openhands.agent_server.managed_llm_key import register_managed_llm_key_refresh
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -2785,13 +2786,17 @@ class AutoTitleSubscriber(Subscriber):
             )
 
             profile_store = get_llm_profile_store()
-            return profile_store.load(profile_name, cipher=self.service.cipher)
+            title_llm = profile_store.load(profile_name, cipher=self.service.cipher)
         except (FileNotFoundError, ValueError) as e:
             logger.warning(
                 f"Failed to load title LLM profile '{profile_name}': {e}. "
                 "Falling back to the agent's LLM."
             )
             return None
+
+        # Profile-loaded, so the agent's start() never hooked it.
+        register_managed_llm_key_refresh([title_llm])
+        return title_llm
 
 
 @dataclass
