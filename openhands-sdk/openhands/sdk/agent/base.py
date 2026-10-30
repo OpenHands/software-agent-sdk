@@ -458,7 +458,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         available_skills_prompt: str | None = None
         custom_suffix: str | None = None
         memory_context: str | None = None
-        secret_infos: tuple[tuple[str, str | None], ...] = ()
+        secret_infos: tuple[SecretInfo, ...] = ()
 
         if agent_context is not None:
             data = agent_context._resolve_dynamic_data(

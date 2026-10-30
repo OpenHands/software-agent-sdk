@@ -300,11 +300,14 @@ def test_custom_suffix_section() -> None:
 def test_custom_secrets_section() -> None:
     section = CustomSecretsSection()
     assert section.guard(PromptContext()) is False
-    out = section.render(PromptContext(secret_infos=(("GITHUB_TOKEN", None),))) or ""
+    out = (
+        section.render(PromptContext(secret_infos=(SecretInfo("GITHUB_TOKEN"),))) or ""
+    )
     assert out.startswith("<CUSTOM_SECRETS>") and out.endswith("</CUSTOM_SECRETS>")
     assert "* **$GITHUB_TOKEN**" in out
     described = (
-        section.render(PromptContext(secret_infos=(("API_KEY", "prod key"),))) or ""
+        section.render(PromptContext(secret_infos=(SecretInfo("API_KEY", "prod key"),)))
+        or ""
     )
     assert "* **$API_KEY** - prod key" in described
 
@@ -328,7 +331,7 @@ def test_custom_secrets_section_no_scope_is_flat() -> None:
     tuple_input = (
         section.render(
             PromptContext(
-                secret_infos=(("GITHUB_TOKEN", None), ("API_KEY", "prod key"))
+                secret_infos=(("GITHUB_TOKEN", None), ("API_KEY", "prod key")),  # pyright: ignore[reportArgumentType]
             )
         )
         or ""
@@ -378,8 +381,15 @@ def test_custom_secrets_section_unscoped_secret_goes_last() -> None:
         section.render(
             PromptContext(
                 secret_infos=(
-                    SecretInfo("SHARED", "shared", scope="organization", scope_description="Shared creds."),
-                    SecretInfo("PERSONAL", "personal", scope=None, scope_description=None),
+                    SecretInfo(
+                        "SHARED",
+                        "shared",
+                        scope="organization",
+                        scope_description="Shared creds.",
+                    ),
+                    SecretInfo(
+                        "PERSONAL", "personal", scope=None, scope_description=None
+                    ),
                 )
             )
         )
@@ -411,8 +421,7 @@ def test_custom_secrets_section_conflicting_scope_description_warns(
     assert "first" in list_block
     assert "second" not in list_block
     assert any(
-        "Conflicting scope_description" in record.message
-        for record in caplog.records
+        "Conflicting scope_description" in record.message for record in caplog.records
     )
 
 
@@ -420,7 +429,7 @@ def test_dynamic_sections_render_into_dynamic_block() -> None:
     ctx = PromptContext(
         now="2025-01-01T00:00:00+00:00",
         custom_suffix="Follow conventions.",
-        secret_infos=(("GITHUB_TOKEN", None),),
+        secret_infos=(SecretInfo("GITHUB_TOKEN"),),
     )
     blocks = create_registry().build(ctx)
     assert "<CURRENT_DATETIME>" in (blocks.dynamic or "")
