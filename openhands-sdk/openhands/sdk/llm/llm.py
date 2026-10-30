@@ -1040,7 +1040,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         mapped = map_provider_exception(error)
         if mapped is not error:
             raise mapped from error
-        raise
+        raise error
 
     async def _ahandle_error(
         self,
@@ -1071,7 +1071,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         mapped = map_provider_exception(error)
         if mapped is not error:
             raise mapped from error
-        raise
+        raise error
 
     # =========================================================================
     # Authentication refresh (refresh-on-401)
@@ -1132,6 +1132,30 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # skip the retry and surface the original error.
             return None
         return new_secret
+
+    def _should_retry_proxy_token_lookup(
+        self, error: Exception, *, streaming: bool
+    ) -> bool:
+        # A lookup miss can also mean an invalid credential. Only try once;
+        # leave persistent failures classified as authentication errors.
+        if (
+            streaming
+            or self.num_retries == 0
+            or self.auth_type != "api_key"
+            or self._auth_refresh_attempted
+            or not self._get_api_key_value()
+            or not looks_like_auth_error(error)
+        ):
+            return False
+        detail = str(error).lower()
+        return all(
+            marker in detail
+            for marker in (
+                "invalid proxy server token passed",
+                "unable to find token in cache or",
+                "litellm_verificationtokentable",
+            )
+        )
 
     def _auth_refreshed_llm(self, new_api_key: SecretStr) -> LLM:
         """Copy this LLM with a refreshed key and the recursion guard set."""
@@ -1868,6 +1892,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     call_context=call_context,
                     **_caller_kwargs,
                 )
+            if self._should_retry_proxy_token_lookup(e, streaming=enable_streaming):
+                logger.warning("Proxy token lookup authentication retry: attempt=1")
+                try:
+                    result = self._build_completion_result(_one_attempt())
+                except Exception as retry_error:
+                    e = retry_error
+                else:
+                    logger.info(
+                        "Proxy token lookup authentication recovered: attempt=1"
+                    )
+                    return result
             return self._handle_error(
                 e,
                 lambda fb: fb.completion(
@@ -1991,6 +2026,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     call_context=call_context,
                     **_caller_kwargs,
                 )
+            if self._should_retry_proxy_token_lookup(e, streaming=enable_streaming):
+                logger.warning("Proxy token lookup authentication retry: attempt=1")
+                try:
+                    result = self._build_completion_result(await _one_attempt())
+                except Exception as retry_error:
+                    e = retry_error
+                else:
+                    logger.info(
+                        "Proxy token lookup authentication recovered: attempt=1"
+                    )
+                    return result
             # Fallback is synchronous; cast the token callback since the
             # fallback LLM's sync path accepts TokenCallbackType.
             _fb_token = cast("TokenCallbackType | None", on_token)
@@ -2171,6 +2217,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     call_context=call_context,
                     **_caller_kwargs,
                 )
+            if self._should_retry_proxy_token_lookup(
+                e,
+                streaming=bool(call_kwargs.get("stream", False))
+                or self.requires_streaming,
+            ):
+                logger.warning("Proxy token lookup authentication retry: attempt=1")
+                try:
+                    result = self._build_responses_result(_one_attempt())
+                except Exception as retry_error:
+                    e = retry_error
+                else:
+                    logger.info(
+                        "Proxy token lookup authentication recovered: attempt=1"
+                    )
+                    return result
             return self._handle_error(
                 e,
                 lambda fb: fb.responses(
@@ -2366,6 +2427,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     call_context=call_context,
                     **_caller_kwargs,
                 )
+            if self._should_retry_proxy_token_lookup(
+                e,
+                streaming=bool(call_kwargs.get("stream", False))
+                or self.requires_streaming,
+            ):
+                logger.warning("Proxy token lookup authentication retry: attempt=1")
+                try:
+                    result = self._build_responses_result(await _one_attempt())
+                except Exception as retry_error:
+                    e = retry_error
+                else:
+                    logger.info(
+                        "Proxy token lookup authentication recovered: attempt=1"
+                    )
+                    return result
             _fb_token = cast("TokenCallbackType | None", on_token)
             return await self._ahandle_error(
                 e,
