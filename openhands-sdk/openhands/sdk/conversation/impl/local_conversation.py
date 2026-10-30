@@ -447,6 +447,10 @@ class LocalConversation(BaseConversation):
             recovered_specs = extract_client_tool_specs(agent.tools)
             if recovered_specs:
                 register_client_tools(recovered_specs)
+        else:
+            with self._state:
+                self._state.ambient_plugin_skills = []
+                self._state.ambient_plugin_mcp_servers = []
         self.agent = agent
 
         # Default callback: persist every event to state
@@ -955,6 +959,13 @@ class LocalConversation(BaseConversation):
             fork_conv._state.head_is_empty = (
                 self._state.head_is_empty if from_event_id is None else False
             )
+            if agent is None:
+                fork_conv._state.ambient_plugin_skills = copy.copy(
+                    self._state.ambient_plugin_skills
+                )
+                fork_conv._state.ambient_plugin_mcp_servers = copy.copy(
+                    self._state.ambient_plugin_mcp_servers
+                )
             # Full rebuild: the copied events may need property enforcement
             # (same posture as cold load).
             fork_conv._state.rebuild_view()
@@ -1037,6 +1048,45 @@ class LocalConversation(BaseConversation):
 
         merged_context = self.agent.agent_context
         merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
+
+        # Discover ambient plugins up front (they are merged further below).
+        # ``None`` means discovery failed: then the previous contributions are
+        # kept and their record is left as is, so a transient failure does not
+        # strip a still-enabled plugin from the resumed conversation.
+        try:
+            ambient_plugins: dict[str, Plugin] | None = load_available_plugins(
+                work_dir=self.workspace.working_dir,
+                include_user=True,
+                include_project=True,
+                strict=True,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to load ambient (installed/local) plugins; "
+                "keeping previous contributions",
+                exc_info=True,
+            )
+            ambient_plugins = None
+
+        # Drop what ambient plugins contributed at the last load: ambient
+        # discovery only adds, so without this a plugin disabled or removed
+        # since then would keep its skills and MCP servers on resume.
+        stale_skills, stale_servers = (
+            self._previous_ambient_contributions()
+            if ambient_plugins is not None
+            else (set(), set())
+        )
+        ambient_contributions_dropped = False
+        if merged_context is not None and stale_skills:
+            kept = [s for s in merged_context.skills if s.name not in stale_skills]
+            if len(kept) != len(merged_context.skills):
+                merged_context = merged_context.model_copy(update={"skills": kept})
+                ambient_contributions_dropped = True
+        for server_name in stale_servers & merged_mcp.keys():
+            del merged_mcp[server_name]
+            ambient_contributions_dropped = True
+        ambient_skill_names: set[str] = set()
+        ambient_server_names: set[str] = set()
 
         # Track whether we have plugins or MCP config to process
         has_mcp_config = bool(merged_mcp)
@@ -1169,21 +1219,7 @@ class LocalConversation(BaseConversation):
         # like project skills. Automation/sandbox runs lack the user's installed
         # and home directories, so discovery naturally yields nothing there.
         ambient_plugins_loaded = False
-        try:
-            ambient_plugins = load_available_plugins(
-                work_dir=self.workspace.working_dir,
-                include_user=True,
-                include_project=True,
-            )
-        except Exception:
-            logger.warning(
-                "Failed to load ambient (installed/local) plugins; "
-                "continuing without them",
-                exc_info=True,
-            )
-            ambient_plugins = {}
-
-        for plugin in ambient_plugins.values():
+        for plugin in (ambient_plugins or {}).values():
             if plugin.name in explicit_plugin_names:
                 logger.debug(
                     f"Skipping ambient plugin '{plugin.name}' "
@@ -1194,6 +1230,8 @@ class LocalConversation(BaseConversation):
             merged_context = plugin.add_skills_to(merged_context)
             merged_mcp = plugin.add_mcp_config_to(merged_mcp)
             has_mcp_config = has_mcp_config or bool(merged_mcp)
+            ambient_skill_names.update(s.name for s in plugin.get_all_skills())
+            ambient_server_names.update(plugin.mcp_config)
 
             if plugin.hooks and not plugin.hooks.is_empty():
                 all_plugin_hooks.append(plugin.hooks)
@@ -1285,6 +1323,7 @@ class LocalConversation(BaseConversation):
             or has_mcp_config
             or project_skills_loaded
             or ambient_plugins_loaded
+            or ambient_contributions_dropped
             or marketplace_skills_loaded
             or memory_loaded
         ):
@@ -1298,6 +1337,17 @@ class LocalConversation(BaseConversation):
             # Also update the agent in _state so API responses reflect loaded plugins
             with self._state:
                 self._state.agent = self.agent
+
+        # Record this load's ambient contributions for the next resume.
+        recorded_skills = sorted(ambient_skill_names)
+        recorded_servers = sorted(ambient_server_names)
+        if ambient_plugins is not None and (
+            self._state.ambient_plugin_skills != recorded_skills
+            or self._state.ambient_plugin_mcp_servers != recorded_servers
+        ):
+            with self._state:
+                self._state.ambient_plugin_skills = recorded_skills
+                self._state.ambient_plugin_mcp_servers = recorded_servers
 
         # Register file-based agents defined in plugins
         if all_plugin_agents:
@@ -1347,6 +1397,14 @@ class LocalConversation(BaseConversation):
             self._hook_processor.run_session_start()
 
         self._plugins_loaded = True
+
+    def _previous_ambient_contributions(self) -> tuple[set[str], set[str]]:
+        # Legacy conversations have no ownership record. Matching names alone
+        # cannot distinguish their caller-supplied content from plugin content.
+        return (
+            set(self._state.ambient_plugin_skills or []),
+            set(self._state.ambient_plugin_mcp_servers or []),
+        )
 
     def _expand_plugin_source_ref(self, value: str) -> str:
         return expand_variable_references(
