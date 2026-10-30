@@ -171,12 +171,12 @@ def test_extract_linked_issue_numbers_keyword_and_bare_ref():
         "## Issue Number\n"
         "Issue: #56, see also #12\n"
     )
-    assert extract_linked_issue_numbers(body) == [12, 34, 56]
+    assert extract_linked_issue_numbers(body) == [("", 12), ("", 34), ("", 56)]
 
 
 def test_extract_linked_issue_numbers_only_bare_ref_in_issue_section():
     body = "## Summary\n\nSome work.\n\n## Issue Number\n\n#7\n"
-    assert extract_linked_issue_numbers(body) == [7]
+    assert extract_linked_issue_numbers(body) == [("", 7)]
 
 
 def test_extract_linked_issue_numbers_no_bare_ref_outside_issue_section():
@@ -281,3 +281,66 @@ def test_validate_linked_issue_ready_returns_error_when_all_issues_not_found(
     monkeypatch.setattr(_prod, "fetch_issue_details", _missing)
     errors = validate_linked_issue_ready("Fixes #12\n", "org/repo", "token")
     assert errors and "could not be found" in errors[0]
+
+
+def test_extract_linked_issue_numbers_preserves_repo_and_deduplicates():
+    body = (
+        "Fixes #12 and closes Other/Project#12\n"
+        "## Issue Number\norg/repo#12, other/project#12, Other/Project#34\n"
+    )
+    assert extract_linked_issue_numbers(body, "org/repo") == [
+        ("org/repo", 12),
+        ("other/project", 12),
+        ("other/project", 34),
+    ]
+
+
+def test_extract_linked_issue_numbers_bare_ref_uses_this_repo():
+    body = "## Issue Number\n#123\n"
+    assert extract_linked_issue_numbers(body, "org/repo") == [("org/repo", 123)]
+
+
+def test_qualified_readiness_checks_the_named_repository(monkeypatch):
+    calls = []
+
+    def details(repo, number, token):
+        calls.append((repo, number))
+        return ["ready-for-dev"], "2026-09-13T00:00:00Z"
+
+    monkeypatch.setattr(_prod, "fetch_issue_details", details)
+    assert (
+        validate_linked_issue_ready(
+            "Fixes OpenHands/OpenHands#17236", "OpenHands/software-agent-sdk", "token"
+        )
+        == []
+    )
+    assert calls == [("openhands/openhands", 17236)]
+
+
+def test_unready_foreign_issue_is_not_masked_by_ready_local_number(monkeypatch):
+    def details(repo, number, token):
+        return (["ready-for-dev"] if repo == "org/repo" else []), "2026-09-13"
+
+    monkeypatch.setattr(_prod, "fetch_issue_details", details)
+    errors = validate_linked_issue_ready(
+        "## Issue Number\n#12, other/repo#12", "org/repo", "token"
+    )
+    assert "other/repo#12" in errors[0]
+
+
+def test_missing_foreign_issue_is_not_masked_by_ready_local_number(monkeypatch):
+    import urllib.error
+    from http.client import HTTPMessage
+
+    def details(repo, number, token):
+        if repo == "other/repo":
+            raise urllib.error.HTTPError(
+                "https://api.github.com", 404, "Not Found", HTTPMessage(), None
+            )
+        return ["ready-for-dev"], "2026-09-13"
+
+    monkeypatch.setattr(_prod, "fetch_issue_details", details)
+    errors = validate_linked_issue_ready(
+        "Fixes #12 and closes other/repo#12", "org/repo", "token"
+    )
+    assert "other/repo#12" in errors[0] and "could not be found" in errors[0]
