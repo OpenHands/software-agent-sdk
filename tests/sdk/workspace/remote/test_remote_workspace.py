@@ -720,7 +720,12 @@ def test_get_secrets_returns_lookup_secrets():
     mock_response = Mock()
     mock_response.json.return_value = {
         "secrets": [
-            {"name": "GITHUB_TOKEN", "description": "GitHub personal access token"},
+            {
+                "name": "GITHUB_TOKEN",
+                "description": "GitHub personal access token",
+                "scope": "personal",
+                "scope_description": "Your own credentials.",
+            },
             {"name": "OPENAI_API_KEY", "description": None},
         ]
     }
@@ -739,9 +744,12 @@ def test_get_secrets_returns_lookup_secrets():
     assert gh_secret.url == "http://localhost:8000/api/settings/secrets/GITHUB_TOKEN"
     assert gh_secret.headers == {"X-Session-API-Key": "test-key"}
     assert gh_secret.description == "GitHub personal access token"
+    assert gh_secret.scope == "personal"
+    assert gh_secret.scope_description == "Your own credentials."
 
     openai_secret = secrets["OPENAI_API_KEY"]
     assert openai_secret.description is None
+    assert openai_secret.scope is None
 
 
 def test_get_secrets_filters_by_names():

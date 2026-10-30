@@ -424,6 +424,8 @@ export interface SettingsUpdateRequest {
 export interface SecretInfo {
   name: string;
   description?: string;
+  scope?: string | null;
+  scope_description?: string | null;
 }
 
 export interface SecretsListResponse {

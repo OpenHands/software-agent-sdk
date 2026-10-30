@@ -680,6 +680,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
                 url=f"{self._settings_base_url}/secrets/{name}",
                 headers={"X-Session-API-Key": self._session_api_key or ""},
                 description=item.get("description"),
+                scope=item.get("scope"),
+                scope_description=item.get("scope_description"),
             )
 
         return result
