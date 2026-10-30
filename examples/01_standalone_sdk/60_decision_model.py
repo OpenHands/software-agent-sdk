@@ -14,6 +14,8 @@ practices in https://docs.typesafe.ai/concepts/how-to-build-with-system-one.md:
 
 1. Keep control flow in code. Ask the model only for narrow judgments.
 2. Send structured state, and point questions at fields with backticked paths.
+   Options and levels can be structured too, which helps tell apart options
+   that are easy to confuse.
 3. Ask many atomic questions in one call, including speculative ones that only
    matter on some code paths. Questions run in parallel against the same state,
    so each extra question adds little latency and costs only its own tokens.
@@ -61,12 +63,28 @@ state = {
 # One request, many questions. Question names are only for your code: they are
 # not sent to the model, so each `instructions` must be a complete question.
 questions = {
+    # Bug reports and feature requests are easy to confuse, so each option
+    # says what it covers, what it does not, and gives examples. Using the same
+    # keys for every option lets the model compare them directly. A plain
+    # string is enough for an option that is not easily confused.
     "kind": Choice(
         instructions="What does `issue` mainly ask for?",
         criteria={
-            "bug": "Something that used to work, or should work, is broken.",
-            "feature": "A new capability or a change in behavior.",
-            "question": "Help using the software; nothing is broken.",
+            "bug": {
+                "what": "Documented or expected behavior that is broken.",
+                "not_for": "Asking for behavior the software never had.",
+                "examples": ["Crashes on startup", "Export writes an empty file"],
+            },
+            "feature": {
+                "what": "A new capability or a change to working behavior.",
+                "not_for": "Something that is supposed to work but fails.",
+                "examples": ["Support YAML config", "Add a --quiet flag"],
+            },
+            "question": {
+                "what": "Help using the software; nothing is broken.",
+                "not_for": "Reports of failures or requests for changes.",
+                "examples": ["How do I set the model?", "Where are logs kept?"],
+            },
             "other": "None of the above.",
         },
     ),
