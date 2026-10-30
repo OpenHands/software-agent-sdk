@@ -737,3 +737,155 @@ class TestEventsToMessages:
         assert msgs[0].role == "assistant"
         assert msgs[1].role == "tool"
         assert msgs[1].tool_call_id == "call_ne"
+
+
+class TestRecycledToolCallIdPairing:
+    """Regression tests for OpenHands #18941: tool results arriving mismatched
+    to tool calls after a runtime reprovision.
+
+    ACP providers reset per-session tool_call_id counters, so a later turn can
+    legitimately reuse an earlier turn's call id. The LLM payload must still
+    pair each result with its own call — never with a sibling call that happens
+    to share the raw id.
+    """
+
+    def test_reused_tool_call_id_keeps_results_paired(self):
+        """Two turns both using ``exec_1``: each result binds to its own call."""
+        a1 = create_action_event("run curl", "terminal", "exec_1", "resp_1", {"command": "curl"})
+        o1 = ObservationEvent(
+            source="environment",
+            observation=EventsToMessagesMockObservation(result="OUTPUT_OF_CURL"),
+            action_id=a1.id,
+            tool_name="terminal",
+            tool_call_id="exec_1",
+        )
+        a2 = create_action_event("run sed", "terminal", "exec_1", "resp_2", {"command": "sed"})
+        o2 = ObservationEvent(
+            source="environment",
+            observation=EventsToMessagesMockObservation(result="OUTPUT_OF_SED"),
+            action_id=a2.id,
+            tool_name="terminal",
+            tool_call_id="exec_1",
+        )
+
+        messages = LLMConvertibleEvent.events_to_messages([a1, o1, a2, o2])
+
+        assert len(messages) == 4
+        call1 = messages[0].tool_calls[0].id
+        call2 = messages[2].tool_calls[0].id
+        # The two tool_use ids are now distinct in the LLM payload ...
+        assert call1 != call2
+        # ... and each result is bound to its own call, not the sibling's.
+        assert messages[1].tool_call_id == call1
+        assert messages[3].tool_call_id == call2
+        assert messages[1].content[0].text == "OUTPUT_OF_CURL"  # type: ignore
+        assert messages[3].content[0].text == "OUTPUT_OF_SED"  # type: ignore
+
+    def test_unique_tool_call_ids_are_unchanged(self):
+        """No collision: ids pass through verbatim (prompt-cache friendly)."""
+        a1 = create_action_event("run ls", "terminal", "call_1", "resp_1", {"command": "ls"})
+        o1 = ObservationEvent(
+            source="environment",
+            observation=EventsToMessagesMockObservation(result="file1"),
+            action_id=a1.id,
+            tool_name="terminal",
+            tool_call_id="call_1",
+        )
+
+        messages = LLMConvertibleEvent.events_to_messages([a1, o1])
+
+        assert messages[0].tool_calls[0].id == "call_1"
+        assert messages[1].tool_call_id == "call_1"
+
+    def test_duplicate_actionless_error_binds_to_first_pending_call(self):
+        """An AgentErrorEvent has no action_id; it resolves to the earliest
+        still-unresolved call with the same raw id, mirroring
+        ``get_unmatched_actions``."""
+        a1 = create_action_event("run ls", "terminal", "exec_1", "resp_1", {"command": "ls"})
+        a2 = create_action_event("run wc", "terminal", "exec_1", "resp_2", {"command": "wc"})
+        err = AgentErrorEvent(
+            error="restart interrupted this call",
+            tool_call_id="exec_1",
+            tool_name="terminal",
+        )
+        o2 = ObservationEvent(
+            source="environment",
+            observation=EventsToMessagesMockObservation(result="42"),
+            action_id=a2.id,
+            tool_name="terminal",
+            tool_call_id="exec_1",
+        )
+
+        messages = LLMConvertibleEvent.events_to_messages([a1, a2, err, o2])
+
+        call1 = messages[0].tool_calls[0].id
+        call2 = messages[1].tool_calls[0].id
+        assert call1 != call2
+        assert messages[2].tool_call_id == call1
+        assert messages[3].tool_call_id == call2
+
+    def test_replayed_observation_binds_to_its_own_action(self):
+        """A crash-recovery replay (duplicate result for a1) inserted after a2
+        still binds to a1's call, leaving a2's result on a2's call."""
+        a1 = create_action_event("run curl", "terminal", "exec_1", "resp_1", {"command": "curl"})
+        o1 = ObservationEvent(
+            source="environment",
+            observation=EventsToMessagesMockObservation(result="OUTPUT_OF_CURL"),
+            action_id=a1.id,
+            tool_name="terminal",
+            tool_call_id="exec_1",
+        )
+        a2 = create_action_event("run sed", "terminal", "exec_1", "resp_2", {"command": "sed"})
+        replay = ObservationEvent(
+            source="environment",
+            observation=EventsToMessagesMockObservation(result="OUTPUT_OF_CURL"),
+            action_id=a1.id,
+            tool_name="terminal",
+            tool_call_id="exec_1",
+        )
+        o2 = ObservationEvent(
+            source="environment",
+            observation=EventsToMessagesMockObservation(result="OUTPUT_OF_SED"),
+            action_id=a2.id,
+            tool_name="terminal",
+            tool_call_id="exec_1",
+        )
+
+        messages = LLMConvertibleEvent.events_to_messages([a1, o1, a2, replay, o2])
+
+        call1 = messages[0].tool_calls[0].id
+        call2 = messages[2].tool_calls[0].id
+        assert call1 != call2
+        assert messages[1].tool_call_id == call1
+        assert messages[3].tool_call_id == call1  # replay stays on a1's call
+        assert messages[4].tool_call_id == call2
+
+    def test_parallel_batch_with_reused_ids_keeps_pairs(self):
+        """Parallel tool calls within one response, sharing raw ids across
+        batches, still pair by request."""
+        b1a = create_action_event("search", "github_search_repositories", "exec_1", "resp_1", {})
+        b1b = create_action_event("", "github_get_file_contents", "exec_1", "resp_1", {})
+        b1b = b1b.model_copy(update={"thought": []})
+        o1a = ObservationEvent(
+            source="environment",
+            observation=EventsToMessagesMockObservation(result="SEARCH_RESULTS"),
+            action_id=b1a.id,
+            tool_name="github_search_repositories",
+            tool_call_id="exec_1",
+        )
+        o1b = ObservationEvent(
+            source="environment",
+            observation=EventsToMessagesMockObservation(result="FILE_CONTENTS"),
+            action_id=b1b.id,
+            tool_name="github_get_file_contents",
+            tool_call_id="exec_1",
+        )
+
+        messages = LLMConvertibleEvent.events_to_messages([b1a, b1b, o1a, o1b])
+
+        # Both calls are in the same assistant message (same llm_response_id).
+        calls = messages[0].tool_calls
+        assert len(calls) == 2
+        assert calls[0].id != calls[1].id
+        assert messages[1].tool_call_id == calls[0].id
+        assert messages[2].tool_call_id == calls[1].id

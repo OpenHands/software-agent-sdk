@@ -237,6 +237,12 @@ class ConversationState(OpenHandsModel):
     # ===== Private attrs (NOT Fields) =====
     _fs: FileStore = PrivateAttr(default=cast(Any, None))  # filestore for persistence
     _events: EventLog = PrivateAttr()  # now the storage for events
+    # tool_call_ids already used in this conversation's log, seeded lazily from
+    # `_events` so it survives resume/reprovision. Guards against providers that
+    # recycle call ids across turns (e.g. ACP resets counters per session), which
+    # would otherwise let a stale result cross-pair with a newer call.
+    _used_tool_call_ids: set[str] | None = PrivateAttr(default=None)
+    _tool_call_id_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
     # Cached projection of `_events` for the *active branch*, lazily updated on
     # read. Derived state — never persisted. `_view_branch_leaf` is the resolved
     # leaf the cache reflects: equal to the active leaf -> reuse; an ancestor ->
@@ -338,6 +344,58 @@ class ConversationState(OpenHandsModel):
         if parent is None and len(self._events) > 0:
             parent = ROOT_PARENT_ID
         return event.model_copy(update={"parent_id": parent})
+
+    def _ensure_tool_call_id_registry(self) -> set[str]:
+        """Return the used-id set, seeding it from the log on first access.
+
+        Seeded from the log rather than kept purely incrementally so a
+        resumed conversation (fresh process, reloaded events) still knows
+        which ids a recycled provider counter must not reuse.
+        """
+        if self._used_tool_call_ids is None:
+            used: set[str] = set()
+            for idx in range(len(self._events)):
+                try:
+                    event = self._events[idx]
+                except Exception:
+                    continue
+                for value in (
+                    getattr(event, "tool_call_id", None),
+                    getattr(getattr(event, "tool_call", None), "id", None),
+                ):
+                    if isinstance(value, str) and value:
+                        used.add(value)
+            self._used_tool_call_ids = used
+        return self._used_tool_call_ids
+
+    def allocate_tool_call_id(self, candidate: str) -> str:
+        """Return a conversation-unique ``tool_call_id`` for ``candidate``.
+
+        Providers that reset per-session counters (ACP sandboxes, reprovisioned
+        runtimes) can emit the same ``tool_call_id`` in two unrelated turns.
+        Id-based result↔call pairing across the whole log would then attach a
+        stale result to the newer call. Reminting on collision keeps every id
+        unique within the conversation so pairing stays unambiguous; the
+        caller threads the returned id through both the action and its
+        observation so the pair stays bound.
+        """
+        with self._tool_call_id_lock:
+            used = self._ensure_tool_call_id_registry()
+            if candidate not in used:
+                used.add(candidate)
+                return candidate
+            suffix = 2
+            while f"{candidate}__{suffix}" in used:
+                suffix += 1
+            unique = f"{candidate}__{suffix}"
+            used.add(unique)
+            logger.warning(
+                "tool_call_id %r was already used in this conversation "
+                "(recycled provider counter?); reminted to %r",
+                candidate,
+                unique,
+            )
+            return unique
 
     def append_event(self, event: Event) -> int:
         """Single storage chokepoint: stamp parent_id, append, advance HEAD.
