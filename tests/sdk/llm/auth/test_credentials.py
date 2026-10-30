@@ -1,14 +1,26 @@
 """Tests for credential storage and retrieval."""
 
+import json
 import os
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import pytest
+
+from openhands.sdk.llm.auth import openai
 from openhands.sdk.llm.auth.credentials import (
     CredentialStore,
     OAuthCredentials,
+    SubscriptionBrokerCredentialStore,
     get_credentials_dir,
 )
+from openhands.sdk.llm.auth.openai import (
+    OpenAISubscriptionAuth,
+    subscription_credential_store_scope,
+)
+from openhands.sdk.llm.llm import LLM
 
 
 def test_oauth_credentials_model():
@@ -194,3 +206,105 @@ def test_credential_store_update_tokens_nonexistent(tmp_path):
         expires_in=3600,
     )
     assert result is None
+
+
+def test_disabled_shared_server_never_reads_default_filesystem(monkeypatch, tmp_path):
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
+    monkeypatch.setenv("OH_OPENAI_SUBSCRIPTION_MODE", "disabled")
+    local = CredentialStore(tmp_path / "auth")
+    local.save(
+        OAuthCredentials(
+            vendor="openai",
+            access_token="other-user",
+            refresh_token="secret",
+            expires_at=int(time.time() * 1000) + 3600000,
+        )
+    )
+    with pytest.raises(RuntimeError, match="disabled"):
+        OpenAISubscriptionAuth()
+    assert (
+        OpenAISubscriptionAuth(
+            credential_store=CredentialStore(tmp_path / "empty")
+        ).get_credentials()
+        is None
+    )
+    with subscription_credential_store_scope(local):
+        assert OpenAISubscriptionAuth().get_credentials().access_token == "other-user"
+    with pytest.raises(RuntimeError, match="disabled"):
+        OpenAISubscriptionAuth()
+
+
+@pytest.fixture
+def broker_server():
+    state = {"requests": [], "token": "first-access", "status": 200}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/jwks":
+                body = json.dumps({"keys": []}).encode()
+                self.send_response(200)
+            else:
+                state["requests"].append(self.headers.get("X-Session-API-Key"))
+                self.send_response(state["status"])
+                body = json.dumps(
+                    {
+                        "access_token": state["token"],
+                        "expires_at": int(time.time() * 1000) + 3600000,
+                    }
+                ).encode()
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", state
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_broker_uses_current_initialized_session_key(broker_server, monkeypatch):
+    url, state = broker_server
+    monkeypatch.setenv("OH_OPENAI_SUBSCRIPTION_MODE", "broker")
+    monkeypatch.setenv("OH_OPENAI_SUBSCRIPTION_BROKER_URL", f"{url}/token")
+    monkeypatch.setenv("SESSION_API_KEY", "stale-template-key")
+    monkeypatch.setenv("OH_SESSION_API_KEYS_0", "initialized-session-key")
+    assert OpenAISubscriptionAuth().get_credentials().access_token == "first-access"
+    assert state["requests"] == ["initialized-session-key"]
+
+
+@pytest.mark.asyncio
+async def test_broker_revalidates_each_request_and_logout_fails_closed(
+    broker_server, monkeypatch
+):
+    url, state = broker_server
+    monkeypatch.setattr(openai, "JWKS_URL", f"{url}/jwks")
+    openai._jwks_cache.clear()
+    store = SubscriptionBrokerCredentialStore(f"{url}/token", "session-key")
+    llm = LLM(model="openai/gpt-5.5", auth_type="subscription")
+    llm.is_subscription = True
+    llm._subscription_credential_store = store
+    llm._subscription_credentials = OAuthCredentials(
+        vendor="openai",
+        access_token="cached-secret",
+        refresh_token="",
+        expires_at=int(time.time() * 1000) + 3600000,
+    )
+    assert llm._get_litellm_api_key_value() == "first-access"
+    state["token"] = "second-access"
+    assert await llm._aget_litellm_api_key_value() == "second-access"
+    state["status"] = 404
+    with pytest.raises(ValueError, match="login is required"):
+        await llm._aget_litellm_api_key_value()
+    with pytest.raises(ValueError, match="login is required"):
+        llm._get_litellm_api_key_value()
+    assert state["requests"] == ["session-key"] * 4
+    assert "first-access" not in repr(llm.model_dump(context={"expose_secrets": True}))
+    openai._jwks_cache.clear()
