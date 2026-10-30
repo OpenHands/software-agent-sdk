@@ -36,7 +36,7 @@ Routes: `GET /api/conversations/{runtime_conversation_id}/git/changes`,
 - `F15.changes-ref`: `ref=HEAD` gives `git status`-style changes and an older commit adds its later commits' files; an unknown or option-shaped `ref` is 400 and never runs as a git option; no `path` is 422.
 - `F15.changes-nested-repo`: changes inside a repository nested one level below the requested repository are listed with the nested directory as prefix, the nested directory itself is not listed, and `diff` of such an entry reads the nested repository.
 - `F15.changes-repo-below-path`: a non-repository directory that holds one repository (the layout of a repository-backed conversation) lists that repository's changes with its directory as prefix.
-- `F15.changes-special-names`: a modified tracked file whose name has a space or a non-ASCII character is listed under its real name; today a space fails the whole list with 400 and a non-ASCII name comes back as a mangled git-quoted string.
+- `F15.changes-special-names`: a modified tracked file whose name has a space or a non-ASCII character is listed under its real name.
 - `F15.changes-subdir-paths`: `changes` for a subdirectory of a repository lists only the changes under it, tracked and untracked alike, as paths relative to the requested directory.
 - `F15.non-repo`: on a plain directory, a missing directory and a non-repository file every operation answers 200 with an empty result (`[]`, `{"original": null, "modified": null}`, `{"commits": [], "has_more": false}`); a repository without commits lists its files as `ADDED` and has no commits.
 - `F15.diff`: `diff` for a modified file returns the base text as `original` and the disk text as `modified` (final newline dropped on both sides), an untracked file has `original` `""`, and an explicit `ref` moves the base.
@@ -262,7 +262,7 @@ Preconditions:
   repository (and as `GET /api/file/archive` resolves the same layout), so
   consumers that pass the workspace root of a repository-backed conversation
   see its changes. The directory contributes no changes of its own.
-- **File names with a space or non-ASCII characters (`F15.changes-special-names`), known bug.**
+- **File names with a space or non-ASCII characters (`F15.changes-special-names`).**
   ```sh
   mkdir -p "$F/names"
   git -C "$F/names" init -q -b main
@@ -276,24 +276,19 @@ Preconditions:
   rm "$F/names/untracked note.md"
   printf 'a2\n' > "$F/names/my notes.md"
   control-agent-server api GET /api/git/changes --query path="$F/names" --expect 200 --check . len-eq 1 \
-    --check 0.status eq UPDATED --check 0.path eq 'my notes.md' --save F15.changes-special-names/space  # bug: status eq 400 && response.body.detail contains 'Unexpected git diff output format'
+    --check 0.status eq UPDATED --check 0.path eq 'my notes.md' --save F15.changes-special-names/space
   git -C "$F/names" checkout -q -- 'my notes.md'
   printf 'b2\n' > "$F/names/café.txt"
   control-agent-server api GET /api/git/changes --query path="$F/names" --expect 200 --check . len-eq 1 \
-    --check 0.path eq café.txt --save F15.changes-special-names/non-ascii  # bug: status eq 200 && response.body.0.path contains 303/251
+    --check 0.path eq café.txt --save F15.changes-special-names/non-ascii
   ```
   The committed repository answers for an untracked name with a space
   (positive control: the route and the space in a name are fine on their
-  own). Expected: each modified file under its real name. Actual: the space
-  makes
-  the whole list `400 {"detail": "Unexpected git diff output format: M\tmy notes.md"}`
-  (`_parse_name_status` splits the `--name-status` line on any whitespace),
-  so one such file hides every other change; `GET /api/git/commits/{sha}/changes`
-  of the commit that added it fails the same way. A modified `café.txt` comes
-  back as `"\"caf/303/251.txt\""`: git's C-quoted octal form
-  (`core.quotePath`), with quotes kept and backslashes turned into slashes by
-  the POSIX path serializer. Untracked names with a space are fine; untracked
-  non-ASCII names are mangled the same way.
+  own). Expected: each modified file under its real name, `my notes.md` and
+  `café.txt`, never a 400 or git's C-quoted octal form. The server reads
+  `git diff --name-status -z` and `git ls-files -z`, whose NUL-separated
+  fields carry names verbatim, so `GET /api/git/commits/{sha}/changes` and
+  untracked files keep real names too.
 - **Subdirectory of a repository (`F15.changes-subdir-paths`).**
   `path` is `src/` of a copy with a modified `src/app.py` and an untracked
   `src/new.py`.
