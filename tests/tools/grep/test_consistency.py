@@ -191,6 +191,54 @@ class TestGrepConsistency:
         for match in ripgrep_matches:
             assert match.endswith(".py"), f"Non-Python file found: {match}"
 
+    def test_include_brace_pattern_consistency(self, temp_dir_with_content):
+        """Test that brace include patterns behave consistently across backends."""
+        executor = GrepExecutor(temp_dir_with_content)
+        action = GrepAction(pattern="hello", include="*.{py,json}")
+
+        ripgrep_result = executor._execute_with_ripgrep(
+            action, Path(temp_dir_with_content)
+        )
+        python_result = executor._execute_with_python_search(
+            action, Path(temp_dir_with_content)
+        )
+
+        ripgrep_matches = set(ripgrep_result.matches)
+        python_matches = set(python_result.matches)
+
+        assert ripgrep_matches == python_matches, (
+            f"Ripgrep found: {ripgrep_matches}\n"
+            f"Python fallback found: {python_matches}\n"
+        )
+        assert ripgrep_matches, "Expected brace include to match files"
+        for match in ripgrep_matches:
+            assert match.endswith((".py", ".json")), f"Unexpected file: {match}"
+
+    def test_include_path_pattern_consistency(self, temp_dir_with_content):
+        """Test that path-bearing includes are resolved against the search root."""
+        executor = GrepExecutor(temp_dir_with_content)
+        for include in ("src/*.py", "src/**/*.py"):
+            action = GrepAction(pattern="hello", include=include)
+
+            ripgrep_result = executor._execute_with_ripgrep(
+                action, Path(temp_dir_with_content)
+            )
+            python_result = executor._execute_with_python_search(
+                action, Path(temp_dir_with_content)
+            )
+
+            ripgrep_matches = set(ripgrep_result.matches)
+            python_matches = set(python_result.matches)
+
+            assert ripgrep_matches == python_matches, (
+                f"Include: {include}\n"
+                f"Ripgrep found: {ripgrep_matches}\n"
+                f"Python fallback found: {python_matches}\n"
+            )
+            assert ripgrep_matches, f"Expected {include} to match files"
+            for match in ripgrep_matches:
+                assert "/src/" in Path(match).as_posix(), f"Unexpected file: {match}"
+
     def test_no_matches_consistency(self, temp_dir_with_content):
         """Test that ripgrep and the Python fallback handle no matches consistently."""
         executor = GrepExecutor(temp_dir_with_content)
