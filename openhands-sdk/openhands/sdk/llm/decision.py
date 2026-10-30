@@ -11,8 +11,6 @@ is used only inside :meth:`DecisionModel.send` and :meth:`DecisionModel.asend`.
 A subclass can override those two methods to call a provider LiteLLM lacks.
 """
 
-from __future__ import annotations
-
 import json
 import time
 import uuid
@@ -93,34 +91,31 @@ class NoulCriteria(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
 
-class Noul(BaseModel):
+class _QuestionBase(BaseModel):
+    instructions: DecisionJSON
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
+
+
+class Noul(_QuestionBase):
     """A yes/no question. The answer is the probability of yes."""
 
     type: Literal["noul"] = "noul"
-    instructions: DecisionJSON
     criteria: NoulCriteria | None = None
 
-    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
-
-class Choice(BaseModel):
+class Choice(_QuestionBase):
     """Pick one option from a closed set. ``criteria`` maps option to meaning."""
 
     type: Literal["choice"] = "choice"
-    instructions: DecisionJSON
     criteria: Mapping[str, DecisionJSON] = Field(min_length=1)
 
-    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
-
-class Score(BaseModel):
+class Score(_QuestionBase):
     """Rate against ordered levels, lowest first."""
 
     type: Literal["score"] = "score"
-    instructions: DecisionJSON
     criteria: Sequence[DecisionJSON] = Field(min_length=1, max_length=_MAX_SCORE_LEVELS)
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
 
 Question = Annotated[Noul | Choice | Score, Field(discriminator="type")]
