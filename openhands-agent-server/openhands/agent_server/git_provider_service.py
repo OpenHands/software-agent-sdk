@@ -25,7 +25,7 @@ _GITHUB_REPOSITORY_PAGE_SIZE: Final[int] = 100
 _GITHUB_REQUEST_TIMEOUT_SECS: Final[int] = 15
 _GITHUB_TOKEN_CANDIDATES: Final[tuple[str, ...]] = (
     PROVIDER_TOKEN_NAMES[GitProvider.GITHUB],
-    "GITHUB_TOKEN",
+    "github_token",
     "GH_TOKEN",
     "github",
 )
