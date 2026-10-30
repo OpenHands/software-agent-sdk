@@ -21,6 +21,61 @@ class ParallelSubagentBudget:
 
 
 @dataclass(frozen=True, slots=True)
+class CpuBudget:
+    """CPU ceilings for the concurrency-heavy stress scenarios.
+
+    Two signals, each aimed at the regression it can actually catch:
+
+    * A **peak-utilization canary** (``event_loop_max_cpu_percent``) for the
+      event-loop scenario, read from ``ResourceProbe.peak_cpu_percent()``. The
+      sleeping-bash load waits on I/O, so its peak stays a small fraction of a
+      core; a busy-wait on the event loop pins a core and drives the peak toward
+      100% — a regression the /health-latency budget can miss when the loop
+      yields just often enough to stay inside it.
+    * A **CPU-seconds-per-wall-second ratio** for the concurrent and parallel
+      scenarios, read from the ``ResourceProbe.cpu_time_s()`` delta over the
+      run window. The scripted LLM sleeps rather than spins, so those loads are
+      I/O-bound and burn little CPU relative to wall time.
+
+    What the ratio does — and does not — catch. A *pure-Python* spin in the run
+    path holds the GIL, so it also stretches wall time: the CPU numerator and
+    the wall denominator grow together and the ratio barely moves. That class
+    is already caught by the wall-clock budget (verified: replacing the
+    scripted sleep with an equal-duration spin fails ``wall_time_factor``). The
+    ratio earns its place by catching CPU burned *off the critical path*:
+    an extra worker thread, or a spin in code that releases the GIL (native
+    work, C extensions). Those raise process CPU without moving wall time, and
+    neither the wall-clock nor the RSS budget sees them. Ceilings are therefore
+    set just above the measured steady state rather than at a "safe" multiple
+    of it, so a single such regression trips them.
+
+    Ratio ceilings are fixed constants, not relative to a per-run baseline.
+    This deviates from the module's usual relative-to-baseline convention on
+    purpose: a uniform busy-wait inflates a per-run baseline and the measured
+    window alike, so a ratio-to-baseline would cancel out and never fire.
+    Dividing CPU by *wall time* keeps the per-unit-of-work normalisation (the
+    property the convention is after) while remaining a live signal. Like the
+    other fixed numbers in this module (see ``ConversationListingBudget``), a
+    shared runner that legitimately needs more headroom should override the
+    constant at the call site rather than loosen it here for everyone.
+    """
+
+    # Peak process CPU (%) during the I/O-bound long-bash load. Measured ~12% of
+    # a core; 50 leaves a wide margin for shared runners while still failing a
+    # busy-wait, which approaches 100%.
+    event_loop_max_cpu_percent: float = 50.0
+    # 16 concurrent conversations run on worker threads, so per-process CPU
+    # legitimately exceeds wall time. Measured run-window steady state ~0.5-0.6
+    # (peaks ~65%); 1.0 leaves ~1.7x headroom while still failing one extra
+    # GIL-releasing thread burning a core, which measured ~1.35.
+    concurrent_conversations_max_cpu_per_wall_second: float = 1.0
+    # 8 parallel sub-agents are I/O-bound on the scripted LLM's sleep. Measured
+    # run-window steady state ~0.25-0.29 (peaks ~65%); 0.6 leaves ~2x headroom
+    # while still failing one extra GIL-releasing thread, which measured ~1.25.
+    parallel_subagents_max_cpu_per_wall_second: float = 0.6
+
+
+@dataclass(frozen=True, slots=True)
 class ConversationListingBudget:
     # 2000 surfaces O(N) regressions strongly in pagination/listing while
     # keeping the test under a minute on a developer laptop. We tried 10k
@@ -136,6 +191,7 @@ class LeaseContentionBudget:
 
 
 PARALLEL_SUBAGENTS = ParallelSubagentBudget()
+CPU = CpuBudget()
 CONVERSATION_LISTING = ConversationListingBudget()
 CONCURRENT_CONVERSATIONS = ConcurrentConversationsBudget()
 LONG_RUNNING_COMMAND = LongRunningCommandBudget()
