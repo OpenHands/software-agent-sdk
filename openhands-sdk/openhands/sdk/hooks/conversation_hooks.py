@@ -150,6 +150,7 @@ class HookEventProcessor:
         should_continue, results = self.hook_manager.run_pre_tool_use(
             tool_name=tool_name,
             tool_input=tool_input,
+            tool_use_id=event.tool_call_id,
         )
 
         # Emit HookExecutionEvents for each hook
@@ -225,6 +226,7 @@ class HookEventProcessor:
             tool_name=tool_name,
             tool_input=tool_input,
             tool_response=tool_response,
+            tool_use_id=event.tool_call_id,
         )
 
         # Emit HookExecutionEvents for each hook and log errors
