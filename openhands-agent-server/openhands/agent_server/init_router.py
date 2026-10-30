@@ -293,7 +293,11 @@ class InitService:
             await shutdown_telemetry_sink()
             reset_stores()
             await asyncio.to_thread(reencrypt_stale_stores, new_config)
-            self._app.state.telemetry_sink = await build_telemetry_sink(new_config)
+            # new_config clears deferred_init (no longer dormant), but the
+            # telemetry property records that this pod booted deferred.
+            self._app.state.telemetry_sink = await build_telemetry_sink(
+                new_config, deferred_init=True
+            )
 
             # Reset the module-level singleton so other call sites that go
             # through ``get_default_conversation_service`` see the new
