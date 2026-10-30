@@ -58,6 +58,10 @@ _EXCLUDED_EXAMPLES = {
     "examples/01_standalone_sdk/16_llm_security_analyzer.py",
     "examples/01_standalone_sdk/27_observability_laminar.py",
     "examples/01_standalone_sdk/35_subscription_login.py",
+    # Require JEV_API_KEY for the TypeSafe decision model, which CI does not set
+    "examples/01_standalone_sdk/60_decision_model.py",
+    "examples/01_standalone_sdk/61_decision_model_agent_gate.py",
+    "examples/01_standalone_sdk/62_decision_model_custom_provider.py",
     # Requires interactive input() which fails in CI with EOFError
     "examples/02_remote_agent_server/05_vscode_with_docker_sandboxed_server.py",
     # Requires a Kubernetes cluster with agent-sandbox and the agent-sandbox extra
