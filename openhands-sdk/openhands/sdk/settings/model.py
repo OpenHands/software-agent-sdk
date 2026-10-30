@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import copy
 import itertools
+import json
+import re
 import shutil
+import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
 from pathlib import Path
@@ -70,6 +73,10 @@ from openhands.sdk.utils.pydantic_secrets import (
 )
 from openhands.sdk.workspace import LocalWorkspace
 
+from .acp_install_catalog import (
+    ACP_VERSION_RE,
+    get_acp_pinned_version,
+)
 from .acp_providers import (
     ACPFileSecretSpec,
     ACPProviderInfo,
@@ -1758,6 +1765,99 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         )
 
 
+_ACP_CLI_VERSION_TIMEOUT_SECS = 10.0
+_ACP_WRAPPER_EXEC_RE = re.compile(
+    r'^#!/bin/sh\nPATH="[^"]+/bin:\$PATH" exec "([^"]+)" "\$@"\n?\Z'
+)
+
+
+def _wrapper_exec_target(path: Path) -> Path | None:
+    """Return the ``exec`` target of an agent-server ACP wrapper, if *path* is one."""
+    try:
+        if not path.is_file() or path.stat().st_size > 4096:
+            return None
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = _ACP_WRAPPER_EXEC_RE.fullmatch(text)
+    if match is None:
+        return None
+    target = Path(match.group(1))
+    return target if target.is_absolute() else None
+
+
+def _version_in_package_json(path: Path) -> str | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    version = payload.get("version")
+    if not isinstance(version, str) or not version:
+        return None
+    match = ACP_VERSION_RE.fullmatch(version)
+    return match.group(1) if match else version
+
+
+def _npm_package_version(binary: Path) -> str | None:
+    """Version of the npm package under ``node_modules`` that owns *binary*."""
+    try:
+        resolved = binary.resolve()
+    except OSError:
+        return None
+    if "node_modules" not in resolved.parts:
+        return None
+    for parent in resolved.parents:
+        if parent.name == "node_modules":
+            return None
+        package_json = parent / "package.json"
+        if package_json.is_file():
+            return _version_in_package_json(package_json)
+    return None
+
+
+def _installed_acp_package_version(binary_path: str) -> str | None:
+    path = Path(binary_path)
+    target = _wrapper_exec_target(path)
+    if target is not None:
+        path = target
+    return _npm_package_version(path)
+
+
+def _probe_acp_cli_version(binary_path: str) -> str | None:
+    """First semver from ``<binary> --version``, or ``None`` on failure or timeout."""
+    try:
+        proc = subprocess.run(
+            [binary_path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=_ACP_CLI_VERSION_TIMEOUT_SECS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    match = ACP_VERSION_RE.search(f"{proc.stdout}\n{proc.stderr}")
+    return match.group(1) if match else None
+
+
+def _probe_acp_binary_version(binary_path: str) -> str | None:
+    """Version of *binary_path*, from its npm ``package.json`` when that exists.
+
+    Agent-server wrappers and global npm bins point at an installed package.
+    Reading that ``package.json`` avoids spawning the CLI: ``pi-acp --version``
+    prints nothing, and several pinned CLIs take longer than a short timeout
+    to start. Other executables are probed with ``--version``. A miss is not
+    cached.
+    """
+    installed = _installed_acp_package_version(binary_path)
+    if installed is not None:
+        return installed
+    return _probe_acp_cli_version(binary_path)
+
+
 class ACPAgentSettings(AgentSettingsBase):
     """Settings for an ACP (Agent Client Protocol) agent.
 
@@ -2077,12 +2177,15 @@ class ACPAgentSettings(AgentSettingsBase):
         """Swap an ``npx -y <pkg>`` command for the provider's pinned binary.
 
         When *command* is an ``npx`` invocation of this provider's package and
-        the provider's ``binary_name`` resolves via :func:`shutil.which`, return
-        ``[binary_name, *extra]`` (preserving trailing args like gemini's
+        the provider's ``binary_name`` resolves via :func:`shutil.which` to a
+        binary reporting the exact pinned version declared in
+        :data:`~openhands.sdk.settings.acp_install_catalog.ACP_INSTALL_CATALOG`,
+        return ``[binary_name, *extra]`` (preserving trailing args like gemini's
         ``--acp``) — running the agent-server image's pinned wrapper instead of
         downloading npm-latest. Returned unchanged otherwise: no pinned binary
-        (custom server), a non-matching/non-npx command, or the binary not on
-        ``PATH`` (local dev).
+        (custom server), a non-matching/non-npx command, the binary not on
+        ``PATH`` (local dev), or a binary on ``PATH`` reporting a non-pinned
+        version.
 
         Package matching ignores any ``@version`` suffix: the registry default
         is version-pinned (so the native fallback can't drift to npm ``latest``),
@@ -2104,7 +2207,18 @@ class ACPAgentSettings(AgentSettingsBase):
         same_package = self._npm_package_name(actual_pkg) == self._npm_package_name(
             default_pkg
         )
-        if not same_package or shutil.which(info.binary_name) is None:
+        if not same_package:
+            return command
+
+        binary_path = shutil.which(info.binary_name)
+        if binary_path is None:
+            return command
+
+        pinned_version = get_acp_pinned_version(info.key)
+        if pinned_version is None:
+            return command
+
+        if _probe_acp_binary_version(binary_path) != pinned_version:
             return command
 
         return [info.binary_name, *extra]
