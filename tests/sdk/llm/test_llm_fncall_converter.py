@@ -1014,3 +1014,126 @@ def test_security_risk_param_allowed_for_tool_that_does_not_declare_it():
     arguments = json.loads(assistant_msg["tool_calls"][0]["function"]["arguments"])
     assert arguments["message"] == "Hello!"
     assert arguments["security_risk"] == "LOW"
+
+
+def _typed_tool(properties: dict, required: list[str]) -> list[ChatCompletionToolParam]:
+    return cast(
+        list[ChatCompletionToolParam],
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "typed",
+                    "description": "Tool with typed parameters.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required,
+                    },
+                },
+            }
+        ],
+    )
+
+
+def _parsed_arguments(
+    tools: list[ChatCompletionToolParam], assistant_content: str
+) -> dict:
+    fncall_messages = convert_non_fncall_messages_to_fncall_messages(
+        [{"role": "assistant", "content": assistant_content}], tools
+    )
+    return json.loads(fncall_messages[0]["tool_calls"][0]["function"]["arguments"])
+
+
+def test_number_and_boolean_params_are_coerced():
+    """Model output arrives as text, so non-string parameters must be coerced
+    to their schema types, like integer already is. Without coercion the
+    emitted tool call carries strings ("0.5", "true") where the schema
+    declares number/boolean.
+    """
+    tools = _typed_tool(
+        {
+            "count": {"type": "integer"},
+            "ratio": {"type": "number"},
+            "flag": {"type": "boolean"},
+        },
+        ["count", "ratio", "flag"],
+    )
+
+    arguments = _parsed_arguments(
+        tools,
+        "<function=typed>\n"
+        "<parameter=count>5</parameter>\n"
+        "<parameter=ratio>0.5</parameter>\n"
+        "<parameter=flag>true</parameter>\n"
+        "</function>",
+    )
+
+    assert arguments == {"count": 5, "ratio": 0.5, "flag": True}
+
+
+def test_number_and_boolean_enum_values_accepted():
+    """Enum membership must be checked against the coerced value. A model
+    that emits a valid boolean or number enum value previously got a
+    FunctionCallValidationError because the raw string was compared against
+    the enum.
+    """
+    bool_tool = _typed_tool(
+        {"flag": {"type": "boolean", "enum": [True, False]}}, ["flag"]
+    )
+    assert _parsed_arguments(
+        bool_tool, "<function=typed>\n<parameter=flag>false</parameter>\n</function>"
+    ) == {"flag": False}
+
+    number_tool = _typed_tool(
+        {"ratio": {"type": "number", "enum": [0.5, 1.0]}}, ["ratio"]
+    )
+    assert _parsed_arguments(
+        number_tool, "<function=typed>\n<parameter=ratio>0.5</parameter>\n</function>"
+    ) == {"ratio": 0.5}
+
+
+@pytest.mark.parametrize(
+    "properties,param_tag",
+    [
+        ({"ratio": {"type": "number"}}, "<parameter=ratio>abc</parameter>"),
+        ({"ratio": {"type": "number"}}, "<parameter=ratio>nan</parameter>"),
+        ({"ratio": {"type": "number"}}, "<parameter=ratio>inf</parameter>"),
+        ({"flag": {"type": "boolean"}}, "<parameter=flag>maybe</parameter>"),
+    ],
+)
+def test_number_and_boolean_invalid_values_rejected(properties, param_tag):
+    tools = _typed_tool(properties, [])
+    with pytest.raises(FunctionCallValidationError):
+        _parsed_arguments(tools, f"<function=typed>\n{param_tag}\n</function>")
+
+
+def test_boolean_coercion_is_case_insensitive():
+    tools = _typed_tool({"flag": {"type": "boolean"}}, ["flag"])
+    assert _parsed_arguments(
+        tools, "<function=typed>\n<parameter=flag>True</parameter>\n</function>"
+    ) == {"flag": True}
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("1", True),
+        ("yes", True),
+        ("Y", True),
+        ("t", True),
+        ("on", True),
+        ("0", False),
+        ("no", False),
+        ("N", False),
+        ("f", False),
+        ("off", False),
+    ],
+)
+def test_boolean_params_keep_pydantic_bool_spellings(raw, expected):
+    """Spellings Pydantic's bool validator accepts must not become tool-call
+    errors just because the schema declares a boolean."""
+    tools = _typed_tool({"flag": {"type": "boolean"}}, ["flag"])
+    assert _parsed_arguments(
+        tools, f"<function=typed>\n<parameter=flag>{raw}</parameter>\n</function>"
+    ) == {"flag": expected}
