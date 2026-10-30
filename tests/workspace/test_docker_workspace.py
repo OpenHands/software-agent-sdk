@@ -238,6 +238,10 @@ def test_docker_workspace_uses_forwarded_session_key(
     `OH_SESSION_API_KEYS_0` first (V0 `SESSION_API_KEY` is only a fallback), so
     with both set the workspace has to send the V1 key or the container
     rejects it.
+
+    When neither variable is set (`expected is None`), the workspace must
+    auto-generate a random key rather than leave the container unauthenticated
+    - checked separately below, since the generated value isn't deterministic.
     """
     monkeypatch.delenv("SESSION_API_KEY", raising=False)
     monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
@@ -259,7 +263,15 @@ def test_docker_workspace_uses_forwarded_session_key(
 
         workspace._start_container("test:latest", None)
 
-    assert workspace.api_key == expected
+    if expected is None:
+        assert workspace.api_key is not None
+        assert len(workspace.api_key) >= 32
+        run_cmd = next(
+            call[0][0] for call in mock_exec.call_args_list if "run" in call[0][0]
+        )
+        assert f"OH_SESSION_API_KEYS_0={workspace.api_key}" in run_cmd
+    else:
+        assert workspace.api_key == expected
 
 
 # ===========================================================================
