@@ -268,7 +268,7 @@ def test_create_mcp_tools_skips_disabled_servers():
     with patch("openhands.sdk.mcp.utils.MCPClient") as mock_client_class:
         create_mcp_tools(native_mcp_config(config))
 
-    prepared = mock_client_class.call_args.args[0]
+    prepared = mock_client_class.call_args.args[0].config
     assert list(prepared.mcpServers) == ["kept"]
 
 
