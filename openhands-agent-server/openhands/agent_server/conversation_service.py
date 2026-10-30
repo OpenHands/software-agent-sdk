@@ -1155,6 +1155,31 @@ class ConversationService:
     ) -> ConversationInfo | None:
         return await self.get_conversation(conversation_id)
 
+    async def find_by_voice_binding_id(
+        self, voice_binding_id: str
+    ) -> UUID | None:
+        """Return the conversation_id whose ``voice_binding_id`` matches, or None.
+
+        Minimal implementation for issue #5515 — scans persisted conversations
+        and returns the first match. A follow-up should index this to avoid
+        O(n) scans when the conversation catalog grows.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        # Scan the in-memory event services and the persisted catalog.
+        # The persisted catalog is authoritative for saved controller
+        # conversations that are not currently loaded into memory.
+        for conv_id, record in list(self._conversation_records.items()):
+            info = await self._conversation_info(conv_id, record)
+            if info is not None and info.voice_binding_id == voice_binding_id:
+                return conv_id
+        # Fallback: scan persisted storage via the catalog router
+        all_convs = await self.search_conversations(limit=1000)
+        for info in all_convs.items:
+            if info.voice_binding_id == voice_binding_id:
+                return info.id
+        return None
+
     async def search_conversations(
         self,
         page_id: str | None = None,

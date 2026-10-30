@@ -209,6 +209,16 @@ class _ConversationInfoBase(BaseModel):
         default_factory=dict,
         description="Messages blocked by UserPromptSubmit hooks, keyed by message ID",
     )
+    voice_binding_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional identifier of a Voice relay handoff bound to this "
+            "conversation. When set, Voice relay requests carrying this ID "
+            "route to this saved controller conversation instead of spawning "
+            "a new session. Supports the Insider Cat use case where Voice and "
+            "text must share conversation history."
+        ),
+    )
     last_user_message_id: str | None = Field(
         default=None,
         description=(

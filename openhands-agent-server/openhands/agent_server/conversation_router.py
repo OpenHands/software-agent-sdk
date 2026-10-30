@@ -912,3 +912,90 @@ async def navigate_conversation(
     if not include_skills:
         info = trim_conversation_response_skills(info)
     return info
+
+
+# ---------------------------------------------------------------------------
+# Voice relay binding — issue #5515
+#
+# Insider Cat is a saved controller conversation. Voice relay requests must
+# route to that same conversation so text and Voice share history. The
+# endpoints below let a Voice relay handoff bind to (and later unbind from)
+# a specific saved conversation, and look up which conversation a handoff
+# ID targets so that reasoning turns cannot silently drop the request.
+# ---------------------------------------------------------------------------
+
+
+@conversation_router.put(
+    "/{conversation_id}/voice/bind",
+    summary="Bind a Voice relay handoff to this saved conversation",
+    description=(
+        "Stores ``voice_binding_id`` on the conversation so that later Voice "
+        "requests carrying this handoff ID route here. The binding survives "
+        "intermediate reasoning turns because it is persisted on the "
+        "conversation record, not kept in a turn-local flag."
+    ),
+)
+async def bind_voice_handoff(
+    conversation_id: UUID,
+    voice_binding_id: Annotated[str, Body(..., embed=True)],
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> dict:
+    info = await conversation_service.get_conversation(conversation_id)
+    if info is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found",
+        )
+    info.voice_binding_id = voice_binding_id
+    return {
+        "conversation_id": str(conversation_id),
+        "voice_binding_id": voice_binding_id,
+        "status": "bound",
+    }
+
+
+@conversation_router.delete(
+    "/{conversation_id}/voice/bind",
+    summary="Unbind a Voice relay handoff from this conversation",
+)
+async def unbind_voice_handoff(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> dict:
+    info = await conversation_service.get_conversation(conversation_id)
+    if info is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found",
+        )
+    info.voice_binding_id = None
+    return {
+        "conversation_id": str(conversation_id),
+        "voice_binding_id": None,
+        "status": "unbound",
+    }
+
+
+@conversation_router.get(
+    "/voice/bind/{voice_binding_id}",
+    summary="Look up the conversation bound to a Voice handoff ID",
+    description=(
+        "Reverse lookup: given a Voice handoff ID, return the conversation_id "
+        "it is bound to. Voice relay callers use this to discover which saved "
+        "controller conversation their request should reach before dispatching."
+    ),
+)
+async def lookup_voice_binding(
+    voice_binding_id: str,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> dict:
+    conv_id = await conversation_service.find_by_voice_binding_id(voice_binding_id)
+    if conv_id is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail=f"No conversation bound to voice handoff '{voice_binding_id}'",
+        )
+    return {
+        "voice_binding_id": voice_binding_id,
+        "conversation_id": str(conv_id),
+    }
