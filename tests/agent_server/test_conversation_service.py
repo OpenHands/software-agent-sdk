@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -49,11 +50,14 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.credential import CredentialSyncError
 from openhands.sdk.critic.impl.api import APIBasedCritic
 from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.llm import MessageToolCall, TextContent
+from openhands.sdk.llm.exceptions import LLMAuthenticationError
 from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
@@ -3677,16 +3681,86 @@ class TestAutoTitle:
         with patch(
             "openhands.sdk.llm.llm.LLM.completion",
             side_effect=Exception("model does not exist"),
-        ):
+        ) as mock_completion:
             subscriber = AutoTitleSubscriber(service=service)
             await subscriber(self._user_message_event())
             await self._drain_title_task(
                 lambda: service._publish_error_event_sync.called
             )
 
+        assert mock_completion.call_count == 1
         service._publish_error_event_sync.assert_called_once()
         (exc,) = service._publish_error_event_sync.call_args.args
         assert str(exc) == "model does not exist"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("agent_usage_id", "agent_fails", "expected_title", "expected_errors"),
+        [
+            ("test-llm", False, "Agent Title", []),
+            (
+                "test-llm",
+                True,
+                "Fix the login bug",
+                ["Invalid proxy server token passed"],
+            ),
+            (
+                "acp-managed",
+                False,
+                "Fix the login bug",
+                ["Invalid proxy server token passed"],
+            ),
+        ],
+    )
+    async def test_autotitle_falls_back_to_agent_llm_when_profile_call_fails(
+        self, agent_usage_id, agent_fails, expected_title, expected_errors
+    ):
+        """A failing title profile falls back to the agent's LLM. If no LLM
+        produces a title, one title-specific, non-auth error event is published."""
+        service = self._make_service(
+            title_llm_profile="cheap-model", llm_usage_id=agent_usage_id
+        )
+        service._publish_error_event_sync = partial(
+            EventService._publish_error_event_sync, service
+        )
+
+        def fake_generate(self_llm, _messages, **_kwargs):
+            if self_llm.usage_id == "title-llm":
+                raise LLMAuthenticationError("Invalid proxy server token passed")
+            if agent_fails:
+                raise LLMAuthenticationError("agent key rejected")
+            return MagicMock(
+                message=Message(
+                    role="assistant", content=[TextContent(text="Agent Title")]
+                )
+            )
+
+        with (
+            patch(
+                "openhands.agent_server.persistence.store.get_llm_profile_store"
+            ) as MockStore,
+            patch(
+                "openhands.sdk.llm.llm.LLM.generate",
+                autospec=True,
+                side_effect=fake_generate,
+            ),
+        ):
+            MockStore.return_value.load.return_value = LLM(
+                model="gpt-3.5-turbo", usage_id="title-llm"
+            )
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+        assert service.stored.title == expected_title
+        events = [c.args[0] for c in service._conversation._on_event.call_args_list]
+        assert [e.detail for e in events] == expected_errors
+        for event in events:
+            assert isinstance(event, ConversationErrorEvent)
+            assert event.code == "TitleGenerationError"
+            assert event.classification == ErrorClassification(
+                kind=FailureKind.UNKNOWN, retryable=False
+            )
 
     @pytest.mark.asyncio
     async def test_autotitle_skips_empty_message(self):
