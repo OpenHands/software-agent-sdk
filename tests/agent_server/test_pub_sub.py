@@ -902,3 +902,65 @@ class TestPubSubMaxSubscribers:
         for _ in range(100):
             pubsub.subscribe(_Sub())
         assert len(pubsub._subscribers) == 100
+
+
+class _RecordingSubscriber:
+    """Real ``Subscriber`` that records events and closes, optionally failing."""
+
+    def __init__(self, fail_call: bool = False, fail_close: bool = False):
+        from openhands.agent_server.pub_sub import Subscriber
+
+        outer = self
+
+        class _Sub(Subscriber[str]):
+            async def __call__(self, event: str) -> None:
+                outer.events.append(event)
+                if fail_call:
+                    raise RuntimeError("subscriber call failed")
+
+            async def close(self) -> None:
+                outer.closed = True
+                if fail_close:
+                    raise RuntimeError("subscriber close failed")
+
+        self.events: list[str] = []
+        self.closed = False
+        self.subscriber = _Sub()
+
+
+async def test_real_pubsub_isolates_a_failing_subscriber():
+    from openhands.agent_server.pub_sub import PubSub
+
+    pubsub: PubSub[str] = PubSub()
+    failing = _RecordingSubscriber(fail_call=True)
+    healthy = _RecordingSubscriber()
+    pubsub.subscribe(failing.subscriber)
+    pubsub.subscribe(healthy.subscriber)
+
+    await pubsub("event")
+
+    assert failing.events == ["event"]
+    assert healthy.events == ["event"]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: PubSub.close gathers without return_exceptions, so one failing "
+    "close raises and skips clearing the subscribers",
+)
+async def test_real_pubsub_close_survives_a_failing_subscriber_close():
+    from openhands.agent_server.pub_sub import PubSub
+
+    pubsub: PubSub[str] = PubSub()
+    subscribers = [
+        _RecordingSubscriber(),
+        _RecordingSubscriber(fail_close=True),
+        _RecordingSubscriber(),
+    ]
+    for recorder in subscribers:
+        pubsub.subscribe(recorder.subscriber)
+
+    await pubsub.close()
+
+    assert all(recorder.closed for recorder in subscribers)
+    assert pubsub.subscriber_ids() == set()

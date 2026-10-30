@@ -137,6 +137,61 @@ def test_release_keeps_new_owner_lease_intact_after_takeover(tmp_path: Path) -> 
     assert not (conversation_dir / LEASE_FILE_NAME).exists()
 
 
+@pytest.mark.parametrize(
+    "corrupt_payload",
+    [
+        "{not json",
+        "[]",
+        json.dumps({"owner_instance_id": 7, "generation": 1, "expires_at": 1e12}),
+        json.dumps({"owner_instance_id": "x", "generation": "1", "expires_at": 1e12}),
+        json.dumps({"owner_instance_id": "x", "generation": 1, "expires_at": "soon"}),
+    ],
+)
+def test_corrupt_lease_file_is_treated_as_stale(
+    tmp_path: Path, corrupt_payload: str
+) -> None:
+    conversation_dir = tmp_path / "conversation"
+    conversation_dir.mkdir()
+    (conversation_dir / LEASE_FILE_NAME).write_text(corrupt_payload)
+    lease = ConversationLease(
+        conversation_dir=conversation_dir, owner_instance_id="primary"
+    )
+
+    claim = lease.claim()
+
+    assert claim.generation == 1
+    assert claim.takeover is False
+    assert _read_lease_payload(conversation_dir)["owner_instance_id"] == "primary"
+
+
+def test_owner_loses_lease_when_lease_file_is_corrupted(tmp_path: Path) -> None:
+    conversation_dir = tmp_path / "conversation"
+    lease = ConversationLease(
+        conversation_dir=conversation_dir, owner_instance_id="primary"
+    )
+    claim = lease.claim()
+    (conversation_dir / LEASE_FILE_NAME).write_text("{not json")
+
+    with pytest.raises(ConversationOwnershipLostError):
+        lease.renew(claim.generation)
+    with pytest.raises(ConversationOwnershipLostError):
+        with lease.guarded_write(claim.generation):
+            pass
+
+
+def test_release_without_a_lease_file_is_a_no_op(tmp_path: Path) -> None:
+    conversation_dir = tmp_path / "conversation"
+    lease = ConversationLease(
+        conversation_dir=conversation_dir, owner_instance_id="primary"
+    )
+    claim = lease.claim()
+    (conversation_dir / LEASE_FILE_NAME).unlink()
+
+    lease.release(claim.generation)
+
+    assert not (conversation_dir / LEASE_FILE_NAME).exists()
+
+
 def test_claim_writes_owner_host_and_pid(tmp_path: Path) -> None:
     conversation_dir = tmp_path / "conversation"
     lease = ConversationLease(

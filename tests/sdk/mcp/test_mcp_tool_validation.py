@@ -99,3 +99,45 @@ def test_mcp_action_from_arguments_raises_on_invalid():
     # extra field should also cause validation error
     with pytest.raises(ValidationError):
         tool.action_from_arguments({"url": "https://x.com", "data": {"x": 1}})
+
+
+def test_mcp_action_from_arguments_wrong_type_raises_validation_error():
+    tool = _make_tool_with_schema(
+        {
+            "type": "object",
+            "properties": {"limit": {"type": "integer"}},
+            "required": ["limit"],
+        }
+    )
+
+    with pytest.raises(ValidationError):
+        tool.action_from_arguments({"limit": "not-a-number"})
+
+
+def test_mcp_action_from_arguments_without_properties_accepts_empty_call():
+    tool = _make_tool_with_schema({"type": "object"})
+
+    assert tool.action_from_arguments({}).data == {}
+    with pytest.raises(ValidationError):
+        tool.action_from_arguments({"unexpected": 1})
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "BUG: Schema.from_mcp_schema passes MCP argument names straight to "
+        "pydantic.create_model, so '_'-prefixed names raise NameError, which "
+        "Agent._get_action_event does not catch"
+    ),
+)
+def test_mcp_action_from_arguments_accepts_underscore_prefixed_argument():
+    tool = _make_tool_with_schema(
+        {
+            "type": "object",
+            "properties": {"_cursor": {"type": "string"}},
+            "required": ["_cursor"],
+        },
+        name="paginate",
+    )
+
+    assert tool.action_from_arguments({"_cursor": "abc"}).data == {"_cursor": "abc"}

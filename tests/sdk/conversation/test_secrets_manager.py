@@ -1,5 +1,8 @@
 """Tests for SecretsManager class."""
 
+from typing import Any
+
+import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.conversation.secret_registry import (
@@ -459,6 +462,68 @@ def test_mask_secrets_retries_until_source_succeeds():
     assert secret_registry.mask_secrets_in_output("leak: recovered-value") == (
         "leak: <secret-hidden>"
     )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "BUG: mask_secrets_in_output replaces values in insertion order, so a "
+        "shorter secret that prefixes a longer one leaves the longer one's tail "
+        "in cleartext"
+    ),
+)
+def test_mask_secrets_in_output_masks_the_longest_overlapping_value():
+    """Same contract as compile_stream_mask: no fragment of a secret survives."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"SHORT": "abc", "LONG": "abc123"})
+
+    assert secret_registry.mask_secrets_in_output("leak: abc123") == (
+        "leak: <secret-hidden>"
+    )
+
+
+def test_mask_secrets_in_output_masks_every_occurrence():
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"TOKEN": "hunter2"})
+
+    assert secret_registry.mask_secrets_in_output("hunter2 and hunter2") == (
+        "<secret-hidden> and <secret-hidden>"
+    )
+
+
+def test_mask_secrets_in_output_returns_empty_text_unchanged():
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"FAILING_SECRET": MyCountingFailingSource()})
+
+    MyCountingFailingSource.attempts = 0
+    assert secret_registry.mask_secrets_in_output("") == ""
+    # Nothing to mask, so no source is resolved.
+    assert MyCountingFailingSource.attempts == 0
+
+
+def test_update_secrets_rejects_unsupported_value_types():
+    secret_registry = SecretRegistry()
+    bad: dict[str, Any] = {"BAD": 123}
+
+    with pytest.raises(ValueError, match="Invalid SecretValue"):
+        secret_registry.update_secrets(bad)
+
+    assert secret_registry.secret_sources == {}
+
+
+def test_compile_stream_mask_holds_back_a_partial_value_until_flush():
+    """A prefix of a secret at the end of a chunk is withheld, then released
+    unmasked on flush when the rest never arrives."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"TOKEN": "hunter2"})
+    secret_registry.get_secrets_as_env_vars("echo $TOKEN")
+
+    masker = secret_registry.compile_stream_mask()
+
+    assert masker.feed("say hunt") == "sa"
+    assert masker.feed("") == ""
+    assert masker.flush() == "y hunt"
+    assert masker.flush() == ""
 
 
 def test_compile_stream_mask_uses_only_already_resolved_values():

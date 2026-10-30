@@ -154,6 +154,26 @@ def test_docker_workspace_resume_raises_if_no_container():
         workspace.resume()
 
 
+@pytest.mark.parametrize(
+    ("method", "match"),
+    [("pause", "Failed to pause"), ("resume", "Failed to resume")],
+)
+def test_docker_workspace_pause_resume_surface_docker_errors(
+    mock_docker_workspace, method, match
+):
+    workspace, mock_exec = mock_docker_workspace
+    mock_exec.return_value = Mock(returncode=1, stdout="", stderr="no such container")
+
+    with (
+        patch.object(workspace, "_wait_for_health") as mock_wait,
+        pytest.raises(RuntimeError, match=match) as excinfo,
+    ):
+        getattr(workspace, method)()
+
+    assert "no such container" in str(excinfo.value)
+    mock_wait.assert_not_called()
+
+
 # =============================================================================
 # APIRemoteWorkspace Tests
 # =============================================================================

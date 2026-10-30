@@ -1411,3 +1411,73 @@ def test_closing_the_session_stops_waiting_on_a_running_command(terminal_type):
     assert obs.is_error
     assert obs.exit_code == -1
     assert "terminal was closed" in obs.text
+
+
+@parametrize_terminal_types
+def test_input_without_running_command_is_rejected(terminal_type):
+    session = create_terminal_session(work_dir=os.getcwd(), terminal_type=terminal_type)
+    session.initialize()
+    try:
+        obs = session.execute(TerminalAction(command="C-c", is_input=True))
+
+        assert obs.is_error is True
+        assert obs.text == "No previous running command to interact with."
+        assert session.prev_status is None
+    finally:
+        session.close()
+
+
+@parametrize_terminal_types
+def test_non_utf8_output_does_not_break_the_session(terminal_type):
+    session = create_terminal_session(work_dir=os.getcwd(), terminal_type=terminal_type)
+    session.initialize()
+    try:
+        obs = session.execute(TerminalAction(command="printf 'start\\xff\\xfeend\\n'"))
+
+        assert obs.metadata.exit_code == 0
+        assert "start" in obs.text
+        assert "end" in obs.text
+
+        obs = session.execute(TerminalAction(command="echo still-alive"))
+        assert "still-alive" in obs.text
+    finally:
+        session.close()
+
+
+@parametrize_terminal_types
+def test_subshell_exit_code_is_reported(terminal_type):
+    session = create_terminal_session(work_dir=os.getcwd(), terminal_type=terminal_type)
+    session.initialize()
+    try:
+        obs = session.execute(TerminalAction(command="(exit 42)"))
+
+        assert obs.metadata.exit_code == 42
+        assert "exit code 42" in obs.metadata.suffix
+    finally:
+        session.close()
+
+
+@parametrize_terminal_types
+def test_output_without_trailing_newline_is_captured(terminal_type):
+    session = create_terminal_session(work_dir=os.getcwd(), terminal_type=terminal_type)
+    session.initialize()
+    try:
+        obs = session.execute(TerminalAction(command="printf 'no-newline-tail'"))
+
+        assert obs.metadata.exit_code == 0
+        assert obs.text.strip() == "no-newline-tail"
+    finally:
+        session.close()
+
+
+@parametrize_terminal_types
+def test_unicode_output_round_trips(terminal_type):
+    session = create_terminal_session(work_dir=os.getcwd(), terminal_type=terminal_type)
+    session.initialize()
+    try:
+        obs = session.execute(TerminalAction(command="echo 'café 数据 😀'"))
+
+        assert obs.metadata.exit_code == 0
+        assert obs.text.strip() == "café 数据 😀"
+    finally:
+        session.close()

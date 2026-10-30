@@ -3,6 +3,9 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, Mock, patch
 
+import pytest
+from pydantic import SecretStr
+
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.llm_registry import LLMRegistry, RegistryEvent
 
@@ -328,3 +331,22 @@ def test_llm_registry_does_not_reset_metrics_for_independent_llms():
     # llm2 should have its own independent metrics
     assert llm2.metrics is not llm1.metrics
     assert llm2.metrics.accumulated_cost == 0.0
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "BUG: LLMRegistry.remove() keeps the metrics id in _metrics_ids, so "
+        "re-adding the same LLM is treated as shared and its metrics are reset"
+    ),
+)
+def test_llm_registry_readd_after_remove_keeps_metrics():
+    registry = LLMRegistry()
+    llm = LLM(model="gpt-4o", api_key=SecretStr("test-key"), usage_id="slot")
+    registry.add(llm)
+    llm.metrics.add_cost(3.0)
+
+    registry.remove("slot")
+    registry.add(llm)
+
+    assert llm.metrics.accumulated_cost == 3.0

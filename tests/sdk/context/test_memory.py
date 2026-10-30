@@ -144,6 +144,44 @@ def test_load_memory_treats_unreadable_index_as_absent(
     assert "Project memory" not in text
 
 
+def test_load_memory_treats_non_utf8_index_as_absent(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    index = workspace / MEMORY_INDEX_RELPATH
+    index.parent.mkdir(parents=True)
+    index.write_bytes(b"\xff\xfe not utf-8 \x80")
+
+    assert load_memory(workspace) is None
+
+
+def test_load_memory_single_overlong_line_collapses_to_notice(tmp_path: Path) -> None:
+    """A line that cannot fit is dropped whole, never cut mid-line."""
+    workspace = tmp_path / "workspace"
+    _write_index(workspace, "x" * 500)
+
+    text = load_memory(workspace, char_budget=120)
+
+    assert text == (
+        "# Project memory (.openhands/memory/MEMORY.md)\n[earlier memory truncated]"
+    )
+
+
+def test_load_memory_short_tier_share_rolls_over_to_long_tier(
+    isolated_home: Path, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "workspace"
+    _write_index(isolated_home, "\n".join(f"user line {i:02d}" for i in range(30)))
+    _write_index(workspace, "p")
+
+    text = load_memory(workspace, char_budget=300)
+
+    assert text is not None
+    assert len(text) <= 300
+    assert text.endswith("# Project memory (.openhands/memory/MEMORY.md)\np")
+    # Fair share alone (~100 chars per tier) would keep only a handful of user
+    # lines; the unused project share must go to the user tier instead.
+    assert text.count("user line") > 10
+
+
 # --- read/write alignment: the write guidance and the loader agree on a path ----
 
 # The user-tier bullet the static <MEMORY> block renders, e.g.

@@ -193,6 +193,40 @@ def test_partial_release_on_timeout():
     t.join()
 
 
+def test_nested_lock_on_same_key_is_reentrant_and_cleaned_up():
+    """A tool that re-enters its own resource on the same thread must not
+    deadlock, and the lock entry must not outlive the outer block."""
+    mgr = ResourceLockManager(timeouts={"file": 0.1})
+    with mgr.lock("file:/a.py"):
+        with mgr.lock("file:/a.py", "file:/b.py"):
+            pass
+        assert "file:/a.py" in mgr._locks
+        assert "file:/b.py" not in mgr._locks
+
+    assert mgr._locks == {}
+    assert mgr._refcounts == {}
+
+
+def test_exception_in_nested_block_releases_every_level():
+    mgr = ResourceLockManager(timeouts={"file": 1.0})
+    with pytest.raises(RuntimeError):
+        with mgr.lock("file:/a.py"):
+            with mgr.lock("file:/a.py"):
+                raise RuntimeError("tool failed")
+
+    acquired: list[bool] = []
+
+    def other_thread() -> None:
+        with mgr.lock("file:/a.py"):
+            acquired.append(True)
+
+    t = threading.Thread(target=other_thread)
+    t.start()
+    t.join(timeout=5)
+    assert acquired == [True]
+    assert mgr._locks == {}
+
+
 def test_cleanup_removes_unused_locks():
     """After all holders release, the internal lock should be cleaned up."""
     mgr = ResourceLockManager()

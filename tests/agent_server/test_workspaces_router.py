@@ -303,6 +303,63 @@ def test_list_workspaces_returns_409_when_persisted_file_is_corrupted(client):
     assert "corrupt" in response.json()["detail"].lower()
 
 
+@pytest.mark.parametrize(
+    ("method", "url", "kwargs"),
+    [
+        (
+            "post",
+            "/api/workspaces",
+            {"json": {"workspaces": [{"id": "/b", "name": "b", "path": "/b"}]}},
+        ),
+        (
+            "post",
+            "/api/workspaces/parents",
+            {"json": {"parents": [{"id": "/p", "name": "p", "path": "/p"}]}},
+        ),
+        ("delete", "/api/workspaces", {"params": {"path": "/a"}}),
+        ("delete", "/api/workspaces/parents", {"params": {"path": "/a"}}),
+    ],
+)
+def test_writes_to_a_corrupted_workspaces_file_are_refused_and_keep_it(
+    client, method, url, kwargs
+):
+    client.post(
+        "/api/workspaces",
+        json={"workspaces": [{"id": "/a", "name": "a", "path": "/a"}]},
+    )
+    workspaces_file = Path(os.environ["OH_PERSISTENCE_DIR"]) / "workspaces.json"
+    workspaces_file.write_text("{not valid json", encoding="utf-8")
+    reset_stores()
+
+    response = client.request(method, url, **kwargs)
+
+    assert response.status_code == 409
+    assert workspaces_file.read_text(encoding="utf-8") == "{not valid json"
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        {"id": "/a", "name": "a"},
+        {"id": "/a", "name": "a", "path": ""},
+        {"id": "", "name": "a", "path": "/a"},
+        {"id": "/a", "name": "", "path": "/a"},
+        {"id": "/a", "name": "n" * 257, "path": "/a"},
+    ],
+)
+def test_add_workspaces_rejects_invalid_items(client, item):
+    response = client.post("/api/workspaces", json={"workspaces": [item]})
+
+    assert response.status_code == 422
+    assert client.get("/api/workspaces").json()["workspaces"] == []
+
+
+def test_delete_workspace_parent_returns_404_when_path_absent(client):
+    response = client.delete("/api/workspaces/parents", params={"path": "/missing"})
+
+    assert response.status_code == 404
+
+
 # ── Auth ─────────────────────────────────────────────────────────────────
 #
 # The /api router applies a header-only ``X-Session-API-Key`` dependency when

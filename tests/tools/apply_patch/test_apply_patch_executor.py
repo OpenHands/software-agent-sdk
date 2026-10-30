@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from openhands.tools.apply_patch.definition import ApplyPatchAction, ApplyPatchExecutor
+from tests.platform_utils import symlink_or_skip
 
 
 @pytest.fixture()
@@ -275,3 +276,131 @@ def test_invalid_move_to_path_returns_differror(tmp_ws: Path):
     obs = run_exec(tmp_ws, patch)
     assert obs.is_error
     assert "Invalid move path" in obs.text
+
+
+def test_update_through_symlink_escaping_workspace_is_rejected(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret\n")
+    symlink_or_skip(outside, workspace / "link.txt")
+
+    patch = (
+        "*** Begin Patch\n*** Update File: link.txt\n@@\n-secret\n+owned\n*** End Patch"
+    )
+    obs = run_exec(workspace, patch)
+
+    assert obs.is_error
+    assert "Absolute or escaping paths" in obs.text
+    assert outside.read_text() == "secret\n"
+
+
+def test_invalid_context_leaves_file_untouched(tmp_ws: Path):
+    fp = tmp_ws / "f.txt"
+    fp.write_text("a\nb\n")
+    patch = "*** Begin Patch\n*** Update File: f.txt\n@@\n-not there\n+x\n*** End Patch"
+    obs = run_exec(tmp_ws, patch)
+
+    assert obs.is_error
+    assert "Invalid Context" in obs.text
+    assert fp.read_text() == "a\nb\n"
+
+
+def test_missing_end_patch_is_rejected(tmp_ws: Path):
+    obs = run_exec(tmp_ws, "*** Begin Patch\n*** Add File: new.txt\n+x\n")
+
+    assert obs.is_error
+    assert not (tmp_ws / "new.txt").exists()
+
+
+def test_add_file_line_without_plus_is_rejected(tmp_ws: Path):
+    patch = "*** Begin Patch\n*** Add File: new.txt\nno plus\n*** End Patch"
+    obs = run_exec(tmp_ws, patch)
+
+    assert obs.is_error
+    assert "Invalid Add File Line" in obs.text
+    assert not (tmp_ws / "new.txt").exists()
+
+
+def test_add_file_with_unicode_content(tmp_ws: Path):
+    patch = "*** Begin Patch\n*** Add File: uni.txt\n+café 😀 数据\n*** End Patch"
+    obs = run_exec(tmp_ws, patch)
+
+    assert not obs.is_error
+    assert (tmp_ws / "uni.txt").read_text(encoding="utf-8") == "café 😀 数据"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: Update of a missing file is reported as 'Delete File Error'",
+)
+def test_update_missing_file_error_names_update(tmp_ws: Path):
+    patch = "*** Begin Patch\n*** Update File: missing.txt\n@@\n-a\n+b\n*** End Patch"
+    obs = run_exec(tmp_ws, patch)
+
+    assert obs.is_error
+    assert "Missing File" in obs.text
+    assert "Delete File" not in obs.text
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: non-UTF-8 file raises UnicodeDecodeError out of the executor",
+)
+def test_update_non_utf8_file_returns_error_observation(tmp_ws: Path):
+    fp = tmp_ws / "latin1.txt"
+    fp.write_bytes("café\n".encode("latin-1"))
+    patch = "*** Begin Patch\n*** Update File: latin1.txt\n@@\n-caf\n+x\n*** End Patch"
+    obs = run_exec(tmp_ws, patch)
+
+    assert obs.is_error
+    assert fp.read_bytes() == "café\n".encode("latin-1")
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: updating a directory raises IsADirectoryError out of the executor",
+)
+def test_update_directory_returns_error_observation(tmp_ws: Path):
+    (tmp_ws / "sub").mkdir()
+    patch = "*** Begin Patch\n*** Update File: sub\n@@\n-a\n+b\n*** End Patch"
+    obs = run_exec(tmp_ws, patch)
+
+    assert obs.is_error
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: a rejected later path leaves earlier files written (non-atomic)",
+)
+def test_rejected_patch_does_not_apply_earlier_files(tmp_ws: Path):
+    patch = (
+        "*** Begin Patch\n"
+        "*** Add File: ok.txt\n"
+        "+x\n"
+        "*** Add File: ../escape.txt\n"
+        "+y\n"
+        "*** End Patch"
+    )
+    obs = run_exec(tmp_ws, patch)
+
+    assert obs.is_error
+    assert not (tmp_ws / "ok.txt").exists()
+    assert not (tmp_ws.parent / "escape.txt").exists()
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="text-mode writes emit CRLF natively on Windows"
+)
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: updating a CRLF file rewrites every line ending as LF",
+)
+def test_update_preserves_crlf_line_endings(tmp_ws: Path):
+    fp = tmp_ws / "crlf.txt"
+    fp.write_bytes(b"a\r\nb\r\n")
+    patch = "*** Begin Patch\n*** Update File: crlf.txt\n@@\n a\n-b\n+B\n*** End Patch"
+    obs = run_exec(tmp_ws, patch)
+
+    assert not obs.is_error
+    assert fp.read_bytes() == b"a\r\nB\r\n"

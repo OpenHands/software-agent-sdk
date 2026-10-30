@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from typing import Any, ClassVar
 
 import pytest
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from openhands.sdk.llm import ImageContent, TextContent
 from openhands.sdk.tool.schema import Action, Observation, Schema, _process_schema_node
@@ -487,6 +487,89 @@ def test_anyof_ignores_non_schema_members(member):
     assert _process_schema_node({"anyOf": [member, {"type": "string"}]}, {}) == {
         "type": "string"
     }
+
+
+def test_unresolvable_ref_does_not_raise():
+    node = {"$ref": "#/$defs/Missing", "description": "kept"}
+
+    assert _process_schema_node(node, {}) == {"description": "kept"}
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "BUG: _process_schema_node calls .get() on array 'items', so the "
+        "valid draft-07 tuple form (items: [...]) raises AttributeError"
+    ),
+)
+def test_tuple_form_items_does_not_raise():
+    node = {
+        "type": "object",
+        "properties": {
+            "pair": {
+                "type": "array",
+                "items": [{"type": "string"}, {"type": "integer"}],
+            }
+        },
+    }
+
+    result = _process_schema_node(node, {})
+
+    assert result["properties"]["pair"]["type"] == "array"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "BUG: _process_schema_node only recurses when type == 'object'/'array', "
+        "so a nullable type list drops nested properties, required and items"
+    ),
+)
+def test_nullable_type_list_keeps_nested_structure():
+    node = {
+        "type": "object",
+        "properties": {
+            "filter": {
+                "type": ["object", "null"],
+                "properties": {"field": {"type": "string"}},
+                "required": ["field"],
+            },
+            "tags": {"type": ["array", "null"], "items": {"type": "string"}},
+        },
+    }
+
+    result = _process_schema_node(node, {})
+
+    assert result["properties"]["filter"]["properties"] == {"field": {"type": "string"}}
+    assert result["properties"]["filter"]["required"] == ["field"]
+    assert result["properties"]["tags"]["items"] == {"type": "string"}
+
+
+def test_from_mcp_schema_rejects_non_object_schema():
+    with pytest.raises(AssertionError, match="object"):
+        Schema.from_mcp_schema("Bad", {"type": "array"})
+
+
+def test_from_mcp_schema_optional_fields_accept_null_and_omission():
+    model = Action.from_mcp_schema(
+        "GeneratedAction",
+        {
+            "type": "object",
+            "properties": {"q": {"type": "string"}, "n": {"type": "integer"}},
+            "required": ["q"],
+        },
+    )
+
+    assert model.model_validate({"q": "x"}).model_dump(exclude={"kind"}) == {
+        "q": "x",
+        "n": None,
+    }
+    assert model.model_validate({"q": "x", "n": None}).model_dump(exclude={"kind"}) == {
+        "q": "x",
+        "n": None,
+    }
+    with pytest.raises(ValidationError):
+        model.model_validate({"n": 1})
 
 
 def test_schema_mcp_aliases_use_declared_class_apis():

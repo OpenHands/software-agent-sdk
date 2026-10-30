@@ -1,5 +1,6 @@
 """Comprehensive edge case tests for EventLog class."""
 
+from contextlib import contextmanager
 from unittest.mock import Mock
 
 import pytest
@@ -788,3 +789,123 @@ def test_path_to_root_legacy_chain_spans_a_gap():
         "aaaaaaaa-0000",
         "cccccccc-0000",
     ]
+
+
+def test_failed_write_leaves_the_log_unchanged(monkeypatch):
+    """A write error must not advance the index, so the next append reuses it."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("aaaaaaaa-0000", "First"))
+
+    original_write = fs.write
+
+    def failing_write(path: str, contents: str | bytes) -> None:
+        if "bbbbbbbb-0000" in path:
+            raise OSError("disk full")
+        original_write(path, contents)
+
+    monkeypatch.setattr(fs, "write", failing_write)
+    with pytest.raises(OSError, match="disk full"):
+        log.append(create_test_event("bbbbbbbb-0000", "Lost"))
+    monkeypatch.setattr(fs, "write", original_write)
+
+    assert len(log) == 1
+    assert "bbbbbbbb-0000" not in log
+    assert log.append(create_test_event("cccccccc-0000", "Second")) == 1
+    assert [e.id for e in EventLog(fs)] == ["aaaaaaaa-0000", "cccccccc-0000"]
+
+
+def test_write_guard_error_leaves_the_log_unchanged():
+    """An exception from the write guard aborts the append without a file."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+
+    @contextmanager
+    def refusing_guard():
+        raise RuntimeError("conversation is closed")
+        yield
+
+    log.set_write_guard(refusing_guard)
+    with pytest.raises(RuntimeError, match="conversation is closed"):
+        log.append(create_test_event("aaaaaaaa-0000"))
+
+    assert len(log) == 0
+    assert len(EventLog(fs)) == 0
+
+
+def test_append_rejects_unknown_parent_without_writing():
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("aaaaaaaa-0000"))
+
+    with pytest.raises(ValueError, match="does not exist"):
+        log.append(_child("bbbbbbbb-0000", "ffffffff-0000"))
+
+    assert len(log) == 1
+    assert len(EventLog(fs)) == 1
+
+
+def test_slices_with_negative_step_and_out_of_range_bounds():
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    ids = [f"{c * 8}-0000" for c in "abc"]
+    for event_id in ids:
+        log.append(create_test_event(event_id))
+
+    assert [e.id for e in log[::-1]] == ids[::-1]
+    assert [e.id for e in log[1:100]] == ids[1:]
+    assert log[5:] == []
+    with pytest.raises(IndexError):
+        log[3]
+
+
+def test_contains_handles_unknown_ids_and_non_string_items():
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    event = create_test_event("aaaaaaaa-0000")
+    log.append(event)
+
+    assert event in log
+    assert "aaaaaaaa-0000" in log
+    assert "ffffffff-0000" not in log
+    assert create_test_event("ffffffff-0000") not in log
+    assert 0 not in log
+    assert None not in log
+
+
+def test_get_seq_rejects_out_of_range_indices():
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("aaaaaaaa-0000"))
+
+    assert log.get_seq(-1) == 0
+    with pytest.raises(IndexError):
+        log.get_seq(1)
+    with pytest.raises(IndexError):
+        log.get_seq(-2)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "BUG: _count_events_on_disk counts every event-*.json, but the scan "
+        "only indexes names matching EVENT_NAME_RE, so a stray file inflates "
+        "len() past the mapped indices and iteration raises KeyError"
+    ),
+)
+def test_stray_event_named_file_does_not_corrupt_a_legacy_log():
+    """A legacy (marker-less) log with a stray ``event-*.json`` file must stay
+    readable after an append: the stray file is not an event."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("aaaaaaaa-0000", "First"))
+    for path in list(fs.files):
+        if posix_path_name(path).startswith("."):
+            del fs.files[path]
+    fs.write(f"{EVENTS_DIR}/event-backup.json", "{}")
+
+    reopened = EventLog(fs)
+    reopened.append(create_test_event("bbbbbbbb-0000", "Second"))
+
+    assert len(reopened) == 2
+    assert [e.id for e in reopened] == ["aaaaaaaa-0000", "bbbbbbbb-0000"]

@@ -1,5 +1,8 @@
-"""Tests for CriticClient api_key handling."""
+"""Tests for CriticClient api_key handling, inference and response parsing."""
 
+import time
+
+import httpx
 import pytest
 from pydantic import SecretStr
 
@@ -8,6 +11,8 @@ from openhands.sdk.critic.impl.api import APIBasedCritic
 from openhands.sdk.critic.impl.api.client import (
     DEFAULT_CRITIC_MODEL_NAME,
     DEFAULT_CRITIC_SERVER_URL,
+    ClassificationItem,
+    ClassificationResponse,
     CriticClient,
 )
 from openhands.sdk.utils.cipher import Cipher
@@ -173,3 +178,133 @@ def test_agent_dump_encrypts_nested_critic_api_key_with_cipher():
     assert isinstance(restored.critic, APIBasedCritic)
     assert isinstance(restored.critic.api_key, SecretStr)
     assert restored.critic.api_key.get_secret_value() == "critic-secret"
+
+
+def _client_with_transport(monkeypatch, handler) -> tuple[CriticClient, list[int]]:
+    """A client whose /classify calls go to ``handler``; returns the call log."""
+    calls: list[int] = []
+
+    def recording_handler(request: httpx.Request) -> httpx.Response:
+        response = handler(len(calls))
+        calls.append(response.status_code)
+        return response
+
+    monkeypatch.setattr(
+        CriticClient, "apply_chat_template", lambda self, messages, tools=None: "p"
+    )
+    # Retries back off with real sleeps; skip them.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    client = CriticClient(api_key="key", server_url="http://critic.invalid")
+    client._client = httpx.Client(transport=httpx.MockTransport(recording_handler))
+    return client, calls
+
+
+def test_classify_trace_retries_a_500_then_succeeds(monkeypatch):
+    ok = {"data": [{"probs": [0.5], "num_classes": 1}]}
+    client, calls = _client_with_transport(
+        monkeypatch,
+        lambda n: httpx.Response(500) if n == 0 else httpx.Response(200, json=ok),
+    )
+
+    response = client.classify_trace([{"role": "user", "content": "hi"}])
+
+    assert calls == [500, 200]
+    assert response.data[0].probs == [0.5]
+
+
+def test_classify_trace_gives_up_after_three_500s(monkeypatch):
+    client, calls = _client_with_transport(monkeypatch, lambda n: httpx.Response(500))
+
+    with pytest.raises(httpx.HTTPStatusError):
+        client.classify_trace([])
+
+    assert calls == [500, 500, 500]
+
+
+@pytest.mark.parametrize("status", [400, 401, 429, 503])
+def test_classify_trace_does_not_retry_other_errors(monkeypatch, status):
+    client, calls = _client_with_transport(
+        monkeypatch, lambda n: httpx.Response(status)
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        client.classify_trace([])
+
+    assert calls == [status]
+
+
+def test_classify_trace_without_key_fails_before_any_request(monkeypatch):
+    client, calls = _client_with_transport(monkeypatch, lambda n: httpx.Response(200))
+    client.api_key = None
+
+    with pytest.raises(ValueError, match="api_key must be non-empty"):
+        client.classify_trace([])
+
+    assert calls == []
+
+
+def _response(probs: list[float], num_classes: int | None = None):
+    return ClassificationResponse(
+        data=[ClassificationItem(probs=probs, num_classes=num_classes)]
+    )
+
+
+def test_extract_prob_map_aligns_probs_to_labels():
+    client = CriticClient(api_key="key")
+    probs = [i / 100 for i in range(len(client.all_labels))]
+
+    prob_map = client.extract_prob_map(_response(probs, num_classes=len(probs)))
+
+    assert prob_map.order == list(client.all_labels)
+    assert prob_map.probs["success"] == 0.0
+    assert prob_map.probs[client.all_labels[-1]] == probs[-1]
+
+
+@pytest.mark.parametrize(
+    ("response", "match"),
+    [
+        (ClassificationResponse(data=[]), "empty response.data"),
+        (_response([]), "empty 'probs'"),
+        (_response([0.1, 0.2], num_classes=3), "num_classes"),
+        (_response([0.1, 0.2]), r"len\(probs\)"),
+    ],
+)
+def test_extract_prob_map_rejects_malformed_responses(response, match):
+    client = CriticClient(api_key="key")
+
+    with pytest.raises(ValueError, match=match):
+        client.extract_prob_map(response)
+
+
+def test_extract_prob_map_without_success_label():
+    client = CriticClient(api_key="key", has_success_label=False)
+    probs = [0.1] * len(client.all_labels)
+
+    prob_map = client.extract_prob_map(_response(probs))
+
+    assert "success" not in prob_map.probs
+    assert len(prob_map.probs) == len(probs)
+
+
+def test_normalize_messages_flattens_odd_content_shapes():
+    messages = [
+        {"role": "user", "content": None},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "a"},
+                {"type": "image_url", "image_url": {"url": "x"}},
+                "not-a-block",
+                {"type": "text", "text": "b"},
+            ],
+        },
+        {"role": "tool", "content": 42},
+        {"content": "no role"},
+    ]
+
+    assert CriticClient.normalize_messages(messages) == [
+        {"role": "user", "content": ""},
+        {"role": "assistant", "content": "a\nb"},
+        {"role": "tool", "content": "42"},
+        {"role": "", "content": "no role"},
+    ]

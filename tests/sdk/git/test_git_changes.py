@@ -830,3 +830,83 @@ def test_get_git_changes_non_repo_without_repo_below_still_raises():
 
         with pytest.raises(GitRepositoryError):
             get_git_changes(temp_dir)
+
+
+def _commit_all(repo_dir: Path) -> None:
+    run_bash_command("git add -A", str(repo_dir))
+    run_bash_command("git commit -q -m 'commit'", str(repo_dir))
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: _parse_name_status splits on any whitespace, so a path "
+    "containing a space raises GitCommandError",
+)
+def test_get_changes_in_repo_path_with_space(tmp_path):
+    setup_git_repo(str(tmp_path))
+    (tmp_path / "my notes.txt").write_text("before")
+    _commit_all(tmp_path)
+    (tmp_path / "my notes.txt").write_text("after")
+
+    changes = get_changes_in_repo(tmp_path, ref="HEAD")
+
+    assert changes == [
+        GitChange(status=GitChangeStatus.UPDATED, path=Path("my notes.txt"))
+    ]
+
+
+def test_get_changes_in_repo_untracked_path_with_space(tmp_path):
+    """Untracked files are listed one per line, so spaces survive there."""
+    setup_git_repo(str(tmp_path))
+
+    (tmp_path / "my notes.txt").write_text("new")
+
+    assert get_changes_in_repo(tmp_path, ref="HEAD") == [
+        GitChange(status=GitChangeStatus.ADDED, path=Path("my notes.txt"))
+    ]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: git's core.quotePath output is not unquoted, so a non-ASCII "
+    "path comes back as '\"caf\\303\\251.txt\"'",
+)
+@pytest.mark.parametrize("tracked", [True, False], ids=["modified", "untracked"])
+def test_get_changes_in_repo_non_ascii_path(tmp_path, tracked):
+    setup_git_repo(str(tmp_path))
+    # Pin git's default so a developer's global core.quotePath=false cannot
+    # hide the behavior under test.
+    run_bash_command("git config core.quotePath true", str(tmp_path))
+    (tmp_path / "base.txt").write_text("base")
+    if tracked:
+        (tmp_path / "café.txt").write_text("before")
+    _commit_all(tmp_path)
+    (tmp_path / "café.txt").write_text("after")
+
+    changes = get_changes_in_repo(tmp_path, ref="HEAD")
+
+    assert [change.path for change in changes] == [Path("café.txt")]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: a type change ('T', e.g. file -> symlink) is an unknown "
+    "status and aborts the whole change listing",
+)
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_get_changes_in_repo_type_change_does_not_abort_listing(tmp_path):
+    setup_git_repo(str(tmp_path))
+    (tmp_path / "target.txt").write_text("target")
+    (tmp_path / "link.txt").write_text("regular file")
+    (tmp_path / "other.txt").write_text("before")
+    _commit_all(tmp_path)
+    (tmp_path / "link.txt").unlink()
+    (tmp_path / "link.txt").symlink_to("target.txt")
+    (tmp_path / "other.txt").write_text("after")
+
+    changes = get_changes_in_repo(tmp_path, ref="HEAD")
+
+    assert {change.path for change in changes} == {
+        Path("link.txt"),
+        Path("other.txt"),
+    }

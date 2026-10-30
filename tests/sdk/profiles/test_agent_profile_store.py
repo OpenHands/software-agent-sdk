@@ -439,6 +439,89 @@ def test_list_summaries_skips_invalid_filename(
     assert [s["name"] for s in agent_store.list_summaries()] == ["oh"]
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: list_summaries catches OSError/JSONDecodeError but not "
+    "UnicodeDecodeError, so one non-UTF-8 file breaks every listing",
+)
+def test_list_summaries_skips_undecodable_file(
+    agent_store: AgentProfileStore, openhands_profile: OpenHandsAgentProfile
+) -> None:
+    agent_store.save(openhands_profile)
+    (agent_store.base_dir / "binary.json").write_bytes(b"\xff\xfe\x00garbage")
+
+    assert [s["name"] for s in agent_store.list_summaries()] == ["oh"]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: set_llm_profile_ref does not treat UnicodeDecodeError as a "
+    "corrupt profile, so a ref cascade aborts instead of skipping the file",
+)
+def test_set_llm_profile_ref_skips_undecodable_file(
+    agent_store: AgentProfileStore,
+) -> None:
+    (agent_store.base_dir / "binary.json").write_bytes(b"\xff\xfe\x00garbage")
+
+    agent_store.set_llm_profile_ref("binary", "new-ref")
+
+    assert (agent_store.base_dir / "binary.json").read_bytes().startswith(b"\xff")
+
+
+def test_set_llm_profile_ref_skips_corrupt_and_acp_profiles(
+    agent_store: AgentProfileStore, acp_profile: ACPAgentProfile
+) -> None:
+    agent_store.save(acp_profile)
+    (agent_store.base_dir / "corrupt.json").write_text("{ not json")
+    acp_before = (agent_store.base_dir / "acp.json").read_text()
+
+    agent_store.set_llm_profile_ref("corrupt", "new-ref")
+    agent_store.set_llm_profile_ref("acp", "new-ref")
+    agent_store.set_llm_profile_ref("missing", "new-ref")
+
+    assert (agent_store.base_dir / "corrupt.json").read_text() == "{ not json"
+    assert (agent_store.base_dir / "acp.json").read_text() == acp_before
+    assert not (agent_store.base_dir / "missing.json").exists()
+
+
+def test_rename_corrupted_profile_keeps_source(
+    agent_store: AgentProfileStore,
+) -> None:
+    (agent_store.base_dir / "corrupt.json").write_text("{ not json")
+
+    with pytest.raises(ValueError):
+        agent_store.rename("corrupt", "renamed")
+
+    assert (agent_store.base_dir / "corrupt.json").exists()
+    assert not (agent_store.base_dir / "renamed.json").exists()
+
+
+def _is_case_insensitive(path: Path) -> bool:
+    probe = path / "CaseProbe.tmp"
+    probe.write_text("x")
+    try:
+        return (path / "caseprobe.tmp").exists()
+    finally:
+        probe.unlink()
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: on case-insensitive filesystems rename sees the source file "
+    "as the existing target, so a case-only rename raises FileExistsError",
+)
+def test_rename_case_only_change(
+    agent_store: AgentProfileStore, openhands_profile: OpenHandsAgentProfile
+) -> None:
+    if not _is_case_insensitive(agent_store.base_dir):
+        pytest.xfail("case-only rename collision needs a case-insensitive fs")
+    agent_store.save(openhands_profile.model_copy(update={"name": "myprofile"}))
+
+    agent_store.rename("myprofile", "MyProfile")
+
+    assert agent_store.load("MyProfile").name == "MyProfile"
+
+
 # ── max_profiles ────────────────────────────────────────────────────────────
 
 

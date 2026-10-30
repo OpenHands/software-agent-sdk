@@ -9,6 +9,7 @@ from openhands.sdk.utils.path import (
     is_host_absolute_path,
     is_local_path_source,
     posix_path_name,
+    resolves_within,
     to_posix_path,
 )
 
@@ -131,3 +132,56 @@ def test_is_host_absolute_path_uses_current_platform_semantics():
         assert is_host_absolute_path(r"C:\workspace\file.py")
     else:
         assert not is_host_absolute_path(r"C:\workspace\file.py")
+
+
+@pytest.mark.parametrize("value", ["", "/", "\\"])
+def test_posix_path_name_of_empty_or_root_is_empty(value: str) -> None:
+    assert posix_path_name(value) == ""
+
+
+def test_posix_path_name_ignores_trailing_separator() -> None:
+    assert posix_path_name("a/b/") == "b"
+    assert posix_path_name("a\\b\\") == "b"
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_blank_sources_are_neither_local_nor_absolute(value: str) -> None:
+    assert not is_local_path_source(value)
+    assert not is_absolute_path_source(value)
+    assert not is_host_absolute_path(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["git@github.com:org/repo.git", "github:org/repo", "org/repo", "C:relative"],
+)
+def test_is_local_path_source_rejects_remote_and_drive_relative(value: str) -> None:
+    assert not is_local_path_source(value)
+
+
+def test_resolves_within_accepts_inner_symlink(tmp_path: Path) -> None:
+    (tmp_path / "real.txt").write_text("x")
+    link = tmp_path / "link.txt"
+    link.symlink_to(tmp_path / "real.txt")
+
+    assert resolves_within(link, tmp_path)
+
+
+def test_resolves_within_rejects_escaping_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    (tmp_path / "secret.txt").write_text("x")
+    link = root / "link.txt"
+    link.symlink_to(tmp_path / "secret.txt")
+
+    assert not resolves_within(link, root)
+
+
+def test_resolves_within_rejects_sibling_sharing_root_prefix(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    sibling = tmp_path / "root2"
+    root.mkdir()
+    sibling.mkdir()
+
+    assert not resolves_within(sibling, root)
+    assert not resolves_within(root / ".." / "root2", root)

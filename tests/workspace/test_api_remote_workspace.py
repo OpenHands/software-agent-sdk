@@ -4,6 +4,7 @@ import os
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 
 
 def test_api_timeout_is_used_in_client():
@@ -327,3 +328,238 @@ def test_api_remote_workspace_exit_sends_callback(monkeypatch):
         mock_client.post.assert_called_once()
         payload = mock_client.post.call_args.kwargs["json"]
         assert payload["status"] == "COMPLETED"
+
+
+# --- Runtime API failure paths ---
+
+RUNTIME_API = "https://runtime.test"
+RUNTIME_URL = "https://rt-123.runtime.test"
+
+
+class _FakeHealth:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.fixture
+def runtime_api(monkeypatch):
+    """Route APIRemoteWorkspace HTTP calls to scripted per-endpoint responses.
+
+    ``routes`` maps ``"METHOD /path"`` to a list of responses consumed in order
+    (the last one repeats). ``calls`` records every ``"METHOD /path"`` hit.
+    """
+    from openhands.workspace.remote_api import workspace as module
+
+    routes: dict[str, list[httpx.Response]] = {}
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        key = f"{request.method} {request.url.path}"
+        calls.append(key)
+        queue = routes.get(key)
+        if not queue:
+            return httpx.Response(404, json={"detail": "not found"})
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    real_client = httpx.Client
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(module.httpx, "Client", client_factory)
+    monkeypatch.setattr(module, "urlopen", lambda *a, **kw: _FakeHealth())
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    return routes, calls
+
+
+def _session(status: str | None, **extra) -> httpx.Response:
+    return httpx.Response(200, json={"pod_status": status, **extra})
+
+
+def _attached(status: str = "running") -> httpx.Response:
+    return httpx.Response(
+        200, json={"status": status, "runtime_id": "rt-123", "url": RUNTIME_URL}
+    )
+
+
+def _started() -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={"runtime_id": "rt-123", "url": RUNTIME_URL, "session_api_key": "sk"},
+    )
+
+
+def _new_workspace(**kwargs):
+    from openhands.workspace import APIRemoteWorkspace
+
+    return APIRemoteWorkspace(
+        runtime_api_url=RUNTIME_API,
+        runtime_api_key="key",
+        server_image="img",
+        session_id="sess",
+        **kwargs,
+    )
+
+
+def test_startup_starts_runtime_when_session_lookup_404s(runtime_api):
+    routes, calls = runtime_api
+    routes["GET /sessions/sess"] = [
+        httpx.Response(404),
+        _session("pending"),
+        _session("ready"),
+    ]
+    routes["POST /start"] = [_started()]
+
+    workspace = _new_workspace()
+
+    assert workspace.host == RUNTIME_URL
+    assert workspace.api_key == "sk"
+    assert calls.count("POST /start") == 1
+    workspace._runtime_id = None
+
+
+def test_startup_propagates_non_404_session_lookup_error(runtime_api):
+    routes, calls = runtime_api
+    routes["GET /sessions/sess"] = [httpx.Response(500, text="boom")]
+
+    with pytest.raises(httpx.HTTPStatusError):
+        _new_workspace()
+
+    assert "POST /start" not in calls
+
+
+def test_startup_rejects_start_response_without_url(runtime_api):
+    routes, calls = runtime_api
+    routes["POST /start"] = [httpx.Response(200, json={"runtime_id": "rt-123"})]
+
+    with pytest.raises(ValueError, match="Invalid runtime response"):
+        _new_workspace()
+
+    assert "POST /start" in calls
+
+
+@pytest.mark.parametrize(
+    ("pod_status", "match"),
+    [
+        ("failed", "Pod logs: oom"),
+        ("crashloopbackoff", "possibly OOM"),
+    ],
+)
+def test_terminal_pod_status_fails_fast_and_stops_runtime(
+    runtime_api, pod_status, match
+):
+    routes, calls = runtime_api
+    routes["POST /start"] = [_started()]
+    routes["GET /sessions/sess"] = [
+        httpx.Response(404),
+        _session(pod_status, pod_logs="oom"),
+    ]
+    routes["POST /stop"] = [httpx.Response(200, json={})]
+
+    with pytest.raises(ValueError, match=match):
+        _new_workspace()
+
+    # Terminal states are not retried: one lookup to attach, one readiness probe.
+    assert calls.count("GET /sessions/sess") == 2
+    assert calls[-1] == "POST /stop"
+
+
+def test_unhealthy_runtime_is_retried_until_health_passes(runtime_api, monkeypatch):
+    from openhands.workspace.remote_api import workspace as module
+
+    routes, calls = runtime_api
+    routes["POST /start"] = [_started()]
+    routes["GET /sessions/sess"] = [httpx.Response(404), _session("ready")]
+    health = iter([OSError("connection refused"), _FakeHealth()])
+
+    def flaky_urlopen(*args, **kwargs):
+        result = next(health)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(module, "urlopen", flaky_urlopen)
+
+    workspace = _new_workspace()
+
+    assert workspace.host == RUNTIME_URL
+    assert calls.count("GET /sessions/sess") == 3
+    workspace._runtime_id = None
+
+
+def test_paused_runtime_is_resumed_on_attach(runtime_api):
+    routes, calls = runtime_api
+    routes["GET /sessions/sess"] = [_attached("paused"), _session("ready")]
+    routes["POST /resume"] = [httpx.Response(200, json={})]
+
+    workspace = _new_workspace()
+
+    assert "POST /resume" in calls
+    assert "POST /start" not in calls
+    workspace._runtime_id = None
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: a JSON null pod_status raises AttributeError instead of being "
+    "retried like other unknown statuses",
+)
+def test_null_pod_status_is_retried(runtime_api):
+    routes, _ = runtime_api
+    routes["POST /start"] = [_started()]
+    routes["GET /sessions/sess"] = [
+        httpx.Response(404),
+        _session(None),
+        _session("ready"),
+    ]
+
+    workspace = _new_workspace()
+
+    assert workspace.host == RUNTIME_URL
+    workspace._runtime_id = None
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({}, "POST /stop"),
+        ({"pause_on_close": True}, "POST /pause"),
+    ],
+)
+def test_cleanup_swallows_api_errors_and_is_idempotent(runtime_api, kwargs, expected):
+    routes, calls = runtime_api
+    routes["GET /sessions/sess"] = [_attached(), _session("ready")]
+    routes[expected] = [httpx.Response(503, text="unavailable")]
+    workspace = _new_workspace(**kwargs)
+
+    workspace.cleanup()
+    workspace.cleanup()
+
+    assert calls.count(expected) == 1
+    assert workspace._runtime_id is None
+
+
+def test_cleanup_with_keep_alive_makes_no_api_call(runtime_api):
+    routes, calls = runtime_api
+    routes["GET /sessions/sess"] = [_attached(), _session("ready")]
+    workspace = _new_workspace(keep_alive=True)
+
+    workspace.cleanup()
+
+    assert not any(c.startswith("POST") for c in calls)
+    assert workspace._runtime_id is None
+
+
+def test_invalid_resource_factor_rejected_before_any_request(runtime_api):
+    _, calls = runtime_api
+
+    with pytest.raises(ValueError, match="resource_factor"):
+        _new_workspace(resource_factor=3)
+
+    assert calls == []

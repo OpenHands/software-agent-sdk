@@ -1,8 +1,10 @@
 """Test DockerWorkspace import and basic functionality."""
 
+import gc
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
@@ -354,3 +356,183 @@ def test_apptainer_workspace_startup_uses_health_check_timeout():
         mock_exec.return_value = Mock(returncode=0, stdout="", stderr="")
         ApptainerWorkspace(server_image="test:latest", health_check_timeout=45.0)
         mock_wait.assert_called_once_with(timeout=45.0)
+
+
+# ===========================================================================
+# DockerWorkspace startup failure paths
+# ===========================================================================
+
+
+def _docker_exec(**overrides):
+    """execute_command fake keyed by docker subcommand; records every argv."""
+    calls: list[list[str]] = []
+    results = {
+        "version": Mock(returncode=0, stdout="", stderr=""),
+        "run": Mock(returncode=0, stdout="cid-123\n", stderr=""),
+        "inspect": Mock(returncode=0, stdout="true\n", stderr=""),
+        "logs": Mock(returncode=0, stdout="server log", stderr="boom"),
+        **overrides,
+    }
+
+    def fake(cmd, *args, **kwargs):
+        calls.append(cmd)
+        return results.get(cmd[1], Mock(returncode=0, stdout="", stderr=""))
+
+    return fake, calls
+
+
+def _subcommands(calls: list[list[str]]) -> list[str]:
+    return [cmd[1] for cmd in calls]
+
+
+@pytest.fixture
+def docker_startup(monkeypatch):
+    monkeypatch.setattr(
+        "openhands.workspace.docker.workspace.check_port_available", lambda p: True
+    )
+    monkeypatch.setattr("openhands.workspace.docker.workspace.time.sleep", Mock())
+
+
+def test_docker_unavailable_fails_before_running_container(docker_startup, monkeypatch):
+    fake, calls = _docker_exec(version=Mock(returncode=1, stdout="", stderr=""))
+    monkeypatch.setattr("openhands.workspace.docker.workspace.execute_command", fake)
+
+    with pytest.raises(RuntimeError, match="Docker is not available"):
+        DockerWorkspace(server_image="test:latest", host_port=8123)
+
+    assert _subcommands(calls) == ["version"]
+
+
+def test_docker_run_failure_surfaces_stderr(docker_startup, monkeypatch):
+    fake, calls = _docker_exec(
+        run=Mock(returncode=125, stdout="", stderr="pull access denied")
+    )
+    monkeypatch.setattr("openhands.workspace.docker.workspace.execute_command", fake)
+
+    with pytest.raises(RuntimeError, match="pull access denied"):
+        DockerWorkspace(server_image="test:latest", host_port=8123)
+
+
+def test_wait_for_health_reports_logs_when_container_exits(docker_startup, monkeypatch):
+    fake, calls = _docker_exec(inspect=Mock(returncode=0, stdout="false\n"))
+    monkeypatch.setattr("openhands.workspace.docker.workspace.execute_command", fake)
+    monkeypatch.setattr(
+        "openhands.workspace.docker.workspace.urlopen",
+        Mock(side_effect=OSError("connection refused")),
+    )
+    with patch.object(DockerWorkspace, "_start_container"):
+        workspace = DockerWorkspace(server_image="test:latest")
+    workspace.host = "http://127.0.0.1:8123"
+    workspace._container_id = "cid-123"
+
+    with pytest.raises(RuntimeError, match="stopped unexpectedly") as excinfo:
+        workspace._wait_for_health(timeout=60)
+
+    assert "server log" in str(excinfo.value)
+    assert "boom" in str(excinfo.value)
+    workspace._container_id = None
+
+
+def test_wait_for_health_times_out(docker_startup, monkeypatch):
+    monkeypatch.setattr(
+        "openhands.workspace.docker.workspace.urlopen",
+        Mock(side_effect=OSError("connection refused")),
+    )
+    with patch.object(DockerWorkspace, "_start_container"):
+        workspace = DockerWorkspace(server_image="test:latest")
+    workspace.host = "http://127.0.0.1:8123"
+
+    with pytest.raises(RuntimeError, match="failed to become healthy"):
+        workspace._wait_for_health(timeout=0.01)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: DockerWorkspace leaves the container running when startup fails "
+    "after `docker run` (no cleanup in model_post_init)",
+)
+def test_failed_health_check_stops_container(docker_startup, monkeypatch):
+    fake, calls = _docker_exec()
+    monkeypatch.setattr("openhands.workspace.docker.workspace.execute_command", fake)
+
+    with (
+        patch.object(
+            DockerWorkspace,
+            "_wait_for_health",
+            side_effect=RuntimeError("Container failed to become healthy in time"),
+        ),
+        pytest.raises(RuntimeError, match="healthy") as excinfo,
+    ):
+        DockerWorkspace(server_image="test:latest", host_port=8123, detach_logs=False)
+
+    # excinfo keeps the half-built workspace alive, so __del__ has not run yet
+    # and cannot stand in for a rollback inside the constructor.
+    stopped_during_startup = ["docker", "stop", "cid-123"] in calls
+    del excinfo
+    gc.collect()  # let __del__ run while execute_command is still faked
+    assert stopped_during_startup
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: an exhausted port range (find_available_tcp_port() == -1) "
+    "raises OverflowError from socket.bind instead of a clear RuntimeError",
+)
+def test_no_free_port_raises_runtime_error(monkeypatch):
+    fake, calls = _docker_exec()
+    monkeypatch.setattr("openhands.workspace.docker.workspace.execute_command", fake)
+    monkeypatch.setattr(
+        "openhands.workspace.docker.workspace.find_available_tcp_port", lambda: -1
+    )
+
+    with pytest.raises(RuntimeError, match="not available"):
+        DockerWorkspace(server_image="test:latest")
+
+    assert calls == []
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: DockerWorkspace.__exit__ skips RemoteWorkspace.__exit__, so the "
+    "AUTOMATION_CALLBACK_URL completion callback is never sent",
+)
+def test_exit_sends_completion_callback(mock_docker_workspace, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    workspace, _ = mock_docker_workspace()
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace.__exit__(None, None, None)
+
+        mock_client.post.assert_called_once()
+        assert mock_client.post.call_args.args[0] == "https://svc.test/complete"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: cleanup() run on the log-streaming thread (as __del__ does when "
+    "that thread drops the last reference) raises 'cannot join current thread' "
+    "before `docker stop`",
+)
+def test_cleanup_from_log_thread_still_stops_container(mock_docker_workspace):
+    workspace, mock_exec = mock_docker_workspace()
+    workspace._stop_logs = threading.Event()
+    errors: list[Exception] = []
+
+    def run_cleanup():
+        try:
+            workspace.cleanup()
+        except Exception as e:
+            errors.append(e)
+
+    workspace._logs_thread = threading.Thread(target=run_cleanup)
+    workspace._logs_thread.start()
+    workspace._logs_thread.join(timeout=5)
+
+    assert errors == []
+    stop_calls = [c.args[0] for c in mock_exec.call_args_list if "stop" in c.args[0]]
+    assert stop_calls == [["docker", "stop", "container_id_123"]]

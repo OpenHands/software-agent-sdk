@@ -1,5 +1,7 @@
 """Tests for truncate utility functions."""
 
+import pytest
+
 from openhands.sdk.utils import (
     DEFAULT_TEXT_CONTENT_LIMIT,
     DEFAULT_TRUNCATE_NOTICE,
@@ -356,3 +358,23 @@ def test_maybe_truncate_unicode_content_persistence(tmp_path):
     assert len(files) == 1
     saved_content = files[0].read_text(encoding="utf-8")
     assert saved_content == content
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: _save_full_content only guards write_text; a save_dir that "
+    "cannot be created (e.g. an existing file) raises from maybe_truncate",
+)
+def test_maybe_truncate_unusable_save_dir_falls_back_to_plain_notice(tmp_path):
+    save_dir = tmp_path / "not-a-dir"
+    save_dir.write_text("occupied")
+    content = "a" * 1000
+
+    result = maybe_truncate(content, truncate_after=500, save_dir=str(save_dir))
+
+    assert len(result) == 500
+    assert DEFAULT_TRUNCATE_NOTICE in result
+
+
+def test_maybe_truncate_negative_limit_returns_content():
+    assert maybe_truncate("hello", truncate_after=-1) == "hello"

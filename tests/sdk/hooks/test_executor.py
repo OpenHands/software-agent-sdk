@@ -1,6 +1,9 @@
 """Tests for hook executor."""
 
+import contextlib
 import json
+import os
+import signal
 import subprocess
 from unittest import mock
 from unittest.mock import MagicMock, patch
@@ -162,6 +165,119 @@ class TestHookExecutor:
 
         assert result.blocked
         assert "error message" in result.stderr
+
+    def test_continue_false_blocks_a_successful_hook(self, executor, sample_event):
+        hook = HookDefinition(command="""echo '{"continue": false}'""")
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.success
+        assert result.blocked
+        assert not result.should_continue
+
+    def test_deny_with_a_non_blocking_exit_code_still_denies(
+        self, executor, sample_event
+    ):
+        """A JSON deny is honoured even when the hook also exits non-zero."""
+        hook = HookDefinition(
+            command=python_command(
+                "import json, sys; print(json.dumps({'decision': 'deny'})); sys.exit(1)"
+            )
+        )
+
+        result = executor.execute(hook, sample_event)
+
+        assert not result.success
+        assert result.exit_code == 1
+        assert result.decision == HookDecision.DENY
+        assert not result.should_continue
+
+    @pytest.mark.parametrize(
+        "stdout",
+        ["not json at all", "[1, 2, 3]", '"deny"', '{"decision": "deny"'],
+    )
+    def test_non_object_stdout_is_kept_without_a_decision(
+        self, executor, sample_event, stdout
+    ):
+        hook = HookDefinition(command=python_command(f"print({stdout!r})"))
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.success
+        assert result.decision is None
+        assert not result.blocked
+        assert result.stdout.strip() == stdout
+
+    def test_missing_working_dir_fails_without_raising(self, tmp_path, sample_event):
+        executor = HookExecutor(working_dir=str(tmp_path / "does-not-exist"))
+
+        result = executor.execute(HookDefinition(command="echo hi"), sample_event)
+
+        assert not result.success
+        assert result.exit_code == -1
+        assert result.error
+        assert result.should_continue
+
+    def test_execute_all_without_stop_on_block_runs_every_hook(
+        self, executor, sample_event
+    ):
+        hooks = [
+            HookDefinition(command=python_command("import sys; sys.exit(2)")),
+            HookDefinition(command="echo 'second'"),
+        ]
+
+        results = executor.execute_all(hooks, sample_event, stop_on_block=False)
+
+        assert [r.blocked for r in results] == [True, False]
+        assert "second" in results[1].stdout
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            'BUG: a JSON null reason is stringified to "None" instead of '
+            "being treated as no reason"
+        ),
+    )
+    def test_null_reason_is_not_stringified(self, executor, sample_event):
+        hook = HookDefinition(command="""echo '{"decision": "deny", "reason": null}'""")
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.blocked
+        assert result.reason is None
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX process semantics")
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "BUG: a timed-out sync hook only kills the shell; its child "
+            "processes keep running (the async path kills the process group)"
+        ),
+    )
+    def test_timed_out_hook_does_not_leave_its_child_running(
+        self, executor, sample_event, tmp_path
+    ):
+        pid_file = tmp_path / "child.pid"
+        # The trailing ``; true`` stops the shell from exec-ing the child, so
+        # the child is a separate process the timeout has to reach.
+        hook = HookDefinition(
+            command=f"sh -c 'echo $$ > {pid_file}; exec sleep 30'; true",
+            timeout=1,
+        )
+
+        result = executor.execute(hook, sample_event)
+        assert "timed out" in (result.error or "")
+
+        child_pid = int(pid_file.read_text())
+        try:
+            os.kill(child_pid, 0)
+            child_alive = True
+        except ProcessLookupError:
+            child_alive = False
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(child_pid, signal.SIGKILL)
+        assert not child_alive
 
 
 class TestAsyncHookExecution:

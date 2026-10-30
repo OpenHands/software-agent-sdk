@@ -165,6 +165,46 @@ def test_parse_ssh_with_custom_user():
     assert url == ssh_url
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: is_git_url does not recognise the ssh:// scheme, so a "
+    "standard ssh:// clone URL is rejected as unparseable",
+)
+def test_parse_ssh_scheme_url():
+    ssh_url = "ssh://git@git.example.com:2222/org/repo.git"
+    assert parse_extension_source(ssh_url) == (SourceType.GIT, ssh_url)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: the github: shorthand appends .git unconditionally, so "
+    "'github:owner/repo.git' becomes '.../repo.git.git'",
+)
+def test_parse_github_shorthand_with_git_suffix():
+    assert parse_extension_source("github:owner/repo.git") == (
+        SourceType.GITHUB,
+        "https://github.com/owner/repo.git",
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: normalize_git_url checks the .git suffix before stripping a "
+    "trailing slash, so 'repo.git/' becomes 'repo.git.git'",
+)
+def test_parse_https_url_with_git_suffix_and_trailing_slash():
+    assert parse_extension_source("https://github.com/owner/repo.git/") == (
+        SourceType.GIT,
+        "https://github.com/owner/repo.git",
+    )
+
+
+@pytest.mark.parametrize("source", ["", "   ", "name-only"])
+def test_parse_unrecognised_source_raises(source):
+    with pytest.raises(ExtensionFetchError, match="Unable to parse"):
+        parse_extension_source(source)
+
+
 def test_parse_relative_path_with_slash():
     source_type, url = parse_extension_source("extensions/my-ext")
     assert source_type == SourceType.LOCAL

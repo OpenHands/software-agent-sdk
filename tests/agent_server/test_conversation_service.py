@@ -4446,6 +4446,42 @@ class TestConversationSearchScaling:
             )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "corrupt_payload",
+        [
+            pytest.param('{"execution_status": "idl', id="truncated"),
+            pytest.param('{"execution_status": "no-such-status"}', id="bad-enum"),
+            pytest.param(
+                "[]",
+                id="non-object",
+                marks=pytest.mark.xfail(
+                    strict=True,
+                    reason="BUG: _read_execution_status_sync only suppresses "
+                    "OSError/ValueError; a non-object payload raises "
+                    "AttributeError and fails every status-filtered count",
+                ),
+            ),
+        ],
+    )
+    async def test_status_index_keeps_cached_status_for_corrupt_state(
+        self, tmp_path, corrupt_payload
+    ):
+        """A corrupt base_state.json must not break status-filtered listing."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        ids = self._seed(conversations_dir, 2, workspace_dir)
+
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            idle = ConversationExecutionStatus.IDLE
+            assert await svc.count_conversations(execution_status=idle) == 2
+
+            base_state = conversations_dir / ids[0].hex / "base_state.json"
+            base_state.write_text(corrupt_payload)
+
+            assert await svc.count_conversations(execution_status=idle) == 2
+
+    @pytest.mark.asyncio
     async def test_live_conversation_status_is_read_from_memory(self, tmp_path):
         """A live conversation answers the filter from its in-memory state."""
         workspace_dir = tmp_path / "workspace"

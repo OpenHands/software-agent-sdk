@@ -220,6 +220,27 @@ class TestHookMatcher:
         assert matcher.matches("BashTool")
         assert matcher.matches(None)
 
+    @pytest.mark.parametrize("pattern", ["BashTool", "Bash.*", "/Bash.*/"])
+    def test_specific_matcher_does_not_match_missing_tool_name(self, pattern):
+        """Tool-less events (SessionStart, Stop, ...) only reach wildcard matchers."""
+        assert not HookMatcher(matcher=pattern).matches(None)
+
+    def test_invalid_delimited_regex_matches_nothing(self):
+        matcher = HookMatcher(matcher="/[unclosed/")
+        assert not matcher.matches("[unclosed")
+        assert not matcher.matches("BashTool")
+
+    def test_invalid_bare_regex_falls_back_to_exact_match(self):
+        matcher = HookMatcher(matcher="Tool[")
+        assert matcher.matches("Tool[")
+        assert not matcher.matches("Tool")
+
+    @pytest.mark.parametrize("pattern", ["/", "//"])
+    def test_bare_slashes_are_not_treated_as_regex(self, pattern):
+        matcher = HookMatcher(matcher=pattern)
+        assert matcher.matches(pattern)
+        assert not matcher.matches("BashTool")
+
 
 class TestHookConfig:
     """Tests for HookConfig loading and management."""
@@ -398,6 +419,42 @@ class TestHookConfig:
             HookConfig.from_dict(
                 {"PreToolExecute": [{"hooks": [{"command": "test.sh"}]}]}
             )
+
+    def test_unknown_snake_case_key_raises_validation_error(self):
+        with pytest.raises(ValidationError):
+            HookConfig.from_dict({"pre_tool_used": []})
+
+    def test_load_invalid_json_raises(self, tmp_path):
+        hooks_file = tmp_path / "hooks.json"
+        hooks_file.write_text("{not json")
+
+        with pytest.raises(json.JSONDecodeError):
+            HookConfig.load(hooks_file)
+
+    def test_load_with_empty_working_dir_returns_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "user"))
+        config = HookConfig.load(working_dir=tmp_path)
+        assert config.is_empty()
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            'BUG: a non-dict "hooks" wrapper hits data.items() in the before '
+            "validator and raises AttributeError instead of ValidationError"
+        ),
+    )
+    @pytest.mark.parametrize("wrapped", [None, [], "PreToolUse"])
+    def test_malformed_legacy_wrapper_raises_validation_error(self, wrapped):
+        with pytest.raises(ValidationError):
+            HookConfig.from_dict({"hooks": wrapped})
+
+    def test_merge_of_only_empty_configs_is_none(self):
+        assert HookConfig.merge([]) is None
+        assert HookConfig.merge([HookConfig(), HookConfig()]) is None
+
+    def test_matcher_without_hooks_yields_no_hooks(self):
+        config = HookConfig(pre_tool_use=[HookMatcher(matcher="*")])
+        assert config.get_hooks_for_event(HookEventType.PRE_TOOL_USE, "x") == []
 
 
 class TestAsyncHooks:

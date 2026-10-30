@@ -1647,6 +1647,28 @@ def test_archive_non_ascii_branch_is_percent_encoded_not_dropped(client, tmp_pat
     assert resp.headers["x-archive-branch"] == quote("café-branch", safe="")
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: X-Archive-Base-Ref echoes base_ref raw instead of through "
+    "_header_safe, so a non-latin-1 ref 500s and leaks the scratch archive",
+)
+def test_archive_non_latin1_base_ref_is_percent_encoded(client, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init"], repo)
+    _git(["commit", "--allow-empty", "-m", "init"], repo)
+    _git(["branch", "功能"], repo)
+    (repo / "a.txt").write_text("x\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(repo), "base_ref": "功能"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-archive-base-ref"] == quote("功能", safe="")
+    assert [p.name for p in tmp_path.iterdir()] == ["repo"]
+
+
 # =============================================================================
 # Archive Tests - format=tar.gz (full-workspace archive)
 # =============================================================================

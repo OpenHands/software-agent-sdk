@@ -1,11 +1,12 @@
 """Tests for ConfirmationPolicy classes and serialization."""
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from openhands.sdk.security.confirmation_policy import (
     AlwaysConfirm,
     ConfirmationPolicyBase,
+    ConfirmRisky,
     NeverConfirm,
 )
 from openhands.sdk.security.risk import SecurityRisk
@@ -95,3 +96,48 @@ class TestNeverConfirm:
         restored_policy = ConfirmationPolicyBase.model_validate_json(policy_dict)
 
         assert isinstance(restored_policy, NeverConfirm)
+
+
+@pytest.mark.parametrize(
+    ("threshold", "risk", "expected"),
+    [
+        (SecurityRisk.HIGH, SecurityRisk.HIGH, True),
+        (SecurityRisk.HIGH, SecurityRisk.MEDIUM, False),
+        (SecurityRisk.MEDIUM, SecurityRisk.MEDIUM, True),
+        (SecurityRisk.MEDIUM, SecurityRisk.LOW, False),
+        (SecurityRisk.LOW, SecurityRisk.LOW, True),
+    ],
+)
+def test_confirm_risky_threshold_is_inclusive(threshold, risk, expected) -> None:
+    assert ConfirmRisky(threshold=threshold).should_confirm(risk) is expected
+
+
+@pytest.mark.parametrize("confirm_unknown", [True, False])
+def test_confirm_risky_unknown_risk_follows_flag(confirm_unknown: bool) -> None:
+    policy = ConfirmRisky(confirm_unknown=confirm_unknown)
+
+    assert policy.should_confirm(SecurityRisk.UNKNOWN) is confirm_unknown
+    assert policy.should_confirm() is confirm_unknown
+
+
+def test_confirm_risky_rejects_unknown_threshold() -> None:
+    with pytest.raises(ValidationError, match="Threshold cannot be UNKNOWN"):
+        ConfirmRisky(threshold=SecurityRisk.UNKNOWN)
+
+
+def test_confirm_risky_rejects_unknown_threshold_when_deserialized() -> None:
+    payload = ConfirmRisky().model_dump()
+    payload["threshold"] = "UNKNOWN"
+
+    with pytest.raises(ValidationError, match="Threshold cannot be UNKNOWN"):
+        ConfirmationPolicyBase.model_validate(payload)
+
+
+def test_confirm_risky_polymorphic_roundtrip_keeps_settings() -> None:
+    policy: ConfirmationPolicyBase = ConfirmRisky(
+        threshold=SecurityRisk.MEDIUM, confirm_unknown=False
+    )
+
+    restored = ConfirmationPolicyBase.model_validate_json(policy.model_dump_json())
+
+    assert restored == policy

@@ -306,21 +306,10 @@ def test_convert_with_invalid_function_call():
         },
     ]
 
-    # This should handle invalid function calls gracefully
-    try:
-        fncall_messages = convert_non_fncall_messages_to_fncall_messages(
+    with pytest.raises(FunctionCallValidationError, match="invalid_function"):
+        convert_non_fncall_messages_to_fncall_messages(
             non_fncall_messages, FNCALL_TOOLS
         )
-        # If no exception, check that result is reasonable
-        assert isinstance(fncall_messages, list)
-    except (
-        FunctionCallConversionError,
-        FunctionCallValidationError,
-        ValueError,
-        KeyError,
-    ):
-        # These exceptions are acceptable for invalid function calls
-        pass
 
 
 def test_convert_with_malformed_parameters():
@@ -336,20 +325,10 @@ def test_convert_with_malformed_parameters():
         },
     ]
 
-    # This should handle malformed parameters gracefully
-    try:
-        fncall_messages = convert_non_fncall_messages_to_fncall_messages(
+    with pytest.raises(FunctionCallValidationError, match="invalid_param"):
+        convert_non_fncall_messages_to_fncall_messages(
             non_fncall_messages, FNCALL_TOOLS
         )
-        assert isinstance(fncall_messages, list)
-    except (
-        FunctionCallConversionError,
-        FunctionCallValidationError,
-        ValueError,
-        KeyError,
-    ):
-        # These exceptions are acceptable for malformed parameters
-        pass
 
 
 def test_convert_empty_messages():
@@ -1014,3 +993,159 @@ def test_security_risk_param_allowed_for_tool_that_does_not_declare_it():
     arguments = json.loads(assistant_msg["tool_calls"][0]["function"]["arguments"])
     assert arguments["message"] == "Hello!"
     assert arguments["security_risk"] == "LOW"
+
+
+TYPED_TOOLS: list[ChatCompletionToolParam] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "typed_tool",
+            "description": "Tool with typed parameters.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "count": {"type": "integer"},
+                    "paths": {"type": "array", "items": {"type": "string"}},
+                    "mode": {"type": "string", "enum": ["fast", "slow"]},
+                },
+                "required": ["count"],
+            },
+        },
+    },
+]
+
+
+def _typed_call(body: str) -> list[dict]:
+    return [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": f"<function=typed_tool>\n{body}</function>"},
+    ]
+
+
+def _first_tool_call_arguments(messages: list[dict]) -> dict:
+    assistant_msg = next(m for m in messages if m.get("tool_calls"))
+    return json.loads(assistant_msg["tool_calls"][0]["function"]["arguments"])
+
+
+def test_non_fncall_typed_params_are_coerced():
+    messages = convert_non_fncall_messages_to_fncall_messages(
+        _typed_call(
+            "<parameter=count> 3 </parameter>\n"
+            '<parameter=paths>["a", "b"]</parameter>\n'
+            "<parameter=mode>fast</parameter>\n"
+        ),
+        TYPED_TOOLS,
+    )
+
+    assert _first_tool_call_arguments(messages) == {
+        "count": 3,
+        "paths": ["a", "b"],
+        "mode": "fast",
+    }
+
+
+@pytest.mark.parametrize(
+    ("body", "error"),
+    [
+        ("<parameter=count>three</parameter>\n", "expected to be an integer"),
+        (
+            "<parameter=count>1</parameter>\n<parameter=paths>a, b</parameter>\n",
+            "expected to be an array",
+        ),
+        (
+            "<parameter=count>1</parameter>\n<parameter=mode>medium</parameter>\n",
+            "expected to be one of",
+        ),
+        ("<parameter=mode>fast</parameter>\n", "Missing required parameters"),
+    ],
+)
+def test_non_fncall_invalid_params_raise_validation_error(body, error):
+    with pytest.raises(FunctionCallValidationError, match=error):
+        convert_non_fncall_messages_to_fncall_messages(_typed_call(body), TYPED_TOOLS)
+
+
+def test_non_fncall_legacy_tool_name_resolves_to_alias():
+    messages = convert_non_fncall_messages_to_fncall_messages(
+        [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": (
+                    "<function=execute_bash>\n"
+                    "<parameter=command>ls</parameter>\n</function>"
+                ),
+            },
+        ],
+        FNCALL_TOOLS,
+    )
+
+    assistant_msg = next(m for m in messages if m.get("tool_calls"))
+    assert assistant_msg["tool_calls"][0]["function"]["name"] == "terminal"
+
+
+def test_non_fncall_missing_closing_tag_is_repaired():
+    messages = convert_non_fncall_messages_to_fncall_messages(
+        [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": "<function=terminal>\n<parameter=command>ls</parameter>\n",
+            },
+        ],
+        FNCALL_TOOLS,
+    )
+
+    assert _first_tool_call_arguments(messages) == {"command": "ls"}
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "BUG: non-fncall parser .strip()s parameter values, dropping the "
+        "leading indentation and trailing newline of multiline strings"
+    ),
+)
+def test_roundtrip_preserves_multiline_param_whitespace():
+    """A tool call rendered for a non-native model must parse back unchanged.
+
+    ``convert_tool_call_to_string`` wraps multiline strings in a newline on
+    each side; the parser should strip only that framing, not the indentation
+    of code in, for example, a file_editor ``new_str``.
+    """
+    tools: list[ChatCompletionToolParam] = [
+        {
+            "type": "function",
+            "function": {
+                "name": "file_editor",
+                "description": "Edit a file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"new_str": {"type": "string"}},
+                    "required": ["new_str"],
+                },
+            },
+        }
+    ]
+    new_str = "    if x:\n        return 1\n"
+    fncall_messages = [
+        {"role": "user", "content": "edit"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "file_editor",
+                        "arguments": json.dumps({"new_str": new_str}),
+                    },
+                }
+            ],
+        },
+    ]
+
+    non_fncall = convert_fncall_messages_to_non_fncall_messages(fncall_messages, tools)
+    back = convert_non_fncall_messages_to_fncall_messages(non_fncall, tools)
+
+    assert _first_tool_call_arguments(back) == {"new_str": new_str}

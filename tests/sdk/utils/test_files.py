@@ -61,3 +61,34 @@ def test_is_temp_file_matches_tmp_names(name: str) -> None:
 )
 def test_is_temp_file_ignores_other_names(name: str) -> None:
     assert not is_temp_file(Path(name))
+
+
+def test_atomic_write_text_failure_keeps_original_and_removes_temp(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "state.json"
+    target.write_text("original")
+
+    # A lone surrogate cannot be encoded as UTF-8, so the write fails midway.
+    with pytest.raises(UnicodeEncodeError):
+        atomic_write_text(target, "broken \ud800")
+
+    assert target.read_text() == "original"
+    assert [path.name for path in tmp_path.iterdir()] == ["state.json"]
+
+
+def test_atomic_write_text_missing_parent_raises(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        atomic_write_text(tmp_path / "missing" / "state.json", "{}")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_atomic_write_text_replaces_existing_mode(tmp_path: Path) -> None:
+    target = tmp_path / "state.json"
+    target.write_text("old")
+    target.chmod(0o644)
+
+    atomic_write_text(target, "new")
+
+    assert target.read_text() == "new"
+    assert target.stat().st_mode & 0o777 == 0o600

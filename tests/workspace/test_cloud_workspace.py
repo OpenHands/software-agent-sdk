@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 
 
 def test_api_timeout_is_used_in_client():
@@ -678,3 +679,213 @@ def test_callback_includes_registered_cost(monkeypatch):
 
         payload = mock_client.post.call_args.kwargs["json"]
         assert payload["cost"] == 1.25
+
+
+# --- Cloud API failure paths ---
+
+CLOUD = "https://cloud.test"
+SANDBOXES = "/api/v1/sandboxes"
+AGENT_URL = "https://sb-1.agent.test"
+
+
+class _FakeHealth:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.fixture
+def cloud_api(monkeypatch):
+    """Route every httpx.Client the workspace builds to scripted responses.
+
+    ``routes`` maps ``"METHOD /path"`` to a list of responses consumed in order
+    (the last one repeats). ``calls`` records every ``"METHOD /path"`` hit.
+    """
+    from openhands.workspace.cloud import workspace as module
+
+    routes: dict[str, list[httpx.Response]] = {}
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        key = f"{request.method} {request.url.path}"
+        calls.append(key)
+        queue = routes.get(key)
+        if not queue:
+            return httpx.Response(404, json={"detail": "not found"})
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    real_client = httpx.Client
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(module.httpx, "Client", client_factory)
+    monkeypatch.setattr(module, "urlopen", lambda *a, **kw: _FakeHealth())
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    return routes, calls
+
+
+def _sandbox(status: str, exposed_urls: list | None = None) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json=[
+            {
+                "id": "sb-1",
+                "status": status,
+                "session_api_key": "sk",
+                "exposed_urls": exposed_urls,
+            }
+        ],
+    )
+
+
+_RUNNING = [{"name": "AGENT_SERVER", "url": AGENT_URL + "/"}]
+
+
+def _new_cloud_workspace(**kwargs):
+    from openhands.workspace import OpenHandsCloudWorkspace
+
+    return OpenHandsCloudWorkspace(
+        cloud_api_url=CLOUD, cloud_api_key="cloud-key", **kwargs
+    )
+
+
+def _created() -> httpx.Response:
+    return httpx.Response(200, json={"id": "sb-1", "session_api_key": "sk"})
+
+
+def test_create_waits_through_starting_and_connects(cloud_api):
+    routes, calls = cloud_api
+    routes[f"POST {SANDBOXES}"] = [_created()]
+    routes[f"GET {SANDBOXES}"] = [_sandbox("STARTING"), _sandbox("RUNNING", _RUNNING)]
+
+    workspace = _new_cloud_workspace()
+
+    assert workspace.host == AGENT_URL
+    assert workspace.api_key == "sk"
+    assert calls.count(f"GET {SANDBOXES}") == 2
+    workspace._sandbox_id = None
+
+
+@pytest.mark.parametrize("status", ["ERROR", "MISSING"])
+def test_failed_sandbox_status_fails_fast_and_deletes_sandbox(cloud_api, status):
+    routes, calls = cloud_api
+    routes[f"POST {SANDBOXES}"] = [_created()]
+    routes[f"GET {SANDBOXES}"] = [_sandbox(status)]
+    routes[f"DELETE {SANDBOXES}/sb-1"] = [httpx.Response(200)]
+
+    with pytest.raises(ValueError, match=status):
+        _new_cloud_workspace()
+
+    assert calls.count(f"GET {SANDBOXES}") == 1
+    assert calls[-1] == f"DELETE {SANDBOXES}/sb-1"
+
+
+def test_running_sandbox_without_agent_server_url_is_deleted(cloud_api):
+    routes, calls = cloud_api
+    routes[f"POST {SANDBOXES}"] = [_created()]
+    routes[f"GET {SANDBOXES}"] = [
+        _sandbox("RUNNING", [{"name": "VSCODE", "url": "https://vscode.test"}])
+    ]
+    routes[f"DELETE {SANDBOXES}/sb-1"] = [httpx.Response(200)]
+
+    with pytest.raises(ValueError, match="Agent server URL not found"):
+        _new_cloud_workspace()
+
+    assert calls[-1] == f"DELETE {SANDBOXES}/sb-1"
+
+
+def test_paused_sandbox_is_resumed_while_waiting(cloud_api):
+    routes, calls = cloud_api
+    routes[f"POST {SANDBOXES}"] = [_created()]
+    routes[f"GET {SANDBOXES}"] = [_sandbox("PAUSED"), _sandbox("RUNNING", _RUNNING)]
+    routes[f"POST {SANDBOXES}/sb-1/resume"] = [httpx.Response(200)]
+
+    workspace = _new_cloud_workspace()
+
+    assert f"POST {SANDBOXES}/sb-1/resume" in calls
+    assert workspace.host == AGENT_URL
+    workspace._sandbox_id = None
+
+
+def test_create_sandbox_client_error_propagates_without_delete(cloud_api):
+    routes, calls = cloud_api
+    routes[f"POST {SANDBOXES}"] = [httpx.Response(401, text="bad key")]
+
+    with pytest.raises(httpx.HTTPStatusError):
+        _new_cloud_workspace()
+
+    assert calls == [f"POST {SANDBOXES}"]
+
+
+def test_cleanup_swallows_delete_failure_and_resets_state(cloud_api):
+    routes, calls = cloud_api
+    routes[f"POST {SANDBOXES}"] = [_created()]
+    routes[f"GET {SANDBOXES}"] = [_sandbox("RUNNING", _RUNNING)]
+    routes[f"DELETE {SANDBOXES}/sb-1"] = [httpx.Response(500, text="boom")]
+    workspace = _new_cloud_workspace()
+
+    workspace.cleanup()
+    workspace.cleanup()
+
+    assert calls.count(f"DELETE {SANDBOXES}/sb-1") == 1
+    assert workspace._sandbox_id is None
+
+
+@pytest.fixture
+def running_cloud_workspace(cloud_api):
+    routes, calls = cloud_api
+    routes[f"POST {SANDBOXES}"] = [_created()]
+    routes[f"GET {SANDBOXES}"] = [_sandbox("RUNNING", _RUNNING)]
+    workspace = _new_cloud_workspace()
+    calls.clear()
+    yield workspace
+    workspace._sandbox_id = None
+
+
+def test_get_secret_value_returns_none_on_404(running_cloud_workspace, cloud_api):
+    assert running_cloud_workspace._get_secret_value("github_token") is None
+    assert cloud_api[1] == [f"GET {SANDBOXES}/sb-1/settings/secrets/github_token"]
+
+
+@pytest.mark.parametrize("name", ["", "../users/me", "a/b"])
+def test_get_secret_value_rejects_unsafe_names_without_request(
+    running_cloud_workspace, cloud_api, name
+):
+    assert running_cloud_workspace._get_secret_value(name) is None
+    assert cloud_api[1] == []
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: _get_secret_value nests a 3-attempt retry around the 3-attempt "
+    "_send_settings_request, so a persistent 5xx makes 9 requests",
+)
+def test_get_secret_value_retries_at_most_three_times(
+    running_cloud_workspace, cloud_api
+):
+    routes, calls = cloud_api
+    routes[f"GET {SANDBOXES}/sb-1/settings/secrets/github_token"] = [
+        httpx.Response(503, text="unavailable")
+    ]
+
+    assert running_cloud_workspace._get_secret_value("github_token") is None
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize(("status", "attempts"), [(400, 1), (502, 3)])
+def test_call_skills_api_returns_empty_list_on_http_error(
+    running_cloud_workspace, cloud_api, status, attempts
+):
+    routes, calls = cloud_api
+    routes["POST /api/skills"] = [httpx.Response(status, text="nope")]
+
+    skills = running_cloud_workspace._call_skills_api("/workspace/project")
+
+    assert skills == []
+    assert calls == ["POST /api/skills"] * attempts

@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+import threading
 
 import pytest
 
@@ -121,3 +122,67 @@ def test_file_operations_with_security():
         # Test that we can't read outside the root
         with pytest.raises(ValueError, match="path escapes filestore root"):
             store.read("../outside.txt")
+
+
+def test_windows_style_traversal_in_nested_path_blocked(tmp_path):
+    store = LocalFileStore(str(tmp_path / "root"))
+
+    with pytest.raises(ValueError, match="path escapes filestore root"):
+        store.get_full_path("sub\\..\\..\\outside.txt")
+
+
+def test_sibling_directory_sharing_root_prefix_blocked(tmp_path):
+    """``root2`` shares ``root``'s string prefix but is outside it."""
+    store = LocalFileStore(str(tmp_path / "root"))
+
+    with pytest.raises(ValueError, match="path escapes filestore root"):
+        store.write("../root2/file.txt", "x")
+    assert not (tmp_path / "root2").exists()
+
+
+def test_list_and_exists_on_missing_path(tmp_path):
+    store = LocalFileStore(str(tmp_path / "root"))
+
+    assert store.list("missing") == []
+    assert store.exists("missing") is False
+
+
+def test_list_file_returns_the_file_itself(tmp_path):
+    store = LocalFileStore(str(tmp_path / "root"))
+    store.write("dir/file.txt", "x")
+
+    assert store.list("dir/file.txt") == ["dir/file.txt"]
+    assert store.list("dir") == ["dir/file.txt"]
+
+
+def test_delete_missing_path_is_a_no_op(tmp_path):
+    store = LocalFileStore(str(tmp_path / "root"))
+
+    store.delete("missing/file.txt")
+
+    assert store.exists("") is True
+
+
+def test_lock_times_out_while_another_thread_holds_it(tmp_path):
+    store = LocalFileStore(str(tmp_path / "root"))
+    held = threading.Event()
+    release = threading.Event()
+
+    def hold_lock() -> None:
+        with store.lock("state.lock"):
+            held.set()
+            release.wait(5)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    try:
+        assert held.wait(5)
+        with pytest.raises(TimeoutError, match="state.lock"):
+            with store.lock("state.lock", timeout=0.05):
+                pass
+    finally:
+        release.set()
+        holder.join(5)
+
+    with store.lock("state.lock", timeout=1):
+        pass

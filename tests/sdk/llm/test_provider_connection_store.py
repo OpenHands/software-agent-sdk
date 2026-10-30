@@ -11,6 +11,7 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.provider_connection_store import (
     PROVIDER_CONNECTIONS_SCHEMA_VERSION,
     ProviderConnection,
+    ProviderConnectionLimitExceeded,
     ProviderConnectionNotFound,
     ProviderConnectionStore,
 )
@@ -84,6 +85,93 @@ def test_corrupted_file_raises_not_clobbers(tmp_path):
         store.list()
     # The corrupt file is left intact, not silently replaced.
     assert path.read_text() == "{ not valid json"
+
+
+@pytest.mark.parametrize(
+    ("payload", "error"),
+    [
+        ([], "JSON object"),
+        ({"schema_version": "1", "connections": []}, "integer"),
+        (
+            {"schema_version": PROVIDER_CONNECTIONS_SCHEMA_VERSION + 1},
+            "newer than supported",
+        ),
+    ],
+)
+def test_unsupported_file_shape_raises_and_blocks_writes(tmp_path, payload, error):
+    path = tmp_path / "provider_connections.json"
+    original = json.dumps(payload)
+    path.write_text(original)
+    store = ProviderConnectionStore(base_dir=tmp_path)
+
+    with pytest.raises(ValueError, match=error):
+        store.list()
+    with pytest.raises(ValueError, match=error):
+        store.create(_connection())
+    assert path.read_text() == original
+
+
+@pytest.mark.parametrize("bad_id", ["../escape", ".hidden", "a/b", "-dash"])
+def test_create_rejects_invalid_connection_id(tmp_path, bad_id):
+    store = ProviderConnectionStore(base_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="Invalid provider connection id"):
+        store.create(_connection(id=bad_id))
+    assert store.list() == []
+
+
+def test_create_duplicate_id_raises_and_keeps_original(tmp_path):
+    store = ProviderConnectionStore(base_dir=tmp_path)
+    store.create(_connection())
+
+    with pytest.raises(ValueError, match="already exists"):
+        store.create(_connection(api_key="sk-other"))
+
+    got = store.get("conn1")
+    assert got is not None
+    assert got.api_key_value() == "sk-shared"
+
+
+def test_create_beyond_limit_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "openhands.sdk.llm.provider_connection_store.MAX_PROVIDER_CONNECTIONS", 2
+    )
+    store = ProviderConnectionStore(base_dir=tmp_path)
+    store.create(_connection(id="a"))
+    store.create(_connection(id="b"))
+
+    with pytest.raises(ProviderConnectionLimitExceeded):
+        store.create(_connection(id="c"))
+    assert [c.id for c in store.list()] == ["a", "b"]
+
+
+def test_update_missing_connection_raises_without_creating(tmp_path):
+    store = ProviderConnectionStore(base_dir=tmp_path)
+
+    with pytest.raises(ProviderConnectionNotFound):
+        store.update(_connection(id="ghost"))
+    assert store.list() == []
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "**********"])
+def test_blank_or_redacted_api_key_is_treated_as_unset(blank):
+    assert _connection(api_key=blank).api_key is None
+
+
+def test_write_failure_leaves_previous_file_and_no_temp_files(tmp_path, monkeypatch):
+    store = ProviderConnectionStore(base_dir=tmp_path)
+    store.create(_connection())
+    before = (tmp_path / "provider_connections.json").read_text()
+
+    def fail_replace(self, target):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("pathlib.Path.replace", fail_replace)
+    with pytest.raises(OSError, match="disk full"):
+        store.create(_connection(id="conn2"))
+
+    assert (tmp_path / "provider_connections.json").read_text() == before
+    assert list(tmp_path.glob("*.tmp")) == []
 
 
 # ── Resolution in LLMProfileStore ──────────────────────────────────────────

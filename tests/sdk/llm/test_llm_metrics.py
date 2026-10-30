@@ -629,3 +629,43 @@ def test_cache_hit_rate_is_not_serialized():
     snapshot = Metrics().get_snapshot()
     assert "cache_hit_rate" not in snapshot.model_dump()
     assert "cache_hit_rate" not in MetricsSnapshot.model_json_schema()["properties"]
+
+
+def test_metrics_diff_lists_only_entries_after_baseline():
+    metrics = Metrics(model_name="m")
+    metrics.add_cost(1.0)
+    metrics.add_response_latency(0.5, "r1")
+    metrics.add_token_usage(10, 5, 0, 0, 4096, "r1")
+    baseline = metrics.deep_copy()
+
+    metrics.add_cost(2.0)
+    metrics.add_response_latency(0.7, "r2")
+    metrics.add_token_usage(20, 10, 0, 0, 4096, "r2")
+    diff = metrics.diff(baseline)
+
+    assert [c.cost for c in diff.costs] == [2.0]
+    assert [r.response_id for r in diff.response_latencies] == ["r2"]
+    assert [u.response_id for u in diff.token_usages] == ["r2"]
+    assert diff.accumulated_token_usage is not None
+    assert diff.accumulated_token_usage.prompt_tokens == 20
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "BUG: Metrics.diff selects new costs by timestamp > last baseline "
+        "timestamp, so a cost recorded in the same clock tick (or after a "
+        "backwards clock step) is dropped while accumulated_cost still counts it"
+    ),
+)
+def test_metrics_diff_keeps_cost_recorded_at_baseline_timestamp():
+    metrics = Metrics(model_name="m")
+    metrics.add_cost(1.0)
+    baseline = metrics.deep_copy()
+    metrics.add_cost(2.0)
+    metrics.costs[-1].timestamp = metrics.costs[0].timestamp
+
+    diff = metrics.diff(baseline)
+
+    assert diff.accumulated_cost == 2.0
+    assert [c.cost for c in diff.costs] == [2.0]

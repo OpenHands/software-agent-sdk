@@ -118,3 +118,44 @@ def test_load_skills_from_dir_mcp_json_only_for_agentskills(tmp_path: Path) -> N
 
     assert agent_skills["agent-skill"].mcp_tools is not None
     assert repo_skills["legacy"].mcp_tools is None
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: load_mcp_config catches JSONDecodeError and OSError but not "
+    "UnicodeDecodeError, so a non-UTF-8 .mcp.json escapes as a raw error",
+)
+def test_mcp_json_non_utf8_raises_skill_validation_error(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# Skill")
+    (skill_dir / ".mcp.json").write_bytes(b'\xff\xfe{"mcpServers": {}}')
+
+    with pytest.raises(SkillValidationError):
+        Skill.load(skill_dir / "SKILL.md")
+
+
+@pytest.mark.parametrize("payload", ["[]", '"servers"', "null"])
+def test_mcp_json_non_object_raises_error(tmp_path: Path, payload: str) -> None:
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# Skill")
+    (skill_dir / ".mcp.json").write_text(payload)
+
+    with pytest.raises(SkillValidationError, match="expected object"):
+        Skill.load(skill_dir / "SKILL.md")
+
+
+def test_bad_mcp_json_does_not_block_sibling_skills(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    bad = skills_dir / "bad-skill"
+    bad.mkdir(parents=True)
+    (bad / "SKILL.md").write_text("# Bad")
+    (bad / ".mcp.json").write_bytes(b"\xff{}")
+    good = skills_dir / "good-skill"
+    good.mkdir()
+    (good / "SKILL.md").write_text("# Good")
+
+    _, _, agent_skills = load_skills_from_dir(skills_dir)
+
+    assert list(agent_skills) == ["good-skill"]

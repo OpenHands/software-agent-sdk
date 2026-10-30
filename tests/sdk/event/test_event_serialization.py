@@ -15,6 +15,7 @@ from openhands.sdk.event import (
     ObservationEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.event.types import ROOT_PARENT_ID
 from openhands.sdk.llm import (
     Message,
     MessageToolCall,
@@ -217,3 +218,57 @@ def test_event_deserialize():
     dumped = original.model_dump_json()
     loaded = Event.model_validate_json(dumped)
     assert loaded == original
+
+
+def _persisted_message_event() -> dict:
+    event = MessageEvent(
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text="hi")]),
+    )
+    return json.loads(event.model_dump_json())
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        lambda d: {**d, "kind": "NoSuchEvent"},
+        lambda d: {k: v for k, v in d.items() if k != "kind"},
+        lambda d: {**d, "source": "robot"},
+        lambda d: {**d, "llm_message": None},
+        lambda d: {**d, "id": ROOT_PARENT_ID},
+    ],
+    ids=["unknown-kind", "missing-kind", "bad-source", "null-message", "reserved-id"],
+)
+def test_corrupt_persisted_event_raises_validation_error(corrupt):
+    """Corrupt event files surface as ValidationError, which loaders handle,
+    rather than as an arbitrary exception from inside a validator."""
+    with pytest.raises(ValidationError):
+        Event.model_validate_json(json.dumps(corrupt(_persisted_message_event())))
+
+
+def test_truncated_persisted_event_raises_validation_error():
+    payload = json.dumps(_persisted_message_event())
+
+    with pytest.raises(ValidationError):
+        Event.model_validate_json(payload[: len(payload) // 2])
+
+
+def test_minimal_persisted_event_fills_defaults():
+    """Only kind, source and payload are required; optional fields default."""
+    loaded = Event.model_validate_json(
+        json.dumps(
+            {
+                "kind": "MessageEvent",
+                "source": "user",
+                "llm_message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "hi"}],
+                },
+            }
+        )
+    )
+
+    assert isinstance(loaded, MessageEvent)
+    assert loaded.id
+    assert loaded.parent_id is None
+    assert loaded.activated_skills == []

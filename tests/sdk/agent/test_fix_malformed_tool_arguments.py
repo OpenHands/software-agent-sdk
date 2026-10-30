@@ -6,7 +6,7 @@ decodes JSON strings for list/dict fields. This handles cases where LLMs
 JSON arrays/objects.
 """
 
-from typing import Annotated
+from typing import Annotated, Any
 
 import pytest
 from pydantic import Field, ValidationError
@@ -55,6 +55,13 @@ class StrOrListAction(Action):
     """Test action with a field that accepts either a str or a list."""
 
     value: str | list[str] = Field(description="A str-or-list field")
+
+
+class OptionalAnnotatedAction(Action):
+    """Optional fields whose inner type carries ``Annotated`` metadata."""
+
+    items: Annotated[list[int], Field(description="Optional list")] | None = None
+    text: Annotated[str, Field(description="Optional string")] | None = None
 
 
 class _NestedActionForMalformedArgs(Action):
@@ -383,3 +390,57 @@ def test_str_or_list_field_list_passthrough():
     action = StrOrListAction.model_validate(fixed_data)
 
     assert action.value == ["a", "b", "c"]
+
+
+def test_non_dict_arguments_are_returned_unchanged():
+    payload: Any = ["not", "a", "dict"]
+    assert fix_malformed_tool_arguments(payload, JsonDecodingTestAction) is payload
+
+
+def test_input_arguments_are_not_mutated():
+    data = {"items": '["a"]', "config": "{}", "name": "n"}
+    fix_malformed_tool_arguments(data, JsonDecodingTestAction)
+    assert data == {"items": '["a"]', "config": "{}", "name": "n"}
+
+
+def test_json_schema_resolves_refs_and_unions():
+    schema = {
+        "$defs": {"Ids": {"type": "array", "items": {"type": "integer"}}},
+        "properties": {
+            "ids": {"$ref": "#/$defs/Ids"},
+            "opts": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+            "body": {"type": ["string", "null"]},
+            "dangling": {"$ref": "#/$defs/Missing"},
+            "not_a_schema": "ignored",
+        },
+    }
+    data = {
+        "ids": "[1, 2]",
+        "opts": '{"k": 1}',
+        "body": ["a", "b"],
+        "dangling": "[1]",
+        "not_a_schema": "[1]",
+    }
+
+    assert fix_malformed_tool_arguments(data, schema) == {
+        "ids": [1, 2],
+        "opts": {"k": 1},
+        "body": "ab",
+        "dangling": "[1]",
+        "not_a_schema": "[1]",
+    }
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "BUG: for `Annotated[X, ...] | None` the union args are not unwrapped, "
+        "so the expected origin is Annotated and neither repair applies"
+    ),
+)
+def test_optional_annotated_fields_are_repaired():
+    data = {"items": "[1, 2]", "text": ["a", "b"]}
+
+    fixed = fix_malformed_tool_arguments(data, OptionalAnnotatedAction)
+
+    assert fixed == {"items": [1, 2], "text": "ab"}

@@ -14,9 +14,20 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
-from openhands.sdk.conversation.title_utils import generate_title_with_llm
+from openhands.sdk.conversation.title_utils import (
+    extract_first_user_message,
+    generate_fallback_title,
+    generate_title_with_llm,
+)
 from openhands.sdk.event.llm_convertible import MessageEvent
-from openhands.sdk.llm import LLM, LLMResponse, Message, MetricsSnapshot, TextContent
+from openhands.sdk.llm import (
+    LLM,
+    ImageContent,
+    LLMResponse,
+    Message,
+    MetricsSnapshot,
+    TextContent,
+)
 from openhands.sdk.llm.auth.credentials import CredentialStore, OAuthCredentials
 from openhands.sdk.llm.auth.openai import OpenAISubscriptionAuth
 from openhands.sdk.settings import ACPAgentSettings
@@ -544,3 +555,45 @@ def test_generate_title_keeps_text_without_reasoning(mock_completion):
     assert generate_title_with_llm("Help me write a script", llm) == (
         "✨ Create Python Script"
     )
+
+
+def test_first_user_message_skips_messages_without_text():
+    image_only = MessageEvent(
+        source="user",
+        llm_message=Message(
+            role="user", content=[ImageContent(image_urls=["http://img.invalid/a"])]
+        ),
+    )
+    blank = MessageEvent(
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text="   ")]),
+    )
+    agent = MessageEvent(
+        source="agent",
+        llm_message=Message(role="assistant", content=[TextContent(text="hi")]),
+    )
+    real = MessageEvent(
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text=" fix it ")]),
+    )
+
+    assert extract_first_user_message([image_only, blank, agent]) is None
+    assert extract_first_user_message([image_only, blank, agent, real]) == "fix it"
+
+
+def test_fallback_title_strips_and_keeps_short_messages():
+    assert generate_fallback_title("  short  ", max_length=50) == "short"
+    assert generate_fallback_title("x" * 50, max_length=50) == "x" * 50
+    assert generate_fallback_title("x" * 51, max_length=50) == "x" * 47 + "..."
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "BUG: max_length < 3 makes title[: max_length - 3] a negative slice, so "
+        "the 'truncated' title is longer than max_length"
+    ),
+)
+@pytest.mark.parametrize("max_length", [0, 1, 2])
+def test_fallback_title_never_exceeds_tiny_max_length(max_length):
+    assert len(generate_fallback_title("hello world", max_length)) <= max_length

@@ -338,3 +338,42 @@ def test_cache_with_evict_correct():
     total_len = len(cache["key2"]) + len(cache["key3"])
     # Verify memory statistics match the total size of key2 and key3
     assert total_len == cache.current_memory
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: MemoryLRUCache skips an oversize value without evicting the "
+    "key's previous value, so LocalFileStore.read returns stale content",
+)
+def test_oversize_overwrite_does_not_serve_stale_cache(tmp_path):
+    store = LocalFileStore(str(tmp_path), cache_memory_size=16)
+    store.write("state.json", "old")
+    new_content = "x" * 32
+
+    store.write("state.json", new_content)
+
+    assert store.read("state.json") == new_content
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: LocalFileStore.write(bytes) leaves the previous str cached, "
+    "so a later read returns the old content",
+)
+def test_bytes_overwrite_does_not_serve_stale_cache(tmp_path):
+    store = LocalFileStore(str(tmp_path))
+    store.write("state.json", "old")
+
+    store.write("state.json", b"new")
+
+    assert store.read("state.json") == "new"
+
+
+def test_read_after_external_delete_raises_file_not_found(tmp_path):
+    store = LocalFileStore(str(tmp_path))
+    store.write("a.txt", "content")
+    store.cache.clear()
+    os.remove(store.get_full_path("a.txt"))
+
+    with pytest.raises(FileNotFoundError):
+        store.read("a.txt")

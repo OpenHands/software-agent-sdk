@@ -710,3 +710,96 @@ def test_git_commit_endpoints_in_openapi(client):
     assert commit_param is not None
     assert commit_param["in"] == "query"
     assert commit_param.get("required", False) is False
+
+
+@pytest.fixture
+def committed_repo(tmp_path) -> Path:
+    """A real repo with one commit and a modified tracked file."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-c", "user.name=qa", "-c", "user.email=qa@example.com", *args],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+
+    git("init", "-q", "-b", "main")
+    (repo / "a.txt").write_text("a\n")
+    git("add", "a.txt")
+    git("commit", "-qm", "init")
+    (repo / "a.txt").write_text("b\n")
+    return repo
+
+
+@pytest.mark.parametrize("endpoint", ["changes", "diff"])
+def test_git_unknown_ref_returns_400(client, committed_repo, endpoint):
+    path = committed_repo if endpoint == "changes" else committed_repo / "a.txt"
+
+    response = client.get(
+        f"/api/git/{endpoint}", params={"path": str(path), "ref": "no-such-branch"}
+    )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize("endpoint", ["changes", "diff"])
+def test_git_option_shaped_ref_is_not_run_as_a_git_option(
+    client, committed_repo, tmp_path, endpoint
+):
+    path = committed_repo if endpoint == "changes" else committed_repo / "a.txt"
+    output = tmp_path / "written-by-git"
+
+    response = client.get(
+        f"/api/git/{endpoint}",
+        params={"path": str(path), "ref": f"--output={output}"},
+    )
+
+    assert response.status_code == 400
+    assert not output.exists()
+
+
+def test_git_unknown_commit_returns_400(client, committed_repo):
+    changes = client.get(
+        "/api/git/commits/deadbeef/changes", params={"path": str(committed_repo)}
+    )
+    diff = client.get(
+        "/api/git/diff",
+        params={"path": str(committed_repo / "a.txt"), "commit": "deadbeef"},
+    )
+
+    assert changes.status_code == 400
+    assert diff.status_code == 400
+
+
+def test_git_diff_of_missing_file_returns_400(client, committed_repo):
+    response = client.get(
+        "/api/git/diff", params={"path": str(committed_repo / "missing.txt")}
+    )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize("limit", [0, 201])
+def test_git_commits_rejects_out_of_range_limit(client, committed_repo, limit):
+    response = client.get(
+        "/api/git/commits", params={"path": str(committed_repo), "limit": limit}
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("endpoint", ["changes", "diff", "commits"])
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: an empty path becomes Path('.') and answers for the "
+    "agent-server process's own working directory instead of erroring",
+)
+def test_git_empty_path_is_rejected(client, committed_repo, monkeypatch, endpoint):
+    monkeypatch.chdir(committed_repo)
+
+    response = client.get(f"/api/git/{endpoint}", params={"path": ""})
+
+    assert 400 <= response.status_code < 500

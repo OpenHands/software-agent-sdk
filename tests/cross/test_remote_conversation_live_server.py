@@ -1423,6 +1423,46 @@ def test_file_upload_endpoint_with_live_server(server_env, tmp_path: Path):
     assert downloaded_file.read_text() == test_content
 
 
+def test_file_download_of_missing_file_fails_without_writing(
+    server_env, tmp_path: Path
+):
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/test_workspace"
+    )
+    destination = tmp_path / "out" / "missing.txt"
+
+    result = workspace.file_download(
+        server_env["workspace_path"] / "does-not-exist.txt", destination
+    )
+
+    assert result.success is False
+    assert result.error
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("api_key", [None, "wrong-key"])
+def test_remote_workspace_with_bad_session_key_reports_failures(
+    authenticated_server_env, tmp_path: Path, api_key
+):
+    workspace = RemoteWorkspace(
+        host=authenticated_server_env["host"],
+        working_dir="/tmp/test_workspace",
+        api_key=api_key,
+    )
+    source = tmp_path / "upload.txt"
+    source.write_text("payload")
+    destination = authenticated_server_env["workspace_path"] / "uploaded.txt"
+
+    command = workspace.execute_command("echo should-not-run", timeout=5.0)
+    upload = workspace.file_upload(str(source), destination)
+
+    assert command.exit_code == -1
+    assert "401" in command.stderr
+    assert "should-not-run" not in command.stdout
+    assert upload.success is False
+    assert not destination.exists()
+
+
 def test_conversation_stats_with_live_server(
     server_env, monkeypatch: pytest.MonkeyPatch
 ):

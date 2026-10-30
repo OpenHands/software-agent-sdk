@@ -305,6 +305,55 @@ def test_to_fastmcp_mcp_config_strips_enabled():
     assert "enabled" not in prepared["mcpServers"]["switched_off"]
 
 
+@pytest.mark.parametrize(
+    ("server", "error"),
+    [
+        ({"transport": "stdio", "url": "https://x.example"}, "require 'command'"),
+        ({"transport": "sse", "command": "echo"}, "require 'url'"),
+        (
+            {
+                "url": "https://x.example",
+                "headers": {"authorization": "Bearer a"},
+                "auth": {"strategy": "bearer", "value": "b"},
+            },
+            "Authorization",
+        ),
+        ({"url": ""}, "at least 1 character"),
+        ({"command": "echo", "auth": {"strategy": "kerberos"}}, "strategy"),
+    ],
+)
+def test_coerce_mcp_config_rejects_invalid_servers(server, error):
+    with pytest.raises(ValueError, match=error):
+        coerce_mcp_config({"bad": server})
+
+
+def test_to_fastmcp_mcp_config_merges_auth_into_existing_headers():
+    config = coerce_mcp_config(
+        {
+            "keyed": {
+                "url": "https://keyed.example/mcp",
+                "headers": {"X-Trace": "t"},
+                "auth": {
+                    "strategy": "api_key",
+                    "value": "k",
+                    "header_name": "X-Api-Key",
+                },
+            },
+            "no_password": {
+                "url": "https://basic.example/mcp",
+                "auth": {"strategy": "basic", "username": "u"},
+            },
+        }
+    )
+
+    servers = to_fastmcp_mcp_config(config)["mcpServers"]
+
+    assert servers["keyed"]["headers"] == {"X-Trace": "t", "X-Api-Key": "k"}
+    assert "auth" not in servers["keyed"]
+    assert "headers" not in servers["no_password"]
+    assert "auth" not in servers["no_password"]
+
+
 def test_prepare_mcp_config_converts_bare_oauth_credential():
     config = {
         "mcpServers": {

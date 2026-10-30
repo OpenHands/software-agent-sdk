@@ -356,19 +356,34 @@ def test_merge_function():
     expected = [10, 20, 3]
     assert merge(list1, list2) == expected
 
-    # Test with lists of different lengths (second list longer) - this will fail
-    list1 = [1, 2]
-    list2 = [10, 20, 30, 40]
-    # The current implementation has a bug - it tries to assign to index that
-    # doesn't exist
-    with pytest.raises(IndexError):
-        merge(list1, list2)
-
     # Test with lists of different lengths (first list longer)
     list1 = [1, 2, 3, 4]
     list2 = [10, 20]
     expected = [10, 20, 3, 4]
     assert merge(list1, list2) == expected
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: merge() indexes past the end of a copy of the shorter list",
+)
+def test_merge_appends_items_when_second_list_is_longer():
+    assert merge([1, 2], [10, 20, 30, 40]) == [10, 20, 30, 40]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: merge() raises IndexError when env lists more items than the file",
+)
+def test_config_env_list_longer_than_file_list_overrides_it(tmp_path, clean_env):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"session_api_keys": ["file-key"]}))
+    os.environ["OH_SESSION_API_KEYS_0"] = "env-key-a"
+    os.environ["OH_SESSION_API_KEYS_1"] = "env-key-b"
+
+    config = load_config(config_path)
+
+    assert config.session_api_keys == ["env-key-a", "env-key-b"]
 
 
 def test_get_env_parser_basic_types():

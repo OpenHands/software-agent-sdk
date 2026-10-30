@@ -369,3 +369,43 @@ class TestRedactApiKeyLiterals:
         result = redact_api_key_literals(text)
         assert "sk-oh-Xk9mP2vL4nR7wQ1y" not in result
         assert "ERROR runtime stderr:" in result
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: redact_url_credentials matches the scheme case-sensitively "
+    "(the _in_text variant is IGNORECASE), so HTTPS:// credentials leak",
+)
+def test_redact_url_credentials_uppercase_scheme():
+    assert (
+        redact_url_credentials("HTTPS://oauth2:SECRET@github.com/o/r.git")
+        == "HTTPS://****@github.com/o/r.git"
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["", "https://github.com/o/r.git", "git@github.com:o/r.git", "/local/path"],
+)
+def test_redact_url_credentials_leaves_credential_free_input(url):
+    assert redact_url_credentials(url) == url
+
+
+def test_redact_url_credentials_masks_bare_token():
+    assert (
+        redact_url_credentials("https://ghp_TOKEN@github.com/o/r.git")
+        == "https://****@github.com/o/r.git"
+    )
+
+
+def test_redact_url_credentials_placeholder_only_kept_when_asked():
+    url = "https://x:${TOKEN}@host/r.git"
+    assert redact_url_credentials(url, preserve_placeholders=True) == url
+    assert redact_url_credentials(url) == "https://****@host/r.git"
+
+
+def test_redact_url_params_keeps_blank_values_and_ignores_no_query():
+    assert redact_url_params("https://h/p") == "https://h/p"
+    assert redact_url_params("https://h/p?apikey=&q=") == (
+        "https://h/p?apikey=%3Credacted%3E&q="
+    )

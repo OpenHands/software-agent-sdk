@@ -279,6 +279,35 @@ class TestGraySwanAnalyzerAPICall:
 
             assert result == SecurityRisk.UNKNOWN
 
+    @pytest.mark.parametrize(
+        "body", [{"violation": "high"}, [0.9], {"violation": None, "ipi": False}]
+    )
+    def test_api_call_malformed_body_returns_unknown(
+        self, analyzer: GraySwanAnalyzer, body
+    ):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = body
+
+        with patch.object(analyzer, "_get_client") as mock_get_client:
+            mock_get_client.return_value.post.return_value = mock_response
+
+            result = analyzer._call_grayswan_api([{"role": "user", "content": "x"}])
+
+        assert result == SecurityRisk.UNKNOWN
+
+    def test_api_call_connection_error_returns_unknown(
+        self, analyzer: GraySwanAnalyzer
+    ):
+        with patch.object(analyzer, "_get_client") as mock_get_client:
+            mock_get_client.return_value.post.side_effect = httpx.ConnectError(
+                "refused"
+            )
+
+            result = analyzer._call_grayswan_api([{"role": "user", "content": "x"}])
+
+        assert result == SecurityRisk.UNKNOWN
+
 
 class TestGraySwanAnalyzerSecurityRisk:
     """Tests for the security_risk method."""
@@ -287,6 +316,44 @@ class TestGraySwanAnalyzerSecurityRisk:
     def analyzer(self) -> GraySwanAnalyzer:
         """Create analyzer with test API key."""
         return GraySwanAnalyzer(api_key=SecretStr("test_key"))
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "BUG: history_limit=0 slices events[-0:], which sends the whole "
+            "history instead of none"
+        ),
+    )
+    def test_security_risk_history_limit_zero_sends_no_history(
+        self, analyzer: GraySwanAnalyzer
+    ):
+        analyzer.history_limit = 0
+        analyzer.set_events(
+            [create_mock_message_event(f"Message {i}", "user") for i in range(3)]
+        )
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"violation": 0.1}
+
+        with patch.object(analyzer, "_get_client") as mock_get_client:
+            mock_client = mock_get_client.return_value
+            mock_client.post.return_value = mock_response
+            analyzer.security_risk(create_mock_action_event())
+
+        messages = mock_client.post.call_args.kwargs["json"]["messages"]
+        assert [m["role"] for m in messages] == ["system", "assistant"]
+
+    def test_security_risk_unexpected_conversion_error_returns_unknown(
+        self, analyzer: GraySwanAnalyzer
+    ):
+        with patch(
+            "openhands.sdk.security.grayswan.analyzer."
+            "convert_events_to_openai_messages",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = analyzer.security_risk(create_mock_action_event())
+
+        assert result == SecurityRisk.UNKNOWN
 
     def test_security_risk_without_api_key(self):
         """Test that security_risk returns UNKNOWN without API key."""

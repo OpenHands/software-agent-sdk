@@ -376,6 +376,77 @@ def test_release_all_then_reacquire_hands_off_to_waiter_first():
     assert order == ["waiter", "releaser"]
 
 
+def _wait_for_waiters(lock: FIFOLock, count: int) -> None:
+    deadline = time.monotonic() + 5
+    while len(lock._waiters) < count:
+        assert time.monotonic() < deadline, "waiter never queued"
+        time.sleep(0.001)
+
+
+def test_timed_out_head_waiter_does_not_strand_the_next_waiter():
+    """A waiter at the front of the queue that gives up must hand its place
+    on, otherwise the waiter behind it never wakes."""
+    lock = FIFOLock()
+    lock.acquire()
+    results: dict[str, bool] = {}
+
+    def impatient() -> None:
+        results["impatient"] = lock.acquire(timeout=0.05)
+
+    def patient() -> None:
+        results["patient"] = lock.acquire(timeout=5)
+        if results["patient"]:
+            lock.release()
+
+    t_impatient = threading.Thread(target=impatient)
+    t_impatient.start()
+    _wait_for_waiters(lock, 1)
+    t_patient = threading.Thread(target=patient)
+    t_patient.start()
+    _wait_for_waiters(lock, 2)
+
+    t_impatient.join(timeout=5)
+    assert results["impatient"] is False
+    lock.release()
+    t_patient.join(timeout=5)
+
+    assert results["patient"] is True
+    assert not lock.locked()
+    assert not lock._waiters
+
+
+def test_non_blocking_acquire_while_held_elsewhere_does_not_queue():
+    lock = FIFOLock()
+    lock.acquire()
+    result: list[bool] = []
+
+    t = threading.Thread(target=lambda: result.append(lock.acquire(blocking=False)))
+    t.start()
+    t.join(timeout=5)
+
+    assert result == [False]
+    assert not lock._waiters
+    # The owner can still re-enter without blocking.
+    assert lock.acquire(blocking=False)
+    lock.release()
+    lock.release()
+    assert not lock.locked()
+
+
+def test_zero_timeout_on_contended_lock_returns_immediately():
+    lock = FIFOLock()
+    lock.acquire()
+    result: list[bool] = []
+
+    t = threading.Thread(target=lambda: result.append(lock.acquire(timeout=0)))
+    t.start()
+    t.join(timeout=5)
+
+    assert result == [False]
+    assert not lock._waiters
+    lock.release()
+
+
 if __name__ == "__main__":
     print("Running FIFO lock fairness test 100 times sequentially...")
 

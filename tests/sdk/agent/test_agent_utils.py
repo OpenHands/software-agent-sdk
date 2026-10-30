@@ -1,10 +1,15 @@
 """Tests for agent message preparation utilities."""
 
+import json
 from unittest.mock import Mock, patch
 
 import pytest
 
-from openhands.sdk.agent.utils import aprepare_llm_messages, prepare_llm_messages
+from openhands.sdk.agent.utils import (
+    aprepare_llm_messages,
+    parse_tool_call_arguments,
+    prepare_llm_messages,
+)
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
 from openhands.sdk.event import Condensation, MessageEvent
@@ -231,3 +236,31 @@ async def test_aprepare_llm_messages_appends_user_turn_after_trailing_assistant(
     assert isinstance(result, list)
     assert [m.role for m in result] == ["assistant", "user", "assistant", "user"]
     assert len(view.events) == 3
+
+
+# ---------------------------------------------------------------------------
+# parse_tool_call_arguments
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("raw", ["[1, 2]", '"just a string"', "42", "null"])
+def test_parse_tool_call_arguments_non_object_payload_is_empty(raw):
+    assert parse_tool_call_arguments(raw) == {}
+
+
+def test_parse_tool_call_arguments_sanitizes_raw_control_chars():
+    assert parse_tool_call_arguments('{"command": "echo a\nb\tc"}') == {
+        "command": "echo a\nb\tc"
+    }
+
+
+def test_parse_tool_call_arguments_drops_nulls_and_fixes_risk_typo():
+    assert parse_tool_call_arguments(
+        '{"path": "/a", "view_range": null, "securtiy_risk": "LOW"}'
+    ) == {"path": "/a", "security_risk": "LOW"}
+
+
+@pytest.mark.parametrize("raw", ["", "{", '{"a": 1} trailing', "{'a': 1}"])
+def test_parse_tool_call_arguments_invalid_json_raises(raw):
+    with pytest.raises(json.JSONDecodeError):
+        parse_tool_call_arguments(raw)

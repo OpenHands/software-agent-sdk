@@ -74,3 +74,60 @@ class TestResolveSourcePath:
     def test_resolve_home_path(self):
         result = resolve_source_path("~/documents/skill")
         assert result == Path.home() / "documents" / "skill"
+
+
+class TestSourceEdgeCases:
+    def test_parse_github_url_requires_path_after_branch(self):
+        assert parse_github_url("https://github.com/o/r/tree/main") is None
+        assert parse_github_url("https://github.com/o/r") is None
+
+    def test_parse_github_url_rejects_non_https_and_other_hosts(self):
+        assert parse_github_url("http://github.com/o/r/blob/main/p") is None
+        assert parse_github_url("https://www.github.com/o/r/blob/main/p") is None
+
+    @pytest.mark.parametrize("source", ["", "   ", "owner/repo", "github:o/r"])
+    def test_validate_source_path_rejects_ambiguous_sources(self, source):
+        with pytest.raises(ValueError, match="Invalid source path"):
+            validate_source_path(source)
+
+    def test_resolve_github_source_returns_none_when_clone_fails(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "openhands.sdk.plugin.source.try_cached_clone_or_update",
+            lambda *args, **kwargs: None,
+        )
+
+        result = resolve_source_path(
+            "https://github.com/o/r/blob/main/skills/x", cache_dir=tmp_path
+        )
+
+        assert result is None
+
+    def test_resolve_github_source_lowercases_cache_path(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "openhands.sdk.plugin.source.try_cached_clone_or_update",
+            lambda url, repo_path, *args, **kwargs: repo_path,
+        )
+
+        result = resolve_source_path(
+            "https://github.com/Owner/Repo/tree/main/skills/x", cache_dir=tmp_path
+        )
+
+        assert result == tmp_path / "github.com" / "owner" / "repo" / "skills" / "x"
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="BUG: file:// URLs are sliced instead of parsed, so the "
+        "'localhost' authority becomes a relative path component",
+    )
+    def test_resolve_file_url_with_localhost_authority(self):
+        assert resolve_source_path("file://localhost/tmp/skill") == Path("/tmp/skill")
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="BUG: file:// URLs are sliced instead of parsed, so "
+        "percent-escapes such as %20 are not decoded",
+    )
+    def test_resolve_file_url_decodes_percent_escapes(self):
+        assert resolve_source_path("file:///tmp/my%20skill") == Path("/tmp/my skill")

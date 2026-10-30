@@ -914,3 +914,83 @@ def test_find_third_party_files_collision_winner_deterministic(tmp_path, monkeyp
     monkeypatch.setattr(Path, "iterdir", lambda self: iter(entries))
     files = find_third_party_files(tmp_path, {"agents.md": "agents"})
     assert [f.name for f in files] == ["AGENTS.md"]
+
+
+def test_find_regular_md_files_flat_mode_skips_readme_any_case(tmp_path):
+    (tmp_path / "readme.md").write_text("docs")
+    (tmp_path / "skill-a.md").write_text("a")
+
+    files = find_regular_md_files(tmp_path, set(), recursive=False)
+
+    assert [f.name for f in files] == ["skill-a.md"]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: recursive find_regular_md_files compares the README name "
+    "case-sensitively (flat mode does not), so readme.md loads as a skill",
+)
+def test_find_regular_md_files_recursive_skips_readme_any_case(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "readme.md").write_text("docs")
+    (tmp_path / "skill-a.md").write_text("a")
+
+    files = find_regular_md_files(tmp_path, set())
+
+    assert [f.name for f in files] == ["skill-a.md"]
+
+
+def test_skill_load_crlf_frontmatter(tmp_path):
+    path = tmp_path / "crlf.md"
+    path.write_bytes(b"---\r\ntriggers:\r\n  - deploy\r\n---\r\nBody\r\n")
+
+    skill = Skill.load(path, tmp_path)
+
+    assert isinstance(skill.trigger, KeywordTrigger)
+    assert skill.trigger.keywords == ["deploy"]
+    assert skill.content.strip() == "Body"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: Skill.load reads with encoding='utf-8' (not 'utf-8-sig'), so "
+    "a BOM hides the frontmatter and a triggered skill becomes always-on",
+)
+def test_skill_load_utf8_bom_frontmatter(tmp_path):
+    path = tmp_path / "bom.md"
+    path.write_bytes("\ufeff---\ntriggers:\n  - deploy\n---\nBody\n".encode())
+
+    skill = Skill.load(path, tmp_path)
+
+    assert isinstance(skill.trigger, KeywordTrigger)
+    assert skill.content.strip() == "Body"
+
+
+@pytest.mark.parametrize(
+    "frontmatter_block", ["---\n---\n", "---\n- a\n- b\n---\n", "---\nplain\n---\n"]
+)
+def test_skill_load_empty_or_non_mapping_frontmatter_is_ignored(
+    tmp_path, frontmatter_block
+):
+    path = tmp_path / "odd.md"
+    path.write_text(frontmatter_block + "Body\n")
+
+    skill = Skill.load(path, tmp_path)
+
+    assert skill.name == "odd"
+    assert skill.trigger is None
+    assert skill.content.strip() == "Body"
+
+
+def test_skill_load_null_triggers_raises(tmp_path):
+    path = tmp_path / "null.md"
+    path.write_text("---\ntriggers:\n---\nBody\n")
+
+    with pytest.raises(SkillValidationError, match="Triggers must be a list"):
+        Skill.load(path, tmp_path)
+
+
+def test_find_regular_md_files_missing_dir_returns_empty(tmp_path):
+    assert find_regular_md_files(tmp_path / "missing", set()) == []
+    assert find_skill_md_directories(tmp_path / "missing") == []
+    assert find_third_party_files(tmp_path / "missing", {"agents.md": "a"}) == []

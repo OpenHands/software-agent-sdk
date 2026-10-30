@@ -741,3 +741,92 @@ class TestAgentDefinitionMaxBudget:
         md = tmp_path / "a.md"
         md.write_text("---\nname: a\nmax_budget_per_run: 3\n---\n\nPrompt.\n")
         assert "max_budget_per_run" not in AgentDefinition.load(md).metadata
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: AgentDefinition.load wraps fm.get() in str(), so an empty "
+    "YAML value becomes the literal string 'None' (model 'None' is then "
+    "looked up as an LLM profile)",
+)
+def test_load_empty_frontmatter_values_fall_back_to_defaults(tmp_path: Path):
+    md = tmp_path / "reviewer.md"
+    md.write_text("---\nname:\ndescription:\nmodel:\n---\n\nPrompt.\n")
+
+    agent = AgentDefinition.load(md)
+
+    assert agent.name == "reviewer"
+    assert agent.description == ""
+    assert agent.model == "inherit"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: _extract_max_iteration_per_run accepts YAML booleans as ints "
+    "(max_budget_per_run rejects them), so 'yes' silently caps a run at 1",
+)
+def test_load_boolean_max_iteration_per_run_is_not_one(tmp_path: Path):
+    md = tmp_path / "a.md"
+    md.write_text("---\nmax_iteration_per_run: yes\n---\n\nPrompt.\n")
+
+    assert AgentDefinition.load(md).max_iteration_per_run != 1
+
+
+def test_load_boolean_max_budget_per_run_is_ignored(tmp_path: Path):
+    md = tmp_path / "a.md"
+    md.write_text("---\nmax_budget_per_run: yes\n---\n\nPrompt.\n")
+
+    assert AgentDefinition.load(md).max_budget_per_run is None
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("max_iteration_per_run", "many"),
+        ("max_iteration_per_run", "0"),
+        ("max_budget_per_run", "-1"),
+        ("max_budget_per_run", "cheap"),
+        ("mcp_config", "[a, b]"),
+        ("profile_store_dir", "[a, b]"),
+        ("condenser", "42"),
+    ],
+)
+def test_load_invalid_frontmatter_value_raises(tmp_path: Path, field: str, value: str):
+    md = tmp_path / "a.md"
+    md.write_text(f"---\n{field}: {value}\n---\n\nPrompt.\n")
+
+    with pytest.raises((ValueError, ValidationError)):
+        AgentDefinition.load(md)
+
+
+def test_load_skills_string_ignores_blank_entries(tmp_path: Path):
+    md = tmp_path / "a.md"
+    md.write_text('---\nskills: " a, ,b ,, "\n---\n\nPrompt.\n')
+
+    assert AgentDefinition.load(md).skills == ["a", "b"]
+
+
+def test_load_without_frontmatter_uses_filename_and_whole_body(tmp_path: Path):
+    md = tmp_path / "plain.md"
+    md.write_text("Just a prompt.\n")
+
+    agent = AgentDefinition.load(md)
+
+    assert agent.name == "plain"
+    assert agent.system_prompt == "Just a prompt."
+    assert agent.tools == []
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: AgentDefinition.load reads with encoding='utf-8' (not "
+    "'utf-8-sig'), so a BOM hides the frontmatter and it leaks into the prompt",
+)
+def test_load_utf8_bom_frontmatter(tmp_path: Path):
+    md = tmp_path / "file-stem.md"
+    md.write_bytes("\ufeff---\nname: bom-agent\n---\n\nPrompt.\n".encode())
+
+    agent = AgentDefinition.load(md)
+
+    assert agent.name == "bom-agent"
+    assert agent.system_prompt == "Prompt."

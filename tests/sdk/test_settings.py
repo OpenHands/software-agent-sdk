@@ -1116,6 +1116,45 @@ def test_conversation_settings_from_persisted_rejects_newer_schema_version() -> 
         ConversationSettings.from_persisted({"schema_version": 2})
 
 
+@pytest.mark.parametrize("version", ["3", 3.0, True, [3]])
+def test_from_persisted_rejects_non_integer_schema_version(version: Any) -> None:
+    with pytest.raises(TypeError, match="schema_version must be an integer"):
+        OpenHandsAgentSettings.from_persisted(
+            {"schema_version": version, "llm": {"model": "m"}}
+        )
+
+
+def test_from_persisted_rejects_negative_schema_version() -> None:
+    with pytest.raises(ValueError, match="must be non-negative"):
+        OpenHandsAgentSettings.from_persisted(
+            {"schema_version": -1, "llm": {"model": "m"}}
+        )
+
+
+@pytest.mark.parametrize("payload", [None, "{}", [("llm", {"model": "m"})], 42])
+def test_from_persisted_rejects_non_mapping_payload(payload: Any) -> None:
+    with pytest.raises(TypeError, match="must be a mapping"):
+        OpenHandsAgentSettings.from_persisted(payload)
+
+
+def test_from_persisted_null_schema_version_is_treated_as_v0() -> None:
+    settings = OpenHandsAgentSettings.from_persisted(
+        {"schema_version": None, "agent_kind": "llm", "llm": {"model": "m"}}
+    )
+
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert settings.agent_kind == "openhands"
+
+
+def test_from_persisted_does_not_mutate_caller_payload() -> None:
+    payload = {"agent_kind": "llm", "llm": {"model": "m", "modify_params": True}}
+    snapshot = json.loads(json.dumps(payload))
+
+    OpenHandsAgentSettings.from_persisted(payload)
+
+    assert payload == snapshot
+
+
 # ---------------------------------------------------------------------------
 # create_agent — LLM variant
 # ---------------------------------------------------------------------------

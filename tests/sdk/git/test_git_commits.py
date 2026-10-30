@@ -225,3 +225,39 @@ def test_get_commit_file_diff_rejects_oversize_blob():
         # Act + Assert
         with pytest.raises(GitPathError):
             get_commit_file_diff(Path(temp_dir) / "big.txt", sha)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: _show_file_at_rev reads blobs with run_git_command's default "
+    "strip=True, dropping the first line's indentation",
+)
+def test_get_commit_file_diff_preserves_edge_whitespace():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        commit_file(temp_dir, "a.py", "    x = 1\n", "base")
+        sha = commit_file(temp_dir, "a.py", "    x = 2\n", "edit")
+
+        diff = get_commit_file_diff(Path(temp_dir) / "a.py", sha)
+
+        assert diff.original is not None and diff.modified is not None
+        assert diff.original.startswith("    x = 1")
+        assert diff.modified.startswith("    x = 2")
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BUG: _parse_name_status splits on any whitespace, so a commit "
+    "touching a path with a space raises GitCommandError",
+)
+def test_get_commit_changes_path_with_space():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        commit_file(temp_dir, "base.txt", "base", "base")
+        sha = commit_file(temp_dir, "my notes.txt", "new", "add notes")
+
+        changes = get_commit_changes(temp_dir, sha)
+
+        assert [(c.status, c.path) for c in changes] == [
+            (GitChangeStatus.ADDED, Path("my notes.txt"))
+        ]
