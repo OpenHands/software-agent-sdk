@@ -88,7 +88,7 @@ async def list_workspaces(request: Request) -> WorkspacesListResponse:
     response_model=WorkspacesListResponse,
     response_model_exclude_none=True,
 )
-async def add_workspaces(
+def add_workspaces(
     request: Request, payload: AddWorkspacesRequest
 ) -> WorkspacesListResponse:
     """Append workspaces to the saved list. Idempotent — dedupes by ``path``."""
@@ -128,7 +128,7 @@ async def add_workspaces(
 
 
 @workspaces_router.delete("", response_model=DeleteResponse)
-async def delete_workspace(
+def delete_workspace(
     request: Request,
     path: Annotated[str, Query(description="Absolute workspace path to remove")],
 ) -> DeleteResponse:
@@ -168,7 +168,7 @@ async def delete_workspace(
     response_model=WorkspacesListResponse,
     response_model_exclude_none=True,
 )
-async def add_workspace_parents(
+def add_workspace_parents(
     request: Request, payload: AddWorkspaceParentsRequest
 ) -> WorkspacesListResponse:
     """Append workspace parents. Idempotent — dedupes by ``path``."""
@@ -209,7 +209,7 @@ async def add_workspace_parents(
 
 
 @workspaces_router.delete("/parents", response_model=DeleteResponse)
-async def delete_workspace_parent(
+def delete_workspace_parent(
     request: Request,
     path: Annotated[str, Query(description="Absolute workspace parent path to remove")],
 ) -> DeleteResponse:
