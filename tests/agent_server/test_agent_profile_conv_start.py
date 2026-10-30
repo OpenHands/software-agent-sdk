@@ -407,6 +407,20 @@ class TestProfileLaunch:
         assert isinstance(launched.agent, ACPAgent)
         assert launched.agent.tools == []
 
+    @pytest.mark.parametrize("strict", [False, True])
+    @pytest.mark.asyncio
+    async def test_the_profile_strict_model_flag_reaches_the_launched_agent(
+        self, tmp_path, strict
+    ):
+        profile = _make_acp_profile(acp_model="sonnet", acp_strict_model=strict)
+
+        _, launched = await _start(
+            tmp_path, _profile_request(tmp_path, profile), stores=fakes.stores(profile)
+        )
+
+        assert isinstance(launched.agent, ACPAgent)
+        assert launched.agent.acp_strict_model is strict
+
     @pytest.mark.parametrize(
         ("sourcing", "expected"),
         [("native", []), ("openhands_managed", ["managed"])],

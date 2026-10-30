@@ -343,6 +343,13 @@ class ACPAgentProfile(AgentProfileBase):
             "Leave blank to let the server pick its default."
         ),
     )
+    acp_strict_model: bool = Field(
+        default=False,
+        description=(
+            "Fail session start when the ACP server rejects acp_model instead "
+            "of continuing on the server's default model."
+        ),
+    )
     acp_session_mode: str | None = Field(
         default=None,
         description=(

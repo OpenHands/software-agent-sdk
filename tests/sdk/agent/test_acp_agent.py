@@ -13,12 +13,17 @@ from collections.abc import Mapping
 from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from acp.exceptions import RequestError as ACPRequestError
-from acp.schema import NewSessionResponse, PromptResponse
+from acp.schema import (
+    LoadSessionRequest,
+    NewSessionRequest,
+    NewSessionResponse,
+    PromptResponse,
+)
 from pydantic import SecretStr
 
 import openhands.sdk.agent.acp_agent as acp_agent_module
@@ -26,8 +31,10 @@ import openhands.sdk.agent.acp_file_credentials as acp_file_credentials_module
 import openhands.sdk.utils.files as files_module
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
+    ACPModelSelectionRejectedError,
     _acp_error_detail,
     _acp_error_indicates_auth,
+    _ACPClientConnection,
     _apply_acp_model,
     _auth_selection_failure_reason,
     _classify_acp_init_error,
@@ -5693,6 +5700,646 @@ class TestReapplySessionModelOnResume:
         )
         conn.set_session_model.assert_awaited_once()
         assert applied is False
+
+
+class TestACPStrictModel:
+    """``acp_strict_model`` only starts a session proven to run ``acp_model``."""
+
+    _PICKER = ("default", "opus[1m]", "sonnet", "haiku")
+    _SESSION_ENDED = "The Claude Agent session has ended. Please start a new session."
+
+    @staticmethod
+    def _offered(*ids: str) -> list[ACPModelInfo]:
+        return [ACPModelInfo(model_id=i, name=i, description=None) for i in ids]
+
+    @staticmethod
+    def _select(current: str, values: list[str]) -> SimpleNamespace:
+        return SimpleNamespace(
+            id="model",
+            type="select",
+            current_value=current,
+            options=[
+                SimpleNamespace(value=v, name=v, description=None) for v in values
+            ],
+        )
+
+    @classmethod
+    def _adapter_conn(
+        cls,
+        *,
+        advertise: bool = True,
+        apply_error: BaseException | None = None,
+        substitute: str | None = None,
+    ):
+        """Emulate claude-agent-acp 0.63.0 model selection (dist/acp-agent.js).
+
+        ``new_session`` adds a ``_meta`` model seed to the advertised options;
+        ``set_config_option`` accepts an exact option, the current value, or a
+        fuzzy match (``resolveModelPreference``'s substring tier), and answers
+        with the updated options, as ``setSessionConfigOption`` does.
+        """
+        conn = TestACPSessionIdPersistence._make_conn()
+        state = {"offered": list(cls._PICKER), "current": "default"}
+
+        def options():
+            if not advertise:
+                return None
+            return [cls._select(state["current"], state["offered"])]
+
+        async def new_session(**kwargs):
+            seeded = kwargs.get("claudeCode", {}).get("options", {}).get("model")
+            if seeded and seeded not in state["offered"]:
+                state["offered"].append(seeded)
+            return SimpleNamespace(
+                session_id="sess-new", models=None, config_options=options()
+            )
+
+        async def load_session(**_kwargs):
+            return SimpleNamespace(models=None, config_options=options())
+
+        async def set_config_option(*, config_id, value, session_id):
+            if apply_error is not None:
+                raise apply_error
+            if value in state["offered"] or value == state["current"]:
+                chosen = value
+            else:
+                lower = value.lower()
+                chosen = next(
+                    (
+                        v
+                        for v in state["offered"]
+                        if v != "default" and (v in lower or lower in v)
+                    ),
+                    None,
+                )
+            if chosen is None:
+                raise ACPRequestError(
+                    -32603,
+                    "Internal error",
+                    {"details": f"Invalid value for config option model: {value}"},
+                )
+            state["current"] = substitute or chosen
+            return SimpleNamespace(config_options=options())
+
+        conn.new_session = AsyncMock(side_effect=new_session)
+        conn.load_session = AsyncMock(side_effect=load_session)
+        conn.set_config_option = AsyncMock(side_effect=set_config_option)
+        return conn
+
+    @staticmethod
+    def _resumable_state(tmp_path):
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "resumable-sess",
+            "acp_session_cwd": str(tmp_path),
+            "acp_current_model_id": "sonnet",
+            "acp_model_via_config_option": True,
+        }
+        return state
+
+    @staticmethod
+    def _init(agent, state, conn, raises: type[BaseException] | None = None):
+        events: list = []
+        with TestACPSessionIdPersistence._transport_patches(conn):
+            if raises is None:
+                agent.init_state(state, on_event=events.append)
+            else:
+                with pytest.raises(raises):
+                    agent.init_state(state, on_event=events.append)
+        return [e for e in events if isinstance(e, ConversationErrorEvent)]
+
+    def test_defaults_off(self):
+        assert _make_agent().acp_strict_model is False
+
+    def test_serialization_roundtrip(self):
+        agent = ACPAgent(acp_command=["claude-agent-acp"], acp_strict_model=True)
+        restored = AgentBase.model_validate_json(agent.model_dump_json())
+        assert isinstance(restored, ACPAgent)
+        assert restored.acp_strict_model is True
+
+    def test_payload_without_flag_loads_off(self):
+        restored = AgentBase.model_validate(
+            {"kind": "ACPAgent", "acp_command": ["claude-agent-acp"]}
+        )
+        assert isinstance(restored, ACPAgent)
+        assert restored.acp_strict_model is False
+
+    def test_classifies_rejection(self):
+        exc = ACPModelSelectionRejectedError("sonnettt", "claude-agent-acp", "x")
+        assert _classify_acp_init_error(exc) == "ACPModelSelectionRejected"
+
+    # -- helpers ------------------------------------------------------------
+
+    _HELPERS = pytest.mark.parametrize(
+        "helper", [_maybe_set_session_model, _reapply_session_model_on_resume]
+    )
+
+    @pytest.mark.asyncio
+    @_HELPERS
+    async def test_helper_applies_an_offered_model(self, helper):
+        conn = self._adapter_conn()
+        applied = await helper(
+            conn,
+            "claude-agent-acp",
+            "sess-1",
+            "sonnet",
+            via_config_option=True,
+            strict=True,
+            available_models=self._offered(*self._PICKER),
+        )
+        assert applied is True
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model", value="sonnet", session_id="sess-1"
+        )
+
+    @pytest.mark.asyncio
+    @_HELPERS
+    async def test_helper_rejects_an_unoffered_model_without_a_server_call(
+        self, helper
+    ):
+        conn = self._adapter_conn()
+        with pytest.raises(ACPModelSelectionRejectedError, match="sonnettt"):
+            await helper(
+                conn,
+                "claude-agent-acp",
+                "sess-1",
+                "sonnettt",
+                via_config_option=True,
+                strict=True,
+                available_models=self._offered(*self._PICKER),
+            )
+        conn.set_config_option.assert_not_called()
+
+    @pytest.mark.asyncio
+    @_HELPERS
+    @pytest.mark.parametrize("available", [None, []])
+    async def test_helper_fails_closed_without_model_options(self, helper, available):
+        conn = self._adapter_conn()
+        with pytest.raises(ACPModelSelectionRejectedError, match="no model options"):
+            await helper(
+                conn,
+                "claude-agent-acp",
+                "sess-1",
+                "sonnet",
+                via_config_option=True,
+                strict=True,
+                available_models=available,
+            )
+        conn.set_config_option.assert_not_called()
+
+    @pytest.mark.asyncio
+    @_HELPERS
+    async def test_helper_reraises_an_apply_error_unwrapped(self, helper):
+        closed = ACPRequestError(-32603, "Internal error", self._SESSION_ENDED)
+        conn = self._adapter_conn(apply_error=closed)
+        with pytest.raises(ACPRequestError) as excinfo:
+            await helper(
+                conn,
+                "claude-agent-acp",
+                "sess-1",
+                "sonnet",
+                via_config_option=True,
+                strict=True,
+                available_models=self._offered(*self._PICKER),
+            )
+        assert excinfo.value is closed
+
+    @pytest.mark.asyncio
+    @_HELPERS
+    async def test_helper_rejects_a_substituted_model(self, helper):
+        conn = self._adapter_conn(substitute="haiku")
+        with pytest.raises(ACPModelSelectionRejectedError, match="'haiku'"):
+            await helper(
+                conn,
+                "claude-agent-acp",
+                "sess-1",
+                "sonnet",
+                via_config_option=True,
+                strict=True,
+                available_models=self._offered(*self._PICKER),
+            )
+
+    @classmethod
+    def _codex_response(cls, effort: str | None) -> SimpleNamespace:
+        options = [cls._select("gpt-5.4", ["gpt-5.4", "gpt-5.5"])]
+        if effort is not None:
+            options.append(
+                SimpleNamespace(
+                    id="reasoning_effort",
+                    type="select",
+                    current_value=effort,
+                    options=[
+                        SimpleNamespace(value=v, name=v, description=None)
+                        for v in ("low", "medium", "high")
+                    ],
+                )
+            )
+        return SimpleNamespace(config_options=options)
+
+    async def _codex_strict(self, response: SimpleNamespace) -> AsyncMock:
+        conn = AsyncMock()
+        conn.set_config_option.return_value = response
+        await _maybe_set_session_model(
+            conn,
+            "codex-acp",
+            "sess-1",
+            "gpt-5.4/low",
+            via_config_option=True,
+            strict=True,
+            available_models=self._offered("gpt-5.4", "gpt-5.5"),
+        )
+        return conn
+
+    @pytest.mark.asyncio
+    async def test_codex_effort_suffix_is_checked_on_the_base_model(self):
+        conn = await self._codex_strict(self._codex_response("low"))
+
+        assert conn.set_config_option.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_codex_effort_the_server_did_not_set_is_rejected(self):
+        with pytest.raises(
+            ACPModelSelectionRejectedError,
+            match="reasoning_effort 'medium', not 'low'",
+        ):
+            await self._codex_strict(self._codex_response("medium"))
+
+    @pytest.mark.asyncio
+    async def test_codex_effort_the_response_omits_is_rejected(self):
+        with pytest.raises(
+            ACPModelSelectionRejectedError,
+            match="does not report reasoning_effort",
+        ):
+            await self._codex_strict(self._codex_response(None))
+
+    @pytest.mark.asyncio
+    async def test_config_option_response_without_options_is_rejected(self):
+        with pytest.raises(
+            ACPModelSelectionRejectedError, match="does not report model"
+        ):
+            await _maybe_set_session_model(
+                AsyncMock(),
+                "claude-agent-acp",
+                "sess-1",
+                "sonnet",
+                via_config_option=True,
+                strict=True,
+                available_models=self._offered(*self._PICKER),
+            )
+
+    @pytest.mark.asyncio
+    @_HELPERS
+    async def test_legacy_set_session_model_path_relies_on_the_pre_check(self, helper):
+        conn = AsyncMock()
+        conn.set_session_model.return_value = None
+        offered = self._offered("gemini-2.5-pro", "gemini-2.5-flash")
+
+        applied = await helper(
+            conn,
+            "gemini-cli",
+            "sess-1",
+            "gemini-2.5-flash",
+            via_config_option=False,
+            strict=True,
+            available_models=offered,
+        )
+
+        assert applied is True
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="gemini-2.5-flash", session_id="sess-1"
+        )
+        with pytest.raises(ACPModelSelectionRejectedError, match="not one of"):
+            await helper(
+                conn,
+                "gemini-cli",
+                "sess-1",
+                "gemini-2.5-flsh",
+                via_config_option=False,
+                strict=True,
+                available_models=offered,
+            )
+        conn.set_session_model.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @_HELPERS
+    async def test_helper_tolerates_rejection_when_not_strict(self, helper):
+        conn = TestACPSessionIdPersistence._make_conn()
+        conn.set_config_option = AsyncMock(
+            side_effect=ACPRequestError(-32603, "Invalid value")
+        )
+        applied = await helper(
+            conn, "claude-agent-acp", "sess-1", "sonnet", via_config_option=True
+        )
+        assert applied is False
+
+    @pytest.mark.asyncio
+    @_HELPERS
+    async def test_helper_without_model_is_a_noop_when_strict(self, helper):
+        conn = self._adapter_conn()
+        applied = await helper(
+            conn,
+            "claude-agent-acp",
+            "sess-1",
+            None,
+            via_config_option=True,
+            strict=True,
+            available_models=None,
+        )
+        assert applied is False
+        conn.set_config_option.assert_not_called()
+
+    @pytest.mark.asyncio
+    @_HELPERS
+    async def test_helper_does_not_wrap_transport_errors(self, helper):
+        conn = self._adapter_conn(apply_error=BrokenPipeError())
+        with pytest.raises(BrokenPipeError):
+            await helper(
+                conn,
+                "claude-agent-acp",
+                "sess-1",
+                "sonnet",
+                via_config_option=True,
+                strict=True,
+                available_models=self._offered(*self._PICKER),
+            )
+
+    # -- init_state against the emulated 0.63.0 adapter ---------------------
+
+    def test_fuzzy_near_miss_is_rejected_when_strict(self, tmp_path):
+        agent = _make_agent(acp_model="sonnettt", acp_strict_model=True)
+        state = _make_state(tmp_path)
+        conn = self._adapter_conn()
+
+        errors = self._init(agent, state, conn, raises=ACPModelSelectionRejectedError)
+
+        conn.set_config_option.assert_not_called()
+        assert [e.code for e in errors] == ["ACPModelSelectionRejected"]
+        assert errors[0].classification is not None
+        assert errors[0].classification.kind == "config"
+        assert errors[0].classification.user_action == "settings"
+        assert state.execution_status == ConversationExecutionStatus.ERROR
+        assert "acp_session_id" not in state.agent_state
+
+    def test_fuzzy_near_miss_on_resume_is_rejected_when_strict(self, tmp_path):
+        agent = _make_agent(acp_model="sonnettt", acp_strict_model=True)
+        state = self._resumable_state(tmp_path)
+        conn = self._adapter_conn()
+
+        errors = self._init(agent, state, conn, raises=ACPModelSelectionRejectedError)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_not_awaited()
+        conn.set_config_option.assert_not_called()
+        assert [e.code for e in errors] == ["ACPModelSelectionRejected"]
+
+    def test_unrelated_apply_error_keeps_init_classification_when_strict(
+        self, tmp_path
+    ):
+        agent = _make_agent(acp_model="sonnet", acp_strict_model=True)
+        state = _make_state(tmp_path)
+        conn = self._adapter_conn(
+            apply_error=ACPRequestError(-32603, "Internal error", self._SESSION_ENDED)
+        )
+
+        errors = self._init(agent, state, conn, raises=ACPRequestError)
+
+        assert [e.code for e in errors] == ["ACPInitError"]
+
+    def test_server_substitution_is_rejected_when_strict(self, tmp_path):
+        agent = _make_agent(acp_model="sonnet", acp_strict_model=True)
+        state = _make_state(tmp_path)
+        conn = self._adapter_conn(substitute="haiku")
+
+        errors = self._init(agent, state, conn, raises=ACPModelSelectionRejectedError)
+
+        assert [e.code for e in errors] == ["ACPModelSelectionRejected"]
+        assert "'haiku'" in errors[0].detail
+
+    def test_no_advertised_model_options_fails_closed_when_strict(self, tmp_path):
+        agent = _make_agent(acp_model="sonnet", acp_strict_model=True)
+        state = _make_state(tmp_path)
+        conn = self._adapter_conn(advertise=False)
+
+        errors = self._init(agent, state, conn, raises=ACPModelSelectionRejectedError)
+
+        conn.set_config_option.assert_not_called()
+        conn.set_session_model.assert_not_called()
+        assert [e.code for e in errors] == ["ACPModelSelectionRejected"]
+        assert "no model options" in errors[0].detail
+
+    def test_seeded_option_does_not_admit_an_unknown_model_when_strict(self, tmp_path):
+        agent = _make_agent(acp_model="claude-does-not-exist-9", acp_strict_model=True)
+        state = _make_state(tmp_path)
+        conn = self._adapter_conn()
+
+        errors = self._init(agent, state, conn, raises=ACPModelSelectionRejectedError)
+
+        assert "claudeCode" not in conn.new_session.call_args.kwargs
+        assert [e.code for e in errors] == ["ACPModelSelectionRejected"]
+
+    @pytest.mark.parametrize("resume", [False, True])
+    def test_offered_model_is_applied_when_strict(self, tmp_path, resume):
+        agent = _make_agent(acp_model="sonnet", acp_strict_model=True)
+        state = self._resumable_state(tmp_path) if resume else _make_state(tmp_path)
+        conn = self._adapter_conn()
+
+        assert self._init(agent, state, conn) == []
+
+        assert agent.current_model_id == "sonnet"
+        assert state.agent_state["acp_current_model_id"] == "sonnet"
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model",
+            value="sonnet",
+            session_id="resumable-sess" if resume else "sess-new",
+        )
+
+    def test_non_strict_is_unchanged_for_seed_and_near_miss(self, tmp_path):
+        agent = _make_agent(acp_model="sonnettt")
+        state = _make_state(tmp_path)
+        conn = self._adapter_conn()
+
+        assert self._init(agent, state, conn) == []
+
+        assert conn.new_session.call_args.kwargs["claudeCode"] == {
+            "options": {"model": "sonnettt"}
+        }
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model", value="sonnettt", session_id="sess-new"
+        )
+        assert agent.current_model_id == "sonnettt"
+
+    def test_resume_rejection_clears_persisted_model_when_not_strict(self, tmp_path):
+        agent = _make_agent(acp_model="sonnet", acp_strict_model=False)
+        state = self._resumable_state(tmp_path)
+        conn = TestACPSessionIdPersistence._make_conn()
+        conn.load_session = AsyncMock(return_value=MagicMock(spec=[]))
+        conn.set_config_option = AsyncMock(
+            side_effect=ACPRequestError(-32603, "Invalid value")
+        )
+
+        assert self._init(agent, state, conn) == []
+
+        assert state.agent_state["acp_session_id"] == "resumable-sess"
+        assert agent.current_model_id is None
+        assert "acp_current_model_id" not in state.agent_state
+
+    @pytest.mark.parametrize(
+        ("exc", "code"),
+        [
+            (ACPRequestError(-32000, "Authentication required"), "ACPAuthRequired"),
+            (BrokenPipeError(), "ACPInitError"),
+        ],
+    )
+    def test_apply_failure_keeps_its_classification_when_strict(
+        self, tmp_path, exc, code
+    ):
+        agent = _make_agent(acp_model="sonnet", acp_strict_model=True)
+        state = _make_state(tmp_path)
+        conn = self._adapter_conn(apply_error=exc)
+
+        errors = self._init(agent, state, conn, raises=type(exc))
+
+        assert [e.code for e in errors] == [code]
+
+    def test_new_session_auth_failure_keeps_its_classification_when_strict(
+        self, tmp_path
+    ):
+        agent = _make_agent(acp_model="sonnet", acp_strict_model=True)
+        state = _make_state(tmp_path)
+        conn = self._adapter_conn()
+        conn.new_session = AsyncMock(
+            side_effect=ACPRequestError(-32000, "Authentication required")
+        )
+
+        errors = self._init(agent, state, conn, raises=ACPRequestError)
+
+        assert [e.code for e in errors] == ["ACPAuthRequired"]
+
+
+class TestACPStrictLiveSwitchRefused:
+    """Under ``acp_strict_model`` a live switch is refused before any server call."""
+
+    @staticmethod
+    def _assert_refused(agent: ACPAgent, model: str) -> None:
+        with pytest.raises(ValueError, match="not supported with acp_strict_model"):
+            agent.set_acp_model(model)
+
+    def test_live_switch_is_refused_without_a_server_call(self):
+        agent = TestSetACPModel._wire(
+            _make_agent(acp_model="sonnet", acp_strict_model=True),
+            "claude-agent-acp",
+            via_config_option=True,
+        )
+        agent._current_model_id = "sonnet"
+
+        self._assert_refused(agent, "haiku")
+
+        _agent_conn(agent).set_config_option.assert_not_called()
+        _agent_conn(agent).set_session_model.assert_not_called()
+        agent._executor.run_async.assert_not_called()
+        assert agent.current_model_id == "sonnet"
+        assert agent.llm.model == "sonnet"
+
+    def test_live_switch_after_resume_is_refused_without_a_server_call(self, tmp_path):
+        agent = _make_agent(acp_model="sonnet", acp_strict_model=True)
+        state = TestACPStrictModel._resumable_state(tmp_path)
+        conn = TestACPStrictModel._adapter_conn()
+        with TestACPSessionIdPersistence._transport_patches(conn):
+            agent.init_state(state, on_event=lambda _: None)
+        conn.load_session.assert_awaited_once()
+        assert conn.set_config_option.await_count == 1
+
+        self._assert_refused(agent, "haiku")
+
+        assert conn.set_config_option.await_count == 1
+        assert agent.current_model_id == "sonnet"
+        assert state.agent_state["acp_current_model_id"] == "sonnet"
+
+
+class TestSessionResponseParsing:
+    """The real client parser keeps both model mechanisms on new and load."""
+
+    _LEGACY: ClassVar[dict[str, Any]] = {
+        "models": {
+            "currentModelId": "gemini-2.5-pro",
+            "availableModels": [
+                {"modelId": "gemini-2.5-pro", "name": "Gemini 2.5 Pro"},
+                {"modelId": "gemini-2.5-flash", "name": "Gemini 2.5 Flash"},
+            ],
+        }
+    }
+    _CONFIG: ClassVar[dict[str, Any]] = {
+        "configOptions": [
+            {
+                "id": "model",
+                "name": "Model",
+                "type": "select",
+                "currentValue": "default",
+                "options": [
+                    {"value": "default", "name": "Default"},
+                    {"value": "sonnet", "name": "Sonnet"},
+                ],
+            }
+        ]
+    }
+
+    @staticmethod
+    def _conn(payload: dict[str, Any]) -> tuple[_ACPClientConnection, AsyncMock]:
+        conn = object.__new__(_ACPClientConnection)
+        send_request = AsyncMock(return_value=json.loads(json.dumps(payload)))
+        conn._conn = MagicMock(send_request=send_request)
+        return conn, send_request
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "method", ["new_session", "load_session", "newSession", "loadSession"]
+    )
+    @pytest.mark.parametrize(
+        ("shape", "expected"),
+        [
+            (
+                "_LEGACY",
+                ("gemini-2.5-pro", ["gemini-2.5-pro", "gemini-2.5-flash"], False),
+            ),
+            ("_CONFIG", ("default", ["default", "sonnet"], True)),
+        ],
+    )
+    async def test_model_state_survives_parsing(self, method, shape, expected):
+        payload = {**getattr(self, shape), "sessionId": "sess-1"}
+        conn, send_request = self._conn(payload)
+
+        if method == "new_session":
+            response = await conn.new_session(cwd="/w", mcp_servers=[])
+        elif method == "load_session":
+            response = await conn.load_session(
+                cwd="/w", session_id="sess-1", mcp_servers=[]
+            )
+        else:
+            request = (
+                NewSessionRequest(cwd="/w", mcp_servers=[])
+                if method == "newSession"
+                else LoadSessionRequest(cwd="/w", session_id="sess-1", mcp_servers=[])
+            )
+            with pytest.warns(DeprecationWarning):
+                response = await getattr(conn, method)(request)
+
+        current, available, via = _extract_session_models(response)
+        assert current == expected[0]
+        assert available is not None
+        assert [m.model_id for m in available] == expected[1]
+        assert via is expected[2]
+        assert send_request.await_args is not None
+        sent = "session/new" if method.lower().startswith("new") else "session/load"
+        assert send_request.await_args.args[0] == sent
+
+    @pytest.mark.asyncio
+    async def test_malformed_legacy_models_on_load_are_dropped(self):
+        conn, _ = self._conn({"models": {"availableModels": "nope"}})
+
+        response = await conn.load_session(cwd="/w", session_id="s", mcp_servers=[])
+
+        assert _extract_session_models(response)[1] is None
 
 
 class TestHasLiveACPSession:
