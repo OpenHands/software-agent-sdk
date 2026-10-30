@@ -2,6 +2,8 @@
 
 import os
 import re
+import shutil
+import tempfile
 import uuid
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -32,10 +34,34 @@ _LIVE_DEPLOYMENT_ENV = re.compile(
 )
 
 
+_session_tmux_tmpdir: str | None = None
+_inherited_tmux_tmpdir: str | None = None
+
+
 def pytest_configure(config: pytest.Config) -> None:
+    global _session_tmux_tmpdir, _inherited_tmux_tmpdir
     # Before collection: some modules read the agent-server config at import.
     for name in [n for n in os.environ if _LIVE_DEPLOYMENT_ENV.fullmatch(n)]:
         del os.environ[name]
+    # Inside an OpenHands sandbox the inherited TMUX_TMPDIR is the host agent
+    # server's, and agent-server startup kills every session on its legacy
+    # "openhands" socket there: the sandbox's own terminal. /tmp keeps socket
+    # paths under the Unix limit on macOS.
+    _inherited_tmux_tmpdir = os.environ.get("TMUX_TMPDIR")
+    _session_tmux_tmpdir = tempfile.mkdtemp(
+        prefix="oh-tests-tmux-", dir="/tmp" if os.name == "posix" else None
+    )
+    os.environ["TMUX_TMPDIR"] = _session_tmux_tmpdir
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    if _session_tmux_tmpdir is None:
+        return
+    if _inherited_tmux_tmpdir is None:
+        os.environ.pop("TMUX_TMPDIR", None)
+    else:
+        os.environ["TMUX_TMPDIR"] = _inherited_tmux_tmpdir
+    shutil.rmtree(_session_tmux_tmpdir, ignore_errors=True)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
