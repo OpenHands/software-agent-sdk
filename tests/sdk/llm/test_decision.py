@@ -127,6 +127,11 @@ async def test_decide_sends_questions_and_returns_typed_answers(provider, use_as
     assert result.choice("team").choice == "technical"
     assert result.choice("team").probabilities == {"billing": 0.1, "technical": 0.9}
     assert result.score("impact").score == 1.7
+    assert result.score("impact").legend == {
+        "0": "Cosmetic",
+        "1": "Workaround available",
+        "2": "Work blocked",
+    }
 
     usage = result.metrics.accumulated_token_usage
     assert usage is not None

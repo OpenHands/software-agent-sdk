@@ -102,9 +102,12 @@ class ChoiceAnswer(BaseModel):
 
 
 class ScoreAnswer(BaseModel):
+    """``probabilities`` and ``legend`` are keyed by level index, as a string."""
+
     score: float
     confidence: float
     probabilities: dict[str, float]
+    legend: dict[str, str]
 
 
 Answer = NoulAnswer | ChoiceAnswer | ScoreAnswer
@@ -155,6 +158,7 @@ def _convert_answer(answer: Any) -> Answer:
                 score=answer.score,
                 confidence=answer.confidence,
                 probabilities=dict(answer.probabilities),
+                legend=dict(answer.legend),
             )
     raise ValueError(f"Unsupported decision answer type: {answer.type!r}")
 
