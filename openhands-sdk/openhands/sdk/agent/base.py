@@ -24,7 +24,7 @@ from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.context.prompts.presets import PromptPreset, create_registry
 from openhands.sdk.context.prompts.prompt import render_template
-from openhands.sdk.context.prompts.section import Platform, PromptContext
+from openhands.sdk.context.prompts.section import Platform, PromptContext, SecretInfo
 from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
@@ -460,7 +460,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         available_skills_prompt: str | None = None
         custom_suffix: str | None = None
         memory_context: str | None = None
-        secret_infos: tuple[tuple[str, str | None], ...] = ()
+        secret_infos: tuple[SecretInfo, ...] = ()
 
         if agent_context is not None:
             data = agent_context._resolve_dynamic_data(
@@ -479,12 +479,18 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             custom_suffix = agent_context.system_message_suffix or None
             memory_context = agent_context.memory_context or None
             secret_infos = tuple(
-                (info["name"] or "", info["description"]) for info in data.secret_infos
+                SecretInfo(
+                    name=info["name"] or "",
+                    description=info.get("description"),
+                    scope=info.get("scope"),
+                    scope_description=info.get("scope_description"),
+                )
+                for info in data.secret_infos
             )
             # Derive names from the resolver's merged secret_infos instead of a
             # second get_secret_infos() walk; this now includes registry-provided
             # secrets (additional_secret_infos), matching what <CUSTOM_SECRETS> shows.
-            secret_names = tuple(name for name, _ in secret_infos if name)
+            secret_names = tuple(info.name for info in secret_infos if info.name)
 
         template_kwargs = self._resolved_template_kwargs()
         # A custom security policy's content for SecuritySection (registry path only).

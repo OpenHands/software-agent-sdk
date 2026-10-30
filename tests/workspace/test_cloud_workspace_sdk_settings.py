@@ -187,7 +187,12 @@ class TestGetSecrets:
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "secrets": [
-                {"name": "GITHUB_TOKEN", "description": "GitHub token"},
+                {
+                    "name": "GITHUB_TOKEN",
+                    "description": "GitHub token",
+                    "scope": "personal",
+                    "scope_description": "Your own credentials.",
+                },
                 {"name": "MY_API_KEY", "description": None},
             ]
         }
@@ -214,6 +219,9 @@ class TestGetSecrets:
         )
         assert gh_secret.headers == {"X-Session-API-Key": SESSION_KEY}
         assert gh_secret.description == "GitHub token"
+        assert gh_secret.scope == "personal"
+        assert gh_secret.scope_description == "Your own credentials."
+        assert secrets["MY_API_KEY"].scope is None
 
     def test_get_secrets_filters_by_name(self, mock_workspace):
         """get_secrets(names=[...]) filters client-side."""
