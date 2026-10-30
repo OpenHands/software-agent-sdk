@@ -1,0 +1,25 @@
+{
+  "id": "f6b17998-f7e2-4640-823a-1a69e8ea6173",
+  "timestamp": "2026-09-23T09:42:02.121162",
+  "source": "environment",
+  "parent_id": "787a21d9-6fe9-4991-b123-d291011422f2",
+  "tool_name": "file_editor",
+  "tool_call_id": "call_file_editor",
+  "observation": {
+    "content": [
+      {
+        "cache_prompt": false,
+        "type": "text",
+        "text": "Here's the result of running `cat -n` on /fixture/workspace/notes.txt:\n     1\thello\n     2\t\n"
+      }
+    ],
+    "is_error": false,
+    "command": "view",
+    "path": "/fixture/workspace/notes.txt",
+    "prev_exist": true,
+    "kind": "FileEditorObservation"
+  },
+  "action_id": "787a21d9-6fe9-4991-b123-d291011422f2",
+  "extended_content": [],
+  "kind": "ObservationEvent"
+}
