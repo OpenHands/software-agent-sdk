@@ -1,0 +1,22 @@
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.47.0                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+[10/05/26 18:06:22] WARNING  No persistence_dir provided; falling   state.py:515
+                             back to InMemoryFileStore. EventLog
+                             data will not persist across requests.
+[10/05/26 18:06:22] INFO     Created new conversation               state.py:592
+                             d76f5776-338e-43ac-b7cb-eaae206e31d4
+[10/05/26 18:06:22] WARNING  grep: ripgrep (rg) not available.    __init__.py:55
+                             Falling back to system grep. For
+                             better performance, consider
+                             installing ripgrep:
+                             https://github.com/BurntSushi/ripgre
+                             p#installation
+[10/05/26 18:06:22] INFO     Loaded 1 tools from spec                base.py:564
