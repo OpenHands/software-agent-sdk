@@ -15,7 +15,8 @@ up to you:
 2. Through your own code. Subclass ``DecisionModel`` and override ``send()``
    (and ``asend()`` if you call ``adecide()``). Each method makes one request
    and returns a ``DecisionReply`` built from SDK types. ``decide()`` still
-   adds retries, error mapping, metrics and the ``decision.<model>`` span.
+   adds retries, error mapping, metrics and the ``decision.<model>`` span, and
+   checks that every question got one answer of the right type.
 
 Use route 2 for a model only you can reach, such as one you host privately or
 an internal service. For a generally available model, contribute a provider to
@@ -50,6 +51,7 @@ from openhands.sdk.llm import (
 )
 from openhands.sdk.llm.exceptions import (
     LLMRateLimitError,
+    LLMResponseError,
     LLMServiceUnavailableError,
     LLMTimeoutError,
 )
@@ -133,7 +135,7 @@ def _answer(answer: dict) -> NoulAnswer | ChoiceAnswer | ScoreAnswer:
                 probabilities=answer["probabilities"],
                 legend=answer["legend"],
             )
-    raise ValueError(f"Unsupported answer type: {answer['type']!r}")
+    raise LLMResponseError(f"Unsupported answer type: {answer['type']!r}")
 
 
 api_key = os.getenv("JEV_API_KEY")
