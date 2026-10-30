@@ -19,6 +19,7 @@ from openhands.sdk.llm.exceptions import LLMNoResponseError
 from openhands.sdk.llm.exceptions.classifier import (
     is_budget_exceeded_error,
     is_transient_http_error,
+    is_transient_proxy_auth_error,
 )
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.logger import get_logger
@@ -67,6 +68,8 @@ class FallbackStrategy(BaseModel):
         return (
             isinstance(error, _LLM_FALLBACK_EXCEPTIONS)
             or is_transient_http_error(error)
+            # LiteLLM proxy cache-miss 401s recover on retry (#18951)
+            or is_transient_proxy_auth_error(error)
         ) and not is_budget_exceeded_error(error)
 
     def try_fallback(
