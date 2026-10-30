@@ -43,10 +43,11 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
     def is_parallel_safe(self) -> bool:
         """Whether the executor is safe for lock-free parallel execution.
 
-        True when ripgrep is available (independent subprocesses).
-        False for the Python glob fallback (process-global os.chdir()).
+        True for both backends: ripgrep runs an independent subprocess per call, and
+        the Python fallback scopes its search with ``glob(root_dir=...)`` rather than
+        mutating the process-global cwd.
         """
-        return self._ripgrep_available
+        return True
 
     def __call__(
         self,
@@ -197,38 +198,32 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
         """  # noqa: E501
         search_path = search_path.resolve()
 
-        # Change to search directory for glob to work correctly
-        original_cwd = os.getcwd()
-        try:
-            os.chdir(search_path)
+        # Ripgrep's -g flag is always recursive, so we need to make the pattern
+        # recursive if it doesn't already contain **
+        if "**" not in pattern:
+            # Convert non-recursive patterns like "*.py" to "**/*.py"
+            # to match ripgrep's recursive behavior
+            pattern = f"**/{pattern}"
 
-            # Ripgrep's -g flag is always recursive, so we need to make the pattern
-            # recursive if it doesn't already contain **
-            if "**" not in pattern:
-                # Convert non-recursive patterns like "*.py" to "**/*.py"
-                # to match ripgrep's recursive behavior
-                pattern = f"**/{pattern}"
+        # ``root_dir`` scopes the search without touching the process-global cwd, so
+        # concurrent callers cannot observe or race each other's directory changes.
+        matches = glob_module.glob(pattern, root_dir=search_path, recursive=True)
 
-            # Use glob to find matching files
-            matches = glob_module.glob(pattern, recursive=True)
+        # Convert to absolute paths without resolving symlinks and sort by
+        # modification time.
+        file_paths = []
+        for match in matches:
+            abs_path = str((search_path / match).absolute())
+            if os.path.isfile(abs_path):
+                file_paths.append((abs_path, os.path.getmtime(abs_path)))
 
-            # Convert to absolute paths without resolving symlinks and sort by
-            # modification time.
-            file_paths = []
-            for match in matches:
-                abs_path = str((search_path / match).absolute())
-                if os.path.isfile(abs_path):
-                    file_paths.append((abs_path, os.path.getmtime(abs_path)))
+        # Sort by modification time (newest first) and extract paths
+        file_paths.sort(key=lambda x: x[1], reverse=True)
+        sorted_files = [path for path, _ in file_paths[:100]]
 
-            # Sort by modification time (newest first) and extract paths
-            file_paths.sort(key=lambda x: x[1], reverse=True)
-            sorted_files = [path for path, _ in file_paths[:100]]
+        truncated = len(file_paths) > 100
 
-            truncated = len(file_paths) > 100
-
-            return sorted_files, truncated
-        finally:
-            os.chdir(original_cwd)
+        return sorted_files, truncated
 
     @staticmethod
     def _extract_search_path_from_pattern(pattern: str) -> tuple[Path | None, str]:
