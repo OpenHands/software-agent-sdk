@@ -1,6 +1,7 @@
 """Docker-based remote workspace implementation."""
 
 import os
+import secrets
 import subprocess
 import sys
 import threading
@@ -205,9 +206,29 @@ class DockerWorkspace(RemoteWorkspace):
                 "Docker Desktop/daemon."
             )
 
+        # Resolve the session API key the container should require.
+        # If the launching environment never set one, auto-generate a random
+        # key rather than leaving the agent server unauthenticated: an empty
+        # `session_api_keys` makes `check_session_api_key` a no-op, so a
+        # developer who never set SESSION_API_KEY/OH_SESSION_API_KEYS_0 would
+        # otherwise get an agent server with bash/file/git access and no auth
+        # at all.
+        session_api_key = os.environ.get(
+            "OH_SESSION_API_KEYS_0", os.environ.get("SESSION_API_KEY")
+        )
+        if not session_api_key:
+            session_api_key = secrets.token_urlsafe(32)
+            logger.warning(
+                "No SESSION_API_KEY/OH_SESSION_API_KEYS_0 set; auto-generated "
+                "a random session API key for this container. Set one of "
+                "those environment variables to use a key of your choosing."
+            )
+
         # Prepare Docker run flags
-        flags: list[str] = []
+        flags: list[str] = ["-e", f"OH_SESSION_API_KEYS_0={session_api_key}"]
         for key in self.forward_env:
+            if key in ("SESSION_API_KEY", "OH_SESSION_API_KEYS_0"):
+                continue
             if key in os.environ:
                 flags += ["-e", f"{key}={os.environ[key]}"]
 
@@ -269,14 +290,9 @@ class DockerWorkspace(RemoteWorkspace):
         # Override parent's host initialization
         if not self.host:
             object.__setattr__(self, "host", f"http://127.0.0.1:{self.host_port}")
-        # Resolve in the same order as the agent server in this container
-        # (`config.py`: the V1 `OH_SESSION_API_KEYS_0` variable is read by the
-        # env parser, and V0 `SESSION_API_KEY` is only a fallback used when V1
-        # is absent). Both are forwarded into the container by `forward_env`,
-        # so preferring V0 here would send a key the server rejects.
-        session_api_key = os.environ.get(
-            "OH_SESSION_API_KEYS_0", os.environ.get("SESSION_API_KEY")
-        )
+        # Use the same key we just forwarded into the container (either the
+        # one from the environment, or the one auto-generated above) so the
+        # client authenticates with the key the server actually requires.
         object.__setattr__(self, "api_key", session_api_key)
 
         # Wait for container to be healthy
