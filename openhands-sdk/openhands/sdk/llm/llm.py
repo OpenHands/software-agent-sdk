@@ -1362,6 +1362,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         add_security_risk_prediction: bool,
         kwargs: dict[str, Any],
         call_context: LLMCallContext | None = None,
+        risk_description: str | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         list[ChatCompletionToolParam],
@@ -1382,6 +1383,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             add_security_risk_prediction,
             kwargs,
             call_context=call_context,
+            risk_description=risk_description,
         )
 
     async def _aprepare_completion_params(
@@ -1391,6 +1393,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         add_security_risk_prediction: bool,
         kwargs: dict[str, Any],
         call_context: LLMCallContext | None = None,
+        risk_description: str | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         list[ChatCompletionToolParam],
@@ -1411,6 +1414,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             add_security_risk_prediction,
             kwargs,
             call_context=call_context,
+            risk_description=risk_description,
         )
 
     def _finalize_completion_params(
@@ -1420,6 +1424,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         add_security_risk_prediction: bool,
         kwargs: dict[str, Any],
         call_context: LLMCallContext | None = None,
+        risk_description: str | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         list[ChatCompletionToolParam],
@@ -1447,6 +1452,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             cc_tools = [
                 t.to_openai_tool(
                     add_security_risk_prediction=add_security_risk_prediction,
+                    risk_description=risk_description,
                 )
                 for t in tools
             ]
@@ -1515,6 +1521,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         add_security_risk_prediction: bool,
         kwargs: dict[str, Any],
         call_context: LLMCallContext | None = None,
+        risk_description: str | None = None,
     ) -> tuple[
         str | None,
         list[dict[str, Any]],
@@ -1538,6 +1545,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             add_security_risk_prediction,
             kwargs,
             call_context=call_context,
+            risk_description=risk_description,
         )
 
     async def _aprepare_responses_params(
@@ -1549,6 +1557,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         add_security_risk_prediction: bool,
         kwargs: dict[str, Any],
         call_context: LLMCallContext | None = None,
+        risk_description: str | None = None,
     ) -> tuple[
         str | None,
         list[dict[str, Any]],
@@ -1571,6 +1580,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             add_security_risk_prediction,
             kwargs,
             call_context=call_context,
+            risk_description=risk_description,
         )
 
     def _finalize_responses_params(
@@ -1583,6 +1593,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         add_security_risk_prediction: bool,
         kwargs: dict[str, Any],
         call_context: LLMCallContext | None = None,
+        risk_description: str | None = None,
     ) -> tuple[
         str | None,
         list[dict[str, Any]],
@@ -1604,6 +1615,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             [
                 t.to_responses_tool(
                     add_security_risk_prediction=add_security_risk_prediction,
+                    risk_description=risk_description,
                 )
                 for t in tools
             ]
@@ -1691,9 +1703,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         add_security_risk_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
         call_context: LLMCallContext | None = None,
+        *,
+        risk_description: str | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Generate a response using the configured API mode."""
+        risk_kwargs = (
+            {"risk_description": risk_description}
+            if risk_description is not None
+            else {}
+        )
         if self.uses_responses_api():
             return self.responses(
                 messages=messages,
@@ -1703,6 +1722,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 add_security_risk_prediction=add_security_risk_prediction,
                 on_token=on_token,
                 call_context=call_context,
+                **risk_kwargs,
                 **kwargs,
             )
         return self.completion(
@@ -1711,6 +1731,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             add_security_risk_prediction=add_security_risk_prediction,
             on_token=on_token,
             call_context=call_context,
+            **risk_kwargs,
             **kwargs,
         )
 
@@ -1723,9 +1744,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         add_security_risk_prediction: bool = False,
         on_token: AnyTokenCallbackType | None = None,
         call_context: LLMCallContext | None = None,
+        *,
+        risk_description: str | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Async variant of :meth:`generate`."""
+        risk_kwargs = (
+            {"risk_description": risk_description}
+            if risk_description is not None
+            else {}
+        )
         if self.uses_responses_api():
             return await self.aresponses(
                 messages=messages,
@@ -1735,6 +1763,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 add_security_risk_prediction=add_security_risk_prediction,
                 on_token=on_token,
                 call_context=call_context,
+                **risk_kwargs,
                 **kwargs,
             )
         return await self.acompletion(
@@ -1743,6 +1772,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             add_security_risk_prediction=add_security_risk_prediction,
             on_token=on_token,
             call_context=call_context,
+            **risk_kwargs,
             **kwargs,
         )
 
@@ -1757,6 +1787,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         add_security_risk_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
         call_context: LLMCallContext | None = None,
+        *,
+        risk_description: str | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Generate a completion from the language model.
@@ -1769,6 +1801,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             tools: Optional list of tools available to the model.
             add_security_risk_prediction: Add security_risk field to tool schemas.
             on_token: Optional callback for streaming tokens.
+            risk_description: Optional description for security_risk field in
+                tool schemas.
             **kwargs: Additional arguments passed to the LLM API.
 
         Returns:
@@ -1786,7 +1820,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # no-op for providers without runtime metadata.
         self.resolve_runtime_metadata()
 
+        risk_description = kwargs.pop("risk_description", risk_description)
         _caller_kwargs = kwargs.copy()
+        if risk_description is not None:
+            _caller_kwargs["risk_description"] = risk_description
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming and on_token is None:
             # Gracefully degrade to non-streaming rather than crashing a run when
@@ -1812,6 +1849,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             add_security_risk_prediction,
             kwargs,
             call_context=call_context,
+            risk_description=risk_description,
         )
 
         @self._make_retry_decorator()
@@ -1890,6 +1928,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         add_security_risk_prediction: bool = False,
         on_token: AnyTokenCallbackType | None = None,
         call_context: LLMCallContext | None = None,
+        *,
+        risk_description: str | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Async variant of :meth:`completion`.
@@ -1905,7 +1945,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # calls are cheap.
         await self.aresolve_runtime_metadata()
 
+        risk_description = kwargs.pop("risk_description", risk_description)
         _caller_kwargs = kwargs.copy()
+        if risk_description is not None:
+            _caller_kwargs["risk_description"] = risk_description
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming and on_token is None:
             # Gracefully degrade to non-streaming rather than crashing a run when
@@ -1931,6 +1974,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             add_security_risk_prediction,
             kwargs,
             call_context=call_context,
+            risk_description=risk_description,
         )
 
         @self._make_retry_decorator()
@@ -2018,6 +2062,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         add_security_risk_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
         call_context: LLMCallContext | None = None,
+        *,
+        risk_description: str | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Alternative invocation path using OpenAI Responses API via LiteLLM.
@@ -2031,6 +2077,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             store: Whether to store the conversation
             add_security_risk_prediction: Add security_risk field to tool schemas
             on_token: Optional callback for streaming deltas
+            risk_description: Optional description for security_risk field in
+                tool schemas
             **kwargs: Additional arguments passed to the API
 
         Note:
@@ -2044,7 +2092,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # metadata.
         self.resolve_runtime_metadata()
 
+        risk_description = kwargs.pop("risk_description", risk_description)
         _caller_kwargs = kwargs.copy()
+        if risk_description is not None:
+            _caller_kwargs["risk_description"] = risk_description
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming and on_token is None and not self.requires_streaming:
             # Gracefully degrade to non-streaming rather than crashing a run when
@@ -2074,6 +2125,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             add_security_risk_prediction,
             kwargs,
             call_context=call_context,
+            risk_description=risk_description,
         )
 
         @self._make_retry_decorator()
@@ -2197,6 +2249,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         add_security_risk_prediction: bool = False,
         on_token: AnyTokenCallbackType | None = None,
         call_context: LLMCallContext | None = None,
+        *,
+        risk_description: str | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Async variant of :meth:`responses`.
@@ -2209,7 +2263,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # limits. No blocking network I/O in-process.
         await self.aresolve_runtime_metadata()
 
+        risk_description = kwargs.pop("risk_description", risk_description)
         _caller_kwargs = kwargs.copy()
+        if risk_description is not None:
+            _caller_kwargs["risk_description"] = risk_description
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming and on_token is None and not self.requires_streaming:
             # Gracefully degrade to non-streaming rather than crashing a run when
@@ -2239,6 +2296,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             add_security_risk_prediction,
             kwargs,
             call_context=call_context,
+            risk_description=risk_description,
         )
 
         @self._make_retry_decorator()
@@ -3194,6 +3252,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         messages: list[Message],
         tools: Sequence[ToolDefinition] | None = None,
         add_security_risk_prediction: bool = False,
+        *,
+        risk_description: str | None = None,
     ) -> int:
         logger.debug(
             "Message objects now include serialized tool calls in token counting"
@@ -3202,6 +3262,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         cc_tools = [
             tool.to_openai_tool(
                 add_security_risk_prediction=add_security_risk_prediction,
+                risk_description=risk_description,
             )
             for tool in tools or []
         ]
