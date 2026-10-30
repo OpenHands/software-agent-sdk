@@ -35,6 +35,7 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
+from openhands.sdk.logger import get_logger
 from openhands.sdk.security import risk
 from openhands.sdk.tool.schema import Action, Observation, Schema
 from openhands.sdk.utils.models import (
@@ -42,6 +43,9 @@ from openhands.sdk.utils.models import (
     get_known_concrete_subclasses,
     kind_of,
 )
+
+
+logger = get_logger(__name__)
 
 
 if TYPE_CHECKING:
@@ -539,6 +543,32 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     def action_from_arguments(self, arguments: dict[str, Any]) -> Action:
         """Create an action from parsed arguments."""
         action_arguments, structured_output = self._split_response_arguments(arguments)
+        if self.action_type.model_config.get("extra") == "forbid":
+            from openhands.sdk.tool.schema import _extract_field_allowed_keys
+
+            allowed = set()
+            for fname, f in self.action_type.model_fields.items():
+                allowed.update(_extract_field_allowed_keys(fname, f))
+            if hasattr(self.action_type, "model_computed_fields"):
+                allowed.update(self.action_type.model_computed_fields.keys())
+            if (
+                hasattr(self.action_type, "mcp_schema_alias_specs")
+                and self.action_type.mcp_schema_alias_specs
+            ):
+                allowed.update(self.action_type.mcp_schema_alias_specs.keys())
+            if hasattr(self.action_type, "_discriminator_field_names"):
+                allowed.update(self.action_type._discriminator_field_names())
+            extra = set(action_arguments.keys()) - allowed
+            if extra:
+                logger.warning(
+                    "Ignoring unexpected extra parameter(s) %s for tool '%s' (%s)",
+                    sorted(extra),
+                    self.name,
+                    self.action_type.__name__,
+                )
+                action_arguments = {
+                    k: v for k, v in action_arguments.items() if k in allowed
+                }
         action = self.action_type.model_validate(action_arguments)
         action._structured_output = structured_output
         return action

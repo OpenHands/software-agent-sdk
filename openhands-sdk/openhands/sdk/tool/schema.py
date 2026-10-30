@@ -3,7 +3,14 @@ from abc import ABC
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
-from pydantic import ConfigDict, Field, PrivateAttr, create_model
+from pydantic import (
+    AliasChoices,
+    AliasPath,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    create_model,
+)
 from rich.text import Text
 
 from openhands.sdk.llm import ImageContent, TextContent
@@ -181,6 +188,38 @@ def _process_schema_node(
         result["enum"] = node["enum"]
 
     return result
+
+
+def _extract_field_allowed_keys(field_name: str, field_info: Any) -> set[str]:
+    """Extract all valid top-level input keys for a model field.
+
+    Handles field names, explicit aliases, validation_alias strings,
+    AliasChoices (flattening valid string or root path choices), and
+    AliasPath (extracting the root segment).
+    """
+    keys = {field_name}
+    if field_info.alias:
+        keys.add(field_info.alias)
+    val_alias = field_info.validation_alias
+    if isinstance(val_alias, str):
+        keys.add(val_alias)
+    elif isinstance(val_alias, AliasChoices):
+        for choice in val_alias.choices:
+            if isinstance(choice, str):
+                keys.add(choice)
+            elif (
+                isinstance(choice, AliasPath)
+                and choice.path
+                and isinstance(choice.path[0], str)
+            ):
+                keys.add(choice.path[0])
+    elif (
+        isinstance(val_alias, AliasPath)
+        and val_alias.path
+        and isinstance(val_alias.path[0], str)
+    ):
+        keys.add(val_alias.path[0])
+    return keys
 
 
 class Schema(DiscriminatedUnionMixin):
