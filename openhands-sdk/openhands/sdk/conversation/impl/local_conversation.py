@@ -224,6 +224,7 @@ class LocalConversation(BaseConversation):
     _mcp_tool_provider: MCPToolProvider
     _mcp_config_from_parent: bool
     _llm_call_context: LLMCallContext
+    _load_ambient_plugins: bool
 
     def __init__(
         self,
@@ -263,6 +264,7 @@ class LocalConversation(BaseConversation):
         stream_callbacks: list[StreamProgressCallbackType] | None = None,
         _parent_llm_call_context: LLMCallContext | None = None,
         _mcp_config_from_parent: bool = False,
+        _load_ambient_plugins: bool = True,
         **_: object,
     ):
         """Initialize the conversation.
@@ -331,6 +333,7 @@ class LocalConversation(BaseConversation):
             _mcp_config_from_parent: The agent's ``mcp_config`` is the resolved
                 config of a delegating parent. It is used as-is: no plugin MCP
                 servers are merged into it and no ``${VAR}`` is expanded again.
+            _load_ambient_plugins: Whether to discover installed and local plugins.
             profile_store_dir: Optional directory containing saved LLM profiles.
                 Defaults to ``~/.openhands/profiles``.
         """
@@ -352,6 +355,7 @@ class LocalConversation(BaseConversation):
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
         self._mcp_config_from_parent = _mcp_config_from_parent
+        self._load_ambient_plugins = _load_ambient_plugins
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
@@ -1169,19 +1173,20 @@ class LocalConversation(BaseConversation):
         # like project skills. Automation/sandbox runs lack the user's installed
         # and home directories, so discovery naturally yields nothing there.
         ambient_plugins_loaded = False
-        try:
-            ambient_plugins = load_available_plugins(
-                work_dir=self.workspace.working_dir,
-                include_user=True,
-                include_project=True,
-            )
-        except Exception:
-            logger.warning(
-                "Failed to load ambient (installed/local) plugins; "
-                "continuing without them",
-                exc_info=True,
-            )
-            ambient_plugins = {}
+        ambient_plugins = {}
+        if self._load_ambient_plugins:
+            try:
+                ambient_plugins = load_available_plugins(
+                    work_dir=self.workspace.working_dir,
+                    include_user=True,
+                    include_project=True,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to load ambient (installed/local) plugins; "
+                    "continuing without them",
+                    exc_info=True,
+                )
 
         for plugin in ambient_plugins.values():
             if plugin.name in explicit_plugin_names:
