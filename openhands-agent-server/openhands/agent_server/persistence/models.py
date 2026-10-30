@@ -144,7 +144,7 @@ def _deep_merge(
     return result
 
 
-PERSISTED_SETTINGS_SCHEMA_VERSION = 6
+PERSISTED_SETTINGS_SCHEMA_VERSION = 7
 
 
 class PersistedSettings(BaseModel):
@@ -402,8 +402,10 @@ class PersistedSettings(BaseModel):
           (dropped the deprecated ``llm`` from ACP settings).
         - **v5**: nested ``agent_settings`` advanced to schema v8
           (retired tool switches folded into ``tools``).
-        - **v6** (current): nested ``agent_settings`` advanced to schema v9
+        - **v6**: nested ``agent_settings`` advanced to schema v9
           (removed deprecated live input paths; persisted inputs still migrate).
+        - **v7** (current): nested ``agent_settings`` advanced to schema v10
+          (MCP servers with neither ``command`` nor ``url`` are dropped).
         """
         if not isinstance(data, dict):
             return cls.model_validate(data, context=context)
