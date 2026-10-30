@@ -496,6 +496,10 @@ def test_spec_bundles_proxy_from_source_tree():
     ).read_text()
     assert "code_server_proxy.cjs" in spec
     assert 'collect_data_files("openhands.agent_server"' not in spec
+    # The Docker build context is an sdist governed by MANIFEST.in; without
+    # an include line the proxy never reaches the image build at all.
+    manifest = (Path(__file__).parents[2] / "MANIFEST.in").read_text()
+    assert "code_server_proxy.cjs" in manifest
 
 
 @pytest.mark.asyncio
