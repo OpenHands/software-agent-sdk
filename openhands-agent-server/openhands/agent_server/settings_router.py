@@ -10,6 +10,7 @@ from openhands.agent_server._secrets_exposure import (
     get_cipher,
     get_config,
     parse_expose_secrets_header,
+    profile_key_mismatch,
     store_errors,
     translate_missing_cipher,
 )
@@ -41,7 +42,10 @@ from openhands.sdk.settings import (
     export_agent_settings_schema,
 )
 from openhands.sdk.settings.api_models import MCPServerPatch
-from openhands.sdk.utils.pydantic_secrets import is_redacted_secret
+from openhands.sdk.utils.pydantic_secrets import (
+    SecretDecryptionError,
+    is_redacted_secret,
+)
 
 
 logger = get_logger(__name__)
@@ -293,10 +297,13 @@ def _load_active_profile_llm(
     profile_store = get_llm_profile_store()
     # ``load`` resolves any referenced provider connection (read-at-use); a
     # dangling reference raises ProviderConnectionNotFound, which
-    # store_errors() maps to 422.
+    # store_errors() maps to 422. A key the cipher cannot decrypt is refused
+    # (409) rather than applied to settings as ``null``.
     try:
         with store_errors():
-            llm = profile_store.load(profile_name, cipher=cipher)
+            llm = profile_store.load(profile_name, cipher=cipher, strict=True)
+    except SecretDecryptionError as e:
+        raise profile_key_mismatch(profile_name, e)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
