@@ -15,15 +15,23 @@ sandbox < registered marketplace/public < user < org < project
 """
 
 import json
+import os
 import shutil
+import signal
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from time import monotonic
+from time import monotonic, sleep
 
 from pydantic import BaseModel, ValidationError
 
+from openhands.agent_server.git_credentials import (
+    credential_env,
+    credential_helper_args,
+    credential_scope,
+    split_url_credentials,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace import Marketplace
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
@@ -89,6 +97,210 @@ class SkillLoadResult:
     sources: dict[str, int]
 
 
+# Grace period between the cooperative terminate and the forced kill of a
+# timed-out clone, mirroring the bash service and hook executor.
+_TERMINATE_GRACE_SECONDS = 1.0
+
+# Wall-clock budget for a single organization repository clone.
+_CLONE_TIMEOUT_SECONDS = 120.0
+
+
+def _clone_spawn_kwargs() -> dict[str, object]:
+    """Return ``Popen`` kwargs that put git in its own process group/session.
+
+    ``git clone`` spawns credential-bearing helpers (``git-remote-http``,
+    ``git-remote-https``) that inherit ``OPENHANDS_GIT_PASSWORD``. A plain
+    ``subprocess.run(timeout=...)`` kills only the direct child, so on timeout
+    those helpers can outlive the call with the secret still readable in
+    ``/proc/<pid>/environ``. Owning a process group lets us signal the whole
+    tree.
+
+    POSIX uses ``start_new_session`` (``setsid``), so the child leads a new
+    session/group and ``os.killpg`` reaches every descendant. Windows has no
+    process groups reachable that way, so it uses
+    ``CREATE_NEW_PROCESS_GROUP`` and is torn down with ``taskkill /T``.
+    """
+    if os.name == "nt":
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {"start_new_session": True}
+
+
+def _signal_process_group(pgid: int, sig: int) -> None:
+    """Send *sig* to *pgid*, ignoring a group that is already gone."""
+    try:
+        os.killpg(pgid, sig)
+    except (OSError, ProcessLookupError):
+        pass
+
+
+def _group_is_alive(pgid: int) -> bool:
+    """Return True while any process remains in *pgid*."""
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Terminate *process* and every descendant, waiting for full teardown.
+
+    Escalates from ``SIGTERM`` to ``SIGKILL`` and always reaps the direct child
+    before returning, so no credential-bearing descendant is left running once
+    the caller gets control back.
+
+    The escalation is keyed to the *group*, not to the direct child. ``git
+    clone`` forks credential-bearing helpers (``git-remote-http``); a helper that
+    ignores ``SIGTERM`` while the direct child exits promptly would otherwise
+    skip the group ``SIGKILL`` and survive with the token still in its
+    environment.
+    """
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        _reap(process)
+        return
+
+    try:
+        pgid = os.getpgid(process.pid)
+    except (OSError, ProcessLookupError):
+        pgid = None
+
+    if pgid is None:
+        _reap(process)
+        return
+
+    _signal_process_group(pgid, signal.SIGTERM)
+    # Give the whole group the grace period, then SIGKILL whatever is left.
+    # Waiting on the group rather than the direct child is what guarantees a
+    # SIGTERM-ignoring descendant cannot outlive the call.
+    if _wait_for_group_exit(pgid, _TERMINATE_GRACE_SECONDS):
+        _reap(process)
+        return
+    _signal_process_group(pgid, signal.SIGKILL)
+    _wait_for_group_exit(pgid, _TERMINATE_GRACE_SECONDS)
+    _reap(process)
+
+
+def _wait_for_group_exit(pgid: int, timeout: float) -> bool:
+    """Wait up to *timeout* for every process in *pgid* to exit.
+
+    Returns True if the group emptied within the window. A short poll is used
+    because there is no portable way to wait on a whole process group.
+    """
+    deadline = monotonic() + timeout
+    while True:
+        if not _group_is_alive(pgid):
+            return True
+        if monotonic() >= deadline:
+            return False
+        sleep(0.02)
+
+
+def _reap(process: subprocess.Popen[bytes]) -> None:
+    """Reap the direct child so it cannot be left behind as a zombie."""
+    try:
+        process.wait(timeout=_TERMINATE_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        # Last resort for a child that ignored both signals: kill it directly
+        # so it cannot be left behind as an orphan.
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=_TERMINATE_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def _run_git_clone(
+    cmd: list[str],
+    env: dict[str, str],
+    timeout: float,
+) -> str:
+    """Run *cmd* with process-group ownership.
+
+    Returns ``"ok"``, ``"failed"``, or ``"timeout"`` so the caller can keep its
+    distinct logging for a timeout. On timeout the whole group is killed rather
+    than just the direct child, so the credential-bearing remote helpers cannot
+    survive the call.
+    """
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            **_clone_spawn_kwargs(),  # type: ignore[arg-type]
+        )
+    except OSError:
+        # The git binary is missing or not executable.
+        return "failed"
+
+    try:
+        process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_process_group(process)
+        return "timeout"
+    return "ok" if process.returncode == 0 else "failed"
+
+
+def _clone_org_repo(org_repo_url: str, temp_dir: Path, org_name: str) -> bool:
+    """Clone an organization repository without exposing its credentials.
+
+    ``org_repo_url`` arrives pre-authenticated, so its userinfo may carry a
+    token. That token is split out of the URL and passed to an
+    environment-backed git credential helper: git is only ever handed the
+    credential-free URL, so the secret never reaches argv (readable via ``ps``)
+    and never lands in the clone's ``.git/config``.
+
+    The helper is bound to the protocol and host of the credential-free URL.
+    Git asks the helper about whatever host it is about to contact, which after
+    an HTTP redirect is the redirect target; a helper bound to the original
+    host therefore stays silent and the token does not follow the redirect.
+
+    Git runs in its own process group, so a timeout tears down the whole tree
+    (including credential-bearing remote helpers) instead of only the direct
+    child.
+
+    Returns True on success. A missing repository or denied access is expected
+    and returns False; the caller then continues with an empty skill list.
+    """
+    logger.info(f"Cloning organization skills repository for {org_name}")
+    clean_url, creds = split_url_credentials(org_repo_url)
+
+    env = sanitized_env()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    cmd = ["git"]
+    if creds:
+        protocol, host = credential_scope(clean_url)
+        cmd.extend(credential_helper_args())
+        env.update(credential_env(*creds, protocol, host))
+    cmd.extend(["clone", "--depth", "1", clean_url, str(temp_dir)])
+
+    # stderr is deliberately never logged: on some git versions it echoes the
+    # remote URL, which may still carry credentials on other error paths.
+    outcome = _run_git_clone(cmd, env, timeout=_CLONE_TIMEOUT_SECONDS)
+    if outcome == "timeout":
+        logger.warning(f"Git clone timed out for organization repository {org_name}")
+        return False
+    if outcome == "failed":
+        logger.debug(
+            f"Organization repository not found or access denied for {org_name}"
+        )
+        return False
+    return True
+
+
 def load_org_skills_from_url(
     org_repo_url: str,
     org_name: str,
@@ -101,7 +313,10 @@ def load_org_skills_from_url(
     then cleans up the temporary directory.
 
     The org_repo_url should be a pre-authenticated Git URL (e.g., containing
-    credentials or tokens) as provided by the app-server.
+    credentials or tokens) as provided by the app-server. Any inline
+    credentials are moved out of the URL and into an environment-backed git
+    credential helper, so they are never exposed in the process argument list
+    or persisted in the clone's ``.git/config``.
 
     Note:
         This is a blocking I/O operation that may take up to 120 seconds due to
@@ -137,36 +352,8 @@ def load_org_skills_from_url(
         temp_dir = Path(tempfile.mkdtemp(prefix=f"openhands_org_skills_{org_name}_"))
 
     try:
-        # Clone the organization repository (shallow clone for efficiency)
-        logger.info(f"Cloning organization skills repository for {org_name}")
-        try:
-            env = sanitized_env()
-            env["GIT_TERMINAL_PROMPT"] = "0"
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--depth",
-                    "1",
-                    org_repo_url,
-                    str(temp_dir),
-                ],
-                check=True,
-                capture_output=True,
-                timeout=120,
-                env=env,
-            )
-        except subprocess.CalledProcessError:
-            # Repository doesn't exist or access denied - this is expected.
-            # Note: We intentionally don't log stderr as it may contain credentials.
-            logger.debug(
-                f"Organization repository not found or access denied for {org_name}"
-            )
-            return all_skills
-        except subprocess.TimeoutExpired:
-            logger.warning(
-                f"Git clone timed out for organization repository {org_name}"
-            )
+        # Clone the organization repository (shallow clone for efficiency).
+        if not _clone_org_repo(org_repo_url, temp_dir, org_name):
             return all_skills
 
         logger.debug(f"Successfully cloned org repository to {temp_dir}")
