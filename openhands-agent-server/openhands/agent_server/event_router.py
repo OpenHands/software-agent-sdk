@@ -220,9 +220,20 @@ async def send_message(
 ) -> Success:
     """Send a message to a conversation.
 
+    Only ``user`` messages are accepted; any other role is rejected with 422
+    and nothing is stored.
+
     If starting the run returns 429, the message is already saved. Retry the
     conversation's /run endpoint instead of resending the message.
     """
+    if request.role != "user":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Only user messages are allowed to be sent to the agent "
+                f"(got role {request.role!r})."
+            ),
+        )
     message = Message(role=request.role, content=request.content)
     await event_service.send_message(message, request.run)
     return Success()
