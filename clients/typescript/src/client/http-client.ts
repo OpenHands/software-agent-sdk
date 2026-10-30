@@ -343,7 +343,8 @@ export class HttpClient {
     const timeoutMs = options.timeout || this.timeout;
 
     return new Promise<HttpResponse<T>>((resolve, reject) => {
-      const req = transport.request(url, { method: options.method, headers }, (res) => {
+      const requestOptions = { method: options.method, headers, signal: options.signal };
+      const req = transport.request(url, requestOptions, (res) => {
         const chunks: Buffer[] = [];
         res.on('data', (chunk: Buffer) => chunks.push(chunk));
         res.on('end', () => {
@@ -398,6 +399,10 @@ export class HttpClient {
       });
 
       req.on('error', (error: Error) => {
+        if (error.name === 'AbortError' && options.signal?.aborted) {
+          reject(error);
+          return;
+        }
         reject(new Error(`Request failed: ${error.message}`, { cause: error }));
       });
 
