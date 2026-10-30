@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import shlex
 import sys
 import time
 from collections.abc import AsyncIterator
@@ -17,9 +18,19 @@ import pytest_asyncio
 from fastapi import FastAPI
 
 from openhands.agent_server import bash_router as bash_router_module
-from openhands.agent_server.bash_service import BashEventService
+from openhands.agent_server.bash_service import (
+    MAX_CONTENT_CHAR_LENGTH,
+    BashEventService,
+)
 from openhands.agent_server.config import Config
-from openhands.agent_server.models import BashCommand, BashEventSortOrder, BashOutput
+from openhands.agent_server.models import (
+    BashCommand,
+    BashEventBase,
+    BashEventSortOrder,
+    BashOutput,
+    ExecuteBashRequest,
+)
+from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import (
     mark_initialization_complete,
     server_details_router,
@@ -254,6 +265,134 @@ async def test_bash_execution_error_log_omits_command(
 
     assert "Error executing bash command" in caplog.text
     assert secret not in caplog.text
+
+
+async def test_interleaved_bash_output_orders_are_contiguous(
+    bash_service: BashEventService,
+) -> None:
+    stdout = "o" * (MAX_CONTENT_CHAR_LENGTH + 3)
+    stderr = "e" * (MAX_CONTENT_CHAR_LENGTH + 5)
+    process = AsyncMock()
+    process.stdout.read.side_effect = [stdout.encode(), b""]
+    process.stderr.read.side_effect = [stderr.encode(), b""]
+    process.wait = AsyncMock(return_value=0)
+    process.returncode = 0
+    published: list[BashOutput] = []
+
+    async def yielding_publish(event: BashOutput) -> None:
+        assert await bash_service.get_bash_event(event.id.hex) == event
+        published.append(event)
+        await asyncio.sleep(0)
+
+    command = BashCommand(command="interleaved output")
+    with (
+        patch(
+            "openhands.agent_server.bash_service.asyncio.create_subprocess_shell",
+            new=AsyncMock(return_value=process),
+        ),
+        patch.object(
+            bash_service,
+            "_pub_sub",
+            new=AsyncMock(side_effect=yielding_publish),
+        ),
+    ):
+        await bash_service._execute_bash_command(command)
+
+    assert [event.order for event in published] == list(range(len(published)))
+    assert published[-1].exit_code == 0
+    assert "".join(event.stdout or "" for event in published) == stdout
+    assert "".join(event.stderr or "" for event in published) == stderr
+
+    page = await bash_service.search_bash_events(command_id__eq=command.id)
+    persisted = [event for event in page.items if isinstance(event, BashOutput)]
+    persisted.sort(key=lambda event: event.order)
+    assert [event.order for event in persisted] == list(range(len(persisted)))
+    assert persisted[-1].exit_code == 0
+
+
+@pytest.mark.timeout(30)
+async def test_real_bash_output_orders_with_yielding_subscriber(
+    bash_service: BashEventService,
+) -> None:
+    published: list[BashOutput] = []
+
+    class YieldingSubscriber(Subscriber[BashEventBase]):
+        async def __call__(self, event: BashEventBase) -> None:
+            if isinstance(event, BashOutput):
+                published.append(event)
+                await asyncio.sleep(0.01)
+
+    subscriber_id = await bash_service.subscribe_to_events(YieldingSubscriber())
+    size = MAX_CONTENT_CHAR_LENGTH + 1
+    script = (
+        "import os, threading; "
+        f"a = threading.Thread(target=lambda: os.write(1, b'o' * {size})); "
+        f"b = threading.Thread(target=lambda: os.write(2, b'e' * {size})); "
+        "a.start(); b.start(); a.join(); b.join()"
+    )
+    try:
+        command, task = await bash_service.start_bash_command(
+            ExecuteBashRequest(
+                command=f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+            )
+        )
+        await asyncio.wait_for(task, timeout=20)
+    finally:
+        await bash_service.unsubscribe_from_events(subscriber_id)
+
+    assert [event.order for event in published] == [0, 1, 2]
+    assert [event.exit_code for event in published] == [None, None, 0]
+    assert "".join(event.stdout or "" for event in published) == "o" * size
+    assert "".join(event.stderr or "" for event in published) == "e" * size
+    persisted = BashEventService(bash_events_dir=bash_service.bash_events_dir)
+    page = await persisted.search_bash_events(command_id__eq=command.id)
+    assert page.items == published
+
+
+async def test_bash_output_persistence_failure_does_not_consume_order(
+    bash_service: BashEventService,
+) -> None:
+    stdout = "o" * (MAX_CONTENT_CHAR_LENGTH + 1)
+    process = AsyncMock()
+    process.stdout.read.side_effect = [stdout.encode(), b""]
+    process.stderr.read.side_effect = [b""]
+    process.wait = AsyncMock(return_value=0)
+    process.returncode = 0
+    published: list[BashOutput] = []
+    original_save = bash_service._save_event_to_file
+    failed = False
+
+    def fail_first_save(event: BashOutput) -> None:
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise OSError("simulated persistence failure")
+        original_save(event)
+
+    async def yielding_publish(event: BashOutput) -> None:
+        published.append(event)
+        await asyncio.sleep(0)
+
+    command = BashCommand(command="persistence failure")
+    with (
+        patch(
+            "openhands.agent_server.bash_service.asyncio.create_subprocess_shell",
+            new=AsyncMock(return_value=process),
+        ),
+        patch.object(bash_service, "_save_event_to_file", new=fail_first_save),
+        patch.object(
+            bash_service,
+            "_pub_sub",
+            new=AsyncMock(side_effect=yielding_publish),
+        ),
+    ):
+        await bash_service._execute_bash_command(command)
+
+    assert failed
+    assert [event.order for event in published] == [0]
+    assert published[0].exit_code == 0
+    assert published[0].stdout == stdout
+    assert await bash_service.get_bash_event(published[0].id.hex) == published[0]
 
 
 # ---------------------------------------------------------------------------
