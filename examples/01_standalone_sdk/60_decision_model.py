@@ -17,6 +17,8 @@ practices in https://docs.typesafe.ai/concepts/how-to-build-with-system-one.md:
 3. Ask many atomic questions in one call, including speculative ones that only
    matter on some code paths. Questions run in parallel against the same state,
    so each extra question adds little latency and costs only its own tokens.
+   LiteLLM accepts up to 128 questions per call; split more across calls that
+   send the same state.
 4. Combine the answers in code, and route on uncertainty instead of guessing.
 
 Set JEV_API_KEY to a TypeSafe API key. DECISION_MODEL defaults to
