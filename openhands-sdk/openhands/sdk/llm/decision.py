@@ -12,12 +12,12 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import Annotated, Any, ClassVar, Final, Literal, cast
 
 from litellm import asystemone as litellm_asystemone, systemone as litellm_systemone
-from litellm.types.decisions import DecisionsResponse
+from litellm.types.decisions import MAX_DECISION_QUESTIONS, DecisionsResponse
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -49,8 +49,10 @@ __all__ = [
     "ChoiceAnswer",
     "DecisionModel",
     "DecisionResult",
+    "DecisionJSON",
     "Noul",
     "NoulAnswer",
+    "NoulCriteria",
     "Question",
     "Score",
     "ScoreAnswer",
@@ -58,12 +60,26 @@ __all__ = [
 
 _MAX_SCORE_LEVELS: Final[int] = 10
 
+# Instructions and criteria may be plain text or JSON structure, which keeps
+# the question apart from the context and examples that guide it.
+type DecisionJSON = str | dict[str, Any] | list[Any]
+
+
+class NoulCriteria(BaseModel):
+    """What makes a Noul's answer true, and what makes it false."""
+
+    true: DecisionJSON | None = None
+    false: DecisionJSON | None = None
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
+
 
 class Noul(BaseModel):
     """A yes/no question. The answer is the probability of yes."""
 
     type: Literal["noul"] = "noul"
-    instructions: str
+    instructions: DecisionJSON
+    criteria: NoulCriteria | None = None
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
@@ -72,8 +88,8 @@ class Choice(BaseModel):
     """Pick one option from a closed set. ``criteria`` maps option to meaning."""
 
     type: Literal["choice"] = "choice"
-    instructions: str
-    criteria: dict[str, str] = Field(min_length=1)
+    instructions: DecisionJSON
+    criteria: Mapping[str, DecisionJSON] = Field(min_length=1)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
@@ -82,8 +98,8 @@ class Score(BaseModel):
     """Rate against ordered levels, lowest first."""
 
     type: Literal["score"] = "score"
-    instructions: str
-    criteria: list[str] = Field(min_length=1, max_length=_MAX_SCORE_LEVELS)
+    instructions: DecisionJSON
+    criteria: Sequence[DecisionJSON] = Field(min_length=1, max_length=_MAX_SCORE_LEVELS)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
@@ -107,7 +123,7 @@ class ScoreAnswer(BaseModel):
     score: float
     confidence: float
     probabilities: dict[str, float]
-    legend: dict[str, str]
+    legend: dict[str, DecisionJSON]
 
 
 Answer = NoulAnswer | ChoiceAnswer | ScoreAnswer
@@ -204,6 +220,12 @@ class DecisionModel(BaseModel, RetryMixin):
         return self._metrics
 
     def decide(self, state: Any, questions: Mapping[str, Question]) -> DecisionResult:
+        """Answer every question about ``state`` in one call.
+
+        Questions run in parallel against the same state, so ask all of them
+        at once. LiteLLM accepts at most ``MAX_DECISION_QUESTIONS`` (128) per
+        call; split larger sets across calls that send the same state.
+        """
         kwargs = self._call_kwargs(state, questions)
 
         @self._retry_decorator()
@@ -224,6 +246,7 @@ class DecisionModel(BaseModel, RetryMixin):
     async def adecide(
         self, state: Any, questions: Mapping[str, Question]
     ) -> DecisionResult:
+        """Async :meth:`decide`."""
         kwargs = self._call_kwargs(state, questions)
 
         @self._retry_decorator()
@@ -244,12 +267,18 @@ class DecisionModel(BaseModel, RetryMixin):
     def _call_kwargs(
         self, state: Any, questions: Mapping[str, Question]
     ) -> dict[str, Any]:
+        if len(questions) > MAX_DECISION_QUESTIONS:
+            raise ValueError(
+                f"{len(questions)} questions exceed LiteLLM's limit of "
+                f"{MAX_DECISION_QUESTIONS} per call; split them across calls "
+                "with the same state"
+            )
         api_key = self.api_key
         assert api_key is None or isinstance(api_key, SecretStr)
         return {
             "model": self.model,
             "state": state,
-            "questions": {name: q.model_dump() for name, q in questions.items()},
+            "questions": _dump_questions(questions),
             "api_key": api_key.get_secret_value() if api_key else None,
             "api_base": self.base_url,
             "timeout": self.timeout,
@@ -285,7 +314,7 @@ class DecisionModel(BaseModel, RetryMixin):
         from openhands.sdk.observability.laminar import llm_call_span
 
         with llm_call_span(f"decision.{self.model}") as span:
-            dumped = {name: q.model_dump() for name, q in questions.items()}
+            dumped = _dump_questions(questions)
             _set_attributes(
                 span,
                 {
@@ -350,6 +379,11 @@ class DecisionModel(BaseModel, RetryMixin):
             metrics=self._metrics.get_snapshot(),
             raw_response=response,
         )
+
+
+def _dump_questions(questions: Mapping[str, Question]) -> dict[str, Any]:
+    # exclude_none leaves out unset optional fields such as Noul.criteria.
+    return {name: q.model_dump(exclude_none=True) for name, q in questions.items()}
 
 
 def _set_attributes(span: Any, attributes: Mapping[str, Any]) -> None:

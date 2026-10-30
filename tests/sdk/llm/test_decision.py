@@ -13,6 +13,7 @@ from openhands.sdk.llm import (
     Choice,
     DecisionModel,
     Noul,
+    NoulCriteria,
     Score,
 )
 from openhands.sdk.llm.exceptions import LLMRateLimitError, LLMResponseError
@@ -120,7 +121,20 @@ async def test_decide_sends_questions_and_returns_typed_answers(provider, use_as
     assert sent["auth"] == "Bearer test-key"
     assert sent["body"]["state"] == state
     assert sent["body"]["questions"] == {
-        name: q.model_dump() for name, q in QUESTIONS.items()
+        "urgent": {"type": "noul", "instructions": "Does this convey urgency?"},
+        "team": {
+            "type": "choice",
+            "instructions": "Which team owns this?",
+            "criteria": {
+                "billing": "Charges and payments",
+                "technical": "Broken features",
+            },
+        },
+        "impact": {
+            "type": "score",
+            "instructions": "How bad is the bug?",
+            "criteria": ["Cosmetic", "Workaround available", "Work blocked"],
+        },
     }
 
     assert result.noul("urgent").probability == 0.93
@@ -138,6 +152,92 @@ async def test_decide_sends_questions_and_returns_typed_answers(provider, use_as
     assert (usage.prompt_tokens, usage.completion_tokens) == (1000, 3)
     assert result.metrics.accumulated_cost > 0
     assert model.metrics.accumulated_cost == result.metrics.accumulated_cost
+
+
+def test_structured_instructions_and_criteria_are_sent_as_given(provider):
+    base_url, replies, requests = provider
+    levels = [{"what": "Harmless"}, {"what": "Clear phishing"}]
+    questions = {
+        "asks_credential": Noul(
+            instructions={
+                "question": "Does the message request a credential?",
+                "inspect": "`ticket.message`",
+            },
+            criteria=NoulCriteria(
+                true={"what": "Asks to disclose a password or key"},
+                false="Does not ask for a credential",
+            ),
+        ),
+        "team": Choice(
+            instructions="Which team handles `ticket.message`?",
+            criteria={
+                "security": {"what": "Phishing", "examples": ["Send your password"]},
+                "billing": {"what": "Charges", "not_for": "Phishing"},
+            },
+        ),
+        "risk": Score(
+            instructions=["How risky is", "`ticket.message`?"], criteria=levels
+        ),
+    }
+    replies.append(
+        (
+            200,
+            {
+                "model": "jev-1.14.0",
+                "answers": {
+                    "asks_credential": {"type": "noul", "noul": 0.99},
+                    "team": {
+                        "type": "choice",
+                        "choice": "security",
+                        "confidence": 1.0,
+                        "probabilities": {"security": 1.0, "billing": 0.0},
+                    },
+                    "risk": {
+                        "type": "score",
+                        "score": 1.0,
+                        "confidence": 1.0,
+                        "legend": {"0": levels[0], "1": levels[1]},
+                        "probabilities": {"0": 0.0, "1": 1.0},
+                    },
+                },
+            },
+        )
+    )
+
+    result = _model(base_url).decide({"ticket": {"message": "hi"}}, questions)
+
+    sent = requests[0]["body"]["questions"]
+    assert sent["asks_credential"] == {
+        "type": "noul",
+        "instructions": {
+            "question": "Does the message request a credential?",
+            "inspect": "`ticket.message`",
+        },
+        "criteria": {
+            "true": {"what": "Asks to disclose a password or key"},
+            "false": "Does not ask for a credential",
+        },
+    }
+    assert sent["team"]["criteria"]["billing"] == {
+        "what": "Charges",
+        "not_for": "Phishing",
+    }
+    assert sent["risk"] == {
+        "type": "score",
+        "instructions": ["How risky is", "`ticket.message`?"],
+        "criteria": levels,
+    }
+    assert result.score("risk").legend == {"0": levels[0], "1": levels[1]}
+
+
+def test_more_questions_than_litellm_accepts_fail_before_any_request(provider):
+    base_url, _, requests = provider
+    questions = {f"q{i}": Noul(instructions="Is it urgent?") for i in range(129)}
+
+    with pytest.raises(ValueError, match="129 questions exceed LiteLLM's limit of 128"):
+        _model(base_url).decide("state", questions)
+
+    assert requests == []
 
 
 def test_api_key_is_redacted_unless_secrets_are_exposed():
@@ -265,7 +365,9 @@ def test_decision_call_emits_a_span_nested_under_the_active_span(
     assert attrs["gen_ai.request.model"] == MODEL
     assert json.loads(attrs["decision.answers"])["team"]["choice"] == "technical"
     assert json.loads(attrs["lmnr.span.input"]) == {
-        "questions": {name: q.model_dump() for name, q in QUESTIONS.items()}
+        "questions": {
+            name: q.model_dump(exclude_none=True) for name, q in QUESTIONS.items()
+        }
     }
     assert json.loads(attrs["lmnr.span.output"])["team"]["choice"] == "technical"
     assert attrs["gen_ai.response.model"] == "jev-1.13.0"
