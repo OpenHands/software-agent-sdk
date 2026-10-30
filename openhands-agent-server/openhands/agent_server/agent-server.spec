@@ -132,7 +132,10 @@ a = Analysis(
         (
             str(
                 project_root
-                / "openhands-agent-server/openhands/agent_server/code_server_proxy.cjs"
+                / "openhands-agent-server"
+                / "openhands"
+                / "agent_server"
+                / "code_server_proxy.cjs"
             ),
             "openhands/agent_server",
         ),
