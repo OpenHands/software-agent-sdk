@@ -367,7 +367,11 @@ export class StuckDetector {
       a.source === b.source &&
       a.tool_name === b.tool_name &&
       a.thought === b.thought &&
-      JSON.stringify(a.action) === JSON.stringify(b.action)
+      JSON.stringify(a.action) === JSON.stringify(b.action) &&
+      (a.action !== null ||
+        (a.tool_call !== undefined &&
+          b.tool_call !== undefined &&
+          a.tool_call.arguments === b.tool_call.arguments))
     );
   }
 
