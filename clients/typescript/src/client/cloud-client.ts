@@ -761,7 +761,7 @@ async function buildHttpError(response: Response): Promise<HttpError> {
   let errorContent: unknown;
   try {
     const contentType = response.headers.get('content-type');
-    errorContent = contentType?.includes('application/json')
+    errorContent = contentType?.toLowerCase().includes('application/json')
       ? await response.json()
       : await response.text();
   } catch {
@@ -789,7 +789,7 @@ async function parseResponse<TResponse>(
   if (responseType === 'text') return (await response.text()) as TResponse;
 
   const contentType = response.headers.get('content-type');
-  if (responseType === 'json' || contentType?.includes('application/json')) {
+  if (responseType === 'json' || contentType?.toLowerCase().includes('application/json')) {
     return (await response.json()) as TResponse;
   }
   return (await response.text()) as TResponse;
