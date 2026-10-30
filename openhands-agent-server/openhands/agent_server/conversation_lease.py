@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NotRequired, TypedDict
+from uuid import uuid4
 
 from filelock import FileLock
 
@@ -18,6 +19,10 @@ logger = get_logger(__name__)
 LEASE_FILE_NAME = "owner_lease.json"
 LEASE_LOCK_FILE_NAME = ".owner_lease.lock"
 DEFAULT_LEASE_TTL_SECONDS = 45.0
+# A PID can be reused after a fast process restart, especially when the
+# server runs as PID 1 in a container. This token distinguishes that new
+# process from the one that wrote an otherwise still-live lease.
+_PROCESS_TOKEN = uuid4().hex
 
 
 @dataclass(frozen=True)
@@ -35,6 +40,7 @@ class LeasePayload(TypedDict):
     # must treat them as optional.
     owner_host: NotRequired[str]
     owner_pid: NotRequired[int]
+    owner_process_token: NotRequired[str]
 
 
 def _current_host() -> str:
@@ -178,10 +184,14 @@ class ConversationLease:
             return False
         if owner_host != _current_host():
             return False
-        # Don't mistakenly consider ourselves dead if the lease points at
-        # this very process (e.g. a same-process re-claim).
+        # A PID may have been reused by a restarted server. The process token
+        # distinguishes that case while preserving same-process re-claims.
         if owner_pid == os.getpid():
-            return False
+            owner_process_token = payload.get("owner_process_token")
+            return (
+                isinstance(owner_process_token, str)
+                and owner_process_token != _PROCESS_TOKEN
+            )
         return not _is_pid_alive(owner_pid)
 
     def renew(self, generation: int) -> None:
@@ -260,6 +270,9 @@ class ConversationLease:
             owner_pid = raw_payload.get("owner_pid")
             if isinstance(owner_pid, int):
                 payload["owner_pid"] = owner_pid
+            owner_process_token = raw_payload.get("owner_process_token")
+            if isinstance(owner_process_token, str) and owner_process_token:
+                payload["owner_process_token"] = owner_process_token
             return payload
         except Exception:
             logger.warning(
@@ -275,6 +288,7 @@ class ConversationLease:
             "expires_at": expires_at,
             "owner_host": _current_host(),
             "owner_pid": os.getpid(),
+            "owner_process_token": _PROCESS_TOKEN,
         }
         tmp_path = self._lease_path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps(payload))
