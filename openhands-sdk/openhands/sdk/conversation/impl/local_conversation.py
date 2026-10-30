@@ -51,7 +51,12 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
-from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
+from openhands.sdk.hooks import (
+    HookConfig,
+    HookEventProcessor,
+    HookMatcher,
+    create_hook_callback,
+)
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
@@ -182,6 +187,24 @@ def _copy_event_for_fork(event: Event, source: EventLog) -> Event:
     # event the source's own branch walk bridges to instead.
     bridged = source._effective_parent_id(source.get_index(event.id), event)
     return copied.model_copy(update={"parent_id": bridged})
+
+
+def _hooks_not_in(hooks: HookConfig, existing: HookConfig) -> HookConfig:
+    """Return the matchers of ``hooks`` that ``existing`` does not already hold."""
+
+    def unseen(added: list[HookMatcher], present: list[HookMatcher]):
+        return [matcher for matcher in added if matcher not in present]
+
+    return HookConfig(
+        pre_tool_use=unseen(hooks.pre_tool_use, existing.pre_tool_use),
+        post_tool_use=unseen(hooks.post_tool_use, existing.post_tool_use),
+        user_prompt_submit=unseen(
+            hooks.user_prompt_submit, existing.user_prompt_submit
+        ),
+        session_start=unseen(hooks.session_start, existing.session_start),
+        session_end=unseen(hooks.session_end, existing.session_end),
+        stop=unseen(hooks.stop, existing.stop),
+    )
 
 
 def _same_llm_config(a: LLM, b: LLM) -> bool:
@@ -1386,6 +1409,12 @@ class LocalConversation(BaseConversation):
 
     def _merge_runtime_plugin_hooks(self, plugin_hooks: HookConfig) -> None:
         existing_config = self._state.hook_config
+        if existing_config is not None:
+            # Loading the same plugin again must not run its hooks twice, so
+            # keep only the matchers the live config does not already hold.
+            plugin_hooks = _hooks_not_in(plugin_hooks, existing_config)
+            if plugin_hooks.is_empty():
+                return
         merged_config = (
             HookConfig.merge([existing_config, plugin_hooks])
             if existing_config is not None
