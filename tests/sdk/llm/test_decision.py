@@ -237,5 +237,10 @@ def test_decision_call_emits_a_span_nested_under_the_active_span(
     attrs = decision.attributes
     assert attrs["gen_ai.request.model"] == MODEL
     assert json.loads(attrs["decision.answers"])["team"]["choice"] == "technical"
+    assert json.loads(attrs["lmnr.span.input"]) == {
+        "questions": {name: q.model_dump() for name, q in QUESTIONS.items()}
+    }
+    assert json.loads(attrs["lmnr.span.output"])["team"]["choice"] == "technical"
+    assert attrs["gen_ai.response.model"] == "jev-1.13.0"
     assert attrs["gen_ai.usage.input_tokens"] == 1000
     assert attrs["gen_ai.usage.cost"] > 0

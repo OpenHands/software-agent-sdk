@@ -278,13 +278,15 @@ class DecisionModel(BaseModel, RetryMixin):
         from openhands.sdk.observability.laminar import llm_call_span
 
         with llm_call_span(f"decision.{self.model}") as span:
+            dumped = {name: q.model_dump() for name, q in questions.items()}
             _set_attributes(
                 span,
                 {
                     "gen_ai.request.model": self.model,
-                    "decision.questions": json.dumps(
-                        {name: q.model_dump() for name, q in questions.items()}
-                    ),
+                    "decision.questions": json.dumps(dumped),
+                    # Laminar renders lmnr.span.input/output as the span's
+                    # Input and Output panes. The state stays out, as above.
+                    "lmnr.span.input": json.dumps({"questions": dumped}),
                 },
             )
 
@@ -313,10 +315,11 @@ class DecisionModel(BaseModel, RetryMixin):
             )
 
         answers = {name: _convert_answer(a) for name, a in response.answers.items()}
+        answers_json = json.dumps({name: a.model_dump() for name, a in answers.items()})
         attributes: dict[str, Any] = {
-            "decision.answers": json.dumps(
-                {name: a.model_dump() for name, a in answers.items()}
-            )
+            "decision.answers": answers_json,
+            "lmnr.span.output": answers_json,
+            "gen_ai.response.model": response.model,
         }
         if usage is not None:
             attributes["gen_ai.usage.input_tokens"] = usage.input_tokens
