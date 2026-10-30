@@ -5128,8 +5128,9 @@ class TestSelectAuthMethod:
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, {}) == "oauth-personal"
 
-    def test_gemini_oauth_preferred_over_api_key(self, tmp_path):
-        """OAuth login takes precedence over GEMINI_API_KEY (mirrors chatgpt)."""
+    def test_gemini_api_key_preferred_over_leftover_oauth(self, tmp_path):
+        """A leftover oauth_creds.json from the retired consumer Google login must not
+        hide a working GEMINI_API_KEY (#4629)."""
         methods = [
             self._make_auth_method("oauth-personal"),
             self._make_auth_method("gemini-api-key"),
@@ -5140,6 +5141,21 @@ class TestSelectAuthMethod:
 
         env = {"GEMINI_API_KEY": "g-test"}
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) == "gemini-api-key"
+
+    def test_empty_gemini_api_key_is_not_a_credential(self, tmp_path):
+        """An empty GEMINI_API_KEY neither selects gemini-api-key nor hides an
+        oauth-personal login."""
+        methods = [
+            self._make_auth_method("oauth-personal"),
+            self._make_auth_method("gemini-api-key"),
+        ]
+        env = {"GEMINI_API_KEY": ""}
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) is None
+            gem_dir = tmp_path / ".gemini"
+            gem_dir.mkdir()
+            (gem_dir / "oauth_creds.json").write_text("{}", encoding="utf-8")
             assert _select_auth_method(methods, env) == "oauth-personal"
 
     def test_gemini_api_key_fallback_when_no_oauth_file(self, tmp_path):
@@ -10355,6 +10371,14 @@ class TestAuthSelectionFailureReason:
             [self._method("login", "terminal")], {}, None
         )
         assert "login needs an interactive terminal" in reason
+
+    def test_names_the_retired_gemini_google_login(self):
+        reason = _auth_selection_failure_reason(
+            [self._method("oauth-personal"), self._method("gemini-api-key")],
+            {},
+            ACP_PROVIDERS["gemini-cli"],
+        )
+        assert "oauth-personal (Google login) is retired" in reason
 
     def test_falls_back_to_the_generic_reason(self):
         assert (

@@ -313,7 +313,7 @@ _AUTH_METHOD_ENV_MAP: dict[str, str] = {
 }
 # Gemini CLI personal (Google OAuth) login, cached by ``gemini login`` /
 # ``gemini --acp``. Its presence lets us select the server's ``oauth-personal``
-# auth method without an API key (mirrors the ChatGPT subscription path).
+# auth method when no API key is set.
 _GEMINI_OAUTH_PATH = Path(".gemini") / "oauth_creds.json"
 
 
@@ -372,10 +372,13 @@ def _select_auth_method(
     - ``vertex-ai`` (gemini-cli) — service-account JSON at
       ``GOOGLE_APPLICATION_CREDENTIALS`` (the deployable Gemini path; preferred
       over personal OAuth, which is host-bound and undeployable)
-    - ``oauth-personal`` (gemini-cli) — ``~/.gemini/oauth_creds.json``
 
     In a server image the interactive-login files are absent, so the API-key
     fallback (e.g. ``GEMINI_API_KEY``) is used instead.
+
+    gemini-cli's ``oauth-personal`` login (``~/.gemini/oauth_creds.json``) is
+    the last resort: Google retired it for consumer accounts, so a leftover
+    login file must not shadow a working ``GEMINI_API_KEY``.
     """
     method_ids = {m.id for m in auth_methods}
     # Prefer file-backed subscription / service-account logins when their
@@ -385,8 +388,6 @@ def _select_auth_method(
     gac = env.get("GOOGLE_APPLICATION_CREDENTIALS")
     if "vertex-ai" in method_ids and gac and Path(gac).is_file():
         return "vertex-ai"
-    if "oauth-personal" in method_ids and (Path.home() / _GEMINI_OAUTH_PATH).is_file():
-        return "oauth-personal"
     # The maintained Codex ACP adapter exposes one API-key method and reads
     # CODEX_API_KEY first, then OPENAI_API_KEY, from its subprocess env.
     if "api-key" in method_ids and any(
@@ -395,8 +396,10 @@ def _select_auth_method(
         return "api-key"
     # Fall back to explicit API key env vars.
     for method_id, env_var in _AUTH_METHOD_ENV_MAP.items():
-        if method_id in method_ids and env_var in env:
+        if method_id in method_ids and env.get(env_var):
             return method_id
+    if "oauth-personal" in method_ids and (Path.home() / _GEMINI_OAUTH_PATH).is_file():
+        return "oauth-personal"
     return None
 
 
@@ -420,6 +423,11 @@ def _auth_selection_failure_reason(
     if provider is not None and provider.api_key_env_var:
         if not env.get(provider.api_key_env_var):
             reasons.append(f"{provider.api_key_env_var} is unset")
+    if "oauth-personal" in method_ids:
+        reasons.append(
+            "oauth-personal (Google login) is retired for consumer accounts, so "
+            "set GEMINI_API_KEY or GOOGLE_APPLICATION_CREDENTIALS instead"
+        )
     # ``type: "terminal"`` marks a login only an interactive TTY can complete,
     # which the runtime does not have. Named so the log says why the method was
     # never a candidate rather than implying a missing credential.
