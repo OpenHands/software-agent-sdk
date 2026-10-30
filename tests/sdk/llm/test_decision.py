@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 
 import pytest
+from litellm import exceptions as litellm_exceptions
 from litellm.types.decisions import DecisionsResponse
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic import PrivateAttr, SecretStr, ValidationError
@@ -22,6 +23,7 @@ from openhands.sdk.llm import (
     NoulCriteria,
     Score,
     ScoreAnswer,
+    decision as decision_module,
 )
 from openhands.sdk.llm.decision import _set_attributes
 from openhands.sdk.llm.exceptions import (
@@ -750,3 +752,460 @@ def test_custom_reply_without_model_usage_or_cost(lmnr_exporter):
     assert "gen_ai.response.model" not in attrs
     assert "gen_ai.usage.input_tokens" not in attrs
     assert "gen_ai.usage.cost" not in attrs
+
+
+# --- Span privacy, failures and retries ---------------------------------------
+
+STATE_MARKER = "PRIVATE-STATE-MARKER-7f3a"
+
+
+def _decision_spans(exporter: InMemorySpanExporter, name: str):
+    return [s for s in exporter.get_finished_spans() if s.name == name]
+
+
+def _span_id(span) -> int:
+    assert span.context is not None
+    return span.context.span_id
+
+
+def _attrs(span) -> dict:
+    return dict(span.attributes or {})
+
+
+def _all_attribute_text(exporter: InMemorySpanExporter) -> str:
+    return json.dumps(
+        [dict(s.attributes or {}) for s in exporter.get_finished_spans()], default=str
+    )
+
+
+def test_state_is_never_recorded_on_the_span(provider, lmnr_exporter):
+    from lmnr import Laminar
+
+    base_url, replies, _ = provider
+    replies.append((200, REPLY))
+
+    with Laminar.start_as_current_span(name="agent-step"):
+        _model(base_url).decide({"ticket": STATE_MARKER}, QUESTIONS)
+
+    assert _decision_spans(lmnr_exporter, f"decision.{MODEL}")
+    assert STATE_MARKER not in _all_attribute_text(lmnr_exporter)
+
+
+def test_state_is_never_recorded_on_a_custom_send_span(lmnr_exporter):
+    from lmnr import Laminar
+
+    with Laminar.start_as_current_span(name="agent-step"):
+        _scripted(CUSTOM_REPLY).decide(STATE_MARKER, QUESTIONS)
+
+    assert _decision_spans(lmnr_exporter, "decision.acme-decider")
+    assert STATE_MARKER not in _all_attribute_text(lmnr_exporter)
+
+
+def test_each_retry_attempt_gets_its_own_span(lmnr_exporter):
+    from lmnr import Laminar
+
+    model = _scripted(
+        LLMRateLimitError("slow down"),
+        LLMServiceUnavailableError("down"),
+        CUSTOM_REPLY,
+        num_retries=3,
+    )
+
+    with Laminar.start_as_current_span(name="agent-step"):
+        model.decide("x", QUESTIONS)
+
+    spans = _decision_spans(lmnr_exporter, "decision.acme-decider")
+    assert len(spans) == 3
+    parent_id = _span_id(_decision_spans(lmnr_exporter, "agent-step")[0])
+    assert {s.parent and s.parent.span_id for s in spans} == {parent_id}
+    # Only the successful attempt carries answers.
+    assert [("decision.answers" in _attrs(s)) for s in spans] == [
+        False,
+        False,
+        True,
+    ]
+
+
+def test_failed_attempt_still_ends_its_span_and_records_the_error(lmnr_exporter):
+    from lmnr import Laminar
+    from opentelemetry.trace import StatusCode
+
+    model = _scripted(LLMAuthenticationError("bad key"), num_retries=0)
+
+    with Laminar.start_as_current_span(name="agent-step"):
+        with pytest.raises(LLMAuthenticationError):
+            model.decide("x", QUESTIONS)
+
+    (span,) = _decision_spans(lmnr_exporter, "decision.acme-decider")
+    assert span.end_time is not None
+    assert span.status.status_code == StatusCode.ERROR
+    # The questions are still on the span; there is just no answer to record.
+    assert "decision.questions" in _attrs(span)
+    assert "decision.answers" not in _attrs(span)
+
+
+def test_reply_with_mismatched_answers_records_the_error_on_the_span(lmnr_exporter):
+    from lmnr import Laminar
+    from opentelemetry.trace import StatusCode
+
+    answers = {k: v for k, v in CUSTOM_REPLY.answers.items() if k != "impact"}
+    model = _scripted(CUSTOM_REPLY.model_copy(update={"answers": answers}))
+
+    with Laminar.start_as_current_span(name="agent-step"):
+        with pytest.raises(LLMResponseError):
+            model.decide("x", QUESTIONS)
+
+    (span,) = _decision_spans(lmnr_exporter, "decision.acme-decider")
+    assert span.status.status_code == StatusCode.ERROR
+
+
+@pytest.mark.asyncio
+async def test_async_decision_span_nests_under_the_active_span(provider, lmnr_exporter):
+    from lmnr import Laminar
+
+    base_url, replies, _ = provider
+    replies.append((200, REPLY))
+
+    with Laminar.start_as_current_span(name="agent-step"):
+        await _model(base_url).adecide({"ticket": STATE_MARKER}, QUESTIONS)
+
+    (decision,) = _decision_spans(lmnr_exporter, f"decision.{MODEL}")
+    (parent,) = _decision_spans(lmnr_exporter, "agent-step")
+    assert decision.parent is not None
+    assert decision.parent.span_id == _span_id(parent)
+    assert _attrs(decision)["gen_ai.usage.input_tokens"] == 1000
+    assert STATE_MARKER not in _all_attribute_text(lmnr_exporter)
+
+
+@pytest.mark.asyncio
+async def test_async_custom_send_retries_with_a_span_per_attempt(lmnr_exporter):
+    from lmnr import Laminar
+
+    model = _scripted(LLMTimeoutError("timed out"), CUSTOM_REPLY, num_retries=2)
+
+    with Laminar.start_as_current_span(name="agent-step"):
+        await model.adecide("x", QUESTIONS)
+
+    assert len(_decision_spans(lmnr_exporter, "decision.acme-decider")) == 2
+
+
+# --- Errors through the real LiteLLM path ---------------------------------------
+
+
+@pytest.mark.parametrize("status", [408, 500, 502, 503])
+def test_transient_http_errors_are_retried_then_succeed(provider, status):
+    base_url, replies, requests = provider
+    replies.append((status, {"error": {"message": "try again"}}))
+    replies.append((200, REPLY))
+
+    result = _model(base_url, num_retries=2).decide("x", QUESTIONS)
+
+    assert len(requests) == 2
+    assert result.noul("urgent").probability == 0.93
+
+
+def test_server_errors_exhaust_into_an_sdk_error(provider):
+    base_url, replies, requests = provider
+    for _ in range(3):
+        replies.append((503, {"error": {"message": "overloaded"}}))
+
+    with pytest.raises(LLMServiceUnavailableError):
+        _model(base_url, num_retries=3).decide("x", QUESTIONS)
+
+    assert len(requests) == 3
+
+
+@pytest.mark.parametrize(
+    ("status", "error"),
+    [(401, LLMAuthenticationError), (400, LLMBadRequestError)],
+)
+def test_client_errors_map_to_sdk_errors_without_retry(provider, status, error):
+    base_url, replies, requests = provider
+    replies.append((status, {"error": {"message": "nope"}}))
+
+    with pytest.raises(error):
+        _model(base_url, num_retries=3).decide("x", QUESTIONS)
+
+    assert len(requests) == 1
+
+
+def test_quota_exhaustion_is_not_retried(provider):
+    base_url, replies, requests = provider
+    replies.append(
+        (
+            429,
+            {
+                "error": {
+                    "message": "You exceeded your quota",
+                    "code": "insufficient_quota",
+                }
+            },
+        )
+    )
+
+    with pytest.raises(LLMRateLimitError):
+        _model(base_url, num_retries=3).decide("x", QUESTIONS)
+
+    assert len(requests) == 1
+
+
+def test_api_key_does_not_leak_into_errors_or_logs(provider, caplog):
+    base_url, replies, _ = provider
+    replies.append((401, {"error": {"message": "bad key"}}))
+    model = DecisionModel(
+        model=MODEL, api_key="sk-very-secret-key", base_url=base_url, num_retries=0
+    )
+
+    with caplog.at_level("DEBUG"):
+        with pytest.raises(LLMAuthenticationError) as raised:
+            model.decide("x", QUESTIONS)
+
+    assert "sk-very-secret-key" not in str(raised.value)
+    assert "sk-very-secret-key" not in caplog.text
+    assert "sk-very-secret-key" not in repr(model)
+
+
+@pytest.mark.parametrize(
+    ("raised", "expected"),
+    [
+        (litellm_exceptions.Timeout("slow", "m", "p"), LLMTimeoutError),
+        (
+            litellm_exceptions.APIConnectionError("refused", "p", "m"),
+            LLMServiceUnavailableError,
+        ),
+    ],
+    ids=["timeout", "connection"],
+)
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+@pytest.mark.asyncio
+async def test_litellm_transport_errors_are_retried_then_mapped(
+    monkeypatch, raised, expected, use_async
+):
+    calls = []
+
+    def fail(**kwargs):
+        calls.append(kwargs)
+        raise raised
+
+    async def afail(**kwargs):
+        return fail(**kwargs)
+
+    monkeypatch.setattr(decision_module, "litellm_systemone", fail)
+    monkeypatch.setattr(decision_module, "litellm_asystemone", afail)
+    model = DecisionModel(
+        model=MODEL, num_retries=3, retry_min_wait=0, retry_max_wait=0
+    )
+
+    with pytest.raises(expected):
+        if use_async:
+            await model.adecide("x", QUESTIONS)
+        else:
+            model.decide("x", QUESTIONS)
+
+    assert len(calls) == 3
+
+
+def test_provider_options_are_forwarded_to_litellm():
+    model = DecisionModel(
+        model=MODEL,
+        api_key="k",
+        base_url="http://example.test",
+        custom_llm_provider="typesafe",
+        extra_headers={"X-Tenant": "acme"},
+        safety_identifier="user-42",
+        timeout=7,
+        drop_params=False,
+        aws_access_key_id="id",
+        aws_session_token="token",
+        aws_profile_name="prof",
+        aws_role_name="role",
+        aws_session_name="sess",
+    )
+
+    kwargs = model._litellm_kwargs({"s": 1}, QUESTIONS)
+
+    assert kwargs | {"questions": None} == {
+        "model": MODEL,
+        "state": {"s": 1},
+        "questions": None,
+        "api_key": "k",
+        "api_base": "http://example.test",
+        "timeout": 7,
+        "custom_llm_provider": "typesafe",
+        "extra_headers": {"X-Tenant": "acme"},
+        "safety_identifier": "user-42",
+        "drop_params": False,
+        "aws_access_key_id": "id",
+        "aws_session_token": "token",
+        "aws_profile_name": "prof",
+        "aws_role_name": "role",
+        "aws_session_name": "sess",
+    }
+
+
+def test_unset_provider_options_are_sent_as_none_not_dropped_silently():
+    kwargs = DecisionModel(model=MODEL)._litellm_kwargs("x", QUESTIONS)
+
+    assert kwargs["api_key"] is None
+    assert kwargs["api_base"] is None
+    assert kwargs["safety_identifier"] is None
+    assert not any(key.startswith("aws_") for key in kwargs)
+
+
+# --- Model validation ---------------------------------------------------------------
+
+
+def test_score_allows_at_most_ten_levels():
+    Score(criteria=[str(i) for i in range(10)])
+    with pytest.raises(ValidationError):
+        Score(criteria=[str(i) for i in range(11)])
+
+
+@pytest.mark.parametrize("question", [Choice, Score])
+def test_choice_and_score_require_criteria(question):
+    with pytest.raises(ValidationError):
+        question(criteria=[] if question is Score else {})
+
+
+def test_unknown_fields_are_rejected():
+    with pytest.raises(ValidationError):
+        DecisionModel(model=MODEL, not_a_field=1)  # type: ignore[call-arg]
+
+
+def test_negative_retry_settings_are_rejected():
+    with pytest.raises(ValidationError):
+        DecisionModel(model=MODEL, num_retries=-1)
+
+
+def test_question_type_discriminator_survives_a_round_trip():
+    dumped = {name: q.model_dump() for name, q in QUESTIONS.items()}
+
+    assert [d["type"] for d in dumped.values()] == ["noul", "choice", "score"]
+    assert Noul.model_validate(dumped["urgent"]) == QUESTIONS["urgent"]
+    assert Choice.model_validate(dumped["team"]) == QUESTIONS["team"]
+
+
+# --- Replies, costs and metrics -------------------------------------------------
+
+
+def test_unknown_answer_type_from_litellm_is_rejected():
+    from types import SimpleNamespace
+
+    from openhands.sdk.llm.decision import _answer_from_litellm
+
+    with pytest.raises(ValueError, match="Unsupported decision answer type"):
+        _answer_from_litellm(SimpleNamespace(type="mystery"))
+
+
+@pytest.mark.parametrize("cost", [0.0, -1.0])
+def test_zero_or_negative_cost_is_not_added_to_metrics(lmnr_exporter, cost):
+    from lmnr import Laminar
+
+    model = _scripted(CUSTOM_REPLY.model_copy(update={"cost": cost}))
+
+    with Laminar.start_as_current_span(name="agent-step"):
+        result = model.decide("x", QUESTIONS)
+
+    assert result.metrics.accumulated_cost == 0
+    (span,) = _decision_spans(lmnr_exporter, "decision.acme-decider")
+    assert "gen_ai.usage.cost" not in _attrs(span)
+
+
+def test_metrics_accumulate_across_calls_and_results_are_snapshots():
+    model = _scripted(CUSTOM_REPLY, CUSTOM_REPLY)
+
+    first = model.decide("x", QUESTIONS)
+    second = model.decide("x", QUESTIONS)
+
+    assert first.metrics.accumulated_cost == 0.25
+    assert second.metrics.accumulated_cost == 0.5
+    assert model.metrics.accumulated_cost == 0.5
+    usage = model.metrics.accumulated_token_usage
+    assert usage is not None
+    assert (usage.prompt_tokens, usage.completion_tokens) == (100, 4)
+    assert len(model.metrics.response_latencies) == 2
+
+
+def test_failed_attempts_add_no_metrics():
+    model = _scripted(LLMRateLimitError("slow down"), CUSTOM_REPLY, num_retries=2)
+
+    result = model.decide("x", QUESTIONS)
+
+    assert result.metrics.accumulated_cost == 0.25
+    assert len(model.metrics.token_usages) == 1
+
+
+def test_cache_write_tokens_reach_metrics():
+    reply = CUSTOM_REPLY.model_copy(
+        update={"usage": DecisionUsage(input_tokens=5, cache_write_tokens=9)}
+    )
+
+    result = _scripted(reply).decide("x", QUESTIONS)
+
+    usage = result.metrics.accumulated_token_usage
+    assert usage is not None and usage.cache_write_tokens == 9
+
+
+def test_asking_no_questions_returns_no_answers():
+    result = _scripted(DecisionReply(answers={})).decide("x", {})
+
+    assert result.answers == {}
+
+
+def test_asking_no_questions_through_litellm_is_a_bad_request_without_a_call(
+    provider,
+):
+    base_url, _, requests = provider
+
+    with pytest.raises(LLMBadRequestError, match="at least 1 item"):
+        _model(base_url, num_retries=3).decide("x", {})
+
+    assert requests == []
+
+
+def test_state_that_litellm_rejects_is_a_bad_request_without_retry(provider):
+    base_url, _, requests = provider
+
+    with pytest.raises(LLMBadRequestError):
+        _model(base_url, num_retries=3).decide(None, QUESTIONS)
+
+    assert requests == []
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="A value LiteLLM cannot JSON-encode fails while building the request. "
+    "LiteLLM raises APIConnectionError, which maps to the retryable "
+    "LLMServiceUnavailableError, so a deterministic caller error is retried "
+    "num_retries times with backoff and reported as a service outage.",
+)
+@pytest.mark.parametrize("where", ["state", "question"])
+def test_non_json_values_fail_fast_as_bad_requests(monkeypatch, where):
+    attempts = []
+    real = decision_module.litellm_systemone
+
+    def counting(**kwargs):
+        attempts.append(1)
+        return real(**kwargs)
+
+    monkeypatch.setattr(decision_module, "litellm_systemone", counting)
+    when = datetime.date(2026, 1, 1)
+    state = {"when": when} if where == "state" else "x"
+    questions = (
+        QUESTIONS
+        if where == "state"
+        else {"urgent": Noul(instructions={"since": when})}
+    )
+    model = DecisionModel(
+        model=MODEL,
+        api_key="k",
+        base_url="http://127.0.0.1:9",  # never reached: encoding fails first
+        num_retries=3,
+        retry_min_wait=0,
+        retry_max_wait=0,
+    )
+
+    with pytest.raises(LLMBadRequestError):
+        model.decide(state, questions)
+
+    assert len(attempts) == 1
