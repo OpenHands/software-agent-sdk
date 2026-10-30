@@ -53,7 +53,6 @@ from openhands.sdk.llm._tokenizer import (
     count_tokenized_output,
     load_chat_template_tokenizer,
 )
-from openhands.sdk.llm.exceptions.classifier import is_transient_http_error
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 from openhands.sdk.llm.utils.runtime_metadata import (
@@ -121,13 +120,11 @@ from litellm.utils import (
     create_pretrained_tokenizer,
     token_counter,
 )
-from tenacity import retry_if_exception, retry_if_exception_type
 
 from openhands.sdk.llm.exceptions import (
     LLMContextWindowTooSmallError,
     LLMNoResponseError,
     is_prompt_cache_too_small,
-    is_quota_exhaustion_error,
     looks_like_auth_error,
     map_provider_exception,
 )
@@ -158,7 +155,7 @@ from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
     litellm_call_kwargs,
 )
-from openhands.sdk.llm.utils.retry_mixin import RetryMixin
+from openhands.sdk.llm.utils.retry_mixin import RetryMixin, transient_error_condition
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.llm.utils.vertex_preflight import assert_vertex_sdk_available
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
@@ -379,7 +376,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     num_retries: int = Field(default=5, ge=0, json_schema_extra=field_meta())
     retry_multiplier: float = Field(default=8.0, ge=0, json_schema_extra=field_meta())
     retry_min_wait: int = Field(default=8, ge=0, json_schema_extra=field_meta())
-    retry_max_wait: int = Field(default=64, ge=0, json_schema_extra=field_meta())
+    retry_max_wait: int = Field(
+        default=64,
+        ge=0,
+        description=(
+            "Maximum retry wait in seconds. A longer provider Retry-After hint "
+            "stops retries instead of retrying before the requested delay."
+        ),
+        json_schema_extra=field_meta(),
+    )
 
     timeout: int | None = Field(
         default=300,
@@ -1146,13 +1151,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Exhausted allowances skip backoff. Provider quota errors may fall back;
         explicit budget denials stop without trying another model.
         """
-        retry_condition = (
-            retry_if_exception_type(LLM_RETRY_EXCEPTIONS)
-            | retry_if_exception(is_transient_http_error)
-        ) & retry_if_exception(lambda e: not is_quota_exhaustion_error(e))
         return self.retry_decorator(
             num_retries=self.num_retries,
-            retry_exceptions=retry_condition,
+            retry_exceptions=transient_error_condition(LLM_RETRY_EXCEPTIONS),
             retry_min_wait=self.retry_min_wait,
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,

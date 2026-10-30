@@ -258,6 +258,13 @@ class BaseConversation(ABC):
 
         This method runs the agent until it finishes processing the current
         message or reaches the maximum iteration limit.
+
+        When the run ends because the iteration limit is reached
+        (``ERROR``) or the agent is stuck (``STUCK``), the implementations
+        differ: ``LocalConversation.run()`` returns and leaves that status in
+        ``state.execution_status``, while ``RemoteConversation.run()`` raises
+        :class:`ConversationRunError`. Errors raised during the run, such as
+        LLM errors, raise ``ConversationRunError`` in both.
         """
         ...
 

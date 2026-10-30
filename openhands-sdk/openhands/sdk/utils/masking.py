@@ -1,7 +1,7 @@
 """Field metadata used by secret masking."""
 
 from collections.abc import Mapping
-from typing import Annotated, Any, get_args, get_origin
+from typing import Annotated, Any, Literal, get_args, get_origin
 
 from pydantic.fields import FieldInfo
 
@@ -45,3 +45,26 @@ def _type_has_marker(annotation: Any, marker: type) -> bool:
         args = args[1:]
     args = tuple(arg for arg in args if arg not in (type(None), Ellipsis))
     return bool(args) and all(_type_has_marker(arg, marker) for arg in args)
+
+
+def field_is_literal(field: FieldInfo) -> bool:
+    """Return whether ``field`` only holds ``Literal`` values.
+
+    Like an ``Enum``, a ``Literal`` has a fixed vocabulary, so it cannot hold a
+    secret, and a masked value fails validation when the model is loaded back.
+    ``Literal[...] | None`` and containers of ``Literal`` count as well.
+    """
+    return _type_is_literal(field.annotation)
+
+
+def _type_is_literal(annotation: Any) -> bool:
+    origin = get_origin(annotation)
+    if origin is Literal:
+        return True
+    args = get_args(annotation)
+    if origin is Annotated:
+        return _type_is_literal(args[0])
+    if isinstance(origin, type) and issubclass(origin, Mapping):
+        args = args[1:]
+    args = tuple(arg for arg in args if arg not in (type(None), Ellipsis))
+    return bool(args) and all(_type_is_literal(arg) for arg in args)

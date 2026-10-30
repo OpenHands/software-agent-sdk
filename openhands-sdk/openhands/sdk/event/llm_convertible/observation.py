@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rich.text import Text
 
 from openhands.sdk.event.base import N_CHAR_PREVIEW, LLMConvertibleEvent
@@ -135,6 +135,14 @@ class UserRejectObservation(ObservationBaseEvent):
         return f"{base_str}\n  Tool: {self.tool_name}\n  Reason: {reason_preview}"
 
 
+class ToolValidationError(BaseModel):
+    """A validation failure's location and code, without argument values."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    type: str
+    loc: tuple[str | int, ...]
+
+
 class AgentErrorEvent(ObservationBaseEvent):
     """Error triggered by the agent.
 
@@ -147,6 +155,11 @@ class AgentErrorEvent(ObservationBaseEvent):
     classification: ErrorClassification | None = Field(
         default=None,
         description="Safe structured error semantics for API consumers.",
+    )
+
+    validation_errors: list[ToolValidationError] | None = Field(
+        default=None,
+        description="Validation locations and codes for detecting repeated failures.",
     )
 
     @model_validator(mode="after")

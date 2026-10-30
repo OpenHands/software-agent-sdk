@@ -43,6 +43,11 @@ import type { HookConfig } from '../hooks';
  */
 export interface RemoteConversationOptions extends BaseConversationOptions {
   /**
+   * Positive USD limit on accumulated conversation cost, including earlier runs.
+   * Null means unbounded. A completed agent step may overshoot the limit.
+   */
+  maxBudgetPerRun?: number | null;
+  /**
    * Optional user ID to associate with server-side observability traces.
    */
   userId?: string;
@@ -93,6 +98,7 @@ export class RemoteConversation implements IConversation {
   private hookConfig?: HookConfig;
   private userId?: string;
   private maxIterations?: number;
+  private maxBudgetPerRun?: number | null;
   private stuckDetection?: boolean;
 
   constructor(
@@ -108,6 +114,7 @@ export class RemoteConversation implements IConversation {
     this.hookConfig = options.hookConfig;
     this.userId = options.userId;
     this.maxIterations = options.maxIterations;
+    this.maxBudgetPerRun = options.maxBudgetPerRun;
     this.stuckDetection = options.stuckDetection;
 
     this.client = new HttpClient({
@@ -144,6 +151,7 @@ export class RemoteConversation implements IConversation {
     options: {
       initialMessage?: string;
       maxIterations?: number;
+      maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
       hookConfig?: HookConfig;
       userId?: string;
@@ -175,6 +183,8 @@ export class RemoteConversation implements IConversation {
       agent: this.agent,
       initial_message: initialMessage,
       max_iterations: options.maxIterations || this.maxIterations || 500,
+      max_budget_per_run:
+        options.maxBudgetPerRun !== undefined ? options.maxBudgetPerRun : this.maxBudgetPerRun,
       stuck_detection: options.stuckDetection ?? this.stuckDetection ?? true,
       workspace: { type: 'local', working_dir: this.workspace.workingDir },
       hook_config: hookConfig ?? null,

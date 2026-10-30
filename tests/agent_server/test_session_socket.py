@@ -22,8 +22,10 @@ from openhands.sdk.agent.stream_context import (
     StreamDelta,
     StreamStarted,
 )
+from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.event import MessageEvent, StreamingDeltaEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.io import InMemoryFileStore
 
 
 def _msg(text: str) -> MessageEvent:
@@ -73,6 +75,12 @@ class _FakeEventLog:
 
     def __len__(self) -> int:
         return len(self._events)
+
+    def get_seq(self, idx: int) -> int:
+        return idx
+
+    def index_after_seq(self, seq: int) -> int:
+        return min(max(seq + 1, 0), len(self._events))
 
 
 async def _drain(writer: _ConnectionWriter) -> None:
@@ -167,6 +175,38 @@ async def test_replay_and_live_do_not_interleave_or_duplicate():
     frames = ws.frames()
     assert [f["seq"] for f in frames] == [0, 1, 2, 3], "no gaps, no duplicates"
     assert [f["event"]["id"] for f in frames] == [e.id for e in [*history, live]]
+
+
+@pytest.mark.asyncio
+async def test_seq_survives_a_reload_that_finds_a_lost_file():
+    """A seq is the on-disk index: a reload after a lost file keeps every
+    survivor's seq, and the next event gets one no client has seen."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    history = [_msg(f"h{i}") for i in range(4)]
+    for e in history:
+        log.append(e)
+    fs.delete(log._path(1))
+    reloaded = EventLog(fs)
+
+    writer = _ConnectionWriter(ws := _FakeWebSocket())  # type: ignore[arg-type]
+    writer.start()
+    sub = _SessionSubscriber(writer=writer, events=reloaded)
+
+    # The client saw seq 0 before the restart and resumes after it.
+    through_seq = reloaded.get_seq(len(reloaded) - 1)
+    assert through_seq == 3
+    start = reloaded.index_after_seq(0)
+    assert await _replay(reloaded, start, len(reloaded), writer)
+    sub.go_live(through_seq)
+    live = _msg("live")
+    reloaded.append(live)
+    await sub(live)
+    await _drain(writer)
+    await writer.aclose()
+
+    frames = [(f["seq"], f["event"]["id"]) for f in ws.frames()]
+    assert frames == [(2, history[2].id), (3, history[3].id), (4, live.id)]
 
 
 @pytest.mark.asyncio
