@@ -6,6 +6,7 @@ that will run the agent and is the only code that returns a
 :class:`LaunchedAgent`.
 """
 
+from openhands.sdk.launch.credentials import resolve_llm_credentials
 from openhands.sdk.launch.errors import (
     AgentLaunchError,
     LaunchStoreError,
@@ -39,4 +40,5 @@ __all__ = [
     "finalize",
     "preview_launch",
     "resolve",
+    "resolve_llm_credentials",
 ]
