@@ -469,6 +469,19 @@ async def test_start_vscode_process(vscode_service, tmp_path):
         assert vscode_service.process == mock_process
 
 
+def test_proxy_script_path_source_tree(vscode_service):
+    """In a source checkout the proxy sits next to vscode_service.py."""
+    assert vscode_service._proxy_script_path().name == "code_server_proxy.cjs"
+    assert vscode_service._proxy_script_path().exists()
+
+
+def test_proxy_script_path_frozen(vscode_service, tmp_path, monkeypatch):
+    """In the frozen binary the proxy is resolved under sys._MEIPASS."""
+    monkeypatch.setattr("sys._MEIPASS", str(tmp_path), raising=False)
+    expected = tmp_path / "openhands" / "agent_server" / "code_server_proxy.cjs"
+    assert vscode_service._proxy_script_path() == expected
+
+
 @pytest.mark.asyncio
 async def test_start_vscode_process_with_server_base_path():
     """Test starting VSCode process with server_base_path includes the arg."""

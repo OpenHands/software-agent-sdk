@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import signal
+import sys
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -212,6 +213,19 @@ class VSCodeService:
         while not await self._is_port_available():
             await asyncio.sleep(0.1)
 
+    def _proxy_script_path(self) -> Path:
+        # In the frozen (PyInstaller) binary, __file__ points inside the PYZ
+        # archive; bundled data files live under sys._MEIPASS instead.
+        bundle_root = getattr(sys, "_MEIPASS", None)
+        if bundle_root:
+            return (
+                Path(bundle_root)
+                / "openhands"
+                / "agent_server"
+                / ("code_server_proxy.cjs")
+            )
+        return Path(__file__).with_name("code_server_proxy.cjs")
+
     async def _start_vscode_process(self) -> None:
         """Start the VSCode server process."""
         config = json.dumps(
@@ -224,7 +238,7 @@ class VSCodeService:
         ).encode()
         self.process = await asyncio.create_subprocess_exec(
             str(self.openvscode_server_root / "lib" / "node"),
-            str(Path(__file__).with_name("code_server_proxy.cjs")),
+            str(self._proxy_script_path()),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
