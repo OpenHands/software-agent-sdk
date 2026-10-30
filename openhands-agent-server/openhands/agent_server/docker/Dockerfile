@@ -79,7 +79,7 @@ ARG NPM_VERSION
 # 20261021 is the oldest snapshot whose ca-certificates (20250419+deb13u1,
 # trixie-security) drops emSign ECC Root CA - G3; 20261019 still ships
 # 20250419, which trusts the compromised root (GHSA-6q48-6c7w-9gw2).
-ARG DEBIAN_SNAPSHOT=20261021T000000Z
+ARG DEBIAN_SNAPSHOT=20261023T000000Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
