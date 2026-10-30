@@ -163,8 +163,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         description=(
             "List of default tool class names to include. By default, the agent "
             "includes 'FinishTool'. Set to an empty list to disable all default "
-            "tools, or provide a subset to include specific ones. 'ThinkTool' is "
-            "no longer included by default; add it explicitly to enable it. "
+            "tools, or provide a subset to include specific ones. Add 'ThinkTool' "
+            "explicitly to enable the think tool. "
             "Example: include_default_tools=['FinishTool', 'ThinkTool'] to enable "
             "the think tool, or include_default_tools=[] to disable all default "
             "tools."
