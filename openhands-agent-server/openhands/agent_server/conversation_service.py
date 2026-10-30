@@ -2802,6 +2802,7 @@ class WebhookSubscriber(Subscriber):
     session_api_key: str | None = None
     queue: list[Event] = field(default_factory=list)
     _flush_timer: asyncio.Task | None = field(default=None, init=False)
+    _post_task: asyncio.Task | None = field(default=None, init=False)
     _post_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _queue_sizes: list[int] = field(default_factory=list, init=False)
     _queue_bytes: int = field(default=0, init=False)
@@ -2825,14 +2826,17 @@ class WebhookSubscriber(Subscriber):
         self._enqueue(event)
 
         if self._buffer_full():
-            if self._post_lock.locked():
-                # The in-flight _post_events re-checks the buffer when it is
-                # done and re-arms the timer if a post fails.
+            if self._post_lock.locked() or self._post_in_flight():
                 self._start_flush_timer()
                 return
             # Cancel timer since we're flushing due to buffer size
             self._cancel_flush_timer()
-            await self._post_events()
+            # Post in the background: the event's publish future must not wait
+            # for the receiver, because a run's wrap-up waits for pending
+            # publishes before it clears itself, and a slow receiver would keep
+            # a finished conversation answering 409 to POST /run.
+            self._post_task = asyncio.create_task(self._post_events())
+            self._post_task.add_done_callback(self._log_post_failure)
         elif self.queue:
             self._start_flush_timer()
 
@@ -2842,8 +2846,26 @@ class WebhookSubscriber(Subscriber):
         # Cancel any pending flush timer
         self._cancel_flush_timer()
 
+        # Let a background post finish so close() still delivers in order.
+        post_task = self._post_task
+        if post_task is not None and not post_task.done():
+            await asyncio.wait({post_task})
+
         if self.queue:
             await self._post_events()
+
+    def _post_in_flight(self) -> bool:
+        return self._post_task is not None and not self._post_task.done()
+
+    def _log_post_failure(self, task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(
+                f"Webhook post for conversation {self.conversation_id.hex} failed",
+                exc_info=exc,
+            )
 
     async def _post_events(self):
         """Post bounded batches serially until the queue is empty or a post fails."""
