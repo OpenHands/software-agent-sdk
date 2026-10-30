@@ -50,7 +50,7 @@ Routes: `GET /api/conversations/{conversation_id}/workspace`,
 - `F16.vscode-url-no-key`: a server without session keys, with VS Code enabled but not running (no binary), answers `{"url": null}` on both URL routes.
 - `F16.vscode-url-after-init`: a deferred-init server that receives its session key through `POST /api/init`, with VS Code enabled but not running (no binary), answers `{"url": null}`.
 - `F16.vscode-folder-encoding`: the URL's `folder` parameter decodes back to the workspace path even when the path contains `&` or `#`.
-- `F16.docker-root-cookie`: in Docker runtime mode the slashless workspace root accepts the workspace cookie like the slashed form does (known bug: it falls into the header-only proxy and answers 401).
+- `F16.docker-root-cookie`: in Docker runtime mode the slashless workspace root accepts the workspace cookie like the slashed form does.
 - `F16.vscode-running`: with the OpenVSCode Server binary installed and its port free, status reports `running: true` and the URL opens the editor.
 
 ## How to get to it (agent POV)
@@ -504,7 +504,7 @@ Preconditions:
   the key to VS Code only when it is running (`set_connection_token`), and a
   server that is not running advertises no URL, like the keyed boot of
   `F16.vscode-url-not-running`.
-- **Docker-mode root and the cookie (`F16.docker-root-cookie`), known bug.**
+- **Docker-mode root and the cookie (`F16.docker-root-cookie`).**
   A second server with `OH_CONVERSATION_RUNTIME=docker`. Translated: no
   Docker daemon is needed, because the route table and its auth groups are
   fixed at startup (which only warns that it cannot list containers), and an
@@ -518,17 +518,16 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$Z/workspace/" --run "$DK" --auth none --expect 401
   control-agent-server api POST /api/auth/workspace-session --run "$DK" --jar qa-f16-docker --expect 204
   control-agent-server api GET "/api/conversations/$Z/workspace/" --run "$DK" --auth none --jar qa-f16-docker --expect 404 --save F16.docker-root-cookie/slash
-  control-agent-server api GET "/api/conversations/$Z/workspace" --run "$DK" --auth none --jar qa-f16-docker --expect 404 --save F16.docker-root-cookie/slashless  # bug: status eq 401
+  control-agent-server api GET "/api/conversations/$Z/workspace" --run "$DK" --auth none --jar qa-f16-docker --expect 404 --save F16.docker-root-cookie/slashless
   control-agent-server stop --run "$DK"
   ```
   With the header both forms reach the Docker routes (404); with nothing,
-  `workspace/` is 401. With only the
-  cookie, `workspace/` passes the workspace auth group (404), but the
-  slashless `workspace` answers 401: `docker_workspace_router` only defines
-  `/{conversation_id}/workspace/{file_path:path}`, so the root falls into the
-  header-only conversation proxy. In local mode the slashless root accepts
-  the cookie (`F16.auth`). Clients that use the trailing slash (the
-  TypeScript client does) are not affected.
+  `workspace/` is 401. With only the cookie, both `workspace/` and the
+  slashless `workspace` pass the workspace auth group (404):
+  `docker_workspace_router` declares the root as well as
+  `/{conversation_id}/workspace/{file_path:path}`, so the root does not fall
+  into the header-only conversation proxy. This matches local mode, where
+  the slashless root accepts the cookie too (`F16.auth`).
 - **VS Code actually running (`F16.vscode-running`).**
   Needs: `vscode`
 
