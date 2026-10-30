@@ -220,6 +220,7 @@ class LocalConversation(BaseConversation):
     _plugin_specs: list[PluginSource] | None
     _resolved_plugins: list[ResolvedPluginSource] | None
     _plugins_loaded: bool
+    _load_ambient_plugins: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _mcp_tool_provider: MCPToolProvider
     _mcp_config_from_parent: bool
@@ -263,6 +264,7 @@ class LocalConversation(BaseConversation):
         stream_callbacks: list[StreamProgressCallbackType] | None = None,
         _parent_llm_call_context: LLMCallContext | None = None,
         _mcp_config_from_parent: bool = False,
+        _load_ambient_plugins: bool = True,
         **_: object,
     ):
         """Initialize the conversation.
@@ -331,6 +333,8 @@ class LocalConversation(BaseConversation):
             _mcp_config_from_parent: The agent's ``mcp_config`` is the resolved
                 config of a delegating parent. It is used as-is: no plugin MCP
                 servers are merged into it and no ``${VAR}`` is expanded again.
+            _load_ambient_plugins: Whether internal conversations discover ambient
+                plugins in addition to their explicitly attached plugins.
             profile_store_dir: Optional directory containing saved LLM profiles.
                 Defaults to ``~/.openhands/profiles``.
         """
@@ -348,6 +352,7 @@ class LocalConversation(BaseConversation):
         self._plugin_specs = plugins
         self._resolved_plugins = None
         self._plugins_loaded = False
+        self._load_ambient_plugins = _load_ambient_plugins
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
@@ -1170,10 +1175,14 @@ class LocalConversation(BaseConversation):
         # and home directories, so discovery naturally yields nothing there.
         ambient_plugins_loaded = False
         try:
-            ambient_plugins = load_available_plugins(
-                work_dir=self.workspace.working_dir,
-                include_user=True,
-                include_project=True,
+            ambient_plugins = (
+                load_available_plugins(
+                    work_dir=self.workspace.working_dir,
+                    include_user=True,
+                    include_project=True,
+                )
+                if self._load_ambient_plugins
+                else {}
             )
         except Exception:
             logger.warning(
