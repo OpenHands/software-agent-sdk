@@ -3,6 +3,7 @@
 import asyncio
 import json
 import signal
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, call, patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -480,6 +481,21 @@ def test_proxy_script_path_frozen(vscode_service, tmp_path, monkeypatch):
     monkeypatch.setattr("sys._MEIPASS", str(tmp_path), raising=False)
     expected = tmp_path / "openhands" / "agent_server" / "code_server_proxy.cjs"
     assert vscode_service._proxy_script_path() == expected
+
+
+def test_spec_bundles_proxy_from_source_tree():
+    """The frozen build must bundle the proxy from the source tree.
+
+    collect_data_files() on the installed package silently yields nothing
+    for non-editable installs whose wheel lacks the .cjs, which shipped an
+    agent-server image whose editor could never start.
+    """
+    spec = (
+        Path(__file__).parents[2]
+        / "openhands-agent-server/openhands/agent_server/agent-server.spec"
+    ).read_text()
+    assert "code_server_proxy.cjs" in spec
+    assert 'collect_data_files("openhands.agent_server"' not in spec
 
 
 @pytest.mark.asyncio

@@ -125,7 +125,17 @@ a = Analysis(
         # ModuleNotFoundError: No module named 'binaryornot.data' in frozen builds.
         *collect_data_files("binaryornot"),
 
-        *collect_data_files("openhands.agent_server", includes=["code_server_proxy.cjs"]),
+        # Bundle from the source tree directly: collect_data_files() on the
+        # installed package silently yields nothing when the wheel was built
+        # without the .cjs (non-editable installs), which would leave the
+        # frozen editor without its proxy.
+        (
+            str(
+                project_root
+                / "openhands-agent-server/openhands/agent_server/code_server_proxy.cjs"
+            ),
+            "openhands/agent_server",
+        ),
 
         # OpenHands SDK prompt templates (adjusted for shallow namespace layout)
         *collect_data_files("openhands.sdk.context.condenser", includes=["prompts/*.j2"]),
