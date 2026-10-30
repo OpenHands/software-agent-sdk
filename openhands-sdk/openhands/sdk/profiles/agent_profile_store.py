@@ -213,7 +213,7 @@ class AgentProfileStore:
                 )
 
             try:
-                data = json.loads(profile_path.read_text())
+                data = json.loads(profile_path.read_text(encoding="utf-8"))
                 profile = validate_agent_profile(data)
             except Exception as e:
                 raise ValueError(f"Failed to load profile `{name}`: {e}") from e
@@ -263,7 +263,7 @@ class AgentProfileStore:
             if new_path.exists():
                 raise FileExistsError(f"Profile `{new_name}` already exists")
 
-            data = json.loads(old_path.read_text())
+            data = json.loads(old_path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 data["name"] = new_stem
             self._atomic_write(new_path, json.dumps(data, indent=2))
@@ -287,7 +287,7 @@ class AgentProfileStore:
             if not path.exists():
                 return
             try:
-                data = json.loads(path.read_text())
+                data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 return
             if not isinstance(data, dict):
@@ -316,7 +316,7 @@ class AgentProfileStore:
                     )
                     continue
                 try:
-                    data = json.loads(path.read_text())
+                    data = json.loads(path.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError) as e:
                     logger.warning(
                         f"[AgentProfile Store] Skipping corrupted profile {name!r}: {e}"
