@@ -130,9 +130,11 @@ def protected_oauth_mcp_server(oauth_provider: InMemoryOAuthProvider):
 @pytest.mark.asyncio
 async def test_mcp_oauth_token_store_persists_values_in_settings(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     reset_stores()
     try:
+        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
         config = Config(
             session_api_keys=[],
             conversations_path=tmp_path / "conversations",
@@ -158,6 +160,7 @@ async def test_mcp_oauth_token_store_persists_values_in_settings(
             }
         )
         settings_store = get_settings_store(config)
+        assert settings_store.persistence_dir == tmp_path
         settings_store.save(settings)
         create_settings_backed_mcp_tool_provider(config)
 
@@ -250,6 +253,7 @@ def test_oauth_mcp_connection_persists_and_reuses_settings_state(
     reset_stores()
     _HeadlessOAuth.redirect_count = 0
     try:
+        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
         config = Config(
             session_api_keys=[],
             conversations_path=tmp_path / "conversations",
@@ -276,6 +280,7 @@ def test_oauth_mcp_connection_persists_and_reuses_settings_state(
             update={"mcp_config": mcp_config}
         )
         settings_store = get_settings_store(config)
+        assert settings_store.persistence_dir == tmp_path
         settings_store.save(settings)
         tool_provider = create_settings_backed_mcp_tool_provider(config)
 
@@ -334,9 +339,11 @@ def test_oauth_mcp_connection_persists_and_reuses_settings_state(
 @pytest.mark.asyncio
 async def test_mcp_oauth_token_storage_does_not_attach_to_non_oauth_server(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     reset_stores()
     try:
+        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
         config = Config(
             session_api_keys=[],
             conversations_path=tmp_path / "conversations",
@@ -351,6 +358,7 @@ async def test_mcp_oauth_token_storage_does_not_attach_to_non_oauth_server(
             }
         )
         settings_store = get_settings_store(config)
+        assert settings_store.persistence_dir == tmp_path
         settings_store.save(settings)
 
         create_settings_backed_mcp_tool_provider(config)
