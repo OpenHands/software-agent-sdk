@@ -16,6 +16,7 @@ from openhands.sdk.llm import (
     MessageToolCall,
     TextContent,
 )
+from openhands.sdk.llm.exceptions import LLMBadRequestError
 from openhands.sdk.llm.router.impl.multimodal import MultimodalRouter
 from openhands.sdk.llm.streaming import TokenCallbackType
 from openhands.sdk.testing import TestLLM
@@ -274,3 +275,109 @@ def test_profile_helper_registers_auxiliary_vision_llm(monkeypatch):
 
     assert loaded is conversation.llm_registry.get(usage_id)
     assert conversation.state.stats.usage_to_metrics[usage_id] is loaded.metrics
+
+
+def _tool_image_message() -> Message:
+    return Message(
+        role="tool",
+        content=[
+            TextContent(text="screenshot"),
+            ImageContent(image_urls=["https://example.com/tool.png"]),
+        ],
+        name="browser_use",
+        tool_call_id="call_browser",
+    )
+
+
+def test_llm_image_guard_scoped_to_latest_user_message():
+    llm = TestLLM.from_messages([], model="text-only-model", disable_vision=True)
+    with pytest.raises(LLMBadRequestError):
+        llm._validate_image_request([_image_message()])
+    # Tool-observation and older-user images are dropped by the formatter,
+    # not hard-failed: they cannot be delegated after the fact.
+    llm._validate_image_request(
+        [
+            _image_message(),
+            Message(role="user", content=[TextContent(text="continue")]),
+            _tool_image_message(),
+        ]
+    )
+    llm._validate_image_request([_tool_image_message()])
+
+
+def test_image_references_cover_tool_and_older_user_images():
+    from openhands.sdk.agent.agent import _replace_images_with_references
+
+    rewritten = _replace_images_with_references(
+        [
+            _image_message(),
+            Message(role="user", content=[TextContent(text="continue")]),
+            _tool_image_message(),
+        ]
+    )
+    assert not any(message.contains_image for message in rewritten)
+    older_user_text = " ".join(
+        content.text
+        for content in rewritten[0].content
+        if isinstance(content, TextContent)
+    )
+    tool_text = " ".join(
+        content.text
+        for content in rewritten[2].content
+        if isinstance(content, TextContent)
+    )
+    assert "image_index=0" in older_user_text
+    assert "image_index=1" in tool_text
+
+
+def test_vision_executor_resolves_tool_observation_image(monkeypatch):
+    monkeypatch.setattr(
+        "openhands.sdk.tool.builtins.vision_inspect._candidate_vision_profiles",
+        lambda: ["vision-profile"],
+    )
+    vision = TestLLM.from_messages(
+        [Message(role="assistant", content=[TextContent(text="It shows a cat.")])],
+        model="gpt-4o",
+        base_url="https://vision.example.test/",
+    )
+    parent = TestLLM.from_messages([], model="text-only-model", disable_vision=True)
+    conversation = Conversation(agent=Agent(llm=parent, tools=[]))
+    conversation._ensure_agent_ready()
+    monkeypatch.setattr(
+        LocalConversation,
+        "get_or_create_profile_llm",
+        lambda self, profile_name, usage_id: vision,
+    )
+    conversation.state.append_event(
+        ObservationEvent(
+            source="environment",
+            tool_name="browser_use",
+            tool_call_id="call_browser",
+            action_id="action_browser",
+            observation=VisionInspectObservation.from_text(
+                text="placeholder",
+                image_index=0,
+                question="placeholder",
+            ).model_copy(
+                update={
+                    "content": [
+                        ImageContent(image_urls=["https://example.com/tool.png"])
+                    ]
+                }
+            ),
+        )
+    )
+
+    from openhands.sdk.tool.builtins.vision_inspect import (
+        VisionInspectAction,
+        VisionInspectExecutor,
+    )
+
+    result = VisionInspectExecutor(["vision-profile"])(
+        VisionInspectAction(image_index=0, question="What is shown?"),
+        conversation=cast(LocalConversation, conversation),
+    )
+    assert not result.is_error
+    assert result.answer == "It shows a cat."
+    assert vision.call_count == 1
+    conversation.close()
