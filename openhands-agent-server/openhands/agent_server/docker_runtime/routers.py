@@ -174,7 +174,9 @@ async def start_conversation(
             identity = identity.model_copy(update=updates)
             registry.provisioning.save(identity)
         container = await registry.get_or_create(conversation_id)
-        async with httpx.AsyncClient(timeout=60) as client:
+        # ``container.host`` is always a loopback port; env proxies must not
+        # be consulted for it.
+        async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
             response = await client.post(
                 f"{container.host}/api/conversations",
                 params={"include_skills": include_skills},

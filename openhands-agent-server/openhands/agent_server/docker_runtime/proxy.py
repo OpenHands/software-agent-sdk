@@ -148,7 +148,14 @@ async def proxy_http(
     try:
         client = await stack.enter_async_context(
             httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=10.0, read=timeout, write=30.0, pool=10.0)
+                timeout=httpx.Timeout(
+                    connect=10.0, read=timeout, write=30.0, pool=10.0
+                ),
+                # ``workspace.host`` is always a loopback port published by the
+                # docker daemon; an HTTP(S)_PROXY/ALL_PROXY environment
+                # override would divert the request to a proxy that cannot
+                # reach it, so never consult proxy env vars here.
+                trust_env=False,
             )
         )
         upstream = await stack.enter_async_context(
@@ -225,9 +232,17 @@ async def bridge_websocket(
         upstream_headers["X-Session-API-Key"] = workspace.api_key
 
     try:
+        # ``proxy=None`` disables ``*_PROXY`` env var resolution. The upstream
+        # is always a loopback port published by the docker daemon, but for a
+        # ``ws://`` URI websockets would otherwise fall back to SOCKS_PROXY or
+        # even HTTPS_PROXY — environments where the REST proxy path to the same
+        # loopback address stays direct. A CONNECT tunnel to 127.0.0.1 then
+        # fails or times out and the conversation events socket stalls while
+        # the agent keeps running.
         async with websockets.connect(
             upstream_url,
             additional_headers=upstream_headers or None,
+            proxy=None,
         ) as upstream_ws:
             await _bridge_websocket_loop(client_ws, upstream_ws)
     except websockets.exceptions.InvalidStatus as exc:

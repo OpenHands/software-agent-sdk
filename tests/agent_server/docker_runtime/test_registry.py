@@ -994,3 +994,46 @@ def test_container_options_override_the_host_limits(
         command.index("--cpus") : command.index("--cpus") + 2
     ]
     assert env["OH_ENABLE_BROWSER"] == browser
+
+
+def test_health_check_opener_ignores_environment_proxies(monkeypatch):
+    """``_LOOPBACK_OPENER`` must not resolve ``*_PROXY`` env vars.
+
+    The container health check polls a loopback port published by the docker
+    daemon; an HTTP_PROXY/ALL_PROXY override would divert it to a proxy that
+    cannot reach the container.
+    """
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from openhands.agent_server.docker_runtime import registry as registry_module
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        for name in (
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+        monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:1")
+        with registry_module._LOOPBACK_OPENER.open(
+            f"http://127.0.0.1:{server.server_port}/health", timeout=2
+        ) as response:
+            assert response.status == 200
+    finally:
+        server.shutdown()
