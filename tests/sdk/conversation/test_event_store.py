@@ -1,5 +1,6 @@
 """Comprehensive edge case tests for EventLog class."""
 
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -11,6 +12,7 @@ from openhands.sdk.conversation.persistence_const import (
     EVENTS_DIR,
 )
 from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.utils.path import posix_path_name
@@ -40,6 +42,34 @@ def test_event_log_empty_initialization():
 
     with pytest.raises(IndexError):
         log[-1]
+
+
+@pytest.mark.parametrize("backend", ["memory", "local"])
+@pytest.mark.parametrize(
+    "stray_name",
+    ["event-backup.json", "event-00001-not-an-id.json", "event-backup.json.bak"],
+)
+def test_stray_event_named_file_does_not_corrupt_a_legacy_log(
+    backend: str, stray_name: str, tmp_path: Path
+):
+    fs = InMemoryFileStore() if backend == "memory" else LocalFileStore(str(tmp_path))
+    log = EventLog(fs)
+    log.append(create_test_event("aaaaaaaa-0000", "First"))
+    # Legacy logs have no length marker and must count their event files.
+    for path in fs.list(EVENTS_DIR):
+        if posix_path_name(path).startswith(".eventlog-len-"):
+            fs.delete(path)
+    stray_path = f"{EVENTS_DIR}/{stray_name}"
+    fs.write(stray_path, "{}")
+
+    reopened = EventLog(fs)
+    assert reopened.append(create_test_event("bbbbbbbb-0000", "Second")) == 1
+
+    assert len(reopened) == 2
+    expected_ids = ["aaaaaaaa-0000", "bbbbbbbb-0000"]
+    assert [event.id for event in reopened] == expected_ids
+    assert [event.id for event in EventLog(fs)] == expected_ids
+    assert fs.read(stray_path) == "{}"
 
 
 def test_event_log_append_returns_assigned_index():
@@ -403,8 +433,9 @@ def test_event_log_concurrent_writes_serialized():
         log1 = EventLog(fs)
         log2 = EventLog(fs)
 
-        log1.append(create_test_event("event-1", "First"))
-        log2.append(create_test_event("event-2", "Second"))
+        # Cross-instance discovery requires IDs recognized by EVENT_NAME_RE.
+        log1.append(create_test_event("aaaaaaaa-0000", "First"))
+        log2.append(create_test_event("bbbbbbbb-0000", "Second"))
 
         assert log1._length == 1
         assert log2._length == 2
@@ -412,6 +443,9 @@ def test_event_log_concurrent_writes_serialized():
         # Sidecars (lock file, event-count marker) are dotfiles, not events.
         files = [f for f in fs.list("events") if not posix_path_name(f).startswith(".")]
         assert len(files) == 2
+        expected_ids = ["aaaaaaaa-0000", "bbbbbbbb-0000"]
+        assert [event.id for event in log2] == expected_ids
+        assert [event.id for event in EventLog(fs)] == expected_ids
 
 
 def test_get_single_item_recovers_from_stale_index():
