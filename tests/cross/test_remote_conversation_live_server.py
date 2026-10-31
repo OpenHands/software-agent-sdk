@@ -68,6 +68,7 @@ from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace import RemoteWorkspace
 from openhands.tools.file_editor import FileEditorTool
+from tests.agent_server.canvas_extensions.conftest import write_extension
 from tests.cross.conftest import live_server_env
 
 
@@ -258,6 +259,42 @@ def test_health_endpoints_return_ok_json(server_env):
             response = client.get(f"{server_env['host']}{endpoint}", timeout=1.0)
             assert response.status_code == 200
             assert response.json() == {"status": "ok"}
+
+
+def test_canvas_extension_nav_label_survives_install_and_enable(server_env, tmp_path):
+    pages = [
+        {
+            "id": "hello",
+            "title": "Hello from an extension",
+            "path": "/hello",
+            "nav_label": "Extension demo",
+        },
+        {"id": "legacy", "title": "Legacy page", "path": "/legacy"},
+    ]
+    source = write_extension(tmp_path / "demo-page", name="demo-page", pages=pages)
+
+    with httpx.Client(base_url=server_env["host"]) as client:
+        installed = client.post(
+            "/api/canvas-extensions/install", json={"source": str(source)}
+        )
+        assert installed.status_code == 200, installed.text
+        assert installed.json()["enabled"] is False
+
+        enabled = client.patch(
+            "/api/canvas-extensions/installed/demo-page", json={"enabled": True}
+        )
+        assert enabled.status_code == 200, enabled.text
+        assert enabled.json()["enabled"] is True
+
+        detail = client.get("/api/canvas-extensions/installed/demo-page")
+        listed = client.get("/api/canvas-extensions/installed")
+        assert detail.status_code == 200, detail.text
+        assert listed.status_code == 200, listed.text
+        [extension] = listed.json()["canvas_extensions"]
+        assert extension == detail.json()
+        assert extension["enabled"] is True
+        assert extension["manifest"]["schema_version"] == 1
+        assert extension["manifest"]["contributes"]["pages"] == pages
 
 
 @pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix sockets")

@@ -1,0 +1,76 @@
+Checking uv version...
+uv version 0.11.15 meets requirements
+[10/31/26 10:30:16] INFO     Registered file-based agent          default.py:167
+                             'bash-runner' from
+                             <HOME>/Documents/Codex/2026-
+                             10-05/task/software-agent-sdk/openha
+                             nds-tools/openhands/tools/preset/sub
+                             agents/bash_runner.md
+[10/31/26 10:30:16] INFO     Registered file-based agent          default.py:167
+                             'code-explorer' from
+                             <HOME>/Documents/Codex/2026-
+                             10-05/task/software-agent-sdk/openha
+                             nds-tools/openhands/tools/preset/sub
+                             agents/code_explorer.md
+[10/31/26 10:30:16] INFO     Registered file-based agent          default.py:167
+                             'general-purpose' from
+                             <HOME>/Documents/Codex/2026-
+                             10-05/task/software-agent-sdk/openha
+                             nds-tools/openhands/tools/preset/sub
+                             agents/default.md
+[10/31/26 10:30:16] INFO     Registered file-based agent          default.py:167
+                             'web-researcher' from
+                             <HOME>/Documents/Codex/2026-
+                             10-05/task/software-agent-sdk/openha
+                             nds-tools/openhands/tools/preset/sub
+                             agents/web_researcher.md
+[10/31/26 10:30:16] WARNING  ⚠️ OH_SECRET_KEY was not defined.     config.py:570
+                             Secrets will not be persisted between
+                             restarts.
+[10/31/26 10:30:16] WARNING  Saving MCP OAuth state       mcp_oauth_store.py:497
+                             without encryption (no
+                             OH_SECRET_KEY configured).
+                             Configure OH_SECRET_KEY for
+                             production deployments.
+INFO Waiting to acquire exclusive lock for `.venv` at `.venv/.lock`
+[10/31/26 10:30:24] INFO     Registered file-based agent          default.py:167
+                             'bash-runner' from
+                             <HOME>/Documents/Codex/2026-
+                             10-05/task/software-agent-sdk/openha
+                             nds-tools/openhands/tools/preset/sub
+                             agents/bash_runner.md
+[10/31/26 10:30:24] INFO     Registered file-based agent          default.py:167
+                             'code-explorer' from
+                             <HOME>/Documents/Codex/2026-
+                             10-05/task/software-agent-sdk/openha
+                             nds-tools/openhands/tools/preset/sub
+                             agents/code_explorer.md
+[10/31/26 10:30:24] INFO     Registered file-based agent          default.py:167
+                             'general-purpose' from
+                             <HOME>/Documents/Codex/2026-
+                             10-05/task/software-agent-sdk/openha
+                             nds-tools/openhands/tools/preset/sub
+                             agents/default.md
+[10/31/26 10:30:24] INFO     Registered file-based agent          default.py:167
+                             'web-researcher' from
+                             <HOME>/Documents/Codex/2026-
+                             10-05/task/software-agent-sdk/openha
+                             nds-tools/openhands/tools/preset/sub
+                             agents/web_researcher.md
+[10/31/26 10:30:26] WARNING  ⚠️ OH_SECRET_KEY was not defined.     config.py:570
+                             Secrets will not be persisted between
+                             restarts.
+[10/31/26 10:30:26] WARNING  Saving MCP OAuth state       mcp_oauth_store.py:497
+                             without encryption (no
+                             OH_SECRET_KEY configured).
+                             Configure OH_SECRET_KEY for
+                             production deployments.
+Agent Server OpenAPI type-quality check passed (63 allowlisted weak locations).
+npm notice run npx
+npm notice run 'swagger-cli' validate <TMP>/tmp.Y67OZb7PU4/openapi.json
+<TMP>/tmp.Y67OZb7PU4/openapi.json is valid
+npm notice
+npm notice New minor version of npm available! 12.0.1 -> 12.2.1
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.1
+npm notice To update run: npm install -g npm@12.2.1
+npm notice
