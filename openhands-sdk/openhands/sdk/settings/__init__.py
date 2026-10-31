@@ -29,7 +29,6 @@ from .metadata import (
 
 
 if TYPE_CHECKING:
-    from .acp_providers import ACPModelOption
     from .model import (
         AGENT_SETTINGS_SCHEMA_VERSION,
         CONVERSATION_SETTINGS_SCHEMA_VERSION,
@@ -85,7 +84,6 @@ _MODEL_EXPORTS = {
 __all__ = [
     "ACP_PROVIDERS",
     "ACPFileSecretSpec",
-    "ACPModelOption",
     "ACPProviderInfo",
     "build_session_model_meta",
     "default_acp_file_secrets",
@@ -130,10 +128,6 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    if name == "ACPModelOption":
-        from .acp_providers import _deprecated_model_option
-
-        return _deprecated_model_option()
     if name in _MODEL_EXPORTS:
         from . import model
 

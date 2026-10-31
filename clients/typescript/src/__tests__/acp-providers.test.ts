@@ -75,18 +75,15 @@ describe('ACP provider credential descriptors', () => {
     expect(opencode.file_secrets).toEqual([]);
   });
 
-  it('uses the maintained Codex adapter and exposes GPT-5.6 models', () => {
+  it('uses the maintained Codex adapter', () => {
     const codex = ACP_PROVIDERS.codex;
     expect(codex.default_command).toEqual([
       'npx',
       '-y',
       '--prefer-offline',
-      '@agentclientprotocol/codex-acp@1.10.0',
+      '@agentclientprotocol/codex-acp@2.2.2',
     ]);
     expect(codex.default_session_mode).toBe('agent-full-access');
-    expect(codex.available_models.map((model) => model.id)).toEqual(
-      expect.arrayContaining(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])
-    );
   });
 
   describe('file_secrets', () => {

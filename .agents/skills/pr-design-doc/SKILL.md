@@ -40,15 +40,13 @@ non-trivial PR easy to review.
 ## The `.pr/` workflow
 
 Use the temporary **`.pr/`** directory for PR-only artifacts. Before relying on automatic
-cleanup, verify that the target repository has an enabled
-`.github/workflows/pr-artifacts.yml` workflow that opens or updates a cleanup PR after
-a PR merges to `main`.
+cleanup, verify how the target repository removes `.pr/` from `main`.
 
-- Same-repository or fork PR with a verified cleanup workflow: the workflow opens or updates
-  a cleanup PR to remove `.pr/` from `main` after merge.
-- Repository without a verified cleanup workflow: remove `.pr/` manually before merge.
+- This repository: `.pr/` stays on `main` after merge until the next release PR removes it
+  (`.github/workflows/prepare-release.yml`). Do not open a separate cleanup PR.
+- Repository without verified cleanup automation: remove `.pr/` manually before merge.
 
-The design doc is a temporary review aid and must not remain on `main`. Keep the essential
+The design doc is a temporary review aid, not project documentation. Keep the essential
 design summary in the PR description: intent, important before/after behavior or API shape, compatibility, risk,
 and code references. Use commit-pinned document links so cleanup does not break access.
 
@@ -155,7 +153,7 @@ and code references. Use commit-pinned document links so cleanup does not break 
 5. **Self-contained & offline.** One HTML file, inline CSS/SVG, no external scripts or
    assets, opens by double-click, and survives being copied to another machine.
 6. **`.pr/` only, and temporary.** The doc is a review aid, not project docs. Keep it in
-   `.pr/` and rely on post-merge cleanup only when the repository's workflow has been
+   `.pr/` and rely on automatic cleanup only when the repository's mechanism has been
    verified; otherwise remove it manually before merge. Do not move design HTML into
    `docs/` or keep it permanently on `main`.
 

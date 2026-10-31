@@ -11,18 +11,21 @@ from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.testing import TestLLM
 
 
-def _think_message(index: int, thought: str | None) -> Message:
+def _think_message(
+    index: int, thought: str | None, *, calls_per_response: int = 1
+) -> Message:
     arguments = {} if thought is None else {"thought": thought}
     return Message(
         role="assistant",
         content=[],
         tool_calls=[
             MessageToolCall(
-                id=f"call_{index}",
+                id=f"call_{index}_{call_index}",
                 name="think",
                 arguments=json.dumps(arguments),
                 origin="completion",
             )
+            for call_index in range(calls_per_response)
         ],
     )
 
@@ -31,23 +34,37 @@ def _finished_message() -> Message:
     return Message(role="assistant", content=[TextContent(text="Done.")])
 
 
-@pytest.mark.parametrize("pattern", ["identical", "alternating", "error"])
-def test_run_detects_loops_with_thresholds_beyond_ten_pairs(pattern):
+@pytest.mark.parametrize(
+    ("pattern", "calls_per_response"),
+    [("identical", 1), ("alternating", 1), ("error", 1), ("error", 2)],
+)
+def test_run_detects_loops_with_thresholds_beyond_ten_pairs(
+    pattern, calls_per_response
+):
+    repetitions = 13 if calls_per_response == 2 else 12
     messages = [
         _think_message(
             i,
             None
             if pattern == "error"
             else str(i % 2 if pattern == "alternating" else 0),
+            calls_per_response=calls_per_response,
         )
-        for i in range(12)
+        for i in range(repetitions)
     ]
     conversation = Conversation(
-        agent=Agent(llm=TestLLM.from_messages([*messages, _finished_message()])),
+        agent=Agent(
+            llm=TestLLM.from_messages([*messages, _finished_message()]),
+            include_default_tools=["FinishTool", "ThinkTool"],
+        ),
         stuck_detection_thresholds={
-            "action_observation": 12 if pattern == "identical" else 14,
-            "action_error": 11,
-            "alternating_pattern": 12 if pattern == "alternating" else 14,
+            "action_observation": repetitions
+            if pattern == "identical"
+            else repetitions + 2,
+            "action_error": repetitions - 1,
+            "alternating_pattern": repetitions
+            if pattern == "alternating"
+            else repetitions + 2,
         },
     )
     conversation.send_message("Start")
@@ -55,9 +72,13 @@ def test_run_detects_loops_with_thresholds_beyond_ten_pairs(pattern):
 
     assert conversation.state.execution_status == ConversationExecutionStatus.STUCK
     events = list(conversation.state.events)
-    assert sum(isinstance(event, ActionEvent) for event in events) == 12
+    assert sum(isinstance(event, ActionEvent) for event in events) == (
+        repetitions * calls_per_response
+    )
     if pattern == "error":
-        assert sum(isinstance(event, AgentErrorEvent) for event in events) == 12
+        assert sum(isinstance(event, AgentErrorEvent) for event in events) == (
+            repetitions * calls_per_response
+        )
         nudges = [
             event
             for event in events
@@ -67,7 +88,7 @@ def test_run_detects_loops_with_thresholds_beyond_ten_pairs(pattern):
         nudge_index = events.index(nudges[0])
         assert (
             sum(isinstance(event, AgentErrorEvent) for event in events[:nudge_index])
-            == 11
+            == (repetitions - 1) * calls_per_response
         )
 
 
@@ -105,7 +126,10 @@ def test_large_threshold_does_not_stop_before_threshold_or_across_user_message(
     if new_user_message:
         messages.extend([_think_message(11, "same"), _finished_message()])
     conversation = Conversation(
-        agent=Agent(llm=TestLLM.from_messages(messages)),
+        agent=Agent(
+            llm=TestLLM.from_messages(messages),
+            include_default_tools=["FinishTool", "ThinkTool"],
+        ),
         stuck_detection_thresholds={
             "action_observation": 12,
             "alternating_pattern": 14,
