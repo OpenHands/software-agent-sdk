@@ -1,0 +1,25 @@
+{
+  "request": {
+    "method": "PATCH",
+    "path": "/api/canvas-extensions/installed/qa-nav-label",
+    "query": [],
+    "auth": "header",
+    "body": {
+      "enabled": true
+    },
+    "files": []
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-length": "38",
+      "content-type": "application/json"
+    },
+    "body": {
+      "name": "qa-nav-label",
+      "enabled": true
+    },
+    "truncated": false
+  },
+  "elapsed_ms": 37
+}
