@@ -13,6 +13,7 @@ from openhands.sdk.llm.utils.model_features import ModelFeatures, get_features
 @dataclass
 class DummyLLM:
     model: str
+    base_url: str | None = None
     model_canonical_name: str | None = None
     model_info: dict[str, Any] | None = None
     capability_overrides: dict[str, bool | str] = field(default_factory=dict)
@@ -132,6 +133,23 @@ def test_non_reasoning_model_preserves_temp_and_top_p():
     out = select_chat_options(llm, user_kwargs={}, has_tools=True)
 
     # Non-reasoning models should retain temperature/top_p defaults
+    assert out.get("temperature") == 0.6
+    assert out.get("top_p") == 0.7
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "openai/gpt-4o",
+        "openai/ft:gpt-4o-2024-08-06:acme::AbC123",
+        "openai/Qwen/Qwen3-Coder-30B-A3B-Instruct",
+    ],
+)
+def test_non_reasoning_openai_models_omit_reasoning_effort(model):
+    llm = DummyLLM(model=model, temperature=0.6, top_p=0.7, reasoning_effort="high")
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    assert "reasoning_effort" not in out
     assert out.get("temperature") == 0.6
     assert out.get("top_p") == 0.7
 
@@ -272,8 +290,10 @@ def test_litellm_translates_claude_5_reasoning_to_adaptive_thinking(
         reasoning_effort="high",
     )
 
-    assert params["thinking"] == {"type": "adaptive"}
-    assert "budget_tokens" not in params["thinking"]
+    thinking = params["thinking"]
+    assert isinstance(thinking, dict)
+    assert thinking == {"type": "adaptive", "display": "summarized"}
+    assert "budget_tokens" not in thinking
 
 
 def test_bedrock_opus_4_8_strips_temp_top_p_without_thinking_block():
@@ -420,3 +440,100 @@ def test_chat_options_omits_openrouter_headers_when_unset():
     llm = DummyLLM(model="gpt-4o")
     out = select_chat_options(llm, user_kwargs={}, has_tools=False)
     assert "extra_headers" not in out
+
+
+def test_chat_options_sends_openrouter_session_id_for_affinity():
+    """OpenRouter keys sticky routing off `session_id` (issue #6164).
+
+    Without it the routing key is derived from the opening messages, which agent
+    conversations rewrite as they compact, so later turns lose the warm cache.
+    """
+    llm = DummyLLM(model="openrouter/meta/muse-glimmer-30b")
+    out = select_chat_options(
+        llm,
+        user_kwargs={},
+        has_tools=True,
+        call_context=LLMCallContext(session_id="conv-abc123"),
+    )
+    assert out["extra_body"]["session_id"] == "conv-abc123"
+    # litellm-internal tracing header is preserved alongside the affinity param.
+    assert out["extra_headers"]["x-litellm-session-id"] == "conv-abc123"
+
+
+def test_chat_options_sends_openrouter_session_id_from_scope():
+    """The ambient conversation scope reaches the OpenRouter affinity param."""
+    llm = DummyLLM(model="openrouter/meta/muse-glimmer-30b")
+    with llm_call_context_scope(LLMCallContext(session_id="conv-scoped")):
+        out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+    assert out["extra_body"]["session_id"] == "conv-scoped"
+
+
+def test_chat_options_sends_openrouter_session_id_from_base_url():
+    """A bare OpenRouter model id with an openrouter.ai base URL also qualifies."""
+    llm = DummyLLM(model="meta/muse-glimmer-30b")
+    llm.base_url = "https://openrouter.ai/api/v1"
+    out = select_chat_options(
+        llm,
+        user_kwargs={},
+        has_tools=True,
+        call_context=LLMCallContext(session_id="conv-base-url"),
+    )
+    assert out["extra_body"]["session_id"] == "conv-base-url"
+
+
+def test_chat_options_preserves_openrouter_provider_routing():
+    """Affinity must merge into, not replace, caller-supplied routing."""
+    llm = DummyLLM(
+        model="openrouter/meta/muse-glimmer-30b",
+        litellm_extra_body={
+            "provider": {"only": ["deepinfra"], "allow_fallbacks": False}
+        },
+    )
+    out = select_chat_options(
+        llm,
+        user_kwargs={},
+        has_tools=True,
+        call_context=LLMCallContext(session_id="conv-abc123"),
+    )
+    assert out["extra_body"]["session_id"] == "conv-abc123"
+    assert out["extra_body"]["provider"] == {
+        "only": ["deepinfra"],
+        "allow_fallbacks": False,
+    }
+
+
+def test_chat_options_explicit_session_id_wins_over_conversation_id():
+    """A caller-supplied affinity id is not overwritten by the conversation id."""
+    llm = DummyLLM(
+        model="openrouter/meta/muse-glimmer-30b",
+        litellm_extra_body={"session_id": "caller-chosen"},
+    )
+    out = select_chat_options(
+        llm,
+        user_kwargs={},
+        has_tools=True,
+        call_context=LLMCallContext(session_id="conv-abc123"),
+    )
+    assert out["extra_body"]["session_id"] == "caller-chosen"
+
+
+def test_chat_options_omits_openrouter_session_id_for_other_providers():
+    """Non-OpenRouter providers must not receive an OpenRouter-only field."""
+    for model in ("gpt-4o", "claude-opus-4-5-20251101", "gemini/gemini-2.5-pro"):
+        llm = DummyLLM(model=model)
+        out = select_chat_options(
+            llm,
+            user_kwargs={},
+            has_tools=True,
+            call_context=LLMCallContext(session_id="conv-abc123"),
+        )
+        assert "extra_body" not in out or "session_id" not in out.get(
+            "extra_body", {}
+        ), model
+
+
+def test_chat_options_omits_openrouter_session_id_when_no_session():
+    """No conversation id means no affinity param, even on OpenRouter."""
+    llm = DummyLLM(model="openrouter/meta/muse-glimmer-30b")
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+    assert "extra_body" not in out or "session_id" not in out.get("extra_body", {})

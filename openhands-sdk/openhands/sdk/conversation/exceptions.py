@@ -1,3 +1,5 @@
+import httpx
+
 from openhands.sdk.conversation.types import ConversationID
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 
@@ -70,3 +72,26 @@ class ConversationRunError(RuntimeError):
             lines.append("and attach the conversation logs from the directory above.")
 
         return "\n".join(lines)
+
+
+class RemoteConversationValueError(httpx.HTTPStatusError, ValueError):
+    """The agent server rejected a remote conversation call as invalid.
+
+    ``BaseConversation`` documents ``ValueError`` for these cases, and
+    ``RemoteConversation`` used to raise the plain ``httpx.HTTPStatusError``,
+    so this error is both: callers catching either one keep working.
+    """
+
+    @classmethod
+    def from_http_error(
+        cls, error: httpx.HTTPStatusError
+    ) -> "RemoteConversationValueError":
+        try:
+            detail = error.response.json().get("detail")
+        except ValueError:
+            detail = None
+        return cls(
+            str(detail) if detail else str(error),
+            request=error.request,
+            response=error.response,
+        )

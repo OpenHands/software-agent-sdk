@@ -11,6 +11,8 @@ no SDK rule behind it is upstream's to change, and pinning one here fails the
 day it does (#4877).
 """
 
+from dataclasses import asdict
+
 import pytest
 from litellm import get_supported_openai_params
 from litellm.utils import supports_vision
@@ -62,9 +64,8 @@ def test_model_matches(name, pattern, expected):
         ("gemini-1.5-pro", False),
         # DeepSeek Reasoner
         ("deepseek/deepseek-reasoner", True),
-        # Moonshot Kimi thinking models expose reasoning content but do not
-        # accept the reasoning_effort parameter.
-        ("moonshot/kimi-k2.5", False),
+        # LiteLLM >=1.105 forwards reasoning_effort to Moonshot reasoning models.
+        ("moonshot/kimi-k2.5", True),
         ("moonshot/kimi-k2-thinking", False),
         ("litellm_proxy/moonshot/kimi-k2-thinking", False),
         # Eval LiteLLM proxy wrapper should not affect capability detection.
@@ -92,6 +93,18 @@ def test_model_matches(name, pattern, expected):
         ("litellm_proxy/staging/gpt-5", True),
         ("litellm_proxy/test/o1", True),
         ("unknown-model", False),
+        # LiteLLM >=1.105 says any model missing from its OpenAI catalog takes
+        # reasoning_effort; fine-tunes and custom servers mostly do not.
+        ("openai/gpt-4o", False),
+        ("ft:gpt-4o-2024-08-06", False),
+        ("openai/ft:gpt-4o-2024-08-06:acme::AbC123", False),
+        ("openai/ft:o4-mini-2025-04-16:acme::AbC123", True),
+        ("openai/Qwen/Qwen3-Coder-30B-A3B-Instruct", False),
+        ("openai/gpt-5-custom-deployment", True),
+        # The kimi-k3 override applies to every host, not only Moonshot.
+        ("deepinfra/moonshotai/Kimi-K3", True),
+        ("litellm_proxy/deepinfra/moonshotai/Kimi-K3", True),
+        ("perplexity/perplexity/kimi-k3", True),
     ],
 )
 def test_reasoning_effort_support(model, expected_reasoning):
@@ -663,6 +676,79 @@ def test_provider_hint_does_not_leak_into_reasoning_effort():
     assert features.supports_prompt_cache_key is True
     # ... but reasoning_effort stays on the unhinted bare-name lookup.
     assert features.supports_reasoning_effort is False
+
+
+# Unknown to LiteLLM's registry and to every SDK model-name list, so proxy
+# metadata is the only possible source of a capability.
+_UNKNOWN_PROXY_ALIAS = "litellm_proxy/acme-reasoner-7"
+
+
+@pytest.mark.parametrize(
+    "param,capability",
+    [
+        ("reasoning_effort", "supports_reasoning_effort"),
+        ("prompt_cache_key", "supports_prompt_cache_key"),
+        ("prompt_cache_retention", "supports_prompt_cache_retention"),
+    ],
+)
+def test_advertised_request_param_enables_only_its_capability(param, capability):
+    """A proxy-advertised request param enables exactly its capability (#5499)."""
+    without = asdict(get_features(_UNKNOWN_PROXY_ALIAS, model_info={}))
+    advertised = asdict(
+        get_features(
+            _UNKNOWN_PROXY_ALIAS, model_info={"allowed_openai_params": [param]}
+        )
+    )
+
+    assert {k for k in without if without[k] != advertised[k]} == {capability}
+    assert advertised[capability] is True
+
+
+@pytest.mark.parametrize(
+    "allowed",
+    [
+        ["supports_vision", "image_url", "thinking", "tools"],
+        "reasoning_effort",
+        [None, 1, {"name": "reasoning_effort"}],
+        None,
+    ],
+)
+def test_unmapped_or_malformed_advertised_params_change_nothing(allowed):
+    """Vision and other non-request-param capabilities can never be advertised."""
+    assert get_features(
+        _UNKNOWN_PROXY_ALIAS, model_info={"allowed_openai_params": allowed}
+    ) == get_features(_UNKNOWN_PROXY_ALIAS, model_info={})
+
+
+def test_advertised_param_precedence():
+    """Advertised params beat generic metadata; overrides beat both.
+
+    Absence from the advertised list is not a denial.
+    """
+    advertised = {"allowed_openai_params": ["reasoning_effort"]}
+
+    assert (
+        get_features(
+            _UNKNOWN_PROXY_ALIAS,
+            model_info={**advertised, "supports_reasoning": False},
+        ).supports_reasoning_effort
+        is True
+    )
+    assert (
+        get_features(
+            _UNKNOWN_PROXY_ALIAS,
+            model_info=advertised,
+            overrides={"supports_reasoning_effort": False},
+        ).supports_reasoning_effort
+        is False
+    )
+    assert (
+        get_features(
+            _UNKNOWN_PROXY_ALIAS,
+            model_info={"allowed_openai_params": [], "supports_reasoning": True},
+        ).supports_reasoning_effort
+        is True
+    )
 
 
 @pytest.mark.parametrize(

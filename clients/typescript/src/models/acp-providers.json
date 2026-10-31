@@ -4,28 +4,6 @@
       "claude-agent"
     ],
     "api_key_env_var": "ANTHROPIC_API_KEY",
-    "available_models": [
-      {
-        "id": "default",
-        "label": "Default (recommended)"
-      },
-      {
-        "id": "opus[1m]",
-        "label": "Claude Opus (1M)"
-      },
-      {
-        "id": "claude-opus-5",
-        "label": "Claude Opus 5"
-      },
-      {
-        "id": "sonnet",
-        "label": "Claude Sonnet"
-      },
-      {
-        "id": "haiku",
-        "label": "Claude Haiku"
-      }
-    ],
     "base_url_env_var": "ANTHROPIC_BASE_URL",
     "binary_name": "claude-agent-acp",
     "data_dir_env_var": "CLAUDE_CONFIG_DIR",
@@ -35,7 +13,6 @@
       "--prefer-offline",
       "@agentclientprotocol/claude-agent-acp@0.63.0"
     ],
-    "default_model": "opus[1m]",
     "default_session_mode": "bypassPermissions",
     "display_name": "Claude Code",
     "env_conflicts": [
@@ -58,28 +35,6 @@
       "codex-acp"
     ],
     "api_key_env_var": "OPENAI_API_KEY",
-    "available_models": [
-      {
-        "id": "gpt-6-astra",
-        "label": "GPT-6 Astra"
-      },
-      {
-        "id": "gpt-5.6-sol",
-        "label": "GPT-5.6 Sol"
-      },
-      {
-        "id": "gpt-5.6-terra",
-        "label": "GPT-5.6 Terra"
-      },
-      {
-        "id": "gpt-5.6-luna",
-        "label": "GPT-5.6 Luna"
-      },
-      {
-        "id": "gpt-5.5",
-        "label": "GPT-5.5"
-      }
-    ],
     "base_url_env_var": "OPENAI_BASE_URL",
     "binary_name": "codex-acp",
     "data_dir_env_var": "CODEX_HOME",
@@ -87,9 +42,8 @@
       "npx",
       "-y",
       "--prefer-offline",
-      "@agentclientprotocol/codex-acp@1.10.0"
+      "@agentclientprotocol/codex-acp@2.2.2"
     ],
-    "default_model": "gpt-5.5",
     "default_session_mode": "agent-full-access",
     "display_name": "Codex",
     "env_conflicts": [],
@@ -113,36 +67,6 @@
       "gemini-cli"
     ],
     "api_key_env_var": "GEMINI_API_KEY",
-    "available_models": [
-      {
-        "id": "auto",
-        "label": "Auto"
-      },
-      {
-        "id": "gemini-3.1-pro-preview",
-        "label": "Gemini 3.1 Pro (preview)"
-      },
-      {
-        "id": "gemini-3-pro-preview",
-        "label": "Gemini 3 Pro (preview)"
-      },
-      {
-        "id": "gemini-3-flash-preview",
-        "label": "Gemini 3 Flash (preview)"
-      },
-      {
-        "id": "gemini-3.1-flash-lite",
-        "label": "Gemini 3.1 Flash Lite"
-      },
-      {
-        "id": "gemini-2.5-pro",
-        "label": "Gemini 2.5 Pro"
-      },
-      {
-        "id": "gemini-2.5-flash",
-        "label": "Gemini 2.5 Flash"
-      }
-    ],
     "base_url_env_var": "GEMINI_BASE_URL",
     "binary_name": "gemini",
     "data_dir_env_var": "HOME",
@@ -153,7 +77,6 @@
       "@google/gemini-cli@0.46.0",
       "--acp"
     ],
-    "default_model": "auto",
     "default_session_mode": "default",
     "display_name": "Gemini CLI",
     "env_conflicts": [],
@@ -180,7 +103,6 @@
       "kimi"
     ],
     "api_key_env_var": null,
-    "available_models": [],
     "base_url_env_var": "KIMI_BASE_URL",
     "binary_name": "kimi",
     "data_dir_env_var": "KIMI_CODE_HOME",
@@ -191,7 +113,6 @@
       "@moonshot-ai/kimi-code@0.38.0",
       "acp"
     ],
-    "default_model": null,
     "default_session_mode": "yolo",
     "display_name": "Kimi Code",
     "env_conflicts": [],
@@ -215,36 +136,6 @@
       "opencode"
     ],
     "api_key_env_var": "OPENCODE_API_KEY",
-    "available_models": [
-      {
-        "id": "opencode/big-pickle",
-        "label": "Big Pickle"
-      },
-      {
-        "id": "opencode/claude-opus-5",
-        "label": "Claude Opus 5"
-      },
-      {
-        "id": "opencode/claude-sonnet-5",
-        "label": "Claude Sonnet 5"
-      },
-      {
-        "id": "opencode/gpt-5.5",
-        "label": "GPT-5.5"
-      },
-      {
-        "id": "opencode/gemini-3.1-pro",
-        "label": "Gemini 3.1 Pro"
-      },
-      {
-        "id": "opencode/kimi-k3",
-        "label": "Kimi K3"
-      },
-      {
-        "id": "opencode/nemotron-3-ultra-free",
-        "label": "Nemotron 3 Ultra (free)"
-      }
-    ],
     "base_url_env_var": null,
     "binary_name": "opencode",
     "data_dir_env_var": "HOME",
@@ -255,7 +146,6 @@
       "opencode-ai@1.18.23",
       "acp"
     ],
-    "default_model": "opencode/big-pickle",
     "default_session_mode": "build",
     "display_name": "OpenCode",
     "env_conflicts": [],
@@ -270,28 +160,6 @@
       "pi-acp"
     ],
     "api_key_env_var": "ANTHROPIC_API_KEY",
-    "available_models": [
-      {
-        "id": "anthropic/claude-opus-5",
-        "label": "Claude Opus 5"
-      },
-      {
-        "id": "anthropic/claude-opus-4-8",
-        "label": "Claude Opus 4.8"
-      },
-      {
-        "id": "anthropic/claude-sonnet-5",
-        "label": "Claude Sonnet 5"
-      },
-      {
-        "id": "anthropic/claude-sonnet-4-6",
-        "label": "Claude Sonnet 4.6"
-      },
-      {
-        "id": "anthropic/claude-haiku-4-5",
-        "label": "Claude Haiku 4.5"
-      }
-    ],
     "base_url_env_var": null,
     "binary_name": "pi-acp",
     "data_dir_env_var": "HOME",
@@ -303,7 +171,6 @@
       "--package=@earendil-works/pi-coding-agent@0.83.0",
       "pi-acp"
     ],
-    "default_model": null,
     "default_session_mode": null,
     "display_name": "Pi",
     "env_conflicts": [],

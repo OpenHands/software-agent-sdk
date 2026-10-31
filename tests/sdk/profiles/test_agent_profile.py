@@ -613,7 +613,7 @@ _PINNED_WITH_SUB_AGENTS = [
 ]
 
 
-@pytest.mark.parametrize("schema_version", [AGENT_PROFILE_SCHEMA_VERSION, None])
+@pytest.mark.parametrize("schema_version", [3])
 @pytest.mark.parametrize(
     ("switch", "value", "tools", "expected"),
     [
@@ -644,7 +644,7 @@ _PINNED_WITH_SUB_AGENTS = [
         ),
     ],
 )
-def test_current_payload_accepts_retired_switches_as_deprecated_input(
+def test_v3_persisted_payload_discards_retired_switches(
     schema_version, switch, value, tools, expected
 ) -> None:
     payload = {"name": "oh", "llm_profile_ref": "d", "tools": tools, switch: value}
@@ -653,7 +653,9 @@ def test_current_payload_accepts_retired_switches_as_deprecated_input(
     profile = validate_agent_profile(payload)
 
     assert isinstance(profile, OpenHandsAgentProfile)
-    assert [tool.name for tool in profile.tools or []] == expected
+    assert [tool.name for tool in profile.tools or []] == [
+        tool["name"] for tool in tools or []
+    ]
     assert switch not in profile.model_dump(mode="json")
 
 
@@ -916,3 +918,17 @@ def test_payload_without_disabled_skills_adopts_empty_default() -> None:
     assert isinstance(profile, OpenHandsAgentProfile)
     assert profile.disabled_skills == []
     assert profile.disabled_skills == []
+
+
+@pytest.mark.parametrize("switch", ["enable_sub_agents", "enable_switch_llm_tool"])
+@pytest.mark.parametrize("schema_version", [None, AGENT_PROFILE_SCHEMA_VERSION])
+def test_current_profile_rejects_removed_switches(switch, schema_version) -> None:
+    with pytest.raises(ValidationError, match="Retired tool switches were removed"):
+        validate_agent_profile(
+            {
+                "schema_version": schema_version,
+                "name": "oh",
+                "llm_profile_ref": "d",
+                switch: True,
+            }
+        )

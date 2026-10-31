@@ -33,7 +33,6 @@ from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.mcp.tool import MCPToolDefinition, MCPToolExecutor
 from openhands.sdk.tool import (
-    BROWSER_TOOL_NAME,
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
     Tool,
@@ -45,7 +44,6 @@ from openhands.sdk.tool.builtins.vision_inspect import (
     VisionInspectTool,
     has_vision_profile_available,
 )
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.utils.path import get_user_persistence_dir
 
@@ -164,12 +162,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         default_factory=lambda: [tool.__name__ for tool in BUILT_IN_TOOLS],
         description=(
             "List of default tool class names to include. By default, the agent "
-            "includes 'FinishTool' and 'ThinkTool'. Set to an empty list to disable "
-            "all default tools, or provide a subset to include only specific ones. "
-            "Example: include_default_tools=['FinishTool'] to only include FinishTool, "
-            "or include_default_tools=[] to disable all default tools."
+            "includes 'FinishTool'. Set to an empty list to disable all default "
+            "tools, or provide a subset to include specific ones. Add 'ThinkTool' "
+            "explicitly to enable the think tool. "
+            "Example: include_default_tools=['FinishTool', 'ThinkTool'] to enable "
+            "the think tool, or include_default_tools=[] to disable all default "
+            "tools."
         ),
-        examples=[["FinishTool", "ThinkTool"], ["FinishTool"], []],
+        examples=[["FinishTool"], ["FinishTool", "ThinkTool"], []],
     )
     agent_context: AgentContext | None = Field(
         default=None,
@@ -268,21 +268,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
     @field_validator("system_prompt_kwargs")
     @classmethod
-    def _warn_deprecated_enable_browser(
+    def _drop_retired_enable_browser(
         cls, value: dict[str, object]
     ) -> dict[str, object]:
-        if "enable_browser" in value:
-            warn_deprecated(
-                "system_prompt_kwargs['enable_browser']",
-                deprecated_in="1.51.0",
-                removed_in="1.56.0",
-                details=(
-                    "Browser guidance now comes from the loaded browser tools; "
-                    "only custom Jinja templates still read this kwarg."
-                ),
-                stacklevel=5,
-            )
-        return value
+        """Old saved conversations may still carry this retired prompt flag."""
+        return {key: item for key, item in value.items() if key != "enable_browser"}
 
     condenser: CondenserBase | None = Field(
         default=None,
@@ -378,15 +368,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         # own Jinja template; everything else (incl. custom policies) uses the registry.
         preset = self._prompt_preset
         if preset is None:
-            # Deprecated kwarg, kept until 1.56.0 for templates that branch on it.
-            template_kwargs = {
-                "enable_browser": any(t.name == BROWSER_TOOL_NAME for t in self.tools),
-                **self._resolved_template_kwargs(),
-            }
             return render_template(
                 prompt_dir=self.prompt_dir,
                 template_name=self.system_prompt_filename,
-                **template_kwargs,
+                **self._resolved_template_kwargs(),
             )
 
         return create_registry(preset).build(self._build_prompt_context()).static
@@ -421,9 +406,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "model_family" not in template_kwargs
             or "model_variant" not in template_kwargs
         ):
-            spec = get_model_prompt_spec(
-                self.llm.model, getattr(self.llm, "model_canonical_name", None)
-            )
+            spec = get_model_prompt_spec(self.llm.model, self.llm.model_canonical_name)
             if "model_family" not in template_kwargs and spec.family:
                 template_kwargs["model_family"] = spec.family
             if "model_variant" not in template_kwargs and spec.variant:

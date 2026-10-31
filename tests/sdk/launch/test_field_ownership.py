@@ -76,11 +76,6 @@ class NotOnProfile:
 
 
 @dataclass(frozen=True)
-class Legacy:
-    removed_in: str
-
-
-@dataclass(frozen=True)
 class Nested:
     fields: dict[str, Any]
 
@@ -156,12 +151,11 @@ ACP_FIELDS: dict[str, Any] = {
         "set by the deploying application when conversations share a sandbox"
     ),
     "acp_file_secrets": NotOnProfile("a code-level spec for other ACP CLIs"),
-    "llm": Legacy(removed_in="1.56.0"),
     "agent_context": Nested(ACP_CONTEXT),
 }
 
 PROFILE_IDENTITY = {"schema_version", "id", "name", "revision", "agent_kind"}
-PROFILE_SCOPE = {"secret_refs"}
+PROFILE_SCOPE = {"secret_refs", "integration_refs"}
 
 SETTINGS_MODELS: dict[type[BaseModel], dict[str, Any]] = {
     OpenHandsAgentSettings: OPENHANDS_FIELDS,

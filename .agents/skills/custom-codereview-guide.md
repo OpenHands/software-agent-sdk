@@ -234,16 +234,28 @@ If any is missing, skipped, stale, ambiguous, or failing, COMMENT with the exact
 missing validation and defer approval to a maintainer.
 
 Package version changes belong in dedicated release PRs. Do not approve an
-unrelated PR that changes a distributable package version.
+unrelated PR that changes a distributable package version. A release PR also
+deletes the root `.pr/` directory; that deletion is expected.
 
 ### Dependency updates
 
-The root `pyproject.toml` has a seven-day `tool.uv.exclude-newer` supply-chain
-guardrail, but Dependabot can bypass it for this workspace. For a dependency
-update, inspect the changed distribution's package-index upload time (the
-`uv.lock` `upload-time` when available). Do not approve an artifact uploaded less
-than seven days ago; state its package, version, and upload time and ask a
-maintainer whether to wait or override the guardrail.
+For dependency additions or updates, inspect every changed third-party npm or
+PyPI version, including transitive lockfile changes. Require at least seven days
+since publication of that exact version. Use registry publication/upload metadata
+or the relevant artifact's `uv.lock` `upload-time`; a weekly bot schedule, an old
+package name, or a passing install is not age evidence.
+
+For an under-seven-day artifact, leave a COMMENT naming the package, version,
+publication time, and source, and defer approval until it ages out or a maintainer
+explicitly approves a narrowly documented exception. If publication time is
+unavailable, ask for that evidence. Existing named first-party exemptions apply
+only to those packages, not their third-party dependencies or blanket approval
+of the lockfile. Apply this check before any dependency-bump fast path.
+
+Flag removal or weakening of seven-day uv/Dependabot guards or new broad
+exemptions. Dependabot security updates bypass cooldown, so review them under
+the explicit maintainer-exception rule in `AGENTS.md`; agents cannot approve
+their own bypass.
 
 ### Newly provisioned eval models
 
@@ -269,7 +281,7 @@ Do not comment on:
 - clear code merely to request a comment or docstring;
 - extra tests unless a concrete behavior or regression is unverified;
 - good behavior that needs no change; or
-- `.pr/` artifacts, which the repository cleanup workflow owns.
+- `.pr/` artifacts, which the next release PR removes.
 
 Do not assume that test-only, documentation, configuration, CI, or dependency
 PRs are safe by category. Apply the relevant checkpoint, then approve promptly
