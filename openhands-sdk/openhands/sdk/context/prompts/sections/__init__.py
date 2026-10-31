@@ -9,6 +9,7 @@ in :mod:`.static`; the standalone planning composition (ported from
 
 from openhands.sdk.context.prompts.sections.dynamic import (
     AvailableSkillsSection,
+    CustomGpgSigningSection,
     CustomSecretsSection,
     CustomSuffixSection,
     DateTimeSection,
@@ -42,6 +43,7 @@ from openhands.sdk.context.prompts.sections.static import (
 __all__ = [
     "AvailableSkillsSection",
     "CodeQualitySection",
+    "CustomGpgSigningSection",
     "CustomSecretsSection",
     "CustomSuffixSection",
     "DateTimeSection",
