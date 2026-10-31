@@ -1,0 +1,1658 @@
+"""Deterministic tests for deferred (group-commit) durability — issue #5402.
+
+Covers:
+    - fsync normally executes on bounded shared workers, not the caller
+      (event-loop) thread; failed worker admission retains inline durability.
+    - Writes are visible and recoverable after process exit without an
+      explicit flush (write + rename stay synchronous).
+    - Fault-injected fsync/os.replace failures propagate to callers
+      (flush / fail-fast-before-mutation / inline) instead of being swallowed.
+    - Event ordering, per-conversation isolation, and duplicate/parent
+      validation are preserved with deferred durability enabled.
+    - Explicit flush/shutdown semantics: run-end flush drains the queue,
+      close() drains the store without shutting down shared workers.
+"""
+
+import asyncio
+import errno
+import multiprocessing
+import os
+import subprocess
+import sys
+import threading
+import uuid
+from contextlib import ExitStack
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from pydantic import SecretStr
+
+from openhands.sdk.agent import Agent
+from openhands.sdk.conversation import Conversation
+from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.exceptions import ConversationRunError
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
+from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.io import (
+    DurabilityError,
+    LocalFileStore,
+    durability,
+    local as local_io,
+)
+from openhands.sdk.io.durability import DurabilityWriter
+from openhands.sdk.io.memory import InMemoryFileStore
+from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.testing import TestLLM
+from openhands.sdk.workspace import LocalWorkspace
+
+
+def _event(event_id: str | None = None, content: str = "content") -> MessageEvent:
+    # Default to a UUID id: only hex/dash ids round-trip through the on-disk
+    # file-name scheme (EVENT_NAME_RE), which disk-reopen tests rely on.
+    return MessageEvent(
+        id=event_id or uuid.uuid4().hex,
+        llm_message=Message(role="user", content=[TextContent(text=content)]),
+        source="user",
+    )
+
+
+class _FsyncSpy:
+    """Records (thread_name, fd) for every os.fsync call."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.calls: list[str] = []
+        self._orig = os.fsync
+
+        def spy(fd: int) -> None:
+            self.calls.append(threading.current_thread().name)
+            self._orig(fd)
+
+        monkeypatch.setattr(os, "fsync", spy)
+
+
+def test_fsync_runs_on_durability_thread_not_caller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The event-loop responsiveness guarantee, stated without timing:
+    no fsync may execute on the thread that calls write()."""
+    spy = _FsyncSpy(monkeypatch)
+    fs = LocalFileStore(str(tmp_path))
+    try:
+        fs.write("a/b.txt", "hello")
+        caller = threading.current_thread().name
+        fs.flush()
+        assert len(spy.calls) == 1
+        assert caller not in spy.calls
+        assert all("durability" in t for t in spy.calls)
+        assert fs.read("a/b.txt") == "hello"
+    finally:
+        fs.close()
+
+
+def test_inline_mode_keeps_synchronous_fsync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """deferred_durability=False preserves the previous inline behavior."""
+    spy = _FsyncSpy(monkeypatch)
+    fs = LocalFileStore(str(tmp_path), deferred_durability=False)
+    fs.write("a.txt", "v")
+    assert len(spy.calls) == 1
+    assert spy.calls[0] == threading.current_thread().name
+
+
+def test_many_open_stores_do_not_retain_one_thread_each(tmp_path: Path):
+    stores: list[LocalFileStore] = []
+    before = {thread.ident for thread in threading.enumerate()}
+    try:
+        for index in range(200):
+            store = LocalFileStore(str(tmp_path / str(index)))
+            stores.append(store)
+            store.write("state.json", str(index))
+            store.flush()
+        after = {thread.ident for thread in threading.enumerate()}
+        print("DURABILITY_THREAD_BOUND_PROBE", flush=True)
+        assert len(after - before) <= 4, "idle stores retain dedicated threads"
+        assert [store.read("state.json") for store in stores] == [
+            str(index) for index in range(200)
+        ]
+    finally:
+        for store in stores:
+            store.close()
+
+
+def test_worker_start_failure_falls_back_without_poisoning_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    start = threading.Thread.start
+    failed = False
+    calls: list[str] = []
+    fsync = os.fsync
+
+    def fail_once(thread: threading.Thread):
+        nonlocal failed
+        if thread.name == "openhands-durability-worker" and not failed:
+            failed = True
+            raise RuntimeError("can't start new thread")
+        return start(thread)
+
+    def record_fsync(fd: int):
+        calls.append(threading.current_thread().name)
+        fsync(fd)
+
+    monkeypatch.setattr(durability, "_executor", durability._DurabilityPool())
+    monkeypatch.setattr(threading.Thread, "start", fail_once)
+    monkeypatch.setattr(os, "fsync", record_fsync)
+    store = LocalFileStore(str(tmp_path))
+    try:
+        store.write("first.json", "first")
+        store.write("second.json", "second")
+        store.flush()
+        assert failed
+        assert calls[0] == threading.current_thread().name
+        assert len(calls) == 2
+        assert calls[1] != threading.current_thread().name
+        assert store.read("first.json") == "first"
+        assert store.read("second.json") == "second"
+    finally:
+        store.close()
+
+
+def test_unclosed_store_does_not_block_interpreter_exit(tmp_path: Path):
+    script = """
+import os, sys, threading
+from openhands.sdk.io import LocalFileStore
+entered = threading.Event()
+release = threading.Event()
+def pending_fsync(fd):
+    entered.set()
+    release.wait()
+os.fsync = pending_fsync
+store = LocalFileStore(sys.argv[1])
+store.write('state.json', 'visible')
+assert entered.wait(10)
+print('NORMAL_INTERPRETER_EXIT_WITH_PENDING_FSYNC', flush=True)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    assert "NORMAL_INTERPRETER_EXIT_WITH_PENDING_FSYNC" in result.stdout
+    assert (tmp_path / "state.json").read_text() == "visible"
+
+
+@pytest.mark.parametrize("boundary", ["flush", "close"])
+def test_deferred_fsync_uses_writable_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+):
+    """Exercise real store boundaries with Windows' writable-fsync requirement."""
+    handles: dict[int, int] = {}
+    synced: list[int] = []
+
+    def open_file(path: Path, flags: int) -> int:
+        fd = os.open(path, flags)
+        handles[fd] = flags
+        return fd
+
+    def windows_fsync(fd: int) -> None:
+        if not handles[fd] & (os.O_WRONLY | os.O_RDWR):
+            raise OSError(errno.EBADF, "fsync requires a writable handle")
+        os.fsync(fd)
+        synced.append(fd)
+
+    monkeypatch.setattr(
+        durability,
+        "os",
+        SimpleNamespace(
+            open=open_file,
+            fsync=windows_fsync,
+            close=os.close,
+            getpid=os.getpid,
+            O_RDONLY=os.O_RDONLY,
+            O_RDWR=os.O_RDWR,
+        ),
+    )
+    monkeypatch.setattr(
+        durability, "_open_fsync_file", lambda path: open_file(path, os.O_RDWR)
+    )
+    fs = LocalFileStore(str(tmp_path))
+    try:
+        fs.write("event.json", "persisted")
+        getattr(fs, boundary)()
+        assert len(synced) == 1
+        assert (tmp_path / "event.json").read_text() == "persisted"
+    finally:
+        fs.close()
+
+
+def test_atomic_replace_while_deferred_fsync_holds_previous_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An open durability handle must not prevent the next atomic replacement."""
+    entered = threading.Event()
+    release = threading.Event()
+    original_fsync = os.fsync
+
+    def latched_fsync(fd: int) -> None:
+        entered.set()
+        assert release.wait(10)
+        original_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", latched_fsync)
+    fs = LocalFileStore(str(tmp_path))
+    try:
+        fs.write("base_state.json", "first")
+        assert entered.wait(10)
+        fs.write("base_state.json", "second")
+        assert fs.read("base_state.json") == "second"
+        release.set()
+        fs.flush()
+        assert fs.read("base_state.json") == "second"
+    finally:
+        release.set()
+        fs.close()
+
+
+def test_deferred_fsync_preserves_written_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An older snapshot slot must not fsync a later snapshot generation."""
+    fs = LocalFileStore(str(tmp_path))
+    writer = DurabilityWriter(write_lock=fs._durability_lock)
+    fs._durability = writer
+    entered = threading.Event()
+    release = threading.Event()
+    synced: list[str] = []
+    original_fsync = os.fsync
+
+    def observe_fsync(fd: int) -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        synced.append(os.read(fd, 32).decode())
+        original_fsync(fd)
+
+    def hold_worker() -> None:
+        entered.set()
+        assert release.wait(10)
+
+    monkeypatch.setattr(os, "fsync", observe_fsync)
+    writer.submit(hold_worker)
+    try:
+        assert entered.wait(10)
+        fs.write("event-e1", "E1")
+        fs.write("marker-1", "M1")
+        fs.write("base_state", "B1")
+        fs.write("event-e2", "E2")
+        fs.write("marker-2", "M2")
+        fs.write("base_state", "B2")
+        release.set()
+        fs.flush()
+        print("GENERATION_ORDER_PROBE")
+        assert synced in (
+            ["E1", "M1", "E2", "M2", "B2"],
+            ["E1", "M1", "B1", "E2", "M2", "B2"],
+        )
+    finally:
+        release.set()
+        fs.close()
+
+
+def test_missing_fsync_path_is_tolerated(tmp_path: Path):
+    writer = DurabilityWriter(write_lock=threading.Lock())
+    try:
+        writer.submit_fsync(tmp_path / "deleted")
+        writer.flush()
+        assert not writer.failed
+    finally:
+        writer.close()
+
+
+def test_fsync_open_failure_is_sticky_and_later_tasks_drain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    writer = DurabilityWriter(write_lock=threading.Lock())
+    drained = threading.Event()
+    failure = OSError("open failed")
+    monkeypatch.setattr(
+        durability,
+        "_open_fsync_file",
+        lambda _path: (_ for _ in ()).throw(failure),
+    )
+    writer.submit_fsync(tmp_path / "written")
+    writer.submit(drained.set)
+    with pytest.raises(DurabilityError) as error:
+        writer.flush()
+    assert error.value.__cause__ is failure
+    assert drained.is_set()
+    assert writer.failed
+    with pytest.raises(DurabilityError) as error:
+        writer.raise_if_failed()
+    assert error.value.__cause__ is failure
+    with pytest.raises(DurabilityError) as error:
+        writer.close()
+    assert error.value.__cause__ is failure
+
+
+def test_fsync_failure_closes_worker_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path = tmp_path / "written"
+    path.write_text("value")
+    writer = DurabilityWriter(write_lock=threading.Lock())
+    synced: list[int] = []
+
+    def fail_fsync(fd: int) -> None:
+        synced.append(fd)
+        raise OSError("fsync failed")
+
+    monkeypatch.setattr(os, "fsync", fail_fsync)
+    writer.submit_fsync(path)
+    with pytest.raises(DurabilityError, match="Deferred durability failed"):
+        writer.flush()
+    with pytest.raises(OSError) as error:
+        os.fstat(synced[0])
+    assert error.value.errno == errno.EBADF
+    with pytest.raises(DurabilityError):
+        writer.close()
+
+
+def test_fsync_requires_explicit_shared_write_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    writer = DurabilityWriter()
+    opened: list[Path] = []
+    monkeypatch.setattr(
+        durability,
+        "_open_fsync_file",
+        lambda path: opened.append(path),
+    )
+    try:
+        with pytest.raises(ValueError, match="requires a shared write_lock"):
+            writer.submit_fsync(tmp_path / "written")
+        assert writer._thread is None
+        assert writer._queue.unfinished_tasks == 0
+        assert not opened
+        assert not writer.failed
+    finally:
+        writer.close()
+
+
+def test_superseded_generations_coalesce_to_latest_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fs = LocalFileStore(str(tmp_path))
+    writer = DurabilityWriter(write_lock=fs._durability_lock)
+    fs._durability = writer
+    entered = threading.Event()
+    release = threading.Event()
+    synced: list[str] = []
+    original_fsync = os.fsync
+
+    def observe_fsync(fd: int) -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        synced.append(os.read(fd, 32).decode())
+        original_fsync(fd)
+
+    def hold_worker() -> None:
+        entered.set()
+        assert release.wait(10)
+
+    monkeypatch.setattr(os, "fsync", observe_fsync)
+    writer.submit(hold_worker)
+    try:
+        assert entered.wait(10)
+        fs.write("base_state", "B1")
+        fs.write("base_state", "B2")
+        fs.write("base_state", "B3")
+        release.set()
+        fs.flush()
+        assert synced == ["B3"]
+    finally:
+        release.set()
+        fs.close()
+
+
+def test_failed_submission_invalidates_older_generation_after_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fs = LocalFileStore(str(tmp_path))
+    writer = DurabilityWriter(write_lock=fs._durability_lock)
+    fs._durability = writer
+    entered = threading.Event()
+    release = threading.Event()
+    synced: list[str] = []
+    failure = OSError("queue submission failed")
+    original_fsync = os.fsync
+    original_put = writer._queue.put
+
+    def hold_worker() -> None:
+        entered.set()
+        assert release.wait(10)
+
+    def observe_fsync(fd: int) -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        synced.append(os.read(fd, 32).decode())
+        original_fsync(fd)
+
+    def fail_put(_item) -> None:
+        raise failure
+
+    monkeypatch.setattr(os, "fsync", observe_fsync)
+    writer.submit(hold_worker)
+    try:
+        assert entered.wait(10)
+        fs.write("base_state", "B1")
+        fs.write("event-e2", "E2")
+        monkeypatch.setattr(writer._queue, "put", fail_put)
+        with pytest.raises(OSError, match="queue submission failed"):
+            fs.write("base_state", "B2")
+        assert (tmp_path / "base_state").read_text() == "B2"
+        monkeypatch.setattr(writer._queue, "put", original_put)
+        release.set()
+        with pytest.raises(DurabilityError) as error:
+            fs.flush()
+        assert error.value.__cause__ is failure
+        assert synced == ["E2"]
+        with pytest.raises(DurabilityError) as error:
+            fs.close()
+        assert error.value.__cause__ is failure
+    finally:
+        monkeypatch.setattr(writer._queue, "put", original_put)
+        release.set()
+        try:
+            fs.close()
+        except DurabilityError:
+            pass
+
+
+def test_worker_waits_for_rename_and_registration_as_one_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fs = LocalFileStore(str(tmp_path))
+    worker_entered = threading.Event()
+    worker_release = threading.Event()
+    worker_waiting_for_write = threading.Event()
+    renamed = threading.Event()
+    register = threading.Event()
+    synced: list[str] = []
+    errors: list[BaseException] = []
+    original_fsync = os.fsync
+    original_atomic_write = local_io.atomic_write_text
+
+    class TracedLock:
+        def __init__(self) -> None:
+            self.lock = threading.Lock()
+
+        def __enter__(self):
+            if threading.current_thread().name == "barrier-worker":
+                worker_waiting_for_write.set()
+            self.lock.acquire()
+            return self
+
+        def __exit__(self, *_args):
+            self.lock.release()
+
+    monkeypatch.setattr(fs, "_durability_lock", TracedLock())
+    writer = DurabilityWriter(name="barrier-worker", write_lock=fs._durability_lock)
+    fs._durability = writer
+
+    def hold_worker() -> None:
+        worker_entered.set()
+        assert worker_release.wait(10)
+
+    def delayed_atomic_write(path: Path, value: str, *args, **kwargs) -> None:
+        defer_fsync = kwargs.pop("defer_fsync")
+
+        def after_rename(written_path: Path) -> None:
+            renamed.set()
+            assert register.wait(10)
+            defer_fsync(written_path)
+
+        original_atomic_write(path, value, *args, defer_fsync=after_rename, **kwargs)
+
+    def write_second_generation() -> None:
+        try:
+            fs.write("base_state", "B2")
+        except BaseException as error:
+            errors.append(error)
+
+    def observe_fsync(fd: int) -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        synced.append(os.read(fd, 32).decode())
+        original_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", observe_fsync)
+    writer.submit(hold_worker)
+    writer_thread = threading.Thread(target=write_second_generation)
+    try:
+        assert worker_entered.wait(10)
+        fs.write("base_state", "B1")
+        monkeypatch.setattr(local_io, "atomic_write_text", delayed_atomic_write)
+        writer_thread.start()
+        assert renamed.wait(10)
+        worker_release.set()
+        assert worker_waiting_for_write.wait(10)
+        assert synced == []
+        register.set()
+        writer_thread.join(10)
+        assert not writer_thread.is_alive() and not errors
+        fs.flush()
+        assert synced == ["B2"]
+    finally:
+        worker_release.set()
+        register.set()
+        if writer_thread.ident is not None:
+            writer_thread.join(10)
+        fs.close()
+
+
+def test_deferred_backlog_keeps_only_worker_handle_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fs = LocalFileStore(str(tmp_path))
+    entered = threading.Event()
+    release = threading.Event()
+    opened: list[int] = []
+    original_fsync = os.fsync
+    original_open = durability._open_fsync_file
+
+    def record_open(path: Path) -> int:
+        fd = original_open(path)
+        opened.append(fd)
+        return fd
+
+    def hold_first_fsync(fd: int) -> None:
+        if len(opened) == 1:
+            entered.set()
+            assert release.wait(10)
+        original_fsync(fd)
+
+    monkeypatch.setattr(durability, "_open_fsync_file", record_open)
+    monkeypatch.setattr(os, "fsync", hold_first_fsync)
+    try:
+        fs.write("first", "one")
+        assert entered.wait(10)
+        for i in range(80):
+            fs.write(f"event-{i}", str(i))
+        assert len(opened) == 1
+        release.set()
+        fs.flush()
+        assert len(opened) == 81
+        with pytest.raises(OSError) as error:
+            os.fstat(opened[-1])
+        assert error.value.errno == errno.EBADF
+    finally:
+        release.set()
+        fs.close()
+
+
+@pytest.mark.asyncio
+async def test_deferred_backlog_keeps_event_loop_responsive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fs = LocalFileStore(str(tmp_path))
+    entered = threading.Event()
+    release = threading.Event()
+    heartbeat = threading.Event()
+    watchdog_result: list[bool] = []
+    original_fsync = os.fsync
+
+    def hold_first_fsync(fd: int) -> None:
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(10)
+        original_fsync(fd)
+
+    def watchdog() -> None:
+        watchdog_result.append(heartbeat.wait(5))
+        release.set()
+
+    monkeypatch.setattr(os, "fsync", hold_first_fsync)
+    observer = threading.Thread(target=watchdog)
+    try:
+        fs.write("first", "one")
+        assert await asyncio.to_thread(entered.wait, 10)
+        observer.start()
+        asyncio.get_running_loop().call_soon(heartbeat.set)
+        for i in range(80):
+            fs.write(f"event-{i}", str(i))
+        assert await asyncio.to_thread(heartbeat.wait, 10)
+        await asyncio.to_thread(observer.join, 10)
+        print("BACKLOG_RESPONSIVENESS_PROBE")
+        assert watchdog_result == [True]
+        await asyncio.to_thread(fs.flush)
+    finally:
+        release.set()
+        if observer.ident is not None:
+            observer.join(10)
+        await asyncio.to_thread(fs.close)
+
+
+@pytest.mark.parametrize("conversion_fails", [False, True])
+def test_windows_fsync_handle_shares_delete_and_transfers_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, conversion_fails: bool
+):
+    """Check WinAPI flags and the ownership boundary without emulating fsync."""
+    calls: list[tuple] = []
+    closed: list[int] = []
+
+    def create_file(*args):
+        calls.append(args)
+        return 123
+
+    def open_osfhandle(handle, flags):
+        assert (handle, flags) == (123, os.O_RDWR)
+        if conversion_fails:
+            raise OSError("conversion failed")
+        return 456
+
+    monkeypatch.setattr(durability, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(
+        durability,
+        "_winapi",
+        SimpleNamespace(
+            GENERIC_READ=0x80000000,
+            GENERIC_WRITE=0x40000000,
+            OPEN_EXISTING=3,
+            CreateFile=create_file,
+            CloseHandle=closed.append,
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        durability,
+        "msvcrt",
+        SimpleNamespace(open_osfhandle=open_osfhandle),
+        raising=False,
+    )
+    path = tmp_path / "base_state.json"
+    if conversion_fails:
+        with pytest.raises(OSError, match="conversion failed"):
+            durability._open_fsync_file(path)
+        assert closed == [123]
+    else:
+        assert durability._open_fsync_file(path) == 456
+        assert closed == []
+    assert calls == [(str(path), 0xC0000000, 0x7, 0, 3, 0, 0)]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-exit test uses POSIX fork")
+@pytest.mark.parametrize(
+    ("target", "phase"),
+    [
+        ("store", "active"),
+        ("store", "locked"),
+        ("store", "idle"),
+        ("store", "inline"),
+        ("writer", "active"),
+        ("writer", "locked"),
+        ("writer", "idle"),
+    ],
+)
+def test_inherited_durability_rejects_before_locks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str, phase: str
+):
+    parent_pid = os.getpid()
+    entered = threading.Event()
+    release = threading.Event()
+    original_fsync = os.fsync
+    callback_file = tmp_path / "callback.txt"
+
+    def blocked_fsync(fd: int) -> None:
+        if os.getpid() == parent_pid:
+            entered.set()
+            assert release.wait(15)
+        original_fsync(fd)
+
+    if phase in ("active", "locked"):
+        monkeypatch.setattr(os, "fsync", blocked_fsync)
+    store = LocalFileStore(
+        str(tmp_path / "parent"), deferred_durability=phase != "inline"
+    )
+    store.write("parent.txt", "parent")
+    writer = store._durability
+    if phase in ("active", "locked"):
+        assert entered.wait(10)
+        store.write("queued.txt", "queued")
+    else:
+        store.flush()
+
+    def callback() -> None:
+        with callback_file.open("a") as stream:
+            stream.write(f"{os.getpid()}\n")
+
+    if writer is not None:
+        writer.submit(callback)
+        if phase == "idle":
+            writer.flush()
+
+    def child_work() -> None:
+        if target == "store":
+            operations = (
+                store.flush,
+                store.close,
+                lambda: store.write("child.txt", "must not appear"),
+                lambda: store.delete("parent.txt"),
+            )
+        else:
+            assert writer is not None
+            child_writer = writer
+            operations = (
+                child_writer.flush,
+                child_writer.close,
+                child_writer.raise_if_failed,
+                lambda: child_writer.submit(callback),
+                lambda: child_writer.submit_fsync(tmp_path / "parent" / "parent.txt"),
+                lambda: child_writer.failed,
+            )
+        for operation in operations:
+            with pytest.raises(RuntimeError, match="inherited across fork"):
+                operation()
+        fresh = LocalFileStore(str(tmp_path / "child"))
+        fresh.write("fresh.txt", "fresh")
+        fresh.flush()
+        fresh.close()
+
+    child = multiprocessing.get_context("fork").Process(target=child_work)
+    try:
+        with ExitStack() as locks:
+            if phase in ("locked", "inline"):
+                locks.enter_context(store._durability_lock)
+                if writer is not None:
+                    locks.enter_context(writer._lock)
+                    locks.enter_context(writer._queue.mutex)
+            print("INHERITED_DURABILITY_FORK_PROBE", flush=True)
+            child.start()
+        child.join(5)
+        assert child.exitcode == 0, "child did not reject inherited durability promptly"
+        assert not (tmp_path / "parent" / "child.txt").exists()
+        assert (tmp_path / "parent" / "parent.txt").read_text() == "parent"
+        assert (tmp_path / "child" / "fresh.txt").read_text() == "fresh"
+    finally:
+        if child.is_alive():
+            child.kill()
+            child.join(10)
+        release.set()
+        store.flush()
+        store.close()
+    if writer is not None:
+        assert callback_file.read_text() == f"{parent_pid}\n"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="normal interpreter fork exit is POSIX")
+def test_inherited_conversation_atexit_does_not_hang(tmp_path: Path):
+    script = """
+import os, signal, sys, threading
+from pydantic import SecretStr
+from openhands.sdk import Agent, Conversation, LLM
+parent_pid = os.getpid()
+entered = threading.Event()
+release = threading.Event()
+original_fsync = os.fsync
+def pending_fsync(fd):
+    if os.getpid() == parent_pid:
+        entered.set()
+        assert release.wait(15)
+    original_fsync(fd)
+conversation = Conversation(
+    agent=Agent(
+        llm=LLM(model='gpt-4o-mini', api_key=SecretStr('test-key'),
+                usage_id='fork-test'), tools=[],
+    ),
+    workspace=sys.argv[1], persistence_dir=sys.argv[2], visualizer=None,
+)
+conversation._state.flush()
+os.fsync = pending_fsync
+conversation._state._fs.write('fork-backlog.txt', 'pending')
+assert entered.wait(10)
+pid = os.fork()
+if pid == 0:
+    signal.alarm(5)
+    print('NORMAL_FORKED_CONVERSATION_EXIT', flush=True)
+    sys.exit(0)
+try:
+    _, status = os.waitpid(pid, 0)
+    assert status == 0, f'forked conversation exit failed: {status}'
+finally:
+    release.set()
+    conversation.close()
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(tmp_path / "workspace"),
+            str(tmp_path / "persist"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    assert "NORMAL_FORKED_CONVERSATION_EXIT" in result.stdout
+    assert "inherited across fork" in result.stderr
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-exit test uses POSIX fork")
+def test_write_visible_and_recoverable_without_flush(tmp_path: Path):
+    """A real child exits with fsync pending; this is not a power-loss test."""
+    ids = [uuid.uuid4().hex for _ in range(5)]
+
+    def write_then_exit():
+        entered = threading.Event()
+        release = threading.Event()
+
+        def pending_fsync(fd):
+            entered.set()
+            release.wait()
+
+        os.fsync = pending_fsync
+        log = EventLog(LocalFileStore(str(tmp_path)))
+        for event_id in ids:
+            log.append(_event(event_id))
+        os._exit(0 if entered.wait(10) else 1)
+
+    child = multiprocessing.get_context("fork").Process(target=write_then_exit)
+    child.start()
+    try:
+        child.join(30)
+        assert child.exitcode == 0, "child did not exit with fsync pending"
+    finally:
+        if child.is_alive():
+            child.kill()
+            child.join(10)
+
+    fs2 = LocalFileStore(str(tmp_path))
+    try:
+        log2 = EventLog(fs2)
+        assert len(log2) == 5
+        for i, event_id in enumerate(ids):
+            assert log2[i].id == event_id
+        # Length marker matches the count of event files on disk.
+        event_files = [
+            p for p in fs2.list(log2._dir) if p.endswith(".json") and "event-" in p
+        ]
+        assert len(event_files) == 5
+        assert fs2.exists(log2._marker_path(5))
+    finally:
+        fs2.close()
+
+
+def test_fault_injected_fsync_propagates_and_fails_fast(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A failing deferred fsync must (a) surface at flush and (b) fail the
+    *next* write fast, before its mutation becomes visible on disk."""
+
+    def boom(fd: int) -> None:
+        raise OSError("injected fsync failure")
+
+    fs = LocalFileStore(str(tmp_path))
+    try:
+        # Patch before writing so the queued fsync deterministically fails
+        # (patching after write would race the worker thread).
+        monkeypatch.setattr(os, "fsync", boom)
+        fs.write("first.txt", "v")
+        with pytest.raises(DurabilityError, match="Deferred durability failed"):
+            fs.flush()
+        # Fail-fast happens before the write mutates on-disk state.
+        with pytest.raises(DurabilityError):
+            fs.write("second.txt", "v")
+        assert not fs.exists("second.txt")
+        # The pre-failure write is intact and readable.
+        assert fs.read("first.txt") == "v"
+        # The recorded failure also propagates at close (not swallowed).
+        with pytest.raises(DurabilityError):
+            fs.close()
+        with pytest.raises(DurabilityError):
+            fs.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            fs.write("late/file.txt", "v")
+        assert not (tmp_path / "late").exists()
+    finally:
+        monkeypatch.undo()
+
+
+def test_fault_injected_replace_raises_inline_without_partial_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """os.replace is synchronous even with deferred durability: its failure
+    raises inline from append(), leaving neither a file nor an index entry."""
+    fs = LocalFileStore(str(tmp_path))
+    try:
+        log = EventLog(fs)
+        log.append(_event("ok-0"))
+        monkeypatch.setattr(
+            os, "replace", lambda *_a, **_kw: (_ for _ in ()).throw(OSError("boom"))
+        )
+        with pytest.raises(OSError, match="boom"):
+            log.append(_event("bad-1"))
+        assert len(log) == 1
+        assert "bad-1" not in log
+        monkeypatch.undo()
+        # The log still works afterwards.
+        log.append(_event("ok-1"))
+        assert len(log) == 2
+    finally:
+        fs.close()
+
+
+def test_concurrent_appends_ordered_and_isolated(tmp_path: Path):
+    """Concurrent appends to one log keep indices contiguous from 0; two
+    logs on different stores stay isolated."""
+    fs_a = LocalFileStore(str(tmp_path / "a"))
+    fs_b = LocalFileStore(str(tmp_path / "b"))
+    try:
+        log_a, log_b = EventLog(fs_a), EventLog(fs_b)
+        n_threads, n_per = 5, 10
+        errors: list[BaseException] = []
+
+        def produce(tid: int) -> None:
+            try:
+                for i in range(n_per):
+                    log_a.append(_event(f"a-{tid}-{i}"))
+                    log_b.append(_event(f"b-{tid}-{i}"))
+            except BaseException as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [
+            threading.Thread(target=produce, args=(t,)) for t in range(n_threads)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors
+
+        total = n_threads * n_per
+        assert len(log_a) == total and len(log_b) == total
+        ids_a = {log_a.get_id(i) for i in range(total)}
+        ids_b = {log_b.get_id(i) for i in range(total)}
+        assert all(i.startswith("a-") for i in ids_a)
+        assert all(i.startswith("b-") for i in ids_b)
+        # Indices are contiguous (get_id raises IndexError past the end).
+        with pytest.raises(IndexError):
+            log_a.get_id(total)
+        fs_a.flush()
+        fs_b.flush()
+    finally:
+        fs_a.close()
+        fs_b.close()
+
+
+def test_validation_errors_preserved_with_deferred_durability(tmp_path: Path):
+    """Duplicate event IDs and missing explicit parents still raise."""
+    fs = LocalFileStore(str(tmp_path))
+    try:
+        log = EventLog(fs)
+        log.append(_event("root"))
+        with pytest.raises(ValueError, match="already exists"):
+            log.append(_event("root"))
+        orphan = _event("orphan").model_copy(update={"parent_id": "missing"})
+        with pytest.raises(ValueError, match="does not exist"):
+            log.append(orphan)
+        assert len(log) == 1
+    finally:
+        fs.close()
+
+
+def test_marker_consistency_while_fsync_is_in_flight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """With the durability worker latched mid-fsync (simulated interruption
+    window), a reopened log still sees contiguous events and a marker that
+    matches the on-disk event count — renames are synchronous, only fsync
+    lags."""
+    entered = threading.Event()
+    release = threading.Event()
+    orig_fsync = os.fsync
+
+    def latched(fd: int) -> None:
+        entered.set()
+        release.wait(timeout=10)
+        orig_fsync(fd)
+
+    fs = LocalFileStore(str(tmp_path))
+    try:
+        monkeypatch.setattr(os, "fsync", latched)
+        log = EventLog(fs)
+        ids = [uuid.uuid4().hex for _ in range(3)]
+        for event_id in ids:
+            log.append(_event(event_id))
+        # Wait until the worker is parked inside the first fsync.
+        assert entered.wait(timeout=10)
+
+        fs2 = LocalFileStore(str(tmp_path))
+        log2 = EventLog(fs2)
+        assert len(log2) == 3
+        assert [log2[i].id for i in range(3)] == ids
+        assert fs2.exists(log2._marker_path(3))
+
+        release.set()
+        fs.flush()
+    finally:
+        release.set()
+        monkeypatch.undo()
+        fs.close()
+
+
+def test_close_drains_store_without_closing_shared_pool(tmp_path: Path):
+    fs = LocalFileStore(str(tmp_path))
+    fs.write("a.txt", "v")
+    fs.close()
+    assert fs.read("a.txt") == "v"
+    fs.close()  # idempotent
+    with pytest.raises(RuntimeError, match="closed"):
+        fs.write("a.txt", "rejected")
+    other = LocalFileStore(str(tmp_path / "other"))
+    try:
+        other.write("b.txt", "v2")
+        other.flush()
+        assert other.read("b.txt") == "v2"
+    finally:
+        other.close()
+
+
+def test_inmemory_store_flush_close_are_noops():
+    fs = InMemoryFileStore()
+    fs.write("a.txt", "v")
+    fs.flush()
+    fs.close()
+    assert fs.read("a.txt") == "v"
+
+
+def _make_conversation(tmp_path: Path, llm: LLM) -> LocalConversation:
+    return Conversation(
+        agent=Agent(llm=llm, tools=[]),
+        persistence_dir=str(tmp_path / "persist"),
+        workspace=str(tmp_path),
+    )
+
+
+def test_fork_closes_owned_state_after_copy_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    conv = _make_conversation(tmp_path, TestLLM.from_messages([]))
+    conv.send_message("source message")
+    fork_id = uuid.uuid4()
+    closed_forks: list[LocalConversation] = []
+    original_close = LocalConversation.close
+    original_rebuild = ConversationState.rebuild_view
+
+    def fail_fork_rebuild(state: ConversationState) -> None:
+        if state.id == fork_id:
+            raise ValueError("copy failed")
+        original_rebuild(state)
+
+    def close_and_record(conversation: LocalConversation) -> None:
+        if conversation.id == fork_id:
+            closed_forks.append(conversation)
+        original_close(conversation)
+
+    monkeypatch.setattr(ConversationState, "rebuild_view", fail_fork_rebuild)
+    monkeypatch.setattr(LocalConversation, "close", close_and_record)
+    with pytest.raises(ValueError, match="copy failed"):
+        conv.fork(conversation_id=fork_id)
+    assert len(closed_forks) == 1
+    fork = closed_forks[0]
+    assert fork._cleanup_complete
+    store = fork._state._fs
+    assert isinstance(store, LocalFileStore)
+    writer = store._durability
+    assert writer is not None and writer._closed
+    assert Path(str(conv._state.persistence_dir)).exists()
+    conv.send_message("source still open")
+    conv.close()
+
+
+def test_fork_preserves_copy_error_if_cleanup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    conv = _make_conversation(tmp_path, TestLLM.from_messages([]))
+    fork_id = uuid.uuid4()
+    original_rebuild = ConversationState.rebuild_view
+    original_close = LocalConversation.close
+    closed_forks: list[LocalConversation] = []
+
+    def fail_fork_rebuild(state: ConversationState) -> None:
+        if state.id == fork_id:
+            raise ValueError("primary copy error")
+        original_rebuild(state)
+
+    def close_then_fail(conversation: LocalConversation) -> None:
+        original_close(conversation)
+        if conversation.id == fork_id:
+            closed_forks.append(conversation)
+            raise RuntimeError("secondary cleanup error")
+
+    monkeypatch.setattr(ConversationState, "rebuild_view", fail_fork_rebuild)
+    monkeypatch.setattr(LocalConversation, "close", close_then_fail)
+    with pytest.raises(ValueError, match="primary copy error"):
+        conv.fork(conversation_id=fork_id)
+    assert len(closed_forks) == 1
+    assert closed_forks[0]._cleanup_complete
+    store = closed_forks[0]._state._fs
+    assert isinstance(store, LocalFileStore)
+    writer = store._durability
+    assert writer is not None and writer._closed
+    conv.close()
+
+
+def test_fork_flushes_copied_state_before_return(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    conv = _make_conversation(tmp_path, TestLLM.from_messages([]))
+    conv.send_message("source message")
+    conv.max_budget_per_run = 2.5
+    fork_id = uuid.uuid4()
+    original_flush = ConversationState.flush
+    flushed: list[uuid.UUID] = []
+
+    def record_flush(state: ConversationState) -> None:
+        original_flush(state)
+        flushed.append(state.id)
+
+    monkeypatch.setattr(ConversationState, "flush", record_flush)
+    fork = conv.fork(conversation_id=fork_id)
+    assert fork_id in flushed
+    assert fork.max_budget_per_run == 2.5
+    fork.close()
+    conv.close()
+
+
+def test_fork_closes_owned_state_when_final_flush_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    conv = _make_conversation(tmp_path, TestLLM.from_messages([]))
+    conv.send_message("source message")
+    conv.max_budget_per_run = 2.5
+    fork_id = uuid.uuid4()
+    original_flush = ConversationState.flush
+    original_close = LocalConversation.close
+    closed_forks: list[LocalConversation] = []
+
+    def fail_fork_flush(state: ConversationState) -> None:
+        original_flush(state)
+        if state.id == fork_id:
+            raise OSError("fork flush failed")
+
+    def close_and_record(conversation: LocalConversation) -> None:
+        original_close(conversation)
+        if conversation.id == fork_id:
+            closed_forks.append(conversation)
+
+    monkeypatch.setattr(ConversationState, "flush", fail_fork_flush)
+    monkeypatch.setattr(LocalConversation, "close", close_and_record)
+    with pytest.raises(OSError, match="fork flush failed"):
+        conv.fork(conversation_id=fork_id)
+    assert len(closed_forks) == 1
+    assert closed_forks[0]._cleanup_complete
+    assert closed_forks[0].max_budget_per_run == 2.5
+    assert Path(str(conv._state.persistence_dir)).exists()
+    conv.close()
+
+
+def test_state_without_store_has_no_durability_work(tmp_path: Path):
+    llm = TestLLM.from_messages([])
+    state = ConversationState(
+        id=uuid.uuid4(),
+        agent=Agent(llm=llm, tools=[]),
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+    )
+    state.flush()
+    state.close()
+
+
+def test_conversation_parent_chain_and_close_semantics(tmp_path: Path):
+    """Stamped parent chain resolves to a single ordered branch; close()
+    flushes and shuts down the durability writer."""
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="t")
+    conv = _make_conversation(tmp_path, llm)
+    for i in range(3):
+        conv.send_message(Message(role="user", content=[TextContent(text=f"m{i}")]))
+    persist_dir = conv._state.persistence_dir
+    conv.close()
+
+    # Reopen from disk: events contiguous from 0, branch chain intact.
+    fs = LocalFileStore(str(persist_dir))
+    try:
+        log = EventLog(fs)
+        branch = log.path_to_root(log.get_id(len(log) - 1))
+        assert len(branch) == len(log), "branch must cover the whole linear log"
+        texts = [
+            c.text
+            for e in branch
+            if isinstance(e, MessageEvent)
+            for c in e.llm_message.content
+            if isinstance(c, TextContent)
+        ]
+        assert ["m0", "m1", "m2"] == [t for t in texts if t.startswith("m")]
+    finally:
+        fs.close()
+
+    with pytest.raises(RuntimeError, match="closed"):
+        conv._state._fs.write("late.txt", "v")
+
+
+def test_run_end_flush_makes_all_events_durable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """At the end of run() every acknowledged event is durable (its fsync
+    completed) before the conversation reports terminal — no explicit flush
+    by the caller."""
+    spy = _FsyncSpy(monkeypatch)
+    llm = TestLLM.from_messages(
+        [Message(role="assistant", content=[TextContent(text="done")])]
+    )
+    conv = _make_conversation(tmp_path, llm)
+    conv.send_message(Message(role="user", content=[TextContent(text="hi")]))
+    conv.run()
+
+    events_dir = Path(str(conv._state.persistence_dir)) / "events"
+    event_files = [p for p in os.listdir(events_dir) if p.startswith("event-")]
+    assert len(event_files) >= 2  # user message + assistant response
+    # Superseded/deleted markers may be skipped by the worker. Check thread
+    # affinity and a drained queue, not a scheduling-dependent marker count.
+    fsyncs_off_thread = [t for t in spy.calls if "durability" in t]
+    assert len(fsyncs_off_thread) >= len(event_files)
+    assert len(fsyncs_off_thread) == len(spy.calls)
+    fs = conv._state._fs
+    assert isinstance(fs, LocalFileStore)
+    writer = fs._durability
+    assert writer is None or writer._queue.unfinished_tasks == 0
+    conv.close()
+
+
+def test_close_cannot_overtake_accepted_submission(monkeypatch: pytest.MonkeyPatch):
+    writer = DurabilityWriter()
+    admitted = threading.Event()
+    release = threading.Event()
+    completed = threading.Event()
+    close_started = threading.Event()
+    close_finished = threading.Event()
+    errors: list[BaseException] = []
+    original_put = writer._queue.put
+
+    def latched_put(item):
+        if item is not None:
+            admitted.set()
+            assert release.wait(10)
+        original_put(item)
+
+    def submit():
+        try:
+            writer.submit(completed.set)
+        except BaseException as error:
+            errors.append(error)
+
+    def close():
+        try:
+            close_started.set()
+            writer.close()
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            close_finished.set()
+
+    monkeypatch.setattr(writer._queue, "put", latched_put)
+    producer = threading.Thread(target=submit, daemon=True)
+    closer = threading.Thread(target=close, daemon=True)
+    try:
+        producer.start()
+        assert admitted.wait(10)
+        closer.start()
+        assert close_started.wait(10)
+        assert not close_finished.wait(0.1), "close overtook task admission"
+    finally:
+        release.set()
+        producer.join(10)
+        closer.join(10)
+    assert not producer.is_alive() and not closer.is_alive()
+    assert not errors
+    assert completed.is_set(), "close dropped an accepted task"
+    assert writer._queue.unfinished_tasks == 0
+    with pytest.raises(RuntimeError, match="closed"):
+        writer.submit(lambda: None)
+
+
+def test_concurrent_close_drains_all_accepted_tasks_once():
+    writer = DurabilityWriter()
+    entered = threading.Event()
+    release = threading.Event()
+    results: list[int] = []
+    errors: list[BaseException] = []
+
+    def first():
+        entered.set()
+        assert release.wait(10)
+        results.append(0)
+
+    def close():
+        try:
+            writer.close()
+        except BaseException as error:
+            errors.append(error)
+
+    writer.submit(first)
+    for i in range(1, 20):
+        writer.submit(lambda i=i: results.append(i))
+    closers = [threading.Thread(target=close, daemon=True) for _ in range(2)]
+    try:
+        assert entered.wait(10)
+        for closer in closers:
+            closer.start()
+    finally:
+        release.set()
+        for closer in closers:
+            closer.join(10)
+    assert all(not closer.is_alive() for closer in closers)
+    assert not errors
+    assert results == list(range(20))
+    assert writer._queue.unfinished_tasks == 0
+    writer.close()
+
+
+def test_worker_cannot_deadlock_by_closing_itself():
+    writer = DurabilityWriter()
+    completed = threading.Event()
+    writer.submit(writer.close)
+    writer.submit(completed.set)
+    with pytest.raises(DurabilityError) as error:
+        writer.close()
+    assert isinstance(error.value.__cause__, RuntimeError)
+    assert "cannot close from its worker" in str(error.value.__cause__)
+    assert completed.is_set()
+    assert writer._queue.unfinished_tasks == 0
+
+
+@pytest.mark.parametrize("deferred", [False, True])
+@pytest.mark.parametrize("contents", ["text", b"binary"])
+def test_store_close_rejects_writes_without_mutation(
+    tmp_path: Path, deferred: bool, contents: str | bytes
+):
+    fs = LocalFileStore(str(tmp_path), deferred_durability=deferred)
+    fs.close()  # Also covers closing a lazy, never-started writer.
+    with pytest.raises(RuntimeError, match="closed"):
+        fs.write("late/file.txt", contents)
+    assert not (tmp_path / "late").exists()
+    fs.close()
+
+
+def test_store_close_waits_for_admitted_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from openhands.sdk.io import local
+
+    fs = LocalFileStore(str(tmp_path))
+    entered = threading.Event()
+    release = threading.Event()
+    fsynced = threading.Event()
+    errors: list[BaseException] = []
+    original_write = local.atomic_write_text
+    close_started = threading.Event()
+    close_finished = threading.Event()
+    original_fsync = os.fsync
+
+    def latched_write(*args, **kwargs):
+        entered.set()
+        assert release.wait(10)
+        return original_write(*args, **kwargs)
+
+    def spy(fd):
+        original_fsync(fd)
+        fsynced.set()
+
+    def write():
+        try:
+            fs.write("accepted.txt", "v")
+        except BaseException as error:
+            errors.append(error)
+
+    def close():
+        try:
+            close_started.set()
+            fs.close()
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            close_finished.set()
+
+    monkeypatch.setattr(local, "atomic_write_text", latched_write)
+    monkeypatch.setattr(os, "fsync", spy)
+    producer = threading.Thread(target=write, daemon=True)
+    closer = threading.Thread(target=close, daemon=True)
+    try:
+        producer.start()
+        assert entered.wait(10)
+        closer.start()
+        assert close_started.wait(10)
+        assert not close_finished.wait(0.1), "close overtook the admitted write"
+    finally:
+        release.set()
+        producer.join(10)
+        closer.join(10)
+    assert not producer.is_alive() and not closer.is_alive()
+    assert not errors
+    assert fsynced.is_set()
+    assert fs.read("accepted.txt") == "v"
+    with pytest.raises(RuntimeError, match="closed"):
+        fs.write("late.txt", "v")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "error", "cancel"])
+async def test_arun_drains_durability_on_each_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+):
+    llm = TestLLM.from_messages([Message(role="assistant", content=[])])
+    conv = _make_conversation(tmp_path, llm)
+    conv.send_message("hi")
+    conv._state.flush()
+    entered = threading.Event()
+    release = threading.Event()
+    original_fsync = os.fsync
+    calls: list[str] = []
+
+    def latched_fsync(fd):
+        calls.append(threading.current_thread().name)
+        entered.set()
+        assert release.wait(10)
+        original_fsync(fd)
+
+    async def step(self, conversation, on_event, **kwargs):
+        if outcome == "error":
+            raise ValueError("primary run error")
+        if outcome == "cancel":
+            raise asyncio.CancelledError
+        conversation.state.execution_status = ConversationExecutionStatus.FINISHED
+
+    monkeypatch.setattr(os, "fsync", latched_fsync)
+    monkeypatch.setattr(Agent, "astep", step)
+    task = asyncio.create_task(conv.arun())
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        await asyncio.sleep(0)
+        assert not task.done(), "arun returned before its fsync work completed"
+        release.set()
+        if outcome == "error":
+            with pytest.raises(ConversationRunError) as error:
+                await asyncio.wait_for(task, 10)
+            assert isinstance(error.value.__cause__, ValueError)
+        else:
+            await asyncio.wait_for(task, 10)
+            expected = (
+                ConversationExecutionStatus.PAUSED
+                if outcome == "cancel"
+                else ConversationExecutionStatus.FINISHED
+            )
+            assert conv.state.execution_status == expected
+        assert calls and threading.current_thread().name not in calls
+        fs = conv._state._fs
+        assert isinstance(fs, LocalFileStore)
+        writer = fs._durability
+        assert writer is not None and writer._queue.unfinished_tasks == 0
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        conv.close()
+
+
+@pytest.mark.parametrize("async_run", [False, True])
+@pytest.mark.asyncio
+async def test_initialization_error_still_flushes_and_preserves_primary_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, async_run: bool
+):
+    conv = _make_conversation(tmp_path, TestLLM.from_messages([]))
+    conv._state.flush()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def failing_fsync(fd):
+        entered.set()
+        assert release.wait(10)
+        raise OSError("secondary durability failure")
+
+    def failing_init(self):
+        with self._state:
+            self._state._fs.write("init.txt", "accepted")
+        raise ValueError("primary initialization failure")
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+    monkeypatch.setattr(LocalConversation, "_ensure_agent_ready", failing_init)
+    task = asyncio.create_task(
+        conv.arun() if async_run else asyncio.to_thread(conv.run)
+    )
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        await asyncio.sleep(0)
+        assert not task.done(), "initialization failure bypassed durability cleanup"
+        release.set()
+        with pytest.raises(ValueError, match="primary initialization failure"):
+            await asyncio.wait_for(task, 10)
+        fs = conv._state._fs
+        assert isinstance(fs, LocalFileStore)
+        writer = fs._durability
+        assert writer is not None and writer._queue.unfinished_tasks == 0
+        assert conv._arun_task is None
+        assert conv._cancel_token is None
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        with pytest.raises(DurabilityError):
+            conv.close()
+        assert conv._cleanup_complete
+        conv.close()  # Already closed despite reporting a durability failure.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("init_fails", [False, True])
+async def test_initialization_cancellation_settles_thread_and_durability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, init_fails: bool
+):
+    conv = _make_conversation(tmp_path, TestLLM.from_messages([]))
+    conv._state.flush()
+    initializing = threading.Event()
+    finish_init = threading.Event()
+    fsync_entered = threading.Event()
+    finish_fsync = threading.Event()
+    original_fsync = os.fsync
+
+    def init(self):
+        initializing.set()
+        assert finish_init.wait(10)
+        with self._state:
+            self._state._fs.write("late-init.txt", "accepted")
+        if init_fails:
+            raise ValueError("initialization failed after cancellation")
+
+    def latched_fsync(fd):
+        fsync_entered.set()
+        assert finish_fsync.wait(10)
+        original_fsync(fd)
+
+    monkeypatch.setattr(LocalConversation, "_ensure_agent_ready", init)
+    monkeypatch.setattr(os, "fsync", latched_fsync)
+    task = asyncio.create_task(conv.arun())
+    try:
+        assert await asyncio.to_thread(initializing.wait, 10)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()  # Repeated cancellation must not abandon the init thread.
+        await asyncio.sleep(0)
+        assert not task.done()
+        finish_init.set()
+        assert await asyncio.to_thread(fsync_entered.wait, 10)
+        await asyncio.sleep(0)
+        assert not task.done(), "cancellation bypassed the durability boundary"
+        finish_fsync.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 10)
+        assert conv._state._fs.read("late-init.txt") == "accepted"
+        fs = conv._state._fs
+        assert isinstance(fs, LocalFileStore)
+        writer = fs._durability
+        assert writer is not None and writer._queue.unfinished_tasks == 0
+        assert conv._arun_task is None
+    finally:
+        finish_init.set()
+        finish_fsync.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        conv.close()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_run_end_flush_does_not_abandon_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    conv = _make_conversation(tmp_path, TestLLM.from_messages([]))
+    conv.send_message("hi")
+    conv._state.flush()
+    entered = threading.Event()
+    release = threading.Event()
+    step_done = asyncio.Event()
+    original_fsync = os.fsync
+
+    def latched_fsync(fd):
+        entered.set()
+        assert release.wait(10)
+        original_fsync(fd)
+
+    async def step(self, conversation, on_event, **kwargs):
+        conversation.state.execution_status = ConversationExecutionStatus.FINISHED
+        step_done.set()
+
+    monkeypatch.setattr(os, "fsync", latched_fsync)
+    monkeypatch.setattr(Agent, "astep", step)
+    task = asyncio.create_task(conv.arun())
+    try:
+        await asyncio.wait_for(step_done.wait(), 10)
+        assert await asyncio.to_thread(entered.wait, 10)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done(), "cancelled flush abandoned accepted work"
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 10)
+        fs = conv._state._fs
+        assert isinstance(fs, LocalFileStore)
+        writer = fs._durability
+        assert writer is not None and writer._queue.unfinished_tasks == 0
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        conv.close()

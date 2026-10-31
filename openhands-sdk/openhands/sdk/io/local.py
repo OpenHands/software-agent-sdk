@@ -1,5 +1,6 @@
 import os
 import shutil
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 from filelock import FileLock, Timeout
 
 from openhands.sdk.io.cache import MemoryLRUCache
+from openhands.sdk.io.durability import DurabilityWriter
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.files import atomic_write_text
 from openhands.sdk.utils.path import to_posix_path
@@ -26,6 +28,8 @@ class LocalFileStore(FileStore):
         root: str,
         cache_limit_size: int = 500,
         cache_memory_size: int = 20 * 1024 * 1024,
+        *,
+        deferred_durability: bool = True,
     ) -> None:
         """Initialize a LocalFileStore with caching.
 
@@ -33,17 +37,42 @@ class LocalFileStore(FileStore):
             root: Root directory for file storage.
             cache_limit_size: Maximum number of cached entries (default: 500).
             cache_memory_size: Maximum cache memory in bytes (default: 20MB).
+            deferred_durability: When True (default), the fsync of each write
+                runs through a bounded shared pool with a FIFO per store, not on
+                the calling thread (group commit). The write + atomic rename still
+                happen synchronously, so content is immediately visible to
+                readers and survives process exit. Queued fsync preserves the
+                existing file-fsync guarantees, not directory durability.
+                Call ``flush()`` at acknowledgment boundaries (end of a run)
+                and ``close()`` on
+                shutdown. When False, text writes fsync inline (previous
+                behavior). Neither mode adds fsync to binary writes.
 
         Note:
             The cache assumes exclusive access to files. External modifications
             to files will not be detected and may result in stale cache reads.
+            Mutations, flush and close belong to the creating process. After fork,
+            construct a new store in the child; flush in the parent before fork
+            if the child requires prior writes to have completed durability.
         """
         if root.startswith("~"):
             root = os.path.expanduser(root)
         root = os.path.abspath(os.path.normpath(root))
+        self._pid = os.getpid()
         self.root = root
         os.makedirs(self.root, exist_ok=True)
         self.cache = MemoryLRUCache(cache_memory_size, cache_limit_size)
+        self._deferred_durability = deferred_durability
+        self._durability: DurabilityWriter | None = None
+        self._durability_lock = threading.Lock()
+        self._closed = False
+
+    def _check_process(self) -> None:
+        if os.getpid() != self._pid:
+            raise RuntimeError(
+                "LocalFileStore was inherited across fork; "
+                "create a new store in the child process"
+            )
 
     def get_full_path(self, path: str) -> str:
         # strip leading slash to keep relative under root
@@ -61,16 +90,55 @@ class LocalFileStore(FileStore):
         return full
 
     def write(self, path: str, contents: str | bytes) -> None:
-        full_path = self.get_full_path(path)
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        if isinstance(contents, str):
-            atomic_write_text(Path(full_path), contents)
-            self.cache[full_path] = contents
-        else:
-            with open(full_path, "wb") as f:
-                f.write(contents)
-            # Don't cache binary content - LocalFileStore is meant for JSON data
-            # If binary data is written and then read, it will error on read
+        self._check_process()
+        # Keep admission, mutation and durability submission in one lifecycle
+        # critical section. Close cannot seal a write between rename and enqueue.
+        with self._durability_lock:
+            if self._closed:
+                raise RuntimeError("LocalFileStore is closed")
+            full_path = self.get_full_path(path)
+            writer = None
+            if isinstance(contents, str) and self._deferred_durability:
+                if self._durability is None:
+                    self._durability = DurabilityWriter(
+                        name=f"fs-durability-{id(self):x}",
+                        write_lock=self._durability_lock,
+                    )
+                writer = self._durability
+                writer.raise_if_failed()
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            if isinstance(contents, str):
+                if writer is not None:
+                    atomic_write_text(
+                        Path(full_path), contents, defer_fsync=writer.submit_fsync
+                    )
+                else:
+                    atomic_write_text(Path(full_path), contents)
+                self.cache[full_path] = contents
+            else:
+                with open(full_path, "wb") as f:
+                    f.write(contents)
+                # Don't cache binary content - LocalFileStore is meant for JSON data
+                # If binary data is written and then read, it will error on read
+
+    def flush(self) -> None:
+        """Drain queued fsync work; re-raise the first durability failure."""
+        self._check_process()
+        with self._durability_lock:
+            writer = self._durability
+        if writer is not None:
+            writer.flush()
+
+    def close(self) -> None:
+        """Reject new writes and drain admitted writes; reads remain available."""
+        self._check_process()
+        with self._durability_lock:
+            self._closed = True
+            writer = self._durability
+            # Retain the writer so all close callers wait for its completion
+            # and observe the same sticky durability failure.
+        if writer is not None:
+            writer.close()
 
     def read(self, path: str) -> str:
         full_path = self.get_full_path(path)
@@ -102,6 +170,7 @@ class LocalFileStore(FileStore):
         return files
 
     def delete(self, path: str) -> None:
+        self._check_process()
         try:
             full_path = self.get_full_path(path)
             if not os.path.exists(full_path):

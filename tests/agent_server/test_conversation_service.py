@@ -2683,6 +2683,40 @@ class TestConversationServiceStartConversation:
                 assert stored.id not in conversation_service._event_services
 
     @pytest.mark.asyncio
+    async def test_cancelled_start_event_service_closes_before_return(
+        self, conversation_service, sample_stored_conversation
+    ):
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        closed = asyncio.Event()
+
+        async def blocked_start():
+            entered.set()
+            await release.wait()
+
+        async def close():
+            closed.set()
+
+        with patch(
+            "openhands.agent_server.conversation_service.EventService"
+        ) as service_class:
+            service = service_class.return_value
+            service.start.side_effect = blocked_start
+            service.close.side_effect = close
+            task = asyncio.create_task(
+                conversation_service._start_event_service(sample_stored_conversation)
+            )
+            await entered.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert closed.is_set()
+            assert (
+                sample_stored_conversation.id
+                not in conversation_service._event_services
+            )
+
+    @pytest.mark.asyncio
     async def test_start_event_service_success_stores_service(
         self, conversation_service
     ):
@@ -4236,6 +4270,73 @@ class TestConversationTreeForkAndNavigate:
                 await svc.fork_conversation(info.id, from_event_id="evt-missing")
             # Validation must fail-fast before any fork dir is written to disk.
             assert {p.name for p in conversations_dir.iterdir()} == before
+
+    @pytest.mark.asyncio
+    async def test_cancelled_fork_waits_for_owned_close_then_removes_dir(
+        self, tmp_path, monkeypatch
+    ):
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            info, _, _ = await self._start_with_events(svc, workspace_dir, ["first"])
+            fork_id = uuid4()
+            fork_dir = conversations_dir / fork_id.hex
+            entered = threading.Event()
+            release = threading.Event()
+            closed = threading.Event()
+            original_close = LocalConversation.close
+
+            def latched_close(conversation: LocalConversation) -> None:
+                if conversation.id == fork_id:
+                    entered.set()
+                    if not release.wait(10):
+                        raise TimeoutError("fork close latch was not released")
+                original_close(conversation)
+                if conversation.id == fork_id:
+                    closed.set()
+
+            monkeypatch.setattr(LocalConversation, "close", latched_close)
+            task = asyncio.create_task(svc.fork_conversation(info.id, fork_id=fork_id))
+            try:
+                assert await asyncio.to_thread(entered.wait, 10)
+                task.cancel()
+                heartbeat = asyncio.Event()
+                asyncio.get_running_loop().call_soon(heartbeat.set)
+                await heartbeat.wait()
+                assert not task.done(), "fork abandoned its owned close thread"
+                task.cancel()
+                heartbeat.clear()
+                asyncio.get_running_loop().call_soon(heartbeat.set)
+                await heartbeat.wait()
+                assert not task.done(), "repeated cancellation abandoned fork close"
+                assert fork_dir.exists()
+            finally:
+                release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert closed.is_set()
+            assert not fork_dir.exists()
+            retry = await svc.fork_conversation(info.id, fork_id=fork_id)
+            assert retry is not None and retry.id == fork_id
+
+    @pytest.mark.asyncio
+    async def test_fork_preserves_preexisting_target_directory(self, tmp_path):
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversations_dir = tmp_path / "conversations"
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            info, _, _ = await self._start_with_events(svc, workspace_dir, ["first"])
+            fork_id = uuid4()
+            fork_dir = conversations_dir / fork_id.hex
+            fork_dir.mkdir()
+            marker = fork_dir / "owner-marker"
+            marker.write_text("original")
+            with pytest.raises(ValueError, match="Fork directory already exists"):
+                await svc.fork_conversation(info.id, fork_id=fork_id)
+            assert marker.read_text() == "original"
+            assert svc._event_services is not None
+            assert fork_id not in svc._event_services
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
