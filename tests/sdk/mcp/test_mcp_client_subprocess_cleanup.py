@@ -4,6 +4,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -190,3 +191,55 @@ sys.exit(0)
             os.kill(child_pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+
+
+def test_process_group_escalates_when_leader_exits_on_sigterm() -> None:
+    """SIGKILL must still reach a survivor after its leader exits on SIGTERM.
+
+    The wrapper leads the group and exits as soon as it receives SIGTERM,
+    while its child ignores SIGTERM. A reaper thread reaps the wrapper
+    promptly, so by the time the grace period ends the leader PID no longer
+    exists at all. Cleanup must key on process-group existence, not on the
+    leader still being alive, or the surviving child is never SIGKILLed.
+    """
+    script = """
+import signal
+import subprocess
+import sys
+import time
+
+child = subprocess.Popen([
+    sys.executable,
+    "-c",
+    "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)",
+])
+print(child.pid, flush=True)
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+time.sleep(60)
+"""
+    leader = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    assert leader.stdout is not None
+    child_pid = int(leader.stdout.readline())
+    reaper = threading.Thread(target=leader.wait, daemon=True)
+    reaper.start()
+    try:
+        MCPClient._kill_process_group(leader.pid)
+
+        reaper.join(timeout=5)
+        assert not _is_alive(leader.pid)
+        _wait_until_dead(child_pid)
+    finally:
+        try:
+            os.killpg(leader.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            os.kill(child_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        leader.wait(timeout=5)

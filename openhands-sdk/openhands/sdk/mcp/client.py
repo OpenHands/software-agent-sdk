@@ -214,6 +214,23 @@ class MCPClient(AsyncMCPClient):
             return pid if MCPClient._process_group_alive(pid) else None
 
     @staticmethod
+    def _wait_for_process_group_exit(pgid: int, timeout: float) -> bool:
+        """Poll group existence until it empties or ``timeout`` elapses.
+
+        Existence is probed with ``os.killpg(pgid, 0)`` on the group itself,
+        never with the leader PID: a wrapper that exits on SIGTERM may be
+        reaped while a descendant survives, and that survivor must still be
+        there to receive SIGKILL when this returns ``False``.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            if not MCPClient._process_group_alive(pgid):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+
+    @staticmethod
     def _kill_process_group(pid: int) -> None:
         """Kill a process and its group (SIGTERM then SIGKILL).
 
@@ -228,13 +245,13 @@ class MCPClient(AsyncMCPClient):
         if pgid is None:
             return
 
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            if not MCPClient._signal_process_group(pgid, pid, sig):
-                return
-            if sig is signal.SIGTERM:
-                time.sleep(0.5)
-            if not MCPClient._process_group_alive(pgid):
-                return
+        if not MCPClient._signal_process_group(pgid, pid, signal.SIGTERM):
+            return
+        if MCPClient._wait_for_process_group_exit(pgid, timeout=0.5):
+            return
+        # The leader may be gone and reaped by now; the group is the unit of
+        # work, so SIGKILL it as long as any member still exists.
+        MCPClient._signal_process_group(pgid, pid, signal.SIGKILL)
 
     def _force_kill_subprocesses(self, pids: Sequence[int]) -> None:
         """Kill stdio MCP subprocesses captured before async close."""
