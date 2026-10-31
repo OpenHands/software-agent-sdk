@@ -38,6 +38,6 @@ Component-specific tests that prevent regressions in core functionality.
 - **Tools Tests** (`tools/`): `openhands-sdk/**`, `openhands-tools/**` or `tests/tools/**`
 - **Agent Server Tests** (`agent_server/`): `openhands-sdk/**`, `openhands-tools/**`, `openhands-agent-server/**` or `tests/agent_server/**`
 - **Workspace Tests** (`workspace/`): any `openhands-*/**` package or `tests/workspace/**`
-- **Cross Tests** (`cross/`): any `openhands-*/**` package or any file under `tests/`
+- **Cross Tests** (`cross/`): any `openhands-*/**` package, any file under `tests/`, `.github/scripts/remove_pr_artifacts.py`, `.github/workflows/prepare-release.yml` or `.github/workflows/precommit.yml`
 
 Every suite also runs when `pyproject.toml`, `uv.lock` or `.github/workflows/tests.yml` changes.

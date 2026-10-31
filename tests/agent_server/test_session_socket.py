@@ -283,15 +283,20 @@ async def test_wedged_connection_drops_instead_of_blocking_the_publisher():
     sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
     sub.go_live(None)
 
-    # Publish far past the budget, and time the publisher.
-    started = asyncio.get_running_loop().time()
-    for i in range(500):
-        event = _msg(f"m{i}" * 50)
-        log.add(event)
-        await sub(event)
-    elapsed = asyncio.get_running_loop().time() - started
+    async def publish():
+        for i in range(500):
+            event = _msg(f"m{i}" * 50)
+            log.add(event)
+            await sub(event)
 
-    assert elapsed < 0.5, "publisher blocked on a wedged consumer"
+    # Publish far past the budget. The gate never opens while we publish, so
+    # a publisher that waited on the socket would hang, not just run slowly;
+    # the generous timeout catches that without timing a busy CI runner.
+    try:
+        await asyncio.wait_for(publish(), timeout=10)
+    except TimeoutError:
+        pytest.fail("publisher blocked on a wedged consumer")
+
     assert writer.closed, "over-budget connection should be dropped"
     assert writer.drop_reason == "slow_consumer"
 

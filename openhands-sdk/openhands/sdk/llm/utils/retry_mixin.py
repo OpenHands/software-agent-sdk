@@ -5,6 +5,7 @@ from tenacity import (
     RetryCallState,
     retry,
     retry_base,
+    retry_if_exception,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
@@ -12,6 +13,10 @@ from tenacity import (
 from tenacity.stop import stop_base
 
 from openhands.sdk.llm.exceptions import LLMNoResponseError
+from openhands.sdk.llm.exceptions.classifier import (
+    is_quota_exhaustion_error,
+    is_transient_http_error,
+)
 from openhands.sdk.llm.utils.retry_after import retry_after_seconds
 from openhands.sdk.logger import get_logger
 
@@ -26,6 +31,16 @@ RetryListener = Callable[[int, int, BaseException | None], None]
 class _HasStatusCode(Protocol):
     @property
     def status_code(self) -> object: ...
+
+
+def transient_error_condition(
+    exception_types: tuple[type[BaseException], ...],
+) -> retry_base:
+    """Retry ``exception_types`` and transient HTTP errors, never quota exhaustion."""
+    return (
+        retry_if_exception_type(exception_types)
+        | retry_if_exception(is_transient_http_error)
+    ) & retry_if_exception(lambda e: not is_quota_exhaustion_error(e))
 
 
 class _StopBeforeLongWait(stop_base):

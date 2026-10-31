@@ -53,6 +53,10 @@ jobs:
                   git checkout -b "$BRANCH_NAME"
                   echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
+            # Before any build step, so no .pr/ file is on disk when repository code runs.
+            - name: Remove temporary PR artifacts
+              run: python3 .github/scripts/remove_pr_artifacts.py
+
             - name: Set package version
               env:
                   INPUTS_VERSION: ${{ inputs.version }}
@@ -127,12 +131,16 @@ jobs:
 
                   ### Release Checklist
                   - [x] Version set to {version}
+                  - [x] Temporary `.pr/` artifacts removed
                   - [ ] Fix any deprecation deadlines if they exist
                   - [ ] Integration tests pass (tagged with `integration-test`)
                   - [ ] Behavior tests pass (tagged with `behavior-test`)
                   - [ ] Example tests pass (tagged with `test-examples`)
                   - [ ] Security scan passes (tagged with `security-scan`)
                   - [ ] Confirm any `release-note-required` PRs are accurately called out in the final release notes
+
+                  ### Updating this branch
+                  If `main` advances, refresh this branch as described in `.github/workflows/README-RELEASE.md` instead of using **Update branch**, so new `.pr/` artifacts are removed in the same update.
 
                   ### What happens on merge
                   When this PR is merged, the `create-release.yml` workflow will automatically:
