@@ -344,7 +344,12 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
 ]
 
 # Match token -> canonical LiteLLM ID for vision metadata overrides.
-VISION_MODEL_OVERRIDES: dict[str, str] = {}
+VISION_MODEL_OVERRIDES: dict[str, str] = {
+    # OpenHands exposes this verified model, but LiteLLM does not currently
+    # have metadata for its public model id. The Baseten-hosted equivalent is
+    # registered as vision-capable upstream.
+    "deepseek-v4.1-flash": "deepseek/deepseek-v4.1-flash",
+}
 
 
 @cache
@@ -559,6 +564,9 @@ def get_features(
             "supports_vision",
             overrides=overrides,
             metadata=model_info,
-            fallback=_model_supports_vision(model),
+            fallback=(
+                model_matches(model, VISION_MODEL_OVERRIDES)
+                or _model_supports_vision(model)
+            ),
         ),
     )
