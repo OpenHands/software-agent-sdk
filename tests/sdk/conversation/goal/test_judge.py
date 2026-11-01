@@ -5,7 +5,12 @@ from typing import cast
 import pytest
 from pydantic import PrivateAttr
 
-from openhands.sdk.conversation.goal import GoalVerdict, judge_goal
+from openhands.sdk.conversation.goal import (
+    GoalContinue,
+    GoalController,
+    GoalVerdict,
+    judge_goal,
+)
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.testing import TestLLM
 
@@ -78,6 +83,60 @@ def test_judge_goal_parses_verdict(response, score, complete, missing):
     assert verdict.score == score
     assert verdict.complete is complete
     assert verdict.missing == missing
+
+
+@pytest.mark.parametrize(
+    "score_json",
+    [
+        "NaN",
+        '"NaN"',
+        "Infinity",
+        '"Infinity"',
+        "-Infinity",
+        '"-Infinity"',
+        "1e400",
+        '"1e400"',
+        str(10**400),
+    ],
+)
+def test_goal_controller_continues_on_non_finite_or_overflowing_score(score_json):
+    response = '{"score": ' + score_json + ', "missing": "tests not run"}'
+    controller = GoalController("run tests", _judge(response), max_iterations=2)
+
+    step = controller.on_run_finished([])
+
+    assert isinstance(step, GoalContinue)
+    assert step.verdict.score == 0.0
+    assert step.verdict.complete is False
+    assert step.verdict.missing == "tests not run"
+
+
+@pytest.mark.parametrize(
+    ("score_json", "score", "complete"),
+    [
+        ("1.5", 1.0, True),
+        ("-0.5", 0.0, False),
+        ("0.4", 0.4, False),
+        ('"0.4"', 0.4, False),
+        ("1e308", 1.0, True),
+    ],
+)
+def test_judge_goal_preserves_finite_score_clamping(score_json, score, complete):
+    verdict = judge_goal(_judge('{"score": ' + score_json + "}"), "run tests", [])
+
+    assert verdict.score == score
+    assert verdict.complete is complete
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_judge_goal_preserves_explicit_completion_with_non_finite_score(complete):
+    response = '{"score": NaN, "complete": ' + str(complete).lower() + "}"
+
+    verdict = judge_goal(_judge(response), "run tests", [])
+
+    assert verdict.score == 0.0
+    assert verdict.complete is complete
+    assert verdict.missing == ""
 
 
 def test_judge_goal_disables_streaming_on_judge_llm():
