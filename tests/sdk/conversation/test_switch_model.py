@@ -70,13 +70,17 @@ def test_switch_acp_model_rejects_non_acp_agent():
         conv.switch_acp_model("haiku")
 
 
-def _make_acp_conversation(tmp_path) -> tuple[LocalConversation, ACPAgent]:
+def _make_acp_conversation(
+    tmp_path, *, strict: bool = False
+) -> tuple[LocalConversation, ACPAgent]:
     """A persisted ACP conversation with a faked-out live session.
 
     The fake ``_conn`` / ``_executor`` let ``set_acp_model`` issue its
     protocol call without launching a real ACP subprocess.
     """
-    agent = ACPAgent(acp_command=["echo", "test"], acp_model="model-a")
+    agent = ACPAgent(
+        acp_command=["echo", "test"], acp_model="model-a", acp_strict_model=strict
+    )
     agent._conn = MagicMock()
     agent._session_id = "sess-1"
     agent._agent_name = "codex-acp"
@@ -105,6 +109,41 @@ def _make_pre_session_acp_conversation(tmp_path) -> tuple[LocalConversation, ACP
         persistence_dir=str(tmp_path / "persist"),
     )
     return conv, agent
+
+
+def test_strict_live_switch_is_refused_and_the_receipt_is_unchanged(tmp_path):
+    conv, agent = _make_acp_conversation(tmp_path, strict=True)
+    agent._current_model_id = "model-a"
+    conv.state.agent_state = {
+        **conv.state.agent_state,
+        "acp_current_model_id": "model-a",
+    }
+
+    with pytest.raises(ValueError, match="not supported with acp_strict_model"):
+        conv.switch_acp_model("model-b")
+
+    agent._executor.run_async.assert_not_called()
+    assert conv.agent is agent
+    assert isinstance(conv.state.agent, ACPAgent)
+    assert conv.state.agent.acp_model == "model-a"
+    assert conv.state.agent_state["acp_current_model_id"] == "model-a"
+
+
+def test_strict_switch_before_session_defers_to_the_verified_start(tmp_path):
+    """No live session: the value is persisted and verified at session start."""
+    agent = ACPAgent(
+        acp_command=["echo", "test"], acp_model="model-a", acp_strict_model=True
+    )
+    agent._agent_name = "codex-acp"
+    conv = LocalConversation(
+        agent=agent, workspace=tmp_path, persistence_dir=str(tmp_path / "persist")
+    )
+
+    conv.switch_acp_model("model-b")
+
+    assert isinstance(conv.agent, ACPAgent)
+    assert conv.agent.acp_model == "model-b"
+    assert conv.agent.acp_strict_model is True
 
 
 def test_switch_acp_model_before_session_defers_and_persists(tmp_path):

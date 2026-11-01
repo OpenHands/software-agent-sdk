@@ -74,6 +74,7 @@ def classify_error(code: str, detail: str = "") -> ErrorClassification:
         "LLMBadRequestError",
         "ACPInitError",
         "ACPSpawnError",
+        "ACPModelSelectionRejected",
         "ACPPromptError",
         "NotFoundError",
         "LibTmuxException",

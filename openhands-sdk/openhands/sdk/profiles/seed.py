@@ -44,6 +44,7 @@ def build_seed_profile(
             name=name,
             acp_server=agent_settings.acp_server,
             acp_model=agent_settings.acp_model,
+            acp_strict_model=agent_settings.acp_strict_model,
             acp_session_mode=agent_settings.acp_session_mode,
             acp_prompt_timeout=agent_settings.acp_prompt_timeout,
             acp_startup_timeout=agent_settings.acp_startup_timeout,

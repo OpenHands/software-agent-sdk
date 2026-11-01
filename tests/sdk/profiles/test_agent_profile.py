@@ -192,6 +192,7 @@ def test_acp_profile_round_trips() -> None:
         name="my-acp",
         acp_server="codex",
         acp_model="gpt-5.5/medium",
+        acp_strict_model=True,
         acp_session_mode="full-access",
         acp_prompt_timeout=600.0,
         acp_command="codex-acp",
@@ -205,6 +206,7 @@ def test_acp_profile_round_trips() -> None:
     assert reloaded.agent_kind == "acp"
     assert reloaded.acp_server == "codex"
     assert reloaded.acp_model == "gpt-5.5/medium"
+    assert reloaded.acp_strict_model is True
     assert reloaded.acp_command == "codex-acp"
     assert reloaded.acp_args == ["--flag"]
     assert reloaded.mcp_server_refs is None
@@ -216,6 +218,7 @@ def test_acp_profile_minimal_defaults() -> None:
     assert isinstance(profile, ACPAgentProfile)
     assert profile.acp_server == "claude-code"
     assert profile.acp_model is None
+    assert profile.acp_strict_model is False
     assert profile.acp_session_mode is None
     assert profile.acp_prompt_timeout == 1800.0
     assert profile.acp_command is None

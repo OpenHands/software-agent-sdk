@@ -117,6 +117,7 @@ def test_server_info_reports_credential_binding_probe(client):
     assert {
         "profile_secret_scope_v1",
         "profile_persona_v1",
+        "profile_acp_strict_model_v1",
         "credential_binding_v1",
         "credential_binding_readiness_probe_v1",
         "credential_binding_activation_guard_v1",

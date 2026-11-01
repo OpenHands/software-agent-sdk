@@ -225,7 +225,10 @@ class ACPProviderInfo:
     ``{session_meta_key: {"options": {"model": <model>}}}`` passed to
     ``new_session()``. This is best-effort only: claude-agent-acp ignores it
     (#3654), so the authoritative initial selection is the protocol call gated
-    on :attr:`supports_set_session_model`.
+    on :attr:`supports_set_session_model`. It is not sent under
+    ``ACPAgent.acp_strict_model``: claude-agent-acp adds the seeded id to its
+    advertised model options unvalidated, which would let a model that does
+    not exist pass the strict exact-match check.
 
     Runtime switches use the mechanism the session advertised
     (``set_config_option`` or ``set_session_model``), gated on
@@ -389,8 +392,9 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # protocol call (#3654). On 0.44.0+ that call is
             # ``set_config_option(configId="model")`` rather than
             # ``set_session_model`` (auto-detected from session/new); the _meta
-            # payload (session_meta_key below) is still sent — harmless, and
-            # picks up the same model if a future CLI honours it.
+            # payload (session_meta_key below) is still sent unless
+            # acp_strict_model is set, and picks up the same model if a future
+            # CLI honours it.
             supports_set_session_model=True,
             supports_runtime_model_switch=True,
             session_meta_key="claudeCode",

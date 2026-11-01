@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>acp_strict_model: fail a session that cannot verify the selected model</title>
+<style>
+  body { font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: #1d2433; background: #f6f7f9; margin: 0; }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 28px 40px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 26px 0 8px; border-bottom: 1px solid #d9dde5; padding-bottom: 4px; }
+  p, li { max-width: 78ch; }
+  .lede { color: #4a5368; margin: 0 0 12px; }
+  .tag { display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 10px; margin-right: 6px; }
+  .add { background: #e2f4e8; color: #1c6b3a; }
+  .off { background: #e8edf7; color: #2d4a85; }
+  .gate { background: #fbf0dc; color: #8a5a00; }
+  code, pre { font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code { background: #eceff4; padding: 0 4px; border-radius: 3px; }
+  pre { background: #fff; border: 1px solid #d9dde5; border-radius: 6px; padding: 10px 12px; margin: 0; overflow-x: auto; white-space: pre-wrap; }
+  table { border-collapse: collapse; width: 100%; background: #fff; border: 1px solid #d9dde5; }
+  th, td { text-align: left; vertical-align: top; padding: 7px 10px; border-top: 1px solid #e6e9ef; }
+  th { background: #eef1f6; font-size: 12.5px; }
+  td.what { width: 21%; font-weight: 600; }
+  td.before { width: 30%; color: #6b7385; }
+  .bad { color: #a12a2a; font-weight: 600; }
+  .good { color: #1c6b3a; font-weight: 600; }
+  .note { background: #fff8e6; border-left: 3px solid #e0a800; padding: 8px 12px; margin: 10px 0; }
+</style>
+</head>
+<body>
+<main>
+<h1>Opt-in <code>acp_strict_model</code>: fail a session that cannot verify the selected model</h1>
+<p class="lede">
+  <span class="tag add">additive</span><span class="tag off">default off</span><span class="tag gate">profile field capability-gated</span>
+  The contract: with the flag on, a session starts or resumes only when it can be shown to run <code>acp_model</code>, and the model
+  cannot be changed on a live session.
+</p>
+
+<h2>Problem</h2>
+<p>
+  When the ACP server rejects <code>acp_model</code>, <code>_maybe_set_session_model</code> (fresh session) and
+  <code>_reapply_session_model_on_resume</code> (resume) log a warning and the session runs on the server's default model. That
+  tolerance is deliberate (the curated model list is a suggestion, not an access check) and stays the default. A deployment that
+  records which model ran (receipts, billing, evaluation) cannot accept it, and today the only way out is replacing four private
+  functions.
+</p>
+<p>
+  The server's acceptance is not evidence either. In <code>@agentclientprotocol/claude-agent-acp@0.63.0</code>
+  (<code>dist/acp-agent.js</code>), <code>setSessionConfigOption</code> (L3178 to L3263) accepts an exact option, the option's current value
+  even when it is not an option (L3209 to L3216), and a fuzzy match via <code>resolveModelPreference</code> (L3229 to L3239) whose
+  substring tier (L4997 to L5011) maps <code>"sonnettt"</code> onto <code>"sonnet"</code>. The <code>_meta</code> model seed sent with
+  <code>new_session</code> is also added to the advertised options unvalidated. Live, both started sessions whose recorded model the
+  server never ran.
+</p>
+
+<h2>Interface changes</h2>
+<table>
+  <tr><th>Surface</th><th>Before</th><th>After</th></tr>
+  <tr><td class="what"><code>ACPAgent</code></td><td class="before">no field</td>
+      <td><code>acp_strict_model: bool = False</code></td></tr>
+  <tr><td class="what"><code>ACPAgentSettings</code></td><td class="before">no field</td>
+      <td><code>acp_strict_model: bool = False</code>, in the <code>acp</code> settings section (MINOR); forwarded by <code>create_agent()</code></td></tr>
+  <tr><td class="what"><code>ACPAgentProfile</code></td><td class="before">no field (a profile launch could not enable strict)</td>
+      <td><code>acp_strict_model: bool = False</code>; copied by the resolver and the seed profile; launch ownership <code>PROFILE</code></td></tr>
+  <tr><td class="what"><code>/server_info</code> capabilities</td><td class="before">...<code>profile_persona_v1</code>...</td>
+      <td>adds <code>profile_acp_strict_model_v1</code> (profiles are <code>extra="forbid"</code>, so clients must know the server accepts the key)</td></tr>
+  <tr><td class="what">TypeScript client</td><td class="before"></td>
+      <td><code>'acp_strict_model'</code> in <code>ACP_SETTINGS_KEYS</code>; optional <code>acp_strict_model?: boolean</code> on <code>ACPAgentProfile</code></td></tr>
+  <tr><td class="what"><code>ConversationErrorEvent.code</code></td><td class="before">ACPAuthRequired, ACPStartupTimeout, ACPSpawnError, ACPInitError</td>
+      <td>adds <code>ACPModelSelectionRejected</code> (raised as <code>ACPModelSelectionRejectedError(model, agent_name, reason)</code>);
+      <code>classify_error</code> gives <code>kind=config, user_action="settings"</code>. Protocol errors keep their existing codes.</td></tr>
+  <tr><td class="what"><code>ACPAgent.set_acp_model</code> / <code>switch_acp_model</code></td><td class="before">live switch</td>
+      <td>under strict, a live switch raises <code>ValueError</code> (HTTP 400 on <code>/switch_acp_model</code>) before any server call:
+      "Live model switches are not supported with acp_strict_model; start a new conversation with the desired acp_model." A switch before
+      the first <code>run()</code> still persists and is verified at session start. Non-strict switching is unchanged.</td></tr>
+  <tr><td class="what"><code>_ACPClientConnection</code></td><td class="before">overrode <code>new_session</code> only</td>
+      <td>also overrides <code>load_session</code>, parsing into a response that keeps the legacy <code>models</code> block (ACP 0.12.1's
+      <code>LoadSessionResponse</code> drops it); <code>@compatible_class</code> plus <code>@param_model</code> route the camelCase
+      <code>newSession</code> / <code>loadSession</code> aliases through the overrides. The <code>newSession</code> alias bypass predates this PR.
+      Both apply in non-strict mode too.</td></tr>
+</table>
+
+<h2>Strict session start and resume</h2>
+<pre>new_session(cwd=..., mcp_servers=...)            # no _meta model seed under strict
+options = model options advertised by new_session / load_session
+if not options:                 raise Rejected("no model options")          # nothing sent
+if acp_model not in options:    raise Rejected("not one of ... options")    # exact match, nothing sent
+resp = set_config_option(model=...) [, reasoning_effort=...]                # errors propagate unwrapped
+set_config_option path: each value set must be present in resp and equal, else raise Rejected
+set_session_model path:  no model state by protocol; the exact pre-check is the only check</pre>
+<ul>
+  <li><b>Exact match first</b>, so no server fuzzy matching or current-value acceptance can stand in for the request. For a Codex
+      <code>model/effort</code> id the base model is matched, and both the model and the effort must be present in the final
+      <code>set_config_option</code> response (which carries the session's full option state) and equal to what was set. A value the
+      response omits fails closed, like a server that advertises no options.</li>
+  <li><b>No options means fail closed.</b> The flag exists to give a guarantee; a server that cannot say what it offers cannot give one.
+      claude-agent-acp returns options from both <code>newSession</code> and <code>loadSession</code> (L3970 to L3998).</li>
+  <li><b>A failure tears the session down.</b> <code>init_state</code> catches the error, calls <code>_cleanup()</code> (terminating the
+      subprocess), emits the typed event, sets ERROR and re-raises; <code>_initialized</code> and the persisted <code>agent_state</code> are not
+      updated, so no turn runs on a session that failed the check.</li>
+  <li><b>No live switches.</b> Verifying a switch on a running session needs restore, restart and turn-in-flight handling that kept
+      producing new gaps under review (pause bypassing a running check, nothing to restore to, an unverified Codex effort on restore). The
+      simpler contract is that a strict conversation's model is fixed once its session is verified; a different model means a new
+      conversation, or a switch before the first run.</li>
+</ul>
+<div class="note">
+  <b>Trade-offs.</b> Under strict, <code>acp_model</code> must be an id the server advertises for the session: a real but unlisted model
+  (for example a full dated id when the picker shows aliases) is rejected. A server that advertises no model options, or whose
+  <code>load_session</code> omits them, cannot be used with strict. Grouped select options are not flattened. Each case fails closed
+  with a reason naming what was missing. Live model switching is unavailable with the flag on. On legacy servers that select the model
+  with <code>set_session_model</code> (the UNSTABLE <code>models</code> capability, e.g. gemini-cli), the call returns no model state by
+  protocol, so verification there is the exact pre-check against the advertised list only; failing closed on the missing response would
+  make strict unusable on those servers.
+</div>
+
+<h2>Compatibility</h2>
+<ul>
+  <li>All new fields default to <code>False</code>; payloads without the key load unchanged. No persisted-settings or profile schema bump.</li>
+  <li>With the flag off, every request and code path is unchanged, including <code>set_acp_model</code> and
+      <code>agent_state["acp_current_model_id"]</code> handling. <code>_apply_acp_model</code> now returns its last response; non-strict callers ignore it.</li>
+  <li>The profile field is gated by <code>profile_acp_strict_model_v1</code>, following the <code>profile_persona_v1</code> precedent (#5449).</li>
+</ul>
+
+<h2>Verification</h2>
+<ul>
+  <li><code>TestACPStrictModel</code> drives <code>init_state</code> against a fake emulating 0.63.0's model handling (seed joins the options;
+      exact, current-value and substring acceptance; the response carries the options): near-miss rejected fresh and on resume with no
+      server call, unrelated apply errors keep <code>ACPInitError</code> / <code>ACPAuthRequired</code>, substitution rejected, no options fails
+      closed, offered models applied fresh and on resume, non-strict unchanged; plus helper-level tests including
+      <code>test_codex_effort_the_server_did_not_set_is_rejected</code>, <code>test_codex_effort_the_response_omits_is_rejected</code>,
+      <code>test_config_option_response_without_options_is_rejected</code> and
+      <code>test_legacy_set_session_model_path_relies_on_the_pre_check</code>.</li>
+  <li><code>TestACPStrictLiveSwitchRefused</code> (fresh, and after a strict resume) and
+      <code>test_strict_live_switch_is_refused_and_the_receipt_is_unchanged</code>: refused with no server call, model and receipt unchanged.
+      <code>test_strict_switch_before_session_defers_to_the_verified_start</code> pins the pre-run path.</li>
+  <li><code>TestSessionResponseParsing</code>: wire-shaped JSON through the real parser for <code>new_session</code>, <code>load_session</code>,
+      <code>newSession</code> and <code>loadSession</code>, legacy and config-option shapes.</li>
+  <li>Profile, settings, classification and route tests: <code>test_the_profile_strict_model_flag_reaches_the_launched_agent</code>,
+      <code>test_resolve_copies_profile_fields_and_fixed_values[acp]</code>, <code>test_acp_model_selection_rejected_is_a_settings_config_error</code>.</li>
+</ul>
+<p><b>Live, claude-agent-acp 0.63.0</b> (unauthenticated):</p>
+<pre><span class="good">strict=true, sonnettt (fresh)</span>     no set_config_option sent
+  OUTCOME: INIT_RAISED ACPModelSelectionRejectedError ... 'sonnettt' is not one of the session's model options
+          ['default', 'opus[1m]', 'sonnet', 'haiku']
+<span class="good">strict=true, sonnet (fresh)</span>       OUTCOME: INIT_OK   current_model_id='sonnet'
+<span class="good">  then live switch to haiku</span>       SWITCH_RAISED ValueError: Live model switches are not supported with acp_strict_model; ...
+                                    no set_config_option sent; acp_model and persisted acp_current_model_id stay 'sonnet'
+<span class="good">strict=true, sonnettt (resume)</span>    OUTCOME: INIT_RAISED ACPModelSelectionRejectedError ...
+<span class="good">strict=true, haiku (resume)</span>       OUTCOME: INIT_OK   current_model_id='haiku'
+
+<span class="bad">strict=false, sonnettt</span>    (unchanged default: _meta seed sent, option added)
+  OUTCOME: INIT_OK   current_model_id='sonnettt'</pre>
+<p>Not exercised live: a legacy-only <code>models</code> server (gemini-cli) and codex-acp; both are covered by the tests above.</p>
+</main>
+</body>
+</html>
