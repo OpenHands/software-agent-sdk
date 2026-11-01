@@ -62,6 +62,31 @@ def test_subscription_config_restores_credentials():
     assert restored._get_litellm_api_key_value() == "test-access"
 
 
+def test_shared_server_defers_subscription_materialization_without_filesystem(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("OH_OPENAI_SUBSCRIPTION_MODE", "disabled")
+    stored = CredentialStore()
+    stored.save(
+        OAuthCredentials(
+            vendor="openai",
+            access_token="other-user-secret",
+            refresh_token="other-user-refresh",
+            expires_at=int(time.time() * 1000) + 3600000,
+        )
+    )
+    llm = LLM.from_persisted(
+        {"model": "openai/gpt-5.6-sol", "auth_type": "subscription"}
+    )
+    assert llm.is_subscription
+    assert llm._subscription_credentials is None
+    assert "other-user-secret" not in llm.model_dump_json()
+    with pytest.raises(RuntimeError, match="disabled"):
+        llm._get_litellm_auth_values()
+    assert LLM.model_validate_json(llm.model_dump_json()).is_subscription
+
+
 def test_generate_pkce():
     """Test PKCE code generation."""
     verifier, challenge = _generate_pkce()
