@@ -2420,8 +2420,12 @@ class TestEventServiceStartWithRunningStatus:
     """Test cases for EventService.start handling of RUNNING execution status."""
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "status",
+        [ConversationExecutionStatus.RUNNING, ConversationExecutionStatus.PAUSING],
+    )
     async def test_start_sets_error_status_when_running_from_disk(
-        self, event_service, tmp_path
+        self, event_service, tmp_path, status
     ):
         """Test that start() sets ERROR status and adds AgentErrorEvent.
 
@@ -2466,8 +2470,7 @@ class TestEventServiceStartWithRunningStatus:
                 llm_response_id="response_1",
             )
 
-            # Set up mock state with RUNNING status and the unmatched action
-            mock_state.execution_status = ConversationExecutionStatus.RUNNING
+            mock_state.execution_status = status
             mock_state.events = [unmatched_action]
             mock_state.stats = MagicMock()
 

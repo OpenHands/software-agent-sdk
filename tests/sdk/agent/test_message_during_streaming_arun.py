@@ -18,8 +18,11 @@ from pydantic import PrivateAttr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
-from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import MessageEvent
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
+from openhands.sdk.event import MessageEvent, PauseEvent
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.llm_convertible import UserRejectObservation
 from openhands.sdk.llm import LLM, LLMResponse, Message, MessageToolCall, TextContent
@@ -360,6 +363,102 @@ async def test_message_during_confirmation_wait_on_final_iteration_still_rejects
         "the pending action must be rejected even when going IDLE on the "
         "final iteration, or the next run() call will silently execute it"
     )
+
+
+@pytest.mark.parametrize("superseding_message", [False, True])
+async def test_pause_during_llm_preserves_confirmation_handling(
+    tmp_path, monkeypatch, superseding_message
+):
+    llm = _InjectingAsyncConfirmLLM()
+    convo = LocalConversation(
+        agent=Agent(llm=llm, tools=[Tool(name="async_confirm_tool")]),
+        workspace=str(tmp_path),
+        visualizer=None,
+    )
+
+    async def completion(self, *, messages, **kwargs):
+        self._calls.append(" ".join(str(m) for m in messages))
+        if len(self._calls) == 1:
+            # Agent.astep has released the state lock for this LLM call.
+            await asyncio.to_thread(convo.pause)
+            if superseding_message:
+                await asyncio.to_thread(convo.send_message, "second message")
+            return _tool_call_response()
+        return _finishing_response()
+
+    monkeypatch.setattr(_InjectingAsyncConfirmLLM, "acompletion", completion)
+    try:
+        convo.set_confirmation_policy(AlwaysConfirm())
+        convo.send_message("first message")
+        await asyncio.wait_for(convo.arun(), timeout=5)
+        assert len(llm._calls) == 1
+        pending = ConversationState.get_unmatched_actions(convo.state.events)
+        if superseding_message:
+            assert not pending
+            assert any(isinstance(e, UserRejectObservation) for e in convo.state.events)
+            assert convo.state.execution_status == ConversationExecutionStatus.PAUSED
+        else:
+            assert len(pending) == 1
+            assert (
+                convo.state.execution_status
+                == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+            )
+            assert not any(isinstance(e, PauseEvent) for e in convo.state.events)
+            convo.reject_pending_actions("not approved")
+
+        await asyncio.wait_for(convo.arun(), timeout=5)
+        assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
+        assert len(llm._calls) == 2
+        if superseding_message:
+            assert _saw(llm._calls, "second message") == [1]
+    finally:
+        convo.close()
+
+
+@pytest.mark.parametrize("queued_message", [False, True])
+async def test_pause_during_final_llm_call_preserves_finished(
+    tmp_path, monkeypatch, queued_message
+):
+    """A pause that lands while the agent produces its final answer must not
+    turn FINISHED into PAUSED: resuming a "paused" finished turn would make
+    Agent.step() call the LLM again with nothing new to say. Only a message
+    queued during that step justifies PAUSED, so the resume picks it up."""
+    llm = _InjectingAsyncConfirmLLM()
+    convo = _make_conversation(llm, tmp_path)
+
+    async def completion(self, *, messages, **kwargs):
+        self._calls.append(" ".join(str(m) for m in messages))
+        if len(self._calls) == 1:
+            # Agent.astep has released the state lock for this LLM call.
+            await asyncio.to_thread(convo.pause)
+            assert convo.state.execution_status == ConversationExecutionStatus.PAUSING
+            if queued_message:
+                await asyncio.to_thread(convo.send_message, "second message")
+        return _finishing_response()
+
+    monkeypatch.setattr(_InjectingAsyncConfirmLLM, "acompletion", completion)
+    try:
+        convo.send_message("first message")
+        await asyncio.wait_for(convo.arun(), timeout=5)
+        assert len(llm._calls) == 1
+        pause_events = [e for e in convo.state.events if isinstance(e, PauseEvent)]
+        if queued_message:
+            assert convo.state.execution_status == ConversationExecutionStatus.PAUSED
+            assert len(pause_events) == 1
+        else:
+            assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
+            assert pause_events == []
+
+        await asyncio.wait_for(convo.arun(), timeout=5)
+        assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
+        if queued_message:
+            assert len(llm._calls) == 2
+            assert _saw(llm._calls, "second message") == [1]
+        else:
+            # Nothing was queued, so the resume has nothing to run.
+            assert len(llm._calls) == 1
+    finally:
+        convo.close()
 
 
 class _InjectingAsyncBudgetLLM(LLM):

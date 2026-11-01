@@ -2138,6 +2138,7 @@ class TestACPAgentStep:
     def test_step_sets_finished(self, tmp_path):
         agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
+        assert not agent.last_prompt_completed
 
         mock_client = _OpenHandsACPBridge()
         agent._client = mock_client
@@ -2145,6 +2146,7 @@ class TestACPAgentStep:
         agent._session_id = "test-session"
 
         def _fake_run_async(_coro, **_kwargs):
+            assert not agent.last_prompt_completed
             mock_client.accumulated_text.append("done")
 
         mock_executor = MagicMock()
@@ -2156,6 +2158,39 @@ class TestACPAgentStep:
         assert (
             conversation.state.execution_status == ConversationExecutionStatus.FINISHED
         )
+        assert agent.last_prompt_completed
+
+        # A new turn must not inherit the previous prompt's completion.
+        conversation.state.execution_status = ConversationExecutionStatus.RUNNING
+        agent.step(conversation, on_event=lambda _: None)
+        assert agent.last_prompt_completed
+
+    def test_step_defers_finished_while_pause_is_pending(self, tmp_path):
+        """A completed prompt under PAUSING leaves the outcome to the run loop,
+        which reports FINISHED or PAUSED at the boundary; the agent only records
+        that the prompt completed."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        def _fake_run_async(_coro, **_kwargs):
+            conversation.state.execution_status = ConversationExecutionStatus.PAUSING
+            mock_client.accumulated_text.append("done")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.PAUSING
+        )
+        assert agent.last_prompt_completed
 
     def test_step_no_user_message_finishes(self, tmp_path):
         agent = _make_agent()
@@ -2785,6 +2820,7 @@ class TestACPAgentAstep:
         agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
         emitted: list = []
+        assert not agent.last_prompt_completed
 
         mock_client = _OpenHandsACPBridge()
         mock_client.get_turn_usage_update = MagicMock(return_value=object())
@@ -2838,6 +2874,7 @@ class TestACPAgentAstep:
                     agent.astep(conversation, on_event=emitted.append)
                 )
                 await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
+                assert not agent.last_prompt_completed
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await task
@@ -2859,6 +2896,7 @@ class TestACPAgentAstep:
             for e in emitted
         )
         assert agent._restart_session_on_next_turn is False
+        assert agent.last_prompt_completed
 
     def test_astep_cancelled_prompt_error_pauses_without_turn_error(self, tmp_path):
         """Explicit cancellation should not emit stale prompt errors."""

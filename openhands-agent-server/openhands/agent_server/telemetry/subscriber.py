@@ -53,7 +53,11 @@ logger = get_logger(__name__)
 _TERMINAL_STATUSES: Final[frozenset[str]] = frozenset(
     s.value for s in ConversationExecutionStatus if s.is_terminal()
 )
-_RUNNING_STATUS: Final[str] = ConversationExecutionStatus.RUNNING.value
+# Internal events are not projected for the wire, so a pending pause arrives
+# here as ``pausing``; it is still an observed run.
+_ACTIVE_STATUSES: Final[frozenset[str]] = frozenset(
+    s.value for s in ConversationExecutionStatus if s.is_active()
+)
 #: Reported when a run was observed but ended without a terminal state, e.g.
 #: the server stopped mid-run. Never a raw non-terminal status, which would put
 #: values like "paused" in a field named terminal_status.
@@ -133,7 +137,7 @@ class TelemetrySubscriber(Subscriber[Event]):
             self._terminal_emitted = status in _TERMINAL_STATUSES
             return
 
-        if status == _RUNNING_STATUS:
+        if status in _ACTIVE_STATUSES:
             self._run_observed = True
 
         if status in _TERMINAL_STATUSES:

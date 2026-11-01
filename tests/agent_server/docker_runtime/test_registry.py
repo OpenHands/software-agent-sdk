@@ -234,13 +234,20 @@ async def test_terminal_idle_runtime_is_stopped(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_running_idle_runtime_is_retained(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "status", [ConversationExecutionStatus.RUNNING, ConversationExecutionStatus.PAUSING]
+)
+async def test_running_idle_runtime_is_retained(tmp_path, monkeypatch, status):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id = uuid4()
     active = container(conversation_id)
     runtime._containers[conversation_id] = active
     runtime._last_access[conversation_id] = 0
-    set_execution_status(runtime, ConversationExecutionStatus.RUNNING)
+    set_execution_status(runtime, status)
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer, "stop", lambda self: stopped.append(self.container_id)
+    )
     monkeypatch.setattr(
         "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
     )
@@ -248,6 +255,7 @@ async def test_running_idle_runtime_is_retained(tmp_path, monkeypatch):
     await runtime._evict_idle_runtimes(10)
 
     assert runtime.get(conversation_id) is active
+    assert stopped == []
 
 
 @pytest.mark.asyncio

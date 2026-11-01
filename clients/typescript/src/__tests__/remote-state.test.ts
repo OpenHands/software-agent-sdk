@@ -1,6 +1,7 @@
 import type { Mock } from 'vitest';
 import { HttpClient } from '../client/http-client';
 import { RemoteState } from '../conversation/remote-state';
+import { ConversationExecutionStatus } from '../types/base';
 
 const originalFetch = global.fetch;
 
@@ -62,6 +63,32 @@ describe('RemoteState full_state normalization', () => {
     const { state } = makeState({ agent_status: 'idle' });
     await expect(state.getExecutionStatus()).resolves.toBe('idle');
   });
+
+  it.each(['rest', 'full_state', '__full_state__', 'execution_status'])(
+    'accepts PAUSING through %s before servers start emitting it',
+    async (source) => {
+      const { state } = makeState({ execution_status: 'pausing' });
+      if (source !== 'rest') {
+        await state.updateStateFromEvent({
+          id: 'pause-requested',
+          kind: 'ConversationStateUpdateEvent',
+          timestamp: '2024-01-01T00:00:00Z',
+          key: source,
+          value: source === 'execution_status' ? 'pausing' : { execution_status: 'pausing' },
+        });
+      }
+      await expect(state.getExecutionStatus()).resolves.toBe(ConversationExecutionStatus.PAUSING);
+
+      await state.updateStateFromEvent({
+        id: 'pause-completed',
+        kind: 'ConversationStateUpdateEvent',
+        timestamp: '2024-01-01T00:00:01Z',
+        key: 'execution_status',
+        value: 'paused',
+      });
+      await expect(state.getExecutionStatus()).resolves.toBe(ConversationExecutionStatus.PAUSED);
+    }
+  );
 
   it('throws a descriptive error when a required field is missing', async () => {
     const { state } = makeState({ execution_status: 'running' });

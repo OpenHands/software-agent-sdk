@@ -106,7 +106,8 @@ async def test_interrupt_without_arun_falls_back_to_pause(tmp_path):
     """interrupt() with no active arun() should fall back to pause()."""
     conv = _make_conversation(SlowLLM(sleep_seconds=60.0), tmp_path)
 
-    # Set to RUNNING manually to verify pause fallback
+    # Set to RUNNING manually to verify pause fallback. With no run loop to
+    # reach a step boundary, the pause completes immediately.
     conv._state.execution_status = ConversationExecutionStatus.RUNNING
 
     conv.interrupt()

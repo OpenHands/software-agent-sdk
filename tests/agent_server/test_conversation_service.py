@@ -1030,6 +1030,30 @@ async def test_restart_resumes_conversations_after_non_graceful_shutdown(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_startup_recovers_persisted_pausing_conversation(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace)),
+    )
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        info, _ = await primary.start_conversation(request)
+        event_service = await primary.get_event_service(info.id)
+        assert event_service is not None
+        state = await event_service.get_state()
+        with state:
+            state.execution_status = ConversationExecutionStatus.PAUSING
+
+    async with ConversationService(conversations_dir=conversations_dir) as restarted:
+        page = await restarted.search_conversations()
+        assert len(page.items) == 1
+        assert page.items[0].id == info.id
+        assert page.items[0].execution_status == ConversationExecutionStatus.ERROR
+
+
+@pytest.mark.asyncio
 async def test_startup_and_search_do_not_hydrate_idle_conversation(tmp_path):
     conversations_dir = tmp_path / "conversations"
     workspace_dir = tmp_path / "workspace"
@@ -1455,6 +1479,7 @@ class TestConversationServiceSearchConversations:
             [
                 ConversationExecutionStatus.IDLE,
                 ConversationExecutionStatus.RUNNING,
+                ConversationExecutionStatus.PAUSING,
                 ConversationExecutionStatus.FINISHED,
             ]
         ):
@@ -1493,8 +1518,14 @@ class TestConversationServiceSearchConversations:
         result = await conversation_service.search_conversations(
             execution_status=ConversationExecutionStatus.RUNNING
         )
-        assert len(result.items) == 1
-        assert result.items[0].execution_status == ConversationExecutionStatus.RUNNING
+        assert {info.execution_status for info in result.items} == {
+            ConversationExecutionStatus.RUNNING,
+            ConversationExecutionStatus.PAUSING,
+        }
+        assert all(
+            info.model_dump(mode="json")["execution_status"] == "running"
+            for info in result.items
+        )
 
         # Test filtering by non-existent status
         result = await conversation_service.search_conversations(
@@ -1765,6 +1796,7 @@ class TestConversationServiceCountConversations:
         statuses = [
             ConversationExecutionStatus.IDLE,
             ConversationExecutionStatus.RUNNING,
+            ConversationExecutionStatus.PAUSING,
             ConversationExecutionStatus.FINISHED,
             ConversationExecutionStatus.IDLE,  # Another IDLE one
         ]
@@ -1795,7 +1827,7 @@ class TestConversationServiceCountConversations:
 
         # Test counting all conversations
         result = await conversation_service.count_conversations()
-        assert result == 4
+        assert result == 5
 
         # Test counting by IDLE status (should be 2)
         result = await conversation_service.count_conversations(
@@ -1803,11 +1835,11 @@ class TestConversationServiceCountConversations:
         )
         assert result == 2
 
-        # Test counting by RUNNING status (should be 1)
+        # Pending pauses still appear as RUNNING during the migration window.
         result = await conversation_service.count_conversations(
             execution_status=ConversationExecutionStatus.RUNNING
         )
-        assert result == 1
+        assert result == 2
 
         # Test counting by non-existent status (should be 0)
         result = await conversation_service.count_conversations(

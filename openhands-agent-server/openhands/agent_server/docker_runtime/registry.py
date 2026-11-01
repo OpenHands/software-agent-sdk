@@ -28,7 +28,6 @@ from openhands.agent_server.models import (
 from openhands.agent_server.persistence.store import _get_persistence_dir
 from openhands.agent_server.storage import Reclaimer
 from openhands.sdk.conversation.request import ConversationContainerOptions
-from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.command import execute_command, sanitized_env
@@ -391,10 +390,7 @@ class DockerConversationRegistry(ConversationRegistry):
 
         for conversation_id, container in candidates:
             info = await service.get_conversation(conversation_id)
-            if (
-                info is None
-                or info.execution_status == ConversationExecutionStatus.RUNNING
-            ):
+            if info is None or info.execution_status.is_active():
                 continue
             async with self._lock:
                 if self._containers.get(conversation_id) is not container:

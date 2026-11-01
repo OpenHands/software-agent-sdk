@@ -32,14 +32,19 @@ def _fast_poll(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "active",
+    [ConversationExecutionStatus.RUNNING, ConversationExecutionStatus.PAUSING],
+)
+@pytest.mark.parametrize(
     "stopped",
     [
         ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
         ConversationExecutionStatus.PAUSED,
     ],
 )
-def test_a_continued_run_that_stops_for_the_user_answers_409_at_once(stopped):
-    events = _StatusSequence(ConversationExecutionStatus.RUNNING, stopped)
+def test_a_continued_run_that_stops_for_the_user_answers_409_at_once(stopped, active):
+    # A pending pause (PAUSING) is still an observed run for this turn.
+    events = _StatusSequence(active, stopped)
 
     status_value = asyncio.run(
         _wait_for_reused_conversation_completion(

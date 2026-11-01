@@ -2027,6 +2027,8 @@ class ACPAgent(AgentBase):
     _skills_root: Path | None = PrivateAttr(default=None)
     _additional_directories_supported: bool = PrivateAttr(default=False)
     _restart_session_on_next_turn: bool = PrivateAttr(default=False)
+    # A completed prompt can still be PAUSING while async cleanup is pending.
+    _last_prompt_completed: bool = PrivateAttr(default=False)
     # Stream identity for the turn in flight; see stream_context.py. Held on
     # the agent rather than threaded through the finalizers because the ACP
     # turn already resolves through four of them.
@@ -2275,6 +2277,16 @@ class ACPAgent(AgentBase):
             return False
         provider = detect_acp_provider_by_agent_name(self._agent_name)
         return provider is not None and provider.supports_runtime_model_switch
+
+    @property
+    def last_prompt_completed(self) -> bool:
+        """Whether the latest step finalized a successful ACP prompt response.
+
+        Resets when a step starts. May be true even when cancellation propagates
+        after finalization, so callers can avoid replaying a completed prompt.
+        This does not mean that cleanup has finished or the conversation stopped.
+        """
+        return self._last_prompt_completed
 
     @property
     def has_live_acp_session(self) -> bool:
@@ -3903,7 +3915,9 @@ class ACPAgent(AgentBase):
                 tool_call_id=tc_id,
             )
         )
-        state.execution_status = ConversationExecutionStatus.FINISHED
+        self._last_prompt_completed = True
+        if state.execution_status != ConversationExecutionStatus.PAUSING:
+            state.execution_status = ConversationExecutionStatus.FINISHED
 
     def _emit_turn_timeout(
         self,
@@ -4069,6 +4083,7 @@ class ACPAgent(AgentBase):
         on_event: ConversationCallbackType,
         on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
+        self._last_prompt_completed = False
         state = conversation.state
 
         if self._restart_session_on_next_turn:
@@ -4247,6 +4262,7 @@ class ACPAgent(AgentBase):
         on_token: ConversationTokenCallbackType | None = None,
         prompt_message: MessageEvent | None = None,
     ) -> None:
+        self._last_prompt_completed = False
         state = conversation.state
 
         if self._restart_session_on_next_turn:
