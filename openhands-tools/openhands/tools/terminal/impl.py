@@ -437,7 +437,15 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         conversation: "LocalConversation | None" = None,
     ) -> TerminalObservation:
         """Execute *action* in single-session (non-pool) mode."""
-        if action.reset or self.session._closed:
+        # Self-heal: a session whose shell exited, was killed, or was declared
+        # unresponsive after a failed interrupt is replaced before the command
+        # is accepted, so the model never has to discover that itself.
+        if action.reset or self.session._closed or not self.session.is_alive():
+            if not action.reset and not self.session._closed:
+                logger.warning(
+                    "Terminal session is no longer alive; recreating it before "
+                    "running the next command"
+                )
             reset_result = self._reset_single_session()
 
             if action.command.strip():
