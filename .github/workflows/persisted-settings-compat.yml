@@ -35,6 +35,10 @@ jobs:
                   exit_code=${PIPESTATUS[0]}
                   exit "${exit_code}"
 
+            - name: Run conversation compatibility check
+              timeout-minutes: 10
+              run: uv run python .github/scripts/check_conversation_compat.py
+
             - name: Write persisted settings summary
               if: ${{ always() }}
               env:

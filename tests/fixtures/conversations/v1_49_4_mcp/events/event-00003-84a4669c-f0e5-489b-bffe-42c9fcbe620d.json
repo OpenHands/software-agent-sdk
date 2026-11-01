@@ -1,0 +1,35 @@
+{
+  "id": "84a4669c-f0e5-489b-bffe-42c9fcbe620d",
+  "timestamp": "2026-09-23T09:42:20.008374",
+  "source": "environment",
+  "parent_id": "a312ada5-45bd-4817-a9f5-7cdd69f832d0",
+  "tool_name": "terminal",
+  "tool_call_id": "call_terminal",
+  "observation": {
+    "content": [
+      {
+        "cache_prompt": false,
+        "type": "text",
+        "text": ""
+      }
+    ],
+    "is_error": false,
+    "command": "echo hello > notes.txt",
+    "exit_code": 0,
+    "timeout": false,
+    "metadata": {
+      "exit_code": 0,
+      "pid": -1,
+      "username": "fixture-user",
+      "hostname": "fixture-host",
+      "working_dir": "/fixture/workspace",
+      "py_interpreter_path": "/repo/.venv/bin/python",
+      "prefix": "",
+      "suffix": "\n[The command completed with exit code 0.]"
+    },
+    "kind": "TerminalObservation"
+  },
+  "action_id": "a312ada5-45bd-4817-a9f5-7cdd69f832d0",
+  "extended_content": [],
+  "kind": "ObservationEvent"
+}

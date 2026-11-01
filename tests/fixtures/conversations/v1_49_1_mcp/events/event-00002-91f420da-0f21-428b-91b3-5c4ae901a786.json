@@ -1,0 +1,32 @@
+{
+  "id": "91f420da-0f21-428b-91b3-5c4ae901a786",
+  "timestamp": "2026-09-23T09:42:01.583091",
+  "source": "agent",
+  "parent_id": "fb58d9b8-09d5-48fb-a7f1-c3a45a2e9374",
+  "thought": [
+    {
+      "cache_prompt": false,
+      "type": "text",
+      "text": ""
+    }
+  ],
+  "thinking_blocks": [],
+  "action": {
+    "command": "echo hello > notes.txt",
+    "is_input": false,
+    "reset": false,
+    "kind": "TerminalAction"
+  },
+  "tool_name": "terminal",
+  "tool_call_id": "call_terminal",
+  "tool_call": {
+    "id": "call_terminal",
+    "name": "terminal",
+    "arguments": "{\"command\": \"echo hello > notes.txt\"}",
+    "origin": "completion"
+  },
+  "llm_response_id": "test-response-1",
+  "security_risk": "UNKNOWN",
+  "summary": "terminal: {\"command\": \"echo hello > notes.txt\"}",
+  "kind": "ActionEvent"
+}

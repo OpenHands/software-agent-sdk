@@ -1,0 +1,32 @@
+{
+  "id": "6e0bc446-902c-42ba-b227-8d4ab8d0b72b",
+  "timestamp": "2026-09-23T09:42:20.017272",
+  "source": "agent",
+  "parent_id": "a99009c3-2b84-4a76-836d-1884b7819215",
+  "thought": [
+    {
+      "cache_prompt": false,
+      "type": "text",
+      "text": ""
+    }
+  ],
+  "thinking_blocks": [],
+  "action": {
+    "data": {
+      "path": "notes.txt"
+    },
+    "kind": "MCPToolAction"
+  },
+  "tool_name": "read_file",
+  "tool_call_id": "call_read_file",
+  "tool_call": {
+    "id": "call_read_file",
+    "name": "read_file",
+    "arguments": "{\"path\": \"notes.txt\"}",
+    "origin": "completion"
+  },
+  "llm_response_id": "test-response-3",
+  "security_risk": "UNKNOWN",
+  "summary": "read_file: {\"path\": \"notes.txt\"}",
+  "kind": "ActionEvent"
+}

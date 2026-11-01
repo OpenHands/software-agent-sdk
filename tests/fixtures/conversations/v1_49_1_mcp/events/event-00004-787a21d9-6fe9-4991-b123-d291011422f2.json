@@ -1,0 +1,31 @@
+{
+  "id": "787a21d9-6fe9-4991-b123-d291011422f2",
+  "timestamp": "2026-09-23T09:42:02.118234",
+  "source": "agent",
+  "parent_id": "4c058613-0f14-4fb6-a65e-338ce794aeef",
+  "thought": [
+    {
+      "cache_prompt": false,
+      "type": "text",
+      "text": ""
+    }
+  ],
+  "thinking_blocks": [],
+  "action": {
+    "command": "view",
+    "path": "/fixture/workspace/notes.txt",
+    "kind": "FileEditorAction"
+  },
+  "tool_name": "file_editor",
+  "tool_call_id": "call_file_editor",
+  "tool_call": {
+    "id": "call_file_editor",
+    "name": "file_editor",
+    "arguments": "{\"command\": \"view\", \"path\": \"/fixture/workspace/notes.txt\"}",
+    "origin": "completion"
+  },
+  "llm_response_id": "test-response-2",
+  "security_risk": "UNKNOWN",
+  "summary": "file_editor: {\"command\": \"view\", \"path\": \"/fixture/workspace/notes.txt\"}",
+  "kind": "ActionEvent"
+}
