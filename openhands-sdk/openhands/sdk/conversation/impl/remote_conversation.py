@@ -27,6 +27,7 @@ from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import (
     ConversationRunError,
+    RemoteConversationValueError,
     WebSocketConnectionError,
 )
 from openhands.sdk.conversation.secret_registry import (
@@ -1408,7 +1409,9 @@ class RemoteConversation(BaseConversation):
                 (only used when blocking=True). Default is 3600 seconds.
 
         Raises:
-            ConversationRunError: If the run fails or times out.
+            ConversationRunError: If the run fails or times out, including when
+                it ends in ``ERROR`` (e.g. the iteration limit) or ``STUCK``.
+                ``LocalConversation.run()`` returns with that status instead.
         """
         # Disarm and drain any stale terminal status events from previous runs
         # before arming for the new one. _run_armed gates full-state WS snapshots
@@ -1814,13 +1817,20 @@ class RemoteConversation(BaseConversation):
         conversation state by adding a condensation event to the history.
 
         Raises:
-            HTTPError: If the server returns an error (e.g., no condenser configured).
+            RemoteConversationValueError: If no condenser is configured. It is
+                both a ``ValueError`` and an ``httpx.HTTPStatusError`` (409).
+            httpx.HTTPStatusError: For other server errors.
         """
-        _send_request(
-            self._client,
-            "POST",
-            f"{CONVERSATIONS_PATH}/{self._id}/condense",
-        )
+        try:
+            _send_request(
+                self._client,
+                "POST",
+                f"{CONVERSATIONS_PATH}/{self._id}/condense",
+            )
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 409:
+                raise RemoteConversationValueError.from_http_error(error) from error
+            raise
 
     def fork(
         self,
@@ -1913,15 +1923,22 @@ class RemoteConversation(BaseConversation):
             event_id: Event to make the new HEAD, or ``None`` for the empty tree.
 
         Raises:
-            httpx.HTTPStatusError: If the server rejects the event id (e.g. 404
-                for an unknown event).
+            RemoteConversationValueError: If the server does not know the event
+                id. It is both a ``ValueError`` and an ``httpx.HTTPStatusError``
+                (404).
+            httpx.HTTPStatusError: For other server errors.
         """
-        _send_request(
-            self._client,
-            "POST",
-            f"{CONVERSATIONS_PATH}/{self._id}/navigate",
-            json={"event_id": event_id},
-        )
+        try:
+            _send_request(
+                self._client,
+                "POST",
+                f"{CONVERSATIONS_PATH}/{self._id}/navigate",
+                json={"event_id": event_id},
+            )
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 404:
+                raise RemoteConversationValueError.from_http_error(error) from error
+            raise
         self._state.refresh_from_server()
 
     def execute_tool(self, tool_name: str, action: "Action") -> "Observation":

@@ -7,6 +7,7 @@ subclasses.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -41,6 +42,7 @@ class GitProvider(str, Enum):
     GITLAB = "gitlab"
     BITBUCKET = "bitbucket"
     AZURE_DEVOPS = "azure_devops"
+    BITBUCKET_DATA_CENTER = "bitbucket_data_center"
 
 
 # Mapping of provider to secret name used in sandbox settings
@@ -49,6 +51,7 @@ PROVIDER_TOKEN_NAMES: dict[GitProvider, str] = {
     GitProvider.GITLAB: "gitlab_token",
     GitProvider.BITBUCKET: "bitbucket_token",
     GitProvider.AZURE_DEVOPS: "azure_devops_token",
+    GitProvider.BITBUCKET_DATA_CENTER: "bitbucket_data_center_token",
 }
 
 # Mapping of URL patterns to providers for auto-detection
@@ -150,12 +153,17 @@ class RepoSource(BaseModel):
         default=None,
         description="Optional branch, tag, or commit SHA to checkout.",
     )
-    provider: Literal["github", "gitlab", "bitbucket", "azure_devops"] | None = Field(
+    provider: (
+        Literal[
+            "github", "gitlab", "bitbucket", "azure_devops", "bitbucket_data_center"
+        ]
+        | None
+    ) = Field(
         default=None,
         description=(
-            "Git hosting provider (github, gitlab, bitbucket, azure_devops). "
-            "Required for short URL format (owner/repo). "
-            "Auto-detected for full URLs."
+            "Git hosting provider (github, gitlab, bitbucket, azure_devops, "
+            "bitbucket_data_center). Required for short URL format (owner/repo) "
+            "and for Bitbucket Data Center URLs. Auto-detected for other full URLs."
         ),
     )
 
@@ -201,6 +209,11 @@ class RepoSource(BaseModel):
             raise ValueError(
                 "Azure DevOps repositories need a full URL such as "
                 "https://dev.azure.com/org/project/_git/repo"
+            )
+        if self.provider == GitProvider.BITBUCKET_DATA_CENTER.value:
+            raise ValueError(
+                "Bitbucket Data Center repositories need a full URL such as "
+                "https://bitbucket.example.com/scm/PROJ/repo.git"
             )
         detected = _detect_provider_from_url(self.url)
         if not detected and not self.provider:
@@ -365,7 +378,9 @@ def _build_clone_url(
         lookalike = any(
             f".{host}." in f".{hostname}" for host in _provider_hosts(provider)
         )
-        if not explicit_provider or lookalike:
+        # Bitbucket Cloud has no self-hosted variant (that is Data Center),
+        # so its token never leaves bitbucket.org.
+        if not explicit_provider or lookalike or provider == GitProvider.BITBUCKET:
             return url
     if parsed.username:
         # Azure DevOps clone URLs name the organization as the user; keep it
@@ -374,6 +389,72 @@ def _build_clone_url(
 
     netloc = hostname if parsed.port is None else f"{hostname}:{parsed.port}"
     return urllib.parse.urlunparse(parsed._replace(netloc=f"{auth_prefix}{netloc}"))
+
+
+def _bitbucket_dc_clone_url(url: str) -> str:
+    """The `/scm/` clone URL of a Bitbucket Data Center repository.
+
+    Browse URLs (`/projects/PROJ/repos/repo`, `/users/name/repos/repo`) are
+    converted, keeping any context path; other URLs are used as given.
+    """
+    parsed = urllib.parse.urlparse(url)
+    match = re.match(r"^(.*?)/(projects|users)/([^/]+)/repos/([^/]+)", parsed.path)
+    if parsed.scheme != "https" or "/scm/" in parsed.path or not match:
+        return url
+    prefix, kind, owner, slug = match.groups()
+    if kind == "users":
+        owner = f"~{owner}"
+    path = f"{prefix}/scm/{owner}/{slug.removesuffix('.git')}.git"
+    return urllib.parse.urlunparse(parsed._replace(path=path, query="", fragment=""))
+
+
+def _bitbucket_dc_clone(url: str, token: str | None) -> tuple[str, dict[str, str]]:
+    """Clone URL and git config for a Bitbucket Data Center repository.
+
+    A `username:token` credential goes in the URL as Basic auth. An access or
+    OAuth token (bare, or stored as `x-token-auth:<token>`) is sent as a Bearer
+    header, which Data Center accepts on every version. The header is scoped to
+    the repository's host and passed through the environment, so it stays out
+    of argv and the clone's .git/config.
+    """
+    clone_url = _bitbucket_dc_clone_url(url)
+    parsed = urllib.parse.urlparse(clone_url)
+    hostname = (parsed.hostname or "").lower()
+    if not token or parsed.scheme != "https" or parsed.password or not hostname:
+        return clone_url, {}
+
+    username, _, secret = token.partition(":")
+    if not secret or username == "x-token-auth":
+        username, secret = "", secret or token
+    host = hostname if parsed.port is None else f"{hostname}:{parsed.port}"
+    if username:
+        quote = urllib.parse.quote
+        auth = f"{quote(username, safe='')}:{quote(secret, safe='')}@"
+        return urllib.parse.urlunparse(parsed._replace(netloc=auth + host)), {}
+    # A user the URL names (as Data Center's Clone dialog shows) stays.
+    netloc = f"{parsed.username}@{host}" if parsed.username else host
+    header = {f"http.https://{host}/.extraHeader": f"Authorization: Bearer {secret}"}
+    return urllib.parse.urlunparse(parsed._replace(netloc=netloc)), header
+
+
+def _git_config_env(config: dict[str, str]) -> dict[str, str] | None:
+    """The environment that adds `config` to git's own, or None if empty."""
+    if not config:
+        return None
+    env = dict(os.environ)
+    count = int(env.get("GIT_CONFIG_COUNT") or 0)
+    for index, (key, value) in enumerate(config.items(), start=count):
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = value
+    env["GIT_CONFIG_COUNT"] = str(count + len(config))
+    return env
+
+
+def _clone_source_url(repo: RepoSource) -> str:
+    """The URL a repository is cloned from, before any credentials."""
+    if repo.provider == GitProvider.BITBUCKET_DATA_CENTER.value:
+        return _bitbucket_dc_clone_url(repo.url)
+    return repo.url
 
 
 # Type for functions that fetch tokens by name (e.g., "github_token" -> token value)
@@ -418,11 +499,15 @@ def _checkout_sha(dest: Path, sha: str) -> bool:
 
 def _clone_single_repo(repo: RepoSource, dest: Path, token: str | None) -> bool:
     """Clone a single repository. Returns True on success."""
+    git_config: dict[str, str] = {}
     try:
         provider = repo.get_provider()
-        clone_url = _build_clone_url(
-            repo.url, provider, token, explicit_provider=repo.provider is not None
-        )
+        if provider == GitProvider.BITBUCKET_DATA_CENTER:
+            clone_url, git_config = _bitbucket_dc_clone(repo.url, token)
+        else:
+            clone_url = _build_clone_url(
+                repo.url, provider, token, explicit_provider=repo.provider is not None
+            )
         provider_str = provider.value
     except ValueError:
         # No provider detected (e.g., file:// URLs) - use URL as-is
@@ -436,7 +521,11 @@ def _clone_single_repo(repo: RepoSource, dest: Path, token: str | None) -> bool:
 
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=CLONE_TIMEOUT
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=CLONE_TIMEOUT,
+            env=_git_config_env(git_config),
         )
     except subprocess.TimeoutExpired:
         logger.warning(f"[clone] Timed out: {display_url}")
@@ -527,7 +616,7 @@ def clone_repos(
                 continue
 
             # Determine unique directory name
-            base_name = _sanitize_dir_name(_extract_repo_name(repo.url))
+            base_name = _sanitize_dir_name(_extract_repo_name(_clone_source_url(repo)))
             dir_name = _get_unique_dir_name(base_name, used_dirs)
             used_dirs.add(dir_name)
             dest = target_dir / dir_name

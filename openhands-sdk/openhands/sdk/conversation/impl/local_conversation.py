@@ -1990,6 +1990,14 @@ class LocalConversation(BaseConversation):
         - Creates and executes actions immediately
 
         Can be paused between steps
+
+        Reaching the iteration limit or getting stuck does not raise: the run
+        returns with ``state.execution_status`` set to ``ERROR`` or ``STUCK``.
+        ``RemoteConversation.run()`` raises ``ConversationRunError`` instead.
+
+        Raises:
+            ConversationRunError: If an error is raised during the run, such
+                as an LLM error.
         """
         with llm_call_context_scope(self._llm_call_context):
             self._run()
