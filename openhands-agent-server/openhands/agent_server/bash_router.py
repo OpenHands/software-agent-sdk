@@ -115,6 +115,13 @@ async def execute_bash_command(
     bash_event_service: BashEventService = Depends(get_bash_event_service),
 ) -> BashOutput:
     """Execute a bash command and wait for a result"""
+    if request.timeout is None:
+        raise HTTPException(
+            422,
+            "execute_bash_command needs a timeout; to run a command until it "
+            "is stopped, use start_bash_command with a null timeout and "
+            "bash_commands/{command_id}/stop",
+        )
     update_last_execution_time()
     _validate_cwd(request, bash_event_service)
     command, task = await bash_event_service.start_bash_command(request)

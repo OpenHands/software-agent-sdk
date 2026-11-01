@@ -306,10 +306,10 @@ class Config(BaseModel):
             "How long bash event files are retained on disk, in seconds. "
             "A background task purges events older than this window on a "
             "rolling basis. None (default) retains events indefinitely. "
-            "Should be set higher than the longest expected command timeout: "
+            "Should be set higher than the longest expected command run time: "
             "a command whose BashCommand file is purged mid-execution will "
             "complete normally, but its on-disk event history will be "
-            "incomplete. A value >= 2x max command timeout avoids this."
+            "incomplete. A value >= 2x max command run time avoids this."
         ),
     )
     static_files_path: Path | None = Field(

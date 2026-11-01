@@ -1293,6 +1293,47 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('BashClient.startCommand forwards a null timeout unchanged', async () => {
+    global.fetch = vi.fn().mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: 'bash-command-2',
+            timestamp: new Date().toISOString(),
+            command: 'make build',
+            timeout: null,
+            kind: 'BashCommand',
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+    ) as typeof fetch;
+
+    const client = new BashClient({ host: 'http://example.com' });
+    const fromString = await client.startCommand('make build', undefined, null);
+    await client.startCommand({ command: 'make build', timeout: null });
+
+    expect(fromString.timeout).toBeNull();
+    const bodies = (global.fetch as Mock).mock.calls.map(([, init]) => init.body);
+    expect(bodies).toEqual([
+      JSON.stringify({ command: 'make build', timeout: null }),
+      JSON.stringify({ command: 'make build', timeout: null }),
+    ]);
+  });
+
+  it('BashClient.executeCommand rejects a null timeout before sending', async () => {
+    global.fetch = vi.fn() as typeof fetch;
+
+    const client = new BashClient({ host: 'http://example.com' });
+
+    await expect(client.executeCommand({ command: 'make build', timeout: null })).rejects.toThrow(
+      /startCommand/
+    );
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   it('BashClient.stopCommand POSTs to the stop endpoint and swallows 404', async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {

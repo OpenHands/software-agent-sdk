@@ -134,9 +134,13 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         self,
         command: str,
         cwd: str | Path | None = None,
-        timeout: float = 30,
+        timeout: float | None = 30,
     ) -> str:
-        """Start a command and return its ID without waiting for completion."""
+        """Start a command and return its ID without waiting for completion.
+
+        A ``timeout`` of None lets the command run until it exits or
+        ``stop_command`` stops it.
+        """
         return self._execute(self._start_command_generator(command, cwd, timeout))
 
     def get_command_output(
