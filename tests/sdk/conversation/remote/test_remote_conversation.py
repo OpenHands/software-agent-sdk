@@ -739,6 +739,41 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    def test_token_callbacks_preserve_caller_callbacks(self, mock_ws_client):
+        self.setup_mock_client()
+        events: list[Event] = []
+        chunks: list[LLMStreamChunk] = []
+        callback = events.append
+        callbacks = [callback]
+
+        conversation = Conversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            visualizer=None,
+            callbacks=callbacks,
+            token_callbacks=[chunks.append],
+        )
+        try:
+            delta = StreamingDeltaEvent(content="Hel", reasoning_content="think")
+            message = MessageEvent(
+                source="agent", llm_message=Message(role="assistant")
+            )
+            socket_callback = mock_ws_client.call_args.kwargs["callback"]
+            socket_callback(delta)
+            socket_callback(message)
+
+            assert callbacks == [callback]
+            assert events == [delta, message]
+            assert len(chunks) == 1
+            assert chunks[0].choices[0].delta.content == "Hel"
+            assert chunks[0].choices[0].delta.reasoning_content == "think"
+            assert list(conversation.state.events) == [message]
+        finally:
+            conversation.close()
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_acp_remote_conversation_uses_unified_endpoint(self, mock_ws_client):
         acp_agent = ACPAgent(acp_command=["echo", "test"])
         conversation_id = str(uuid.uuid4())
@@ -2352,6 +2387,68 @@ class TestRemoteConversation:
         mock_ws_client.assert_called_once()
         call_args = mock_ws_client.call_args
         assert "callback" in call_args[1]  # Should have a callback parameter
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_preserves_callback_list(self, mock_ws_client):
+        self.setup_mock_client()
+        callback_calls = []
+        callback = callback_calls.append
+        callbacks = [callback]
+
+        conversation = RemoteConversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            callbacks=callbacks,
+            visualizer=None,
+        )
+        try:
+            assert callbacks == [callback]
+        finally:
+            conversation.close()
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversations_reusing_callbacks_keep_events_isolated(
+        self, mock_ws_client
+    ):
+        self.setup_mock_client()
+        callback_calls = []
+        callbacks = [callback_calls.append]
+        first = RemoteConversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            callbacks=callbacks,
+            visualizer=None,
+        )
+        try:
+            self.workspace = RemoteWorkspace(host=self.host, working_dir="/tmp")
+            self.setup_mock_client()
+            second = RemoteConversation(
+                agent=self.agent,
+                workspace=self.workspace,
+                callbacks=callbacks,
+                visualizer=None,
+            )
+            try:
+                event = MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user", content=[TextContent(text="Only for the second")]
+                    ),
+                )
+                second_ws_callback = mock_ws_client.call_args_list[1].kwargs["callback"]
+                second_ws_callback(event)
+
+                assert list(second.state.events) == [event]
+                assert callback_calls == [event]
+                assert list(first.state.events) == []
+            finally:
+                second.close()
+        finally:
+            first.close()
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
