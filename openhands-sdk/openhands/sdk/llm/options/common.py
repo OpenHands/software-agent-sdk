@@ -67,3 +67,10 @@ def is_openrouter(llm: LLM) -> bool:
     model = llm.model or ""
     base_url = llm.base_url or ""
     return model.startswith("openrouter/") or "openrouter.ai" in base_url
+
+
+def should_send_session_id_in_body(llm: LLM) -> bool:
+    """Use explicit request policy before direct-OpenRouter auto-detection."""
+    if llm.send_session_id_in_body is not None:
+        return llm.send_session_id_in_body
+    return is_openrouter(llm)

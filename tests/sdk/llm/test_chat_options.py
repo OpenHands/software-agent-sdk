@@ -25,6 +25,7 @@ class DummyLLM:
     reasoning_effort: str | None = None
     extended_thinking_budget: int | None = None
     litellm_extra_body: dict[str, Any] | None = None
+    send_session_id_in_body: bool | None = None
     # Align with LLM default; only emitted for models that support it
     prompt_cache_retention: str | None = "24h"
     openrouter_site_url: str = ""

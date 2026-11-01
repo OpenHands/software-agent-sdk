@@ -9,6 +9,7 @@ import asyncio
 import json
 import tempfile
 import threading
+from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -239,14 +240,23 @@ def test_run_scopes_unthreaded_llm_calls_on_shared_agent(monkeypatch):
     assert seen_session_ids == [str(conv1.id), str(conv2.id)]
 
 
-def test_shared_agent_context_reaches_live_llm_transport():
-    seen_session_ids: list[str | None] = []
+@pytest.mark.parametrize(
+    ("model", "send_session_id_in_body"),
+    [("openai/gpt-4o-mini", None), ("litellm_proxy/gpt-4o-mini", True)],
+)
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_shared_agent_context_reaches_live_llm_transport(
+    model, send_session_id_in_body, asynchronous
+):
+    seen_sessions: list[tuple[str | None, str | None]] = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             content_length = int(self.headers.get("Content-Length", "0"))
-            self.rfile.read(content_length)
-            seen_session_ids.append(self.headers.get("x-litellm-session-id"))
+            body = json.loads(self.rfile.read(content_length))
+            seen_sessions.append(
+                (self.headers.get("x-litellm-session-id"), body.get("session_id"))
+            )
             payload = json.dumps(
                 {
                     "id": "chatcmpl-context-test",
@@ -297,11 +307,12 @@ def test_shared_agent_context_reaches_live_llm_transport():
     conversations = []
     try:
         llm = LLM(
-            model="openai/gpt-4o-mini",
+            model=model,
             api_key=SecretStr("test-key"),
             base_url=f"http://127.0.0.1:{server.server_port}/v1",
             usage_id="live-context-test",
             stream=False,
+            send_session_id_in_body=send_session_id_in_body,
         )
         agent = _agent(llm)
         first = Conversation(agent=agent, visualizer=None)
@@ -310,12 +321,34 @@ def test_shared_agent_context_reaches_live_llm_transport():
         first.send_message("first")
         second.send_message("second")
 
-        llm.completion([Message(role="user", content=[TextContent(text="direct")])])
+        messages = [
+            Message(role="system", content=[TextContent(text="Answer briefly.")]),
+            Message(role="user", content=[TextContent(text="direct")]),
+        ]
+        if asynchronous:
 
-        first.run()
-        second.run()
+            async def run_conversations():
+                await llm.acompletion(messages)
+                await asyncio.gather(first.arun(), second.arun())
+                first.send_message("another turn")
+                await first.arun()
 
-        assert seen_session_ids == [None, str(first.id), str(second.id)]
+            asyncio.run(run_conversations())
+        else:
+            llm.completion(messages)
+            first.run()
+            second.run()
+            first.send_message("another turn")
+            first.run()
+
+        first_id, second_id = str(first.id), str(second.id)
+        assert seen_sessions[0] == (None, None)
+        assert Counter(seen_sessions[1:]) == Counter(
+            {
+                (first_id, first_id if send_session_id_in_body else None): 2,
+                (second_id, second_id if send_session_id_in_body else None): 1,
+            }
+        )
         assert first.state.execution_status == ConversationExecutionStatus.FINISHED
         assert second.state.execution_status == ConversationExecutionStatus.FINISHED
     finally:

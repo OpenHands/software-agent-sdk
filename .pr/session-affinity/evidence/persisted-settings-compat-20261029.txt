@@ -1,0 +1,27 @@
+::notice title=AgentProfile::Migrated fixture tests/sdk/persisted_settings_baselines/v1/agent_profile_default.json from schema_version 1 to 4
+::notice title=AgentSettings::Migrated fixture tests/sdk/persisted_settings_baselines/v1/agent_settings_acp.json from schema_version 1 to 9
+::notice title=AgentSettings::Migrated fixture tests/sdk/persisted_settings_baselines/v1/agent_settings_llm.json from schema_version 1 to 9
+::notice title=PersistedSettings::Migrated fixture tests/sdk/persisted_settings_baselines/v1/persisted_settings.json from schema_version 1 to 6
+::notice title=AgentProfile::Migrated fixture tests/sdk/persisted_settings_baselines/v2/agent_profile_default.json from schema_version 2 to 4
+::notice title=AgentProfile::Migrated fixture tests/sdk/persisted_settings_baselines/v2/agent_profile_tool_switches.json from schema_version 2 to 4
+::notice title=AgentProfile::Migrated fixture tests/sdk/persisted_settings_baselines/v2/agent_profile_tool_switches_explicit.json from schema_version 2 to 4
+::notice title=AgentSettings::Migrated fixture tests/sdk/persisted_settings_baselines/v2/agent_settings_openhands.json from schema_version 2 to 9
+::notice title=PersistedSettings::Migrated fixture tests/sdk/persisted_settings_baselines/v2/persisted_settings.json from schema_version 2 to 6
+::notice title=AgentProfile::Migrated fixture tests/sdk/persisted_settings_baselines/v3/agent_profile_default.json from schema_version 3 to 4
+::notice title=AgentProfile::Migrated fixture tests/sdk/persisted_settings_baselines/v3/agent_profile_tool_switches.json from schema_version 3 to 4
+::notice title=AgentSettings::Migrated fixture tests/sdk/persisted_settings_baselines/v3/agent_settings_openhands.json from schema_version 3 to 9
+::notice title=PersistedSettings::Migrated fixture tests/sdk/persisted_settings_baselines/v3/persisted_settings.json from schema_version 3 to 6
+::notice title=AgentSettings::Migrated fixture tests/sdk/persisted_settings_baselines/v4/agent_settings_openhands_provider.json from schema_version 4 to 9
+::notice title=PersistedSettings::Migrated fixture tests/sdk/persisted_settings_baselines/v4/persisted_settings.json from schema_version 4 to 6
+::notice title=AgentSettings::Migrated fixture tests/sdk/persisted_settings_baselines/v5/agent_settings_mcp_oauth.json from schema_version 5 to 9
+::notice title=AgentSettings::Migrated fixture tests/sdk/persisted_settings_baselines/v5/agent_settings_modify_params.json from schema_version 5 to 9
+::notice title=PersistedSettings::Migrated fixture tests/sdk/persisted_settings_baselines/v5/persisted_settings.json from schema_version 5 to 6
+::notice title=AgentSettings::Migrated fixture tests/sdk/persisted_settings_baselines/v6/agent_settings_acp.json from schema_version 6 to 9
+::notice title=AgentSettings::Migrated fixture tests/sdk/persisted_settings_baselines/v6/agent_settings_openhands.json from schema_version 6 to 9
+::notice title=AgentSettings::Migrated fixture tests/sdk/persisted_settings_baselines/v7/agent_settings_acp.json from schema_version 7 to 9
+::notice title=AgentSettings::Migrated fixture tests/sdk/persisted_settings_baselines/v7/agent_settings_openhands.json from schema_version 7 to 9
+::notice title=AgentSettings::Migrated fixture tests/sdk/persisted_settings_baselines/v8/agent_settings_acp.json from schema_version 8 to 9
+::notice title=AgentSettings::Migrated fixture tests/sdk/persisted_settings_baselines/v8/agent_settings_openhands.json from schema_version 8 to 9
+::notice title=AgentSettings::Migrated fixture tests/sdk/persisted_settings_baselines/v8/agent_settings_tool_switches.json from schema_version 8 to 9
+Validated 29 persisted settings fixture(s) under tests/sdk/persisted_settings_baselines
+Validated 8 baseline payload(s) from PyPI release openhands-sdk==1.59.0, openhands-agent-server==1.59.0
