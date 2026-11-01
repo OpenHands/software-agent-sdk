@@ -266,7 +266,7 @@ class HookExecutor:
                 include_default_tools=["FinishTool"],
                 system_prompt=hook.system_prompt,
             )
-            # hook_config=None disables hooks in the sub-conversation (no recursion)
+            # The evaluator must not inherit hooks from its workspace.
             conversation = LocalConversation(
                 agent=agent,
                 workspace=self.working_dir,
@@ -276,6 +276,7 @@ class HookExecutor:
                 visualizer=hook_visualizer,
                 max_iteration_per_run=hook.max_iterations,
                 _parent_llm_call_context=self.llm_call_context,
+                _load_ambient_plugins=False,
             )
             conversation.send_message(
                 f"Evaluate this {event_type} hook event and make your decision.\n\n"
