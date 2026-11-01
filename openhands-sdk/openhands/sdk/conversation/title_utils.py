@@ -9,6 +9,7 @@ from openhands.sdk.event.base import Event
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.redact import redact_api_key_literals
 
 
 logger = get_logger(__name__)
@@ -188,7 +189,7 @@ def generate_title_with_llm(
             return None
 
     except Exception as e:
-        logger.warning(f"Error generating conversation title with LLM: {e}")
+        logger.warning(f"Error generating conversation title with LLM: {redact_api_key_literals(str(e))}")
         # Non-fatal (we fall back to truncation), but let callers surface the
         # otherwise-invisible LLM error to the UI (issue #16686).
         if on_error is not None:
