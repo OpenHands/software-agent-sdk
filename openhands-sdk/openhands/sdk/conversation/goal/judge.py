@@ -123,8 +123,11 @@ def _parse_verdict(message: Message) -> GoalVerdict:
         score = 0.0
     score = max(0.0, min(1.0, score))
 
+    complete_value = data.get("complete")
+    complete = complete_value if isinstance(complete_value, bool) else score >= 1.0
+
     return GoalVerdict(
         score=score,
-        complete=bool(data.get("complete", score >= 1.0)),
+        complete=complete,
         missing=str(data.get("missing") or ""),
     )
