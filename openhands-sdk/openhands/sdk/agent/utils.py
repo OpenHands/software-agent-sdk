@@ -583,9 +583,10 @@ def _ensure_trailing_user_message(messages: list[Message]) -> None:
         "LLM history ends with an assistant message; appending a user turn so "
         "the request does not end with assistant prefill."
     )
-    messages.append(
-        Message(role="user", content=[TextContent(text=_TRAILING_ASSISTANT_NUDGE)])
-    )
+    nudge = Message(role="user", content=[TextContent(text=_TRAILING_ASSISTANT_NUDGE)])
+    # Pydantic drops private attrs passed to __init__, so mark it afterward.
+    nudge._request_only = True
+    messages.append(nudge)
 
 
 @overload
