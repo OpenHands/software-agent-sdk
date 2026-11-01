@@ -29,7 +29,8 @@ from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.models import StartConversationRequest
 from openhands.sdk import Agent
 from openhands.sdk.workspace import LocalWorkspace
-from tests.agent_server.stress.budgets import EVENT_LOOP_RESPONSIVENESS
+from tests.agent_server.stress.budgets import CPU, EVENT_LOOP_RESPONSIVENESS
+from tests.agent_server.stress.probe import ResourceProbe
 from tests.agent_server.stress.scripts import placeholder_llm
 
 
@@ -60,9 +61,25 @@ def _assert_within_budget(name: str, p95: float, p99: float) -> None:
     )
 
 
+def _assert_cpu_within_budget(name: str, peak_cpu_percent: float) -> None:
+    """Peak process CPU during an I/O-bound load must stay below a ceiling.
+
+    The sleeping-bash load waits on I/O, so its peak CPU utilization stays a
+    small fraction of a core. A busy-wait on the event loop pins a core and
+    drives the peak toward 100%, even when /health latency happens to stay
+    inside budget because the loop yields just often enough.
+    """
+    assert peak_cpu_percent < CPU.event_loop_max_cpu_percent, (
+        f"under load '{name}', peak process CPU = {peak_cpu_percent:.1f}% "
+        f"exceeded {CPU.event_loop_max_cpu_percent:.0f}%. The load is burning "
+        f"CPU rather than waiting on I/O — likely a busy-wait on the event loop."
+    )
+
+
 async def test_health_responsive_under_long_bash(
     client,
     bash_service: BashEventService,
+    probe: ResourceProbe,
 ):
     """A long bash command must not starve the event loop."""
     samples = EVENT_LOOP_RESPONSIVENESS.health_samples
@@ -70,6 +87,11 @@ async def test_health_responsive_under_long_bash(
     # Baseline: no load.
     p95_baseline, p99_baseline = await _measure_health_p95_p99(client, samples=samples)
     _assert_within_budget("baseline", p95_baseline, p99_baseline)
+
+    # Sample index at which the load begins; the CPU peak below considers only
+    # samples from here, so the baseline /health traffic that already ran does
+    # not count against the bash ceiling.
+    load_start_sample = len(probe.samples)
 
     bash_duration_s = 4
     resp = await client.post(
@@ -130,12 +152,16 @@ async def test_health_responsive_under_long_bash(
 
     quantiles = statistics.quantiles(latencies, n=100)
     _assert_within_budget("long_bash", quantiles[94], quantiles[98])
+    _assert_cpu_within_budget(
+        "long_bash", probe.peak_cpu_percent(since=load_start_sample)
+    )
 
 
 async def test_health_responsive_under_busy_listing(
     conversation_service: ConversationService,
     client,
     tmp_path,
+    probe: ResourceProbe,
 ):
     """High-volume conversation listing in parallel must not starve /health."""
     samples = EVENT_LOOP_RESPONSIVENESS.health_samples
@@ -177,6 +203,10 @@ async def test_health_responsive_under_busy_listing(
         await asyncio.sleep(0.1)
         p95, p99 = await _measure_health_p95_p99(client, samples=samples)
         _assert_within_budget("busy_listing", p95, p99)
+        # No CPU budget here: this load hammers listing in a tight in-process
+        # loop with no I/O wait, so it legitimately consumes ~one core. The
+        # CPU canary lives on the sleeping-bash scenario above, where the load
+        # is I/O-bound and CPU is a meaningful signal.
     finally:
         stop.set()
         await bg_task
