@@ -102,6 +102,23 @@ def parse_extension_source(source: str) -> tuple[SourceType, str]:
     )
 
 
+def resolve_extension_source(
+    source: str, repo_path: str | None = None
+) -> tuple[SourceType, str, str | None]:
+    """Parse a source and resolve an explicit or embedded repository subpath."""
+    source_type, url = parse_extension_source(source)
+    if source_type == SourceType.GITHUB:
+        _, subpath = _split_github_shorthand(source)
+        if subpath is not None:
+            if repo_path:
+                raise ExtensionFetchError(
+                    f"GitHub shorthand {source} already names a subdirectory; "
+                    "do not also pass repo_path"
+                )
+            repo_path = subpath
+    return source_type, url, repo_path
+
+
 def _resolve_local_source(url: str) -> Path:
     """Resolve a local extension source to a path.
 
@@ -204,17 +221,7 @@ def fetch_with_resolution(
     Raises:
         ExtensionFetchError: If fetching the extension fails.
     """
-    source_type, url = parse_extension_source(source)
-
-    if source_type == SourceType.GITHUB:
-        _, subpath = _split_github_shorthand(source)
-        if subpath is not None:
-            if repo_path:
-                raise ExtensionFetchError(
-                    f"GitHub shorthand {source} already names a subdirectory; "
-                    "do not also pass repo_path"
-                )
-            repo_path = subpath
+    source_type, url, repo_path = resolve_extension_source(source, repo_path)
 
     if source_type == SourceType.LOCAL:
         base_path = _resolve_local_source(url)

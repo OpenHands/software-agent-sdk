@@ -96,8 +96,9 @@ class StartChildConversationRequest(BaseModel):
         description=(
             "Workspace isolation for the child. 'worktree' runs it in a git "
             "worktree carved from the parent's workspace when that workspace is a "
-            "git repository; 'shared' runs it in the parent's directory. Backends "
-            "that manage workspaces themselves may ignore this."
+            "git repository with a usable base commit; otherwise it shares the "
+            "parent's directory. 'shared' always uses the parent's directory. "
+            "Backends that manage workspaces themselves may ignore this."
         ),
     )
 
@@ -443,9 +444,9 @@ class StartConversationRequest(ConversationConfig):
     server turns the source into the conversation's agent at launch; this model
     only checks that exactly one source is given.
 
-    Note: the agent lives here on the *request*, deliberately not on
+    Note: the agent and budget live here on the *request*, deliberately not on
     ``ConversationConfig``. The persisted record (``StoredConversation``) does
-    not carry the agent — its single source of truth is ``ConversationState`` /
+    not carry them — their single source of truth is ``ConversationState`` /
     ``base_state.json``.
     """
 
@@ -465,6 +466,18 @@ class StartConversationRequest(ConversationConfig):
         ),
     )
     agent: AgentBase = Field(default=cast(AgentBase, None))
+    max_budget_per_run: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "Hard cost ceiling in USD, checked against the conversation's "
+            "accumulated LLM cost across all of its LLMs after each agent step, "
+            "so a step may overshoot it. Despite the name, accumulated cost does "
+            "not reset between runs. When reached, the run stops with a "
+            "`MaxBudgetReached` error. `None` disables the check."
+        ),
+    )
     conversation_runtime: ConversationRuntime | None = Field(
         default=None,
         description=(

@@ -204,7 +204,9 @@ jobs:
               id: changed
               uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
               with:
+                  # Also run when a package that openhands-tools depends on changes.
                   files: |
+                      openhands-sdk/**
                       openhands-tools/**
                       tests/tools/**
                       pyproject.toml
@@ -336,7 +338,10 @@ jobs:
               id: changed
               uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
               with:
+                  # Also run when a package that openhands-agent-server depends on changes.
                   files: |
+                      openhands-sdk/**
+                      openhands-tools/**
                       openhands-agent-server/**
                       tests/agent_server/**
                       pyproject.toml
@@ -435,7 +440,11 @@ jobs:
               id: changed
               uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
               with:
+                  # Also run when a package that openhands-workspace depends on changes.
                   files: |
+                      openhands-sdk/**
+                      openhands-tools/**
+                      openhands-agent-server/**
                       openhands-workspace/**
                       tests/workspace/**
                       pyproject.toml
@@ -492,10 +501,13 @@ jobs:
               with:
                   files: |
                       tests/**
-                      openhands/**
+                      openhands-*/**
                       pyproject.toml
                       uv.lock
                       .github/workflows/tests.yml
+                      .github/scripts/remove_pr_artifacts.py
+                      .github/workflows/prepare-release.yml
+                      .github/workflows/precommit.yml
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'
