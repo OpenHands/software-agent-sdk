@@ -914,3 +914,13 @@ def test_find_third_party_files_collision_winner_deterministic(tmp_path, monkeyp
     monkeypatch.setattr(Path, "iterdir", lambda self: iter(entries))
     files = find_third_party_files(tmp_path, {"agents.md": "agents"})
     assert [f.name for f in files] == ["AGENTS.md"]
+
+def test_find_regular_md_files_recursive_skips_readme_any_case(tmp_path):
+    """A README in any letter case is skipped in recursive mode too."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "readme.md").write_text("docs")
+    (tmp_path / "skill-a.md").write_text("a")
+
+    files = find_regular_md_files(tmp_path, set())
+
+    assert [f.name for f in files] == ["skill-a.md"]
