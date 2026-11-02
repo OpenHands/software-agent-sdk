@@ -221,6 +221,28 @@ def test_fork_from_event_slices_the_branch():
         assert _by_id(fork.state.events, e3.id).parent_id == e1.id
 
 
+@pytest.mark.parametrize("from_leaf", [False, True], ids=["full", "branch-slice"])
+def test_fork_of_a_log_with_a_lost_event_file(from_leaf):
+    """A copy whose parent's file was lost links to the bridged parent instead
+    of being rejected, so the fork gets the source's branch."""
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp, delete_on_close=False)
+        e0 = _emit(conv, _msg("root"))
+        _emit(conv, _msg("a"))
+        e2 = _emit(conv, _msg("b"))
+        conv_id = conv.id
+        persist = Path(conv.state.persistence_dir)  # type: ignore[arg-type]
+        conv.close()
+        next(persist.glob("events/event-00001-*.json")).unlink()
+
+        resumed = _conversation(tmp, conversation_id=conv_id, delete_on_close=False)
+        fork = resumed.fork(from_event_id=e2.id if from_leaf else None)
+
+        assert _view_ids(resumed) == [e0.id, e2.id]
+        assert _view_ids(fork) == [e0.id, e2.id]
+        assert _by_id(fork.state.events, e2.id).parent_id == e0.id
+
+
 def test_fork_after_condensation_replays_correctly():
     """Forking from a condensation event replays it on the sliced branch."""
     with tempfile.TemporaryDirectory() as tmp:

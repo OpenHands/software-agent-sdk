@@ -38,7 +38,7 @@ ARG ENABLE_VSCODE=true
 # newly published Debian packages have a three-day observation period.
 ####################################################################################
 FROM python:3.13.15-slim-trixie AS python-runtime
-FROM node:24.21.0-trixie-slim AS node-runtime
+FROM node:24.22.1-trixie-slim AS node-runtime
 
 # pip 26.2.2 vendors urllib3 2.7.0 (CVE-2026-97689) and msgpack 1.1.2
 # (GHSA-6v7p-g79w-8964), and no pip release vendors the fixed versions yet.
@@ -253,13 +253,13 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     ARCH=$(uname -m); \
     case "$ARCH" in \
-      x86_64|amd64) NARCH=x64; NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6;; \
-      aarch64|arm64) NARCH=arm64; NODE_SHA256=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2;; \
+      x86_64|amd64) NARCH=x64; NODE_SHA256=6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6;; \
+      aarch64|arm64) NARCH=arm64; NODE_SHA256=dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e;; \
       *) echo "Unsupported architecture for ACP providers: '$ARCH'" >&2; exit 1;; \
     esac; \
-    NODE_TARBALL="/tmp/node-v24.21.0-linux-${NARCH}.tar.xz"; \
+    NODE_TARBALL="/tmp/node-v24.22.1-linux-${NARCH}.tar.xz"; \
     curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused \
-        "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
+        "https://nodejs.org/dist/v24.22.1/node-v24.22.1-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
     echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
     tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL"; \
     rm -f "$NODE_TARBALL"; \
@@ -504,6 +504,23 @@ RUN set -eux; \
     mv ${RELEASE_TAG}-linux-${arch} ${OPENVSCODE_SERVER_ROOT}; \
     cp ${OPENVSCODE_SERVER_ROOT}/bin/remote-cli/openvscode-server ${OPENVSCODE_SERVER_ROOT}/bin/remote-cli/code; \
     rm -f ${RELEASE_TAG}-linux-${arch}.tar.gz; \
+    \
+    # Replace the bundled Node.js (22.21.1 in v1.109.5) with 22.23.4, which
+    # fixes the Brotli decoder overflow CVE-2026-111497. No OpenVSCode Server
+    # release bundles a fixed Node yet; drop this once one does.
+    case "${arch}" in \
+      x64) NARCH=x64; NODE_SHA256=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce;; \
+      arm64) NARCH=arm64; NODE_SHA256=6287aa46b6c375d816e63ae66d024fbbfd70404825aabdfdf898a970871d2f4b;; \
+      armhf) NARCH=armv7l; NODE_SHA256=c9057c6a3b8fbb9651ed115c1e96d4a7281b7b9c9ca89fa05865c98ed7ffd437;; \
+      *) echo "Unsupported architecture for OpenVSCode Node: '${arch}'" >&2; exit 1;; \
+    esac; \
+    NODE_TARBALL="/tmp/node-v22.23.4-linux-${NARCH}.tar.xz"; \
+    wget -nv -O "$NODE_TARBALL" "https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-${NARCH}.tar.xz"; \
+    echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
+    tar -xJf "$NODE_TARBALL" -O "node-v22.23.4-linux-${NARCH}/bin/node" > ${OPENVSCODE_SERVER_ROOT}/node; \
+    chmod 755 ${OPENVSCODE_SERVER_ROOT}/node; \
+    rm -f "$NODE_TARBALL"; \
+    ${OPENVSCODE_SERVER_ROOT}/node --version; \
     \
     # Set proper ownership
     chown -R ${USERNAME}:${USERNAME} ${OPENVSCODE_SERVER_ROOT}

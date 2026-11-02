@@ -49,6 +49,7 @@ def expand_variable_references(
     check_env: bool = False,
     expand_defaults: bool = True,
     support_unbraced: bool = False,
+    on_unresolved: Callable[[str], None] | None = None,
 ) -> Any:
     """Expand variable references in data structures.
 
@@ -73,6 +74,8 @@ def expand_variable_references(
         check_env: If True, check os.environ for unresolved variables.
         expand_defaults: If True, apply default values for unresolved variables.
         support_unbraced: If True, support $VAR syntax in addition to ${VAR}.
+        on_unresolved: Called with the name of each reference that has no
+            default and that no source resolved; the reference is kept as is.
 
     Returns:
         Data with variable references expanded.
@@ -108,6 +111,8 @@ def expand_variable_references(
             return default_value
 
         # Return original if not found (preserves placeholder)
+        if on_unresolved is not None and default_value is None:
+            on_unresolved(var_name)
         return match.group(0)
 
     def expand_value(value: Any) -> Any:
@@ -179,6 +184,7 @@ def expand_mcp_variables(
     get_secret: SecretLookup | None = None,
     *,  # keyword-only after this (PEP 3102)
     expand_defaults: bool = True,
+    on_unresolved: Callable[[str], None] | None = None,
 ) -> dict:
     """Expand variables in MCP configuration.
 
@@ -201,6 +207,7 @@ def expand_mcp_variables(
         expand_defaults: If True, apply default values for unresolved variables.
             If False, preserve ${VAR:-default} as-is for later expansion.
             This allows deferred expansion when secrets are not yet available.
+        on_unresolved: See ``expand_variable_references``.
 
     Returns:
         Configuration with variables expanded.
@@ -215,6 +222,7 @@ def expand_mcp_variables(
         check_env=True,
         expand_defaults=expand_defaults,
         support_unbraced=False,
+        on_unresolved=on_unresolved,
     )
 
     if not isinstance(expanded_config, dict):
@@ -225,6 +233,8 @@ def expand_mcp_variables(
 def expand_mcp_servers(
     servers: Mapping[str, MCPServer],
     get_secret: SecretLookup | None = None,
+    *,
+    on_unresolved: Callable[[str], None] | None = None,
 ) -> dict[str, MCPServer]:
     """Expand ``${VAR}`` placeholders in MCP servers, applying defaults.
 
@@ -244,6 +254,7 @@ def expand_mcp_servers(
         {},
         get_secret=get_secret,
         expand_defaults=True,
+        on_unresolved=on_unresolved,
     )
     return {**servers, **coerce_mcp_config(expanded["mcpServers"])}
 
