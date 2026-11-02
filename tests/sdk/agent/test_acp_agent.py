@@ -4792,6 +4792,43 @@ class TestACPToolCallEmission:
 # ---------------------------------------------------------------------------
 
 
+def _run_fork(
+    agent: ACPAgent,
+    prompt: Any,
+    fork_id: str = "fork-session",
+    close: Any = None,
+) -> Any:
+    """Run ``ask_agent()`` against a mock connection and return that connection."""
+    fork_response = MagicMock()
+    fork_response.session_id = fork_id
+    conn = _agent_conn(agent)
+    conn.fork_session = AsyncMock(return_value=fork_response)
+    conn.prompt = AsyncMock(side_effect=prompt)
+    conn.close_session = AsyncMock() if close is None else close
+
+    def _run_async(coro_fn, **_kwargs):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro_fn())
+        finally:
+            loop.close()
+
+    agent._executor = MagicMock()
+    agent._executor.run_async = _run_async
+    return conn
+
+
+def _fork_agent(agent_name: str = "") -> tuple[ACPAgent, Any]:
+    agent = _make_agent()
+    mock_client = _OpenHandsACPBridge()
+    agent._client = mock_client
+    agent._conn = MagicMock()
+    agent._session_id = "main-session"
+    agent._working_dir = "/workspace"
+    agent._agent_name = agent_name
+    return agent, mock_client
+
+
 class TestACPAgentAskAgent:
     def test_ask_agent_raises_if_not_initialized(self):
         """ask_agent() raises RuntimeError when _conn is None."""
@@ -4943,6 +4980,95 @@ class TestACPAgentAskAgent:
         # Fork state should be cleaned up
         assert mock_client._fork_session_id is None
         assert mock_client._fork_accumulated_text == []
+
+    def test_ask_agent_fork_disables_tools_for_claude(self):
+        """The claude-agent-acp fork gets no tools and the answer-only prompt."""
+        agent, mock_client = _fork_agent("claude-agent-acp")
+
+        async def _prompt(*_args, **_kwargs):
+            mock_client._fork_accumulated_text.append("answer")
+            response = MagicMock()
+            response.usage = None
+            return response
+
+        conn = _run_fork(agent, _prompt, "fork-claude")
+
+        assert agent.ask_agent("is it done yet?") == "answer"
+
+        fork_kwargs = conn.fork_session.await_args.kwargs
+        assert fork_kwargs["session_id"] == "main-session"
+        assert fork_kwargs["claudeCode"] == {"options": {"tools": []}}
+        prompt_text = conn.prompt.await_args.kwargs["prompt"][0].text
+        assert "is it done yet?" in prompt_text
+        assert "do not make any tool call and just answer my question" in prompt_text
+        conn.close_session.assert_awaited_once_with(session_id="fork-claude")
+
+    def test_ask_agent_fork_omits_tool_meta_for_other_providers(self):
+        """Non-claude harnesses get the wrapped prompt but no claude-only _meta."""
+        agent, mock_client = _fork_agent("codex-acp")
+
+        async def _prompt(*_args, **_kwargs):
+            mock_client._fork_accumulated_text.append("answer")
+            response = MagicMock()
+            response.usage = None
+            return response
+
+        conn = _run_fork(agent, _prompt, "fork-codex")
+
+        assert agent.ask_agent("what changed?") == "answer"
+
+        fork_kwargs = conn.fork_session.await_args.kwargs
+        assert "claudeCode" not in fork_kwargs
+        prompt_text = conn.prompt.await_args.kwargs["prompt"][0].text
+        assert "what changed?" in prompt_text
+        assert "do not make any tool call and just answer my question" in prompt_text
+        conn.close_session.assert_awaited_once_with(session_id="fork-codex")
+
+    def test_ask_agent_closes_fork_when_prompt_fails(self):
+        """A failing prompt still closes the fork and propagates the error."""
+        agent, mock_client = _fork_agent("claude-agent-acp")
+
+        async def _prompt(*_args, **_kwargs):
+            raise RuntimeError("fork prompt failed")
+
+        conn = _run_fork(agent, _prompt, "fork-error")
+
+        with pytest.raises(RuntimeError, match="fork prompt failed"):
+            agent.ask_agent("what?")
+
+        conn.close_session.assert_awaited_once_with(session_id="fork-error")
+        assert mock_client._fork_session_id is None
+
+    def test_ask_agent_closes_fork_on_timeout(self):
+        """A timed-out fork prompt still closes the fork."""
+        agent, mock_client = _fork_agent("claude-agent-acp")
+
+        async def _prompt(*_args, **_kwargs):
+            raise TimeoutError("fork timed out")
+
+        conn = _run_fork(agent, _prompt, "fork-timeout")
+
+        with pytest.raises(TimeoutError, match="fork timed out"):
+            agent.ask_agent("what?")
+
+        conn.close_session.assert_awaited_once_with(session_id="fork-timeout")
+
+    def test_ask_agent_close_failure_keeps_result(self):
+        """A failed close is logged and does not replace the fork's answer."""
+        agent, mock_client = _fork_agent("claude-agent-acp")
+
+        async def _prompt(*_args, **_kwargs):
+            mock_client._fork_accumulated_text.append("answer")
+            response = MagicMock()
+            response.usage = None
+            return response
+
+        async def _close(**_kwargs):
+            raise ValueError("close failed")
+
+        _run_fork(agent, _prompt, "fork-close", close=_close)
+
+        assert agent.ask_agent("still working?") == "answer"
 
 
 # ---------------------------------------------------------------------------
