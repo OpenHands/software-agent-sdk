@@ -159,9 +159,14 @@ from openhands.sdk.llm.utils.retry_mixin import RetryMixin, transient_error_cond
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.llm.utils.vertex_preflight import assert_vertex_sdk_available
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
+from openhands.sdk.logger.logger import apply_litellm_debug_flags
 
 
 logger = get_logger(__name__)
+
+# This module is the first place litellm is genuinely needed, so the debug flags
+# that used to be set while importing the logger package are applied here.
+apply_litellm_debug_flags()
 
 litellm.modify_params = True
 
