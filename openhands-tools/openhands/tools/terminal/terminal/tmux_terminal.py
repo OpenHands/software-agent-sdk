@@ -356,27 +356,47 @@ class TmuxTerminal(TerminalInterface):
         control character (``^L``) can leak into the shell input buffer over SSH
         connections.
 
-        Instead we run ``clear`` to erase the visible screen and ``clear-history``
-        to drop the scrollback, chained into a *single* tmux client invocation.
-        Spawning a client is the dominant cost here and this runs after every
-        command, so the previous two calls (``send_keys`` then ``cmd``) plus a
-        fixed 100 ms sleep added a hard floor to each command. Chaining is safe
-        because the shell runs the two commands in order, and ``libtmux`` scopes
-        ``send-keys`` to this pane.
+        ``clear`` erases the visible screen and ``clear-history`` drops the
+        scrollback. Spawning a tmux client dominates the cost and this runs after
+        every command, so we send as little as possible:
 
-        ``send_keys`` returns before the shell runs ``clear``, so we then wait for
-        the cleared shape (a bare prompt with nothing above it) up to
-        ``_CLEAR_PROMPT_TIMEOUT``. The pre-clear screen still shows content above
-        the prompt, so the shape is an unambiguous proof that ``clear`` ran. The
-        check reads only the visible rows: ``clear`` empties those immediately,
-        whereas its scrollback erase relies on ``ESC[3J``, which not every
-        ``clear`` emits -- waiting on the scrollback would stall the full timeout
-        there. The bound keeps a wedged pane from blocking the agent.
+        * If the visible screen is already empty there is nothing for ``clear``
+          to erase. ``clear-history`` alone drops the scrollback, and because it
+          is a synchronous tmux command (no shell round-trip) no ``clear`` is left
+          pending -- the prompt already on screen cannot be mistaken for the
+          result of a queued command.
+        * Otherwise the pre-clear screen shows content above the prompt, so the
+          cleared shape (a bare prompt with nothing above it) is an unambiguous
+          proof that ``clear`` ran. ``send_keys`` returns before the shell runs the
+          command, so we wait for the shape, bounded by ``_CLEAR_PROMPT_TIMEOUT``
+          so a wedged pane still makes progress.
+
+        The shape is read from the visible rows only. ``clear`` empties those
+        immediately, whereas its scrollback erase relies on ``ESC[3J``, which not
+        every ``clear`` emits -- waiting on the scrollback (``read_screen``) would
+        stall the full timeout there.
+
+        Every command is targeted at this pane. ``libtmux`` injects ``-t`` for the
+        command that follows the subcommand name, but the second command of a
+        ``;`` chain is a separate tmux command and would otherwise run against the
+        session's *active* pane, wiping an unrelated pooled pane's scrollback.
         """
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
-        self.pane.cmd("send-keys", "clear", "Enter", ";", "clear-history")
+        try:
+            visible_cleared = self._content_is_cleared(self._visible_screen())
+        except Exception:
+            visible_cleared = False
+            logger.debug("capture-pane failed while checking for a clean pane")
+
+        if visible_cleared:
+            self.pane.cmd("clear-history")
+            return
+
+        self.pane.cmd(
+            "send-keys", "clear", "Enter", ";", "clear-history", "-t", self.pane.id
+        )
         self._wait_for_clear(_CLEAR_PROMPT_TIMEOUT)
 
     def _wait_for_clear(self, timeout: float) -> bool:

@@ -111,3 +111,35 @@ def test_clear_screen_empties_visible_screen_and_scrollback(tmux_terminal):
     assert tmux_terminal._screen_is_cleared() is True
     # ...and so is the scrollback that ``read_screen`` spans.
     assert "SCROLL_1" not in tmux_terminal.read_screen()
+
+
+def test_clear_screen_does_not_queue_clear_on_a_clean_screen(tmux_terminal):
+    """A clean screen must not get a queued ``clear``.
+
+    ``send_keys`` returns before the shell runs the command, so if we queued a
+    ``clear`` here the wait could accept the prompt already on screen and return
+    with the ``clear`` still pending -- it would then run during the next command
+    and wipe its completion marker. The clean path must drop the scrollback with
+    a synchronous tmux command only, leaving nothing queued in the shell.
+    """
+    tmux_terminal.pane.cmd("send-keys", "clear", "Enter")
+    time.sleep(0.3)
+    assert tmux_terminal._screen_is_cleared() is True
+
+    calls: list[tuple] = []
+    original_cmd = tmux_terminal.pane.cmd
+
+    def record_cmd(*args, **kwargs):
+        calls.append(args)
+        return original_cmd(*args, **kwargs)
+
+    tmux_terminal.pane.cmd = record_cmd  # type: ignore[method-assign]
+    try:
+        tmux_terminal.clear_screen()
+    finally:
+        tmux_terminal.pane.cmd = original_cmd  # type: ignore[method-assign]
+
+    assert not any("send-keys" in call for call in calls), (
+        f"a clean screen must not queue `clear`, got {calls}"
+    )
+    assert any("clear-history" in call for call in calls)

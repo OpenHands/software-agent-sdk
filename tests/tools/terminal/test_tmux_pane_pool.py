@@ -15,10 +15,7 @@ from openhands.tools.terminal.constants import (
 from openhands.tools.terminal.definition import TerminalAction
 from openhands.tools.terminal.terminal import create_terminal_session
 from openhands.tools.terminal.terminal.tmux_pane_pool import TmuxPanePool
-from openhands.tools.terminal.terminal.tmux_terminal import (
-    _CLEAR_PROMPT_TIMEOUT,
-    TmuxTerminal,
-)
+from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
 
 
 def test_tmux_session_viewport_is_bounded():
@@ -385,6 +382,11 @@ def test_first_terminal_shell_gets_fallback_locale(
 # -- clear_screen on inactive pooled panes ----------------------------------
 
 
+def _history_size(terminal) -> int:
+    output = terminal.pane.cmd("display-message", "-p", "#{history_size}").stdout
+    return int(output[0].strip()) if output and output[0].strip() else 0
+
+
 def _wait_until(predicate, timeout: float = 2.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -394,40 +396,29 @@ def _wait_until(predicate, timeout: float = 2.0) -> bool:
     return False
 
 
-def test_clear_screen_completes_on_inactive_pooled_pane(pool):
-    """An inactive pane's clear must clear *that* pane and return quickly.
+def test_clear_screen_of_inactive_pane_does_not_touch_active_pane_scrollback(pool):
+    """Clearing an inactive pane must not erase the active pane's scrollback.
 
-    ``libtmux`` scopes a pane's commands to the pane, so clearing from an
-    inactive window must not depend on which window is active.
+    Each pooled pane lives in its own tmux window, and a chained
+    ``; clear-history`` is a separate tmux command that libtmux does not target.
+    Untargeted, it would run against the session's *active* pane -- so clearing an
+    inactive pane would drop an unrelated pane's scrollback while leaving its own.
     """
-    first = pool.checkout()
-    second = pool.checkout()
-    # Make the second pane's window active so the first pane is inactive.
-    pool._session.cmd("select-window", "-t", second.window.id)
-    assert _wait_until(lambda: pool._session.active_window.id == second.window.id), (
-        "could not make the second pane's window active"
-    )
+    active = pool.checkout()
+    inactive = pool.checkout()
+    pool._session.cmd("select-window", "-t", active.window.id)
+    assert _wait_until(lambda: pool._session.active_window.id == active.window.id)
 
-    first.send_keys("echo INACTIVE_CONTENT")
-    assert _wait_until(lambda: "INACTIVE_CONTENT" in first.read_screen())
+    active.send_keys("for i in $(seq 1 400); do echo ACTIVE_$i; done")
+    inactive.send_keys("for i in $(seq 1 400); do echo INACTIVE_$i; done")
+    assert _wait_until(lambda: _history_size(active) > 0)
+    assert _wait_until(lambda: _history_size(inactive) > 0)
 
-    start = time.perf_counter()
-    first.clear_screen()
-    elapsed = time.perf_counter() - start
+    inactive.clear_screen()
 
-    assert elapsed < _CLEAR_PROMPT_TIMEOUT, (
-        f"clear_screen on an inactive pooled pane took {elapsed * 1000:.0f} ms"
-    )
-    assert first._screen_is_cleared()
-    assert "INACTIVE_CONTENT" not in first.read_screen()
-
-
-def test_clear_screen_does_not_touch_other_pooled_panes(pool):
-    first = pool.checkout()
-    second = pool.checkout()
-    second.send_keys("echo OTHER_PANE_CONTENT")
-    assert _wait_until(lambda: "OTHER_PANE_CONTENT" in second.read_screen())
-
-    first.clear_screen()
-
-    assert "OTHER_PANE_CONTENT" in second.read_screen()
+    # The cleared pane lost its own scrollback...
+    assert _wait_until(lambda: _history_size(inactive) == 0)
+    assert "INACTIVE_1" not in inactive.read_screen()
+    # ...and the active pane kept all of its own.
+    assert _history_size(active) > 0
+    assert "ACTIVE_1" in active.read_screen()
