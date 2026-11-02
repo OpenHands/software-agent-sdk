@@ -534,7 +534,7 @@ def find_regular_md_files(
             and (root is None or resolves_within(f, root))
         ]
     for f in sorted(skill_dir.rglob("*.md")):
-        is_readme = f.name == "README.md"
+        is_readme = f.name.lower() == "readme.md"
         is_skill_md = f.name.lower() == "skill.md"
         is_in_excluded_dir = any(f.is_relative_to(d) for d in exclude_dirs)
         if not is_readme and not is_skill_md and not is_in_excluded_dir:
