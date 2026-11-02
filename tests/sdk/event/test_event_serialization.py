@@ -146,6 +146,56 @@ def test_agent_error_event_serialization() -> None:
     assert deserialized == event
 
 
+def test_error_origin_fields_round_trip_and_legacy_payloads() -> None:
+    """New origin fields survive a JSON round trip; older payloads still load."""
+    from openhands.sdk.event.conversation_error import ConversationErrorEvent
+    from openhands.sdk.event.error_origin import grouping_key_for
+
+    origin = "openhands.sdk.llm.llm.completion"
+    conversation_error = ConversationErrorEvent(
+        source="environment",
+        code="TypeError",
+        detail="secret /tmp/hidden sk-ant-SECRET",
+        origin=origin,
+    )
+    restored = ConversationErrorEvent.model_validate_json(
+        conversation_error.model_dump_json()
+    )
+    assert restored == conversation_error
+    assert restored.origin == origin
+    assert restored.grouping_key == grouping_key_for(origin, "TypeError")
+    assert "secret" not in (restored.origin or "")
+    assert "sk-ant-SECRET" not in (restored.grouping_key or "")
+
+    legacy = ConversationErrorEvent.model_validate(
+        {"source": "environment", "code": "TypeError", "detail": "legacy"}
+    )
+    assert legacy.origin is None
+    assert legacy.grouping_key is None
+    assert legacy.classification is not None
+    assert legacy.classification.kind == "internal"
+
+    agent_key = grouping_key_for(origin, "ValueError")
+    agent_error = AgentErrorEvent(
+        error="secret /tmp/hidden sk-ant-SECRET",
+        tool_name="bash",
+        tool_call_id="call_001",
+        origin=origin,
+        grouping_key=agent_key,
+    )
+    restored_agent = AgentErrorEvent.model_validate_json(agent_error.model_dump_json())
+    assert restored_agent.origin == origin
+    assert restored_agent.grouping_key == agent_key
+    assert restored_agent.classification is not None
+    assert restored_agent.classification.kind == "unknown"
+
+    legacy_agent = AgentErrorEvent.model_validate(
+        {"error": "legacy", "tool_name": "bash", "tool_call_id": "call_001"}
+    )
+    assert legacy_agent.origin is None
+    assert legacy_agent.grouping_key is None
+
+
 def test_condensation_serialization() -> None:
     """Test Condensation serialization/deserialization."""
     event = Condensation(
