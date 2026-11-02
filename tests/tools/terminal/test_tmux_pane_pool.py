@@ -395,13 +395,10 @@ def _wait_until(predicate, timeout: float = 2.0) -> bool:
 
 
 def test_clear_screen_completes_on_inactive_pooled_pane(pool):
-    """An inactive pane's clear must not wait out the timeout.
+    """An inactive pane's clear must clear *that* pane and return quickly.
 
-    Each pooled pane lives in its own tmux window, so an untargeted
-    ``tmux select-pane`` (used by the clear completion marker) resolves against
-    the session's *active* window and marks a different pane's title. The marker
-    wait then never sees its token and burns the full ``_CLEAR_PROMPT_TIMEOUT``
-    after every clean-screen clear.
+    ``libtmux`` scopes a pane's commands to the pane, so clearing from an
+    inactive window must not depend on which window is active.
     """
     first = pool.checkout()
     second = pool.checkout()
@@ -411,28 +408,26 @@ def test_clear_screen_completes_on_inactive_pooled_pane(pool):
         "could not make the second pane's window active"
     )
 
-    # A clean screen takes the completion-marker path.
-    first.send_keys("clear")
-    assert _wait_until(lambda: first._content_is_cleared(first.read_screen()))
-    assert first._content_is_cleared(first.read_screen())
+    first.send_keys("echo INACTIVE_CONTENT")
+    assert _wait_until(lambda: "INACTIVE_CONTENT" in first.read_screen())
 
     start = time.perf_counter()
     first.clear_screen()
     elapsed = time.perf_counter() - start
 
     assert elapsed < _CLEAR_PROMPT_TIMEOUT, (
-        f"clear_screen on an inactive pooled pane took {elapsed * 1000:.0f} ms; "
-        "the completion marker was not targeted at the pane"
+        f"clear_screen on an inactive pooled pane took {elapsed * 1000:.0f} ms"
     )
-    assert first._content_is_cleared(first.read_screen())
+    assert first._screen_is_cleared()
+    assert "INACTIVE_CONTENT" not in first.read_screen()
 
-    # The other pane's title must be untouched: no cross-talk between panes.
-    other_title = second._pane_title()
+
+def test_clear_screen_does_not_touch_other_pooled_panes(pool):
+    first = pool.checkout()
+    second = pool.checkout()
+    second.send_keys("echo OTHER_PANE_CONTENT")
+    assert _wait_until(lambda: "OTHER_PANE_CONTENT" in second.read_screen())
+
     first.clear_screen()
-    assert second._pane_title() == other_title
 
-
-def test_clear_marker_target_is_this_pane(pool):
-    terminal = pool.checkout()
-    target = terminal._clear_marker_target()
-    assert target.strip("\"'") == terminal.pane.id
+    assert "OTHER_PANE_CONTENT" in second.read_screen()

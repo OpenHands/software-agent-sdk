@@ -356,104 +356,58 @@ class TmuxTerminal(TerminalInterface):
         control character (``^L``) can leak into the shell input buffer over SSH
         connections.
 
-        Instead, we run the ``clear`` command to clear the visible screen, then
-        use tmux's ``clear-history`` to remove the scrollback buffer.
+        Instead we run ``clear`` to erase the visible screen and ``clear-history``
+        to drop the scrollback, chained into a *single* tmux client invocation.
+        Spawning a client is the dominant cost here and this runs after every
+        command, so the previous two calls (``send_keys`` then ``cmd``) plus a
+        fixed 100 ms sleep added a hard floor to each command. Chaining is safe
+        because the shell runs the two commands in order, and ``libtmux`` scopes
+        ``send-keys`` to this pane.
 
-        We used to sleep a fixed 100 ms here, which added a hard ~150 ms floor to
-        *every* command (this runs from ``_ready_for_next_command`` after each
-        command completes). Instead we wait until the screen has actually been
-        cleared, bounded by ``_CLEAR_PROMPT_TIMEOUT`` so a slow or wedged pane
-        still makes progress.
-
-        ``pane.send_keys`` submits the keys but does not wait for the shell to run
-        them, so for a moment the pane still shows the *previous* prompt. Which
-        proof of "``clear`` ran" is sound depends on the screen we start from:
-
-        * If it still shows content above the prompt, only running ``clear`` can
-          remove that content, so waiting for the cleared shape is a sound proof.
-        * If it is *already* clean (the caller ran ``clear`` themselves, say), the
-          shape proves nothing. We then attach an explicit completion marker to
-          the command and wait for the pane title to carry it. The marker is
-          targeted at this pane explicitly, because an untargeted
-          ``tmux select-pane`` resolves against the session's *active* window and
-          would mark a different pane in a pool.
+        ``send_keys`` returns before the shell runs ``clear``, so we then wait for
+        the cleared shape (a bare prompt with nothing above it) up to
+        ``_CLEAR_PROMPT_TIMEOUT``. The pre-clear screen still shows content above
+        the prompt, so the shape is an unambiguous proof that ``clear`` ran. The
+        check reads only the visible rows: ``clear`` empties those immediately,
+        whereas its scrollback erase relies on ``ESC[3J``, which not every
+        ``clear`` emits -- waiting on the scrollback would stall the full timeout
+        there. The bound keeps a wedged pane from blocking the agent.
         """
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
-        try:
-            already_clean = self._content_is_cleared(self.read_screen())
-        except Exception:
-            # Unknown state: take the provable path rather than trusting the shape.
-            already_clean = True
-
-        if already_clean:
-            token = f"openhands-clear-{uuid.uuid4().hex}"
-            target = self._clear_marker_target()
-            self.pane.send_keys(
-                f"clear; tmux select-pane -t {target} -T {token}", enter=True
-            )
-            self._wait_for_marker(token, _CLEAR_PROMPT_TIMEOUT)
-        else:
-            self.pane.send_keys("clear", enter=True)
-            self._wait_for_clear(_CLEAR_PROMPT_TIMEOUT)
-        self.pane.cmd("clear-history")
-
-    def _clear_marker_target(self) -> str:
-        """tmux target for the completion marker, scoped to this pane.
-
-        ``tmux select-pane`` without ``-t`` targets the session's *active*
-        window. A pooled pane lives in its own window, so an inactive pane's
-        marker would land on a different pane's title and ``_wait_for_marker``
-        would always time out. Target this pane's id explicitly, falling back to
-        the shell's ``$TMUX_PANE`` if the handle has no id.
-        """
-        pane_id = self.pane.id
-        return shlex.quote(pane_id) if pane_id else "$TMUX_PANE"
+        self.pane.cmd("send-keys", "clear", "Enter", ";", "clear-history")
+        self._wait_for_clear(_CLEAR_PROMPT_TIMEOUT)
 
     def _wait_for_clear(self, timeout: float) -> bool:
-        """Wait until the pane has actually been cleared by ``clear``.
+        """Wait until ``clear`` has emptied the visible screen.
 
-        Used when the pre-clear screen still had content above the prompt, so the
-        cleared shape cannot be the stale screen. Returns ``True`` once cleared,
-        ``False`` if ``timeout`` elapses first (the caller then proceeds anyway).
+        Returns ``True`` once the cleared shape appears, ``False`` if ``timeout``
+        elapses first (the caller then proceeds anyway).
         """
         deadline = time.monotonic() + timeout
         while True:
             try:
-                if self._screen_is_cleared():
+                if self._content_is_cleared(self._visible_screen()):
                     return True
             except Exception:
-                logger.debug("read_screen failed while waiting for clear")
+                logger.debug("capture-pane failed while waiting for clear")
             if time.monotonic() >= deadline:
                 return False
             time.sleep(_CLEAR_PROMPT_POLL_INTERVAL)
 
-    def _wait_for_marker(self, token: str, timeout: float) -> bool:
-        """Wait until the pane title carries ``token``, proving ``clear`` ran.
-
-        The marker is appended to the same command as ``clear``, so the title
-        changes only after the shell executed ``clear``. Returns ``True`` once
-        seen, ``False`` if ``timeout`` elapses first.
-        """
-        deadline = time.monotonic() + timeout
-        while True:
-            try:
-                if self._pane_title() == token:
-                    return True
-            except Exception:
-                logger.debug("reading pane title failed while waiting for clear")
-            if time.monotonic() >= deadline:
-                return False
-            time.sleep(_CLEAR_PROMPT_POLL_INTERVAL)
-
-    def _pane_title(self) -> str:
-        output = self.pane.cmd("display-message", "-p", "#{pane_title}").stdout
-        return output[0].strip() if output else ""
+    def _visible_screen(self) -> str:
+        """The pane's visible rows only, excluding the scrollback."""
+        return "\n".join(
+            map(
+                lambda line: line.rstrip(),
+                self.pane.cmd("capture-pane", "-J", "-p").stdout,
+            )
+        )
 
     def _screen_is_cleared(self) -> bool:
         """Whether the pane shows a bare prompt with no content above it."""
-        return self._content_is_cleared(self.read_screen())
+        return self._content_is_cleared(self._visible_screen())
 
     @staticmethod
     def _content_is_cleared(content: str) -> bool:
