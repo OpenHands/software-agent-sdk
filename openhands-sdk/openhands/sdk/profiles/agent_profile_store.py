@@ -317,7 +317,7 @@ class AgentProfileStore:
                     continue
                 try:
                     data = json.loads(path.read_text())
-                except (OSError, json.JSONDecodeError) as e:
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
                     logger.warning(
                         f"[AgentProfile Store] Skipping corrupted profile {name!r}: {e}"
                     )
