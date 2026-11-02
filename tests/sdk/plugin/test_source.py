@@ -74,3 +74,9 @@ class TestResolveSourcePath:
     def test_resolve_home_path(self):
         result = resolve_source_path("~/documents/skill")
         assert result == Path.home() / "documents" / "skill"
+
+    def test_resolve_file_url_with_localhost_authority(self):
+        assert resolve_source_path("file://localhost/tmp/skill") == Path("/tmp/skill")
+
+    def test_resolve_file_url_decodes_percent_escapes(self):
+        assert resolve_source_path("file:///tmp/my%20skill") == Path("/tmp/my skill")

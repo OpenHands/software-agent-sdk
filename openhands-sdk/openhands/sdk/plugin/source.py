@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import NamedTuple
+from urllib.parse import unquote, urlsplit
 
 from openhands.sdk.git.cached_repo import try_cached_clone_or_update
 from openhands.sdk.logger import get_logger
@@ -89,7 +90,9 @@ def resolve_source_path(
     """
     # Handle file:// URLs
     if source.startswith("file://"):
-        return Path(source[7:])
+        # Parse the URL properly so a ``localhost`` authority is not treated as
+        # a path component and percent-escapes are decoded.
+        return Path(unquote(urlsplit(source).path))
 
     # Handle GitHub URLs
     if gh := parse_github_url(source):
