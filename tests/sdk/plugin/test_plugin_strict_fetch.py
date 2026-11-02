@@ -14,7 +14,7 @@ from openhands.sdk.plugin import (
     fetch_plugin_with_resolution,
     preflight_plugin,
 )
-from openhands.sdk.plugin.strict_fetch import _sanitize_message, fetch_plugin_strict
+from openhands.sdk.plugin.strict_fetch import fetch_plugin_strict
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -213,24 +213,61 @@ def test_strict_fetch_does_not_cache_git_remote_credentials(tmp_path: Path):
     )
 
 
-def test_sanitize_message_masks_the_longest_overlapping_value():
-    """Same contract as SecretRegistry: no fragment of a secret survives."""
-    assert (
-        _sanitize_message("leak: abc123 here", ["abc", "abc123"]) == "leak: **** here"
-    )
+def test_fetch_error_masks_overlapping_secret_values_in_any_order(tmp_path: Path):
+    """A failed fetch must not leak any fragment of an overlapping secret.
+
+    The ref is echoed by git, so this drives the real fetch path rather than the
+    internal formatter: whichever order the referenced secret names are resolved
+    in, the returned error must contain neither value.
+    """
+    repo, _sha1, _sha2 = _make_plugin_repo(tmp_path)
+    secrets_by_name = {"AAA": "abc", "BBB": "abc123"}
+
+    for ordering in permutations(secrets_by_name):
+        with pytest.raises(PluginSourceError) as exc_info:
+            fetch_plugin_strict(
+                source=f"file://{repo}",
+                ref="${AAA}-${BBB}",
+                repo_path="plugins/demo",
+                secrets={name: secrets_by_name[name] for name in ordering},
+                cache_dir=tmp_path / "cache",
+                allow_local=True,
+                use_cache=False,
+            )
+
+        message = exc_info.value.message
+        assert exc_info.value.code == "ref_not_found"
+        # Both placeholders are fully masked and nothing trails them; a leak
+        # shows up as a fragment such as "123" after the second mask.
+        assert message.endswith("****-****")
+        for value in secrets_by_name.values():
+            assert value not in message
 
 
-def test_sanitize_message_masks_overlapping_values_in_any_order():
-    values = ["abc", "abc123"]
+def test_fetch_error_redacts_url_credentials_before_masking(tmp_path: Path):
+    """A URL credential echoed by git is masked, and never partly so.
 
-    for ordering in permutations(values):
-        assert (
-            _sanitize_message("leak: abc123 here", list(ordering)) == "leak: **** here"
+    Git strips credentials from the URLs it prints, so the credential here is
+    also expanded into the ref, which is the part git echoes verbatim. The
+    message must show the redacted URL and neither the secret value nor its
+    tail.
+    """
+    repo, _sha1, _sha2 = _make_plugin_repo(tmp_path)
+    secret_value = "SUPERSECRET"
+
+    with pytest.raises(PluginSourceError) as exc_info:
+        fetch_plugin_strict(
+            source=f"file://x-access-token:${{TOKEN}}@{repo}",
+            ref="${TOKEN}-missing",
+            repo_path="plugins/demo",
+            secrets={"TOKEN": secret_value},
+            cache_dir=tmp_path / "cache",
+            allow_local=True,
+            use_cache=False,
         )
 
-
-def test_sanitize_message_redacts_url_credentials_before_secret_masking():
-    message = "fatal: unable to access 'https://oauth2:abc123@example.com/o/r.git/'"
-    sanitized = _sanitize_message(message, ["abc", "abc123"])
-
-    assert sanitized == "fatal: unable to access 'https://****@example.com/o/r.git/'"
+    message = exc_info.value.message
+    assert exc_info.value.code == "ref_not_found"
+    assert "x-access-token" not in message
+    assert secret_value not in message
+    assert secret_value[1:] not in message
