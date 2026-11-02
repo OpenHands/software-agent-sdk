@@ -42,6 +42,7 @@ from openhands.sdk.agent.acp_agent import (
     _mask_json_value,
     _maybe_set_session_model,
     _mcp_config_to_acp_servers,
+    _NewSessionResponse,
     _npx_packages,
     _OpenHandsACPBridge,
     _preconfigured_credentials,
@@ -176,11 +177,11 @@ def _make_state(tmp_path) -> ConversationState:
 
 def test_logs_matching_acp_provider_version(caplog):
     with caplog.at_level("INFO"):
-        _log_acp_provider_version("codex-acp", "1.10.0")
+        _log_acp_provider_version("codex-acp", "2.2.2")
 
     assert "provider=codex" in caplog.text
-    assert "pinned_version='1.10.0'" in caplog.text
-    assert "reported_version='1.10.0'" in caplog.text
+    assert "pinned_version='2.2.2'" in caplog.text
+    assert "reported_version='2.2.2'" in caplog.text
     assert "mismatch" not in caplog.text
 
 
@@ -2828,7 +2829,10 @@ class TestACPAgentAstep:
                     autospec=True,
                     side_effect=lambda _agent: threading.Event().wait(0.05),
                 ),
-                patch.object(acp_agent_module, "_ACP_CANCEL_DRAIN_TIMEOUT", 0.01),
+                # Must exceed the 0.05s credential-sync delay above: with
+                # 0.01s the drain window expires before the released prompt
+                # can complete on loaded runners, flaking to `idle`.
+                patch.object(acp_agent_module, "_ACP_CANCEL_DRAIN_TIMEOUT", 5.0),
             ):
                 task = asyncio.create_task(
                     agent.astep(conversation, on_event=emitted.append)
@@ -6380,7 +6384,7 @@ class TestACPSessionIdPersistence:
         )
         stack.enter_context(
             patch(
-                "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                "openhands.sdk.agent.acp_agent._ACPClientConnection",
                 return_value=conn,
             )
         )
@@ -6453,6 +6457,44 @@ class TestACPSessionIdPersistence:
         conn.new_session.assert_awaited_once()
         conn.load_session.assert_not_awaited()
         assert agent._session_id == "fresh-sess"
+
+    @pytest.mark.parametrize("with_skills", [True, False])
+    def test_skills_directory_is_shared_with_the_session(self, tmp_path, with_skills):
+        context = (
+            AgentContext(
+                skills=[Skill(name="s", content="body", is_agentskills_format=True)]
+            )
+            if with_skills
+            else None
+        )
+        agent = _make_agent().model_copy(update={"agent_context": context})
+        state = _make_state(tmp_path)
+        agent._materialize_skills(state)
+        conn = self._make_conn()
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        extra = conn.new_session.await_args.kwargs["additional_directories"]
+        assert extra == ([str(agent._skills_root)] if with_skills else None)
+
+    def test_skills_directory_is_not_sent_when_the_server_lacks_the_capability(
+        self, tmp_path
+    ):
+        agent = _make_agent().model_copy(
+            update={
+                "agent_context": AgentContext(
+                    skills=[Skill(name="s", content="body", is_agentskills_format=True)]
+                )
+            }
+        )
+        state = _make_state(tmp_path)
+        agent._materialize_skills(state)
+        conn = self._make_conn()
+        conn.initialize.return_value.agent_capabilities.session_capabilities = None
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        assert conn.new_session.await_args.kwargs["additional_directories"] is None
 
     def test_cancel_drain_restart_keeps_retry_flag_when_init_fails(self, tmp_path):
         """A failed replacement session should leave the deferred restart armed."""
@@ -7511,7 +7553,7 @@ class TestACPSecretsEnvInjection:
             )
             stack.enter_context(
                 patch(
-                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    "openhands.sdk.agent.acp_agent._ACPClientConnection",
                     return_value=conn,
                 )
             )
@@ -7668,7 +7710,7 @@ class TestACPSecretRegistryEnvInjection:
             )
             stack.enter_context(
                 patch(
-                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    "openhands.sdk.agent.acp_agent._ACPClientConnection",
                     return_value=conn,
                 )
             )
@@ -7901,7 +7943,7 @@ class TestACPEnvConflictSuppression:
             )
             stack.enter_context(
                 patch(
-                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    "openhands.sdk.agent.acp_agent._ACPClientConnection",
                     return_value=conn,
                 )
             )
@@ -8491,21 +8533,29 @@ class TestDetectionAgainstRealSessionResponses:
             "gpt-5.5",
         ]
 
-    def test_gemini_046_uses_set_session_model(self):
-        # agent-client-protocol 0.12.1 bumped the ACP schema to v1.19.0, which
-        # dropped the UNSTABLE ``models`` extension from ``NewSessionResponse``.
-        # gemini-cli 0.46.0 selected its model via that legacy ``models`` block
-        # and advertises no ``model`` ``configOptions`` select, so once parsed
-        # through the 0.12.1 schema the block is no longer visible: the SDK
-        # detects no model-selection mechanism (current/available both absent,
-        # mechanism falls back to the legacy default) rather than hallucinating
-        # a model. ``_apply_acp_model`` then no-ops the legacy branch because
-        # ``ClientSideConnection.set_session_model`` was removed alongside it.
-        resp = NewSessionResponse.model_validate(_GEMINI_046_SESSION)
+    def test_gemini_046_models_block_needs_the_extended_response(self):
+        # agent-client-protocol 0.12.1 dropped the UNSTABLE ``models`` block
+        # from ``NewSessionResponse``; gemini-cli reports its models only there.
+        plain = NewSessionResponse.model_validate(_GEMINI_046_SESSION)
+        assert _extract_session_models(plain) == (None, None, False)
+
+        resp = _NewSessionResponse.model_validate(_GEMINI_046_SESSION)
         cur, avail, via = _extract_session_models(resp)
         assert via is False
-        assert cur is None
-        assert avail is None
+        assert cur == "gemini-3-flash-preview"
+        assert avail is not None
+        assert [m.model_id for m in avail][:3] == [
+            "auto",
+            "gemini-3-pro-preview",
+            "gemini-3-flash-preview",
+        ]
+
+    def test_malformed_models_block_is_ignored(self):
+        resp = _NewSessionResponse.model_validate(
+            {"sessionId": "s", "models": {"availableModels": [{"name": "no id"}]}}
+        )
+        assert resp.session_id == "s"
+        assert resp.models is None
 
 
 class TestApplyAcpModelNoFallback:
@@ -8759,6 +8809,118 @@ class TestMcpConfigToAcpServers:
             ("Authorization", "Bearer token-y")
         ]
 
+    def test_oauth_access_token_maps_to_bearer_header(self):
+        from acp.schema import HttpMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "linear": {
+                    "url": "https://mcp.linear.app/mcp",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {
+                            "tokens": {"access_token": "oauth-access-token"},
+                            "token_expires_at": 4102444800.0,
+                        },
+                    },
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
+        assert len(out) == 1
+        assert isinstance(out[0], HttpMcpServer)
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("Authorization", "Bearer oauth-access-token")
+        ]
+
+    def test_oauth_token_encrypted_at_rest_is_forwarded_decrypted(self):
+        from openhands.sdk.mcp.config import MCPServer
+
+        cipher = Cipher(secret_key="test-secret-key-0123456789")
+        stored = MCPServer.model_validate(
+            {
+                "url": "https://mcp.linear.app/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "state": {"tokens": {"access_token": "oauth-access-token"}},
+                },
+            }
+        ).model_dump(mode="json", context={"cipher": cipher})
+        assert stored["auth"]["state"]["tokens"]["access_token"] != (
+            "oauth-access-token"
+        )
+        server = MCPServer.model_validate(stored, context={"cipher": cipher})
+
+        out = _mcp_config_to_acp_servers(
+            {"linear": server}, self._caps(http=True, sse=False)
+        )
+        assert [h.value for h in out[0].headers] == ["Bearer oauth-access-token"]
+
+    def test_oauth_access_token_keeps_static_headers(self):
+        cfg = {
+            "mcpServers": {
+                "linear": {
+                    "url": "https://mcp.linear.app/mcp",
+                    "headers": {"X-Client": "canvas"},
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {"tokens": {"access_token": "oauth-access-token"}},
+                    },
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("X-Client", "canvas"),
+            ("Authorization", "Bearer oauth-access-token"),
+        ]
+
+    def test_oauth_without_stored_token_omits_authorization_header(self):
+        from acp.schema import HttpMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "granola": {
+                    "url": "https://mcp.granola.ai/mcp",
+                    "auth": {"strategy": "oauth2"},
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=False)
+        )
+        assert len(out) == 1
+        assert isinstance(out[0], HttpMcpServer)
+        assert out[0].headers == []
+
+    def test_oauth_access_token_maps_to_bearer_header_for_sse(self):
+        from acp.schema import SseMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "linear": {
+                    "url": "https://mcp.linear.app/sse",
+                    "transport": "sse",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {"tokens": {"access_token": "oauth-access-token"}},
+                    },
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(
+            self._config(cfg), self._caps(http=True, sse=True)
+        )
+        assert len(out) == 1
+        assert isinstance(out[0], SseMcpServer)
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("Authorization", "Bearer oauth-access-token")
+        ]
+
     def test_http_header_auth_forwards_authorization_header(self):
         cfg = {
             "mcpServers": {
@@ -8961,7 +9123,7 @@ class TestACPFileSecretMaterialisation:
             )
             stack.enter_context(
                 patch(
-                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    "openhands.sdk.agent.acp_agent._ACPClientConnection",
                     return_value=conn,
                 )
             )

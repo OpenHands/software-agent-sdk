@@ -34,8 +34,7 @@ class ConversationRegistry:
             can_resume=True,
         )
 
-    @property
-    def serves_persisted_event_reads(self) -> bool:
+    def serves_persisted_event_reads(self, _conversation_id: UUID) -> bool:
         """Whether read-only event routes should use shared persisted storage."""
         return False
 
@@ -82,6 +81,12 @@ class ConversationRegistry:
 
 
 def create_conversation_registry(config: Config) -> ConversationRegistry:
+    if config.conversation_runtime_selectable:
+        from openhands.agent_server.docker_runtime.hybrid import (
+            HybridConversationRegistry,
+        )
+
+        return HybridConversationRegistry(config)
     if config.conversation_runtime == "docker":
         from openhands.agent_server.docker_runtime.registry import (
             DockerConversationRegistry,

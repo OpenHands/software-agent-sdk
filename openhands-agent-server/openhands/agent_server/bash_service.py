@@ -4,7 +4,7 @@ import json
 import os
 import signal
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
@@ -72,6 +72,10 @@ class BashEventService:
         # Include microseconds so filename-based ordering reflects emission
         # order for sub-second bursts (e.g. fast `yes`-style floods that
         # emit several BashOutput chunks in the same wall-clock second).
+        # File names hold UTC times, so convert aware datetimes (e.g. a
+        # ``+02:00`` search bound) to UTC first; naive ones are taken as UTC.
+        if timestamp.tzinfo is not None:
+            timestamp = timestamp.astimezone(UTC)
         return timestamp.strftime("%Y%m%d%H%M%S%f")
 
     def _get_event_filename(self, event: BashEventBase) -> str:
@@ -229,13 +233,13 @@ class BashEventService:
                     start_index = i
                     break
 
-        page_slice = matched[start_index : start_index + limit]
-        next_page_id = None
-        if start_index + limit < len(matched):
-            next_page_id = matched[start_index + limit]
-
+        # Filter before counting toward ``limit``: slicing file names first let
+        # ``order__gt`` empty a page while ``next_page_id`` was still set.
+        # The cursor is the next event that passes the filter, so a page is
+        # never followed by an empty one.
         page_events: list[BashEventBase] = []
-        for name in page_slice:
+        next_page_id = None
+        for name in matched[start_index:]:
             event = self._load_event_from_file(self.bash_events_dir / name)
             if event is None:
                 continue
@@ -244,6 +248,9 @@ class BashEventService:
                 event_order = getattr(event, "order", None)
                 if event_order is not None and event_order <= order__gt:
                     continue
+            if len(page_events) >= limit:
+                next_page_id = name
+                break
             page_events.append(event)
 
         return BashEventPage(items=page_events, next_page_id=next_page_id)

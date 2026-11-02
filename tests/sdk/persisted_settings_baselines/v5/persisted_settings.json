@@ -1,8 +1,8 @@
 {
   "__expected__": {
-    "schema_version": 5,
+    "schema_version": 6,
     "active_profile": "fixture-v5-profile",
-    "agent_settings.schema_version": 8,
+    "agent_settings.schema_version": 9,
     "agent_settings.agent_kind": "openhands",
     "agent_settings.llm.model": "fixture-v5-persisted-llm",
     "agent_settings.tools": [

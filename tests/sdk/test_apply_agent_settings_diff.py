@@ -6,6 +6,7 @@ base, same-variant edits deep-merge. The settings stores previously hand-rolled
 this in several places; this exercises the single SDK owner.
 """
 
+import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import apply_agent_settings_diff, validate_agent_settings
@@ -141,6 +142,7 @@ def test_secret_in_base_survives_same_kind_merge() -> None:
     # diff touches an unrelated field; the base api_key must not be masked away.
     result = apply_agent_settings_diff(base, {"llm": {"model": "claude"}})
 
+    assert isinstance(result, OpenHandsAgentSettings)
     assert isinstance(result.llm.api_key, SecretStr)
     assert result.llm.api_key.get_secret_value() == "sk-SECRET"
     assert result.llm.model == "claude"
@@ -195,3 +197,23 @@ def test_llm_agent_settings_remains_importable() -> None:
     from openhands.sdk.settings.model import LLMAgentSettings as _LLM
 
     assert issubclass(_LLM, OpenHandsAgentSettings)
+
+
+@pytest.mark.parametrize("patch", [{}, {"persona": "updated"}])
+def test_diff_loads_unversioned_persisted_openhands_base(patch) -> None:
+    result = apply_agent_settings_diff(
+        {"agent_kind": "openhands", "enable_sub_agents": True}, patch
+    )
+    assert isinstance(result, OpenHandsAgentSettings)
+    if patch:
+        assert result.persona == "updated"
+
+
+@pytest.mark.parametrize("patch", [{}, {"acp_model": "sonnet"}])
+def test_diff_loads_unversioned_persisted_acp_base(patch) -> None:
+    result = apply_agent_settings_diff(
+        {"agent_kind": "acp", "llm": {"model": "old"}}, patch
+    )
+    assert isinstance(result, ACPAgentSettings)
+    assert result.acp_model == patch.get("acp_model")
+    assert "llm" not in result.model_dump()

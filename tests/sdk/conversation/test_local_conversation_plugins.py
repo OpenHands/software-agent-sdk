@@ -2,6 +2,7 @@
 
 import json
 import logging
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
@@ -262,6 +263,44 @@ class TestLocalConversationPlugins:
                             name="skills-only",
                             source=str(marketplace_dir),
                             auto_load=True,
+                        )
+                    ],
+                ),
+            )
+
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=workspace,
+            visualizer=None,
+        )
+        conversation._ensure_plugins_loaded()
+
+        assert conversation.agent.agent_context is not None
+        skill_names = {s.name for s in conversation.agent.agent_context.skills}
+        assert {"greet", "commit"} <= skill_names
+
+        conversation.close()
+
+    def test_auto_load_plain_skills_repository(self, tmp_path: Path, mock_llm):
+        """A registered repository without a manifest auto-loads its skills."""
+        repo = create_test_marketplace_with_standalone_skills(
+            tmp_path / "repo",
+            skills=["greet", "commit"],
+        )
+        shutil.rmtree(repo / ".plugin")
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        with patch(
+            "openhands.sdk.context.agent_context.load_available_skills",
+            return_value={},
+        ):
+            agent = Agent(
+                llm=mock_llm,
+                tools=[],
+                agent_context=AgentContext(
+                    registered_marketplaces=[
+                        MarketplaceRegistration(
+                            name="plain", source=str(repo), auto_load=True
                         )
                     ],
                 ),

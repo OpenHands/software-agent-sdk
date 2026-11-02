@@ -179,6 +179,25 @@ def test_openhands_provider_translates_only_for_litellm(mock_completion, mock_ge
     assert "base_url" not in persisted
 
 
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_digitalocean_provider_routes_to_openai_compatible_endpoint(mock_completion):
+    mock_completion.return_value = create_mock_litellm_response("ok")
+
+    llm = LLM(
+        model="digitalocean/glm-5.3",
+        api_key=SecretStr("do-key"),
+        usage_id="test-digitalocean",
+        num_retries=0,
+    )
+    llm.completion(messages=[Message(role="user", content=[TextContent(text="Hi")])])
+
+    _, kwargs = mock_completion.call_args
+    assert kwargs["model"] == "glm-5.3"
+    assert kwargs["custom_llm_provider"] == "openai"
+    assert kwargs["api_base"] == "https://inference.do-ai.run/v1"
+    assert llm.to_persisted()["model"] == "digitalocean/glm-5.3"
+
+
 @patch("openhands.sdk.llm.utils.model_info.httpx.get")
 def test_kimi_k2_5_uses_provider_defaults(mock_get):
     """Test that kimi-k2.5 uses provider defaults (None) for temperature and top_p."""
@@ -1181,9 +1200,9 @@ def test_llm_function_calling_can_be_disabled():
 
 def test_llm_force_string_serializer_auto_detect():
     """Test that force_string_serializer auto-detects based on model when None."""
-    # Test with a model that requires string serialization (DeepSeek)
+    # Test with the legacy DeepSeek family that requires string serialization
     llm_deepseek = LLM(
-        model="deepseek-v3",
+        model="DeepSeek-V3.2-Exp",
         api_key=SecretStr("test_key"),
         usage_id="test-deepseek",
     )
@@ -1261,6 +1280,34 @@ def test_llm_caching_support(default_llm):
     # Caching support detection should work without errors
     caching_active = llm.is_caching_prompt_active()
     assert isinstance(caching_active, bool)
+
+
+@pytest.mark.parametrize("model", ["claude-haiku-5-5", "claude-opus-5-5"])
+@pytest.mark.parametrize("prefix", ["", "anthropic/", "litellm_proxy/anthropic/"])
+@pytest.mark.parametrize("caching_prompt", [True, False])
+def test_claude_55_cache_markers_without_metadata(model, prefix, caching_prompt):
+    with patch("openhands.sdk.llm.llm.get_litellm_model_info", return_value=None):
+        llm = LLM(
+            model=f"{prefix}{model}",
+            api_key=SecretStr("test-key"),
+            caching_prompt=caching_prompt,
+        )
+    formatted = llm.format_messages_for_llm(
+        [
+            Message(
+                role="system",
+                content=[TextContent(text="Static instructions")],
+            ),
+            Message(role="user", content=[TextContent(text="Hello")]),
+        ]
+    )
+    content = formatted[0]["content"]
+    markers = (
+        [block["cache_control"] for block in content if "cache_control" in block]
+        if isinstance(content, list)
+        else []
+    )
+    assert markers == ([{"type": "ephemeral"}] if caching_prompt else [])
 
 
 def test_llm_string_representation(default_llm):

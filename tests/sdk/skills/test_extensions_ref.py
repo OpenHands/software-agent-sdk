@@ -8,7 +8,10 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from unittest.mock import patch
+
+from openhands.sdk.skills.utils import is_skills_repo_pinned
 
 
 def _run_in_subprocess(test_code: str, env_extra: dict | None = None) -> None:
@@ -121,6 +124,94 @@ assert PUBLIC_SKILLS_REF == "", (
 # ---------------------------------------------------------------------------
 
 
+def _create_ref_repo(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "commit.gpgSign", "false"], cwd=repo, check=True)
+    skill_dir = repo / "skills" / "demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: Demo skill\n---\n\nBody\n"
+    )
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=repo, check=True)
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    for ref in (
+        "refs/remotes/origin/main",
+        "refs/remotes/origin/dual",
+        "refs/tags/v1",
+        "refs/tags/dual",
+    ):
+        subprocess.run(["git", "update-ref", ref, commit], cwd=repo, check=True)
+    return repo, commit
+
+
+def test_skills_repo_pin_classification_uses_requested_ref(tmp_path: Path):
+    repo, commit = _create_ref_repo(tmp_path)
+
+    assert not is_skills_repo_pinned(repo)
+    assert is_skills_repo_pinned(repo, "v1")
+    assert is_skills_repo_pinned(repo, "refs/tags/v1")
+    assert is_skills_repo_pinned(repo, commit)
+    assert is_skills_repo_pinned(repo, commit[:12])
+    assert not is_skills_repo_pinned(repo, "main")
+    assert not is_skills_repo_pinned(repo, "origin/main")
+    assert not is_skills_repo_pinned(repo, "refs/heads/main")
+    assert not is_skills_repo_pinned(repo, "dual")
+    assert not is_skills_repo_pinned(repo, "--detach")
+    subprocess.run(["git", "checkout", "-q", "--detach", commit], cwd=repo, check=True)
+    assert is_skills_repo_pinned(repo)
+
+
+def test_tag_ref_keeps_public_skills_cache_without_detached_head(tmp_path: Path):
+    from openhands.sdk.skills.skill import (
+        _PUBLIC_SKILLS_CACHE_TTL_SECONDS,
+        _invalidate_public_skills_cache,
+        load_public_skills,
+    )
+
+    repo, _ = _create_ref_repo(tmp_path)
+    _invalidate_public_skills_cache()
+
+    with (
+        patch(
+            "openhands.sdk.skills.skill.update_skills_repository",
+            return_value=repo,
+        ) as mock_update,
+        patch(
+            "openhands.sdk.skills.skill.time.monotonic",
+            side_effect=[0.0, _PUBLIC_SKILLS_CACHE_TTL_SECONDS + 1],
+        ),
+    ):
+        first = load_public_skills(
+            repo_url="https://example.invalid/extensions",
+            ref="v1",
+            marketplace_path=None,
+        )
+        second = load_public_skills(
+            repo_url="https://example.invalid/extensions",
+            ref="v1",
+            marketplace_path=None,
+        )
+
+    assert [skill.name for skill in first] == ["demo"]
+    assert [skill.name for skill in second] == ["demo"]
+    mock_update.assert_called_once()
+
+
 def _seed_cache(
     cache: dict,
     lock: threading.Lock,
@@ -137,8 +228,8 @@ def _seed_cache(
 def test_pinned_cache_entry_never_expires():
     """A pinned entry (timestamp=inf) is returned even after the TTL would have elapsed.
 
-    This verifies that immutable refs (tags, commit SHAs) do not trigger
-    remote polling once their skills have been loaded once.
+    This verifies that pinned tags and commit SHAs do not trigger remote
+    polling after the first load.
     """
     from openhands.sdk.skills.skill import (
         _PUBLIC_SKILLS_CACHE,

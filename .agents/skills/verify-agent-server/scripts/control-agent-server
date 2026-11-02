@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# control-agent-server: drive an isolated OpenHands Agent Server through its
+# REST/WebSocket API and capture evidence. See ../SKILL.md and `--help`.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/../../../.." && pwd)"
+
+if [[ -n "${CONTROL_AGENT_SERVER_PYTHON:-}" ]]; then
+  PYTHON=("$CONTROL_AGENT_SERVER_PYTHON")
+elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+  PYTHON=("$REPO_ROOT/.venv/bin/python")
+elif command -v uv >/dev/null 2>&1; then
+  PYTHON=(uv run --quiet --project "$REPO_ROOT" python)
+else
+  printf '%s\n' '{"ok": false, "exit": 3, "error": "No Python environment found.", "hint": "Run `make build` (or `uv sync --dev`) in the repository root first."}'
+  exit 3
+fi
+
+exec "${PYTHON[@]}" "$SCRIPT_DIR/control_agent_server.py" "$@"

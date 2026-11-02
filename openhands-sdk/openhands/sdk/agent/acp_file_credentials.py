@@ -10,6 +10,7 @@ from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any, Protocol
 
+from openhands.sdk.agent.acp_contracts import ACPRevisionedCredentialBinding
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.credential import (
     CredentialAuthorizationRejected,
@@ -489,8 +490,10 @@ class _CodexAuthLifecycle:
                 self._error = None
 
     def _authorization_revision(self) -> int | None:
-        revision = getattr(self.binding, "authorization_revision", None)
-        return revision if isinstance(revision, int) else None
+        if isinstance(self.binding, ACPRevisionedCredentialBinding):
+            revision = self.binding.authorization_revision
+            return revision if isinstance(revision, int) else None
+        return None
 
     @staticmethod
     def _digest(value: str) -> str:

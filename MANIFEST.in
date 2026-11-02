@@ -13,6 +13,7 @@ include uv.lock
 include openhands-sdk/pyproject.toml
 recursive-include openhands-sdk *.py
 recursive-include openhands-sdk *.j2
+recursive-include openhands-sdk schemas/*.json
 recursive-include openhands-sdk py.typed
 
 # ==============================================================================

@@ -1,0 +1,14 @@
+{
+  "schema_version": 3,
+  "agent_kind": "openhands",
+  "name": "legacy-v3",
+  "llm_profile_ref": "legacy-llm",
+  "tools": [],
+  "enable_sub_agents": true,
+  "enable_switch_llm_tool": false,
+  "__expected__": {
+    "name": "legacy-v3",
+    "llm_profile_ref": "legacy-llm",
+    "tools": []
+  }
+}

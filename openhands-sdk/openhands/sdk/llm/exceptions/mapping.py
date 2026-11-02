@@ -96,7 +96,15 @@ def map_provider_exception(exception: Exception) -> Exception:
         mapped = LLMContentPolicyViolationError(str(exception))
     # Generic client-side 4xx errors
     elif isinstance(exception, BadRequestError):
-        mapped = LLMBadRequestError(str(exception))
+        # Temporary SGLang fallback until the LiteLLM fix ships and is verified:
+        # https://github.com/BerriAI/litellm/pull/48837 (issue #48836).
+        # Remove this branch once our LiteLLM dependency includes that fix.
+        if "Requested token count exceeds the model's maximum context length" in str(
+            exception
+        ):
+            mapped = LLMContextWindowExceedError(str(exception))
+        else:
+            mapped = LLMBadRequestError(str(exception))
     else:
         # Unknown: let caller re-raise original
         return exception

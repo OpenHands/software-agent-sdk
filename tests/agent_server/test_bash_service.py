@@ -6,7 +6,7 @@ import logging
 import sys
 import time
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
@@ -308,6 +308,71 @@ async def test_search_bash_events_filters_and_paginates(tmp_path: Path):
     assert second_page.next_page_id is None
 
 
+async def test_search_bash_events_applies_order_gt_before_paging(tmp_path: Path):
+    """``order__gt`` must filter before ``limit`` cuts the page (#4388)."""
+    service = BashEventService(bash_events_dir=tmp_path / "bash_events")
+    command_id = uuid4()
+    outputs = [
+        BashOutput(
+            command_id=command_id,
+            order=order,
+            stdout=f"chunk {order}",
+            timestamp=_OLD.replace(microsecond=order + 1),
+        )
+        for order in range(5)
+    ]
+    for output in outputs:
+        service._save_event_to_file(output)
+
+    async def search(page_id: str | None = None):
+        return await service.search_bash_events(
+            kind__eq="BashOutput",
+            command_id__eq=command_id,
+            order__gt=1,
+            page_id=page_id,
+            limit=2,
+        )
+
+    first_page = await search()
+    assert [event.id for event in first_page.items] == [
+        outputs[2].id,
+        outputs[3].id,
+    ]
+    assert first_page.next_page_id is not None
+
+    second_page = await search(first_page.next_page_id)
+    assert [event.id for event in second_page.items] == [outputs[4].id]
+    assert second_page.next_page_id is None
+
+
+async def test_search_bash_events_no_cursor_when_rest_is_filtered(tmp_path: Path):
+    """A full page whose remaining files are all filtered out has no cursor."""
+    service = BashEventService(bash_events_dir=tmp_path / "bash_events")
+    command_id = uuid4()
+    other_command_id = uuid4()
+    target = BashOutput(
+        command_id=command_id,
+        order=3,
+        stdout="new",
+        timestamp=_OLD.replace(microsecond=1),
+    )
+    service._save_event_to_file(target)
+    # Older chunks of another command sort after the target but are filtered.
+    for order in range(3):
+        service._save_event_to_file(
+            BashOutput(
+                command_id=other_command_id,
+                order=order,
+                stdout="old",
+                timestamp=_OLD.replace(microsecond=order + 2),
+            )
+        )
+
+    page = await service.search_bash_events(kind__eq="BashOutput", order__gt=2, limit=1)
+    assert [event.id for event in page.items] == [target.id]
+    assert page.next_page_id is None
+
+
 async def test_search_bash_events_runs_blocking_scan_off_event_loop(
     tmp_path: Path,
 ):
@@ -425,6 +490,35 @@ def test_delete_events_older_than_returns_correct_count(tmp_path: Path):
 
     assert count == 3
     assert len(service._get_event_files_by_pattern("*")) == 1
+
+
+async def test_search_bash_events_timestamp_bounds_honor_utc_offset(
+    tmp_path: Path,
+):
+    """A +02:00 bound selects the same events as its UTC spelling."""
+    service = BashEventService(bash_events_dir=tmp_path / "bash_events")
+    event = BashCommand(
+        command="echo tz", timestamp=datetime(2021, 6, 1, 10, tzinfo=UTC)
+    )
+    service._save_event_to_file(event)
+    plus_two = timezone(timedelta(hours=2))
+
+    async def search(
+        gte: datetime | None = None, lt: datetime | None = None
+    ) -> list[UUID]:
+        page = await service.search_bash_events(timestamp__gte=gte, timestamp__lt=lt)
+        return [e.id for e in page.items]
+
+    # 11:00+02:00 is 09:00Z (before the event); 12:30+02:00 is 10:30Z (after).
+    before = datetime(2021, 6, 1, 11, tzinfo=plus_two)
+    after = datetime(2021, 6, 1, 12, 30, tzinfo=plus_two)
+    assert await search(gte=before) == [event.id]
+    assert await search(lt=after) == [event.id]
+    assert await search(gte=after) == []
+    assert await search(lt=before) == []
+    # A naive bound is still read as UTC.
+    assert await search(gte=datetime(2021, 6, 1, 9)) == [event.id]
+    assert await search(gte=datetime(2021, 6, 1, 11)) == []
 
 
 # ---------------------------------------------------------------------------

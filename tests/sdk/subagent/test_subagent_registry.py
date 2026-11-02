@@ -151,6 +151,63 @@ def test_register_plugin_agents_skips_existing(tmp_path: Path) -> None:
     assert factory.definition.description == "Programmatic"
 
 
+def test_register_file_agents_skips_agent_with_missing_skill(tmp_path: Path) -> None:
+    """An agent naming a missing skill is skipped; the other agents register."""
+    skills_dir = tmp_path / ".agents" / "skills"
+    skills_dir.mkdir(parents=True)
+    _create_skill_file(skills_dir, "real-skill", "Real skill content.")
+
+    agents_dir = tmp_path / ".agents" / "agents"
+    agents_dir.mkdir(parents=True)
+    bad_file = agents_dir / "bad-agent.md"
+    bad_file.write_text(
+        "---\nname: bad-agent\ndescription: Bad\nskills: missing-skill\n---\n\nBad."
+    )
+    (agents_dir / "good-agent.md").write_text(
+        "---\nname: good-agent\ndescription: Good\nskills: real-skill\n---\n\nGood."
+    )
+
+    with (
+        patch(
+            "openhands.sdk.subagent.load.Path.home", return_value=tmp_path / "no_user"
+        ),
+        patch("openhands.sdk.subagent.registry.logger") as mock_logger,
+    ):
+        registered = register_file_agents(tmp_path)
+
+    assert registered == ["good-agent"]
+    with pytest.raises(ValueError, match="Unknown agent 'bad-agent'"):
+        get_agent_factory("bad-agent")
+    agent = get_agent_factory("good-agent").factory_func(_make_test_llm())
+    assert agent.agent_context is not None
+    assert [s.name for s in agent.agent_context.skills] == ["real-skill"]
+
+    warning = mock_logger.warning.call_args.args[0]
+    assert "bad-agent" in warning
+    assert str(bad_file) in warning
+    assert "missing-skill" in warning
+
+
+def test_register_plugin_agents_skips_agent_with_missing_skill(
+    tmp_path: Path,
+) -> None:
+    """A plugin agent naming a missing skill is skipped; the others register."""
+    bad = AgentDefinition(
+        name="bad-plugin-agent",
+        description="Bad",
+        skills=["missing-skill"],
+    )
+    good = AgentDefinition(name="good-plugin-agent", description="Good")
+
+    with patch("openhands.sdk.subagent.registry.logger") as mock_logger:
+        registered = register_plugin_agents([bad, good], work_dir=tmp_path)
+
+    assert registered == ["good-plugin-agent"]
+    warning = mock_logger.warning.call_args.args[0]
+    assert "bad-plugin-agent" in warning
+    assert "missing-skill" in warning
+
+
 def test_register_agent_if_absent_existing() -> None:
     """register_agent_if_absent returns False for existing agents."""
 

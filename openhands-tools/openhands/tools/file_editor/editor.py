@@ -414,11 +414,9 @@ class FileEditor:
             )
 
         file_content = self.read_file(path, start_line=start_line, end_line=end_line)
+        file_content = self._normalize_lines(file_content)
 
-        # Get the detected encoding
-        output = self._make_output(
-            "\n".join(file_content.splitlines()), str(path), start_line
-        )  # Remove extra newlines
+        output = self._make_output(file_content, str(path), start_line)
 
         # Prepend warning if we truncated the end_line
         if warning_message:
@@ -573,6 +571,11 @@ class FileEditor:
                     break
                 new_lines.append(line)
                 history_lines.append(line)
+
+        # A final line without a trailing newline would fuse with the inserted
+        # content; terminate it first so the insert starts on its own line.
+        if new_lines and not new_lines[-1].endswith("\n"):
+            new_lines[-1] += "\n"
 
         # Insert new content
         for line in new_str_lines:
@@ -787,6 +790,17 @@ class FileEditor:
         except Exception as e:
             raise ToolError(f"Ran into {e} while trying to read {path}") from None
 
+    def _normalize_lines(self, content: str) -> str:
+        """Rejoin a template snippet without folding exotic line separators.
+
+        ``read_file`` returns a snippet whose lines are separated by ``\\n``. The
+        ranged ``view`` path used to round-trip it through ``str.splitlines()``,
+        which also breaks on form feeds and Unicode separators that the rest of
+        the editor treats as ordinary characters, shifting line numbers. Joining
+        on ``\\n`` instead keeps every other character intact.
+        """
+        return "\n".join(content.split("\n"))
+
     def _make_output(
         self,
         snippet_content: str,
@@ -815,14 +829,17 @@ class FileEditor:
             truncate_notice=TEXT_FILE_CONTENT_TRUNCATED_NOTICE,
         )
 
+        # Split on "\n" only, matching how read_file/_count_lines define lines, so that
+        # characters splitlines() treats as breaks (\x0c, \u2028, ...) keep line numbers
+        # consistent with insert/view_range. A terminating newline ends the last line
+        # rather than adding a blank one, so drop the empty field it produces.
+        lines = snippet_content.split("\n")
+        if lines[-1] == "":
+            lines.pop()
         snippet_content = "\n".join(
-            [
-                f"{i + start_line:6}\t{line}"
-                for i, line in enumerate(snippet_content.split("\n"))
-            ]
+            [f"{i + start_line:6}\t{line}" for i, line in enumerate(lines)]
         )
-        return (
-            f"Here's the result of running `cat -n` on {snippet_description}:\n"
-            + snippet_content
-            + "\n"
-        )
+        output = f"Here's the result of running `cat -n` on {snippet_description}:\n"
+        if snippet_content:
+            output += snippet_content + "\n"
+        return output
