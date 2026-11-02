@@ -162,7 +162,7 @@ def redact_url_credentials(url: str, *, preserve_placeholders: bool = False) -> 
         ... )
         'https://x-token-auth:${TOKEN}@host/r.git'
     """
-    match = re.match(r"^(https?://)([^@/]+)@(.+)$", url)
+    match = re.match(r"^(https?://)([^@/]+)@(.+)$", url, re.IGNORECASE)
     if not match:
         return url
     if preserve_placeholders and "${" in match.group(2):
