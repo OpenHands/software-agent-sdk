@@ -182,6 +182,18 @@ class TestRedactUrlParams:
         assert "hello" in result
 
 
+def test_redact_url_credentials_uppercase_scheme():
+    """The scheme match must be case-insensitive: `HTTPS://` is a valid scheme.
+
+    Regression test for
+    https://github.com/OpenHands/software-agent-sdk/issues/6348
+    """
+    assert (
+        redact_url_credentials("HTTPS://oauth2:SECRET@github.com/o/r.git")
+        == "HTTPS://****@github.com/o/r.git"
+    )
+
+
 # ---------------------------------------------------------------------------
 # redact_url_credentials_in_text
 # ---------------------------------------------------------------------------
