@@ -10,6 +10,7 @@ from litellm import model_cost
 from litellm.utils import get_model_info
 from pydantic import SecretStr
 
+from openhands.sdk.llm.utils.model_features import ALLOWED_OPENAI_PARAMS_KEY
 from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
 
 
@@ -85,6 +86,19 @@ def _register_proxy_alias_pricing(
         logger.debug("Failed to register litellm_proxy alias %r: %s", alias, e)
 
 
+def _allowed_openai_params(entry: Mapping[str, Any]) -> set[str]:
+    """Request params a ``/v1/model/info`` deployment forwards upstream.
+
+    LiteLLM documents ``allowed_openai_params`` as a deployment setting, but
+    ``/v1/model/info`` only exposes it by echoing ``litellm_params``; it is not
+    a declared response field. Anything malformed is treated as absent.
+    """
+    params = entry.get("litellm_params", {}).get(ALLOWED_OPENAI_PARAMS_KEY)
+    if not isinstance(params, list):
+        return set()
+    return {p for p in params if isinstance(p, str)}
+
+
 @lru_cache
 def _get_model_info_from_litellm_proxy(
     secret_api_key: SecretStr | str | None,
@@ -110,18 +124,26 @@ def _get_model_info_from_litellm_proxy(
         # `model_info` overrides set on the proxy are invisible to clients
         # that address the model by its provider id.
         stripped = model.removeprefix("litellm_proxy/")
-        current = next(
-            (
-                info
-                for info in data
-                if info.get("model_name") == stripped
-                or info.get("litellm_params", {}).get("model") == stripped
-            ),
-            None,
-        )
-        if current:
+        matches = [
+            info
+            for info in data
+            if info.get("model_name") == stripped
+            or info.get("litellm_params", {}).get("model") == stripped
+        ]
+        if matches:
+            current = matches[0]
             model_info = current.get("model_info")
             logger.debug(f"Got model info from litellm proxy: {model_info}")
+            # The proxy may route to any matching deployment, so only params
+            # every one of them forwards are safe to send.
+            allowed_params = set.intersection(
+                *(_allowed_openai_params(info) for info in matches)
+            )
+            if allowed_params and isinstance(model_info, dict):
+                model_info = {
+                    **model_info,
+                    ALLOWED_OPENAI_PARAMS_KEY: sorted(allowed_params),
+                }
 
             # Make custom proxy aliases priceable so cost instrumentation does
             # not silently record $0 (#4816).

@@ -78,7 +78,9 @@ def parse_extension_source(source: str) -> tuple[SourceType, str]:
     # GitHub shorthand: github:owner/repo[/subpath]
     if source.startswith("github:"):
         repo, _ = _split_github_shorthand(source)
-        url = f"https://github.com/{repo}.git"
+        # The shorthand may already name the repository file; add the suffix
+        # only when it is missing.
+        url = f"https://github.com/{repo.removesuffix('.git')}.git"
         return (SourceType.GITHUB, url)
 
     # Git URLs: detect by protocol/scheme rather than enumerating providers
