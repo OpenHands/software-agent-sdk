@@ -356,6 +356,25 @@ class TestGraySwanAnalyzerSecurityRisk:
             assert len(payload["messages"]) == 4
             assert payload["messages"][0]["role"] == "system"
 
+    def test_security_risk_history_limit_zero_sends_no_history(
+        self, analyzer: GraySwanAnalyzer
+    ):
+        analyzer.history_limit = 0
+        analyzer.set_events(
+            [create_mock_message_event(f"Message {i}", "user") for i in range(3)]
+        )
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"violation": 0.1}
+
+        with patch.object(analyzer, "_get_client") as mock_get_client:
+            mock_client = mock_get_client.return_value
+            mock_client.post.return_value = mock_response
+            analyzer.security_risk(create_mock_action_event())
+
+        messages = mock_client.post.call_args.kwargs["json"]["messages"]
+        assert [m["role"] for m in messages] == ["system", "assistant"]
+
     def test_security_risk_preserves_leading_system_prompt_when_window_drops_it(
         self, analyzer: GraySwanAnalyzer
     ):
