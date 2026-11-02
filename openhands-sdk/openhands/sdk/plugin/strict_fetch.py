@@ -414,7 +414,9 @@ def _classify_git_error(stderr: str, default_code: str) -> str:
 def _sanitize_message(message: str, secret_values: list[str]) -> str:
     sanitized = redact_url_credentials_in_text(message)
     sanitized = redact_url_credentials(sanitized)
-    for value in secret_values:
+    # Longest first so an overlapping shorter value cannot mask half of a
+    # longer one and leave the rest in cleartext.
+    for value in sorted(secret_values, key=len, reverse=True):
         if value:
             sanitized = sanitized.replace(value, "****")
     return sanitized

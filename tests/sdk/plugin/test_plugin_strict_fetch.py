@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from itertools import permutations
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,7 @@ from openhands.sdk.plugin import (
     fetch_plugin_with_resolution,
     preflight_plugin,
 )
-from openhands.sdk.plugin.strict_fetch import fetch_plugin_strict
+from openhands.sdk.plugin.strict_fetch import _sanitize_message, fetch_plugin_strict
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -210,3 +211,26 @@ def test_strict_fetch_does_not_cache_git_remote_credentials(tmp_path: Path):
         for path in pinned_root.rglob("*")
         if path.is_file()
     )
+
+
+def test_sanitize_message_masks_the_longest_overlapping_value():
+    """Same contract as SecretRegistry: no fragment of a secret survives."""
+    assert (
+        _sanitize_message("leak: abc123 here", ["abc", "abc123"]) == "leak: **** here"
+    )
+
+
+def test_sanitize_message_masks_overlapping_values_in_any_order():
+    values = ["abc", "abc123"]
+
+    for ordering in permutations(values):
+        assert (
+            _sanitize_message("leak: abc123 here", list(ordering)) == "leak: **** here"
+        )
+
+
+def test_sanitize_message_redacts_url_credentials_before_secret_masking():
+    message = "fatal: unable to access 'https://oauth2:abc123@example.com/o/r.git/'"
+    sanitized = _sanitize_message(message, ["abc", "abc123"])
+
+    assert sanitized == "fatal: unable to access 'https://****@example.com/o/r.git/'"
