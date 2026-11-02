@@ -179,8 +179,7 @@ def generate_title_with_llm(
                 return None
 
             # Ensure the title isn't too long
-            if len(title) > max_length:
-                title = title[: max_length - 3] + "..."
+            title = _truncate_title(title, max_length)
 
             return title
         else:
@@ -196,6 +195,19 @@ def generate_title_with_llm(
         return None
 
 
+def _truncate_title(title: str, max_length: int) -> str:
+    """Truncate a title to at most ``max_length`` characters.
+
+    The ellipsis is only appended when there is room for it; a negative slice
+    (``max_length < 3``) would otherwise make the title longer than allowed.
+    """
+    if len(title) <= max_length:
+        return title
+    if max_length < 3:
+        return title[:max_length]
+    return title[: max_length - 3] + "..."
+
+
 def generate_fallback_title(message: str, max_length: int = 50) -> str:
     """Generate a fallback title by truncating the first user message.
 
@@ -206,10 +218,7 @@ def generate_fallback_title(message: str, max_length: int = 50) -> str:
     Returns:
         A truncated title.
     """
-    title = message.strip()
-    if len(title) > max_length:
-        title = title[: max_length - 3] + "..."
-    return title
+    return _truncate_title(message.strip(), max_length)
 
 
 def generate_title_from_message(

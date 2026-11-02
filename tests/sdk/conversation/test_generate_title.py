@@ -14,7 +14,7 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
-from openhands.sdk.conversation.title_utils import generate_title_with_llm
+from openhands.sdk.conversation.title_utils import generate_fallback_title, generate_title_with_llm
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import LLM, LLMResponse, Message, MetricsSnapshot, TextContent
 from openhands.sdk.llm.auth.credentials import CredentialStore, OAuthCredentials
@@ -544,3 +544,27 @@ def test_generate_title_keeps_text_without_reasoning(mock_completion):
     assert generate_title_with_llm("Help me write a script", llm) == (
         "✨ Create Python Script"
     )
+
+
+@pytest.mark.parametrize("max_length", [1, 2, 3, 4, 5, 50])
+def test_fallback_title_never_exceeds_tiny_max_length(max_length):
+    """The fallback title must respect max_length even when it is smaller than the ellipsis.
+
+    A negative slice (`title[: max_length - 3]`) made the ellipsis longer than the budget,
+    so callers asking for a 1-3 char title got a title longer than requested.
+    """
+    title = generate_fallback_title("hello world, this message is quite long", max_length=max_length)
+
+    assert len(title) <= max_length
+
+
+def test_fallback_title_keeps_text_when_it_fits():
+    title = generate_fallback_title("short message", max_length=50)
+
+    assert title == "short message"
+
+
+def test_fallback_title_adds_ellipsis_when_there_is_room():
+    title = generate_fallback_title("hello world, this message is quite long", max_length=10)
+
+    assert title == "hello w..."
