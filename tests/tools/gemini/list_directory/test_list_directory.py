@@ -6,6 +6,7 @@ import pytest
 
 from openhands.sdk.tool.tool import DeclaredResources
 from openhands.tools.gemini.list_directory.definition import (
+    MAX_ENTRIES,
     ListDirectoryAction,
     ListDirectoryObservation,
     ListDirectoryTool,
@@ -135,6 +136,31 @@ def test_list_directory_absolute_path(tmp_path):
     assert not obs.is_error
     assert obs.total_count == 1
     assert obs.entries[0].name == "file.txt"
+
+
+@pytest.mark.parametrize("recursive", [False, True])
+@pytest.mark.parametrize(
+    ("entry_count", "is_truncated"),
+    [
+        (MAX_ENTRIES - 1, False),
+        (MAX_ENTRIES, False),
+        (MAX_ENTRIES + 1, True),
+    ],
+)
+def test_list_directory_truncation_boundary(
+    tmp_path, recursive, entry_count, is_truncated
+):
+    """Only report truncation when at least one entry was omitted."""
+    for i in range(entry_count):
+        (tmp_path / f"file_{i:04d}.txt").write_text("x")
+
+    executor = ListDirectoryExecutor(workspace_root=str(tmp_path))
+    obs = executor(ListDirectoryAction(dir_path=".", recursive=recursive))
+
+    assert not obs.is_error
+    assert len(obs.entries) == min(entry_count, MAX_ENTRIES)
+    assert obs.is_truncated is is_truncated
+    assert ("truncated" in obs.text) is is_truncated
 
 
 @pytest.mark.parametrize(
