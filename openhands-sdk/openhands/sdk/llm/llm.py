@@ -164,8 +164,6 @@ from openhands.sdk.logger.logger import apply_litellm_debug_flags
 
 logger = get_logger(__name__)
 
-# This module is the first place litellm is genuinely needed, so the debug flags
-# that used to be set while importing the logger package are applied here.
 apply_litellm_debug_flags()
 
 litellm.modify_params = True

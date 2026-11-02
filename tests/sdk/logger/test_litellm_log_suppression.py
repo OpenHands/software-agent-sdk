@@ -64,8 +64,8 @@ def test_litellm_logger_level_blocks_info():
 def test_logger_module_does_not_import_litellm_at_module_scope():
     """The logger must not import litellm just to configure logging.
 
-    litellm costs ~3 s and ~198 MB; importing it here would put the provider
-    stack in every process that only wants a logger. See issue #6366.
+    Importing litellm here would put the provider stack in every process that
+    only wants a logger. See issue #6366.
     """
     import ast
     from pathlib import Path

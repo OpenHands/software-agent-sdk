@@ -54,10 +54,6 @@ ENV_DEBUG_LLM = os.getenv("DEBUG_LLM", "false").lower() in {"1", "true", "yes"}
 
 
 # ========= LiteLLM controls =========
-# litellm is imported lazily. Importing it here costs ~3 s and ~198 MB, which a
-# process that only wants a logger should not pay. The flags below are applied by
-# apply_litellm_debug_flags(), which openhands.sdk.llm calls once it has imported
-# litellm itself, so they are still set before the first LLM call.
 _ENABLE_LITELLM_DEBUG = False
 if ENV_DEBUG_LLM:
     confirmation = input(

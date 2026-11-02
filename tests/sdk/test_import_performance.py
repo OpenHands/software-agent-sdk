@@ -1,12 +1,11 @@
 """Import-cost guards for ``openhands.sdk``.
 
-Three separate regressions are guarded here, all measured in this repo:
+Three separate regressions are guarded here:
 
-1. Wall time and peak RSS. A cold ``import openhands.sdk`` costs ~4.6 s and
-   ~250 MB, and the cost is the eager import graph, not any work. The original
-   10 s budget catches a runaway addition but not a litellm-sized one.
-2. The provider stack. ``litellm`` alone is ~3 s and ~198 MB. When it is
-   imported eagerly again, a process that never calls a model pays for it.
+1. Wall time and peak RSS. A cold ``import openhands.sdk`` is seconds and
+   hundreds of MB, all of it the eager import graph rather than any work.
+2. The provider stack. ``litellm`` is most of that cost. A process that never
+   calls a model should not pay it.
 3. Process fan-out. A fresh interpreter per unit of work multiplies the import
    cost by the worker count. Forked workers should share the imported pages
    copy-on-write, so the per-child cost must stay far below the parent's.
@@ -24,21 +23,20 @@ import textwrap
 import pytest
 
 
-# Upper bound (seconds) for a cold `import openhands.sdk`. Measured at ~4.6 s
-# locally; kept above that so a slow CI machine does not flake, while still
-# catching an accidental heavy eager import.
+# Upper bound (seconds) for a cold `import openhands.sdk`. Kept well above the
+# measured value so a slow CI machine does not flake, while still catching an
+# accidental heavy eager import.
 IMPORT_TIME_LIMIT_SECONDS = 8.0
 
-# Upper bound (MiB) for peak RSS of a cold `import openhands.sdk`. Measured at
-# ~250 MiB. Generous on purpose, but a litellm-sized re-addition (~198 MiB)
-# pushes past it.
+# Upper bound (MiB) for peak RSS of a cold `import openhands.sdk`. Generous on
+# purpose, but a litellm-sized re-addition pushes past it.
 IMPORT_RSS_LIMIT_MIB = 600.0
 
 _ITERATIONS = 5
 
-# `litellm` is required for the deferred step that removes it from the import
-# graph (issue #6366, step 3). Until then this is an expected failure rather
-# than a red test.
+# Removing litellm from the import graph (issue #6366, step 3) is blocked by the
+# public `LLMStreamChunk` alias, so this is an expected failure rather than a red
+# test until that is resolved.
 _LITELLM_DEFERRAL_XFAIL = pytest.mark.xfail(
     strict=False,
     reason=(

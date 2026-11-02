@@ -15,9 +15,9 @@ if TYPE_CHECKING:
 def _is_model_response(o: object) -> TypeGuard[ModelResponse]:
     """Return whether ``o`` is a litellm ``ModelResponse``.
 
-    litellm is imported here rather than at module import so that importing this
-    module does not pull the provider stack (~3 s, ~198 MB). The return type
-    narrows for type checkers, which a plain ``bool`` would not.
+    litellm is imported on first use so that importing this module does not pull
+    the provider stack. The ``TypeGuard`` return type narrows for type checkers,
+    which a plain ``bool`` would not.
     """
     from litellm.types.utils import ModelResponse
 
