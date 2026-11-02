@@ -215,7 +215,9 @@ class TestCacheReuse:
         llm.get_token_count.side_effect = count
         counter = IncrementalTokenCounter(llm)
 
-        events = [_message_event("a"), _message_event("bb")]
+        # Distinct roles so the two events project to two messages (adjacent
+        # user messages would coalesce into one, leaving nothing to cache).
+        events = [_message_event("a", "system", "agent"), _message_event("bb")]
         counter.count(events)
         first_step = len(calls)
 
@@ -224,7 +226,7 @@ class TestCacheReuse:
         assert len(calls) == first_step
 
         # Appending one message counts exactly the new message once.
-        events.append(_message_event("ccc"))
+        events.append(_message_event("ccc", "assistant", "agent"))
         counter.count(events)
         assert calls[-1] == 1
 
@@ -248,6 +250,97 @@ class TestNonAdditiveCountingPath:
         # Subsequent calls keep returning the full recount.
         events.append(_message_event("c", "assistant", "agent"))
         assert counter.count(events) == 100
+
+    def test_one_message_input_does_not_establish_additivity(self):
+        """A single message must not be taken as proof of additivity.
+
+        With one message the cached sum is trivially equal to the full count, so
+        an empirical check there proves nothing. The counter must stay unverified
+        (returning exact recounts) until it sees a multi-message input, then
+        verify against it.
+        """
+        llm = MagicMock(spec=LLM)
+
+        def count(messages, **_kwargs):
+            # Additive over a single message, but not over the whole list: this
+            # mirrors prompt-mocked tool calling, whose first-user example is
+            # positional. One message -> 10; more -> 10 per message minus 5.
+            if len(messages) <= 1:
+                return 10 * len(messages)
+            return 10 * len(messages) - 5
+
+        llm.get_token_count.side_effect = count
+        counter = IncrementalTokenCounter(llm)
+
+        events = [
+            _message_event("system", "system", "agent"),
+            _message_event("first user turn"),
+            _message_event("reply", "assistant", "agent"),
+        ]
+
+        # One message: exact recount, and additivity stays unverified.
+        assert counter.count(events[:1]) == 10
+        assert counter._additive is None
+
+        # First multi-message input: the check now runs and rejects the path.
+        assert counter.count(events) == 25
+        assert counter._additive is False
+
+        # And it keeps returning exact recounts afterwards.
+        events.append(_message_event("second user turn"))
+        assert counter.count(events) == 35
+
+
+class TestNonNativeToolCallingPath:
+    """Regression tests with a real non-native tool-calling LLM (no mocks).
+
+    Prompt-mocked tool calling attaches its in-context example positionally, so
+    per-message counts do not add up to the full-history count. The counter must
+    still return the same total as ``get_total_token_count`` at every step.
+    """
+
+    @pytest.fixture
+    def non_native_llm(self) -> LLM:
+        return LLM(model="gpt-4o", api_key="test", native_tool_calling=False)
+
+    def _events(self, tools) -> list:
+        return [
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(text="You are an agent."),
+                tools=tools,
+            ),
+            _message_event("first user turn"),
+            _message_event("assistant reply", "assistant", "agent"),
+            _message_event("second user turn"),
+        ]
+
+    def test_matches_full_count_at_every_step(self, non_native_llm: LLM):
+        tools = cast(list[ToolDefinition], list(FinishTool.create()))
+        events = self._events(tools)
+        counter = IncrementalTokenCounter(non_native_llm)
+
+        for length in range(1, len(events) + 1):
+            view = events[:length]
+            assert counter.count(view) == _full_count(view, non_native_llm)
+
+    def test_cache_is_disabled_for_non_native_tool_calling(self, non_native_llm: LLM):
+        tools = cast(list[ToolDefinition], list(FinishTool.create()))
+        events = self._events(tools)
+        counter = IncrementalTokenCounter(non_native_llm)
+        counter.count(events)
+        assert counter._additive is False
+
+    def test_native_tool_calling_still_uses_the_cache(self):
+        llm = LLM(model="gpt-4o", api_key="test")
+        tools = cast(list[ToolDefinition], list(FinishTool.create()))
+        events = self._events(tools)
+        counter = IncrementalTokenCounter(llm)
+
+        for length in range(1, len(events) + 1):
+            view = events[:length]
+            assert counter.count(view) == _full_count(view, llm)
+        assert counter._additive is True
 
 
 def test_counter_tracks_llm_tool_configuration():

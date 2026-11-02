@@ -3195,6 +3195,31 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
         return self._build_responses_payload(msgs)
 
+    def token_count_is_additive(self, *, has_tools: bool) -> bool:
+        """Whether token counting is exactly additive over the message list.
+
+        Callers that sum per-message counts (see ``IncrementalTokenCounter``)
+        rely on ``count(A + B) == count(A) + count(B) - count([])``. Two
+        configured paths break that:
+
+        - a chat-template tokenizer, which renders the whole message list into a
+          single prompt and then tokenises it;
+        - prompt-mocked tool calling (``native_tool_calling=False`` with tools),
+          whose in-context example is attached according to a message's position,
+          so the first user message counts differently alone than it does inside
+          the full history.
+
+        ``has_tools`` mirrors whether ``get_token_count`` will be passed tools.
+        """
+        if (
+            chat_template_tokenizer(self._chat_template_tokenizer or self._tokenizer)
+            is not None
+        ):
+            return False
+        if has_tools and not self.native_tool_calling:
+            return False
+        return True
+
     def get_token_count(
         self,
         messages: list[Message],

@@ -11,6 +11,15 @@ an ``ActionEvent`` arrives it appends a ``tool_call`` to an earlier assistant
 message (and adjacent user messages can coalesce), so a position-keyed prefix
 cache silently goes stale. The cache here is therefore keyed by message
 *content* and only re-counts entries that actually changed.
+
+Two safeguards keep the cached total honest:
+
+* ``LLM.token_count_is_additive`` rejects, structurally, counting paths that are
+  additive over one message but not over the whole list (prompt-mocked tool
+  calling, chat-template tokenizers).
+* The empirical check that guards the sum is only run on a **multi-message**
+  input, because with a single message the sum trivially equals the full count
+  and proves nothing. Until it has run, ``count`` returns an exact full recount.
 """
 
 from collections.abc import Sequence
@@ -78,6 +87,15 @@ class IncrementalTokenCounter:
             self._tools = tools
             self._add_security_risk_prediction = add_security_risk_prediction
 
+        if self._additive is None and not self._llm.token_count_is_additive(
+            has_tools=add_security_risk_prediction
+        ):
+            # A counting path that is additive over a single message but not over
+            # the whole list (prompt-mocked tool calling, chat-template
+            # tokenizers) would pass the empirical check below on a one-message
+            # view and then silently diverge. Disable the cache up front.
+            self._additive = False
+
         if self._additive is False:
             return self._llm.get_token_count(
                 messages,
@@ -113,19 +131,26 @@ class IncrementalTokenCounter:
             )
         total = sum(self._counts) - (len(messages) - 1) * self._empty_count
 
-        if self._additive is None:
-            # Verify additivity once against a full recount. If the configured
-            # counting path is not additive (e.g. a chat-template tokenizer that
-            # renders the whole list into one prompt), fall back to full
-            # recounts for the rest of the conversation.
+        if self._additive is None and len(messages) >= 2:
+            # Verify additivity once, but only on a multi-message input: with a
+            # single message the "sum" is trivially equal to the full count, so
+            # the comparison proves nothing. Until this runs, ``count`` returns
+            # the full recount below, which is always exact.
             full = self._llm.get_token_count(
                 messages,
                 tools=tools,
                 add_security_risk_prediction=add_security_risk_prediction,
             )
             self._additive = full == total
-            if not self._additive:
-                return full
+            return full
+
+        if self._additive is None:
+            # Still unverified (a one-message view): return the exact recount.
+            return self._llm.get_token_count(
+                messages,
+                tools=tools,
+                add_security_risk_prediction=add_security_risk_prediction,
+            )
 
         return total
 

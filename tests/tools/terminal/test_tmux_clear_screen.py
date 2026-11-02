@@ -12,6 +12,7 @@ import time
 
 import pytest
 
+from openhands.tools.terminal.constants import CMD_OUTPUT_PS1_END
 from openhands.tools.terminal.terminal.tmux_terminal import (
     _CLEAR_PROMPT_TIMEOUT,
     TmuxTerminal,
@@ -48,8 +49,6 @@ def test_clear_screen_returns_once_prompt_is_visible(tmux_terminal):
     # poll should return well under that on a healthy pane.
     assert elapsed < 0.1
     # And it must not return before the prompt is actually there.
-    from openhands.tools.terminal.constants import CMD_OUTPUT_PS1_END
-
     assert tmux_terminal.read_screen().rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip())
 
 
@@ -75,3 +74,26 @@ def test_clear_screen_bounded_when_prompt_never_appears(tmux_terminal):
     elapsed = time.perf_counter() - start
     assert elapsed >= _CLEAR_PROMPT_TIMEOUT
     assert elapsed < _CLEAR_PROMPT_TIMEOUT + 0.5
+
+
+def test_clear_screen_does_not_accept_the_previous_prompt(tmux_terminal):
+    """The prompt already on screen before ``clear`` must not satisfy the wait.
+
+    ``send_keys`` does not wait for the shell to run ``clear``, so right after
+    sending it the pane still ends with the *previous* command's prompt. The wait
+    must require the cleared shape (bare prompt, nothing above it), not just "ends
+    with a prompt marker".
+    """
+    # Leave command output above the prompt, as a real completed command would.
+    tmux_terminal.send_keys("echo PREVIOUS_OUTPUT_XYZ")
+    time.sleep(0.3)
+    previous_screen = tmux_terminal.read_screen()
+    assert previous_screen.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip())
+
+    # The pre-clear screen ends with a prompt but is not "cleared".
+    assert tmux_terminal._screen_is_cleared() is False
+
+    tmux_terminal.clear_screen()
+    # After the wait the screen is genuinely cleared: nothing above the prompt.
+    assert tmux_terminal._screen_is_cleared() is True
+    assert "PREVIOUS_OUTPUT_XYZ" not in tmux_terminal.read_screen()

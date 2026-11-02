@@ -1204,7 +1204,17 @@ class TestCondenserTokenCountCache:
 
     def test_repeated_unchanged_view_does_not_recount(self, mock_llm: LLM) -> None:
         condenser, agent_llm, calls = self._condenser_with_counter(mock_llm)
-        events: list[Event] = [message_event("hello"), message_event("world")]
+        # A user turn followed by an assistant turn stays two messages (two
+        # adjacent user events would coalesce into one and leave nothing cached).
+        events: list[Event] = [
+            message_event("hello"),
+            MessageEvent(
+                llm_message=Message(
+                    role="assistant", content=[TextContent(text="world")]
+                ),
+                source="agent",
+            ),
+        ]
         view = View.from_events(events)
 
         condenser.get_condensation_reasons(view, agent_llm=agent_llm)

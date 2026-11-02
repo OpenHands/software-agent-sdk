@@ -16,6 +16,7 @@ from filelock import FileLock
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.redact import redact_api_key_literals
 from openhands.tools.terminal.constants import (
+    CMD_OUTPUT_PS1_BEGIN,
     CMD_OUTPUT_PS1_END,
     HISTORY_LIMIT,
     TMUX_SESSION_HEIGHT,
@@ -360,33 +361,48 @@ class TmuxTerminal(TerminalInterface):
 
         We used to sleep a fixed 100 ms here, which added a hard ~150 ms floor to
         *every* command (this runs from ``_ready_for_next_command`` after each
-        command completes). Instead we wait for the shell prompt to reappear,
-        bounded by ``_CLEAR_PROMPT_TIMEOUT`` so a slow or wedged pane still makes
-        progress.
+        command completes). Instead we wait for the screen to actually be
+        cleared, bounded by ``_CLEAR_PROMPT_TIMEOUT`` so a slow or wedged pane
+        still makes progress.
         """
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
         self.pane.send_keys("clear", enter=True)
-        self._wait_for_prompt(_CLEAR_PROMPT_TIMEOUT)
+        self._wait_for_clear(_CLEAR_PROMPT_TIMEOUT)
         self.pane.cmd("clear-history")
 
-    def _wait_for_prompt(self, timeout: float) -> bool:
-        """Wait until the pane shows a shell prompt again.
+    def _wait_for_clear(self, timeout: float) -> bool:
+        """Wait until the pane has actually been cleared by ``clear``.
 
-        Returns ``True`` once ``read_screen()`` ends with the prompt marker and
-        ``False`` if ``timeout`` elapses first (the caller then proceeds anyway).
+        ``pane.send_keys`` submits the keys to the shell but does not wait for it
+        to run the command, so for a moment the pane still shows the *previous*
+        prompt. Accepting that prompt would return before ``clear`` ran, and the
+        next command could start against a stale screen. We therefore require the
+        shape ``clear`` leaves behind -- the prompt with nothing above it -- which
+        the previous screen does not have (it still holds the command echo and
+        output). Returns ``True`` once cleared, ``False`` if ``timeout`` elapses
+        first (the caller then proceeds anyway).
         """
         deadline = time.monotonic() + timeout
         while True:
             try:
-                if self.read_screen().rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip()):
+                if self._screen_is_cleared():
                     return True
             except Exception:
-                logger.debug("read_screen failed while waiting for prompt")
+                logger.debug("read_screen failed while waiting for clear")
             if time.monotonic() >= deadline:
                 return False
             time.sleep(_CLEAR_PROMPT_POLL_INTERVAL)
+
+    def _screen_is_cleared(self) -> bool:
+        """Whether the pane shows a bare prompt with no content above it."""
+        content = self.read_screen()
+        if not content.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip()):
+            return False
+        marker = CMD_OUTPUT_PS1_BEGIN.strip()
+        index = content.rfind(marker)
+        return index >= 0 and content[:index].strip() == ""
 
     def interrupt(self) -> bool:
         """Send interrupt signal (Ctrl+C) to the tmux pane.
