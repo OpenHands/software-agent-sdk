@@ -1,0 +1,199 @@
+{
+  "mode": "base",
+  "sourceCommit": "acd96e6fa424c02432304395b9208f99be24b54d",
+  "browserBundleSha256": "0c3cebd4b96915bcb0eb51d88cfbbba67256e995da426ed26a99c0b9ca3e9654",
+  "clientVersion": "1.58.1",
+  "agentServerVersion": "1.58.1",
+  "browser": "155.0.8059.85",
+  "platform": "darwin/arm64",
+  "timestamp": "2026-10-24T04:38:24.767Z",
+  "results": [
+    {
+      "scope": "host",
+      "surface": "FileClient.downloadFile",
+      "firstHash": "a38a4ff7320a3d8764ac959b264f15e335360d7c1e23a0627dee7f366c95c58f",
+      "secondHash": "a38a4ff7320a3d8764ac959b264f15e335360d7c1e23a0627dee7f366c95c58f",
+      "expectedNewHash": "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460",
+      "secondReadIsFresh": false,
+      "invalidKeyBrowserStatus": 200,
+      "invalidKeyNetworkControlStatus": 401
+    },
+    {
+      "scope": "host",
+      "surface": "RemoteWorkspace.downloadAsText",
+      "firstHash": "f513d7e9bca957f3da450de8f234f668ab7d713b3297a1e8e86bffafc99a1e5c",
+      "secondHash": "f513d7e9bca957f3da450de8f234f668ab7d713b3297a1e8e86bffafc99a1e5c",
+      "expectedNewHash": "6c51d29ad4a4f0659ff13a8c2c042fd27cc8b067aa5a1ccdb928425a5bd4b08d",
+      "secondReadIsFresh": false,
+      "invalidKeyBrowserStatus": 200,
+      "invalidKeyNetworkControlStatus": 401
+    },
+    {
+      "scope": "conversation",
+      "surface": "FileClient.downloadFile",
+      "firstHash": "a38a4ff7320a3d8764ac959b264f15e335360d7c1e23a0627dee7f366c95c58f",
+      "secondHash": "a38a4ff7320a3d8764ac959b264f15e335360d7c1e23a0627dee7f366c95c58f",
+      "expectedNewHash": "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460",
+      "secondReadIsFresh": false,
+      "invalidKeyBrowserStatus": 200,
+      "invalidKeyNetworkControlStatus": 401
+    },
+    {
+      "scope": "conversation",
+      "surface": "RemoteWorkspace.downloadAsText",
+      "firstHash": "f513d7e9bca957f3da450de8f234f668ab7d713b3297a1e8e86bffafc99a1e5c",
+      "secondHash": "f513d7e9bca957f3da450de8f234f668ab7d713b3297a1e8e86bffafc99a1e5c",
+      "expectedNewHash": "6c51d29ad4a4f0659ff13a8c2c042fd27cc8b067aa5a1ccdb928425a5bd4b08d",
+      "secondReadIsFresh": false,
+      "invalidKeyBrowserStatus": 200,
+      "invalidKeyNetworkControlStatus": 401
+    }
+  ],
+  "network": [
+    {
+      "requestId": "20055.3",
+      "status": 200,
+      "fromDiskCache": false,
+      "fromServiceWorker": false,
+      "headers": {
+        "etag": "\"02aa6674434d6c28ed5a79b07696d611\"",
+        "content-type": "application/octet-stream",
+        "last-modified": "Wed, 01 Jan 2020 00:00:00 GMT"
+      },
+      "servedFromCache": false
+    },
+    {
+      "requestId": "20055.4",
+      "status": 200,
+      "fromDiskCache": true,
+      "fromServiceWorker": false,
+      "headers": {
+        "etag": "\"02aa6674434d6c28ed5a79b07696d611\"",
+        "content-type": "application/octet-stream",
+        "last-modified": "Wed, 01 Jan 2020 00:00:00 GMT"
+      },
+      "servedFromCache": false
+    },
+    {
+      "requestId": "20055.5",
+      "status": 200,
+      "fromDiskCache": true,
+      "fromServiceWorker": false,
+      "headers": {
+        "etag": "\"02aa6674434d6c28ed5a79b07696d611\"",
+        "content-type": "application/octet-stream",
+        "last-modified": "Wed, 01 Jan 2020 00:00:00 GMT"
+      },
+      "servedFromCache": false
+    },
+    {
+      "requestId": "20055.6",
+      "status": 200,
+      "fromDiskCache": false,
+      "fromServiceWorker": false,
+      "headers": {
+        "etag": "\"9cfa9337111f77730e4094adf76085a8\"",
+        "content-type": "application/octet-stream",
+        "last-modified": "Wed, 01 Jan 2020 00:00:00 GMT"
+      },
+      "servedFromCache": false
+    },
+    {
+      "requestId": "20055.7",
+      "status": 200,
+      "fromDiskCache": true,
+      "fromServiceWorker": false,
+      "headers": {
+        "etag": "\"9cfa9337111f77730e4094adf76085a8\"",
+        "content-type": "application/octet-stream",
+        "last-modified": "Wed, 01 Jan 2020 00:00:00 GMT"
+      },
+      "servedFromCache": false
+    },
+    {
+      "requestId": "20055.8",
+      "status": 200,
+      "fromDiskCache": true,
+      "fromServiceWorker": false,
+      "headers": {
+        "etag": "\"9cfa9337111f77730e4094adf76085a8\"",
+        "content-type": "application/octet-stream",
+        "last-modified": "Wed, 01 Jan 2020 00:00:00 GMT"
+      },
+      "servedFromCache": false
+    },
+    {
+      "requestId": "20055.10",
+      "status": 200,
+      "fromDiskCache": false,
+      "fromServiceWorker": false,
+      "headers": {
+        "etag": "\"02aa6674434d6c28ed5a79b07696d611\"",
+        "content-type": "application/octet-stream",
+        "last-modified": "Wed, 01 Jan 2020 00:00:00 GMT"
+      },
+      "servedFromCache": false
+    },
+    {
+      "requestId": "20055.12",
+      "status": 200,
+      "fromDiskCache": true,
+      "fromServiceWorker": false,
+      "headers": {
+        "etag": "\"02aa6674434d6c28ed5a79b07696d611\"",
+        "content-type": "application/octet-stream",
+        "last-modified": "Wed, 01 Jan 2020 00:00:00 GMT"
+      },
+      "servedFromCache": false
+    },
+    {
+      "requestId": "20055.14",
+      "status": 200,
+      "fromDiskCache": true,
+      "fromServiceWorker": false,
+      "headers": {
+        "etag": "\"02aa6674434d6c28ed5a79b07696d611\"",
+        "content-type": "application/octet-stream",
+        "last-modified": "Wed, 01 Jan 2020 00:00:00 GMT"
+      },
+      "servedFromCache": false
+    },
+    {
+      "requestId": "20055.16",
+      "status": 200,
+      "fromDiskCache": false,
+      "fromServiceWorker": false,
+      "headers": {
+        "etag": "\"9cfa9337111f77730e4094adf76085a8\"",
+        "content-type": "application/octet-stream",
+        "last-modified": "Wed, 01 Jan 2020 00:00:00 GMT"
+      },
+      "servedFromCache": false
+    },
+    {
+      "requestId": "20055.18",
+      "status": 200,
+      "fromDiskCache": true,
+      "fromServiceWorker": false,
+      "headers": {
+        "etag": "\"9cfa9337111f77730e4094adf76085a8\"",
+        "content-type": "application/octet-stream",
+        "last-modified": "Wed, 01 Jan 2020 00:00:00 GMT"
+      },
+      "servedFromCache": false
+    },
+    {
+      "requestId": "20055.20",
+      "status": 200,
+      "fromDiskCache": true,
+      "fromServiceWorker": false,
+      "headers": {
+        "etag": "\"9cfa9337111f77730e4094adf76085a8\"",
+        "content-type": "application/octet-stream",
+        "last-modified": "Wed, 01 Jan 2020 00:00:00 GMT"
+      },
+      "servedFromCache": false
+    }
+  ],
+  "validation": "Fresh browser context, cache enabled; real source Agent Server; no route interception, fetch mocks, cache disabling, or LLM calls. Only owned fixtures use an old initial mtime. Server authentication remains enforced."
+}

@@ -624,6 +624,17 @@ def test_insert_with_empty_string(editor):
     assert len(content) == 3  # Original 2 lines plus empty line
 
 
+def test_insert_after_last_line_without_trailing_newline(editor, tmp_path):
+    editor, _ = editor
+    path = tmp_path / "no_eol.txt"
+    path.write_text("a\nb")
+
+    editor(command="insert", path=str(path), insert_line=2, new_str="x")
+
+    lines = path.read_text().splitlines()
+    assert lines == ["a", "b", "x"]
+
+
 def test_insert_chinese_text_into_english_file(editor):
     editor, test_file = editor
     result = editor(
