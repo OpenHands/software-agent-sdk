@@ -328,6 +328,24 @@ Add proper error handling."""
     assert agent.source == to_posix_path(cursorrules_path)
 
 
+def test_skill_load_utf8_bom_frontmatter(tmp_path):
+    """A UTF-8 BOM must not hide the frontmatter from Skill.load.
+
+    Windows editors commonly save files with a leading BOM. ``Skill.load``
+    used to read with ``encoding="utf-8"`` (not ``"utf-8-sig"``), so the BOM
+    glued itself to the opening ``---`` fence, frontmatter was not detected,
+    and a keyword-triggered skill silently degraded to an always-on repo
+    skill.
+    """
+    path = tmp_path / "bom.md"
+    path.write_bytes("\ufeff---\ntriggers:\n  - deploy\n---\nBody\n".encode())
+
+    skill = Skill.load(path, tmp_path)
+
+    assert isinstance(skill.trigger, KeywordTrigger)
+    assert skill.content.strip() == "Body"
+
+
 def test_skill_version_as_integer(tmp_path):
     """Test loading a skill with version as integer (reproduces the bug)."""
     # Create a skill with version as an unquoted integer
