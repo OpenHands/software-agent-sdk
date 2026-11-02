@@ -465,6 +465,26 @@ def test_tuple_form_items_does_not_raise():
     assert result["properties"]["pair"]["type"] == "array"
 
 
+def test_nullable_type_list_keeps_nested_structure():
+    node = {
+        "type": "object",
+        "properties": {
+            "filter": {
+                "type": ["object", "null"],
+                "properties": {"field": {"type": "string"}},
+                "required": ["field"],
+            },
+            "tags": {"type": ["array", "null"], "items": {"type": "string"}},
+        },
+    }
+
+    result = _process_schema_node(node, {})
+
+    assert result["properties"]["filter"]["properties"] == {"field": {"type": "string"}}
+    assert result["properties"]["filter"]["required"] == ["field"]
+    assert result["properties"]["tags"]["items"] == {"type": "string"}
+
+
 def test_anyof_with_false_does_not_clobber_concrete_type():
     """A ``false`` member in ``anyOf`` must not become the representative type.
 

@@ -156,8 +156,13 @@ def _process_schema_node(
     if "description" in node:
         result["description"] = node["description"]
 
+    # A type may be a list of alternatives (e.g. ``["object", "null"]``); the
+    # nested structure still belongs to the non-null member.
+    node_type = node.get("type")
+    type_names = node_type if isinstance(node_type, list) else [node_type]
+
     # Handle object properties recursively
-    if node.get("type") == "object" and "properties" in node:
+    if "object" in type_names and "properties" in node:
         result["type"] = "object"
         result["properties"] = {}
 
@@ -172,7 +177,7 @@ def _process_schema_node(
             result["required"] = node["required"]
 
     # Handle arrays
-    if node.get("type") == "array" and "items" in node:
+    if "array" in type_names and "items" in node:
         result["type"] = "array"
         items = node["items"]
         if isinstance(items, list):
