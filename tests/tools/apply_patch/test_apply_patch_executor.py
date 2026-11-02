@@ -203,6 +203,15 @@ def test_delete_missing_file_expected_differror(tmp_ws: Path):
     assert "Missing File" in obs.text
 
 
+def test_update_missing_file_error_names_update(tmp_ws: Path):
+    patch = "*** Begin Patch\n*** Update File: missing.txt\n@@\n-a\n+b\n*** End Patch"
+    obs = run_exec(tmp_ws, patch)
+
+    assert obs.is_error
+    assert "Missing File" in obs.text
+    assert "Delete File" not in obs.text
+
+
 def test_duplicate_add_file_error(tmp_ws: Path):
     patch = (
         "*** Begin Patch\n"

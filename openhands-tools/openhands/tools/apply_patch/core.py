@@ -11,7 +11,7 @@ Minimal modifications were made to fit within the OpenHands SDK tool ecosystem:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -438,12 +438,32 @@ class DiffError(ValueError):
     """Raised for invalid or malformed patch text."""
 
 
-def load_files(paths: list[str], open_fn: Callable[[str], str]) -> dict[str, str]:
+def _file_action_labels(text: str) -> dict[str, str]:
+    """The action that references each path, as the label its error should carry."""
+    labels: dict[str, str] = {}
+    for line in text.strip().split("\n"):
+        for prefix, label in (
+            ("*** Update File: ", "Update File"),
+            ("*** Delete File: ", "Delete File"),
+        ):
+            if line.startswith(prefix):
+                labels.setdefault(line[len(prefix) :], label)
+    return labels
+
+
+def load_files(
+    paths: list[str],
+    open_fn: Callable[[str], str],
+    *,
+    action_labels: Mapping[str, str] | None = None,
+) -> dict[str, str]:
     """Load original file contents used as the patch base.
 
     This wraps the reference implementation's behavior from the OpenAI
     cookbook apply_patch.py, but converts missing files into DiffError so
     callers can surface a structured tool error instead of FileNotFoundError.
+    ``action_labels`` names the patch action that references each path, so the
+    error says Update or Delete (the reference wording assumed Delete).
     See:
     https://github.com/openai/openai-cookbook/blob/main/examples/gpt-5/apply_patch.py
     """
@@ -454,7 +474,8 @@ def load_files(paths: list[str], open_fn: Callable[[str], str]) -> dict[str, str
         except (
             FileNotFoundError
         ) as exc:  # pragma: no cover - exercised via higher-level tests
-            raise DiffError(f"Delete File Error: Missing File: {path}") from exc
+            label = (action_labels or {}).get(path, "Delete File")
+            raise DiffError(f"{label} Error: Missing File: {path}") from exc
     return orig
 
 
@@ -495,7 +516,7 @@ def process_patch(
     if not text.startswith("*** Begin Patch"):
         raise DiffError("Invalid patch: must start with '*** Begin Patch'")
     paths = identify_files_needed(text)
-    orig = load_files(paths, open_fn)
+    orig = load_files(paths, open_fn, action_labels=_file_action_labels(text))
     patch, fuzz = text_to_patch(text, orig)
     commit = patch_to_commit(patch, orig)
     apply_commit(commit, write_fn, remove_fn)
