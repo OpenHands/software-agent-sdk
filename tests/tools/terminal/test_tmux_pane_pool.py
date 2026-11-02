@@ -15,7 +15,10 @@ from openhands.tools.terminal.constants import (
 from openhands.tools.terminal.definition import TerminalAction
 from openhands.tools.terminal.terminal import create_terminal_session
 from openhands.tools.terminal.terminal.tmux_pane_pool import TmuxPanePool
-from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
+from openhands.tools.terminal.terminal.tmux_terminal import (
+    _CLEAR_PROMPT_TIMEOUT,
+    TmuxTerminal,
+)
 
 
 def test_tmux_session_viewport_is_bounded():
@@ -377,3 +380,59 @@ def test_first_terminal_shell_gets_fallback_locale(
         session.close()
 
     assert "ctype=C.UTF-8" in obs.text
+
+
+# -- clear_screen on inactive pooled panes ----------------------------------
+
+
+def _wait_until(predicate, timeout: float = 2.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_clear_screen_completes_on_inactive_pooled_pane(pool):
+    """An inactive pane's clear must not wait out the timeout.
+
+    Each pooled pane lives in its own tmux window, so an untargeted
+    ``tmux select-pane`` (used by the clear completion marker) resolves against
+    the session's *active* window and marks a different pane's title. The marker
+    wait then never sees its token and burns the full ``_CLEAR_PROMPT_TIMEOUT``
+    after every clean-screen clear.
+    """
+    first = pool.checkout()
+    second = pool.checkout()
+    # Make the second pane's window active so the first pane is inactive.
+    pool._session.cmd("select-window", "-t", second.window.id)
+    assert _wait_until(lambda: pool._session.active_window.id == second.window.id), (
+        "could not make the second pane's window active"
+    )
+
+    # A clean screen takes the completion-marker path.
+    first.send_keys("clear")
+    assert _wait_until(lambda: first._content_is_cleared(first.read_screen()))
+    assert first._content_is_cleared(first.read_screen())
+
+    start = time.perf_counter()
+    first.clear_screen()
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < _CLEAR_PROMPT_TIMEOUT, (
+        f"clear_screen on an inactive pooled pane took {elapsed * 1000:.0f} ms; "
+        "the completion marker was not targeted at the pane"
+    )
+    assert first._content_is_cleared(first.read_screen())
+
+    # The other pane's title must be untouched: no cross-talk between panes.
+    other_title = second._pane_title()
+    first.clear_screen()
+    assert second._pane_title() == other_title
+
+
+def test_clear_marker_target_is_this_pane(pool):
+    terminal = pool.checkout()
+    target = terminal._clear_marker_target()
+    assert target.strip("\"'") == terminal.pane.id

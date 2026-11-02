@@ -373,7 +373,10 @@ class TmuxTerminal(TerminalInterface):
           remove that content, so waiting for the cleared shape is a sound proof.
         * If it is *already* clean (the caller ran ``clear`` themselves, say), the
           shape proves nothing. We then attach an explicit completion marker to
-          the command and wait for the pane title to carry it.
+          the command and wait for the pane title to carry it. The marker is
+          targeted at this pane explicitly, because an untargeted
+          ``tmux select-pane`` resolves against the session's *active* window and
+          would mark a different pane in a pool.
         """
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
@@ -386,12 +389,27 @@ class TmuxTerminal(TerminalInterface):
 
         if already_clean:
             token = f"openhands-clear-{uuid.uuid4().hex}"
-            self.pane.send_keys(f"clear; tmux select-pane -T {token}", enter=True)
+            target = self._clear_marker_target()
+            self.pane.send_keys(
+                f"clear; tmux select-pane -t {target} -T {token}", enter=True
+            )
             self._wait_for_marker(token, _CLEAR_PROMPT_TIMEOUT)
         else:
             self.pane.send_keys("clear", enter=True)
             self._wait_for_clear(_CLEAR_PROMPT_TIMEOUT)
         self.pane.cmd("clear-history")
+
+    def _clear_marker_target(self) -> str:
+        """tmux target for the completion marker, scoped to this pane.
+
+        ``tmux select-pane`` without ``-t`` targets the session's *active*
+        window. A pooled pane lives in its own window, so an inactive pane's
+        marker would land on a different pane's title and ``_wait_for_marker``
+        would always time out. Target this pane's id explicitly, falling back to
+        the shell's ``$TMUX_PANE`` if the handle has no id.
+        """
+        pane_id = self.pane.id
+        return shlex.quote(pane_id) if pane_id else "$TMUX_PANE"
 
     def _wait_for_clear(self, timeout: float) -> bool:
         """Wait until the pane has actually been cleared by ``clear``.
