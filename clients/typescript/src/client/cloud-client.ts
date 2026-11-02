@@ -20,6 +20,7 @@ import type {
   SaveProfileRequest,
   SettingsSchema,
 } from '../models/api';
+import type { ConversationRuntimeStatus } from '../models/conversation';
 
 export interface CloudProxyOptions {
   /** Agent-server or ingress host exposing `/api/cloud-proxy`. */
@@ -218,7 +219,10 @@ export interface CloudAppConversation {
   metrics: unknown;
   created_at: string;
   updated_at: string;
+  archived_at?: string | null;
   execution_status: string | null;
+  runtime_status?: ConversationRuntimeStatus | null;
+  can_resume?: boolean | null;
   sandbox_status?: string | null;
   conversation_url: string | null;
   session_api_key: string | null;

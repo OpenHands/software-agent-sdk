@@ -402,6 +402,30 @@ async def test_direct_start_strips_reserved_conversation_secret(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_local_codex_binding_is_restored_before_cold_admission(tmp_path) -> None:
+    store = FileSecretsStore(tmp_path / "settings")
+    store.set_secret("CODEX_AUTH_JSON", "canonical")
+    conversations_dir = tmp_path / "conversations"
+    request = StartConversationRequest(
+        agent=ACPAgent(acp_command=["codex-acp"], acp_server="codex"),
+        workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+    )
+
+    async with ConversationService(
+        conversations_dir=conversations_dir,
+        secrets_store=store,
+    ) as service:
+        info, _ = await service.start_conversation(request)
+
+    async with ConversationService(
+        conversations_dir=conversations_dir,
+        secrets_store=store,
+    ) as restarted:
+        event_service = await restarted.get_event_service(info.id)
+        assert event_service is not None
+        assert "CODEX_AUTH_JSON" in event_service.credential_bindings
+
+
 async def test_pending_binding_is_ignored_for_regular_agent(tmp_path) -> None:
     """A binding sent while a regular (non-ACP) conversation is not loaded is
     discarded on load, so it never makes the conversation require a binding."""

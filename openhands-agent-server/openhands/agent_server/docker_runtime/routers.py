@@ -23,7 +23,7 @@ from openhands.agent_server.docker_runtime.proxy import (
 from openhands.agent_server.docker_runtime.registry import (
     ConversationContainer,
     DockerConversationRegistry,
-    RuntimeArchivedError,
+    RuntimeExpiredError,
 )
 from openhands.agent_server.launch import (
     forward_to_runtime,
@@ -33,6 +33,7 @@ from openhands.agent_server.launch import (
     server_launch_stores,
 )
 from openhands.agent_server.models import (
+    ConversationInfo,
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
     StartConversationRequest,
@@ -58,16 +59,36 @@ def get_registry(request: Request) -> DockerConversationRegistry:
     return registry
 
 
+def _is_conversation_archived(
+    registry: DockerConversationRegistry, conversation_id: UUID
+) -> bool:
+    try:
+        metadata_path = registry.conversation_dir(conversation_id) / "meta.json"
+    except ValueError:
+        # Symlinked runtime mount: not archived, and the caller reports the
+        # guard violation itself.
+        return False
+    if not metadata_path.is_file():
+        return False
+    return json.loads(metadata_path.read_text()).get("archived_at") is not None
+
+
 async def _container(
     registry: DockerConversationRegistry, conversation_id: UUID
 ) -> ConversationContainer:
     if not registry.provisioning.manifest_path(conversation_id).is_file():
         raise HTTPException(404, "Conversation not found")
+    if _is_conversation_archived(registry, conversation_id):
+        raise HTTPException(
+            409, "Conversation is archived; unarchive it before using its runtime"
+        )
     try:
         return await registry.get_or_create(conversation_id)
-    except RuntimeArchivedError as exc:
+    except RuntimeExpiredError as exc:
         raise HTTPException(
-            410, "Conversation runtime was archived; its history is read-only"
+            410,
+            "Conversation runtime expired; unarchiving cannot restore its workspace; "
+            "history is read-only",
         ) from exc
     except Exception as exc:
         logger.exception("Could not start conversation container %s", conversation_id)
@@ -150,14 +171,19 @@ async def start_conversation(
     body["workspace"] = {"kind": "LocalWorkspace", "working_dir": "/workspace"}
 
     registry = get_registry(request)
-    # Only a conversation the container already created is left alone on
-    # failure; a manifest from a failed earlier start is retried like a new one.
+    # Resolve the directory before the archive check: a symlinked mount must
+    # surface as the 422 the guard in conversation_dir raises, not a 500 from
+    # reading metadata through it.
     try:
         existing = (
             registry.conversation_dir(conversation_id).joinpath("meta.json").is_file()
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    if _is_conversation_archived(registry, conversation_id):
+        raise HTTPException(
+            409, "Conversation is archived; unarchive it before using its runtime"
+        )
     try:
         payload, launched, options = await _prepare_forward(
             body, registry, existing=existing
@@ -306,6 +332,46 @@ async def reprovision_runtime(
     )
 
 
+async def _set_archive_state(
+    conversation_id: UUID, request: Request, *, archived: bool
+) -> ConversationInfo:
+    registry = get_registry(request)
+    conversation_service = get_conversation_service(request)
+    if archived:
+        # The inner service may still hold an older copy of meta.json and write it
+        # during graceful shutdown. Stop it before persisting the archive marker
+        # so that stale runtime state cannot undo the transition, then reload
+        # what it wrote so the marker does not overwrite its final metadata.
+        await registry.stop(conversation_id)
+        await conversation_service.refresh_persisted_conversation(conversation_id)
+    conversation = await conversation_service.set_conversation_archived(
+        conversation_id, archived=archived
+    )
+    if conversation is None:
+        raise HTTPException(404, "Conversation not found")
+    return conversation.model_copy(
+        update={"runtime_info": registry.runtime_info(conversation_id)}
+    )
+
+
+@docker_conversation_router.post(
+    "/{conversation_id}/archive", response_model=ConversationInfo
+)
+async def archive_conversation(
+    conversation_id: UUID, request: Request
+) -> ConversationInfo:
+    return await _set_archive_state(conversation_id, request, archived=True)
+
+
+@docker_conversation_router.post(
+    "/{conversation_id}/unarchive", response_model=ConversationInfo
+)
+async def unarchive_conversation(
+    conversation_id: UUID, request: Request
+) -> ConversationInfo:
+    return await _set_archive_state(conversation_id, request, archived=False)
+
+
 @docker_conversation_router.delete("/{conversation_id}")
 async def delete_conversation(conversation_id: UUID, request: Request) -> Response:
     registry = get_registry(request)
@@ -322,7 +388,7 @@ async def delete_conversation(conversation_id: UUID, request: Request) -> Respon
     try:
         await registry.stop(conversation_id)
         registry.provisioning.manifest_path(conversation_id).unlink(missing_ok=True)
-        registry.archived_marker(conversation_id).unlink(missing_ok=True)
+        registry.expired_marker(conversation_id).unlink(missing_ok=True)
         await asyncio.to_thread(
             safe_rmtree, registry.provisioning.runtime_dir(conversation_id)
         )
