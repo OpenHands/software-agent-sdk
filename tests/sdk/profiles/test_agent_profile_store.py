@@ -420,6 +420,16 @@ def test_list_summaries_skips_corrupted(
     assert [s["name"] for s in agent_store.list_summaries()] == ["oh"]
 
 
+def test_list_summaries_skips_undecodable_file(
+    agent_store: AgentProfileStore, openhands_profile: OpenHandsAgentProfile
+
+) -> None:
+    agent_store.save(openhands_profile)
+    (agent_store.base_dir / "binary.json").write_bytes(b"\xff\xfe\x00garbage")
+
+    assert [s["name"] for s in agent_store.list_summaries()] == ['oh']
+
+
 def test_list_summaries_skips_non_dict(
     agent_store: AgentProfileStore, openhands_profile: OpenHandsAgentProfile
 ) -> None:
