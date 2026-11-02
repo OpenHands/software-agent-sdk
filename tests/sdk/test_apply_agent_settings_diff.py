@@ -77,6 +77,113 @@ def test_inline_fields_land_on_fresh_base_during_switch() -> None:
     assert result.llm.model == "model-c"
 
 
+@pytest.mark.parametrize(
+    ("base", "diff", "expected_type"),
+    [
+        (
+            {
+                "agent_kind": "openhands",
+                "persona": "old persona",
+                "mcp_config": {
+                    "example": {
+                        "transport": "http",
+                        "url": "https://example.invalid/mcp",
+                    }
+                },
+            },
+            {"agent_kind": "acp", "acp_server": "codex"},
+            ACPAgentSettings,
+        ),
+        (
+            {
+                "agent_kind": "acp",
+                "acp_server": "claude-code",
+                "mcp_config": {
+                    "example": {
+                        "transport": "http",
+                        "url": "https://example.invalid/mcp",
+                    }
+                },
+            },
+            {"agent_kind": "openhands", "llm": {"model": "gpt"}},
+            OpenHandsAgentSettings,
+        ),
+    ],
+)
+def test_kind_switch_preserves_shared_mcp_config(base, diff, expected_type) -> None:
+    result = apply_agent_settings_diff(base, diff)
+
+    assert isinstance(result, expected_type)
+    assert set(result.mcp_config) == {"example"}
+    assert result.mcp_config["example"].url == "https://example.invalid/mcp"
+
+
+@pytest.mark.parametrize(
+    ("mcp_config_patch", "expected_servers"),
+    [
+        (
+            {
+                "replacement": {
+                    "transport": "http",
+                    "url": "https://replacement.invalid/mcp",
+                }
+            },
+            {"replacement"},
+        ),
+        (None, set()),
+    ],
+)
+def test_kind_switch_honors_explicit_mcp_config_patch(
+    mcp_config_patch, expected_servers
+) -> None:
+    base = {
+        "agent_kind": "openhands",
+        "mcp_config": {
+            "existing": {
+                "transport": "http",
+                "url": "https://existing.invalid/mcp",
+            }
+        },
+    }
+
+    result = apply_agent_settings_diff(
+        base, {"agent_kind": "acp", "mcp_config": mcp_config_patch}
+    )
+
+    assert isinstance(result, ACPAgentSettings)
+    assert set(result.mcp_config) == expected_servers
+
+
+def test_same_kind_mcp_config_keeps_merge_patch_semantics() -> None:
+    base = {
+        "agent_kind": "openhands",
+        "mcp_config": {
+            "existing": {
+                "transport": "http",
+                "url": "https://existing.invalid/mcp",
+            }
+        },
+    }
+
+    merged = apply_agent_settings_diff(
+        base,
+        {
+            "mcp_config": {
+                "added": {
+                    "transport": "http",
+                    "url": "https://added.invalid/mcp",
+                }
+            }
+        },
+    )
+    cleared = apply_agent_settings_diff(base, {"mcp_config": None})
+
+    assert isinstance(merged, OpenHandsAgentSettings)
+    assert set(merged.mcp_config) == {"existing", "added"}
+    assert isinstance(cleared, OpenHandsAgentSettings)
+    assert cleared.mcp_config == {}
+
+
 # ── same-variant deep merge ────────────────────────────────────────────
 
 

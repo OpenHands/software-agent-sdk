@@ -1663,6 +1663,38 @@ def test_patch_settings_switch_agent_kind_from_openhands_to_acp(client_with_sett
     assert body["agent_settings"]["acp_command"] == ["echo", "hello"]
 
 
+def test_patch_settings_preserves_mcp_catalog_when_switching_agent_kind(
+    client_with_settings,
+):
+    server = {
+        "transport": "http",
+        "url": "https://example.invalid/mcp",
+    }
+    seeded = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"mcp_config": {"example": server}}},
+    )
+    assert seeded.status_code == 200
+    assert (
+        seeded.json()["agent_settings"]["mcp_config"]["example"]["url"] == server["url"]
+    )
+
+    switched = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_kind": "acp",
+                "acp_server": "codex",
+            }
+        },
+    )
+
+    assert switched.status_code == 200
+    agent_settings = switched.json()["agent_settings"]
+    assert agent_settings["agent_kind"] == "acp"
+    assert agent_settings["mcp_config"]["example"]["url"] == server["url"]
+
+
 def test_patch_settings_same_kind_restated_still_deep_merges(client_with_settings):
     """Re-stating the current ``agent_kind`` is NOT a variant switch: the diff
     must still deep-merge so unrelated fields survive.
