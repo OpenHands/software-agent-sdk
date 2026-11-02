@@ -203,6 +203,24 @@ def test_delete_missing_file_expected_differror(tmp_ws: Path):
     assert "Missing File" in obs.text
 
 
+def test_update_non_utf8_file_returns_error_observation(tmp_ws: Path):
+    fp = tmp_ws / "latin1.txt"
+    fp.write_bytes("café\n".encode("latin-1"))
+    patch = "*** Begin Patch\n*** Update File: latin1.txt\n@@\n-caf\n+x\n*** End Patch"
+    obs = run_exec(tmp_ws, patch)
+
+    assert obs.is_error
+    assert fp.read_bytes() == "café\n".encode("latin-1")
+
+
+def test_update_directory_returns_error_observation(tmp_ws: Path):
+    (tmp_ws / "sub").mkdir()
+    patch = "*** Begin Patch\n*** Update File: sub\n@@\n-a\n+b\n*** End Patch"
+    obs = run_exec(tmp_ws, patch)
+
+    assert obs.is_error
+
+
 def test_duplicate_add_file_error(tmp_ws: Path):
     patch = (
         "*** Begin Patch\n"
