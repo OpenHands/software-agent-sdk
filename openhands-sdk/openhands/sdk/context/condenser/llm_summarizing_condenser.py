@@ -3,16 +3,16 @@ from collections.abc import Sequence
 from enum import Enum
 from typing import Final
 
-from pydantic import Field, model_validator
+from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.context.condenser.base import (
     CondensationRequirement,
     NoCondensationAvailableException,
     RollingCondenser,
 )
+from openhands.sdk.context.condenser.token_counter import IncrementalTokenCounter
 from openhands.sdk.context.condenser.utils import (
     get_suffix_length_for_token_reduction,
-    get_total_token_count,
 )
 from openhands.sdk.context.prompts import render_template
 from openhands.sdk.context.view import View
@@ -86,6 +86,9 @@ class LLMSummarizingCondenser(RollingCondenser):
     size of each event string by this factor and retry.
     """
 
+    _token_counter: IncrementalTokenCounter | None = PrivateAttr(default=None)
+    _token_counter_llm: LLM | None = PrivateAttr(default=None)
+
     @model_validator(mode="after")
     def validate_keep_first_vs_max_size(self):
         events_from_tail = self.max_size // 2 - self.keep_first - 1
@@ -137,6 +140,22 @@ class LLMSummarizingCondenser(RollingCondenser):
         ]
         return min(limits) if limits else None
 
+    def _count_view_tokens(self, view: View, agent_llm: LLM, cached: bool) -> int:
+        """Token-count a view, reusing an incremental cache when it is stable.
+
+        The per-step condenser check reuses ``_token_counter`` across steps so
+        that only the messages that changed since the previous step are
+        re-tokenised. The "how many events can we forget" path counts a
+        *different* event sequence (the view minus the kept prefix), so it uses a
+        throwaway counter rather than disturbing the cached one.
+        """
+        if not cached:
+            return IncrementalTokenCounter(agent_llm).count(view.events)
+        if self._token_counter is None or self._token_counter_llm is not agent_llm:
+            self._token_counter = IncrementalTokenCounter(agent_llm)
+            self._token_counter_llm = agent_llm
+        return self._token_counter.count(view.events)
+
     def get_condensation_reasons(
         self, view: View, agent_llm: LLM | None = None
     ) -> set[Reason]:
@@ -159,7 +178,7 @@ class LLMSummarizingCondenser(RollingCondenser):
         # Reason 2: Token limit is provided and exceeded.
         max_tokens = self._effective_max_tokens(agent_llm)
         if max_tokens is not None and agent_llm is not None:
-            total_tokens = get_total_token_count(view.events, agent_llm)
+            total_tokens = self._count_view_tokens(view, agent_llm, cached=True)
             if total_tokens > max_tokens:
                 logger.info(
                     "Condenser token limit exceeded: total_tokens=%d max_tokens=%d "
@@ -316,7 +335,7 @@ class LLMSummarizingCondenser(RollingCondenser):
             assert max_tokens is not None
             assert agent_llm is not None
 
-            total_tokens = get_total_token_count(view.events, agent_llm)
+            total_tokens = self._count_view_tokens(view, agent_llm, cached=False)
             tokens_to_reduce = total_tokens - (max_tokens // 2)
 
             suffix_events_to_keep.add(

@@ -16,6 +16,7 @@ from filelock import FileLock
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.redact import redact_api_key_literals
 from openhands.tools.terminal.constants import (
+    CMD_OUTPUT_PS1_END,
     HISTORY_LIMIT,
     TMUX_SESSION_HEIGHT,
     TMUX_SESSION_WIDTH,
@@ -37,6 +38,13 @@ from openhands.tools.terminal.terminal.process_priority import (
 
 
 logger = get_logger(__name__)
+
+# ``clear_screen`` waits for the shell prompt instead of sleeping a fixed
+# duration. ``_CLEAR_PROMPT_TIMEOUT`` is the upper bound (a wedged pane must not
+# block the agent) and ``_CLEAR_PROMPT_POLL_INTERVAL`` matches the terminal's
+# other prompt polls.
+_CLEAR_PROMPT_TIMEOUT = 0.5
+_CLEAR_PROMPT_POLL_INTERVAL = 0.02
 
 
 class _SecretRedactFilter(logging.Filter):
@@ -349,13 +357,36 @@ class TmuxTerminal(TerminalInterface):
 
         Instead, we run the ``clear`` command to clear the visible screen, then
         use tmux's ``clear-history`` to remove the scrollback buffer.
+
+        We used to sleep a fixed 100 ms here, which added a hard ~150 ms floor to
+        *every* command (this runs from ``_ready_for_next_command`` after each
+        command completes). Instead we wait for the shell prompt to reappear,
+        bounded by ``_CLEAR_PROMPT_TIMEOUT`` so a slow or wedged pane still makes
+        progress.
         """
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
         self.pane.send_keys("clear", enter=True)
-        time.sleep(0.1)
+        self._wait_for_prompt(_CLEAR_PROMPT_TIMEOUT)
         self.pane.cmd("clear-history")
+
+    def _wait_for_prompt(self, timeout: float) -> bool:
+        """Wait until the pane shows a shell prompt again.
+
+        Returns ``True`` once ``read_screen()`` ends with the prompt marker and
+        ``False`` if ``timeout`` elapses first (the caller then proceeds anyway).
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                if self.read_screen().rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip()):
+                    return True
+            except Exception:
+                logger.debug("read_screen failed while waiting for prompt")
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_CLEAR_PROMPT_POLL_INTERVAL)
 
     def interrupt(self) -> bool:
         """Send interrupt signal (Ctrl+C) to the tmux pane.

@@ -1181,3 +1181,50 @@ def test_llm_summarizing_condenser_requires_llm() -> None:
     """LLMSummarizingCondenser raises ValidationError when llm is missing."""
     with pytest.raises(ValidationError):
         LLMSummarizingCondenser()  # type: ignore[call-arg]
+
+
+class TestCondenserTokenCountCache:
+    """The per-step token check should reuse an incremental cache."""
+
+    def _condenser_with_counter(self, mock_llm: LLM):
+        condenser = LLMSummarizingCondenser(
+            llm=mock_llm, max_size=1000, max_tokens=1_000_000, keep_first=1
+        )
+        agent_llm = MagicMock(spec=LLM)
+        agent_llm.model = "gpt-4"
+        agent_llm.effective_max_input_tokens = None
+        calls: list[int] = []
+
+        def count(messages, **_kwargs):
+            calls.append(len(messages))
+            return sum(len(c.text) for m in messages for c in m.content if c.text)
+
+        agent_llm.get_token_count.side_effect = count
+        return condenser, agent_llm, calls
+
+    def test_repeated_unchanged_view_does_not_recount(self, mock_llm: LLM) -> None:
+        condenser, agent_llm, calls = self._condenser_with_counter(mock_llm)
+        events: list[Event] = [message_event("hello"), message_event("world")]
+        view = View.from_events(events)
+
+        condenser.get_condensation_reasons(view, agent_llm=agent_llm)
+        after_first = len(calls)
+        assert after_first > 0
+
+        # Same view again: the incremental cache means no new per-message counts.
+        condenser.get_condensation_reasons(view, agent_llm=agent_llm)
+        assert len(calls) == after_first
+
+    def test_grown_view_only_counts_new_message(self, mock_llm: LLM) -> None:
+        condenser, agent_llm, calls = self._condenser_with_counter(mock_llm)
+        events: list[Event] = [message_event("hello")]
+        condenser.get_condensation_reasons(
+            View.from_events(events), agent_llm=agent_llm
+        )
+
+        events.append(message_event("a new user turn"))
+        condenser.get_condensation_reasons(
+            View.from_events(events), agent_llm=agent_llm
+        )
+        # Only the newly appended message is counted individually.
+        assert calls[-1] == 1

@@ -3035,15 +3035,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def _begin_chat_messages(
         self, messages: list[Message]
     ) -> tuple[list[Message], bool]:
-        """Deepcopy ``messages`` and apply prompt-caching flags.
+        """Detach ``messages`` when needed and apply prompt-caching flags.
 
         Shared by the sync and async chat-formatting paths. Returns the
-        detached message list and the resolved ``vision_enabled`` flag so
-        callers can plug in their own (sync or async) inline-image pass
-        without duplicating the boilerplate.
+        message list and the resolved ``vision_enabled`` flag so callers can
+        plug in their own (sync or async) inline-image pass without duplicating
+        the boilerplate.
+
+        The list is only deep-copied when prompt caching is active, because
+        ``_apply_prompt_caching`` mutates content items in place. The inline and
+        resize passes are already copy-on-write, so with caching inactive the
+        input can be passed straight through -- which avoids deep-copying the
+        whole history on every token-count and formatting call.
         """
-        messages = copy.deepcopy(messages)
         if self.is_caching_prompt_active():
+            messages = copy.deepcopy(messages)
             self._apply_prompt_caching(messages)
         return messages, self.vision_is_active()
 
