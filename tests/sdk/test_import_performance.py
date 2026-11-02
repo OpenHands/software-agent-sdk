@@ -60,7 +60,7 @@ def _run_snippet(body: str, timeout: int = 60) -> subprocess.CompletedProcess:
 
 
 def _measure_cold_import(snippet: str) -> tuple[float, float]:
-    """Return (median wall seconds, peak RSS MiB) for a cold import."""
+    """Return (median wall seconds, max peak RSS MiB) for a cold import."""
     body = f"""
         import resource, time
         start = time.perf_counter()
@@ -80,7 +80,7 @@ def _measure_cold_import(snippet: str) -> tuple[float, float]:
         line = next(ln for ln in result.stdout.splitlines() if ln.startswith("RESULT "))
         _, elapsed, rss = line.split()
         times.append(float(elapsed))
-        rss_mib = float(rss)
+        rss_mib = max(rss_mib, float(rss))
     return statistics.median(times), rss_mib
 
 
