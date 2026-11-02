@@ -97,3 +97,42 @@ def test_clear_screen_does_not_accept_the_previous_prompt(tmux_terminal):
     # After the wait the screen is genuinely cleared: nothing above the prompt.
     assert tmux_terminal._screen_is_cleared() is True
     assert "PREVIOUS_OUTPUT_XYZ" not in tmux_terminal.read_screen()
+
+
+def test_clear_screen_does_not_trust_the_shape_when_already_clean(tmux_terminal):
+    """When the pane is already clean, the shape cannot prove ``clear`` ran.
+
+    A caller may have cleared the screen themselves, so the pre-clear screen is
+    already a bare prompt. Trusting the shape would return before ``clear`` ran.
+    The wait must instead require the completion marker; make it unreachable and
+    check that ``clear_screen`` waits out the bounded fallback rather than
+    returning instantly.
+    """
+    tmux_terminal.clear_screen()
+    assert tmux_terminal._screen_is_cleared() is True
+
+    tmux_terminal._pane_title = lambda: "not-the-marker"  # type: ignore[method-assign]
+    start = time.perf_counter()
+    tmux_terminal.clear_screen()
+    elapsed = time.perf_counter() - start
+
+    assert elapsed >= _CLEAR_PROMPT_TIMEOUT
+    assert elapsed < _CLEAR_PROMPT_TIMEOUT + 0.5
+    # The pane is still usable afterwards.
+    tmux_terminal.send_keys("echo usable_after_marker_fallback")
+    time.sleep(0.3)
+    assert "usable_after_marker_fallback" in tmux_terminal.read_screen()
+
+
+def test_wait_for_marker_detects_the_completion_marker(tmux_terminal):
+    """The marker appended to ``clear`` proves the shell ran it."""
+    token = "openhands-clear-testtoken"
+    tmux_terminal.pane.send_keys(f"clear; tmux select-pane -T {token}", enter=True)
+    assert tmux_terminal._wait_for_marker(token, 1.0) is True
+
+
+def test_wait_for_marker_times_out_without_the_marker(tmux_terminal):
+    tmux_terminal.pane.send_keys("clear", enter=True)
+    start = time.perf_counter()
+    assert tmux_terminal._wait_for_marker("openhands-clear-absent", 0.1) is False
+    assert time.perf_counter() - start >= 0.1

@@ -361,28 +361,44 @@ class TmuxTerminal(TerminalInterface):
 
         We used to sleep a fixed 100 ms here, which added a hard ~150 ms floor to
         *every* command (this runs from ``_ready_for_next_command`` after each
-        command completes). Instead we wait for the screen to actually be
+        command completes). Instead we wait until the screen has actually been
         cleared, bounded by ``_CLEAR_PROMPT_TIMEOUT`` so a slow or wedged pane
         still makes progress.
+
+        ``pane.send_keys`` submits the keys but does not wait for the shell to run
+        them, so for a moment the pane still shows the *previous* prompt. Which
+        proof of "``clear`` ran" is sound depends on the screen we start from:
+
+        * If it still shows content above the prompt, only running ``clear`` can
+          remove that content, so waiting for the cleared shape is a sound proof.
+        * If it is *already* clean (the caller ran ``clear`` themselves, say), the
+          shape proves nothing. We then attach an explicit completion marker to
+          the command and wait for the pane title to carry it.
         """
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
-        self.pane.send_keys("clear", enter=True)
-        self._wait_for_clear(_CLEAR_PROMPT_TIMEOUT)
+        try:
+            already_clean = self._content_is_cleared(self.read_screen())
+        except Exception:
+            # Unknown state: take the provable path rather than trusting the shape.
+            already_clean = True
+
+        if already_clean:
+            token = f"openhands-clear-{uuid.uuid4().hex}"
+            self.pane.send_keys(f"clear; tmux select-pane -T {token}", enter=True)
+            self._wait_for_marker(token, _CLEAR_PROMPT_TIMEOUT)
+        else:
+            self.pane.send_keys("clear", enter=True)
+            self._wait_for_clear(_CLEAR_PROMPT_TIMEOUT)
         self.pane.cmd("clear-history")
 
     def _wait_for_clear(self, timeout: float) -> bool:
         """Wait until the pane has actually been cleared by ``clear``.
 
-        ``pane.send_keys`` submits the keys to the shell but does not wait for it
-        to run the command, so for a moment the pane still shows the *previous*
-        prompt. Accepting that prompt would return before ``clear`` ran, and the
-        next command could start against a stale screen. We therefore require the
-        shape ``clear`` leaves behind -- the prompt with nothing above it -- which
-        the previous screen does not have (it still holds the command echo and
-        output). Returns ``True`` once cleared, ``False`` if ``timeout`` elapses
-        first (the caller then proceeds anyway).
+        Used when the pre-clear screen still had content above the prompt, so the
+        cleared shape cannot be the stale screen. Returns ``True`` once cleared,
+        ``False`` if ``timeout`` elapses first (the caller then proceeds anyway).
         """
         deadline = time.monotonic() + timeout
         while True:
@@ -395,13 +411,37 @@ class TmuxTerminal(TerminalInterface):
                 return False
             time.sleep(_CLEAR_PROMPT_POLL_INTERVAL)
 
+    def _wait_for_marker(self, token: str, timeout: float) -> bool:
+        """Wait until the pane title carries ``token``, proving ``clear`` ran.
+
+        The marker is appended to the same command as ``clear``, so the title
+        changes only after the shell executed ``clear``. Returns ``True`` once
+        seen, ``False`` if ``timeout`` elapses first.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                if self._pane_title() == token:
+                    return True
+            except Exception:
+                logger.debug("reading pane title failed while waiting for clear")
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_CLEAR_PROMPT_POLL_INTERVAL)
+
+    def _pane_title(self) -> str:
+        output = self.pane.cmd("display-message", "-p", "#{pane_title}").stdout
+        return output[0].strip() if output else ""
+
     def _screen_is_cleared(self) -> bool:
         """Whether the pane shows a bare prompt with no content above it."""
-        content = self.read_screen()
+        return self._content_is_cleared(self.read_screen())
+
+    @staticmethod
+    def _content_is_cleared(content: str) -> bool:
         if not content.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip()):
             return False
-        marker = CMD_OUTPUT_PS1_BEGIN.strip()
-        index = content.rfind(marker)
+        index = content.rfind(CMD_OUTPUT_PS1_BEGIN.strip())
         return index >= 0 and content[:index].strip() == ""
 
     def interrupt(self) -> bool:

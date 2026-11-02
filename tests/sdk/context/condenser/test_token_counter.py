@@ -291,56 +291,59 @@ class TestNonAdditiveCountingPath:
         assert counter.count(events) == 35
 
 
-class TestNonNativeToolCallingPath:
-    """Regression tests with a real non-native tool-calling LLM (no mocks).
+def _non_native_events(tools) -> list:
+    return [
+        SystemPromptEvent(
+            source="agent",
+            system_prompt=TextContent(text="You are an agent."),
+            tools=tools,
+        ),
+        _message_event("first user turn"),
+        _message_event("assistant reply", "assistant", "agent"),
+        _message_event("second user turn"),
+    ]
+
+
+@pytest.fixture
+def non_native_llm() -> LLM:
+    return LLM(model="gpt-4o", api_key="test", native_tool_calling=False)
+
+
+def test_non_native_tool_calling_matches_full_count_at_every_step(
+    non_native_llm: LLM,
+):
+    """Regression with a real non-native tool-calling LLM (no mocks).
 
     Prompt-mocked tool calling attaches its in-context example positionally, so
     per-message counts do not add up to the full-history count. The counter must
     still return the same total as ``get_total_token_count`` at every step.
     """
+    tools = cast(list[ToolDefinition], list(FinishTool.create()))
+    events = _non_native_events(tools)
+    counter = IncrementalTokenCounter(non_native_llm)
 
-    @pytest.fixture
-    def non_native_llm(self) -> LLM:
-        return LLM(model="gpt-4o", api_key="test", native_tool_calling=False)
+    for length in range(1, len(events) + 1):
+        view = events[:length]
+        assert counter.count(view) == _full_count(view, non_native_llm)
 
-    def _events(self, tools) -> list:
-        return [
-            SystemPromptEvent(
-                source="agent",
-                system_prompt=TextContent(text="You are an agent."),
-                tools=tools,
-            ),
-            _message_event("first user turn"),
-            _message_event("assistant reply", "assistant", "agent"),
-            _message_event("second user turn"),
-        ]
 
-    def test_matches_full_count_at_every_step(self, non_native_llm: LLM):
-        tools = cast(list[ToolDefinition], list(FinishTool.create()))
-        events = self._events(tools)
-        counter = IncrementalTokenCounter(non_native_llm)
+def test_cache_is_disabled_for_non_native_tool_calling(non_native_llm: LLM):
+    tools = cast(list[ToolDefinition], list(FinishTool.create()))
+    counter = IncrementalTokenCounter(non_native_llm)
+    counter.count(_non_native_events(tools))
+    assert counter._additive is False
 
-        for length in range(1, len(events) + 1):
-            view = events[:length]
-            assert counter.count(view) == _full_count(view, non_native_llm)
 
-    def test_cache_is_disabled_for_non_native_tool_calling(self, non_native_llm: LLM):
-        tools = cast(list[ToolDefinition], list(FinishTool.create()))
-        events = self._events(tools)
-        counter = IncrementalTokenCounter(non_native_llm)
-        counter.count(events)
-        assert counter._additive is False
+def test_native_tool_calling_still_uses_the_cache():
+    llm = LLM(model="gpt-4o", api_key="test")
+    tools = cast(list[ToolDefinition], list(FinishTool.create()))
+    events = _non_native_events(tools)
+    counter = IncrementalTokenCounter(llm)
 
-    def test_native_tool_calling_still_uses_the_cache(self):
-        llm = LLM(model="gpt-4o", api_key="test")
-        tools = cast(list[ToolDefinition], list(FinishTool.create()))
-        events = self._events(tools)
-        counter = IncrementalTokenCounter(llm)
-
-        for length in range(1, len(events) + 1):
-            view = events[:length]
-            assert counter.count(view) == _full_count(view, llm)
-        assert counter._additive is True
+    for length in range(1, len(events) + 1):
+        view = events[:length]
+        assert counter.count(view) == _full_count(view, llm)
+    assert counter._additive is True
 
 
 def test_counter_tracks_llm_tool_configuration():
