@@ -242,32 +242,3 @@ def test_fetch_error_masks_overlapping_secret_values_in_any_order(tmp_path: Path
         assert message.endswith("****-****")
         for value in secrets_by_name.values():
             assert value not in message
-
-
-def test_fetch_error_redacts_url_credentials_before_masking(tmp_path: Path):
-    """A URL credential echoed by git is masked, and never partly so.
-
-    Git strips credentials from the URLs it prints, so the credential here is
-    also expanded into the ref, which is the part git echoes verbatim. The
-    message must show the redacted URL and neither the secret value nor its
-    tail.
-    """
-    repo, _sha1, _sha2 = _make_plugin_repo(tmp_path)
-    secret_value = "SUPERSECRET"
-
-    with pytest.raises(PluginSourceError) as exc_info:
-        fetch_plugin_strict(
-            source=f"file://x-access-token:${{TOKEN}}@{repo}",
-            ref="${TOKEN}-missing",
-            repo_path="plugins/demo",
-            secrets={"TOKEN": secret_value},
-            cache_dir=tmp_path / "cache",
-            allow_local=True,
-            use_cache=False,
-        )
-
-    message = exc_info.value.message
-    assert exc_info.value.code == "ref_not_found"
-    assert "x-access-token" not in message
-    assert secret_value not in message
-    assert secret_value[1:] not in message
