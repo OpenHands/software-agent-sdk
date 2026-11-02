@@ -90,6 +90,8 @@ Preconditions:
     --check build_git_sha eq "$(git rev-parse HEAD)" \
     --check capabilities contains idempotent_conversation_create_v1 \
     --check capabilities contains tool_catalog_v1 \
+    --check capabilities contains agent_launch_pipeline_v1 \
+    --check capabilities contains profile_public_skills_v1 \
     --check usable_tools contains terminal \
     --check conversation_runtime eq local \
     --check sdk_version exists --save F01.server-info/info

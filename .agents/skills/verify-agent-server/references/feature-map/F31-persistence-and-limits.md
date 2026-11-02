@@ -42,7 +42,7 @@ Routes: none
 - `F31.config-invalid-fails-fast`: a non-numeric `OH_MAX_CONCURRENT_RUNS` or an out-of-range limit in the configuration file stops the server during startup instead of serving with a default.
 - `F31.config-silent-env`: an `OH_*` boolean other than `1`/`true` is read as false (it overrides a `true` in the configuration file) and a `Literal` variable outside its choices falls back to the default; the server starts either way, while the same invalid choice in the file stops startup.
 - `F31.tmux-dir-cleanup`: a server that defaulted its own per-process `TMUX_TMPDIR` removes that directory when it stops.
-- `F31.storage-retention`: with the Docker runtime, `conversation_storage_retention_days` archives a stopped conversation inactive past the limit (events readable, resume and proxied routes 410, runtime directory gone), and `conversation_storage_disk_budget` sheds a stopped workspace's gitignored directories while keeping its files (blocked here: no Docker daemon).
+- `F31.storage-retention`: with the Docker runtime, `conversation_storage_retention_days` archives a stopped conversation inactive past the limit (events readable, resume and proxied routes 410, runtime directory gone), and `conversation_storage_disk_budget` sheds a stopped workspace's gitignored directories while keeping its files, ignored individual files and nested Git checkouts; the runtime remains resumable.
 
 ## How to get to it (agent POV)
 
@@ -680,43 +680,126 @@ Preconditions:
   (`api_lifespan`) restores the variable and removes that directory. A
   `TMUX_TMPDIR` the user provided is kept and never removed. The `trap`
   removes a leftover if the assertion fails.
-- **Storage retention and disk budget (`F31.storage-retention`), blocked.**
-  Needs a Docker daemon and the `conversation_image` pulled
-  (`control-agent-server capabilities` reports `docker`): the storage
-  reclaimer exists only in the Docker runtime (`DockerConversationRegistry`
-  builds it; the local runtime has none), and its pass runs every 300 s
-  (`MAINTENANCE_INTERVAL` in `storage/reclaimer.py`), first 300 s after
-  startup. It would prove that with `conversation_storage_retention_days`
-  set, a stopped conversation inactive past the limit is archived: its
-  events stay readable, while `/run`, a message and every route proxied into
-  its container answer 410 `Conversation runtime was archived; its history
-  is read-only`, `GET .../runtime` reports `missing` with `can_resume`
-  false, an `<id>.archived.json` marker appears under
-  `home/.openhands/runtime-control/` and its `runtime-data/<id>/` directory
-  (sandbox home and the workspace the server created) is gone. A second
-  server with only `conversation_storage_disk_budget` below the
-  filesystem's usage (for example 0.01) would show a stopped runtime's
-  workspace losing its gitignored directories (`node_modules`, `.venv`)
-  while tracked and untracked files stay, and `Conversation storage: freed`
-  in the log.
+- **Storage retention and disk budget (`F31.storage-retention`).**
+  Needs: `docker`
+
+  Pull the selected image first. This uses the same pinned minimal image and
+  `AGENT_SERVER_VERIFY_DOCKER_IMAGE` override as F12. Two isolated Docker
+  servers exercise separate policies concurrently, without invoking an LLM.
+  The outer server uses this checkout and the child image may be a release.
+  The real 300-second maintenance timer is left unchanged.
   ```sh
-  DK=$(control-agent-server launch --new --name f31-storage --print-run \
-    --config-json '{"conversation_runtime": "docker", "conversation_storage_retention_days": 0.0001}')
-  CID=$(control-agent-server api POST /api/conversations --run "$DK" \
-    --json '{"agent": {"llm": {"model": "openai/qa-stub", "api_key": "qa"}, "tools": []}}' --expect 200,201 --field id)
-  RT="/api/conversations/$CID/runtime"
-  NE=$(control-agent-server api GET "/api/conversations/$CID/events/count" --run "$DK" --field .)
-  control-agent-server api DELETE "$RT" --run "$DK" --expect 204
-  control-agent-server api GET "$RT" --run "$DK" --until-ok 330 --check runtime_status eq missing --check can_resume eq false
-  control-agent-server state ls --run "$DK" "home/.openhands/runtime-control/${CID//-/}.archived.json" --expect-count 1
-  control-agent-server state ls --run "$DK" "home/.openhands/runtime-data/${CID//-/}/**/*" --expect-count 0
-  control-agent-server api GET "/api/conversations/$CID/events/count" --run "$DK" --expect 200 --check . eq "$NE"
-  control-agent-server api POST "/api/conversations/$CID/run" --run "$DK" --expect 410 \
+  IMAGE=${AGENT_SERVER_VERIFY_DOCKER_IMAGE:-ghcr.io/openhands/agent-server:1.55.1-python-minimal}
+  docker image inspect "$IMAGE" >/dev/null
+  RET=
+  BUD=
+  trap 'for R in "$RET" "$BUD"; do if [ -n "$R" ]; then control-agent-server stop --run "$R" >/dev/null 2>&1 || true; fi; done' EXIT
+  RET=$(control-agent-server launch --new --name f31-retention --print-run \
+    --config-json "$(jq -nc --arg image "$IMAGE" '{conversation_runtime:"docker",conversation_image:$image,enable_browser:false,conversation_container_memory:"1g",conversation_storage_retention_days:0.00001}')")
+  BUD=$(control-agent-server launch --new --name f31-disk-budget --print-run \
+    --config-json "$(jq -nc --arg image "$IMAGE" '{conversation_runtime:"docker",conversation_image:$image,enable_browser:false,conversation_container_memory:"1g",conversation_storage_disk_budget:0.01}')")
+  for R in "$RET" "$BUD"; do control-agent-server doctor --run "$R"; done
+  control-agent-server exec --run "$RET" --save F31.storage-retention/image -- \
+    docker image inspect --format '{{.Id}} {{json .RepoDigests}}' "$IMAGE"
+  CREATE='{"agent":{"llm":{"model":"openai/qa-no-call","api_key":"qa-placeholder"},"tools":[]},"autotitle":false}'
+  RCID=$(control-agent-server api POST /api/conversations --run "$RET" --json "$CREATE" \
+    --expect 201 --timeout 180 --field id --save F31.storage-retention/retention-create)
+  BCID=$(control-agent-server api POST /api/conversations --run "$BUD" --json "$CREATE" \
+    --expect 201 --timeout 180 --field id --save F31.storage-retention/budget-create)
+  control-agent-server api POST "/api/conversations/$RCID/events" --run "$RET" --expect 200 --check success eq true \
+    --json '{"role":"user","content":[{"type":"text","text":"QA_F31_RETAINED_HISTORY"}],"run":false}'
+  control-agent-server api GET "/api/conversations/$RCID/events/search" --run "$RET" --expect 200 \
+    --check items.1.llm_message.content.0.text eq QA_F31_RETAINED_HISTORY --save F31.storage-retention/history-before
+  FILL=$(cat <<'SH'
+  set -e
+  cd /workspace
+  git init -q
+  printf 'node_modules/\n.venv/\nbuild/\n.env\nvendor/\n' > .gitignore
+  printf 'tracked\n' > main.txt
+  git add .gitignore main.txt
+  git -c user.name=qa -c user.email=qa@example.invalid commit -qm initial
+  printf 'untracked\n' > notes.txt
+  printf 'ignored file\n' > .env
+  mkdir -p node_modules/dep .venv/lib build vendor/lib
+  printf 'rebuild\n' > node_modules/dep/index.js
+  printf 'rebuild\n' > .venv/lib/site.py
+  printf 'rebuild\n' > build/out.o
+  git -C vendor/lib init -q
+  printf 'nested checkout\n' > vendor/lib/lib.txt
+  SH
+  )
+  control-agent-server api POST "/api/conversations/$BCID/bash/execute_bash_command" --run "$BUD" \
+    --json "$(jq -nc --arg command "$FILL" '{command:$command}')" --expect 200 --check exit_code eq 0 --save F31.storage-retention/budget-fill
+  BROOT="$BUD/home/.openhands/runtime-data/${BCID//-/}/workspace"
+  control-agent-server exec --run "$BUD" --env ROOT="$BROOT" --save F31.storage-retention/budget-before -- .venv/bin/python - <<'PY'
+  import json, os, shutil
+  from pathlib import Path
+  root = Path(os.environ["ROOT"])
+  usage = shutil.disk_usage(root)
+  fraction = usage.used / (usage.used + usage.free)
+  assert fraction > 0.01, "Filesystem must exceed the configured 1% budget"
+  for name in ("node_modules/dep/index.js", ".venv/lib/site.py", "build/out.o", "main.txt", "notes.txt", ".env", "vendor/lib/lib.txt"):
+      assert (root / name).is_file(), name
+  print(json.dumps(dict(over_budget=True, disk_usage_fraction=fraction, all_fixture_files_present=True)))
+  PY
+  control-agent-server api DELETE "/api/conversations/$RCID/runtime" --run "$RET" --expect 204
+  control-agent-server api DELETE "/api/conversations/$BCID/runtime" --run "$BUD" --expect 204
+  control-agent-server api GET "/api/conversations/$RCID/runtime" --run "$RET" --expect 200 \
+    --until-ok 330 --check runtime_status eq missing --check can_resume eq false --save F31.storage-retention/archived
+  control-agent-server state ls --run "$RET" "home/.openhands/runtime-control/${RCID//-/}.archived.json" --expect-count 1
+  control-agent-server exec --run "$RET" --env ROOT="$RET/home/.openhands/runtime-data/${RCID//-/}" \
+    --save F31.storage-retention/runtime-directory-gone -- .venv/bin/python - <<'PY'
+  import json, os
+  from pathlib import Path
+  assert not Path(os.environ["ROOT"]).exists()
+  print(json.dumps(dict(runtime_directory_exists=False)))
+  PY
+  control-agent-server api GET "/api/conversations/$RCID/events/search" --run "$RET" --expect 200 \
+    --check items.1.llm_message.content.0.text eq QA_F31_RETAINED_HISTORY --save F31.storage-retention/history-after
+  control-agent-server api POST "/api/conversations/$RCID/run" --run "$RET" --expect 410 \
     --check detail eq 'Conversation runtime was archived; its history is read-only' --save F31.storage-retention/run-410
-  control-agent-server api POST "$RT/reprovision" --run "$DK" --expect 410
-  control-agent-server logs --run "$DK" --grep 'Conversation storage: freed' --expect-min 1
-  control-agent-server stop --run "$DK"
+  control-agent-server api POST "/api/conversations/$RCID/events" --run "$RET" --expect 410 \
+    --json '{"role":"user","content":[{"type":"text","text":"must not persist"}],"run":false}' --save F31.storage-retention/message-410
+  control-agent-server api GET "/api/conversations/$RCID/file/download" --run "$RET" --query path=/workspace/main.txt \
+    --expect 410 --save F31.storage-retention/proxy-410
+  control-agent-server api POST "/api/conversations/$RCID/runtime/reprovision" --run "$RET" --expect 410
+  control-agent-server logs --run "$RET" --grep 'Conversation storage: freed' --expect-min 1
+  control-agent-server exec --run "$BUD" --env ROOT="$BROOT" --timeout 350 \
+    --save F31.storage-retention/budget-after -- .venv/bin/python - <<'PY'
+  import json, os, time
+  from pathlib import Path
+  root = Path(os.environ["ROOT"])
+  shed = ("node_modules", ".venv", "build")
+  deadline = time.monotonic() + 330
+  while any((root / name).exists() for name in shed) and time.monotonic() < deadline:
+      time.sleep(1)
+  for name in shed:
+      assert not (root / name).exists(), name
+  kept = {"main.txt": "tracked\n", "notes.txt": "untracked\n", ".env": "ignored file\n", "vendor/lib/lib.txt": "nested checkout\n"}
+  for name, contents in kept.items():
+      assert (root / name).read_text() == contents, name
+  assert (root / ".git/HEAD").is_file() and (root / "vendor/lib/.git/HEAD").is_file()
+  print(json.dumps(dict(shed=list(shed), kept_exact_contents=list(kept), git_checkouts_preserved=True)))
+  PY
+  control-agent-server logs --run "$BUD" --grep 'Conversation storage: freed' --expect-min 1
+  control-agent-server api GET "/api/conversations/$BCID/runtime" --run "$BUD" --expect 200 \
+    --check runtime_status eq missing --check can_resume eq true --save F31.storage-retention/budget-still-resumable
+  control-agent-server api POST "/api/conversations/$BCID/runtime/reprovision" --run "$BUD" --expect 200 \
+    --check runtime_status eq available --timeout 180 --save F31.storage-retention/budget-reprovision
+  control-agent-server api POST "/api/conversations/$BCID/bash/execute_bash_command" --run "$BUD" --expect 200 --check exit_code eq 0 \
+    --json '{"command":"cd /workspace && test ! -e node_modules && test ! -e .venv && test ! -e build && test -f vendor/lib/.git/HEAD && cat main.txt notes.txt .env vendor/lib/lib.txt"}' \
+    --check stdout eq $'tracked\nuntracked\nignored file\nnested checkout\n' --save F31.storage-retention/resumed-content
+  control-agent-server api DELETE "/api/conversations/$RCID" --run "$RET" --expect 200
+  control-agent-server api DELETE "/api/conversations/$BCID" --run "$BUD" --expect 200
+  for R in "$RET" "$BUD"; do control-agent-server stop --run "$R"; done
   ```
+  Retention removes the runtime directory and leaves an archive marker and
+  readable event history; writes, resume and proxied workspace access are
+  410. The separate disk-budget policy removes only the stopped workspace's
+  gitignored dependency directories. Tracked and untracked files, ignored
+  individual files and a nested checkout keep their exact content; the
+  conversation remains resumable and those files are readable after resume.
+  The budget is checked against actual filesystem usage before the test.
 
 ## Gotchas
 
