@@ -31,7 +31,9 @@ class VisionInspectAction(Action):
     image_index: int = Field(
         ge=0,
         description=(
-            "Zero-based index of the image to inspect from the latest user message."
+            "Zero-based index of the image to inspect. Images are numbered in "
+            "conversation order across user messages and tool observations, "
+            "matching the references in the rewritten messages."
         ),
     )
     question: str = Field(
@@ -128,19 +130,31 @@ def _format_profiles(profile_names: Sequence[str]) -> str:
     return "\n".join(f"- {name}" for name in profile_names)
 
 
-def _latest_user_image_urls(conversation: "LocalConversation") -> list[str]:
-    from openhands.sdk.event import MessageEvent
+def _conversation_image_urls(conversation: "LocalConversation") -> list[str]:
+    """All image URLs in conversation order.
 
-    for event in reversed(conversation.state.events):
-        if not isinstance(event, MessageEvent) or event.source != "user":
+    Covers user messages and tool observations (e.g. browser screenshots),
+    matching the numbering ``image_index`` refers to: the agent rewrites
+    every image-bearing message, not just the latest user message.
+    """
+    from openhands.sdk.event import MessageEvent, ObservationEvent
+
+    urls: list[str] = []
+    for event in conversation.state.events:
+        if isinstance(event, MessageEvent):
+            contents: Sequence[object] = event.llm_message.content
+        elif isinstance(event, ObservationEvent):
+            contents = event.observation.to_llm_content
+        else:
             continue
-        urls: list[str] = []
-        for content in event.llm_message.content:
+        for content in contents:
             if isinstance(content, ImageContent):
                 urls.extend(content.image_urls)
-        if urls:
-            return urls
-    return []
+    return urls
+
+
+# Backwards-compatible alias for the pre-generalization helper.
+_latest_user_image_urls = _conversation_image_urls
 
 
 class VisionInspectExecutor(ToolExecutor):
@@ -183,12 +197,12 @@ class VisionInspectExecutor(ToolExecutor):
                 profile_name=profile_name,
             )
 
-        image_urls = _latest_user_image_urls(conversation)
+        image_urls = _conversation_image_urls(conversation)
         if action.image_index >= len(image_urls):
             return VisionInspectObservation.from_text(
                 text=(
                     f"Image index {action.image_index} is out of range. "
-                    f"The latest user message has {len(image_urls)} image(s)."
+                    f"The conversation has {len(image_urls)} image(s)."
                 ),
                 is_error=True,
                 image_index=action.image_index,
