@@ -629,3 +629,17 @@ def test_cache_hit_rate_is_not_serialized():
     snapshot = Metrics().get_snapshot()
     assert "cache_hit_rate" not in snapshot.model_dump()
     assert "cache_hit_rate" not in MetricsSnapshot.model_json_schema()["properties"]
+
+def test_metrics_diff_keeps_cost_recorded_at_baseline_timestamp():
+    """A cost recorded in the same clock tick as the baseline's last cost is
+    still new (accumulated_cost counts it), so diff() must keep it."""
+    metrics = Metrics(model_name="m")
+    metrics.add_cost(1.0)
+    baseline = metrics.deep_copy()
+    metrics.add_cost(2.0)
+    metrics.costs[-1].timestamp = metrics.costs[0].timestamp
+
+    diff = metrics.diff(baseline)
+
+    assert diff.accumulated_cost == 2.0
+    assert [c.cost for c in diff.costs] == [2.0]
