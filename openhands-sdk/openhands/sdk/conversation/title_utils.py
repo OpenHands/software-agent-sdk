@@ -220,25 +220,33 @@ def generate_title_from_message(
     call_context: LLMCallContext | None = None,
     on_error: Callable[[Exception], None] | None = None,
     prompt: str | None = None,
+    fallback_llm: LLM | None = None,
 ) -> str:
-    """Generate a title from an already-extracted user message."""
-    # Skip the ACP sentinel LLM — it has no credentials and cannot be
-    # called. Detected via ``usage_id`` so the real model name can still
-    # appear in logs and serialized state.
-    llm_to_use = None if llm and llm.usage_id == "acp-managed" else llm
+    """Generate a title from an already-extracted user message.
 
-    if llm_to_use:
+    ``fallback_llm`` is tried when ``llm`` produces no title. ``on_error`` is
+    called once, with the first LLM error, only if no LLM produced a title.
+    """
+    errors: list[Exception] = []
+    for candidate in (llm, fallback_llm):
+        # Skip the ACP sentinel LLM — it has no credentials and cannot be
+        # called. Detected via ``usage_id`` so the real model name can still
+        # appear in logs and serialized state.
+        if candidate is None or candidate.usage_id == "acp-managed":
+            continue
         llm_title = generate_title_with_llm(
             message,
-            llm_to_use,
+            candidate,
             max_length,
             call_context=call_context,
-            on_error=on_error,
+            on_error=errors.append,
             prompt=prompt,
         )
         if llm_title:
             return llm_title
 
+    if errors and on_error is not None:
+        on_error(errors[0])
     return generate_fallback_title(message, max_length)
 
 

@@ -81,6 +81,7 @@ from openhands.sdk.credential import (
 )
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.launch import LaunchedAgent, finalize
@@ -2681,7 +2682,7 @@ class _EventSubscriber(Subscriber):
 
 @observe(
     name="conversation.generate_title",
-    ignore_inputs=["conversation", "llm", "on_error"],
+    ignore_inputs=["conversation", "llm", "on_error", "fallback_llm"],
     metadata={OPERATION_METADATA_KEY: "title_generation"},
 )
 def _generate_title_traced(
@@ -2693,6 +2694,7 @@ def _generate_title_traced(
     max_length: int,
     on_error: Callable[[Exception], None] | None = None,
     prompt: str | None = None,
+    fallback_llm: LLM | None = None,
 ) -> str:
     call_context = (
         conversation.get_llm_call_context() if conversation else LLMCallContext()
@@ -2704,6 +2706,7 @@ def _generate_title_traced(
         call_context=call_context,
         on_error=on_error,
         prompt=prompt,
+        fallback_llm=fallback_llm,
     )
 
 
@@ -2731,13 +2734,20 @@ class AutoTitleSubscriber(Subscriber):
         # don't configure title_llm_profile.
         conversation = self.service._conversation
         title_llm = self._load_title_llm()
+        fallback_llm = conversation.agent.llm if conversation else None
         if title_llm is None:
-            title_llm = conversation.agent.llm if conversation else None
+            title_llm, fallback_llm = fallback_llm, None
 
         # Surface an LLM failure during auto-titling to the UI (issue #16686);
         # generation itself stays non-fatal and falls back to truncation.
         def _on_title_error(exc: Exception) -> None:
-            self.service._publish_error_event_sync(exc)
+            self.service._publish_error_event_sync(
+                exc,
+                code="TitleGenerationError",
+                classification=ErrorClassification(
+                    kind=FailureKind.UNKNOWN, retryable=False
+                ),
+            )
 
         async def _generate_and_save() -> None:
             try:
@@ -2751,6 +2761,7 @@ class AutoTitleSubscriber(Subscriber):
                     50,
                     _on_title_error,
                     self.service.stored.prompt,
+                    fallback_llm,
                 )
                 if title and self.service.stored.title is None:
                     await self.service.save_meta(

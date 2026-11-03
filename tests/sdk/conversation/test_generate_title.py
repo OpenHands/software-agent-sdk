@@ -14,7 +14,10 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
-from openhands.sdk.conversation.title_utils import generate_title_with_llm
+from openhands.sdk.conversation.title_utils import (
+    generate_title_from_message,
+    generate_title_with_llm,
+)
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import LLM, LLMResponse, Message, MetricsSnapshot, TextContent
 from openhands.sdk.llm.auth.credentials import CredentialStore, OAuthCredentials
@@ -169,6 +172,38 @@ def test_generate_title_with_llm_invokes_on_error(mock_completion):
     assert result is None
     assert len(seen) == 1
     assert str(seen[0]) == "model does not exist"
+
+
+@pytest.mark.parametrize(
+    ("fallback_fails", "expected_title", "expected_errors"),
+    [
+        (False, "Fallback Title", []),
+        (True, "Fix the bug", ["primary failed"]),
+    ],
+)
+def test_generate_title_from_message_tries_fallback_llm(
+    fallback_fails, expected_title, expected_errors
+):
+    """The fallback LLM is tried when the primary fails; on_error reports the
+    primary error once, only when no LLM produced a title."""
+    primary = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="primary")
+    fallback = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="fallback")
+
+    def completion(llm, *_args, **_kwargs):
+        if llm.usage_id == "primary" or fallback_fails:
+            raise Exception(f"{llm.usage_id} failed")
+        return create_mock_llm_response("Fallback Title")
+
+    seen: list[Exception] = []
+    with patch(
+        "openhands.sdk.llm.llm.LLM.completion", autospec=True, side_effect=completion
+    ):
+        title = generate_title_from_message(
+            "Fix the bug", primary, on_error=seen.append, fallback_llm=fallback
+        )
+
+    assert title == expected_title
+    assert [str(e) for e in seen] == expected_errors
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")
