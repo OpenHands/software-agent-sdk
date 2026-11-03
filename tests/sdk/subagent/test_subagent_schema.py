@@ -135,6 +135,12 @@ Content.
         agent = AgentDefinition.load(agent_md)
         assert agent.max_iteration_per_run is None
 
+    def test_load_boolean_max_iteration_per_run_is_not_one(self, tmp_path: Path):
+        agent_md = tmp_path / "a.md"
+        agent_md.write_text("---\nmax_iteration_per_run: yes\n---\n\nPrompt.\n")
+
+        assert AgentDefinition.load(agent_md).max_iteration_per_run != 1
+
     def test_max_iteration_per_run_not_in_metadata(self, tmp_path: Path):
         """Test that max_iteration_per_run doesn't leak into metadata."""
         agent_md = tmp_path / "meta-check.md"
