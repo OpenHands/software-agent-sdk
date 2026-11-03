@@ -421,7 +421,10 @@ class HookExecutor:
             )
 
         decision_str = str(data.get("decision", "")).lower()
-        reason = str(data.get("reason", ""))
+        # A non-string reason (e.g. JSON null) means "no reason", not the
+        # literal string "None".
+        reason_value = data.get("reason")
+        reason = reason_value if isinstance(reason_value, str) else None
         if decision_str == "deny":
             return HookResult(
                 success=True,
@@ -585,8 +588,11 @@ class HookExecutor:
                                 hook_result.blocked = True
 
                         # Parse other fields
-                        if "reason" in output_data:
-                            hook_result.reason = str(output_data["reason"])
+                        # A non-string reason (e.g. JSON null) means "no
+                        # reason", not the literal string "None".
+                        reason_value = output_data.get("reason")
+                        if isinstance(reason_value, str):
+                            hook_result.reason = reason_value
                         if "additionalContext" in output_data:
                             hook_result.additional_context = str(
                                 output_data["additionalContext"]
