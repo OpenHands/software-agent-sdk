@@ -830,3 +830,27 @@ def test_get_git_changes_non_repo_without_repo_below_still_raises():
 
         with pytest.raises(GitRepositoryError):
             get_git_changes(temp_dir)
+
+
+def _commit_all(repo_dir: Path) -> None:
+    run_bash_command("git add -A", str(repo_dir))
+    run_bash_command("git commit -q -m 'commit'", str(repo_dir))
+
+
+def test_get_changes_in_repo_path_with_space(tmp_path):
+    """A changed path containing a space must not break the whole listing.
+
+    ``git diff --name-status`` separates the status from the path with a tab,
+    so the path may itself contain spaces; ``_parse_name_status`` used to
+    split on any whitespace and raise GitCommandError for such lines.
+    """
+    setup_git_repo(str(tmp_path))
+    (tmp_path / "my notes.txt").write_text("before")
+    _commit_all(tmp_path)
+    (tmp_path / "my notes.txt").write_text("after")
+
+    changes = get_changes_in_repo(tmp_path, ref="HEAD")
+
+    assert changes == [
+        GitChange(status=GitChangeStatus.UPDATED, path=Path("my notes.txt"))
+    ]
