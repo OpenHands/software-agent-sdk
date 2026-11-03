@@ -116,8 +116,14 @@ def run_env(run: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
             RUN_ENV: str(run),
             "HOME": str(run / "home"),
             "OH_PERSISTENCE_DIR": str(run / "openhands"),
+            # Programs first; the repo root lets live recipes run the
+            # integration runner, which imports `tests.integration`.
             "PYTHONPATH": os.pathsep.join(
-                [str(PROGRAMS_DIR), *filter(None, [env.get("PYTHONPATH")])]
+                [
+                    str(PROGRAMS_DIR),
+                    str(REPO_ROOT),
+                    *filter(None, [env.get("PYTHONPATH")]),
+                ]
             ),
             # A private tmux server per run, so runs never share terminals.
             "TMUX_TMPDIR": str(tmux_dir(run)),
@@ -377,7 +383,12 @@ def model_env(run: Path) -> dict[str, str]:
         raise CliError(
             f"blocked: set {spec['env']}", exit_code=BLOCKED_EXIT, blocked=spec["env"]
         )
-    return {"LLM_MODEL": spec["model"], "LLM_API_KEY": key}
+    # The integration runner refuses to start without LLM_BASE_URL.
+    return {
+        "LLM_MODEL": spec["model"],
+        "LLM_API_KEY": key,
+        "LLM_BASE_URL": spec["base_url"],
+    }
 
 
 def run_command(
@@ -758,7 +769,8 @@ The checks read the program's own JSON result (its last output line).""",
         """python examples/01_standalone_sdk/01_hello_world.py
 
 Paths that exist in the checkout are made absolute. --model-env exports
-LLM_MODEL and LLM_API_KEY from the run's real model (exit 3 without its key).""",
+LLM_MODEL, LLM_API_KEY and LLM_BASE_URL from the run's real model (exit 3
+without its key).""",
     )
     add_common(p)
     add_command_flags(p)

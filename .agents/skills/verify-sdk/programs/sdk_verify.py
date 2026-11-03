@@ -31,8 +31,16 @@ BLOCKED_EXIT = 3
 
 # Real models a run can use. The key is read from the environment, never stored.
 MODELS: dict[str, dict[str, str]] = {
-    "deepseek-flash": {"model": "deepseek/deepseek-flash", "env": "DEEPSEEK_API_KEY"},
-    "deepseek-pro": {"model": "deepseek/deepseek-v4-pro", "env": "DEEPSEEK_API_KEY"},
+    "deepseek-flash": {
+        "model": "deepseek/deepseek-flash",
+        "env": "DEEPSEEK_API_KEY",
+        "base_url": "https://api.deepseek.com",
+    },
+    "deepseek-pro": {
+        "model": "deepseek/deepseek-v4-pro",
+        "env": "DEEPSEEK_API_KEY",
+        "base_url": "https://api.deepseek.com",
+    },
 }
 
 

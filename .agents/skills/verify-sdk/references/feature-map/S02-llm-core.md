@@ -161,7 +161,7 @@ The scripted bullets point a real `LLM` (`openai/...`, `anthropic/...`) at `prog
     --check chat.text eq hi --check chat.temperatures.1 eq 1.0 \
     --check chat_exhausted.error eq LLMNoResponseError
   ```
-  Known failure (reproduced 2026-10-13, not yet filed): the Responses path behaves as documented, but on the chat path a provider reply with `"choices": []` never reaches the SDK's `LLMNoResponseError` check. LiteLLM raises `InternalServerError: ... provider returned a response with no 'choices'` first, the SDK maps that to `LLMServiceUnavailableError`, and retries it as a transient error without the temperature bump (`chat.temperatures` is `[0.0, 0.0, 0.0]`; `chat_exhausted.error` is `LLMServiceUnavailableError`). The unit tests mock `litellm_completion` to return the empty response, so they never meet LiteLLM's own check.
+  Known failure (reproduced 2026-11-03, not yet filed; it moved with the LiteLLM 1.93 to 1.105 upgrade): the chat path now behaves as documented, but on the Responses path a stream that ends without its completed event no longer reaches the SDK's `LLMNoResponseError` check. LiteLLM raises `APIConnectionError` first, the SDK retries it as a transient error without the temperature bump (`responses.temperatures` is `[0.0, 0.0]`), and an exhausted async call ends in `LLMServiceUnavailableError`. On 2026-10-13, with LiteLLM 1.93, it was the other way round: the Responses path worked and a chat reply with `"choices": []` became `LLMServiceUnavailableError`. The unit tests mock the LiteLLM call, so they meet neither.
 - **Error mapping (`S02.error-mapping`).** Each provider error body, as an OpenAI-compatible endpoint sends it, and a dead endpoint.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

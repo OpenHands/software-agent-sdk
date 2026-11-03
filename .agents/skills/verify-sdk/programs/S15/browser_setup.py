@@ -25,8 +25,8 @@ import time
 from pathlib import Path
 
 from S14.toolkit import converse, tool_results
-from S15.site import install_playwright_chromium, serve
-from sdk_verify import emit
+from S15.site import install_playwright_chromium, run_chrome_pids, serve
+from sdk_verify import blocked, emit
 
 from openhands.sdk import Tool
 from openhands.sdk.event import SystemPromptEvent
@@ -72,6 +72,22 @@ def browser_executor(conversation):
 result: dict = {"ok": True, "mode": mode}
 
 if mode == "nochrome":
+    # Hide the Playwright Chromium the SDK would find through
+    # PLAYWRIGHT_BROWSERS_PATH (#5908). A Chrome installed in the system paths
+    # or on PATH cannot be hidden from inside the program: report blocked.
+    import os
+    import shutil
+
+    from openhands.tools.browser_use import impl as browser_impl
+
+    os.environ.pop("PLAYWRIGHT_BROWSERS_PATH", None)
+    system = [str(p) for p in browser_impl._standard_chromium_paths() if p.exists()] + [
+        found
+        for name in browser_impl._path_binary_candidates()
+        if (found := shutil.which(name))
+    ]
+    if system:
+        blocked(f"needs a machine without a system Chrome/Chromium; found {system}")
     result["detected"] = BrowserToolExecutor.check_chromium_available()
     result["is_usable"] = BrowserToolSet.is_usable()
     result["usable_tools"] = list_usable_tools()
@@ -179,13 +195,10 @@ elif mode in ("config", "hang"):
     conversation.close()
     time.sleep(2)
     # Chromium processes from this run's HOME still alive after close.
-    pattern = f"{Path.home()}/.cache/ms-playwright/chromium"
-    alive = subprocess.run(
-        ["pgrep", "-f", pattern], capture_output=True, text=True
-    ).stdout.split()
+    alive = run_chrome_pids()
     result["chrome_processes_after_close"] = len(alive)
     for pid in alive:  # do not leave a spinning browser behind
-        subprocess.run(["kill", "-9", pid], capture_output=True)
+        subprocess.run(["kill", "-9", str(pid)], capture_output=True)
 
 elif mode == "record":
     from openhands.tools.browser_use.definition import BROWSER_RECORDING_OUTPUT_DIR

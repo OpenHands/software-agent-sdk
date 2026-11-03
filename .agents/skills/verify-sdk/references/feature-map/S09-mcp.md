@@ -74,7 +74,7 @@ Every server here is `programs/S09/mcp_server.py`, a small FastMCP server the pr
 - **Filtering tools (`S09.filter-tools-regex`).**
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
-  control-sdk program S09/conversation --arg filter --check error missing --check tools eq '["counter", "echo", "finish", "think"]'
+  control-sdk program S09/conversation --arg filter --check error missing --check tools eq '["counter", "echo", "finish"]'
   ```
 - **A server that fails to start (`S09.startup-failure-tolerated`).** A working server next to one that exits at startup; then the failing server alone.
   ```sh
@@ -83,13 +83,13 @@ Every server here is `programs/S09/mcp_server.py`, a small FastMCP server the pr
     --check error missing --check status eq finished --check tools contains good_echo \
     --check texts.0 contains "echo: still here" \
     --check only_broken_error missing --check only_broken_status eq finished \
-    --check only_broken_tools eq '["finish", "think"]'
+    --check only_broken_tools eq '["finish"]'
   ```
 - **Disabled servers (`S09.enabled-flag`).** A conversation whose only server is disabled (its command would write a marker file), and `create_mcp_tools` with everything disabled or a disabled server beside an enabled one.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S09/conversation --arg disabled \
-    --check error missing --check status eq finished --check tools eq '["finish", "think"]' --check marker_written eq false
+    --check error missing --check status eq finished --check tools eq '["finish"]' --check marker_written eq false
   control-sdk program S09/client --arg timeout \
     --check all_disabled_error contains "All configured MCP servers are disabled: off" \
     --check mixed_enabled_names_sample len-eq 3

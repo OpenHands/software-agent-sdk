@@ -95,7 +95,10 @@ if mode == "default":
             "planner_specs": [t.name for t in planner.tools],
             "planner_tools": sorted(tools),
             "planner_results": [
-                {k: r[k] for k in ("tool", "is_error")} | {"text": r["text"][:300]}
+                {k: r[k] for k in ("tool", "is_error")}
+                # The run path can be long: shorten it so the cut keeps the
+                # file names the checks look for.
+                | {"text": r["text"].replace(str(ws), "<ws>")[:300]}
                 for r in rows
             ],
             "plan_headers": [

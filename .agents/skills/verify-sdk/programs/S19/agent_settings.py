@@ -6,7 +6,6 @@ Each section reports facts; a section that raises reports `<name>_error`.
 """
 
 import json
-import warnings
 
 from pydantic import SecretStr
 from sdk_verify import emit, make_llm, run_paths
@@ -146,29 +145,40 @@ def _():
 
 @section("retired_switches")
 def _():
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        live = apply_agent_settings_diff(
-            OpenHandsAgentSettings(llm=llm()), {"enable_sub_agents": True}
-        )
-        migrated = validate_agent_settings(
-            {
-                "schema_version": 6,
-                "agent_kind": "openhands",
-                "llm": {"model": "openai/settings-model"},
-                "enable_sub_agents": True,
-            }
-        )
-    dumped = live.model_dump(mode="json")
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        in_code = OpenHandsAgentSettings(llm=llm(), enable_sub_agents=True)
+    # Since v9 the retired booleans are refused as input (a live diff or code)
+    # and dropped from older persisted payloads; v6 payloads still fold them
+    # into `tools` on the way through the v7 -> v8 step.
+    def refused(fn) -> str | None:
+        try:
+            fn()
+        except Exception as exc:
+            return f"{type(exc).__name__}: {exc}"
+        return None
+
+    migrated = validate_agent_settings(
+        {
+            "schema_version": 6,
+            "agent_kind": "openhands",
+            "llm": {"model": "openai/settings-model"},
+            "enable_sub_agents": True,
+        }
+    )
+    dumped = migrated.model_dump(mode="json")
     return {
-        "in_code_tools": [t.name for t in in_code.tools or []],
-        "live_tools": [t.name for t in live.tools or []],
+        "live_diff_error": refused(
+            lambda: apply_agent_settings_diff(
+                OpenHandsAgentSettings(llm=llm()), {"enable_sub_agents": True}
+            )
+        ),
+        "in_code_error": refused(
+            lambda: OpenHandsAgentSettings(llm=llm(), enable_sub_agents=True)
+        ),
+        "request_error": refused(
+            lambda: validate_agent_settings(
+                {"llm": {"model": "m"}, "enable_switch_llm_tool": True}
+            )
+        ),
         "migrated_tools": [t.name for t in migrated.tools or []],
-        "same_set": [t.name for t in live.tools or []]
-        == [t.name for t in migrated.tools or []],
         "serialized_keys": sorted(
             k
             for k in dumped
@@ -361,12 +371,20 @@ def _():
     custom = ACPAgentSettings(
         acp_server="custom", acp_command=["python", "my_acp.py"]
     ).create_agent()
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        with_llm = ACPAgentSettings(
-            llm=LLM(model="gpt-5.6", api_key=SecretStr("sk-explicit"))
-        )
-    dumped = with_llm.model_dump_json(context={"expose_secrets": "plaintext"})
+    llm_error = None
+    try:
+        ACPAgentSettings(llm=LLM(model="gpt-5.6", api_key=SecretStr("sk-explicit")))
+    except Exception as exc:
+        llm_error = f"{type(exc).__name__}: {exc}"
+    persisted = validate_agent_settings(
+        {
+            "schema_version": 8,
+            "agent_kind": "acp",
+            "acp_server": "claude-code",
+            "llm": {"model": "gpt-5.6", "api_key": "sk-explicit"},
+        }
+    )
+    dumped = persisted.model_dump_json(context={"expose_secrets": "plaintext"})
     return {
         "type": type(agent).__name__,
         "is_acp": isinstance(agent, ACPAgent),
@@ -377,8 +395,8 @@ def _():
         "api_key_env": claude.api_key_env_var,
         "custom_without_command": custom_error,
         "custom_command": custom.acp_command,
-        "llm_warned": any("ACPAgentSettings.llm" in str(w.message) for w in caught),
-        "llm_dropped": "llm" not in with_llm.model_dump()
+        "llm_error": llm_error,
+        "persisted_llm_dropped": "llm" not in persisted.model_dump()
         and "sk-explicit" not in dumped,
     }
 

@@ -15,12 +15,11 @@ left running after `conversation.close()`.
 
 import json
 import re
-import subprocess
 import time
 from pathlib import Path
 
 from S14.toolkit import converse, tool_results
-from S15.site import install_playwright_chromium, serve
+from S15.site import install_playwright_chromium, run_chrome_pids, serve
 from sdk_verify import emit, make_llm
 
 from openhands.sdk import Tool
@@ -133,9 +132,7 @@ guidance_on_all = all(t.prompt_guidance for t in browser_tools)
 def chrome_processes() -> int:
     """Chromium processes started from this run's HOME (other runs may be browsing
     too)."""
-    pattern = f"{Path.home()}/.cache/ms-playwright/chromium"
-    out = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True)
-    return len(out.stdout.split())
+    return len(run_chrome_pids())
 
 
 chrome_before = chrome_processes()

@@ -28,7 +28,7 @@ Examples: `examples/01_standalone_sdk/06_interactive_terminal_w_reasoning.py`, `
 - `S04.secrets-masking`: secret values echoed by a command are replaced by `<secret-hidden>` in observations and never reach the persisted events. Unit: `tests/tools/terminal/test_secrets_masking.py`, `tests/cross/test_agent_secrets_integration.py`. Example: `examples/01_standalone_sdk/12_custom_secrets.py`. Real-LLM: none.
 - `S04.visualizer-default`: by default a `DefaultConversationVisualizer` prints each event as a Rich panel; `visualizer=None` turns it off; a class or instance can be passed. Unit: `tests/sdk/conversation/local/test_conversation_visualize_param.py`. Example: `examples/01_standalone_sdk/10_persistence.py`. Real-LLM: none.
 - `S04.visualizer-custom`: a `ConversationVisualizerBase` subclass passed as `visualizer=` receives every event through `on_event`; each event type has its own `visualize` rendering. Unit: `tests/sdk/conversation/test_visualizer.py`. Example: `examples/01_standalone_sdk/26_custom_visualizer.py`. Real-LLM: none.
-- `S04.fork`: `fork()` deep-copies the conversation under a new id (or `conversation_id=`), starts IDLE, leaves the source untouched, resets metrics unless `reset_metrics=False`, accepts `agent=`, `title=` and `tags=`, shares the workspace, and persists so the fork survives a reload. Unit: `tests/sdk/conversation/local/test_fork.py`. Example: `examples/01_standalone_sdk/48_conversation_fork.py`. Real-LLM: none.
+- `S04.fork`: `fork()` deep-copies the conversation under a new id (or `conversation_id=`), starts IDLE, leaves the source untouched, resets metrics unless `reset_metrics=False`, accepts `agent=` and `tags=` (`title=` is deprecated and ignored locally since #4814; only `RemoteConversation` stores it), shares the workspace, and persists so the fork survives a reload. Unit: `tests/sdk/conversation/local/test_fork.py`. Example: `examples/01_standalone_sdk/48_conversation_fork.py`. Real-LLM: none.
 - `S04.fork-branch`: events carry parent ids forming a tree; `fork(from_event_id=...)` copies only that branch, and `navigate_to(event_id)` moves HEAD so the next event starts a sibling branch (`None` empties the active branch). Unit: `tests/sdk/conversation/local/test_conversation_tree.py`. Example: `examples/01_standalone_sdk/48_conversation_fork.py`. Real-LLM: none.
 - `S04.goal-loop`: `run_goal(conversation, objective, judge_llm, max_iterations=N)` sends the objective, runs, asks the judge LLM for a verdict, re-prompts with the missing items, and returns a `GoalOutcome` with status `"complete"` or `"capped"`, the iteration count and the verdict. Unit: `tests/sdk/conversation/goal/`. Example: `examples/01_standalone_sdk/54_goal_completion_loop.py`. Real-LLM: none.
 - `S04.interactive-terminal`: with `Tool(name=TerminalTool.name, params={"no_change_timeout_seconds": 3})` the agent can start `python3`, feed it input and exit; an `LLMConvertibleEvent` callback collects the raw LLM messages. Unit: `tests/tools/terminal/test_terminal_session.py::test_python_interactive_input`, `::test_interactive_command`. Example: `examples/01_standalone_sdk/06_interactive_terminal_w_reasoning.py`. Real-LLM: `tests/integration/tests/t07_interactive_commands.py`.
@@ -80,14 +80,15 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
     --check names_match eq true --check numbered_in_order eq true --check files_follow_event_ids eq true \
     --check callback_saw_file_every_time eq true --check files_grew_one_by_one eq true --check status eq finished
   ```
-- **Damaged event files (`S04.persist-events`).** A finished conversation is reopened after one change at a time to its `events/` folder: an empty file (what an interrupted write leaves), invalid JSON, a deleted file. Any of them makes the reload fail with an error that names the file or event; nothing is silently skipped.
+- **Damaged event files (`S04.persist-events`).** A finished conversation is reopened after one change at a time to its `events/` folder: an empty file (what an interrupted write leaves), invalid JSON, a deleted file. A deleted file is skipped and the other events reload (#6197); an empty or invalid file still makes the reload fail with an error that names the file or the JSON problem (the recovery `S05.event-log-recovery` expects).
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S04/lifecycle --arg corrupt \
     --check events_before eq 6 --check intact.events eq 6 \
     --check empty_middle.error contains "Missing event file" --check empty_last.error contains "Missing event file" \
     --check invalid_json_middle.error contains "Invalid JSON" \
-    --check missing_middle.error contains "Unknown event_id" --check missing_last.error contains "Unknown event_id"
+    --check missing_middle.error missing --check missing_middle.events eq 5 \
+    --check missing_last.error missing --check missing_last.events eq 5
   ```
 - **Resume with memory (`S04.resume`).** A conversation is closed and deleted, a new `Conversation` with the same `persistence_dir` and id reloads it, and the next request to the model carries the first turn.
   ```sh
@@ -200,16 +201,16 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
     --check custom_saw_every_event eq true --check custom_events eq 6 --check custom_printed eq 0 \
     --check action_rendering contains "$ echo shown-in-panel" --check observation_rendering contains "shown-in-panel"
   ```
-- **Fork (`S04.fork`).** A priced source run (0.28) is forked with a title, tags and another agent; the fork continues while the source stays as it was; a second fork keeps metrics and a chosen id; the fork reloads from disk.
+- **Fork (`S04.fork`).** A priced source run (0.28) is forked with tags, another agent and a (deprecated, ignored) title; the fork continues while the source stays as it was; a second fork keeps metrics and a chosen id; the fork reloads from disk.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S04/views --arg fork \
     --check new_id eq true --check copied_events eq 6 --check fork_status eq idle \
-    --check title eq "Follow-up fork" --check tags.team eq verify --check fork_model eq openai/gpt-4.1-mini \
+    --check title missing --check title_deprecated eq true --check tags.team eq verify --check fork_model eq openai/gpt-4.1-mini \
     --check source_cost eq 0.28 --check fork_cost_before_run eq 0 --check kept_metrics_cost eq 0.28 \
     --check chosen_id_kept eq true --check fork_events_after_run eq 9 --check source_events_after_fork_run eq 6 \
     --check fork_request_had_source_history eq true --check same_workspace eq true \
-    --check fork_on_disk eq true --check reloaded_fork_events eq 9 --check reloaded_fork_title eq "Follow-up fork"
+    --check fork_on_disk eq true --check reloaded_fork_events eq 9 --check reloaded_fork_title missing
   ```
 - **Branches (`S04.fork-branch`).** Each event's `parent_id` is the one before; `fork(from_event_id=first_answer)` copies three events; `navigate_to(first_answer)` then a new message starts a sibling branch; `navigate_to(None)` empties the active branch but keeps the log.
   ```sh

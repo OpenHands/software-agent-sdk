@@ -119,7 +119,7 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
     --check finish_over_budget.status eq finished --check finish_over_budget.codes len-eq 0 \
     --check factory_accepts_budget eq true
   ```
-  Known failure (reproduced 2026-10-13, not yet filed): the budget logic works on `LocalConversation(..., max_budget_per_run=...)`, but the public `Conversation(...)` factory does not take the argument this family documents: `TypeError: Conversation.__new__() got an unexpected keyword argument 'max_budget_per_run'` (`factory_accepts_budget` is `false`). A program has to import `LocalConversation` from `openhands.sdk.conversation.impl.local_conversation` to set a budget.
+  Fixed: a known failure on 2026-10-13 (the public `Conversation(...)` factory refused `max_budget_per_run` with a `TypeError`); the factory takes it since #6257, and the bullet passes again on 2026-11-03.
 - **Stuck on a repeating action (`S01.stuck-detect`, `S01.stuck-recover`).** Five identical `ls` calls: the fourth pair sets STUCK; a new message moves it to IDLE and the run then reaches the script's `finish`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

@@ -17,7 +17,7 @@ Examples: `examples/01_standalone_sdk/02_custom_tools.py`, `examples/01_standalo
 - `S17.auto-naming`: `ToolDefinition.name` is derived from the class name (`FileEditorTool` to `file_editor`) unless the class sets `name`. Unit: `tests/cross/test_automatic_naming.py`. Example: `examples/01_standalone_sdk/02_custom_tools.py` (`BashAndGrepToolSet.name`). Real-LLM: none.
 - `S17.auto-registration`: importing a built-in tool module (or `openhands.tools`) registers its tools, after which specs resolve. Unit: `tests/cross/test_automatic_registration.py`, `tests/tools/test_init.py`. Example: none. Real-LLM: none.
 - `S17.tool-spec`: `Tool(name, params)` copies its `params` (later changes to the caller's dict do not reach it), round-trips through JSON, and rejects an empty name; it is not frozen (attributes can be reassigned). Unit: `tests/sdk/tool/test_tool.py`. Example: `examples/01_standalone_sdk/02_custom_tools.py`. Real-LLM: none.
-- `S17.agent-tool-init`: the agent turns its specs into tools at conversation start, adds built-ins (`finish`, `think`) unless `include_default_tools` narrows or empties them, rejects duplicate tool names, and does not let a runtime tool replace an existing one; a custom tool may replace `finish`. Unit: `tests/sdk/agent/test_agent_tool_init.py`. Example: `examples/01_standalone_sdk/02_custom_tools.py`. Real-LLM: none.
+- `S17.agent-tool-init`: the agent turns its specs into tools at conversation start, adds the built-in `finish` (and `think` only when `include_default_tools` opts into it; it is no longer a default since #6159), rejects duplicate tool names, and does not let a runtime tool replace an existing one; a custom tool may replace `finish`. Unit: `tests/sdk/agent/test_agent_tool_init.py`. Example: `examples/01_standalone_sdk/02_custom_tools.py`. Real-LLM: none.
 - `S17.llm-schemas`: `to_openai_tool()`, `to_responses_tool()` (with `strict` and parameters) and `to_mcp_tool()` render the action schema without the internal `kind` field, keep required fields and annotations, and expand nested and circular `$ref`s without recursion errors. Unit: `tests/sdk/tool/test_mcp_schema.py`, `tests/sdk/tool/test_to_responses_tool.py`, `tests/sdk/tool/test_tool_definition.py` (`test_to_mcp_tool_*`, `test_mcp_tool_schema_required_fields`). Example: none. Real-LLM: none.
 - `S17.injected-fields`: a `security_risk` parameter is added to tools that are not read-only (optional, ahead of content parameters, gated by the security setting) and a `summary` parameter is always added, while an MCP tool's own description is kept. Unit: `tests/sdk/tool/test_tool_definition.py` (`test_security_risk_only_added_for_non_readonly_tools`, `test_security_risk_is_optional_field_in_schema`, `test_security_risk_precedes_content_params_in_schema`), `tests/sdk/tool/test_to_responses_tool_security.py`, `tests/sdk/tool/test_to_responses_tool_summary.py`. Example: none. Real-LLM: none.
 - `S17.schema-serialization`: `Action`/`Observation` subclasses are frozen and serialize as a discriminated union by `kind`, including nested polymorphic fields; tool definitions are immutable and `set_executor` returns a copy. Unit: `tests/sdk/tool/test_tool_serialization.py`, `tests/sdk/tool/test_schema_immutability.py`, `tests/sdk/tool/test_tool_immutability.py`. Example: none. Real-LLM: none.
@@ -65,7 +65,7 @@ Preconditions:
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S17/custom_tools --arg conversation \
     --check status eq finished \
-    --check tools_map eq '["add_note", "finish", "list_notes", "think", "word_count"]' \
+    --check tools_map eq '["add_note", "finish", "list_notes", "word_count"]' \
     --check results.0.kind eq WordCountObservation --check results.0.text eq "doc.txt has 5 words" \
     --check results.1.is_error eq true --check results.1.text contains "No such file: missing.txt" \
     --check results.2.kind eq AgentErrorEvent --check results.2.text contains "Error validating tool 'word_count'" \
@@ -129,7 +129,7 @@ Preconditions:
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S17/custom_tools --arg schemas \
-    --check sent_tools eq '["add_note", "finish", "list_notes", "think", "word_count"]' \
+    --check sent_tools eq '["add_note", "finish", "list_notes", "word_count"]' \
     --check add_note_properties eq '["security_risk", "summary", "text", "priority", "tags", "outline"]' \
     --check add_note_required eq '["text"]' --check add_note_priority_enum eq '["low", "high"]' \
     --check list_notes_properties eq '["summary", "contains"]' \
@@ -151,9 +151,10 @@ Preconditions:
     --check py_types.object eq "dict[str, Any]" \
     --check dict_coerced_type eq WordCountObservation --check dict_coerced_text eq "dict.txt has 7 words" \
     --check list_result contains "Output must be dict or BaseModel" \
-    --check no_executor_call contains "has no executor" --check no_executor_as_executable contains "has no executor"
+    --check no_executor_call contains "has no executor" --check no_executor_as_executable contains "has no executor" \
+    --check wrong_observation_type contains "instance of WordCountObservation"
   ```
-  `security_risk` goes only to the tool that is not read-only, ahead of `summary` and the tool's own fields. The `Section` outline refers to itself; it is sent expanded one level, with no `$ref`. An executor that returns another observation class fails with `AttributeError: 'NotesObservation' object has no attribute 'pop'` (`wrong_observation_type`), not with a type error that names the expected class.
+  `security_risk` goes only to the tool that is not read-only, ahead of `summary` and the tool's own fields. The `Section` outline refers to itself; it is sent expanded one level, with no `$ref`. An executor that returns another observation class fails with a `ValidationError` that names the expected class (`Input should be a valid dictionary or instance of WordCountObservation`, `wrong_observation_type`; the bare `AttributeError ... 'pop'` was fixed by #5798).
 - **Validating a dumped action twice (`S17.schema-serialization`).** The program validates `action.model_dump(mode="json")` back into an `Action` and then validates the same dict again.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -161,12 +162,12 @@ Preconditions:
     --check action_round_trip_type eq AddNoteAction \
     --check validate_keeps_input_kind eq true --check validate_same_dict_again eq "no error"
   ```
-  Expected: validation reads the caller's dict without changing it. Known failure (reproduced 2026-10-13, not yet filed): the discriminated-union validator (`openhands/sdk/utils/models.py`, `data.pop("kind", None)`) removes `kind` from the caller's dict. A second `Action.model_validate` of the same dict fails with "Unknown kind '' for openhands.sdk.tool.schema.Action". The same pop is behind the `'... object has no attribute 'pop'` error above.
+  Expected: validation reads the caller's dict without changing it. Fixed: a known failure on 2026-10-13 (the validator popped `kind` from the caller's dict, so a second validation failed); it passes since #5770, re-verified 2026-11-03.
 - **Built-in tools and duplicates at agent start (`S17.agent-tool-init`).** Agents with `word_count` and default, narrowed, empty and unknown `include_default_tools`; a duplicate spec; a custom tool named `finish` with only `ThinkTool` built in; and a runtime tool that would replace it.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S17/custom_tools --arg agent_init \
-    --check default eq '["finish", "think", "word_count"]' \
+    --check default eq '["finish", "word_count"]' \
     --check only_finish eq '["finish", "word_count"]' --check none eq '["word_count"]' \
     --check unknown_builtin contains "Unknown built-in tool class: 'NoSuchTool'" \
     --check duplicate eq "ValueError: Duplicate tool names found: {'word_count'}" \
@@ -180,7 +181,7 @@ Preconditions:
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S17/client_tools --arg conversation \
     --check status eq finished \
-    --check tools_map eq '["finish", "navigate_to", "set_filter", "show_notification", "terminal", "think"]' \
+    --check tools_map eq '["finish", "navigate_to", "set_filter", "show_notification", "terminal"]' \
     --check results.1.kind eq ClientToolObservation --check results.1.text eq "Tool call dispatched to client." \
     --check results.1.is_error eq false \
     --check intercepted len-eq 4 --check intercepted.0.action_type eq ClientAction_show_notification \
@@ -212,7 +213,7 @@ Preconditions:
     --check finish_attached eq "ValueError: Duplicate tool names found: {'finish'}" \
     --check think_client_status eq finished --check think_client_results.0.kind eq ClientToolObservation
   ```
-  A client `finish` next to the attached built-in is refused by the agent's duplicate-name check (`ValueError`), not with `ClientToolRegistrationError`. A client `think` works when `include_default_tools` leaves the built-in `think` out.
+  A client `finish` next to the attached built-in is refused by the agent's duplicate-name check (`ValueError`), not with `ClientToolRegistrationError`. A client `think` works, since the built-in `think` is opt-in.
 - **Custom tools with a real model (`S17.custom-tool-definition`, `S17.tool-set`).** Live; example 02 runs its custom `grep` and the terminal in the run's workspace.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
@@ -235,5 +236,5 @@ Preconditions:
 - A client tool whose name matches a built-in the agent attaches (for example `finish`) is rejected when the conversation starts the agent, by the duplicate-name check (`ValueError: Duplicate tool names found: {'finish'}`), not by `ClientToolRegistrationError`; that error is for names already in the tool registry (such as `terminal` once imported) and for duplicates within one `client_tools` list.
 - A client tool argument named `kind` is stored as `mcp_arg_kind`, and `event.action.model_dump()` adds `kind: "ClientAction_<name>"`. A callback that forwards `model_dump()` (as example 53's does) sends the client renamed and extra keys; forward `json.loads(event.tool_call.arguments)` to pass on exactly what the model sent.
 - Client tool arguments are not checked against the spec's `enum`: a value outside it is dispatched like any other, so the client must validate.
-- An executor that returns the wrong observation class fails with `AttributeError: '<Class>' object has no attribute 'pop'` from the discriminated-union validator, not with an error that names the expected type.
+- An executor that returns the wrong observation class fails with a `ValidationError` that names the expected type (since #5798; before, a bare `AttributeError ... 'pop'`).
 - `Action.model_validate(d)` (and every discriminated model's validation) removes `kind` from the dict `d` it is given; copy the dict first if you need it again.

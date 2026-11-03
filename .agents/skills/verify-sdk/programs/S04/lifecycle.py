@@ -336,8 +336,9 @@ elif mode == "compat":
     out["change_agent_class"] = resume(
         seeded(term), OtherAgent(llm=make_llm([{"finish": "x"}]), tools=term)
     )
+    # ThinkTool is opt-in since #6159: seed with it, resume without it.
     out["remove_default_tool"] = resume(
-        seeded(term),
+        seeded(term, include_default_tools=["FinishTool", "ThinkTool"]),
         Agent(
             llm=make_llm([{"finish": "x"}]),
             tools=term,

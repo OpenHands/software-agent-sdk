@@ -90,3 +90,24 @@ def install_playwright_chromium() -> str | None:
     if not cache.exists():
         cache.symlink_to(source)
     return str(cache)
+
+
+def run_chrome_pids() -> list[int]:
+    """Chromium processes started by this run: their HOME is the run's HOME.
+
+    Matching on the environment, not on the binary path, counts the browser
+    whichever Chromium the SDK picked (Playwright's, a system Chrome, or a
+    wrapper script), and still finds one that outlived its parent."""
+    home = str(Path.home()).encode()
+    pids = []
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit() or int(proc.name) == os.getpid():
+            continue
+        try:
+            cmdline = (proc / "cmdline").read_bytes()
+            environ = (proc / "environ").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        if b"chrom" in cmdline.lower() and b"HOME=" + home in environ:
+            pids.append(int(proc.name))
+    return pids

@@ -142,7 +142,8 @@ elif mode == "llm-object":
         conversation.send_message("Second task.")
         conversation.run()
         side = conversation.ask_agent("Which model are you?")
-        # Same usage_id again: the registry entry wins over the new object.
+        # Same usage_id again: the posted object replaces the registry entry
+        # (#5779), and the shared condenser follows it.
         conversation.switch_llm(fake_llm(c, "other", "openai/gpt-4.1-nano"))
         out |= {
             "requests": {
@@ -154,8 +155,8 @@ elif mode == "llm-object":
             "side_answer": side,
             "model_after_reswitch": conversation.agent.llm.model,
             "condenser_model": conversation.agent.condenser.llm.model,
-            "condenser_base_url_is_b": conversation.agent.condenser.llm.base_url
-            == b.url,
+            "condenser_base_url_is_c": conversation.agent.condenser.llm.base_url
+            == c.url,
             "registry": sorted(conversation.llm_registry.list_usage_ids()),
         }
         conversation.close()

@@ -12,7 +12,7 @@ Examples: `examples/01_standalone_sdk/24_planning_agent_workflow.py`, `examples/
 
 - `S16.task-tracker-plan-view`: `TaskTrackerAction(command="plan", task_list=[TaskItem(title=..., notes=..., status=...)])` replaces the list and `command="view"` returns it as a numbered Markdown list with status icons. Unit: **none (untested)**. Example: `examples/01_standalone_sdk/01_hello_world.py` (tool attached). Real-LLM: none.
 - `S16.task-tracker-persistence`: `TaskTrackerTool.create(conv_state)` points `save_dir` at the conversation's persistence directory (which includes the conversation id); each `plan` writes `TASKS.json` there and a new executor on the same directory loads it back. Unit: **none (untested)** for writing and reloading; `tests/cross/test_registry_directories.py` only checks `save_dir`. Example: none. Real-LLM: none.
-- `S16.planning-tools`: `get_planning_tools(plan_path=None)` registers and returns `glob`, `grep` and `planning_file_editor`, forwarding `plan_path` as the editor's `params`; `glob` and `grep` register on import. Unit: `tests/tools/test_planning_preset.py`, `tests/cross/test_automatic_registration.py` (`test_grep_tool_automatic_registration`, `test_glob_tool_automatic_registration`, `test_planning_file_editor_tool_automatic_registration`). Example: `examples/01_standalone_sdk/24_planning_agent_workflow.py`. Real-LLM: `tests/integration/run_infer.py --tool-preset planning`.
+- `S16.planning-tools`: `get_planning_tools(plan_path=None)` registers and returns `glob`, `grep` and `planning_file_editor`, forwarding `plan_path` as the editor's `params`; `glob` and `grep` register on import. Unit: `tests/tools/test_planning_preset.py`, `tests/cross/test_automatic_registration.py` (`test_grep_tool_automatic_registration`, `test_glob_tool_automatic_registration`, `test_planning_file_editor_tool_automatic_registration`). Example: `examples/01_standalone_sdk/24_planning_agent_workflow.py`. Real-LLM: none that can pass (see Gotchas: the runner's planning preset fails its file-editing tasks by construction).
 - `S16.plan-file-location`: without `plan_path` the editor uses `<workspace>/.agents_tmp/PLAN.md`, or an existing legacy `<workspace>/PLAN.md` (with a warning); an absolute `plan_path` is used as given and its parent directory created; a relative `plan_path` raises `ValueError`; the tool description names the path. Unit: `tests/tools/planning_file_editor/test_planning_file_editor_tool.py`. Example: `examples/01_standalone_sdk/24_planning_agent_workflow.py`. Real-LLM: none.
 - `S16.plan-file-headers`: a missing `PLAN.md` is created with the five numbered headers (`OBJECTIVE`, `CONTEXT SUMMARY`, `APPROACH OVERVIEW`, `IMPLEMENTATION STEPS`, `TESTING AND VALIDATION`) from `get_plan_headers()`. Unit: **none (untested)**; the tests check that the file exists, not its content. Example: `examples/01_standalone_sdk/24_planning_agent_workflow.py`. Real-LLM: none.
 - `S16.plan-edit-restriction`: `planning_file_editor` allows `view` on any path but answers `create`, `str_replace`, `insert` and `undo_edit` on any file other than the plan with an error observation ("Operation ... is not allowed"). Unit: **none (untested)**; no test exercises `FileEditorExecutor(allowed_edits_files=...)`. Example: none. Real-LLM: none.
@@ -72,7 +72,7 @@ Preconditions:
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S16/planning --arg default \
     --check planner_specs eq '["glob", "grep", "planning_file_editor"]' \
-    --check planner_tools eq '["finish", "glob", "grep", "planning_file_editor", "think"]' \
+    --check planner_tools eq '["finish", "glob", "grep", "planning_file_editor"]' \
     --check planner_results.0.text contains "app/main.py" --check planner_results.1.text contains "app/main.py" \
     --check plan_headers eq '["# 1. OBJECTIVE", "# 2. CONTEXT SUMMARY", "# 3. APPROACH OVERVIEW", "# 4. IMPLEMENTATION STEPS", "# 5. TESTING AND VALIDATION"]' \
     --check headers_match_preset eq true \
@@ -130,7 +130,7 @@ Preconditions:
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S16/workflow --timeout 300 \
-    --check status eq finished --check tools_map eq '["finish", "think", "workflow"]' \
+    --check status eq finished --check tools_map eq '["finish", "workflow"]' \
     --check steps.fan_out.status eq completed \
     --check steps.fan_out.text contains "'one': 'report: all good'" \
     --check steps.fan_out.text contains "'many': ['report: all good', 'report: all good', 'report: all good']" \
@@ -159,12 +159,6 @@ Preconditions:
   control-sdk exec --model-env --expect-output "WORKFLOW COMPLETE" -- python examples/01_standalone_sdk/24_planning_agent_workflow.py
   ```
   It prints the plan path, the execution result and the files created.
-- **Planning preset through the integration runner (`S16.planning-tools`).** Live.
-  ```sh
-  export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
-  control-sdk exec --model-env -- python tests/integration/run_infer.py --llm-config '{"model": "deepseek/deepseek-flash"}' --tool-preset planning --eval-ids t01_fix_simple_typo
-  ```
-  The planning agent can edit only its plan, so t01's file check is not a fair verdict here; read the run for the preset's tools (`glob`, `grep`, `planning_file_editor`) and the plan it writes.
 - **The Oracle with real models (`S16.oracle-consult`).** Live. Example 58 falls back to the All-Hands proxy when `LLM_BASE_URL` is unset, so point it at DeepSeek.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
@@ -184,6 +178,7 @@ Preconditions:
 
 ## Gotchas
 
+- `tests/integration/run_infer.py --tool-preset planning` (also offered by the integration-runner workflow) pairs the planning tools with task tests that edit files. The planner can write only its plan, so a task test that edits files, such as t01, fails by construction (on 2026-11-03, t01 with DeepSeek: "Typos were not fully corrected"). The map therefore drives the preset with the scripted program above, not through the runner.
 - `TaskTrackerExecutor`'s docstring says tasks go to `TASKS.md`; the file actually written and read is `TASKS.json`.
 - `TaskTrackerTool` only persists when the conversation has a persistence directory; with none, `save_dir` is `None` and the list lives in memory.
 - Example 30 stores its conversations and the ToM user model under `~/.openhands` (it sets `persistence_dir` to `~/.openhands/conversations`); set `OH_PERSISTENCE_DIR` to keep a test run out of your home directory. Its ToM tools get the API key in plain `params`.

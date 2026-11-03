@@ -175,7 +175,7 @@ The programs build every plugin, marketplace and git repository inside the run (
   control-sdk program S08/attach --arg fetch-ref \
     --check default_version eq v2 --check v1_after_cached_clone eq v1 --check v1_resolved_is_v1_sha eq true
   ```
-  Expected: the second fetch checks out the tag and returns v1 with v1's SHA. Known failure (reproduced 2026-10-13, not yet filed): it returns the cached v2 content and v2's SHA. The cached clone is shallow and on a single branch, so the tag is not there. The log shows `git checkout v1` failing with `pathspec 'v1' did not match`, followed by `Using cached version.` No error is raised. A `PluginSource(ref="v1.0.0")`, or a marketplace pin, silently loads whatever branch was fetched first from that URL. The reverse also happens. A plugin first fetched or installed at a tag stays there on later fetches without a ref, as `update_plugin` shows in the next bullet.
+  Expected: the second fetch checks out the tag and returns v1 with v1's SHA. Fixed: a known failure on 2026-10-13 (the shallow single-branch cache silently returned v2 content and SHA); it passes since #5685, re-verified 2026-11-03.
 - **The install store (`S08.installed-plugins`, `S08.ambient-plugins`).** Plugins are installed into the default store, which lives under the run's `OH_PERSISTENCE_DIR`:
   - a git plugin at tag `v1`
   - a local plugin
@@ -203,7 +203,7 @@ The programs build every plugin, marketplace and git repository inside the run (
     --check update_requested_ref eq null --check update_version eq 2.0.0 \
     --check update_resolved_is_v2 eq true --check installed_file_version eq 2.0.0
   ```
-  Expected: the plugin moves to the latest version, as the docstring says ("Update an installed extension to the latest version"). Known failure (reproduced 2026-10-13, not yet filed): it stays at 1.0.0 with v1's SHA. The installation record's `requested_ref` is cleared to `null` anyway, so the store now claims to track the default branch while it holds v1. This is the same single-branch cache as the previous known failure.
+  Expected: the plugin moves to the latest version, as the docstring says ("Update an installed extension to the latest version"). Fixed: a known failure on 2026-10-13 (the plugin stayed at 1.0.0 while `requested_ref` was cleared, the same cache as the previous bullet); it passes since #5685, re-verified 2026-11-03.
 - **The generic installation manager and legacy metadata (`S08.installation-manager`).** These calls go to `InstallationManager` directly:
   - a manifest named `../escaped`
   - a non-kebab-case name
@@ -280,7 +280,7 @@ The programs build every plugin, marketplace and git repository inside the run (
   control-sdk program S08/market --arg runtime \
     --check status eq finished --check skills_before eq '[]' --check skills_after eq '["late-skill"]' \
     --check hook_log_before eq '[]' --check terminal_same_object eq true --check resolved_plugins eq '["late"]' \
-    --check tools_first_call eq '["finish", "terminal", "think"]' \
+    --check tools_first_call eq '["finish", "terminal"]' \
     --check tools_last_call contains echo --check tools_last_call contains invoke_skill \
     --check observations.2 contains "echo: loaded at runtime" \
     --check hook_log eq '["plugin-late:echo", "plugin-late:terminal", "plugin-late:finish"]' \

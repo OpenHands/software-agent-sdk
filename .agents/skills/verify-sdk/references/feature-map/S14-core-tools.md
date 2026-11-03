@@ -186,14 +186,14 @@ Preconditions:
     --check same_files eq true --check rg.glob_in_path.count eq 100 --check same_truncated eq true \
     --check rg.glob_in_path.truncated eq false
   ```
-  Expected: both backends report 100 files and `truncated` false. Known failure (reproduced 2026-10-13, not yet filed): with ripgrep `glob` reports `truncated: true` and "[Results truncated to first 100 files ...]" for exactly 100 matches (`len(file_paths) >= 100` in `GlobExecutor._execute_with_ripgrep`), while the Python fallback (`> 100`) and `grep` report `false`.
+  Expected: both backends report 100 files and `truncated` false. Fixed: a known failure on 2026-10-13 (ripgrep `glob` reported `truncated: true` for exactly 100 matches); it passes since #6342, re-verified 2026-11-03.
 - **Tool presets build working agents (`S14.preset-default`, `S14.preset-gpt5-gemini`, `S14.gemini-file-tools`, `S14.apply-patch`).** Each preset's agent does a scripted task with its own file tools; the default preset also reports the tool lists of all three and the SDK's `default_tool_specs()`, and builds a structured finish tool.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S14/presets --arg default \
     --check status eq finished --check errors len-eq 0 --check hello contains hello \
     --check agent_tool_specs eq '["terminal", "file_editor", "task_tracker"]' \
-    --check tools_map contains think --check condenser eq LLMSummarizingCondenser \
+    --check tools_map not-contains think --check condenser eq LLMSummarizingCondenser \
     --check condenser_usage_id eq condenser \
     --check default_tools eq '["terminal", "file_editor", "task_tracker", "browser_tool_set"]' \
     --check default_tools_no_browser_subagents eq '["terminal", "file_editor", "task_tracker", "task_tool_set"]' \
@@ -229,11 +229,12 @@ Preconditions:
 - **The GPT-5 and Gemini preset examples (`S14.preset-gpt5-gemini`, `S14.apply-patch`, `S14.gemini-file-tools`).** Live; both examples write into the run's workspace.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
+  control-sdk exec -- git init -q .
   control-sdk exec --model-env -- python examples/04_llm_specific_tools/01_gpt5_apply_patch_preset.py
   control-sdk exec --expect-output GPT5 -- ls
   control-sdk exec --model-env -- python examples/04_llm_specific_tools/02_gemini_file_tools.py
   ```
-  The first writes `GPT5_DEMO.txt`; the second writes and then deletes `FACTS.txt` and logs completions under `logs/gemini`.
+  The first writes `GPT5_DEMO.txt` "at the repo root". The `git init` makes the workspace that root: without it, on 2026-11-03 the model looked for a repository, found the SDK checkout elsewhere on the machine and wrote the file into it. A run is not a sandbox. The second writes and then deletes `FACTS.txt` and logs completions under `logs/gemini`.
 - **Task tests through the integration runner (`S14.terminal-exec`, `S14.terminal-interactive`, `S14.file-editor-view`, `S14.file-editor-edit`, `S14.apply-patch`, `S14.gemini-file-tools`).** Live.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)

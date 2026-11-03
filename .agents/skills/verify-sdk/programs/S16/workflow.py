@@ -137,7 +137,8 @@ for (name, _), event in zip(steps, observations):
     results[name] = {
         "is_error": obs.is_error,
         "status": obs.status,
-        "text": obs.text[:600],
+        # Shorten the run path first so the cut keeps every failure line.
+        "text": obs.text.replace(str(run_paths()["run"]), "<run>")[:600],
         "text_len": len(obs.text),
         "llm_text_len": len(content_text(obs)),
         "seconds": round(

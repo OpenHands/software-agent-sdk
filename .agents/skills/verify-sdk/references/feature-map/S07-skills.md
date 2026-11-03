@@ -179,11 +179,13 @@ Each run has its own `HOME` and `OH_PERSISTENCE_DIR`, so user skills, the instal
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
   control-sdk exec --model-env --expect-output "rot13-encryption" --expect-output "EXAMPLE_COST" -- python examples/05_skills_and_plugins/01_loading_agentskills/main.py
   ```
-- **Installed-skills example (`S07.installed-lifecycle`).** Needs no key, but `sdk-map run` treats every example as model-backed.
+- **Installed-skills example (`S07.installed-lifecycle`).** Makes no model call.
   ```sh
-  export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
+  # no model
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk exec --expect-output "DEMO 1: Installing local skills" -- python examples/05_skills_and_plugins/03_managing_installed_skills/main.py
   ```
+  Known failure (reproduced 2026-11-03, not yet filed): the example stops in DEMO 3 with `KeyError: 'skills'`. It reads `.installed.json` as `metadata["skills"][name]`, but the install store now records every kind under `"extensions"` (`InstallationMetadata` in `openhands-sdk/openhands/sdk/extensions/installation/metadata.py` reads `skills` and `plugins` only as legacy keys). The SDK calls themselves work; the example's own asserts are stale, and no CI job runs it (see the gotcha below).
 - **Mixed marketplace example (`S07.marketplace-install`).** Network; `--install` writes to the run's install store (its `HOME` and `OH_PERSISTENCE_DIR` are private).
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
