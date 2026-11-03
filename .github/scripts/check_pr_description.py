@@ -21,14 +21,8 @@ HTML_COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
 HEADING_RE = re.compile(r"(?m)^##\s+(.+?)\s*$")
 HUMAN_HEADING_RE = re.compile(r"(?im)^\s*HUMAN:\s*$")
 AGENT_HEADING_RE = re.compile(r"(?im)^\s*AGENT:\s*$")
-ISSUE_REFERENCE = r"(?:(?P<repo>[A-Za-z0-9-]+/[A-Za-z0-9_.-]+))?#(?P<number>\d+)"
-ISSUE_REF_RE = re.compile(
-    r"(?i)\b(?:fix|clos|resolv)(?:e?(?:s|d)?|ing)?\s+" + ISSUE_REFERENCE
-)
-BARE_ISSUE_REF_RE = re.compile(r"(?<![\w/#.-])" + ISSUE_REFERENCE)
-QUALIFIED_ISSUE_REF_RE = re.compile(
-    r"(?<![\w/#.-])(?P<repo>[A-Za-z0-9-]+/[A-Za-z0-9_.-]+)#(?P<number>\d+)"
-)
+ISSUE_REF_RE = re.compile(r"(?i)\b(?:fix|clos|resolv)(?:e?(?:s|d)?|ing)?\s+#(\d+)")
+BARE_ISSUE_REF_RE = re.compile(r"(?<!\w)#(\d+)")
 READY_FOR_DEV_LABEL = "ready-for-dev"
 # Older issues are exempt: the rollout did not evaluate them retroactively.
 # The cutoff is the UTC day after deployment (2026-08-12), so issues opened
@@ -84,37 +78,23 @@ def extract_human_note(body: str) -> str:
     return visible_text(body[human_match.end() : agent_match.start()])
 
 
-def extract_linked_issue_numbers(body: str, repo: str = "") -> list[tuple[str, int]]:
-    """Return linked issues as (repository, number). Bare ``#123`` uses ``repo``."""
-    seen: dict[tuple[str, int], None] = {}
+def extract_linked_issue_numbers(body: str) -> list[int]:
+    numbers: list[int] = []
+    seen: set[int] = set()
     for match in ISSUE_REF_RE.finditer(body):
-        key = ((match.group("repo") or repo).lower(), int(match.group("number")))
-        seen[key] = None
+        number = int(match.group(1))
+        if number not in seen:
+            numbers.append(number)
+            seen.add(number)
 
     sections = extract_sections(body)
     issue_section = sections.get("Issue Number", "")
     for match in BARE_ISSUE_REF_RE.finditer(issue_section):
-        key = ((match.group("repo") or repo).lower(), int(match.group("number")))
-        seen[key] = None
-    return list(seen)
-
-
-def qualified_repos_by_number(body: str) -> dict[int, set[str]]:
-    """Map issue numbers to the repositories explicitly named for them."""
-    repos: dict[int, set[str]] = {}
-    for match in QUALIFIED_ISSUE_REF_RE.finditer(body):
-        repos.setdefault(int(match.group("number")), set()).add(
-            match.group("repo").lower()
-        )
-    return repos
-
-
-def unique_fallback_repo(
-    qualified: dict[int, set[str]], number: int, current_repo: str
-) -> str | None:
-    """Return the one other named repository for ``number``, if unambiguous."""
-    candidates = qualified.get(number, set()) - {current_repo}
-    return next(iter(candidates)) if len(candidates) == 1 else None
+        number = int(match.group(1))
+        if number not in seen:
+            numbers.append(number)
+            seen.add(number)
+    return numbers
 
 
 def fetch_issue_details(
@@ -140,8 +120,8 @@ def fetch_issue_details(
 def validate_linked_issue_ready(
     body: str, repo: str | None = None, token: str | None = None
 ) -> list[str]:
-    references = extract_linked_issue_numbers(body, repo or "")
-    if not references:
+    numbers = extract_linked_issue_numbers(body)
+    if not numbers:
         return [
             "Link an issue in the `## Issue Number` section (e.g. `Fixes #123`). "
             "Newly opened issues must carry the `ready-for-dev` label."
@@ -149,40 +129,28 @@ def validate_linked_issue_ready(
     if not repo or not token:
         return []
 
-    qualified = qualified_repos_by_number(body)
-    missing: list[str] = []
-    not_ready_new: list[str] = []
-    for issue_repo, number in references:
-        reference = f"{issue_repo}#{number}"
+    checked: list[int] = []
+    not_ready_new: list[int] = []
+    for number in numbers:
         try:
-            labels, created_at = fetch_issue_details(issue_repo, number, token)
+            labels, created_at = fetch_issue_details(repo, number, token)
         except urllib.error.HTTPError as exc:
-            if exc.code != 404:
-                raise
-            fallback_repo = unique_fallback_repo(qualified, number, issue_repo)
-            if fallback_repo is None:
-                missing.append(reference)
+            if exc.code == 404:
                 continue
-            reference = f"{fallback_repo}#{number}"
-            try:
-                labels, created_at = fetch_issue_details(fallback_repo, number, token)
-            except urllib.error.HTTPError as fallback_exc:
-                if fallback_exc.code != 404:
-                    raise
-                missing.append(reference)
-                continue
+            raise
+        checked.append(number)
         if READY_FOR_DEV_LABEL in (label.lower() for label in labels):
             continue
         if created_at[:10] < READY_FOR_DEV_ROLLOUT_ISO:
             # Predates the rollout; grandfathered to avoid retroactive blocking.
             continue
-        not_ready_new.append(reference)
+        not_ready_new.append(number)
 
-    if missing:
-        refs = ", ".join(missing)
-        return [f"Referenced issue(s) {refs} could not be found."]
+    if not checked:
+        refs = ", ".join(f"#{number}" for number in numbers)
+        return [f"Referenced issue(s) {refs} could not be found in this repository."]
     if not_ready_new:
-        refs = ", ".join(not_ready_new)
+        refs = ", ".join(f"#{number}" for number in not_ready_new)
         return [
             f"Linked issue(s) ({refs}) carry neither `ready-for-dev` nor a "
             "pre-rollout creation date. Newly referenced issues must meet the "
