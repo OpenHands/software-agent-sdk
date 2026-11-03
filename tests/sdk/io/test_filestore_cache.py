@@ -338,3 +338,13 @@ def test_cache_with_evict_correct():
     total_len = len(cache["key2"]) + len(cache["key3"])
     # Verify memory statistics match the total size of key2 and key3
     assert total_len == cache.current_memory
+
+def test_bytes_overwrite_does_not_serve_stale_cache(tmp_path):
+    """Overwriting a cached str file with bytes must not keep serving the old
+    cached content from LocalFileStore.read."""
+    store = LocalFileStore(str(tmp_path))
+    store.write("state.json", "old")
+
+    store.write("state.json", b"new")
+
+    assert store.read("state.json") == "new"
