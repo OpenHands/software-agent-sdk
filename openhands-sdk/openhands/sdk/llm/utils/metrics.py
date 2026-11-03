@@ -283,10 +283,16 @@ class Metrics(MetricsSnapshot):
         result.accumulated_cost = self.accumulated_cost - baseline.accumulated_cost
 
         # Include only costs that were added after the baseline
-        if baseline.costs:
+        if self.costs[: len(baseline.costs)] == baseline.costs:
+            # The baseline's costs are a prefix of ours, so everything after
+            # them is new. This keeps a cost recorded in the same clock tick
+            # (or after a backwards clock step) instead of dropping it.
+            result.costs = self.costs[len(baseline.costs) :]
+        elif baseline.costs:
             last_baseline_timestamp = baseline.costs[-1].timestamp
             result.costs = [
-                cost for cost in self.costs if cost.timestamp > last_baseline_timestamp
+                cost for cost in self.costs
+                if cost.timestamp >= last_baseline_timestamp
             ]
         else:
             result.costs = self.costs.copy()
