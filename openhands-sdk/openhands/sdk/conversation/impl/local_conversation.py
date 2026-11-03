@@ -3,6 +3,7 @@ import atexit
 import contextlib
 import copy
 import json
+import tempfile
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePath
@@ -14,6 +15,7 @@ from openhands.sdk.agent.stream_context import StreamProgressCallbackType
 from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
 from openhands.sdk.context.memory import load_memory
 from openhands.sdk.context.prompts.prompt import render_template
+from openhands.sdk.conversation.attachments import save_message_images
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.event_store import ROOT_PARENT_ID, EventLog
@@ -1908,6 +1910,7 @@ class LocalConversation(BaseConversation):
         assert message.role == "user", (
             "Only user messages are allowed to be sent to the agent."
         )
+        attachments_note = save_message_images(message, self._attachments_dir())
         with self._state:
             if self._state.execution_status in (
                 ConversationExecutionStatus.FINISHED,
@@ -1938,6 +1941,8 @@ class LocalConversation(BaseConversation):
                     )
                     extended_content.append(content)
                     self._state.activated_knowledge_skills.extend(activated_skill_names)
+            if attachments_note:
+                extended_content.append(attachments_note)
 
             user_msg_event = MessageEvent(
                 source="user",
@@ -1947,6 +1952,11 @@ class LocalConversation(BaseConversation):
                 sender=sender,
             )
             self._on_event(user_msg_event)
+
+    def _attachments_dir(self) -> Path:
+        if self._state.persistence_dir is not None:
+            return Path(self._state.persistence_dir) / "attachments"
+        return Path(tempfile.gettempdir()) / "openhands-attachments" / self.id.hex
 
     def _on_event_with_state_lock(self, event: Event) -> None:
         """Emit an event while holding the conversation state lock."""
