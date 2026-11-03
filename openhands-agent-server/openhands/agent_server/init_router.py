@@ -305,7 +305,9 @@ class InitService:
             conversation_registry = create_conversation_registry(new_config)
             conversation_registry.configure_service(service)
 
-            bash_svc = BashEventService(bash_events_dir=new_config.bash_events_dir)
+            bash_svc = BashEventService(
+                bash_events_dir=new_config.bash_events_dir, cipher=new_config.cipher
+            )
             await bash_svc.__aenter__()
             self._entered_bash_service = bash_svc
 

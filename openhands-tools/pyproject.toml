@@ -13,6 +13,7 @@ dependencies = [
     "cachetools",
     "filelock>=3.20.1",
     "libtmux>=0.53.0",
+    "psutil>=7.2.2",
     "pydantic>=2.13.5",
     "browser-use>=0.8.0",
     "func-timeout>=4.3.5",
