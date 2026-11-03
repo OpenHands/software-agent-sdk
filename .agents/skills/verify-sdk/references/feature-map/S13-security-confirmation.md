@@ -22,6 +22,7 @@ Examples: `examples/01_standalone_sdk/04_confirmation_mode_example.py`, `example
 - `S13.policy-rails`: `PolicyRailSecurityAnalyzer` returns HIGH for fetch piped to a shell, raw-disk `dd`/`mkfs`, and catastrophic `rm` of `/` or home, LOW for safe commands, using the tree-sitter shell AST (quoted, path-qualified and `sh -c` nested verbs resolved; depth bound and parse errors map to UNKNOWN). Unit: `tests/sdk/security/defense_in_depth/test_policy_rails.py`, `tests/sdk/security/defense_in_depth/test_shell_semantics.py`, `tests/sdk/security/defense_in_depth/test_shell_parser_bypasses.py`, `tests/sdk/security/test_shell_ast.py`, `tests/sdk/security/test_shell_parser.py`, `tests/sdk/security/test_shell_parser_node_shapes.py`. Example: `examples/01_standalone_sdk/47_defense_in_depth_security.py`. Real-LLM: none.
 - `S13.ensemble`: `EnsembleSecurityAnalyzer(analyzers=[...])` takes the maximum concrete risk, fails closed to HIGH on a child exception, ignores UNKNOWN next to a concrete verdict unless `propagate_unknown=True`, rejects an empty list, and serializes with nested children. Unit: `tests/sdk/security/defense_in_depth/test_ensemble.py`, `tests/sdk/security/defense_in_depth/test_serialization.py`. Example: `examples/01_standalone_sdk/47_defense_in_depth_security.py`. Real-LLM: none.
 - `S13.toolshield`: `ToolShieldLLMSecurityAnalyzer(llm=..., history_window, safety_experiences)` asks a separate guardrail LLM about the action plus recent history, wraps untrusted fields in escaped XML, accepts only one standalone risk label (smuggled or conflicting labels give UNKNOWN); helpers detect active MCP tools and load ToolShield safety experiences. Unit: `tests/sdk/security/test_toolshield_llm_analyzer.py` (7 tests skip without the `toolshield` extra). Example: none. Real-LLM: none.
+- `S13.jev`: `JevSecurityAnalyzer` sends dangerous-operation and prompt-injection Noul questions for all pending actions in one TypeSafe request. It separates executable arguments from summary/thought/plaintext reasoning, maps the maximum probability to LOW/MEDIUM/HIGH (0.2/0.5 boundaries), records both scores, uses canonical secret serialization, and rates missing credentials or malformed/incomplete responses HIGH. Unit: `tests/sdk/security/test_jev_analyzer.py`. Example: none. Real-LLM: none.
 - `S13.grayswan`: `GraySwanAnalyzer` reads `GRAYSWAN_API_KEY` / `GRAYSWAN_POLICY_ID`, sends recent events as OpenAI messages to the Gray Swan API, maps the violation score with `low_threshold`/`medium_threshold` (indirect prompt injection escalates to HIGH), and returns UNKNOWN on error, timeout or no key. Unit: `tests/sdk/security/grayswan/test_grayswan_analyzer.py`, `tests/sdk/security/grayswan/test_grayswan_utils.py`. Example: none. Real-LLM: none.
 - `S13.settings-security`: `ConversationSettings(confirmation_mode=True, security_analyzer="llm")` builds `ConfirmRisky` plus `LLMSecurityAnalyzer` (no analyzer gives `AlwaysConfirm`; off gives `NeverConfirm`). Unit: `tests/sdk/test_settings.py::test_conversation_settings_create_request`. Example: none. Real-LLM: none.
 - `S13.secret-sources`: `StaticSecret` and `LookupSecret` (URL plus headers, relative URLs resolved against the current server, `register_local_secret_resolver` short-circuits HTTP and falls back when it declines or raises) redact values and sensitive headers on dump unless exposed or encrypted with a cipher. Unit: `tests/sdk/conversation/test_secret_source.py`. Example: `examples/01_standalone_sdk/12_custom_secrets.py`. Real-LLM: none.
@@ -207,7 +208,33 @@ Preconditions:
   The agent echoes `$SECRET_TOKEN` and `$SECRET_FUNCTION_TOKEN`; the observations show `<secret-hidden>`.
 - **Interactive confirmation, examples 04 and 16 (`S13.confirm-approve-reject`, `S13.llm-analyzer`), blocked.** Both call `input()` for every pending batch and need a person at a terminal (`control-sdk exec` gives no stdin, and on EOF they reject everything). The scripted and live bullets above cover the same flow without the prompt.
 
+- **Jev classification and confirmation (`S13.jev`).** Use the product checkout's Python environment when running this recipe from a separate verification checkout: `export CONTROL_SDK_PYTHON=/absolute/product/checkout/.venv/bin/python`. On macOS use `TMPDIR=/tmp` to keep tmux socket paths short. Scripted actor + loopback TypeSafe contract first; then a live Jev classifier (the actor stays scripted). Crafted threat commands always wait and are rejected. A separate `ConfirmRisky` scenario runs only a harmless marker command, then stops the destructive command. Covers sync/async, analysis events, encrypted request-model transport, and actual conversation resume. Live mode exits 3 without `TYPESAFE_API_KEY`.
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S13/jev --arg scripted \
+    --check status eq waiting_for_confirmation --check risks.0 eq LOW --check risks.1 eq HIGH \
+    --check injection_risk eq HIGH --check nothing_ran eq true --check final eq finished \
+    --check safe_executed eq true --check policy_status eq waiting_for_confirmation \
+    --check dangerous_waited eq true --check policy_final eq finished \
+    --check restored eq JevSecurityAnalyzer --check transport_kind eq JevSecurityAnalyzer \
+    --check transport_secret_preserved eq true --check async_status eq waiting_for_confirmation \
+    --check async_risk eq LOW --check first_questions eq 4 --check actor_risk_sent eq false
+  ```
+  ```sh
+  export SDK_VERIFY_RUN=$(control-sdk new --field run)
+  control-sdk program S13/jev --arg live \
+    --check status eq waiting_for_confirmation --check risks.1 eq HIGH \
+    --check injection_risk eq HIGH --check nothing_ran eq true --check final eq finished \
+    --check safe_executed eq true --check policy_status eq waiting_for_confirmation \
+    --check dangerous_waited eq true --check policy_final eq finished \
+    --check restored eq JevSecurityAnalyzer --check transport_kind eq JevSecurityAnalyzer \
+    --check transport_secret_preserved eq true --check async_status eq waiting_for_confirmation
+  ```
+  Live scores vary: a benign warning about a dangerous command has rated MEDIUM for injection suspicion. The loopback contract makes no model-quality claim. These are smoke checks, not an attack-success benchmark.
+
 ## Gotchas
+
+- Jev sends action commentary as well as arguments to an external service. Output masking does not sanitize that request. Its synchronous HTTP request blocks `arun()` while in flight. It is a review aid: `NeverConfirm` still executes HIGH-rated actions.
 
 - Examples 04 and 16 are in `_EXCLUDED_EXAMPLES` (they call `input()`); on EOF they reject by default, so piping no input rejects every action.
 - Example 16 runs with `persistence_dir="./.conversations"` and `workspace="."`, leaving state in the current directory.
