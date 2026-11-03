@@ -1989,7 +1989,7 @@ export type AgentProfileDetailResponse = {
 /**
  * AgentProfileDiagnostics
  *
- * Side-effect-free report of what :func:`resolve_agent_profile` would do.
+ * Side-effect-free report of what a launch would do.
  *
  * Consumed by ``POST /{id}/materialize`` (#3719) and the canvas editor. The
  * verdict (:attr:`valid`) and the dangling-ref lists match exactly what a real
