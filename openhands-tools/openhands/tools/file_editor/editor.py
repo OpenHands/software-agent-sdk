@@ -200,15 +200,18 @@ class FileEditor:
         file_content = self.read_file(path)
 
         # Find all occurrences using regex
-        # Escape special regex characters in old_str to match it literally
+        # Escape special regex characters in old_str to match it literally.
+        # The lookahead reports every start position, including overlapping
+        # matches ("aa" occurs twice in "aaa"), so an ambiguous old_str is
+        # refused instead of silently replacing its first match.
         pattern = re.escape(old_str)
         occurrences = [
             (
                 file_content.count("\n", 0, match.start()) + 1,  # line number
-                match.group(),  # matched text
+                old_str,  # matched text
                 match.start(),  # start position
             )
-            for match in re.finditer(pattern, file_content)
+            for match in re.finditer(f"(?={pattern})", file_content)
         ]
 
         if not occurrences:
@@ -223,10 +226,10 @@ class FileEditor:
             occurrences = [
                 (
                     file_content.count("\n", 0, match.start()) + 1,  # line number
-                    match.group(),  # matched text
+                    old_str,  # matched text
                     match.start(),  # start position
                 )
-                for match in re.finditer(pattern, file_content)
+                for match in re.finditer(f"(?={pattern})", file_content)
             ]
             if not occurrences:
                 raise ToolError(
