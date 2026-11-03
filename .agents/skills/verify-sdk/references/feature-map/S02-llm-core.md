@@ -254,11 +254,14 @@ The scripted bullets point a real `LLM` (`openai/...`, `anthropic/...`) at `prog
   control-sdk exec --model-env --expect-output EXAMPLE_COST -- python examples/01_standalone_sdk/29_llm_streaming.py
   control-sdk exec --model-env -- python examples/01_standalone_sdk/36_event_json_to_openai_messages.py
   ```
-- **API compliance of a real provider (`S02.error-mapping`).** Live, through the integration runner.
+- **API compliance of a real provider (`S02.error-mapping`).** Live. The eight malformed-history patterns of `tests/integration/tests/a*.py`, sent to the run's model with the compliance tests' own classes (their runner, `run_compliance.py`, knows only the All-Hands proxy models, and `run_infer.py` does not load `a*` tests).
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
-  control-sdk exec --model-env -- python tests/integration/run_infer.py --llm-config '{"model": "deepseek/deepseek-flash"}' --eval-ids a01_unmatched_tool_use
+  control-sdk program S02/api_compliance \
+    --check patterns len-eq 8 --check rejections_typed eq true \
+    --check results.unmatched_tool_use.error_type eq LLMMalformedConversationHistoryError
   ```
+  On 2026-11-03 DeepSeek rejected all eight. Five came back as `LLMMalformedConversationHistoryError`; the three whose provider message is "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'" (unmatched tool result, duplicate id, parallel results in the wrong order) came back as the generic `LLMBadRequestError`, so a caller that recovers from malformed histories by catching the specific error misses them.
 - **Examples 22 and 23 and the thinking-block condenser test (`S02.anthropic-thinking`, `S02.responses-reasoning`), blocked.** Example 22 and `c01_thinking_block_condenser` need an Anthropic extended-thinking model and key; example 23 hardcodes `openhands/gpt-5-mini-2025-08-07` and needs an OpenHands provider key. The run's DeepSeek key reaches neither.
 
 ## Gotchas

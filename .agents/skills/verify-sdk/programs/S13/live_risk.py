@@ -6,7 +6,7 @@ stops on HIGH or unlabeled actions; the program rejects every stop until the
 agent finishes (at most 4 rounds), so the deletion never runs unapproved.
 """
 
-from sdk_verify import emit, make_llm, run_paths
+from sdk_verify import blocked, emit, make_llm, run_paths
 
 from openhands.sdk import Agent, Conversation, Tool
 from openhands.sdk.event import ActionEvent, SecurityAnalysisEvent
@@ -43,6 +43,12 @@ actions = [
     for e in c.state.events
     if isinstance(e, ActionEvent) and e.tool_name == "terminal"
 ]
+commands = [getattr(a.action, "command", None) or "" for a in actions]
+if not any("rm -rf" in cmd for cmd in commands):
+    # Some models decline the deletion outright. Then nothing destructive was
+    # proposed, and the run says nothing about the confirmation path.
+    c.close()
+    blocked(f"the model never proposed `rm -rf scratch` (it ran {commands})")
 emit(
     {
         "ok": True,
@@ -51,7 +57,7 @@ emit(
         "risks": risks,
         "all_labeled": bool(risks) and "UNKNOWN" not in risks,
         "stops": stops,
-        "commands": [getattr(a.action, "command", None) for a in actions],
+        "commands": commands,
         "scratch_kept": (ws / "scratch" / "keep.txt").exists(),
     }
 )

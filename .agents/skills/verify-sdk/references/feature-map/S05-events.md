@@ -121,10 +121,12 @@ Preconditions:
   control-sdk exec --model-env --expect-output "messages" -- python examples/01_standalone_sdk/36_event_json_to_openai_messages.py
   ```
   The example runs two turns with persistence, reloads every `events/event-*.json`, and logs either `Chat Completions messages:` or `Responses input:` with the formatted JSON.
-- **API compliance of produced histories (`S05.events-to-messages`).** Live, through the integration runner.
+- **API compliance of produced histories (`S05.events-to-messages`).** Live. The same malformed-history patterns as `S02.error-mapping`: each one the provider rejects must surface as a typed SDK error.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
-  control-sdk exec --model-env -- python tests/integration/run_infer.py --llm-config '{"model": "deepseek/deepseek-flash"}' --eval-ids a01_unmatched_tool_use
+  control-sdk program S02/api_compliance \
+    --check patterns len-eq 8 --check rejections_typed eq true \
+    --check results.unmatched_tool_use.error_type eq LLMMalformedConversationHistoryError
   ```
 - **System prompt blocks (`S05.system-prompt-blocks`).** The saved `SystemPromptEvent` of a conversation with agent context turns into system content blocks, static first.
   ```sh

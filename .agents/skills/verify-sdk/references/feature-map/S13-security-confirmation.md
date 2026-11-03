@@ -181,7 +181,7 @@ Preconditions:
     --check async.tool_step.seconds lt 10
   ```
   Known failure (reproduced 2026-10-13, not yet filed): when the first lookup is triggered by masking a tool observation (`ToolDefinition.__call__` → `mask_secrets_in_model`), the state lock is still held during the HTTP request. The secrets service's `update_secrets` call therefore blocks until httpx's 30 s timeout, the lookup fails, and the back-off then leaves the value unmasked. Evidence: `async.tool_step.messages.0` is `"the values are loop-val and <secret-hidden>"` and `async.tool_step.seconds` is `30.5`, while the message-step case is masked and takes `0.1` s.
-- **A real model labels its own actions (`S13.llm-analyzer`, `S13.confirm-wait`, `S13.confirm-approve-reject`).** Live. The model is asked to run `ls` and then `rm -rf scratch`; `ConfirmRisky()` stops, and the program rejects until the agent finishes.
+- **A real model labels its own actions (`S13.llm-analyzer`, `S13.confirm-wait`, `S13.confirm-approve-reject`).** Live. The model is asked to run `ls` and then `rm -rf scratch`; `ConfirmRisky()` stops, and the program rejects until the agent finishes. A model that declines to propose the deletion at all (DeepSeek Flash did on 2026-11-03: it only listed and read `scratch/`) leaves the confirmation path unexercised, and the program exits 3.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --llm deepseek-flash --field run)
   control-sdk program S13/live_risk \
