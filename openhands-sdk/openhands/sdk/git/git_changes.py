@@ -55,7 +55,11 @@ def _parse_name_status(changed_files: list[str]) -> list[GitChange]:
         # * "A file.txt"
         # * "A       file.txt"
         # * "R100    old_file.txt    new_file.txt" (rename with similarity percentage)
-        parts = line.split()
+        # git separates the status and path(s) with a tab, and a path may
+        # itself contain spaces ("M\tmy notes.txt"); splitting on any
+        # whitespace would tear such a path apart. Fall back to a plain
+        # whitespace split only for space-separated formats (diff.noprefix).
+        parts = line.split("\t") if "\t" in line else line.split()
         if len(parts) < 2:
             logger.error(f"Unexpected git diff line format: {line}")
             raise GitCommandError(
