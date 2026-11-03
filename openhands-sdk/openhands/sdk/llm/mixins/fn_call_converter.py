@@ -528,7 +528,15 @@ def _extract_and_validate_params(
 
     for param_match in param_matches:
         param_name = param_match.group(1)
-        param_value: Any = param_match.group(2).strip()
+        raw_value = param_match.group(2)
+        if raw_value.startswith("\n") and raw_value.endswith("\n"):
+            # convert_tool_call_to_string frames multiline strings with a
+            # newline on each side; strip only that framing so the value's
+            # own leading indentation and trailing newline survive the
+            # round-trip.
+            param_value: Any = raw_value[1:-1]
+        else:
+            param_value: Any = raw_value.strip()
 
         # security_risk is excluded here for the same reason it's excluded from
         # missing_params below: read-only tools (e.g. finish) never declare it
