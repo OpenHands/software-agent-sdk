@@ -69,8 +69,9 @@ Routes: `POST /api/conversations/{conversation_id}/run`,
   waiting for confirmation.
 - REST: `POST /api/conversations/{conversation_id}/pause` and
   `POST /api/conversations/{conversation_id}/interrupt` (no body), 200
-  `{"success": true}`. Pause flips `idle` or `running` to `paused` and appends
-  a `PauseEvent`; the current step finishes first. Interrupt cancels the
+  `{"success": true}`; 404 for an unknown id. Pause flips `idle` or
+  `running` to `paused` and appends a `PauseEvent`; the current step
+  finishes first. Interrupt cancels the
   in-flight async run (`InterruptEvent`, synthetic error observations for
   unfinished actions) and falls back to pause when nothing runs.
 - Second views (owned by other families, used here as proof):
@@ -351,7 +352,7 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   control-agent-server api POST "/api/conversations/$NOPE/run" --expect 404 --check detail eq 'Not Found' --save F05.unknown-id-run/run
   ```
   404 `{"detail": "Not Found"}`.
-- **Pause or interrupt an unknown id (`F05.unknown-id-pause`), known bug.**
+- **Pause or interrupt an unknown id (`F05.unknown-id-pause`).**
   Both routes declare 404 "Item not found" (and no 400) in the OpenAPI
   document, like `/run` and `GET /api/conversations/{id}`.
   ```sh
@@ -359,14 +360,12 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
     --check 'paths./api/conversations/{conversation_id}/pause.post.responses.404' exists \
     --check 'paths./api/conversations/{conversation_id}/interrupt.post.responses.404' exists
   control-agent-server api GET "/api/conversations/$NOPE" --expect 404
-  control-agent-server api POST "/api/conversations/$NOPE/pause" --expect 404 --save F05.unknown-id-pause/pause  # bug: status eq 400 && response.body.detail eq 'Bad Request'
-  control-agent-server api POST "/api/conversations/$NOPE/interrupt" --expect 404 --save F05.unknown-id-pause/interrupt  # bug: status eq 400 && response.body.detail eq 'Bad Request'
+  control-agent-server api POST "/api/conversations/$NOPE/pause" --expect 404 --save F05.unknown-id-pause/pause
+  control-agent-server api POST "/api/conversations/$NOPE/interrupt" --expect 404 --save F05.unknown-id-pause/interrupt
   ```
   The OpenAPI document and a GET of the same id (404) are the controls.
-  Expected: 404 for both. Today both return 400 `{"detail": "Bad Request"}`
-  (the handlers raise 400 when the service finds no conversation), so a
-  consumer cannot tell a missing conversation from a bad request, and the
-  status differs from `/run` for the same id.
+  Both return 404 `{"detail": "Not Found"}`, like `/run` for the same id:
+  the handlers raise 404 when the service finds no conversation.
 - **Auth and malformed ids (`F05.control-errors`).** The target is `Q`, which
   is `idle`, so an accepted pause or interrupt would visibly flip it to
   `paused`.

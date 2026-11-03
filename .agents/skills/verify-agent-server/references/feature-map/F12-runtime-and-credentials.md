@@ -67,7 +67,8 @@ Routes: `GET /api/conversations/{conversation_id}/runtime`,
 - `F12.managed-key-scope`: an LLM whose `base_url` is outside the allow-list, or any LLM once the allow-list is empty, surfaces the 401 (`LLMAuthenticationError`, status `error`) after one model call and no refresh request; the empty allow-list is logged as "stays off".
 - `F12.managed-key-switch`: an in-scope LLM installed with `switch_llm` (or `switch_profile`) recovers from a 401 through the refresh URL like the LLM the conversation was loaded with.
 - `F12.docker-runtime-contract`: on a server with `OH_CONVERSATION_RUNTIME=docker` and no Docker daemon, fork, `switch_llm`, `switch_profile` and credential bindings answer 501 before any lookup (the binding source is never contacted); the runtime routes, `DELETE .../runtime`, `POST .../runtime/credentials` and `/run` answer 404 `Conversation not found` for an unknown id, and the two Docker-only routes 401 without a key; both conversation sockets close with 1008 for an unknown id; create refuses a missing body (400), a non-object (422), a non-local workspace (422) and a bad `conversation_id` (400) without writing a runtime manifest; a well-formed create answers 502, leaving a manifest whose runtime info is 404, whose reprovision is 502 and whose socket closes with 1011, until `DELETE /api/conversations/{id}` removes it.
-- `F12.docker-runtime`: with a Docker daemon, a create starts a container with the configured `--memory`, `--cpus` and `--pids-limit`, the launched profile in `OH_RUNTIME_LAUNCHED_PROFILE` and a startup bound of `conversation_container_startup_timeout`; `POST .../runtime/credentials` returns the container's session key, `DELETE .../runtime` stops it (204) while the conversation stays readable, reprovision starts it again, a request carrying `X-Expose-Secrets` is refused with 422 and an archived runtime answers 410 (blocked here: no Docker daemon).
+- `F12.docker-runtime`: with a Docker daemon, a create starts a container with the configured `--memory`, `--cpus` and `--pids-limit`, the launched profile in `OH_RUNTIME_LAUNCHED_PROFILE`; `POST .../runtime/credentials` returns the container's session key, `DELETE .../runtime` stops it (204) while the conversation stays readable, reprovision restores workspace files, proxied requests carrying `X-Expose-Secrets` are refused with 422, and archived runtimes preserve history but refuse reprovision with 410.
+- `F12.docker-startup-timeout`: a container that misses `conversation_container_startup_timeout` makes create return 502 within a bounded response time, removes the failed container, and permits deletion of the remaining runtime manifest.
 
 ## How to get to it (agent POV)
 
@@ -156,9 +157,7 @@ Preconditions:
   flash that answers one tiny prompt and finishes. No tool needs `tmux`
   (`--tools none`).
 - Several bullets call `prepare-for-sandbox-pause`, which unloads every
-  conversation of the run, so each bullet loads what it needs first. `N` is
-  left requiring a credential binding by `F12.binding-native-cold` (a known
-  bug), so later bullets do not use it.
+  conversation of the run, so each bullet loads what it needs first.
 - The bullets from `F12.runtime-launched-profile` on each launch and stop
   their own second server (a local one with `OH_RUNTIME_LAUNCHED_PROFILE`
   or the managed-key variables, or one with
@@ -484,7 +483,7 @@ control-agent-server api GET "/api/conversations/$R" --check execution_status eq
   control-agent-server state cat meta.json --conversation "$N" --check required_runtime_credential_bindings len-eq 0
   ```
   409 and no recorded requirement.
-- **Regular conversation, not loaded (`F12.binding-native-cold`), known bug.**
+- **Regular conversation, not loaded (`F12.binding-native-cold`).**
   The same binding sent while `N` is unloaded, then a load and a pause.
   ```sh
   control-agent-server api POST /api/conversations/prepare-for-sandbox-pause --expect 204
@@ -492,24 +491,16 @@ control-agent-server api GET "/api/conversations/$R" --check execution_status eq
     --save F12.binding-native-cold/put
   control-agent-server api GET "/api/conversations/$N/events/count" --expect 200
   control-agent-server api POST /api/conversations/prepare-for-sandbox-pause --expect 204
-  control-agent-server api GET "/api/conversations/$N/events/count" --expect 200 --save F12.binding-native-cold/events-after-pause  # bug: status eq 409 && response.body contains credential_binding_activation_required
-  control-agent-server state cat meta.json --conversation "$N" --check required_runtime_credential_bindings len-eq 0  # bug: checks.0.actual contains CODEX_AUTH_JSON
+  control-agent-server api GET "/api/conversations/$N/events/count" --expect 200 --save F12.binding-native-cold/events-after-pause
+  control-agent-server state cat meta.json --conversation "$N" --check required_runtime_credential_bindings len-eq 0
   ```
-  Correct behavior: a regular conversation either refuses the binding (409,
-  as it does when loaded) or ignores it, and stays readable after the next
-  pause. Today the unloaded PUT is accepted as pending (204), consumed when
-  `N` loads, and written to `meta.json` as
-  `required_runtime_credential_bindings: ["CODEX_AUTH_JSON"]`: after the
-  pause every event read is 409 `credential_binding_activation_required` and
-  the sockets close with 1013, for a conversation that never uses Codex.
-  The same happens when a regular conversation is created with an id that
-  has a pending binding, and then its own `CODEX_AUTH_JSON` secret is also
-  dropped from `meta.json` (`secrets: {}`), although the create path strips
-  that secret only for Codex sources. `_resolve_credential_bindings` filters
-  pending bindings by profile only, not by agent kind, and
-  `EventService.start` records every HTTP binding as required. Low severity:
-  only an orchestrator that binds conversations without knowing their agent
-  kind hits it.
+  A regular conversation either refuses the binding (409, as it does when
+  loaded) or ignores it, and stays readable after the next pause. The
+  unloaded PUT is accepted as pending (204) and dropped when `N` loads,
+  because only ACP agents take file credential bindings: `meta.json` keeps
+  `required_runtime_credential_bindings: []`, and a regular conversation
+  created with an id that has a pending binding keeps its own
+  `CODEX_AUTH_JSON` secret.
 - **Bind a loaded ACP Codex conversation (`F12.binding-live-acp`).** `A` has
   never run, so its ACP agent is not initialized yet.
   ```sh
@@ -732,7 +723,7 @@ control-agent-server api GET "/api/conversations/$R" --check execution_status eq
   stub would answer a retry. After the restart with an empty allow-list the
   same managed `base_url` gets no hook (fail closed, logged as "managed LLM
   key refresh stays off"): one more 401, no fetch, `error`.
-- **Refresh after a model switch (`F12.managed-key-switch`), known bug.** An
+- **Refresh after a model switch (`F12.managed-key-switch`).** An
   in-scope conversation that refreshes once, then `switch_llm` to another
   LLM on the same managed `base_url`.
   ```sh
@@ -754,30 +745,28 @@ control-agent-server api GET "/api/conversations/$R" --check execution_status eq
   control-agent-server conversation send "$WC" --run "$K" --text 'QA_F12_SWITCH_2'
   control-agent-server sink read --name qa-f12-switch --expect-min 3 --wait 30
   control-agent-server conversation wait "$WC" --run "$K" --until finished,error --timeout 60
-  control-agent-server sink read --name qa-f12-keysrc-switch --expect-min 2 --expect-max 2 --save F12.managed-key-switch/key-fetch  # bug: requests eq 1
-  control-agent-server api GET "/api/conversations/$WC" --run "$K" --check execution_status eq finished  # bug: status eq 200 && checks.0.actual eq error
+  control-agent-server sink read --name qa-f12-keysrc-switch --expect-min 2 --expect-max 2 --save F12.managed-key-switch/key-fetch
+  control-agent-server api GET "/api/conversations/$WC" --run "$K" --check execution_status eq finished
   control-agent-server stop --run "$K"
   ```
-  Correct behavior: the switched LLM sits on an allow-listed `base_url`, so
-  its 401 is refreshed like the first one (a second fetch, then
-  `finished`). Today the first run refreshes (the positive control), but
-  after `switch_llm` the 401 surfaces: no second fetch, `error` with
-  `LLMAuthenticationError`, and the stub saw no retry.
-  `register_managed_llm_key_refresh` runs only in `EventService.start`, and
-  `LocalConversation.switch_llm` (which `switch_profile` also uses) installs
-  a new LLM without the hook. A restart reloads the conversation and
-  registers the hook on the switched LLM, after which the same 401 is
-  refreshed and the run finishes (seen while mapping), so the hook is lost
-  only until the next load. Low severity: it reproduces the "first call
-  fails once" symptom (#5189) the hook exists for, after any model switch.
+  The first run refreshes (the positive control). The switched LLM sits on
+  an allow-listed `base_url`, so its 401 is refreshed like the first one: a
+  second fetch, one retry, then `finished`. `LocalConversation.switch_llm`
+  (which `switch_profile` and the agent's switch tools also use) installs a
+  new LLM object; the server re-registers the refresh hook when the
+  conversation's `agent` changes, so the hook does not wait for the next
+  load (#5890).
 - **Docker runtime mode without a daemon (`F12.docker-runtime-contract`).**
   A second server with `OH_CONVERSATION_RUNTIME=docker`. Translated: no
   Docker daemon is needed for the router's own answers (startup only warns
   that it cannot list containers); everything that needs a running
   container is `F12.docker-runtime`. `DELETE .../runtime` and
-  `POST .../runtime/credentials` exist only in this mode.
+  `POST .../runtime/credentials` exist only in this mode. The run's
+  `DOCKER_HOST` points to a nonexistent private socket so this remains a
+  no-daemon check even on hosts where Docker is installed.
   ```sh
-  DK=$(control-agent-server launch --new --name f12-docker --env OH_CONVERSATION_RUNTIME=docker --print-run)
+  DK=$(control-agent-server launch --new --name f12-docker --env OH_CONVERSATION_RUNTIME=docker \
+    --env "DOCKER_HOST=unix://$AGENT_SERVER_VERIFY_RUN/private/no-docker.sock" --print-run)
   trap 'control-agent-server stop --run "$DK" >/dev/null 2>&1 || true' EXIT
   control-agent-server api GET /server_info --run "$DK" --auth none --expect 200 --check conversation_runtime eq docker
   Z=$(python3 -c 'import uuid; print(uuid.uuid4())')
@@ -831,47 +820,138 @@ control-agent-server api GET "/api/conversations/$R" --check execution_status eq
   manifest: the conversation has no `meta.json` yet, so runtime info is 404,
   while reprovision and the socket try to start the container (502, close
   1011). Deleting the conversation removes the manifest.
-- **Docker runtime with a daemon (`F12.docker-runtime`), blocked.**
-  Needs a Docker daemon and the `conversation_image`
-  (`ghcr.io/openhands/agent-server:...-python`) pulled;
-  `control-agent-server capabilities` reports `docker`. It would prove the
-  container limits, the startup bound, `DELETE .../runtime` (204),
-  `POST .../runtime/credentials` (200), reprovision, the `X-Expose-Secrets`
-  refusal (422) and the launched profile inside the container.
+- **Docker runtime with a daemon (`F12.docker-runtime`).**
+  Needs: `docker`
+
+  Preconditions: pull the selected image before this recipe. The default is
+  the released minimal image, which exercises the same Docker lifecycle
+  without the browser stack. Override `AGENT_SERVER_VERIFY_DOCKER_IMAGE` to
+  test a different built image. Record its digest and the child's
+  `/server_info`: the outer checkout and inner image can differ. This recipe
+  creates conversations but does not invoke their LLM.
   ```sh
+  IMAGE=${AGENT_SERVER_VERIFY_DOCKER_IMAGE:-ghcr.io/openhands/agent-server:1.55.1-python-minimal}
+  docker image inspect "$IMAGE" >/dev/null
   DK=$(control-agent-server launch --new --name f12-docker-live --print-run \
-    --config-json '{"conversation_runtime": "docker", "conversation_container_memory": "1g", "conversation_container_cpus": 1, "conversation_container_pids_limit": 256}')
+    --config-json "$(jq -nc --arg image "$IMAGE" '{conversation_runtime:"docker",conversation_image:$image,enable_browser:false,conversation_container_memory:"1g",conversation_container_cpus:1,conversation_container_pids_limit:256}')")
+  INNER=
+  trap 'if [ -n "$INNER" ]; then control-agent-server stop --run "$INNER" >/dev/null 2>&1 || true; fi; control-agent-server stop --run "$DK" >/dev/null 2>&1 || true' EXIT
+  control-agent-server doctor --run "$DK"
+  control-agent-server exec --run "$DK" --save F12.docker-runtime/image -- docker image inspect \
+    --format '{{.Id}} {{json .RepoDigests}}' "$IMAGE"
+  control-agent-server api POST /api/profiles/qa-docker-llm --run "$DK" \
+    --json '{"llm":{"model":"openai/qa-no-call","api_key":"qa-docker-placeholder"}}' --expect 201
+  control-agent-server api POST /api/agent-profiles/qa-docker-profile --run "$DK" \
+    --json '{"llm_profile_ref":"qa-docker-llm","tools":[],"mcp_server_refs":[]}' --expect 201
+  PROFILE_ID=$(control-agent-server api GET /api/agent-profiles/qa-docker-profile --run "$DK" --expect 200 --field profile.id)
   CID=$(control-agent-server api POST /api/conversations --run "$DK" \
-    --json '{"agent": {"llm": {"model": "openai/qa-stub", "api_key": "qa"}, "tools": []}}' --expect 200,201 --field id)
-  docker inspect --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}' \
-    "$(docker ps -q --filter label=ai.openhands.runtime-owner)" | grep -qx '1073741824 1000000000 256'
-  control-agent-server api GET "/api/conversations/$CID/runtime" --run "$DK" --expect 200 --check runtime_status eq available --check can_resume eq true
-  control-agent-server api POST "/api/conversations/$CID/runtime/credentials" --run "$DK" --expect 200 --check session_api_key exists
-  control-agent-server api GET "/api/conversations/$CID/events/search" --run "$DK" --header 'X-Expose-Secrets: plaintext' \
-    --expect 422 --check detail eq 'Runtime secret exposure is unsupported'
+    --json "{\"agent_profile_id\":\"$PROFILE_ID\",\"autotitle\":false}" --expect 201 --field id --timeout 180 --save F12.docker-runtime/create)
+  OWNER=$(python3 -c 'import hashlib,sys; r=sys.argv[1]; print(hashlib.sha256(f"{r}/server/workspace/conversations\0{r}/home/.openhands".encode()).hexdigest()[:24])' "$DK")
+  CONTAINER=$(docker ps -q --filter "label=ai.openhands.runtime-owner=$OWNER")
+  control-agent-server assert --value "$CONTAINER" --check . matches '^[0-9a-f]{12}$'
+  control-agent-server exec --run "$DK" --save F12.docker-runtime/resources \
+    --expect-output '1073741824 1000000000 256 ["ALL"] ["no-new-privileges"]' -- \
+    docker inspect --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}} {{json .HostConfig.CapDrop}} {{json .HostConfig.SecurityOpt}}' "$CONTAINER"
+  control-agent-server api GET "/api/conversations/$CID/runtime" --run "$DK" --expect 200 \
+    --check runtime_status eq available --check can_resume eq true --save F12.docker-runtime/runtime-available
+  QA_DOCKER_KEY=$(control-agent-server api POST "/api/conversations/$CID/runtime/credentials" --run "$DK" --expect 200 --field session_api_key --unsafe-unredacted)
+  export QA_DOCKER_KEY
+  control-agent-server assert --value "${#QA_DOCKER_KEY}" --check . ge 32
+  INNER=$(control-agent-server attach --url "http://$(docker port "$CONTAINER" 8000/tcp)" --key-env QA_DOCKER_KEY --name f12-docker-child --print-run)
+  unset QA_DOCKER_KEY
+  control-agent-server api GET "/api/conversations/$CID" --run "$INNER" --expect 200 --quiet \
+    --check launched_agent_profile.agent_profile_id eq "$PROFILE_ID" --check launched_agent_profile.revision eq 0 --save F12.docker-runtime/credential-auth-profile
+  control-agent-server api GET /server_info --run "$INNER" --auth none --expect 200 --save F12.docker-runtime/child-info
+  control-agent-server api POST "/api/conversations/$CID/events" --run "$DK" \
+    --json '{"role":"user","content":[{"type":"text","text":"QA_DOCKER_RETAINED_EVENT"}],"run":false}' \
+    --expect 200 --check success eq true --save F12.docker-runtime/message
+  control-agent-server api GET "/api/conversations/$CID/events/search" --run "$DK" --expect 200 \
+    --check items.1.llm_message.content.0.text eq QA_DOCKER_RETAINED_EVENT --save F12.docker-runtime/history-before
+  control-agent-server api POST "/api/conversations/$CID/bash/execute_bash_command" --run "$DK" \
+    --json '{"command":"printf qa-docker-live > /workspace/qa-docker-live.txt"}' --expect 200 --check exit_code eq 0 --save F12.docker-runtime/write
+  control-agent-server api GET "/api/conversations/$CID/file/download" --run "$DK" --query path=/workspace/qa-docker-live.txt \
+    --expect 200 --save F12.docker-runtime/file-before
+  control-agent-server api GET "/api/conversations/$CID/file/download" --run "$DK" --query path=/workspace/qa-docker-live.txt \
+    --header 'X-Expose-Secrets: plaintext' --expect 422 --check detail eq 'Runtime secret exposure is unsupported' --save F12.docker-runtime/expose-refused
+  control-agent-server api DELETE "/api/conversations/$CID/runtime" --run "$DK" --expect 204 --save F12.docker-runtime/release
+  control-agent-server stop --run "$INNER"
+  INNER=
+  control-agent-server api GET "/api/conversations/$CID/runtime" --run "$DK" --expect 200 \
+    --check runtime_status eq missing --check can_resume eq true --save F12.docker-runtime/runtime-missing
+  control-agent-server api GET "/api/conversations/$CID" --run "$DK" --expect 200 --quiet --check id eq "$CID" --save F12.docker-runtime/catalog-after-release
+  control-agent-server api GET "/api/conversations/$CID/events/search" --run "$DK" --expect 200 \
+    --check items.1.llm_message.content.0.text eq QA_DOCKER_RETAINED_EVENT --save F12.docker-runtime/history-after-release
+  control-agent-server api GET "/api/conversations/$CID/runtime" --run "$DK" --expect 200 --check runtime_status eq missing --save F12.docker-runtime/reads-did-not-resume
+  control-agent-server api POST "/api/conversations/$CID/runtime/reprovision" --run "$DK" --expect 200 \
+    --check runtime_status eq available --timeout 180 --save F12.docker-runtime/reprovision
+  control-agent-server api GET "/api/conversations/$CID/file/download" --run "$DK" --query path=/workspace/qa-docker-live.txt \
+    --expect 200 --raw-out "$DK/evidence/F12.docker-runtime/file-content.txt" --save F12.docker-runtime/file-after
+  control-agent-server exec --run "$DK" --save F12.docker-runtime/content-proof --expect-output qa-docker-live -- \
+    cat "$DK/evidence/F12.docker-runtime/file-content.txt"
   control-agent-server api DELETE "/api/conversations/$CID/runtime" --run "$DK" --expect 204
-  control-agent-server api GET "/api/conversations/$CID/runtime" --run "$DK" --expect 200 --check runtime_status eq missing --check can_resume eq true
-  control-agent-server api GET "/api/conversations/$CID" --run "$DK" --expect 200
-  control-agent-server api POST "/api/conversations/$CID/runtime/reprovision" --run "$DK" --expect 200 --check runtime_status eq available
+  control-agent-server restart --run "$DK" --config-json '{"conversation_storage_retention_days":0.00001}'
+  control-agent-server doctor --run "$DK"
+  control-agent-server api GET "/api/conversations/$CID/runtime" --run "$DK" --expect 200 --check can_resume eq false \
+    --until-ok 330 --timeout 20 --save F12.docker-runtime/archive-runtime
+  control-agent-server api GET "/api/conversations/$CID" --run "$DK" --expect 200 --quiet --save F12.docker-runtime/archive-catalog
+  control-agent-server api GET "/api/conversations/$CID/events/search" --run "$DK" --expect 200 \
+    --check items.1.llm_message.content.0.text eq QA_DOCKER_RETAINED_EVENT --save F12.docker-runtime/archive-history
+  control-agent-server api POST "/api/conversations/$CID/runtime/reprovision" --run "$DK" --expect 410 \
+    --check detail eq 'Conversation runtime was archived; its history is read-only' --save F12.docker-runtime/archive-refuses-resume
+  control-agent-server api DELETE "/api/conversations/$CID" --run "$DK" --expect 200 --save F12.docker-runtime/delete
+  control-agent-server api GET "/api/conversations/$CID" --run "$DK" --expect 404 --save F12.docker-runtime/deleted
   control-agent-server stop --run "$DK"
   ```
-  With a daemon, the container runs with `--memory 1g --cpus 1
-  --pids-limit 256`, `--cap-drop ALL` and `OH_RUNTIME_LAUNCHED_PROFILE` in
-  its environment; credentials return its session key, the release stops
-  it (runtime `missing`, still resumable) without touching the
-  conversation, and reprovision starts it again. A `conversation_image`
-  that never answers `/health` makes the create fail with 502 after
-  `conversation_container_startup_timeout` seconds; a runtime archived by
-  retention answers 410 `Conversation runtime was archived; its history is
-  read-only`; a second `DELETE /api/conversations/{id}` while the first is
-  still stopping the container answers 409 `Conversation deletion is already
-  in progress` (without a daemon the stop is too quick to race).
+  Runtime release preserves the workspace, profile provenance and readable
+  history; reprovision restores the file bytes. The runtime's five-minute
+  maintenance timer is intentionally exercised by the final poll. Retention
+  then makes the runtime non-resumable while preserving history, and deletion
+  still succeeds. Credentials are captured directly into a variable and used
+  for authenticated child access; do not save or print the raw credential
+  exchange. Container inspection is scoped to this run's owner label.
+
+  Event history is served by the outer persisted catalog (PR #5429), so its
+  routes no longer prove the proxy's `X-Expose-Secrets` refusal. The file
+  download route above traverses the proxy and proves the 422.
+
+- **Docker runtime startup deadline (`F12.docker-startup-timeout`).**
+  Needs: `docker`
+
+  Pull the selected image before the recipe.
+  ```sh
+  IMAGE=${AGENT_SERVER_VERIFY_DOCKER_IMAGE:-ghcr.io/openhands/agent-server:1.55.1-python-minimal}
+  docker image inspect "$IMAGE" >/dev/null
+  BAD=$(control-agent-server launch --new --name f12-docker-short-deadline --print-run \
+    --config-json "$(jq -nc --arg image "$IMAGE" '{conversation_runtime:"docker",conversation_image:$image,enable_browser:false,conversation_container_memory:"1g",conversation_container_startup_timeout:0.01}')")
+  trap 'control-agent-server stop --run "$BAD" >/dev/null 2>&1 || true' EXIT
+  control-agent-server doctor --run "$BAD"
+  SHORT_CID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+  control-agent-server api POST /api/conversations --run "$BAD" \
+    --json "{\"conversation_id\":\"$SHORT_CID\",\"agent\":{\"llm\":{\"model\":\"openai/qa-no-call\",\"api_key\":\"qa\"},\"tools\":[]}}" \
+    --expect 502 --check exception eq '502: Could not create conversation container' \
+    --expect-max-ms 45000 --timeout 60 --save F12.docker-startup-timeout/startup-deadline
+  control-agent-server logs --run "$BAD" --grep 'failed to become healthy in time' --expect-min 1
+  SHORT_OWNER=$(python3 -c 'import hashlib,sys; r=sys.argv[1]; print(hashlib.sha256(f"{r}/server/workspace/conversations\0{r}/home/.openhands".encode()).hexdigest()[:24])' "$BAD")
+  control-agent-server exec --run "$BAD" --save F12.docker-startup-timeout/startup-cleanup -- \
+    docker ps -aq --filter "label=ai.openhands.runtime-owner=$SHORT_OWNER"
+  control-agent-server assert --value "$(docker ps -aq --filter "label=ai.openhands.runtime-owner=$SHORT_OWNER")" --check . eq ''
+  control-agent-server api DELETE "/api/conversations/$SHORT_CID" --run "$BAD" --expect 200 --save F12.docker-startup-timeout/failed-create-delete
+  control-agent-server state ls --run "$BAD" "home/.openhands/runtime-control/${SHORT_CID//-/}.json" --expect-count 0
+  control-agent-server stop --run "$BAD"
+  ```
+  The same real image gets a deliberately impossible 10ms health deadline.
+  The 502 and timeout log establish the reason; the 45s response bound includes
+  Docker startup and shutdown overhead. The failed container is gone before
+  the manifest is deleted. This is a readiness failure test, not an assertion
+  that every host can initialize a container in 10ms.
 
 ## Gotchas
 
-- `GET /api/conversations/{id}` and the runtime routes read the catalog and
-  never load a conversation; event routes, `/run`, message posts and the
-  sockets do. Lease files (`owner_lease.json`, in the conversation directory
+- In local runtime mode, `GET /api/conversations/{id}` and the runtime routes
+  read the catalog and never load a conversation; event routes, `/run`,
+  message posts and the sockets do. Docker mode also serves persisted event
+  history from its outer catalog without starting a container (#5429).
+  Lease files (`owner_lease.json`, in the conversation directory
   named by the id without dashes) exist only for loaded conversations, so they
   are the visible "loaded" signal. Leases themselves (renewal, takeover,
   second instances) are F31.

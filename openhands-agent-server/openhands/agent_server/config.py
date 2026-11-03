@@ -99,8 +99,9 @@ class WebhookSpec(BaseModel):
         ),
     )
     base_url: str = Field(
-        description="The base URL of the webhook service. Events will be sent to "
-        "{base_url}/events and conversation info to {base_url}/conversations"
+        description="The base URL of the webhook service. Event batches are sent "
+        "to {base_url}/events/{conversation_id.hex} (the conversation id without "
+        "dashes) and conversation info to {base_url}/conversations"
     )
     headers: dict[str, str] = Field(default_factory=dict)
     flush_delay: float = Field(
@@ -108,8 +109,8 @@ class WebhookSpec(BaseModel):
         gt=0,
         description=(
             "The delay in seconds after which buffered events will be flushed to "
-            "the webhook, even if the buffer is not full. Timer is reset on each "
-            "new event."
+            "the webhook, even if the buffer is not full. The timer starts when "
+            "the first event is queued and is not reset by later events."
         ),
     )
 
@@ -471,7 +472,8 @@ class Config(BaseModel):
             "container runtimes, where that host configuration is absent): also "
             "inject the user/org/public/marketplace skills the server "
             "discovers. Project/repository skills are never injected either way "
-            "— the CLI reads AGENTS.md itself (#4019). Set explicitly per "
+            "— the CLI reads AGENTS.md itself (#4019). Skills a client supplies "
+            "at launch are kept in both modes. Set explicitly per "
             "deployment; the agent-server image sets 'openhands_managed'."
         ),
     )

@@ -5,6 +5,7 @@ default install dir is redirected), so nothing touches the real ~/.openhands.
 """
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -123,6 +124,53 @@ def test_refresh_returns_updated_plugin(client: TestClient, tmp_path: Path):
 
     assert refreshed.status_code == 200
     assert refreshed.json()["plugin"]["name"] == "demo-plugin"
+
+
+def test_refresh_vanished_source_is_400_and_keeps_plugin(
+    client: TestClient, tmp_path: Path
+):
+    src = _make_installable_plugin(tmp_path / "src", "demo-plugin")
+    assert client.post("/plugins/install", json={"source": str(src)}).status_code == 200
+    shutil.rmtree(src)
+
+    refreshed = client.post("/plugins/installed/demo-plugin/refresh")
+
+    assert refreshed.status_code == 400
+    assert "fetch" in refreshed.json()["detail"].lower()
+    kept = client.get("/plugins/installed/demo-plugin")
+    assert kept.status_code == 200
+    assert kept.json()["enabled"] is True
+
+
+def test_refresh_invalid_manifest_is_422_and_keeps_plugin(
+    client: TestClient, tmp_path: Path
+):
+    src = _make_installable_plugin(tmp_path / "src", "demo-plugin")
+    assert client.post("/plugins/install", json={"source": str(src)}).status_code == 200
+    (src / ".plugin" / "plugin.json").write_text("{bad json")
+
+    refreshed = client.post("/plugins/installed/demo-plugin/refresh")
+
+    assert refreshed.status_code == 422
+    kept = client.get("/plugins/installed/demo-plugin")
+    assert kept.status_code == 200
+    assert kept.json()["version"] == "1.0.0"
+
+    _make_installable_plugin(src, "demo-plugin")
+    assert client.post("/plugins/installed/demo-plugin/refresh").status_code == 200
+
+
+def test_refresh_adopted_local_plugin_is_400(client: TestClient, tmp_path: Path):
+    store = tmp_path / "installed-store"
+    _make_installable_plugin(store / "demo-plugin", "demo-plugin")
+    # Listing adopts the hand-copied directory with source "local".
+    assert client.get("/plugins/installed").status_code == 200
+    assert client.get("/plugins/installed/demo-plugin").json()["source"] == "local"
+
+    refreshed = client.post("/plugins/installed/demo-plugin/refresh")
+
+    assert refreshed.status_code == 400
+    assert client.get("/plugins/installed/demo-plugin").status_code == 200
 
 
 def test_installed_plugin_carries_bundled_skills(client: TestClient, tmp_path: Path):

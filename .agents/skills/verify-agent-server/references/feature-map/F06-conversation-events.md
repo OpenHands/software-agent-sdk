@@ -41,7 +41,8 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 - `F06.send-image`: a message with a text part and an `image` part (a `data:` URL) is persisted with its `image_urls` intact and returned the same by search, get-one and the socket replay; an `image` part without `image_urls` is a 422 and appends nothing.
 - `F06.send-non-user-role`: a message with a schema-valid non-user role (`assistant`) is rejected as a client error (4xx), not a 500, and leaves no event behind (not even the system prompt of an empty log).
 - `F06.send-run`: `POST .../events` with `run: true` drives a real agent turn to `finished`, persisting the kinds of a normal run (user message, `execution_status` running and finished, `ActionEvent`/`ObservationEvent` pairs, `stats`).
-- `F06.ws-live`: a socket opened before the run receives each event live, every live frame is persisted, and a closing `full_state` snapshot follows the run.
+- `F06.ws-live`: a socket opened before the run receives each durable event live, durable frame IDs match the persisted log, and a transient closing `full_state` snapshot follows the run.
+- `F06.ws-streaming-deltas`: a streamed real-model reply emits transient `StreamingDeltaEvent` frames live; REST history and socket replay omit them.
 - `F06.search-timestamp-order`: after a tool-using run, `sort_order=TIMESTAMP` lists events in timestamp order, so a `timestamp__gte` or `resend_mode=since` cut at a listed event keeps every event listed after it.
 - `F06.send-resets-finished`: a message appended to a `finished` conversation sets it back to `idle` with a persisted `execution_status` update.
 - `F06.ws-snapshot`: the first frame after authentication is a transient `full_state` `ConversationStateUpdateEvent` that never appears in search; without `resend_mode` nothing else is replayed.
@@ -236,6 +237,8 @@ Preconditions:
   Every count equals the matching search length.
 - **Get one event (`F06.get-one`).** The second message by id, then the same
   event on disk.
+
+  Requires: `F06.send-no-run`
   ```sh
   E2=$(control-agent-server api GET "/api/conversations/$CID/events/search" --query body=QA_F06_SECOND --field items.0.id)
   control-agent-server api GET "/api/conversations/$CID/events/$E2" --expect 200 --check id eq "$E2" \
@@ -247,9 +250,9 @@ Preconditions:
   The body matches the search item; unlike search it is serialized without
   dropping `null` fields. On disk it is `event-00003-<id>.json`: the file
   index is the event's position in the log.
-- **Unknown event id (`F06.unknown-event`), known bug.** The route documents
-  404 and batch-get documents "null for any missing item"; the TypeScript
-  `getEvents()` relies on that 404. The known id `E2` is found by both
+- **Unknown event id (`F06.unknown-event`).** The route documents 404 and
+  batch-get documents "null for any missing item"; the TypeScript
+  `getEventById` relies on that 404. The known id `E2` is found by both
   routes first.
 
   Requires: `F06.get-one`
@@ -258,15 +261,13 @@ Preconditions:
   control-agent-server api GET "/api/conversations/$CID/events" --json "[\"$E2\"]" --expect 200 \
     --check . len-eq 1 --check 0.id eq "$E2"
   control-agent-server api GET "/api/conversations/$CID/events/00000000-0000-4000-8000-0000000000e6" --expect 404 \
-    --save F06.unknown-event/get-one  # bug: status eq 500 && response.body.exception contains 'Unknown event_id'
+    --save F06.unknown-event/get-one
   control-agent-server api GET "/api/conversations/$CID/events" --json "[\"$E2\", \"qa-missing-event\"]" --expect 200 \
-    --check . len-eq 2 --check 0.id eq "$E2" --check 1 missing --save F06.unknown-event/batch  # bug: status eq 500 && response.body.exception contains 'Unknown event_id'
+    --check . len-eq 2 --check 0.id eq "$E2" --check 1 missing --save F06.unknown-event/batch
   ```
-  Correct behavior: 404, and `[<event>, null]`. Today both are 500
-  `{"detail": "Internal Server Error", "exception": "'Unknown event_id: ...'"}`:
-  `EventLog.get_index` raises `KeyError` before the router's `None` check
-  (`event_service.py` `_get_event_sync`), and one missing id fails the whole
-  batch.
+  The unknown id is a 404, and the batch is `[<event>, null]`: a missing id
+  reads as `None` (`event_service.py` `_get_event_sync`), so it does not
+  fail the rest of the batch.
 - **Batch get (`F06.batch-get`).** A GET with a JSON array body.
 
   Requires: `F06.search-time-window`, `F06.get-one`
@@ -518,7 +519,7 @@ Preconditions:
   control-agent-server ws read f06-live --kinds ObservationEvent --contains '"tool_name": "file_editor"'
   control-agent-server ws read f06-live --kinds ConversationStateUpdateEvent --contains '"value": "finished"'
   LIVE_FRAMES=$(control-agent-server ws read f06-live --save F06.ws-live/all-frames | jq -r .saved)
-  jq -e --argjson ids "$LIVE_IDS" '[.frames[] | select(.direction == "received") | .frame | select(.key != "full_state") | .id] | (length > 0) and (. - $ids == [])' "$LIVE_FRAMES"
+  jq -e --argjson ids "$LIVE_IDS" '[.frames[] | select(.direction == "received") | .frame | select(.key != "full_state" and .kind != "StreamingDeltaEvent") | .id] | (length > 0) and (. - $ids == [])' "$LIVE_FRAMES"
   control-agent-server conversation events "$LIVE" --kinds ObservationEvent --contains file_editor --save F06.send-run/observations
   control-agent-server api GET "/api/conversations/$LIVE/events/count" \
     --query kind=openhands.sdk.event.llm_convertible.action.ActionEvent --check . ge 1
@@ -533,16 +534,17 @@ Preconditions:
   task publishes it after the REST status already says `finished`, so a
   stop right after the wait races it). The socket shows the user message,
   `execution_status` `running`, `ActionEvent`s with their `file_editor`
-  `ObservationEvent`s, `finished` and that closing snapshot; every live
+  `ObservationEvent`s, `finished` and that closing snapshot; every durable
   frame id is in the persisted log (read after the capture stops, because
   an event is persisted before it is published), which also has `stats`
-  updates, and the agent wrote `qa.txt`.
+  updates, and the agent wrote `qa.txt`. The `full_state` snapshots and
+  `StreamingDeltaEvent` frames of streaming runs are transient.
   A typical log:
   `SystemPromptEvent`, `MessageEvent` (user), state updates
   `last_user_message_id` and `execution_status=running`, then per step
   `ActionEvent`, `ObservationEvent` and `stats`, ending with the `finish`
   action and `execution_status=finished`.
-- **Log order is timestamp order (`F06.search-timestamp-order`), known bug.**
+- **Log order is timestamp order (`F06.search-timestamp-order`).**
   Search walks the log in append order and its docstring relies on that
   being timestamp order (`_search_events_sync`); `after_timestamp` is
   documented for "REST fetches history, the socket continues from that
@@ -559,23 +561,23 @@ Preconditions:
   test "$FROM_OBS" -ge 2
   COUNT_SINCE=$(control-agent-server api GET "/api/conversations/$LIVE/events/count" --query timestamp__gte="$OBS_T" \
     --save F06.search-timestamp-order/count-since-observation --field .)
-  control-agent-server assert --value="$((COUNT_SINCE - FROM_OBS))" --check . ge 0  # bug: value eq -1
+  control-agent-server assert --value="$((COUNT_SINCE - FROM_OBS))" --check . ge 0
   SINCE=$(control-agent-server ws listen "/sockets/events/$LIVE" --query resend_mode=since --query after_timestamp="$OBS_T" \
     --duration 3 --save F06.search-timestamp-order/replay-since-observation | jq .frames)
-  control-agent-server assert --value="$((SINCE - 1 - FROM_OBS))" --check . ge 0  # bug: value eq -1
+  control-agent-server assert --value="$((SINCE - 1 - FROM_OBS))" --check . ge 0
   control-agent-server api GET "/api/conversations/$LIVE/events/search" --field items \
-    | jq -c '[range(1; length) as $i | select(.[$i].timestamp < .[$i - 1].timestamp) | (.[$i].key // .[$i].kind)]' | control-agent-server assert --check . len-eq 0  # bug: value contains stats
+    | jq -c '[range(1; length) as $i | select(.[$i].timestamp < .[$i - 1].timestamp) | (.[$i].key // .[$i].kind)]' | control-agent-server assert --check . len-eq 0
   ```
   Correct behavior: a cut at the first `ObservationEvent` keeps it and
   everything listed after it (`FROM_OBS` events), over REST and over the
-  socket. Today the count is one short (8 of 9 on a two-edit run): the
-  `stats` update of each model call is created, and timestamped, when the
-  model answers, but is persisted from an executor that waits for the state
-  lock, so it lands after that step's action and observation (and after
-  `execution_status=finished` for the last call) with an older timestamp
-  (`_setup_stats_streaming`, `_emit_event_from_thread` in
-  `event_service.py`). A client that loads history over REST and then
-  reconnects with `resend_mode=since` silently misses that update.
+  socket, and no listed event has a timestamp older than the one before
+  it. The `stats` update of each model call is built when the model
+  answers, inside the step, and appended later from an executor that waits
+  for the state lock (`_setup_stats_streaming`, `_emit_event_from_thread`
+  in `event_service.py`); it is stamped when appended, so it carries a
+  timestamp after the step's action and observation it follows, and a
+  client that loads history over REST and reconnects with
+  `resend_mode=since` gets it.
 - **A message reopens a finished conversation (`F06.send-resets-finished`).**
 
   Requires: `F06.send-run`
@@ -674,6 +676,32 @@ Preconditions:
   read is the positive control for the same sink query. Interrupting the
   holder frees the slot and the preset restores `deepseek-flash`.
 
+- **Streamed deltas are transient (`F06.ws-streaming-deltas`).** A real
+  streamed reply sends token deltas live, while REST history and a later
+  socket replay contain only durable events.
+  ```sh
+  STREAM_CID=$(control-agent-server conversation start --tools none --no-autotitle \
+    --llm-json '{"stream":true}' --print-id)
+  control-agent-server ws start "/sockets/events/$STREAM_CID" --name "stream-$STREAM_CID" --settle 1
+  control-agent-server api POST "/api/conversations/$STREAM_CID/events" \
+    --json '{"role":"user","content":[{"type":"text","text":"Write one short sentence about ocean waves. Reply in plain text without calling tools."}],"run":true}' \
+    --expect 200 --save F06.ws-streaming-deltas/send
+  control-agent-server conversation wait "$STREAM_CID" --until finished --timeout 180
+  control-agent-server ws read "stream-$STREAM_CID" --kinds ConversationStateUpdateEvent \
+    --contains '"key": "full_state"' --expect-min 2 --wait 30
+  STREAM_CAPTURE=$(control-agent-server ws stop "stream-$STREAM_CID" --kinds StreamingDeltaEvent --expect-min 1 \
+    --save F06.ws-streaming-deltas/live | jq -r .saved)
+  jq -e '[.frames[] | select(.direction == "received") | .frame | select(.kind == "StreamingDeltaEvent")] | length > 0 and any(.content != null or .reasoning_content != null)' "$STREAM_CAPTURE"
+  control-agent-server api GET "/api/conversations/$STREAM_CID/events/count" --query kind=StreamingDeltaEvent \
+    --check . eq 0 --save F06.ws-streaming-deltas/not-persisted
+  control-agent-server ws listen "/sockets/events/$STREAM_CID" --query resend_mode=all --duration 3 \
+    --expect-kind MessageEvent --expect-no-kind StreamingDeltaEvent --save F06.ws-streaming-deltas/replay
+  control-agent-server api DELETE "/api/conversations/$STREAM_CID" --expect 200
+  ```
+  The live frames contain `content` or `reasoning_content` deltas. None is
+  stored or replayed: clients use the final durable message after reconnect,
+  and keep transient tokens out of their event-log cache.
+
 ## Gotchas
 
 - `kind` filters take either the bare class name events carry in `kind`
@@ -687,11 +715,10 @@ Preconditions:
   a fresh first page.
 - Timestamps are naive server-local ISO strings compared as strings. Recipes
   run the server with `TZ=UTC`; a value with an offset is converted to server
-  time first. Search is in log order, which is not strictly timestamp order:
-  a `stats` update is appended after an action and its observation but
-  carries a timestamp from before the action, so a `timestamp__gte` or
-  `resend_mode=since` cut taken at that observation's timestamp skips it
-  (`F06.search-timestamp-order`).
+  time first. Search is in log order, which is timestamp order: a `stats`
+  update appended after an action and its observation is stamped when it
+  is appended, so a `timestamp__gte` or `resend_mode=since` cut taken at
+  that observation's timestamp keeps it (`F06.search-timestamp-order`).
 - Each conversation's event bus takes at most 50 subscribers, internal ones
   (webhooks, auto-title) included; one more socket closes with 1013
   `Too many connections for this conversation`, which the SDK treats as
@@ -699,7 +726,7 @@ Preconditions:
   memory).
 - Search drops `null` fields (`exclude_none`); get-one and batch-get keep
   them. Compare ids, not raw JSON.
-- An unknown event id is a 500 today, and one missing id fails a whole batch
+- An unknown event id is a 404, and `null` in its slot of a batch
   (`F06.unknown-event`); batch-get is a GET with a JSON body, which browsers
   cannot send.
 - The `SystemPromptEvent` is written on the first message, not at creation;

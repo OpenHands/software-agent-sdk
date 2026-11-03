@@ -11,6 +11,7 @@ from openhands.agent_server.config import (
     V0_SESSION_API_KEY_ENV,
     V1_SESSION_API_KEY_ENV,
     Config,
+    WebhookSpec,
     load_config,
 )
 from openhands.agent_server.init_router import InitRequest, _build_initialized_config
@@ -190,6 +191,21 @@ def test_init_secret_key_with_surrounding_whitespace_is_kept_verbatim(
 
     assert merged.secret_key is not None
     assert merged.secret_key.get_secret_value() == " mykey "
+
+
+def test_webhook_spec_descriptions_match_delivery_behaviour():
+    """The published WebhookSpec docs name the per-conversation events path
+    and a flush timer that later events do not reset (see WebhookSubscriber).
+    """
+    fields = WebhookSpec.model_fields
+    base_url_doc = fields["base_url"].description or ""
+    flush_delay_doc = fields["flush_delay"].description or ""
+
+    assert "{base_url}/events/{conversation_id.hex}" in base_url_doc
+    assert "{base_url}/conversations" in base_url_doc
+    assert "reset on each new event" not in flush_delay_doc
+    assert "first" in flush_delay_doc
+    assert "not reset" in flush_delay_doc
 
 
 @pytest.mark.parametrize(
