@@ -70,7 +70,10 @@ class LocalFileStore(FileStore):
             with open(full_path, "wb") as f:
                 f.write(contents)
             # Don't cache binary content - LocalFileStore is meant for JSON data
-            # If binary data is written and then read, it will error on read
+            # If binary data is written and then read, it will error on read.
+            # Evict any cached str for this path so a later read returns the
+            # new content instead of the stale cache.
+            self.cache.pop(full_path, None)
 
     def read(self, path: str) -> str:
         full_path = self.get_full_path(path)
