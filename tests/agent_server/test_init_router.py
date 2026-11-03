@@ -467,7 +467,10 @@ class TestEndToEndOverLifespan:
             finally:
                 _reset_conversation_singleton()
 
-    @pytest.mark.parametrize("session_api_keys", [[""], ["", "user-session-key"]])
+    @pytest.mark.parametrize(
+        "session_api_keys",
+        [[""], ["", "user-session-key"], ["   "], ["\n", "user-session-key"]],
+    )
     def test_init_rejects_empty_session_keys(self, tmp_path, session_api_keys):
         _reset_conversation_singleton()
         cfg = Config(

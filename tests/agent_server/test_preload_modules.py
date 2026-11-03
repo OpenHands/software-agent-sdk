@@ -533,3 +533,15 @@ def test_main_ties_uvicorn_proxy_headers_to_trust_forwarded_headers(
             main()
 
     assert captured["proxy_headers"] is expected
+
+
+@pytest.mark.parametrize("blank", ["   ", "\n"])
+def test_auth_enabled_ignores_blank_env_key(monkeypatch, tmp_path, blank):
+    from openhands.agent_server.__main__ import _auth_enabled
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text("{}")
+    monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg))
+    monkeypatch.delenv("SESSION_API_KEY", raising=False)
+    monkeypatch.setenv("OH_SESSION_API_KEYS_0", blank)
+    assert _auth_enabled() is False

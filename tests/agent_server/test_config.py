@@ -121,6 +121,87 @@ def no_session_keys(monkeypatch, tmp_path):
     monkeypatch.delenv(V1_SESSION_API_KEY_ENV, raising=False)
 
 
+@pytest.mark.parametrize("blank", ["   ", "\n"])
+def test_load_config_ignores_blank_session_api_key_slots(
+    monkeypatch, no_session_keys, blank
+):
+    monkeypatch.setenv(V1_SESSION_API_KEY_ENV, blank)
+
+    assert load_config().session_api_keys == []
+
+    monkeypatch.setenv(V1_SESSION_API_KEY_ENV, "sk-oh-real")
+    monkeypatch.setenv("OH_SESSION_API_KEYS_1", blank)
+
+    assert load_config().session_api_keys == ["sk-oh-real"]
+
+
+def test_blank_session_api_keys_in_config_file_are_dropped(
+    monkeypatch, tmp_path, no_session_keys
+):
+    config_file = tmp_path / "config.json"
+    config_file.write_text(json.dumps({"session_api_keys": ["   ", "real-key"]}))
+    monkeypatch.setenv(CONFIG_PATH_ENV, str(config_file))
+
+    assert load_config().session_api_keys == ["real-key"]
+
+
+def test_blank_session_api_keys_in_constructor_are_dropped(no_session_keys):
+    assert Config(session_api_keys=["   "]).session_api_keys == []
+    assert Config(session_api_keys=["real-key", "\t"]).session_api_keys == ["real-key"]
+
+
+def test_session_api_key_with_surrounding_whitespace_is_kept_verbatim(
+    no_session_keys,
+):
+    assert Config(session_api_keys=[" key "]).session_api_keys == [" key "]
+
+
+@pytest.mark.parametrize("blank", ["   ", "\n"])
+def test_blank_v0_session_api_key_is_ignored(monkeypatch, no_session_keys, blank):
+    monkeypatch.setenv(V0_SESSION_API_KEY_ENV, blank)
+
+    assert Config().session_api_keys == []
+    assert load_config().session_api_keys == []
+
+
+@pytest.mark.parametrize("blank", ["   ", "\n"])
+def test_blank_session_api_key_is_not_used_as_secret_key(
+    monkeypatch, no_session_keys, blank
+):
+    monkeypatch.delenv("OH_SECRET_KEY", raising=False)
+    monkeypatch.setenv(V1_SESSION_API_KEY_ENV, blank)
+
+    config = load_config()
+
+    assert config.secret_key is None
+    assert config.cipher is None
+
+
+def test_secret_key_fallback_skips_blank_v0_session_api_key(
+    monkeypatch, no_session_keys
+):
+    monkeypatch.delenv("OH_SECRET_KEY", raising=False)
+    monkeypatch.setenv(V0_SESSION_API_KEY_ENV, "   ")
+    monkeypatch.setenv(V1_SESSION_API_KEY_ENV, "session-key")
+
+    cipher = load_config().cipher
+
+    assert cipher is not None
+    assert cipher.secret_key == "session-key"
+
+
+def test_secret_key_fallback_keeps_session_api_key_verbatim(
+    monkeypatch, no_session_keys
+):
+    monkeypatch.delenv("OH_SECRET_KEY", raising=False)
+    monkeypatch.setenv(V1_SESSION_API_KEY_ENV, " session-key ")
+
+    cipher = load_config().cipher
+
+    assert cipher is not None
+    assert cipher.secret_key == " session-key "
+
+
 @pytest.mark.parametrize("blank", ["", "   ", "\n"])
 def test_empty_secret_key_env_is_treated_as_unset(
     monkeypatch, caplog, no_session_keys, blank
