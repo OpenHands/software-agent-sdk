@@ -13,12 +13,14 @@ from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.event import MessageEvent
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.hooks.config import HookDefinition, HookMatcher
 from openhands.sdk.marketplace import MarketplaceRegistration
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.plugin import (
+    PluginFetchError,
     PluginSource,
     discovery,
     install_plugin,
@@ -533,6 +535,97 @@ class TestLocalConversationPlugins:
         assert [skill.name for skill in conversation.agent.agent_context.skills] == [
             "auto-skill"
         ]
+        conversation.close()
+
+    @pytest.mark.parametrize(
+        "failure, error",
+        [("missing_source", PluginFetchError), ("invalid_manifest", ValueError)],
+    )
+    def test_explicit_plugin_that_fails_to_load_stops_the_conversation(
+        self, tmp_path: Path, basic_agent, failure: str, error: type[Exception]
+    ):
+        """An explicitly attached plugin is not silently dropped."""
+        broken_plugin = tmp_path / "broken-plugin"
+        if failure == "invalid_manifest":
+            create_test_plugin(broken_plugin, name="broken-plugin")
+            (broken_plugin / ".plugin" / "plugin.json").write_text("{not json")
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            plugins=[PluginSource(source=str(broken_plugin))],
+            visualizer=None,
+        )
+
+        try:
+            with pytest.raises(error):
+                conversation.send_message("hello")
+        finally:
+            conversation.close()
+
+    @pytest.mark.parametrize("failure", ["missing_source", "invalid_manifest"])
+    def test_auto_load_marketplace_skips_plugin_that_fails_to_load(
+        self,
+        tmp_path: Path,
+        mock_llm,
+        caplog: pytest.LogCaptureFixture,
+        failure: str,
+    ):
+        broken_entry: dict = {"name": "broken-plugin"}
+        if failure == "missing_source":
+            broken_entry["source"] = "./plugins/does-not-exist"
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                broken_entry,
+                {
+                    "name": "good-plugin",
+                    "skills": [{"name": "good-skill", "content": "Good skill"}],
+                },
+            ],
+        )
+        if failure == "invalid_manifest":
+            manifest = marketplace_dir / "plugins" / "broken-plugin" / ".plugin"
+            (manifest / "plugin.json").write_text("{not json")
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(
+                        name="auto", source=str(marketplace_dir), auto_load=True
+                    )
+                ]
+            ),
+        )
+        conversation = LocalConversation(
+            agent=agent, workspace=workspace, visualizer=None
+        )
+
+        with caplog.at_level(
+            "WARNING", logger="openhands.sdk.conversation.impl.local_conversation"
+        ):
+            conversation.send_message("hello")
+
+        assert "Failed to load plugin" in caplog.text
+        assert "continuing without it" in caplog.text
+        assert conversation.agent.agent_context is not None
+        assert [skill.name for skill in conversation.agent.agent_context.skills] == [
+            "good-skill"
+        ]
+        assert conversation.resolved_plugins is not None
+        assert [plugin.source for plugin in conversation.resolved_plugins] == [
+            str(marketplace_dir / "plugins" / "good-plugin")
+        ]
+        user_messages = [
+            event
+            for event in conversation.state.events
+            if isinstance(event, MessageEvent) and event.source == "user"
+        ]
+        assert len(user_messages) == 1
         conversation.close()
 
     def test_auto_load_marketplace_duplicate_names_fail(self, tmp_path: Path, mock_llm):
