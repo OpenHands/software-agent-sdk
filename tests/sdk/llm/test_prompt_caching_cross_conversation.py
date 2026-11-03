@@ -264,3 +264,29 @@ def test_cross_conversation_cache_sharing(tmp_path, first_suffix, second_suffix)
 
     assert static_prompts[0] == static_prompts[1]
     assert dynamic_contexts[0] != dynamic_contexts[1]
+
+def test_prompt_caching_skips_empty_user_message():
+    """REGRESSION: an empty user/tool message must not break the breakpoint lookup.
+
+    content[-1] used to raise IndexError before any request was made, so a
+    conversation with an empty user message (or a tool observation without
+    text or images) aborted the completion instead of just skipping the marker.
+    """
+    llm = LLM(
+        model="litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
+        usage_id="test",
+        caching_prompt=True,
+    )
+
+    messages = [
+        Message(role="system", content=[TextContent(text="Static system prompt")]),
+        Message(role="user", content=[TextContent(text="First question")]),
+        Message(role="assistant", content=[TextContent(text="First answer")]),
+        Message(role="user", content=[]),
+    ]
+
+    llm._apply_prompt_caching(messages)
+
+    assert messages[0].content[0].cache_prompt is True
+    # The marker lands on the last user/tool message that has content.
+    assert messages[1].content[-1].cache_prompt is True
