@@ -62,6 +62,7 @@ class _InjectingAsyncLLM(LLM):
 
     _convo_box: list = PrivateAttr(default_factory=list)
     _calls: list = PrivateAttr(default_factory=list)
+    _roles: list = PrivateAttr(default_factory=list)
     _probe: dict = PrivateAttr(default_factory=dict)
 
     def __init__(self):
@@ -72,6 +73,7 @@ class _InjectingAsyncLLM(LLM):
 
     async def acompletion(self, *, messages, tools=None, **kwargs):  # type: ignore[override]
         self._calls.append(" ".join(str(m) for m in messages))
+        self._roles.append([m.role for m in messages])
         convo: LocalConversation = self._convo_box[0]
 
         if len(self._calls) == 1:
@@ -158,6 +160,29 @@ async def test_message_during_streaming_is_acted_upon(tmp_path):
     assert _saw(llm._calls, "second message") == [1]
     assert _saw(llm._calls, "first message") == [0, 1]
     assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
+
+
+@pytest.mark.asyncio
+async def test_message_during_streaming_follow_up_request_ends_with_user_turn(
+    tmp_path,
+):
+    """The follow-up request keeps the delivered reply but must end with a user turn.
+
+    The mid-step message is recorded before the reply, so without a closing user
+    turn the second request would end with the assistant message, which Anthropic
+    rejects on models without prefill support.
+    """
+    llm = _InjectingAsyncLLM()
+    convo = _make_conversation(llm, tmp_path)
+    llm._convo_box.append(convo)
+    convo.send_message("first message")
+
+    await convo.arun()
+
+    assert len(llm._roles) == 2
+    follow_up = llm._roles[1]
+    assert "assistant" in follow_up, "the delivered reply stays in the history"
+    assert follow_up[-1] == "user"
 
 
 def test_sync_run_absorbs_message_sent_during_step(tmp_path):

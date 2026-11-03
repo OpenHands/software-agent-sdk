@@ -522,7 +522,7 @@ def iter_openai_chat_completion_sse(
 
 async def list_openai_models() -> OpenAIModelListResponse:
     try:
-        profiles = get_llm_profile_store().list_summaries()
+        profiles = await asyncio.to_thread(get_llm_profile_store().list_summaries)
     except TimeoutError:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

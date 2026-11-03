@@ -60,7 +60,11 @@ async def test_async_response_masks_loopback_lookup_secret_without_blocking(
         ]
     )
     conversation = Conversation(
-        agent=Agent(llm=llm, tools=[]),
+        agent=Agent(
+            llm=llm,
+            tools=[],
+            include_default_tools=["FinishTool", "ThinkTool"],
+        ),
         workspace=str(tmp_path),
         visualizer=None,
         secrets={"TEST_TOKEN": LookupSecret(url=f"http://127.0.0.1:{port}/secret")},
@@ -114,7 +118,11 @@ async def test_async_tool_thought_matches_sync_behavior(tmp_path):
             ],
         )
         conversation = Conversation(
-            agent=Agent(llm=TestLLM.from_messages([message]), tools=[]),
+            agent=Agent(
+                llm=TestLLM.from_messages([message]),
+                tools=[],
+                include_default_tools=["FinishTool", "ThinkTool"],
+            ),
             workspace=str(tmp_path),
             visualizer=None,
             secrets={"TOKEN": "existing tool thought"},
