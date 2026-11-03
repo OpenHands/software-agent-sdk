@@ -741,3 +741,9 @@ class TestAgentDefinitionMaxBudget:
         md = tmp_path / "a.md"
         md.write_text("---\nname: a\nmax_budget_per_run: 3\n---\n\nPrompt.\n")
         assert "max_budget_per_run" not in AgentDefinition.load(md).metadata
+
+    def test_load_boolean_max_iteration_per_run_is_not_one(self, tmp_path: Path):
+        """A YAML boolean must not silently become max_iteration_per_run == 1."""
+        md = tmp_path / "a.md"
+        md.write_text("---\nname: a\nmax_iteration_per_run: yes\n---\n\nPrompt.\n")
+        assert AgentDefinition.load(md).max_iteration_per_run is None

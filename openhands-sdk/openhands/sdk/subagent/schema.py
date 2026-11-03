@@ -140,6 +140,9 @@ def _extract_permission_mode(fm: dict[str, object]) -> str | None:
 def _extract_max_iteration_per_run(fm: dict[str, object]) -> int | None:
     """Extract max iterations per run from frontmatter file."""
     max_iter_raw = fm.get("max_iteration_per_run")
+    if isinstance(max_iter_raw, bool):
+        # A YAML boolean ("yes"/"true") must not silently become 1 (or 0).
+        return None
     if isinstance(max_iter_raw, str):
         return int(max_iter_raw)
     if isinstance(max_iter_raw, int):
