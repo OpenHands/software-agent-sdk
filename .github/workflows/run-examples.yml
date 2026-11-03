@@ -74,11 +74,17 @@ jobs:
                   REPO_NAME: ${{ github.event.repository.name }}
                   SDK_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
                   OPENHANDS_CLOUD_API_KEY: ${{ secrets.ALLHANDS_BOT_OPENHANDS_SAAS_API_KEY }}
-                  # ACP agents (Claude Code, Codex) route through LiteLLM proxy
+                  # ACP agents (Claude Code, Codex) route through the OpenHands
+                  # LiteLLM proxy. They send their own non-OpenHands system
+                  # prompt, which the proxy's identity guardrail would 403, so
+                  # they use a dedicated bypass key (alias `acp-llm-api-key`,
+                  # listed in the proxy's `ignored_key_aliases`; see saas-deploy
+                  # PR #1913 and issue #6434). Falls back to LLM_API_KEY so the
+                  # examples still run for contributors without the secret.
                   ANTHROPIC_BASE_URL: https://llm-proxy.app.all-hands.dev
-                  ANTHROPIC_API_KEY: ${{ secrets.LLM_API_KEY }}
+                  ANTHROPIC_API_KEY: ${{ secrets.ACP_LLM_API_KEY || secrets.LLM_API_KEY }}
                   OPENAI_BASE_URL: https://llm-proxy.app.all-hands.dev
-                  OPENAI_API_KEY: ${{ secrets.LLM_API_KEY }}
+                  OPENAI_API_KEY: ${{ secrets.ACP_LLM_API_KEY || secrets.LLM_API_KEY }}
               run: |
                   RESULTS_DIR=".example-test-results"
                   REPORT_PATH="examples_report.md"
