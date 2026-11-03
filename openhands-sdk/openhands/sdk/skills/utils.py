@@ -288,11 +288,9 @@ def load_mcp_config(
             config = json.load(f)
     except json.JSONDecodeError as e:
         raise SkillValidationError(f"Invalid JSON in {mcp_json_path}: {e}") from e
-    except UnicodeDecodeError as e:
-        # Bytes that are not UTF-8 are as unreadable as bad JSON, and callers
-        # handle a skill validation failure rather than a raw decode error.
-        raise SkillValidationError(f"Cannot read {mcp_json_path}: {e}") from e
-    except OSError as e:
+    except (UnicodeDecodeError, OSError) as e:
+        # Bytes that are not UTF-8 are as unreadable as a missing file, and
+        # callers handle a skill validation failure rather than a raw error.
         raise SkillValidationError(f"Cannot read {mcp_json_path}: {e}") from e
 
     if not isinstance(config, dict):
