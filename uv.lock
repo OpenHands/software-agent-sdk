@@ -2837,7 +2837,7 @@ requires-dist = [
     { name = "openai", specifier = ">=2.33.0,<3" },
     { name = "openhands-sdk", editable = "openhands-sdk" },
     { name = "openhands-tools", editable = "openhands-tools" },
-    { name = "posthog", marker = "extra == 'posthog'", specifier = ">=7.60.0,<8" },
+    { name = "posthog", marker = "extra == 'posthog'", specifier = ">=7.75.11,<8" },
     { name = "pydantic", specifier = ">=2.13.5" },
     { name = "sqlalchemy", specifier = ">=2.1.5" },
     { name = "uvicorn", specifier = ">=0.54.0" },
@@ -3346,7 +3346,7 @@ wheels = [
 
 [[package]]
 name = "posthog"
-version = "7.60.0"
+version = "7.75.11"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "backoff" },
@@ -3354,9 +3354,9 @@ dependencies = [
     { name = "requests" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bd/16/b5d1489bae5ef5bd20c85b5b95f2b44609926b4ddb6c86794213ce1a832b/posthog-7.60.0.tar.gz", hash = "sha256:6c1ab0f0d31c83b47a3cf6b6829d4ee83f250a4f8844c4c24adae329982d3f36", size = 689157, upload-time = "2026-09-23T16:34:43.475Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/20/ee/6c0ad2557d82a626dbd14453fada5b93c4c78a9e696f4e74b5672facd29a/posthog-7.75.11.tar.gz", hash = "sha256:c55e8de3943cc9cd86a8eda893f5ea1b9d631f52a2758dd14c0c17ef52632908", size = 819642, upload-time = "2026-10-23T15:26:56.068Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/75/23/212a7007dc70dc58b4273c461dbac794844065639935573a129356f80931/posthog-7.60.0-py3-none-any.whl", hash = "sha256:48ecc52c124d8262779bef4fd3dc268ef66a08905449700c4ddfe44f5b0027d1", size = 805784, upload-time = "2026-09-23T16:34:41.242Z" },
+    { url = "https://files.pythonhosted.org/packages/50/8c/7765ea5122fe96daf9d3db4653fc37f2ca5115e2f6f7f4d74f0867433a8a/posthog-7.75.11-py3-none-any.whl", hash = "sha256:c65d173b24ec82cbf0f977f4779348512a7f71b761809786e87ae47e347ebab1", size = 958056, upload-time = "2026-10-23T15:26:54.116Z" },
 ]
 
 [[package]]
