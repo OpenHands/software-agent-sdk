@@ -741,3 +741,14 @@ class TestAgentDefinitionMaxBudget:
         md = tmp_path / "a.md"
         md.write_text("---\nname: a\nmax_budget_per_run: 3\n---\n\nPrompt.\n")
         assert "max_budget_per_run" not in AgentDefinition.load(md).metadata
+
+def test_load_empty_frontmatter_values_fall_back_to_defaults(tmp_path: Path):
+    """Empty frontmatter values must not become the literal string None."""
+    md = tmp_path / "reviewer.md"
+    md.write_text("---\nname:\ndescription:\nmodel:\n---\n\nPrompt.\n")
+
+    agent = AgentDefinition.load(md)
+
+    assert agent.name == "reviewer"
+    assert agent.description == ""
+    assert agent.model == "inherit"
