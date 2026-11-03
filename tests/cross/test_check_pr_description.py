@@ -344,3 +344,44 @@ def test_missing_foreign_issue_is_not_masked_by_ready_local_number(monkeypatch):
         "Fixes #12 and closes other/repo#12", "org/repo", "token"
     )
     assert "other/repo#12" in errors[0] and "could not be found" in errors[0]
+
+
+def test_missing_bare_issue_falls_back_to_unique_qualified_reference(monkeypatch):
+    import urllib.error
+    from http.client import HTTPMessage
+
+    calls = []
+
+    def details(repo, number, token):
+        calls.append((repo, number))
+        if repo == "org/repo":
+            raise urllib.error.HTTPError(
+                "https://api.github.com", 404, "Not Found", HTTPMessage(), None
+            )
+        return ["ready-for-dev"], "2026-09-13"
+
+    monkeypatch.setattr(_prod, "fetch_issue_details", details)
+    body = "Fixes #12\n\nReported in other/repo#12 with timelines."
+    assert validate_linked_issue_ready(body, "org/repo", "token") == []
+    assert calls == [("org/repo", 12), ("other/repo", 12)]
+
+
+def test_missing_bare_issue_stays_missing_with_ambiguous_qualified_references(
+    monkeypatch,
+):
+    import urllib.error
+    from http.client import HTTPMessage
+
+    calls = []
+
+    def details(repo, number, token):
+        calls.append((repo, number))
+        raise urllib.error.HTTPError(
+            "https://api.github.com", 404, "Not Found", HTTPMessage(), None
+        )
+
+    monkeypatch.setattr(_prod, "fetch_issue_details", details)
+    body = "Fixes #12\n\nRelated: first/repo#12 and second/repo#12."
+    errors = validate_linked_issue_ready(body, "org/repo", "token")
+    assert "could not be found" in errors[0]
+    assert calls == [("org/repo", 12)]

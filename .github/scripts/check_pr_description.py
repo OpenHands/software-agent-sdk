@@ -26,6 +26,9 @@ ISSUE_REF_RE = re.compile(
     r"(?i)\b(?:fix|clos|resolv)(?:e?(?:s|d)?|ing)?\s+" + ISSUE_REFERENCE
 )
 BARE_ISSUE_REF_RE = re.compile(r"(?<![\w/#.-])" + ISSUE_REFERENCE)
+QUALIFIED_ISSUE_REF_RE = re.compile(
+    r"(?<![\w/#.-])(?P<repo>[A-Za-z0-9-]+/[A-Za-z0-9_.-]+)#(?P<number>\d+)"
+)
 READY_FOR_DEV_LABEL = "ready-for-dev"
 # Older issues are exempt: the rollout did not evaluate them retroactively.
 # The cutoff is the UTC day after deployment (2026-08-12), so issues opened
@@ -96,6 +99,24 @@ def extract_linked_issue_numbers(body: str, repo: str = "") -> list[tuple[str, i
     return list(seen)
 
 
+def qualified_repos_by_number(body: str) -> dict[int, set[str]]:
+    """Map issue numbers to the repositories explicitly named for them."""
+    repos: dict[int, set[str]] = {}
+    for match in QUALIFIED_ISSUE_REF_RE.finditer(body):
+        repos.setdefault(int(match.group("number")), set()).add(
+            match.group("repo").lower()
+        )
+    return repos
+
+
+def unique_fallback_repo(
+    qualified: dict[int, set[str]], number: int, current_repo: str
+) -> str | None:
+    """Return the one other named repository for ``number``, if unambiguous."""
+    candidates = qualified.get(number, set()) - {current_repo}
+    return next(iter(candidates)) if len(candidates) == 1 else None
+
+
 def fetch_issue_details(
     repo: str, issue_number: int, token: str
 ) -> tuple[list[str], str]:
@@ -128,6 +149,7 @@ def validate_linked_issue_ready(
     if not repo or not token:
         return []
 
+    qualified = qualified_repos_by_number(body)
     missing: list[str] = []
     not_ready_new: list[str] = []
     for issue_repo, number in references:
@@ -135,10 +157,20 @@ def validate_linked_issue_ready(
         try:
             labels, created_at = fetch_issue_details(issue_repo, number, token)
         except urllib.error.HTTPError as exc:
-            if exc.code == 404:
+            if exc.code != 404:
+                raise
+            fallback_repo = unique_fallback_repo(qualified, number, issue_repo)
+            if fallback_repo is None:
                 missing.append(reference)
                 continue
-            raise
+            reference = f"{fallback_repo}#{number}"
+            try:
+                labels, created_at = fetch_issue_details(fallback_repo, number, token)
+            except urllib.error.HTTPError as fallback_exc:
+                if fallback_exc.code != 404:
+                    raise
+                missing.append(reference)
+                continue
         if READY_FOR_DEV_LABEL in (label.lower() for label in labels):
             continue
         if created_at[:10] < READY_FOR_DEV_ROLLOUT_ISO:
