@@ -4,6 +4,7 @@ import os
 import tempfile
 import threading
 from pathlib import Path
+from subprocess import CompletedProcess
 
 import pytest
 
@@ -169,6 +170,48 @@ def test_glob_executor_truncation():
         assert observation.is_error is False
         assert len(observation.files) == 100
         assert observation.truncated is True
+
+
+def test_execute_with_ripgrep_exactly_100_matches_not_truncated(monkeypatch):
+    """The ripgrep backend itself must not flag exactly 100 matches as truncated.
+
+    The subprocess output is stubbed so the ripgrep code path is exercised even
+    when ripgrep is not installed on the machine running the tests.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        executor = GlobExecutor(working_dir=temp_dir)
+        stdout = (
+            "\n".join(str(Path(temp_dir) / f"file_{i:03d}.txt") for i in range(100))
+            + "\n"
+        )
+
+        def fake_run(*args, **kwargs):
+            return CompletedProcess(args=args, returncode=0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr("openhands.tools.glob.impl.subprocess.run", fake_run)
+        files, truncated = executor._execute_with_ripgrep("*.txt", Path(temp_dir))
+
+        assert len(files) == 100
+        assert truncated is False
+
+
+def test_execute_with_ripgrep_101_matches_truncated(monkeypatch):
+    """One more than the limit must still be truncated through the ripgrep path."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        executor = GlobExecutor(working_dir=temp_dir)
+        stdout = (
+            "\n".join(str(Path(temp_dir) / f"file_{i:03d}.txt") for i in range(101))
+            + "\n"
+        )
+
+        def fake_run(*args, **kwargs):
+            return CompletedProcess(args=args, returncode=0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr("openhands.tools.glob.impl.subprocess.run", fake_run)
+        files, truncated = executor._execute_with_ripgrep("*.txt", Path(temp_dir))
+
+        assert len(files) == 100
+        assert truncated is True
 
 
 def test_glob_executor_complex_patterns():

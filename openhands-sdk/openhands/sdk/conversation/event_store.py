@@ -339,11 +339,7 @@ class EventLog(EventsListBase):
         except Exception as e:
             logger.warning("Error listing event directory %s: %s", self._dir, e)
             return 0
-        return sum(
-            1
-            for p in paths
-            if posix_path_name(p).startswith("event-") and p.endswith(".json")
-        )
+        return sum(1 for p in paths if EVENT_NAME_RE.match(posix_path_name(p)))
 
     def _sync_from_disk(self, disk_length: int) -> None:
         """Sync state for events written by other processes.
