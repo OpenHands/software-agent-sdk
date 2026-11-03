@@ -181,12 +181,13 @@ consult each relevant package-level AGENTS.md.
 <PR_ARTIFACTS>
 # PR-Specific Evidence Documents
 
-The `.pr/` directory is intentionally temporary by repository policy: the
-`PR Artifacts` workflow (`.github/workflows/pr-artifacts.yml`) treats it as
-PR-only reviewer context. After a PR merges to `main`, the workflow opens or
-updates a cleanup PR to remove the directory from `main`.
+The `.pr/` directory is intentionally temporary by repository policy: it holds
+PR-only reviewer context. It stays on the PR branch through review and on
+`main` after merge, until the next release PR removes it:
+`.github/workflows/prepare-release.yml` deletes the tracked root `.pr/`
+directory in the same commit as the version changes.
 
-When working on a PR that requires design documents, scripts meant for development-only, or other temporary artifacts that should not remain on main, store them in a `.pr/` directory at the repository root.
+When working on a PR that requires design documents, scripts meant for development-only, or other temporary artifacts that should not be kept long-term, store them in a `.pr/` directory at the repository root.
 
 You can also use the `.pr/` directory for evidence, such as logs, live-tests, live-test summary files.
 
@@ -205,14 +206,14 @@ mkdir -p .pr
 
 ## How It Works
 
-1. **Notification**: When `.pr/` exists, a single comment is posted to the PR conversation alerting reviewers
-2. **Post-merge cleanup**: After a PR merges to `main`, the workflow opens or updates a cleanup PR to remove `.pr/` from `main`
+1. **Notification**: When a PR adds or changes files under `.pr/`, the `PR Artifacts` workflow (`.github/workflows/pr-artifacts.yml`) posts a single comment to the PR conversation alerting reviewers
+2. **Release cleanup**: `.pr/` accumulates on `main` until the next release PR removes it; release PR checks reject any `.pr/` files that remain
 
 ## Important Notes
 
 - Do NOT put anything in `.pr/` that needs to be preserved
 - The `.pr/` check passes (green ✅) during development - it only posts a notification, not a blocking error
-- Cleanup PRs follow the normal review and required-check protections for `main`
+- Do not open separate PRs to remove `.pr/` from `main`; release preparation removes it
 
 ## When to Use
 
@@ -325,7 +326,9 @@ gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
 
 <TESTING>
 - AFTER you edit ONE file, you should run pre-commit hook on that file via `uv run pre-commit run --files [filepath]` to make sure you didn't break it.
-- Don't write TOO MUCH test, you should write just enough to cover edge cases.
+- For each behavior you add or change, test at least one failure or edge input it must handle (invalid or missing input, legacy or persisted data, an error from a dependency, cancellation), not only the success path. Keep it focused: one test per case is enough.
+- Take expected values from the issue, the spec, or the documented contract, not from what the code returns today. A test whose expectation was copied from the implementation passes on the bug.
+- For a bug fix, the regression test must fail without the fix.
 - Check how we perform tests in .github/workflows/tests.yml
 - Put unit tests under the corresponding domain folder in `tests/` (e.g., `tests/sdk`, `tests/tools`, `tests/workspace`). For example, changes to `openhands-sdk/openhands/sdk/tool/tool.py` should be covered in `tests/sdk/tool/test_tool.py`.
 - DON'T write TEST CLASSES unless absolutely necessary!

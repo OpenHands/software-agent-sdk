@@ -13,6 +13,8 @@ from openhands.sdk.workspace.repo import (
     GitProvider,
     RepoMapping,
     RepoSource,
+    _bitbucket_dc_clone,
+    _bitbucket_dc_clone_url,
     _build_clone_url,
     _detect_provider_from_url,
     _extract_repo_name,
@@ -134,6 +136,26 @@ class TestRepoSource:
         """Azure DevOps needs org/project/repo, so owner/repo is refused."""
         with pytest.raises(ValueError, match="need a full URL"):
             RepoSource(url="owner/repo", provider="azure_devops")
+
+    def test_bitbucket_dc_token_name(self):
+        """A Bitbucket Data Center repo uses its own token, not Bitbucket Cloud's."""
+        repo = RepoSource(
+            url="https://bitbucket.example.com/scm/PROJ/repo.git",
+            provider="bitbucket_data_center",
+        )
+        assert repo.get_provider() == GitProvider.BITBUCKET_DATA_CENTER
+        assert repo.get_token_name() == "bitbucket_data_center_token"
+
+    def test_short_url_with_bitbucket_dc_rejected(self):
+        """Data Center has no public host, so PROJ/repo alone cannot be cloned."""
+        with pytest.raises(ValueError, match="need a full URL"):
+            RepoSource(url="PROJ/repo", provider="bitbucket_data_center")
+
+    def test_bitbucket_dc_url_not_detected_without_provider(self):
+        """A Data Center host is not recognized, so it never gets a token unasked."""
+        repo = RepoSource(url="https://bitbucket.example.com/scm/PROJ/repo.git")
+        with pytest.raises(ValueError, match="Cannot determine provider"):
+            repo.get_provider()
 
     # --- URL validation ---
 
@@ -415,6 +437,113 @@ class TestHelperFunctions:
             == url
         )
 
+    def test_build_clone_url_bitbucket_cloud_token_stays_on_bitbucket_org(self):
+        """A Data Center URL labelled `bitbucket` never gets the Cloud token."""
+        url = "https://bitbucket.example.com/scm/PROJ/repo.git"
+        assert (
+            _build_clone_url(
+                url, GitProvider.BITBUCKET, "cloudtoken", explicit_provider=True
+            )
+            == url
+        )
+
+
+class TestBitbucketDataCenterClone:
+    """Clone URLs and credentials for Bitbucket Data Center."""
+
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            (
+                "https://bb.example.com/scm/PROJ/repo.git",
+                "https://bb.example.com/scm/PROJ/repo.git",
+            ),
+            (
+                "https://bb.example.com/projects/PROJ/repos/repo/browse?at=main",
+                "https://bb.example.com/scm/PROJ/repo.git",
+            ),
+            (
+                "https://bb.example.com/users/alice/repos/notes",
+                "https://bb.example.com/scm/~alice/notes.git",
+            ),
+            (
+                "https://example.com:7990/bitbucket/projects/PROJ/repos/repo",
+                "https://example.com:7990/bitbucket/scm/PROJ/repo.git",
+            ),
+            (
+                "https://bb.example.com/scm/~alice/notes.git",
+                "https://bb.example.com/scm/~alice/notes.git",
+            ),
+        ],
+    )
+    def test_clone_url(self, url, expected):
+        assert _bitbucket_dc_clone_url(url) == expected
+
+    @pytest.mark.parametrize("token", ["dctoken", "x-token-auth:dctoken"])
+    def test_access_token_sent_as_bearer_header(self, token):
+        """Access and OAuth tokens go in a host-scoped header, not the URL."""
+        url, config = _bitbucket_dc_clone(
+            "https://bb.example.com:8443/scm/PROJ/repo.git", token
+        )
+        assert url == "https://bb.example.com:8443/scm/PROJ/repo.git"
+        assert config == {
+            "http.https://bb.example.com:8443/.extraHeader": (
+                "Authorization: Bearer dctoken"
+            )
+        }
+
+    def test_username_token_sent_as_basic_auth(self):
+        """A `username:token` credential is URL-encoded into the clone URL."""
+        url, config = _bitbucket_dc_clone(
+            "https://bb.example.com/projects/PROJ/repos/repo", "alice@corp:p/ss"
+        )
+        assert url == "https://alice%40corp:p%2Fss@bb.example.com/scm/PROJ/repo.git"
+        assert config == {}
+
+    def test_clone_dialog_user_kept(self):
+        """The user Data Center's Clone dialog puts in the URL stays."""
+        url, config = _bitbucket_dc_clone(
+            "https://alice@bb.example.com/scm/PROJ/repo.git", "dctoken"
+        )
+        assert url == "https://alice@bb.example.com/scm/PROJ/repo.git"
+        assert config == {
+            "http.https://bb.example.com/.extraHeader": "Authorization: Bearer dctoken"
+        }
+
+    def test_no_token(self):
+        url, config = _bitbucket_dc_clone(
+            "https://bb.example.com/scm/PROJ/repo.git", None
+        )
+        assert url == "https://bb.example.com/scm/PROJ/repo.git"
+        assert config == {}
+
+    def test_git_applies_header_to_repo_host_only(self, tmp_path):
+        """Real git reads the environment config for the repo's host alone."""
+        import subprocess
+
+        from openhands.sdk.workspace.repo import _git_config_env
+
+        _, config = _bitbucket_dc_clone(
+            "https://bb.example.com/scm/PROJ/repo.git", "dctoken"
+        )
+        env = _git_config_env(config)
+        assert env is not None
+        env["HOME"] = str(tmp_path)
+
+        def header_for(url: str) -> str:
+            return subprocess.run(
+                ["git", "config", "--get-urlmatch", "http.extraHeader", url],
+                capture_output=True,
+                text=True,
+                env=env,
+            ).stdout.strip()
+
+        assert (
+            header_for("https://bb.example.com/scm/PROJ/repo.git")
+            == "Authorization: Bearer dctoken"
+        )
+        assert header_for("https://bitbucket.org/owner/repo.git") == ""
+
 
 class TestGetReposContext:
     """Tests for get_repos_context function."""
@@ -646,6 +775,49 @@ class TestCloneRepos:
                 "oauth2:adotoken@dev.azure.com/org/project/_git/repo" in str(arg)
                 for arg in call_args
             )
+
+    @patch("subprocess.run")
+    def test_clone_bitbucket_dc_with_dc_token_only(self, mock_run):
+        """A Data Center repo clones with its own token as a Bearer header and
+        never receives the Bitbucket Cloud token."""
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        tokens = {"bitbucket_token": "cloudtoken", "bitbucket_data_center_token": "dct"}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos = [
+                RepoSource(
+                    url="https://bb.example.com/projects/DEM/repos/demo-app/browse",
+                    provider="bitbucket_data_center",
+                )
+            ]
+            result = clone_repos(repos, Path(tmpdir), token_fetcher=tokens.get)
+
+            assert result.success_count == 1
+            assert result.repo_mappings[repos[0].url].dir_name == "demo-app"
+            args, kwargs = mock_run.call_args
+            assert "https://bb.example.com/scm/DEM/demo-app.git" in args[0]
+            assert not any("dct" in str(arg) for arg in args[0])
+            env = kwargs["env"]
+            assert "Authorization: Bearer dct" in env.values()
+            assert not any("cloudtoken" in value for value in env.values())
+
+    @patch("subprocess.run")
+    def test_clone_bitbucket_dc_labelled_bitbucket_gets_no_token(self, mock_run):
+        """Labelling a Data Center repo `bitbucket` does not leak the Cloud token."""
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos = [
+                RepoSource(
+                    url="https://bb.example.com/scm/DEM/demo-app.git",
+                    provider="bitbucket",
+                )
+            ]
+            clone_repos(repos, Path(tmpdir), token_fetcher=lambda _: "cloudtoken")
+
+            args, kwargs = mock_run.call_args
+            assert not any("cloudtoken" in str(arg) for arg in args[0])
+            assert kwargs["env"] is None
 
     @patch("subprocess.run")
     def test_directory_name_collision(self, mock_run):

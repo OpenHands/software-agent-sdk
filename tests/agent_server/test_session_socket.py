@@ -41,9 +41,11 @@ class _FakeWebSocket:
     def __init__(self) -> None:
         self.sent: list[str] = []
         self.gate: asyncio.Event | None = None
+        self.send_started = asyncio.Event()
 
     async def send_text(self, payload: str) -> None:
         if self.gate is not None:
+            self.send_started.set()
             await self.gate.wait()
         self.sent.append(payload)
 
@@ -283,20 +285,27 @@ async def test_wedged_connection_drops_instead_of_blocking_the_publisher():
     sub = _SessionSubscriber(writer=writer, events=log)  # type: ignore[arg-type]
     sub.go_live(None)
 
-    # Publish far past the budget, and time the publisher.
-    started = asyncio.get_running_loop().time()
-    for i in range(500):
-        event = _msg(f"m{i}" * 50)
-        log.add(event)
-        await sub(event)
-    elapsed = asyncio.get_running_loop().time() - started
+    async def publish():
+        first = _msg("first")
+        log.add(first)
+        await sub(first)
+        await ws.send_started.wait()
 
-    assert elapsed < 0.5, "publisher blocked on a wedged consumer"
-    assert writer.closed, "over-budget connection should be dropped"
-    assert writer.drop_reason == "slow_consumer"
+        for i in range(20):
+            event = _msg(f"m{i}" * 50)
+            log.add(event)
+            await sub(event)
 
-    ws.gate.set()
-    await writer.aclose()
+    # The timeout guards against deadlock while the socket gate stays closed.
+    try:
+        await asyncio.wait_for(publish(), timeout=10)
+
+        assert writer.closed, "over-budget connection should be dropped"
+        assert writer.drop_reason == "slow_consumer"
+        assert ws.frames() == []
+    finally:
+        ws.gate.set()
+        await writer.aclose()
 
 
 @pytest.mark.asyncio

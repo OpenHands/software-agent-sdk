@@ -6,7 +6,7 @@ This document describes the automated release workflows for the OpenHands Softwa
 
 The release process uses `create-release.yml` as its sole orchestrator:
 
-1. **prepare-release.yml** prepares a release PR with synchronized package versions.
+1. **prepare-release.yml** prepares a release PR with synchronized package versions and removes the temporary `.pr/` review artifacts that merged PRs left on `main`.
 2. Merging the release PR runs **create-release.yml**, which creates the GitHub release and explicitly dispatches every publisher against its immutable tag.
 3. The dispatched workflows publish Python packages, the TypeScript client, agent-server images, and release binaries.
 
@@ -24,9 +24,10 @@ Publisher workflows do not listen for GitHub release events. This avoids relying
 
 The workflow will automatically:
 - ✅ Create a new branch named `rel-X.Y.Z`
+- ✅ Remove the tracked root `.pr/` directory with `.github/scripts/remove_pr_artifacts.py`
 - ✅ Update all package versions using `make set-package-version`
 - ✅ Pin the TypeScript client to `agent-server:X.Y.Z-python` and regenerate its types from the branch's OpenAPI contract, so the npm package matches its release
-- ✅ Commit the changes
+- ✅ Commit the version changes and the `.pr/` removal together
 - ✅ Push the branch
 - ✅ Create a PR with labels `integration-tests` and `test-examples`
 
@@ -39,6 +40,22 @@ The created PR will include a checklist. Complete the following:
 - [ ] Verify example checks pass (triggered by `test-examples` label)
 - [ ] Confirm any merged `release-note-required` PRs are accurately called out in the final release notes
 - [ ] Review and approve the PR
+
+#### Refreshing a release branch
+
+If `main` advances before the release PR merges, it can bring new `.pr/` files. Do not use **Update branch** on a release PR: it merges them without removing them, and the `Reject temporary artifacts in release PRs` step of **Pre-commit checks** fails. Instead, refresh the branch so the same update removes them:
+
+```bash
+git fetch origin
+git switch rel-X.Y.Z
+git pull --ff-only
+git merge --no-commit origin/main
+python3 .github/scripts/remove_pr_artifacts.py
+git commit --no-edit
+git push origin rel-X.Y.Z
+```
+
+The merge can stop on `.pr/` conflicts, for example when a later PR edited a file that the release branch already removed; the script resolves them by removing those files. Resolve any other conflict before committing. If an update that brought in `.pr/` files was already pushed, stop: do not push a separate cleanup commit. A maintainer must reconcile or recreate the release branch before the release continues.
 
 ### Step 3: Merge the Release PR
 
