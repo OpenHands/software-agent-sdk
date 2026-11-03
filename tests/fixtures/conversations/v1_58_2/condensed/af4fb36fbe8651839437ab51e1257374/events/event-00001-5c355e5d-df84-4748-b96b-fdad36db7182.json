@@ -1,0 +1,1 @@
+{"id":"5c355e5d-df84-4748-b96b-fdad36db7182","timestamp":"2026-11-03T16:49:38.470868","source":"user","parent_id":"bc9515e5-09fb-4fb1-befc-84ca4113552d","llm_message":{"role":"user","content":[{"cache_prompt":false,"type":"text","text":"Hello."}],"thinking_blocks":[]},"activated_skills":[],"extended_content":[],"kind":"MessageEvent"}
