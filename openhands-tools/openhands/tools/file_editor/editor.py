@@ -44,6 +44,22 @@ logger = get_logger(__name__)
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
 
+def _consistent_crlf_file(path: Path) -> bool:
+    """Whether every line ending in the file on disk is CRLF.
+
+    ``read_file`` normalizes all line endings to ``"\n"`` (universal
+    newlines), so writing the normalized content back would rewrite the endings
+    of every line the edit did not touch. Files whose terminators are all CRLF
+    are detected up front so the original endings can be re-applied.
+    """
+    try:
+        with open(path, "rb") as f:
+            chunk = f.read(8192)
+    except OSError:
+        return False
+    return b"\r\n" in chunk and chunk.count(b"\n") == chunk.count(b"\r\n")
+
+
 def _is_encodable(text: str, encoding: str) -> bool:
     """Return True if text can be encoded with the given encoding."""
     try:
@@ -248,7 +264,10 @@ class FileEditor:
             file_content[:idx] + new_str + file_content[idx + len(matched_text) :]
         )
 
-        # Write the new content to the file
+        # Write the new content to the file, re-applying the original CRLF
+        # endings so untouched lines keep the endings they had on disk.
+        if _consistent_crlf_file(path):
+            new_file_content = new_file_content.replace("\r\n", "\n").replace("\n", "\r\n")
         self.write_file(path, new_file_content)
 
         # Save the content to history
