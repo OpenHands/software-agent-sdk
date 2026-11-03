@@ -1292,6 +1292,12 @@ def _classify_acp_turn_error(exc: BaseException) -> str:
     return "ACPPromptError"
 
 
+ACPPermissionHandler = Callable[
+    [str, ToolCallUpdate, list[PermissionOption]],
+    RequestPermissionResponse | Awaitable[RequestPermissionResponse],
+]
+
+
 class _OpenHandsACPBridge:
     """Bridge between OpenHands and ACP that accumulates session updates.
 
@@ -1354,6 +1360,7 @@ class _OpenHandsACPBridge:
         # signal that the ACP subprocess is still actively working.  Set by
         # ACPAgent.step() to keep the agent-server's idle timer alive.
         self.on_activity: Any = None  # Callable[[], None] | None
+        self.permission_handler: ACPPermissionHandler | None = None
         # Secret masker — set per turn by ACPAgent to
         # ``state.secret_registry.mask_secrets_in_output``. Applied to streamed
         # text chunks and tool-call raw_input/raw_output/content before they
@@ -1653,12 +1660,29 @@ class _OpenHandsACPBridge:
 
     async def request_permission(
         self,
-        session_id: str,  # noqa: ARG002
+        session_id: str,
         tool_call: ToolCallUpdate,
         options: list[PermissionOption],
         **kwargs: Any,  # noqa: ARG002
     ) -> RequestPermissionResponse:
-        """Auto-approve all permission requests from the ACP server."""
+        """Delegate permission decisions when configured; preserve legacy approval."""
+        if self.permission_handler is not None:
+            response = self.permission_handler(session_id, tool_call, options)
+            if inspect.isawaitable(response):
+                response = await response
+            if not isinstance(response, RequestPermissionResponse):
+                raise TypeError(
+                    "ACP permission handler must return RequestPermissionResponse"
+                )
+            if isinstance(
+                response.outcome, AllowedOutcome
+            ) and response.outcome.option_id not in {
+                option.option_id for option in options
+            }:
+                raise ValueError(
+                    "ACP permission handler selected an option not offered"
+                )
+            return response
         # Pick the first option (usually "allow once")
         option_id = options[0].option_id if options else "allow_once"
         logger.info(
@@ -2016,6 +2040,7 @@ class ACPAgent(AgentBase):
     # Callback to signal that the ACP subprocess is actively working.
     # Injected by the agent-server to call update_last_execution_time().
     _on_activity: Any = PrivateAttr(default=None)  # Callable[[], None] | None
+    _permission_handler: ACPPermissionHandler | None = PrivateAttr(default=None)
     # Suffix rendered once at session start from agent_context + secret_registry.
     # "unused"               — no agent_context or empty suffix
     # "pending_first_prompt" — new session; inject into first user message
@@ -2996,9 +3021,23 @@ class ACPAgent(AgentBase):
             "create/load a session"
         )
 
+    def set_permission_handler(self, handler: ACPPermissionHandler | None) -> None:
+        """Set a runtime-only permission callback before or after initialization.
+
+        The callback may be synchronous or asynchronous. Exceptions propagate
+        without falling back to approval. It is never serialized; callers must
+        install it again when restoring an agent. None preserves legacy behavior.
+        """
+        if handler is not None and not callable(handler):
+            raise TypeError("ACP permission handler must be callable")
+        self._permission_handler = handler
+        if self._client is not None:
+            self._client.permission_handler = handler
+
     def _start_acp_server(self, state: ConversationState) -> None:
         """Start the ACP subprocess and initialize the session."""
         client = _OpenHandsACPBridge()
+        client.permission_handler = self._permission_handler
         self._client = client
         # Bind the secret masker for the conversation's lifetime. It's derived
         # from state.secret_registry (stable for the conversation) and touches
