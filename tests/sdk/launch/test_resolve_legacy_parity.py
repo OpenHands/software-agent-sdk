@@ -74,7 +74,7 @@ class _Adapter:
             resolved, LaunchRuntime(browser_available=browser_available)
         )
         agent = launched.agent
-        tools = [Tool(name=t.name, params=t.params or None) for t in agent.tools]
+        tools = [Tool(name=t.name, params=t.params or {}) for t in agent.tools]
         return validate_agent_settings(
             {
                 **resolved.settings.model_dump(mode="json"),
