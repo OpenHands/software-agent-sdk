@@ -187,7 +187,15 @@ def fix_malformed_tool_arguments(
             origin = get_origin(expected_type)
             if origin is Union or origin is types.UnionType:
                 type_args = get_args(expected_type)
-                expected_origins = [get_origin(arg) or arg for arg in type_args]
+                # Unwrap `Annotated[X, ...]` union args the same way the
+                # non-union case above does, so the expected origin is X (e.g.
+                # list/str) instead of Annotated and both repairs apply.
+                expected_origins = []
+                for arg in type_args:
+                    if get_origin(arg) is Annotated:
+                        annotated_args = get_args(arg)
+                        arg = annotated_args[0] if annotated_args else arg
+                    expected_origins.append(get_origin(arg) or arg)
             else:
                 expected_origins = [origin or expected_type]
             field_types.append((data_key, expected_origins))
