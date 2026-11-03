@@ -99,8 +99,9 @@ class WebhookSpec(BaseModel):
         ),
     )
     base_url: str = Field(
-        description="The base URL of the webhook service. Events will be sent to "
-        "{base_url}/events and conversation info to {base_url}/conversations"
+        description="The base URL of the webhook service. Event batches are sent "
+        "to {base_url}/events/{conversation_id.hex} (the conversation id without "
+        "dashes) and conversation info to {base_url}/conversations"
     )
     headers: dict[str, str] = Field(default_factory=dict)
     flush_delay: float = Field(
@@ -108,8 +109,8 @@ class WebhookSpec(BaseModel):
         gt=0,
         description=(
             "The delay in seconds after which buffered events will be flushed to "
-            "the webhook, even if the buffer is not full. Timer is reset on each "
-            "new event."
+            "the webhook, even if the buffer is not full. The timer starts when "
+            "the first event is queued and is not reset by later events."
         ),
     )
 
@@ -362,6 +363,21 @@ class Config(BaseModel):
             "be restored between restarts."
         ),
     )
+    previous_secret_keys: list[SecretStr] = Field(
+        default_factory=list,
+        description=(
+            "Earlier values of secret_key, used only to decrypt. Values saved "
+            "under one of them stay readable and are re-encrypted under "
+            "secret_key when next saved (the settings and secrets stores are "
+            "re-encrypted at startup). To rotate, set the new key as "
+            "secret_key and put the old one here. Prefer setting OH_SECRET_KEY "
+            "explicitly: while secret_key falls back to the first session API "
+            "key, rotating that session key also rotates the encryption key, "
+            "so the old session key must go here. Set with "
+            "OH_PREVIOUS_SECRET_KEYS as a JSON list, or "
+            "OH_PREVIOUS_SECRET_KEYS_0, OH_PREVIOUS_SECRET_KEYS_1, ..."
+        ),
+    )
     web_url: str | None = Field(
         default_factory=_default_web_url,
         description=(
@@ -386,6 +402,16 @@ class Config(BaseModel):
         ),
     )
     conversation_runtime: Literal["local", "docker"] = "local"
+    conversation_runtime_selectable: bool = Field(
+        default=False,
+        description=(
+            "Serve both the local and the docker runtime and let each start "
+            "request pick one with `conversation_runtime`; requests that leave "
+            "it unset use this server's `conversation_runtime`. Requires a "
+            "Docker daemon and "
+            "`OH_SECRET_KEY`."
+        ),
+    )
     conversation_image: str = DEFAULT_CONVERSATION_IMAGE
     conversation_image_has_browser: bool | None = Field(
         default=None,
@@ -446,7 +472,8 @@ class Config(BaseModel):
             "container runtimes, where that host configuration is absent): also "
             "inject the user/org/public/marketplace skills the server "
             "discovers. Project/repository skills are never injected either way "
-            "— the CLI reads AGENTS.md itself (#4019). Set explicitly per "
+            "— the CLI reads AGENTS.md itself (#4019). Skills a client supplies "
+            "at launch are kept in both modes. Set explicitly per "
             "deployment; the agent-server image sets 'openhands_managed'."
         ),
     )
@@ -538,17 +565,28 @@ class Config(BaseModel):
 
     @property
     def cipher(self) -> Cipher | None:
-        cipher = getattr(self, "_cipher", None)
-        if cipher is None:
-            if self.secret_key is None:
+        if self.secret_key is None:
+            if getattr(self, "_cipher", None) is not False:
                 _logger.warning(
                     "⚠️ OH_SECRET_KEY was not defined. Secrets will not "
                     "be persisted between restarts."
                 )
-                cipher = None
-            else:
-                cipher = Cipher(self.secret_key.get_secret_value())
+                setattr(self, "_cipher", False)
+            return None
+        keys = (
+            self.secret_key.get_secret_value(),
+            tuple(key.get_secret_value() for key in self.previous_secret_keys),
+        )
+        cipher = getattr(self, "_cipher", None)
+        # ``model_copy`` carries the cached cipher over, so rebuild it when the
+        # copy was given other keys (e.g. by ``POST /api/init``).
+        if (
+            not isinstance(cipher, Cipher)
+            or getattr(self, "_cipher_keys", None) != keys
+        ):
+            cipher = Cipher(keys[0], previous_keys=keys[1])
             setattr(self, "_cipher", cipher)
+            setattr(self, "_cipher_keys", keys)
         return cipher
 
 

@@ -90,6 +90,8 @@ Preconditions:
     --check build_git_sha eq "$(git rev-parse HEAD)" \
     --check capabilities contains idempotent_conversation_create_v1 \
     --check capabilities contains tool_catalog_v1 \
+    --check capabilities contains agent_launch_pipeline_v1 \
+    --check capabilities contains profile_public_skills_v1 \
     --check usable_tools contains terminal \
     --check conversation_runtime eq local \
     --check sdk_version exists --save F01.server-info/info
@@ -252,7 +254,7 @@ Preconditions:
   `preload_tools` on, the restart (which waits for `/ready`) returns, `/ready`
   is 200 and `/api/*` serves. A server that finds no Chromium (no
   `browser_tool_set` in `usable_tools`; on this machine the only Chromium is
-  under `$PLAYWRIGHT_BROWSERS_PATH`, which the server ignores) logs `Error
+  under `$PLAYWRIGHT_BROWSERS_PATH`, which `launch` does not pass on) logs `Error
   preloading chromium` with the install hint and `Tool preload service failed
   to start - skipping`, and still serves. With the machine's Chromium linked
   into the run's `~/.cache/ms-playwright`, the next start logs `Chromium is

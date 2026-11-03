@@ -16,7 +16,7 @@ Source: `openhands-agent-server/openhands/agent_server/skills_router.py`, `openh
 
 Needs: `git`
 
-Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
+Routes: `POST /api/skills`, `GET /api/skills/catalog`, `POST /api/skills/sync`, `POST /api/skills/install`,
 `GET /api/skills/installed`, `GET /api/skills/installed/{skill_name}`,
 `PATCH /api/skills/installed/{skill_name}`,
 `DELETE /api/skills/installed/{skill_name}`,
@@ -28,6 +28,7 @@ Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
 - `F25.auth`: every skills route answers 401 without a valid session key, and nothing is installed.
 - `F25.public-repo`: against the real public extensions repository (network), sync clones it into the public cache and `POST /api/skills` with `load_public` lists skills loaded from that clone.
 - `F25.marketplace-public`: against the real public extensions repository, `GET /api/skills/marketplace` lists its installable entries; today it returns an empty catalog because the repository has `.plugin/marketplace.json` but no `marketplaces/default.json`.
+- `F25.profile-catalog`: `GET /api/skills/catalog` lists the public and user skills available to profile launches with their `origin`, excluding project-only skills.
 - `F25.catalog-project`: `POST /api/skills` offline with a `project_dir` lists the project's AgentSkills (`agentskills`), legacy trigger skill (`knowledge`) and `AGENTS.md` (`repo`), counts them in `sources.project`, and silently skips a SKILL.md with an invalid name.
 - `F25.catalog-user-precedence`: user skills from `~/.agents/skills` appear only with `load_user`, and a project skill overrides a user skill of the same name.
 - `F25.catalog-server-sources`: `sandbox_config` URLs named `WORKER_*` become one always-on `work_hosts` skill, and `org_configs` repositories are cloned from a git URL (an unreachable one contributes nothing).
@@ -43,8 +44,8 @@ Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
 - `F25.install-documented-sources`: every GitHub source form the OpenAPI description of `InstallSkillRequest.source` advertises installs, including the `github:owner/repo/<path>` shorthand.
 - `F25.refresh`: refresh re-fetches from the recorded source: a new commit in the git source updates `resolved_ref` and the installed files, an edited local source updates the description, and the enabled flag is preserved.
 - `F25.install-ref`: installing a git source with `ref` pins that commit (`resolved_ref`, the installed files, `requested_ref` in `.installed.json`); refresh moves it to the source's latest commit and drops `requested_ref`.
-- `F25.install-unknown-ref`: a `ref` the git source does not have is 400 and leaves the installation unchanged; today that holds only for a first clone, while a source whose clone is cached installs the cached HEAD with 200.
-- `F25.refresh-unfetchable`: refreshing a skill whose recorded source no longer exists is a client error and keeps the installation; today it is a 500.
+- `F25.install-unknown-ref`: a `ref` the git source does not have is 400 and leaves the installation unchanged for both a first clone and a cached source.
+- `F25.refresh-unfetchable`: refreshing a skill whose recorded source no longer exists is a client error (400) and keeps the installation.
 - `F25.name-errors`: an unknown skill name is 404 and a name outside `^[a-z0-9]+(-[a-z0-9]+)*$` is 422 on get, enable/disable, uninstall and refresh.
 - `F25.self-heal`: a skill directory copied into the store by hand is invisible to the single view until the list call discovers it with source `local`; a tracked directory removed by hand is pruned from the metadata by the list call.
 - `F25.sync`: `POST /api/skills/sync` updates the cached public repository from its origin and clears the 60 s public-skills cache, so a skill committed upstream is listed immediately (translated: a local git origin stands in for GitHub).
@@ -67,6 +68,10 @@ Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
   `org_configs`, `sandbox_config`) returns `{"skills": [SkillInfo], "sources":
   {...}}`; `POST /api/skills/sync` force-updates the public repository clone.
   Driven by the `F25.catalog-*` and `F25.sync*` bullets.
+- REST, profile launch catalog: `GET /api/skills/catalog` returns
+  `{"skills": [SkillCatalogEntry]}` with `origin: public|user`, matching the
+  public and user sources profiles can resolve (#6098). Project and org
+  sources need conversation context and are excluded (`F25.profile-catalog`).
 - REST, installed skills: `POST /api/skills/install` (`source`, `ref`,
   `repo_path`, `force`), `GET /api/skills/installed`,
   `GET|PATCH|DELETE /api/skills/installed/{skill_name}` and
@@ -166,6 +171,7 @@ Preconditions:
   with a wrong key).
   ```sh
   control-agent-server api POST /api/skills --auth none --json '{"load_public": false}' --expect 401
+  control-agent-server api GET /api/skills/catalog --auth none --expect 401
   control-agent-server api POST /api/skills/sync --auth bad --expect 401
   control-agent-server api POST /api/skills/install --auth none --json '{"source": "'"$S"'"}' --expect 401
   control-agent-server api GET /api/skills/installed --auth none --expect 401
@@ -176,7 +182,7 @@ Preconditions:
   control-agent-server api GET /api/skills/marketplace --auth none --expect 401 --save F25.auth/marketplace
   test ! -e "$I/qa-f25-skill"
   ```
-  All nine answer `401 {"detail": "Unauthorized"}` and nothing is installed.
+  All ten answer `401 {"detail": "Unauthorized"}` and nothing is installed.
 - **The real public repository (`F25.public-repo`).** Sync against
   `github.com/OpenHands/extensions` (network), which clones it into the public
   cache, then load the public tier from that clone.
@@ -414,7 +420,7 @@ Preconditions:
   commit, and the skill leaves the store again. This bullet is the network
   arrange step for `F25.install-documented-sources`: it proves github.com is
   reachable and `skills/github` installs.
-- **Documented install sources (`F25.install-documented-sources`).**
+- **Documented install sources (`F25.install-documented-sources`), known bug.**
   Install the same skill in each GitHub form the OpenAPI description of
   `InstallSkillRequest.source` advertises.
 
@@ -425,14 +431,20 @@ Preconditions:
     case "$DOC" in
       *"'$SRC'"*)
         control-agent-server api POST /api/skills/install --json '{"source": "'"$SRC"'"}' --timeout 240 --expect 200 \
-          --check name eq github --save F25.install-documented-sources/documented
+          --check name eq github --save F25.install-documented-sources/documented  # bug: status eq 422 && response.body.detail eq 'Invalid skill. Ensure the source contains a valid SKILL.md.'
         control-agent-server api DELETE /api/skills/installed/github --expect 200
         ;;
     esac
   done
   ```
-  `F25.install-github` showed the skill installs from github.com, so every
-  documented example installs it too. `github:owner/repo/<path>` clones
+  `F25.install-github` proves the skill installs from github.com when the
+  subpath is explicit. The shorthand should install the same skill, but
+  currently answers 422: the installation manager treats an omitted
+  `repo_path` as a repository-root install and loads the fetched `github`
+  skill from a temporary directory named `extensions`. Skill validation
+  rejects the resulting directory/name mismatch. This regression is tracked
+  in [OpenHands/software-agent-sdk#6184](https://github.com/OpenHands/software-agent-sdk/issues/6184).
+  The earlier parser rejection was fixed in #5909; the current shorthand clones
   `owner/repo` and uses `<path>` as `repo_path` (passing both is a `400`).
   The loop also covers the `/tree/<ref>/<path>` URL in case it is documented
   again; that form is not parsed (it would be cloned as
@@ -481,7 +493,7 @@ Preconditions:
   in the installed file) and records the requested ref. Refresh reinstalls
   with `ref` dropped, by design ("latest version"), so the skill is back at
   `H2` and `requested_ref` is gone.
-- **Unknown ref (`F25.install-unknown-ref`), known bug.** Ask for a ref that
+- **Unknown ref (`F25.install-unknown-ref`).** Ask for a ref that
   neither git source has: first for a source never cloned, then for the
   cached `qa-f25-src` source.
 
@@ -494,20 +506,16 @@ Preconditions:
   T2=$(control-agent-server api GET /api/skills/installed/qa-f25-src-skill --field installed_at)
   ls -d "$AGENT_SERVER_VERIFY_RUN"/home/.openhands/cache/extensions/qa-f25-src-*/.git
   control-agent-server api POST /api/skills/install --json '{"source": "file://'"$G"'", "repo_path": "skills/qa-f25-src-skill", "ref": "qa-f25-no-such-ref", "force": true}' \
-    --expect 400 --save F25.install-unknown-ref/cached  # bug: status eq 200 && response.body.name eq qa-f25-src-skill
+    --expect 400 --save F25.install-unknown-ref/cached
   control-agent-server api GET /api/skills/installed/qa-f25-src-skill --expect 200 --check installed_at eq "$T2"
   ```
   The first clone fails (`git clone --branch qa-f25-no-such-ref`), so the
-  install is `400` and nothing is installed (the positive control). The
-  `qa-f25-src` clone is in the extensions cache, and that cached source should
-  fail the same way. Today it answers `200` and reinstalls the cached HEAD
-  (`H2` after the refresh bullet)
-  with `requested_ref: "qa-f25-no-such-ref"` in `.installed.json`:
-  `_try_checkout_and_reset` only logs `Failed to checkout ... Using cached
-  version.` and `fetch_with_resolution` resolves whatever is checked out.
-  From source, a real ref that the cache does not hold yet ends the same way
-  when the fetch fails (offline).
-- **Refresh of a vanished source (`F25.refresh-unfetchable`), known bug.**
+  install is `400` and nothing is installed. The `qa-f25-src` clone is in the
+  extensions cache; it also returns `400` and keeps the installed copy at
+  `H2`, with its prior `installed_at` value. A valid ref that is not in the
+  cache is fetched before checkout. If that fetch fails, the install returns
+  `400` and keeps the prior installation.
+- **Refresh of a vanished source (`F25.refresh-unfetchable`).**
   Install from a temporary directory, delete it, refresh.
   ```sh
   mkdir -p "$F/tmp/qa-f25-gone"
@@ -515,16 +523,16 @@ Preconditions:
   control-agent-server api POST /api/skills/install --json '{"source": "'"$F/tmp/qa-f25-gone"'"}' --expect 200
   rm -rf "$F/tmp/qa-f25-gone"
   control-agent-server api POST /api/skills/install --json '{"source": "'"$F/tmp/qa-f25-gone"'"}' --expect 400 --check detail contains 'Failed to fetch'
-  control-agent-server api POST /api/skills/installed/qa-f25-gone/refresh --expect 400,422 --save F25.refresh-unfetchable/refresh  # bug: status eq 500 && response.body.exception contains 'Local extension path does not exist'
+  control-agent-server api POST /api/skills/installed/qa-f25-gone/refresh --expect 400,422 --save F25.refresh-unfetchable/refresh
   control-agent-server api GET /api/skills/installed/qa-f25-gone --expect 200 --check enabled eq true
   ```
   The source cannot be fetched: installing from the vanished path again is
   `400 Failed to fetch skill source` (the positive control), so the refresh
-  route should report a client error too and keep the installed copy. Today it is
-  `500` (`Local extension path does not exist: ...`): `refresh_skill_endpoint`
-  does not catch `ExtensionFetchError`/`SkillValidationError`. The installed
-  copy does survive. A skill discovered by `F25.self-heal` (source `local`)
-  fails the same way.
+  route reports a client error too and keeps the installed copy:
+  `refresh_skill_endpoint` maps `SkillFetchError`/`ExtensionFetchError` to
+  `400` and `SkillValidationError` to `422`, as install does. A skill
+  discovered by `F25.self-heal` (source `local`) has nothing to fetch from and
+  is `400` the same way.
 - **Unknown and invalid names (`F25.name-errors`).** Address a skill that is
   not installed, then a name that breaks the pattern.
   ```sh
@@ -582,6 +590,24 @@ Preconditions:
   equals the origin's and the skill is listed. With the default
   `marketplace_path` only the entries of `marketplaces/default.json` load, so
   `qa-f25-pub-new` stays out.
+- **Profile launch catalog (`F25.profile-catalog`).** Use the local public
+  repository from the sync recipe and the user fixtures. The profile catalog
+  does not need a project directory and labels the two sources explicitly.
+
+  Requires: `F25.sync`
+  ```sh
+  mkdir -p "$P/.agents/skills/qa-f25-project-only"
+  printf -- '---\nname: qa-f25-project-only\ndescription: QA project-only skill\n---\nQA_PROJECT_ONLY\n' > "$P/.agents/skills/qa-f25-project-only/SKILL.md"
+  control-agent-server api POST /api/skills --json '{"load_public":false,"load_user":false,"load_org":false,"project_dir":"'"$P"'"}' \
+    --expect 200 --check skills contains qa-f25-project-only
+  PROFILE_CATALOG=$(control-agent-server api GET /api/skills/catalog --expect 200 \
+    --save F25.profile-catalog/catalog --field skills)
+  jq -e 'any(.name == "qa-f25-pub" and .origin == "public") and any(.name == "qa-f25-user" and .origin == "user") and all(.origin == "public" or .origin == "user") and all(.name != "qa-f25-project-only")' <<< "$PROFILE_CATALOG"
+  rm -r "$P/.agents/skills/qa-f25-project-only"
+  ```
+  The positive control sees the project-only skill through the workspace
+  catalog. The profile catalog includes the public and user fixtures with
+  their expected origins and omits that project-only skill.
 - **Sync without a reachable origin (`F25.sync-offline`).** Point
   the clone's origin at a missing path, sync, restore it on exit.
 
@@ -879,15 +905,18 @@ Preconditions:
   are cloned into `$OH_PERSISTENCE_DIR/cache/extensions/`.
   `github:OpenHands/extensions/skills/github` is the same install as
   `{"source": "github:OpenHands/extensions", "repo_path": "skills/github"}`
-  (`F25.install-documented-sources`), but the record keeps the source as
-  given; a GitHub `/tree/<ref>/<path>` URL is not parsed.
+  in the fetch layer, but installation currently rejects that shorthand with
+  422 because the loader renames the skill directory to the repository name
+  (`F25.install-documented-sources`,
+  [OpenHands/software-agent-sdk#6184](https://github.com/OpenHands/software-agent-sdk/issues/6184)). Use the
+  explicit `repo_path` form until fixed. A GitHub `/tree/<ref>/<path>` URL
+  is not parsed.
 - The 409 for an existing skill is decided after the fetch, so a conflicting
   git install still clones. `version` is always `1.0.0` (the frontmatter
   `version` is not read). Refresh reinstalls with `ref` dropped, so a skill
   installed at a tag moves to the default branch (`F25.install-ref`). A
-  `ref` that cannot be checked out in an already cached clone is ignored
-  with a log warning (`F25.install-unknown-ref`): compare `resolved_ref`
-  with the commit you asked for.
+  `ref` that cannot be checked out in an already cached clone returns a client
+  error and leaves the installed skill unchanged (`F25.install-unknown-ref`).
 - Only the list call and `PATCH` reconcile `.installed.json` with the disk;
   the single view, `DELETE` and refresh do not, so call order matters for hand
   edits (`F25.self-heal`).

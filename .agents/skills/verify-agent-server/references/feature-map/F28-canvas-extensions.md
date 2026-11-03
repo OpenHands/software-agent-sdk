@@ -918,7 +918,7 @@ Preconditions:
   passes and only the archive format is wrong: the prepare answers 409
   `backend artifact is not a valid gzip tar archive`, and no approval or
   extracted artifact is left behind.
-- **Unknown ref on a cached source (`F28.install-ref-cached`), known bug.**
+- **Unknown ref on a cached source (`F28.install-ref-cached`).**
   Pin `qa-f28-git` (which caches its clone), then force a ref that does not
   exist.
   ```sh
@@ -926,21 +926,14 @@ Preconditions:
     --expect 200 --check resolved_ref eq "$GV1" --quiet
   control-agent-server state ls 'home/.openhands/cache/extensions/qa-f28-git-*/canvas-extension.json' --expect-count 1
   control-agent-server api POST /api/canvas-extensions/install --json "{\"source\": \"file://$GX\", \"ref\": \"qa-no-such-ref\", \"force\": true}" \
-    --expect 400 --check detail contains 'Could not read canvas extension source' --save F28.install-ref-cached/unknown-ref  # bug: status eq 200 && response.body.requested_ref eq qa-no-such-ref
+    --expect 400 --check detail contains 'Could not read canvas extension source' --save F28.install-ref-cached/unknown-ref
   control-agent-server state cat home/.openhands/canvas-extensions/installed/.installed.json \
-    --check extensions.qa-f28-git.requested_ref eq "$GV1" --check extensions.qa-f28-git.resolved_ref eq "$GV1"  # bug: content.extensions.qa-f28-git.requested_ref eq qa-no-such-ref
+    --check extensions.qa-f28-git.requested_ref eq "$GV1" --check extensions.qa-f28-git.resolved_ref eq "$GV1"
   control-agent-server api DELETE /api/canvas-extensions/installed/qa-f28-git --expect 200 --quiet
   ```
-  The pinned install leaves exactly one cached clone of the source. Expected:
-  400 as on a first fetch (`F28.install-ref`), with the pinned install
-  untouched. Actual: 200 at the first `# bug` line; the SDK's cached clone
-  logs `Failed to checkout qa-no-such-ref ... Using cached version`
-  (`openhands/sdk/git/cached_repo.py` `_update_repository`), the forced
-  install replaces the app with whatever commit the cache had checked out,
-  and `.installed.json` records `requested_ref: "qa-no-such-ref"` next to
-  that commit (the second `# bug` line, for a fix that answers 400 but still
-  writes the record). Once fixed, the bullet uninstalls the app; while the
-  bug lasts the app stays installed, which no later bullet counts.
+  The pinned install leaves exactly one cached clone of the source. The unknown
+  ref returns 400 as on a first fetch (`F28.install-ref`). The requested and
+  resolved refs remain at the prior pinned commit.
 - **Health probe latch (`F28.status-probe-latch`).** Make the
   running backend answer one status probe slower than the 1 s probe timeout,
   then fast again.
@@ -1042,10 +1035,10 @@ Preconditions:
   (disabled, `source: "local"`) and prunes records whose directory is gone.
   GET by name, bundle, icon and the backend routes do not discover; they 404
   (or report `missing`) until a list call ran.
-- `ref` goes through the SDK's cached git clone (`cache/extensions/<name>-<hash>`),
-  which falls back to the cached checkout when the ref cannot be checked out:
-  an unknown ref is 400 only on the first fetch of a source
-  (`F28.install-ref-cached`). Every git fetch failure reads
+- `ref` goes through the SDK's cached git clone (`cache/extensions/<name>-<hash>`).
+  An unknown ref returns 400 and leaves the installed app unchanged on a first
+  fetch and on a cached source (`F28.install-ref-cached`). Every git fetch
+  failure reads
   `Could not read canvas extension source: Failed to fetch extension from <url>`
   without naming the ref, although the router avoids "failed to fetch" wording
   on purpose (the Canvas client treats it as a network outage).
@@ -1056,10 +1049,11 @@ Preconditions:
 - The backend routes never 404: an unknown or broken app reports `missing`,
   a browser-only app `unsupported`, and prepare/start/stop/logs/data answer
   200 with that state. Only a non-kebab-case name is 422.
-- The revision is the git commit for git installs and
-  `sha256:<hash of the manifest JSON>` for local ones, so editing an installed
-  manifest of a local install changes the revision (and needs a new prepare),
-  while a git install's revision does not change.
+- The revision is `sha256:<hash of the resolved git ref plus manifest JSON>`
+  for all installs (the ref is empty for local sources). Changing either the
+  resolved ref or installed manifest changes the revision and requires fresh
+  preparation and secret consent. Previously persisted bare-git-SHA approvals
+  no longer match and require fresh preparation.
 - `prepare` and `start` do not consult `enabled`: a disabled app can be
   prepared and started (the README makes `prepare` with the exact revision the
   explicit gate; disabling and uninstalling stop the backend). `prepare` also
@@ -1102,3 +1096,14 @@ Preconditions:
   Linux host where the CLI and the server share a network and pid namespace;
   an attached remote server cannot be checked this way. The browser route to
   a backend (`/app-backends/...`) belongs to the bridge family.
+
+
+### Revision-bound secret consent and enable lifecycle
+
+Managed Apps accept `revision` and optional exact `secret_refs` on PATCH enabled=true.
+Explicit enable consent prepares and starts the backend, waits for readiness, and
+only then marks the app enabled. Failure stops it and leaves enabled=false.
+Disable stops the process and active bridge sessions while retaining same-revision
+secret consent. Explicit secret-grant DELETE also disables and clears consent.
+Install and ordinary mounts never start code. Browser-only toggles are unchanged.
+The prepare/start endpoints remain diagnostic APIs, not normal Canvas controls.

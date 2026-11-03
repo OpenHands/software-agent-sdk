@@ -357,12 +357,14 @@ Preconditions:
   const uploaded = await workspace.uploadText('qa-f34 text\n', `${dir}/up.txt`);
   assert.equal(uploaded.success, true);
   assert.equal(uploaded.destination_path, `${dir}/up.txt`);
+  assert.equal(uploaded.file_size, Buffer.byteLength('qa-f34 text\n'));
   assert.equal(await workspace.downloadAsText(`${dir}/up.txt`), 'qa-f34 text\n');
   await workspace.fileUpload(new Blob([new Uint8Array([0xff, 0x00, 0x80, 0xfe, 0x41])]), `${dir}/nested/bin.dat`);
   const files = new c.FileClient({ host, apiKey });
   assert.deepEqual([...new Uint8Array(await files.downloadFile(`${dir}/nested/bin.dat`))], [255, 0, 128, 254, 65]);
   assert.equal(await files.downloadTextFile(`${dir}/up.txt`), 'qa-f34 text\n');
-  assert.deepEqual(await files.uploadTextFile('qa-f34 via FileClient', `${dir}/fc.txt`), { success: true });
+  assert.deepEqual(await files.uploadTextFile('qa-f34 via FileClient', `${dir}/fc.txt`),
+    { success: true, file_size: Buffer.byteLength('qa-f34 via FileClient') });
   await assert.rejects(workspace.downloadAsText(`${dir}/missing.txt`), (e) => e.status === 404 && e.detail === 'File not found');
   await assert.rejects(workspace.uploadText('x', 'qa-f34-relative.txt'), (e) => e.status === 400 && e.detail === 'Path must be absolute');
   await assert.rejects(workspace.downloadAsText(dir), (e) => e.status === 400 && e.detail === 'Path is not a file');
@@ -376,7 +378,8 @@ Preconditions:
   ```
   The text round-trips, the upload created the missing `nested/` directory,
   the five bytes on disk are exactly the ones sent and `FileClient` reads them
-  back unchanged; the server's own download serves the `FileClient` upload.
+  back unchanged; both upload responses report the byte count added by
+  #5856, and the server's own download serves the `FileClient` upload.
 - **Binary download through RemoteWorkspace (`F34.workspace-binary-download`), known bug.**
   `RemoteWorkspace.fileDownload` lets the transport parse the
   `application/octet-stream` body as text, so `downloadAsBlob` and
@@ -764,13 +767,12 @@ Preconditions:
   events; the user filter returns the one message, the fully-qualified kind
   only actions, the body filter is case-insensitive, pages do not overlap,
   and the lookups by id return the stored events.
-- **Unknown event id (`F34.events-unknown-id`), known bug.** The same server
-  bug as `F06.unknown-event`, reached through the client: `getEventById`
-  expects the documented 404 and `getEventsById` maps it to `null`
-  (`clients/typescript/src/events/remote-events-list.ts:110`), but the
-  server answers 500 (`Unknown event_id`). Runs on `SCID`, whose first
-  event is read back by id first (positive control); the program records
-  how each call settled.
+- **Unknown event id (`F34.events-unknown-id`).** `F06.unknown-event`
+  reached through the client: `getEventById` expects the documented 404 and
+  `getEventsById` maps it to `null`
+  (`clients/typescript/src/events/remote-events-list.ts:110`). Runs on
+  `SCID`, whose first event is read back by id first (positive control); the
+  program records how each call settled.
   ```sh
   cat > "$F34/unknown-event.mjs" <<'JS'
   import { writeFileSync } from 'node:fs';
@@ -787,14 +789,12 @@ Preconditions:
   JS
   control-agent-server exec --timeout 60 --expect-output QA_F34_UNKNOWN_EVENT_READ --save F34.events-unknown-id/program -- node "$F34/unknown-event.mjs" "$SCID"
   cat "$F34/unknown-event.json"
-  control-agent-server assert --json "$F34/unknown-event.json" --check single.http_error eq true --check single.status eq 404  # bug: value.single.status eq 500 && value.single.response.exception contains 'Unknown event_id'
+  control-agent-server assert --json "$F34/unknown-event.json" --check single.http_error eq true --check single.status eq 404
   control-agent-server assert --json "$F34/unknown-event.json" --check batch.value len-eq 2 --check batch.value.0 eq "$(jq -r .first "$F34/unknown-event.json")" \
-    --check batch.value.1 missing  # bug: value.batch.status eq 500 && value.batch.response.exception contains 'Unknown event_id'
+    --check batch.value.1 missing
   ```
-  Expected: a 404 `HttpError`, and `[<event>, null]`. Today both calls
-  reject with a 500 `HttpError` whose `response.exception` is
-  `'Unknown event_id: 00000000-0000-0000-0000-000000000000'`, so one missing
-  id fails the whole `getEventsById`.
+  `getEventById` rejects with a 404 `HttpError`, and `getEventsById`
+  resolves to `[<event>, null]`, so one missing id does not fail the batch.
 - **Short event kinds (`F34.events-search-kind`).** `F06.search-kind-short`
   reached through the client: the route and `EventSearchOptions.kind`
   (`clients/typescript/src/events/remote-events-list.ts`) document
@@ -1309,18 +1309,24 @@ Preconditions:
   The same restart with two streams side by side: the `ws`-backed one
   (positive control) and one on Node's global `WebSocket`, which
   `F34.event-stream` uses and the README presents as all the stream
-  needs. In Node 22 (undici 6), a handshake to a port that refuses fires
+  needs. This regression recipe pins Node 22.22.0 (undici 6.23.0), the
+  affected runtime in [upstream #5651](https://github.com/OpenHands/software-agent-sdk/issues/5651);
+  the main consumer lane can use the machine's current Node. The prewarm
+  records the version before the watcher readiness timeout starts. On this
+  Node version, a handshake to a port that refuses fires
   `error` but never `close`, and the stream schedules its retries only
   from `onclose` (`clients/typescript/src/client/conversation-event-stream.ts:145`);
   its own 10 s handshake abort only calls `close()`, which fires no
   `close` either. So the first refused attempt during the restart is the
   last one.
   ```sh
+  control-agent-server exec --timeout 120 --expect-output v22.22.0 --save F34.event-stream-reconnect-native/runtime -- \
+    npm exec --yes --package=node@22.22.0 -- node --version
   RNID=$(control-agent-server conversation start --no-run --placeholder-agent --tools none --no-autotitle --workspace "$F34/scoped" \
     --prompt 'qa-f34-reconnect: never run' --print-id)
   rm -f "$F34/reconnect-ready"
   control-agent-server exec --timeout 300 --expect-output QA_F34_RECONNECT_WATCHED --save F34.event-stream-reconnect-native/program \
-    -- node "$F34/reconnect.mjs" "$RNID" "$F34/reconnect-native.json" ws native &
+    -- npm exec --yes --package=node@22.22.0 -- node "$F34/reconnect.mjs" "$RNID" "$F34/reconnect-native.json" ws native &
   RPID=$!
   for _ in $(seq 150); do if [ -e "$F34/reconnect-ready" ]; then break; fi; sleep 0.2; done
   test -e "$F34/reconnect-ready"
@@ -1333,9 +1339,12 @@ Preconditions:
   control-agent-server assert --json "$F34/reconnect-native.json" --check native.reconnected eq true --check native.sent_after ge 1  # bug: value.native.reconnected eq false && value.native.last_state.attemptCount eq 1
   ```
   Expected: both streams come back and see the message posted after the
-  restart. Today the `ws`-backed stream does, while the native one stays
+  restart. On Node 22.22.0 the `ws`-backed stream does, while the native one stays
   `{"isConnected": false, "isReconnecting": true, "attemptCount": 1}`
-  for the whole minute the watcher gives it, never retrying.
+  for the whole minute the watcher gives it, never retrying. Node 24.19.0
+  (undici 7.29.0) emits `close` after the handshake error, so both BASE and
+  TARGET pass there with byte-identical client code; that environment result
+  does not retire the Node 22 regression.
 - **Endpoint audit against this checkout (`F34.endpoint-audit`).** The
   client's own drift tooling, offline, in a fixture directory (nothing is
   written into `clients/typescript`).
@@ -1376,14 +1385,17 @@ Preconditions:
   `+13 / -1` lines: two new fields of the canvas backend artifact).
 - **Old server version (`F34.version-gate-old`).** A real 1.22.0 release of
   the agent server, installed with `uvx`, attached and stopped inside the
-  bullet.
+  bullet. FastAPI is pinned to the version in the
+  [v1.22.0 release lock](https://github.com/OpenHands/software-agent-sdk/blob/v1.22.0/uv.lock):
+  newer FastAPI releases reject that historical server's `Query(lte=...)`
+  during import, before the version-gate behavior can be tested.
   ```sh
   OLD="$F34/old-server"
   mkdir -p "$OLD/home" "$OLD/persist"
   OLDPORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
   (cd "$OLD" && HOME="$OLD/home" OH_PERSISTENCE_DIR="$OLD/persist" OH_SESSION_API_KEYS_0=qa-f34-old-key COLUMNS=400 exec timeout 600 \
     uvx --python 3.13 --from 'openhands-agent-server==1.22.0' --with 'openhands-sdk==1.22.0' --with 'openhands-tools==1.22.0' \
-    --with 'openhands-workspace==1.22.0' python -m openhands.agent_server --host 127.0.0.1 --port "$OLDPORT" > "$OLD/server.log" 2>&1) &
+    --with 'openhands-workspace==1.22.0' --with 'fastapi==0.129.0' python -m openhands.agent_server --host 127.0.0.1 --port "$OLDPORT" > "$OLD/server.log" 2>&1) &
   OLDPID=$!
   OLDRUN=""
   trap 'if [ -n "$OLDRUN" ]; then control-agent-server stop --run "$OLDRUN" > /dev/null 2>&1; fi; kill -TERM -- "-$OLDPID" 2>/dev/null || kill -TERM "$OLDPID" 2>/dev/null || true' EXIT

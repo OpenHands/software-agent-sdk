@@ -27,6 +27,7 @@ from openhands.agent_server.docker_runtime.routers import (
 )
 from openhands.agent_server.event_router import event_read_router
 from openhands.agent_server.models import UpdateSecretsRequest
+from openhands.sdk.conversation.request import ConversationContainerOptions
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.secret import LookupSecret
 
@@ -522,6 +523,43 @@ def test_a_rejected_start_stops_only_a_container_it_created(
 
     assert response.status_code == 500
     assert stopped == ([] if existing else [conversation_id])
+    assert not registry.has_active_leases(conversation_id)
+
+
+def test_a_successful_start_returns_the_inner_status_and_releases_its_lease(
+    tmp_path, monkeypatch
+):
+    app, registry = _docker_start_app(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+
+    async def get_or_create(_conversation_id):
+        return SimpleNamespace(host="http://inner", api_key="inner-key")
+
+    async def post(self, url, **kwargs):
+        return httpx.Response(
+            201,
+            json={"id": str(conversation_id)},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(registry, "get_or_create", get_or_create)
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "conversation_id": str(conversation_id),
+                "agent": {"kind": "Agent", "llm": {"model": "test"}},
+            },
+        )
+
+    assert response.status_code == 201
+    assert response.json()["id"] == str(conversation_id)
+    assert not registry.has_active_leases(conversation_id)
+    app.state.conversation_service.refresh_persisted_conversation.assert_awaited_once_with(
+        conversation_id
+    )
 
 
 def test_a_symlinked_conversation_dir_is_rejected(tmp_path, monkeypatch):
@@ -542,3 +580,54 @@ def test_a_symlinked_conversation_dir_is_rejected(tmp_path, monkeypatch):
         )
 
     assert response.status_code == 422
+
+
+def test_a_retried_start_records_the_latest_container_options(tmp_path, monkeypatch):
+    app, registry = _docker_start_app(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+
+    async def get_or_create(_conversation_id):
+        return SimpleNamespace(host="http://inner", api_key="inner-key")
+
+    async def post(self, url, **kwargs):
+        return httpx.Response(500, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(registry, "get_or_create", get_or_create)
+    monkeypatch.setattr(registry, "stop", AsyncMock())
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+
+    with TestClient(app) as client:
+        # The first start is saved but fails in the container, so the retry
+        # may still change the options.
+        for container in ({"memory": "2g"}, {"memory": "4g", "browser": False}):
+            response = client.post(
+                "/api/conversations",
+                json={
+                    "conversation_id": str(conversation_id),
+                    "agent": {"kind": "Agent", "llm": {"model": "test"}},
+                    "container": container,
+                },
+            )
+            assert response.status_code == 500
+
+    assert registry.provisioning.load(
+        conversation_id
+    ).container == ConversationContainerOptions(memory="4g", browser=False)
+
+
+def test_invalid_container_options_are_rejected(tmp_path, monkeypatch):
+    app, registry = _docker_start_app(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "conversation_id": str(conversation_id),
+                "agent": {"kind": "Agent", "llm": {"model": "test"}},
+                "container": {"cpus": 0},
+            },
+        )
+
+    assert response.status_code == 422
+    assert registry.provisioning.load_optional(conversation_id) is None

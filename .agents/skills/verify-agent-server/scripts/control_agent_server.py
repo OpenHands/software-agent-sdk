@@ -65,11 +65,13 @@ FERNET_TOKEN = re.compile(r"gAAAAA[A-Za-z0-9_\-]{40,}={0,2}")
 # Environment forwarded from the caller into a launched server. Everything
 # else (LLM keys, OH_* overrides, cloud tokens) stays out unless passed with
 # --env or --pass-env, so a run never inherits a developer's configuration.
+# PLAYWRIGHT_BROWSERS_PATH stays out too: the server's browser probe reads it,
+# and the browser recipes decide where the server finds Chromium.
 FORWARDED_ENV = re.compile(
     r"^(PATH|LANG|LC_[A-Z]+|TZ|TERM|SHELL|USER|LOGNAME|TMPDIR"
     r"|(HTTP|HTTPS|NO|ALL)_PROXY|(http|https|no|all)_proxy"
     r"|SSL_CERT_FILE|SSL_CERT_DIR|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE"
-    r"|NODE_EXTRA_CA_CERTS|PLAYWRIGHT_BROWSERS_PATH|DOCKER_HOST|UV_[A-Z_]+)$"
+    r"|NODE_EXTRA_CA_CERTS|DOCKER_HOST|UV_[A-Z_]+)$"
 )
 
 
@@ -536,6 +538,9 @@ def server_env(
     secret_file = run.private / "secret_key"
     if secret_file.exists():
         env["OH_SECRET_KEY"] = secret_file.read_text().strip()
+    previous_secret = run.private / "previous_secret_key"
+    if run.data.get("keep_previous_secret_key") and previous_secret.exists():
+        env["OH_PREVIOUS_SECRET_KEYS_0"] = previous_secret.read_text().strip()
     env.update(extra)
     return env
 
@@ -887,6 +892,13 @@ def cmd_restart(args: argparse.Namespace) -> dict[str, Any]:
         (run.private / "previous_secret_key").write_text(old_secret)
         (run.private / "secret_key").write_text(secrets.token_urlsafe(32))
         run.register_secrets()
+    if (
+        args.keep_previous_secret_key
+        and not (run.private / "previous_secret_key").exists()
+    ):
+        usage_error("--keep-previous-secret-key needs an earlier --rotate-secret-key")
+    # Per restart: a later restart without the flag drops the previous key.
+    run.data["keep_previous_secret_key"] = bool(args.keep_previous_secret_key)
     if args.reset_config:
         run.data["config_overrides"] = {}
         run.data["extra_env"] = {}
@@ -907,6 +919,7 @@ def cmd_restart(args: argparse.Namespace) -> dict[str, Any]:
         "rotated_key": bool(args.rotate_key),
         "hard": bool(args.hard),
         "rotated_secret_key": bool(args.rotate_secret_key),
+        "kept_previous_secret_key": bool(args.keep_previous_secret_key),
         **readiness,
     }
 
@@ -985,6 +998,9 @@ def ws_probe(run: Run, path: str, auth: str) -> dict[str, Any]:
     except ConnectionClosed as exc:
         result["open"] = False
         result["close_code"] = exc.rcvd.code if exc.rcvd else None
+    except InvalidStatus as exc:
+        result["open"] = False
+        result["handshake_status"] = exc.response.status_code
     except Exception as exc:
         result["open"] = False
         result["error"] = f"{type(exc).__name__}: {exc}"
@@ -994,6 +1010,7 @@ def ws_probe(run: Run, path: str, auth: str) -> dict[str, Any]:
 def cmd_doctor(args: argparse.Namespace) -> dict[str, Any]:
     run = resolve_run(args.run, require_alive=False)
     checks: list[dict[str, Any]] = []
+    dormant = _dormant(run)
 
     def check(name: str, ok: bool, detail: Any, required: bool = True) -> None:
         checks.append({"name": name, "ok": ok, "required": required, "detail": detail})
@@ -1012,7 +1029,7 @@ def cmd_doctor(args: argparse.Namespace) -> dict[str, Any]:
         for path in ("/alive", "/health", "/ready"):
             try:
                 response = client.get(run.url + path)
-                expected = 503 if (path == "/ready" and _dormant(run)) else 200
+                expected = 503 if (path == "/ready" and dormant) else 200
                 check(
                     path,
                     response.status_code in (200, expected),
@@ -1039,46 +1056,60 @@ def cmd_doctor(args: argparse.Namespace) -> dict[str, Any]:
         except Exception as exc:
             check("server-info", False, f"{type(exc).__name__}: {exc}")
         probe = "/api/conversations/count"
-        if run.data.get("auth"):
-            denied = client.get(run.url + probe)
+        try:
+            if run.data.get("auth"):
+                denied = client.get(run.url + probe)
+                check(
+                    "dormant-gates-missing-key"
+                    if dormant
+                    else "auth-rejects-missing-key",
+                    denied.status_code == (503 if dormant else 401),
+                    denied.status_code,
+                )
+            allowed = client.get(run.url + probe, headers=auth_headers(run))
             check(
-                "auth-rejects-missing-key",
-                denied.status_code == 401,
-                denied.status_code,
+                "dormant-gates-api" if dormant else "auth-accepts-key",
+                allowed.status_code == (503 if dormant else 200),
+                {"status": allowed.status_code, "dormant": dormant},
             )
-        allowed = client.get(run.url + probe, headers=auth_headers(run))
-        dormant = _dormant(run)
-        check(
-            "auth-accepts-key",
-            allowed.status_code == 200 or (dormant and allowed.status_code == 503),
-            {"status": allowed.status_code, "dormant": dormant},
-        )
-        if (run.private / "previous_session_api_key").exists():
-            stale = client.get(run.url + probe, headers=auth_headers(run, "previous"))
-            check(
-                "auth-rejects-rotated-key", stale.status_code == 401, stale.status_code
-            )
+            if not dormant and (run.private / "previous_session_api_key").exists():
+                stale = client.get(
+                    run.url + probe, headers=auth_headers(run, "previous")
+                )
+                check(
+                    "auth-rejects-rotated-key",
+                    stale.status_code == 401,
+                    stale.status_code,
+                )
+        except httpx.HTTPError as exc:
+            check("api-access", False, f"{type(exc).__name__}: {exc}")
         try:
             spec = client.get(run.url + "/openapi.json").json()
             operations = sum(len(v) for v in spec.get("paths", {}).values())
             check("openapi", operations > 0, {"operations": operations})
         except Exception as exc:
             check("openapi", False, f"{type(exc).__name__}: {exc}")
-    if run.data.get("auth"):
+    if dormant:
+        gated_socket = ws_probe(run, "/sockets/bash-events", "none")
+        check(
+            "dormant-gates-websocket",
+            gated_socket.get("handshake_status") == 403,
+            gated_socket,
+        )
+    elif run.data.get("auth"):
+        bad_socket = ws_probe(run, "/sockets/bash-events", "bad")
         check(
             "ws-rejects-bad-key",
-            not ws_probe(run, "/sockets/bash-events", "bad")["open"],
-            ws_probe(run, "/sockets/bash-events", "bad"),
+            not bad_socket["open"],
+            bad_socket,
         )
-    check(
-        "ws-accepts-first-frame-auth",
-        ws_probe(
+    if not dormant:
+        allowed_socket = ws_probe(
             run,
             "/sockets/bash-events",
             "first-frame" if run.data.get("auth") else "none",
-        )["open"],
-        None,
-    )
+        )
+        check("ws-accepts-first-frame-auth", allowed_socket["open"], allowed_socket)
     if run.log_path.exists():
         text = run.log_path.read_text(errors="replace")
         tracebacks = text.count("Traceback (most recent call last)")
@@ -1105,7 +1136,7 @@ def _dormant(run: Run) -> bool:
         return False
     with contextlib.suppress(Exception), http_client(5) as client:
         body = client.get(run.url + "/api/init", headers=auth_headers(run)).json()
-        return str(body.get("status", "")).lower() != "ready"
+        return str(body.get("state", "")).lower() != "ready"
     return True
 
 
@@ -2737,13 +2768,16 @@ def serve_llm_stub(port: int, script: Path, out: Path) -> None:
             if "hang" in step:
                 time.sleep(float(step["hang"]))
             if "status" in step:
-                error = step.get("body") or {
-                    "error": {
-                        "message": "qa stub error",
-                        "type": "qa_stub",
-                        "code": step["status"],
-                    }
-                }
+                error = step.get(
+                    "body",
+                    {
+                        "error": {
+                            "message": "qa stub error",
+                            "type": "qa_stub",
+                            "code": step["status"],
+                        }
+                    },
+                )
                 self._reply(
                     int(step["status"]), json.dumps(error).encode(), "application/json"
                 )
@@ -2773,7 +2807,11 @@ def parse_stub_step(text: str) -> dict[str, Any]:
         name, _, args = rest.partition(":")
         return {"tool": name, "args": json.loads(args) if args else {}}
     if kind == "status":
-        return {"status": int(rest)}
+        code, _, body = rest.partition(":")
+        step = {"status": int(code)}
+        if body:
+            step["body"] = json.loads(body)
+        return step
     if kind == "hang":
         return {"hang": float(rest)}
     usage_error(
@@ -4727,7 +4765,16 @@ def cmd_map_run(args: argparse.Namespace) -> dict[str, Any]:
         )
         run_dir = launched["last_line"].strip()
         try:
-            report = replay_family(load_run(Path(run_dir)), path, args)
+            run = load_run(Path(run_dir))
+            health = cmd_doctor(argparse.Namespace(run=run_dir))
+            saved_health = save_evidence(run, "map-run/doctor-before", health)
+            if not health["ok"]:
+                raise CliError(
+                    "Fresh verification server failed doctor",
+                    exit_code=3,
+                    data={"run": run_dir, "doctor": str(saved_health)},
+                )
+            report = replay_family(run, path, args)
         finally:
             self_command("stop", "--run", run_dir)
         attempts.append({**report, "run": run_dir})
@@ -5423,6 +5470,7 @@ secret key all private to the run. Without --new, an already-live run
   {CLI} restart --rotate-key       # the old session key must now be rejected
   {CLI} restart --hard             # SIGKILL: running conversations come back as error
   {CLI} restart --rotate-secret-key  # new cipher key: are stored secrets still readable?
+  {CLI} restart --rotate-secret-key --keep-previous-secret-key  # supported rotation
   {CLI} restart --env OH_MAX_CONCURRENT_RUNS=1""",
         cmd_restart,
     )
@@ -5441,6 +5489,15 @@ secret key all private to the run. Without --new, an already-live run
         "--rotate-secret-key",
         action="store_true",
         help="new OH_SECRET_KEY (cipher): what happens to secrets stored under the old one",
+    )
+    p.add_argument(
+        "--keep-previous-secret-key",
+        action="store_true",
+        help=(
+            "pass the key the last --rotate-secret-key replaced as "
+            "OH_PREVIOUS_SECRET_KEYS_0 for this start (a supported rotation); "
+            "a restart without it drops that key again"
+        ),
     )
     p.add_argument(
         "--hard",
@@ -5974,6 +6031,7 @@ Without --body-json agent fields, the agent comes from GET /api/settings
   {CLI} fixture http-sink --name creds --body '{{"token": "qa"}}' --status 200
   {CLI} fixture llm-stub --name qa-stub --step 'tool:finish:{{"message":"done"}}'
   {CLI} fixture llm-stub --name qa-stub --step status:500      # rewrites the script of a running stub
+  {CLI} fixture llm-stub --name qa-quota --step 'status:429:{{"error":{{"message":"Quota exceeded","type":"insufficient_quota","code":"insufficient_quota"}}}}'
   {CLI} fixture list
 
 llm-stub is an OpenAI-compatible provider on 127.0.0.1 that answers each
@@ -6000,7 +6058,7 @@ readable with `sink read --name <stub>`.""",
         "--step",
         action="append",
         metavar="STEP",
-        help="llm-stub script step: reply:TEXT[@usage=P,C] | tool:NAME:JSON | status:CODE | hang:SECONDS",
+        help="llm-stub script step: reply:TEXT[@usage=P,C] | tool:NAME:JSON | status:CODE[:JSON] | hang:SECONDS",
     )
 
     hp = commands.add_parser(

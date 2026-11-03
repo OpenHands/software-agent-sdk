@@ -6,9 +6,12 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import SecretStr
 
+from openhands.sdk.settings import OpenHandsAgentSettings
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.pydantic_secrets import (
     REDACTED_SECRET_VALUE,
+    STRICT_DECRYPT_CONTEXT_KEY,
+    SecretDecryptionError,
     decrypt_str_with_cipher_or_keep,
     is_redacted_secret,
     serialize_secret,
@@ -412,6 +415,7 @@ def test_real_pydantic_persisted_settings_roundtrip(cipher):
 
     # Create settings with secret
     settings = PersistedSettings()
+    assert isinstance(settings.agent_settings, OpenHandsAgentSettings)
     settings.agent_settings.llm.api_key = SecretStr("sk-test-key-12345")
 
     # Serialize with cipher
@@ -424,6 +428,7 @@ def test_real_pydantic_persisted_settings_roundtrip(cipher):
 
     # Deserialize (decrypt)
     restored = PersistedSettings.model_validate(data, context={"cipher": cipher})
+    assert isinstance(restored.agent_settings, OpenHandsAgentSettings)
     restored_key = restored.agent_settings.llm.api_key
     assert restored_key is not None
     assert isinstance(restored_key, SecretStr)
@@ -499,3 +504,68 @@ def test_validate_secret_dict_passes_through_non_dict(cipher, mock_info):
     # rather than turning it into a TypeError here.
     assert validate_secret_dict("not-a-dict", info, description="x") == "not-a-dict"
     assert validate_secret_dict(None, info, description="x") is None
+
+
+# ── strict decryption (read-modify-write paths) ─────────────────────────
+
+
+def test_validate_secret_strict_raises_on_wrong_cipher(mock_info, cipher):
+    token = cipher.encrypt(SecretStr("sk-test-123"))
+    wrong = Cipher("another-key")
+    lenient = mock_info({"cipher": wrong})
+    strict = mock_info({"cipher": wrong, STRICT_DECRYPT_CONTEXT_KEY: True})
+
+    assert validate_secret(token, lenient) is None
+    with pytest.raises(SecretDecryptionError) as exc_info:
+        validate_secret(token, strict)
+    assert FERNET_TOKEN_PREFIX not in str(exc_info.value)
+
+
+def test_validate_secret_dict_strict_raises_on_wrong_cipher(mock_info, cipher):
+    token = cipher.encrypt(SecretStr("env-value"))
+    wrong = Cipher("another-key")
+    value = {"API_TOKEN": token, "PLAIN": "kept"}
+    lenient = mock_info({"cipher": wrong})
+    strict = mock_info({"cipher": wrong, STRICT_DECRYPT_CONTEXT_KEY: True})
+
+    assert validate_secret_dict(value, lenient) == value
+    with pytest.raises(SecretDecryptionError) as exc_info:
+        validate_secret_dict(value, strict, description="MCP env")
+    assert FERNET_TOKEN_PREFIX not in str(exc_info.value)
+    # The matching cipher still decrypts in strict mode.
+    ok = mock_info({"cipher": cipher, STRICT_DECRYPT_CONTEXT_KEY: True})
+    assert validate_secret_dict(value, ok) == {
+        "API_TOKEN": "env-value",
+        "PLAIN": "kept",
+    }
+
+
+def test_strict_decrypt_accepts_a_previous_key(mock_info):
+    token = Cipher("old-key").encrypt(SecretStr("sk-test-123"))
+    rotated = Cipher("new-key", previous_keys=["old-key"])
+    strict = mock_info({"cipher": rotated, STRICT_DECRYPT_CONTEXT_KEY: True})
+
+    result = validate_secret(token, strict)
+    assert result is not None
+    assert result.get_secret_value() == "sk-test-123"
+    assert validate_secret_dict({"T": token}, strict) == {"T": "sk-test-123"}
+
+
+def test_strict_decrypt_error_names_previous_keys(mock_info):
+    token = Cipher("old-key").encrypt(SecretStr("sk-test-123"))
+    strict = mock_info({"cipher": Cipher("new-key"), STRICT_DECRYPT_CONTEXT_KEY: True})
+    with pytest.raises(SecretDecryptionError, match="OH_PREVIOUS_SECRET_KEYS"):
+        validate_secret(token, strict)
+
+
+def test_serialize_secret_rotates_a_token_under_a_previous_key(mock_info):
+    old_token = Cipher("old-key").encrypt(SecretStr("sk-test-123"))
+    assert old_token is not None
+    rotated = Cipher("new-key", previous_keys=["old-key"])
+
+    out = serialize_secret(SecretStr(old_token), mock_info({"cipher": rotated}))
+    assert isinstance(out, str)
+    assert out != old_token
+    assert Cipher("new-key").try_decrypt_str(out) == "sk-test-123"
+    # A token already under the current key is kept as is.
+    assert serialize_secret(SecretStr(out), mock_info({"cipher": rotated})) == out

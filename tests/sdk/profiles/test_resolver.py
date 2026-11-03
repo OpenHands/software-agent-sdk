@@ -734,8 +734,7 @@ def test_acp_resolves_to_settings_without_credentials(
     assert settings.acp_args == ["--flag"]
     assert settings.mcp_config != {}
     assert list(settings.mcp_config.keys()) == ["fetch"]
-    # No credential is injected; the deprecated llm channel stays empty.
-    assert settings.llm.api_key is None
+    assert "llm" not in settings.model_dump()
     assert isinstance(settings.create_agent(), ACPAgent)
 
 

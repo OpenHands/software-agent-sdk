@@ -1273,6 +1273,72 @@ def test_llm_force_string_serializer_override():
     assert isinstance(formatted_cache[0]["content"], list)
 
 
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize(
+    "model,reasoning_content,expected_reasoning",
+    [
+        ("gpt-oss-120b", "Plan the edit.", "Plan the edit."),
+        ("openai/gpt-oss-120b", "Plan the edit.", "Plan the edit."),
+        ("openrouter/openai/gpt-oss-120b", "Plan the edit.", "Plan the edit."),
+        ("kimi-k2-thinking", "Plan the edit.", "Plan the edit."),
+        ("deepseek/deepseek-reasoner", "Plan the edit.", "Plan the edit."),
+        ("openrouter/minimax-m2", "Plan the edit.", "Plan the edit."),
+        ("gpt-4o", "Plan the edit.", None),
+        ("deepseek/deepseek-chat", "Plan the edit.", None),
+        ("kimi-k2-instruct", "Plan the edit.", None),
+        ("openai/gpt-oss-120b", None, None),
+        ("openai/gpt-oss-120b", "", None),
+    ],
+)
+async def test_llm_reasoning_content_in_tool_call_history(
+    model, reasoning_content, expected_reasoning, use_async
+):
+    llm = LLM(model=model, api_key=SecretStr("test_key"))
+    messages = [
+        Message(role="system", content=[TextContent(text="You are a coding agent.")]),
+        Message(role="user", content=[TextContent(text="Fix the bug.")]),
+    ]
+    for call_id in ("call_1", "call_2"):
+        messages.extend(
+            [
+                Message(
+                    role="assistant",
+                    content=[TextContent(text="")],
+                    reasoning_content=reasoning_content,
+                    tool_calls=[
+                        MessageToolCall(
+                            id=call_id,
+                            name="terminal",
+                            arguments='{"command": "git diff"}',
+                            origin="completion",
+                        )
+                    ],
+                ),
+                Message(
+                    role="tool",
+                    name="terminal",
+                    tool_call_id=call_id,
+                    content=[TextContent(text="No changes yet.")],
+                ),
+            ]
+        )
+
+    if use_async:
+        formatted = await llm.aformat_messages_for_llm(messages)
+    else:
+        formatted = llm.format_messages_for_llm(messages)
+
+    for assistant_index, call_id in ((2, "call_1"), (4, "call_2")):
+        assistant = formatted[assistant_index]
+        assert assistant["role"] == "assistant"
+        assert assistant["tool_calls"][0]["id"] == call_id
+        assert formatted[assistant_index + 1]["tool_call_id"] == call_id
+        if expected_reasoning is None:
+            assert "reasoning_content" not in assistant
+        else:
+            assert assistant["reasoning_content"] == expected_reasoning
+
+
 def test_llm_caching_support(default_llm):
     """Test LLM prompt caching support detection."""
     llm = default_llm

@@ -8,6 +8,7 @@ sync logic is already covered by ``tests/sdk/extensions/installation/``.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -74,6 +75,64 @@ def test_install_from_local_path(sample_skill_dir: Path, installed_dir: Path) ->
     assert info.source == str(sample_skill_dir)
     assert info.description == "A test skill"
     assert (installed_dir / "sample-skill" / "SKILL.md").exists()
+
+
+@pytest.mark.parametrize(
+    "source,repo_path,name",
+    [
+        ("github:skill-tests/extensions/skills/sample-skill/", None, "sample-skill"),
+        ("github:skill-tests/extensions", "skills/sample-skill", "sample-skill"),
+        ("github:skill-tests/extensions", None, "extensions"),
+    ],
+)
+def test_install_and_update_github_skill(
+    tmp_path: Path,
+    installed_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    repo_path: str | None,
+    name: str,
+) -> None:
+    repo = _create_skill_dir(tmp_path, "extensions")
+    nested = _create_skill_dir(repo / "skills", "sample-skill")
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "commit", "-qm", "initial skills"], check=True)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", f"url.{repo.as_uri()}.insteadOf")
+    monkeypatch.setenv(
+        "GIT_CONFIG_VALUE_0", "https://github.com/skill-tests/extensions.git"
+    )
+    monkeypatch.setattr(
+        "openhands.sdk.extensions.installation.manager.DEFAULT_CACHE_DIR",
+        tmp_path / "cache",
+    )
+
+    info = install_skill(source, repo_path=repo_path, installed_dir=installed_dir)
+
+    assert info.name == name
+    assert info.source == source
+    assert info.repo_path == repo_path
+    assert (installed_dir / name / "SKILL.md").exists()
+    disable_skill(name, installed_dir=installed_dir)
+    for skill_dir in (repo, nested):
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(skill_md.read_text().replace("A test skill", "Updated"))
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "commit", "-qm", "update skills"], check=True)
+
+    updated = update_skill(name, installed_dir=installed_dir)
+
+    assert updated is not None
+    assert updated.name == name
+    assert updated.description == "Updated"
+    assert updated.source == source
+    assert updated.repo_path == repo_path
+    assert updated.resolved_ref != info.resolved_ref
+    assert updated.enabled is False
+    assert "Updated" in (installed_dir / name / "SKILL.md").read_text()
+    assert [skill.name for skill in list_installed_skills(installed_dir)] == [name]
 
 
 def test_install_already_exists_raises_error(

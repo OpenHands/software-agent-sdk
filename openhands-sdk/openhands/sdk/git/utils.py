@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.utils.redact import (
-    redact_url_credentials,
+    redact_url_credentials as redact_url_credentials,
     redact_url_credentials_in_text,
     redact_url_params,
 )
@@ -92,7 +92,7 @@ def run_git_command(
     Raises:
         GitCommandError: If the git command fails
     """
-    redacted_args = [redact_url_credentials(a) for a in args]
+    redacted_args = [redact_url_credentials_in_text(a) for a in args]
     cmd_str = shlex.join(redacted_args)
 
     try:
@@ -558,6 +558,10 @@ def is_git_url(source: str) -> bool:
     if re.match(r"^[\w.-]+@[\w.-]+:", source):
         return True
 
+    # SSH scheme, with or without a user and port
+    if source.startswith("ssh://"):
+        return True
+
     # Git protocol
     if source.startswith("git://"):
         return True
@@ -593,7 +597,12 @@ def normalize_git_url(url: str) -> str:
         "https://dev.azure.com/org/project/_git/repo"
     """
     if url.startswith(("https://", "http://")) and not url.endswith(".git"):
+        # Strip the trailing slash before the suffix check, so a URL that
+        # already names a repository (``repo.git/``) does not gain a second
+        # suffix from the append below.
         url = url.rstrip("/")
+        if url.endswith(".git"):
+            return url
         # Azure DevOps resolves ``<repo>.git`` as a different, missing repo.
         if "/_git/" in urlparse(url).path:
             return url

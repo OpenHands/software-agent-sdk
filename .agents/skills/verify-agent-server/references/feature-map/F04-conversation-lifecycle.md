@@ -16,6 +16,7 @@ Needs: `llm`, `git`
 Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 `GET /api/conversations/{conversation_id}`,
 `GET /api/conversations/{conversation_id}/agent_final_response`,
+`POST /api/conversations/{conversation_id}/children`,
 `GET /api/conversations`, `POST /api/conversations`,
 `DELETE /api/conversations/{conversation_id}`,
 `PATCH /api/conversations/{conversation_id}`
@@ -35,7 +36,7 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - `F04.create-observability-precedence`: body `observability_span_name`, `observability_tags` and `observability_parent_span_context` win over their headers, header metadata merges under the body's (body keys win), the parent-span header applies when the body has none, and an over-long or malformed span-name header, non-scalar header metadata and an empty body tag are 422.
 - `F04.create-secrets`: start-time `StaticSecret` values appear masked in the create response and are encrypted at rest.
 - `F04.create-secrets-get`: a start-time secret is listed by `GET /api/conversations/{id}` right after the create.
-- `F04.create-secrets-plain`: a plain-string secret value in the create body is accepted or rejected with 422, never a 500.
+- `F04.create-secrets-plain`: a plain-string secret value in the create body is rejected with 422, never a 500.
 - `F04.run-real`: an initial message runs on DeepSeek flash to `finished`; the events socket replays the run, the final response is non-empty and autotitle names the conversation.
 - `F04.final-response`: `agent_final_response` is empty before the agent answers, carries the exact `finish` message afterwards, and is 404 for an unknown id.
 - `F04.title-llm-profile`: with `title_llm_profile` naming a saved LLM profile, autotitle calls that profile and not the agent's LLM; an unknown profile name falls back to the agent's LLM and never fails the create.
@@ -54,6 +55,11 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - `F04.delete-unknown-id`: DELETE on an unknown or already deleted id answers the 404 the OpenAPI document declares, not 400.
 - `F04.restart-persist`: after a restart the catalog, statuses, titles, tags, final responses and event replay are unchanged, and deleted conversations stay deleted.
 - `F04.read-no-hydrate`: after a restart, GET, the batch get, search and count read a cold conversation without loading it (no `owner_lease.json`), while `agent_final_response` loads it and claims the lease.
+
+- `F04.child-start`: `POST .../children` starts a real-model task with fresh history, inherited configuration and a parent link, using a shared directory, an isolated git worktree, or the shared fallback for a non-git workspace.
+- `F04.child-unborn`: the default child launch succeeds in a fresh workspace whose automatically initialized git repository has no commit.
+- `F04.child-errors`: missing or invalid child-launch fields are 422, an unknown parent is 404 and no key is 401; rejected launches create no child.
+- `F04.child-capacity`: a full run-capacity limit rejects a child launch with 429 before creating a conversation or worktree.
 
 ## How to get to it (agent POV)
 
@@ -104,6 +110,15 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
   repeat the key (`api --query ids=A --query ids=B`); the 99- and 100-id
   batches go through a small `urllib` helper run by `exec`, so the recipe does
   not spell out 100 flags.
+
+- REST: `POST /api/conversations/{conversation_id}/children` takes a `task`,
+  optional `title` and `isolation` (`worktree` by default, or `shared`), and
+  returns 201 with `conversation_id`, `parent_conversation_id`, status,
+  title, workspace and actual isolation. The child inherits the parent's
+  configuration and receives only the new task, not the parent's history.
+  A worktree starts from the repository's default branch; a non-git workspace
+  falls back to sharing. This route is also the default launcher for the
+  `start_child_conversation` tool (F27), introduced by PR #5126.
 
 ## Driving it with control-agent-server
 
@@ -404,17 +419,17 @@ EOF
   live state in place without an autosave, and GET reads the
   `base_state.json` snapshot. The secret appears after the next state save (a
   tags PATCH, a message), so the runtime itself still has it.
-- **Plain-string secret value (`F04.create-secrets-plain`), known bug.**
-  `POST .../secrets` accepts `{"NAME": "value"}`; the create body should either
-  accept it too or refuse it with 422.
+- **Plain-string secret value (`F04.create-secrets-plain`).**
+  `POST .../secrets` accepts `{"NAME": "value"}`, but the create body takes
+  only secret objects, so a plain string there is refused with 422.
   ```sh
   control-agent-server api POST /api/conversations \
     --json "{\"workspace\": {\"working_dir\": \"$W\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false, \"secrets\": {\"QA_F04_PLAIN\": \"qa-f04-plain-value\"}}" \
-    --expect 201,422 --save F04.create-secrets-plain/start  # bug: status eq 500 && response.body.exception contains "'str' object has no attribute 'pop'"
+    --expect 422 --check detail.0.type eq model_attributes_type --check detail.0.loc.2 eq QA_F04_PLAIN \
+    --save F04.create-secrets-plain/start
   ```
-  Today the server answers 500 `"exception": "'str' object has no attribute
-  'pop'"`: `DiscriminatedUnionMixin` calls `.pop("kind")` on the string, an
-  `AttributeError` that escapes request validation.
+  The answer is a standard 422 validation error on
+  `secrets.QA_F04_PLAIN` (`model_attributes_type`), never a 500.
 - **A real run (`F04.run-real`).** DeepSeek flash answers a one-line prompt;
   autotitle is on.
   ```sh
@@ -616,17 +631,16 @@ EOF
   A whitespace-only title is rejected with 422 (like an empty title) and the
   stored title is kept; without that, the service would store
   `title.strip()`, `""`, which also stops autotitle.
-- **PATCH on an unknown id (`F04.patch-unknown-id`), known bug.** The OpenAPI
+- **PATCH on an unknown id (`F04.patch-unknown-id`).** The OpenAPI
   document declares 404 for this route; the same id is 404 on GET.
   ```sh
   control-agent-server api GET /openapi.json --check 'paths./api/conversations/{conversation_id}.patch.responses.404' exists --quiet
   control-agent-server api GET "/api/conversations/$NOPE" --expect 404
-  control-agent-server api PATCH "/api/conversations/$NOPE" --json '{"title": "QA nobody"}' --expect 404 --save F04.patch-unknown-id/unknown  # bug: status eq 200 && response.body.success eq false
+  control-agent-server api PATCH "/api/conversations/$NOPE" --json '{"title": "QA nobody"}' --expect 404 --save F04.patch-unknown-id/unknown
   ```
-  Expected: 404, as declared. Today it is 200 `{"success": false}`: the
-  handler turns a `False` from `update_conversation` into a successful
-  response body (the router test `test_update_conversation_failure` locks
-  it), so a client that checks only the status believes the rename worked.
+  404 `{"detail": "Not Found"}`, as declared: the handler raises 404 when
+  `update_conversation` finds no conversation, so a rename of a missing
+  conversation never looks successful.
 - **Delete (`F04.delete`).** A running conversation (the hanging stub) with a
   child and a file in its workspace, plus the worktree conversation.
 
@@ -664,7 +678,7 @@ EOF
   `parent_conversation_id`) remain. The worktree conversation's worktree is
   removed (directory and `git worktree` entry) while its branch stays. A repeated
   delete and an unknown id are `F04.delete-unknown-id`.
-- **DELETE on an unknown id (`F04.delete-unknown-id`), known bug.** The
+- **DELETE on an unknown id (`F04.delete-unknown-id`).** The
   OpenAPI document declares 404 for this route; the deleted `$DEL` and the
   never-created `$NOPE` are both 404 on GET.
 
@@ -673,14 +687,13 @@ EOF
   control-agent-server api GET /openapi.json --check 'paths./api/conversations/{conversation_id}.delete.responses.404' exists --quiet
   control-agent-server api GET "/api/conversations/$DEL" --expect 404
   control-agent-server api GET "/api/conversations/$NOPE" --expect 404
-  control-agent-server api DELETE "/api/conversations/$NOPE" --expect 404 --save F04.delete-unknown-id/unknown  # bug: status eq 400 && response.body.detail eq 'Bad Request'
-  control-agent-server api DELETE "/api/conversations/$DEL" --expect 404 --save F04.delete-unknown-id/repeat  # bug: status eq 400 && response.body.detail eq 'Bad Request'
+  control-agent-server api DELETE "/api/conversations/$NOPE" --expect 404 --save F04.delete-unknown-id/unknown
+  control-agent-server api DELETE "/api/conversations/$DEL" --expect 404 --save F04.delete-unknown-id/repeat
   ```
-  Expected: 404 for both, as declared. Today both are 400 with
-  `{"detail": "Bad Request"}`: the handler maps every `False` from
-  `delete_conversation` to 400 (the router tests lock it), so a client cannot
-  tell "already gone" from a malformed request. `/pause` and `/interrupt`
-  share the pattern (run family).
+  404 `{"detail": "Not Found"}` for both, as declared: the handler raises
+  404 when `delete_conversation` finds no conversation, so "already gone" is
+  distinct from a malformed request (422). `/pause` and `/interrupt` answer
+  the same way (run family).
 - **Restart (`F04.restart-persist`).** A graceful restart of the same run.
 
   Requires: `F04.create-settings`, `F04.create-idempotent`, `F04.create-parent`, `F04.run-real`, `F04.final-response`, `F04.delete`
@@ -718,6 +731,130 @@ EOF
   `$IID` unloaded, and `agent_final_response` loads it, which claims
   `owner_lease.json`.
 
+- **Start a child (`F04.child-start`).** Launch a task with shared isolation,
+  git-worktree isolation, and the default worktree request on a non-git
+  workspace. Each child runs a tiny real-model turn and starts fresh history.
+  ```sh
+  for CHILD_CASE in shared worktree fallback; do
+    CHILD_PARENT_WS="$REPO"
+    CHILD_ISOLATION="$CHILD_CASE"
+    CHILD_ACTUAL="$CHILD_CASE"
+    if [ "$CHILD_CASE" = fallback ]; then
+      CHILD_PARENT_WS="$F/qa-f04-child-fallback"
+      mkdir -p "$CHILD_PARENT_WS"
+      CHILD_ISOLATION=worktree
+      CHILD_ACTUAL=shared
+    fi
+    CPARENT=$(control-agent-server conversation start --tools none --no-autotitle \
+      --workspace "$CHILD_PARENT_WS" --max-iterations 7 --tag qa=f04-child \
+      --secret QA_F04_CHILD_TOKEN=qa-f04-child-value --print-id)
+    if [ "$CHILD_CASE" = fallback ]; then
+      rm -rf "$CHILD_PARENT_WS/.git"
+    fi
+    control-agent-server api POST "/api/conversations/$CPARENT/events" \
+      --json '{"role":"user","content":[{"type":"text","text":"QA_F04_PARENT_ONLY"}],"run":false}' --expect 200
+    CCHILD=$(control-agent-server api POST "/api/conversations/$CPARENT/children" \
+      --json "{\"task\":\"QA_F04_CHILD_TASK: reply with ok.\",\"title\":\"QA F04 child $CHILD_CASE\",\"isolation\":\"$CHILD_ISOLATION\"}" \
+      --expect 201 --check parent_conversation_id eq "$CPARENT" --check isolation eq "$CHILD_ACTUAL" \
+      --save "F04.child-start/$CHILD_CASE-create" --field conversation_id)
+    control-agent-server conversation wait "$CCHILD" --until finished --timeout 180
+    CHILD_EXPECTED_WS="$CHILD_PARENT_WS"
+    if [ "$CHILD_ACTUAL" = worktree ]; then
+      CHILD_EXPECTED_WS="$AGENT_SERVER_VERIFY_RUN/worktrees/$CCHILD/qa-f04-repo"
+      git -C "$REPO" worktree list | grep -Fq "$CHILD_EXPECTED_WS"
+      test "$(git -C "$CHILD_EXPECTED_WS" branch --show-current)" = "openhands/$CCHILD"
+    fi
+    control-agent-server api GET "/api/conversations/$CCHILD" --expect 200 \
+      --check parent_conversation_id eq "$CPARENT" --check title eq "QA F04 child $CHILD_CASE" \
+      --check tags.qa eq f04-child --check max_iterations eq 7 \
+      --check agent.llm.model eq deepseek/deepseek-flash --check agent.tools len-eq 0 \
+      --check secret_registry.secret_sources.QA_F04_CHILD_TOKEN.kind eq StaticSecret \
+      --check secret_registry.secret_sources.QA_F04_CHILD_TOKEN.value ne qa-f04-child-value \
+      --check workspace.working_dir eq "$CHILD_EXPECTED_WS" --save "F04.child-start/$CHILD_CASE-child"
+    control-agent-server api GET "/api/conversations/$CPARENT" --expect 200 \
+      --check sub_conversation_ids contains "$CCHILD" --check execution_status eq idle \
+      --save "F04.child-start/$CHILD_CASE-parent"
+    control-agent-server api GET "/api/conversations/$CCHILD/events/count" --query source=user --check . eq 1
+    control-agent-server api GET "/api/conversations/$CCHILD/events/count" --query body=QA_F04_PARENT_ONLY --check . eq 0
+    control-agent-server api GET "/api/conversations/$CCHILD/events/search" --query source=user --query body=QA_F04_CHILD_TASK \
+      --check items len-eq 1 --save "F04.child-start/$CHILD_CASE-task"
+    control-agent-server api DELETE "/api/conversations/$CCHILD" --expect 200
+    control-agent-server api DELETE "/api/conversations/$CPARENT" --expect 200
+  done
+  ```
+  The response reports the actual isolation, including `shared` for the
+  non-git fallback. GET proves inherited model, limits, tags and masked
+  start-time secrets, plus the parent link. Only the child's task appears in
+  its user history; the parent stays idle. The worktree has its own branch.
+  The non-git case removes the empty `.git` created during parent startup,
+  so it exercises the intended non-git fallback independently of the next bug.
+- **Default child in a fresh workspace (`F04.child-unborn`), known bug.** Creating the
+  parent initializes git without a commit. The default child isolation must
+  handle that normal workspace state, just as an explicit shared child does.
+  ```sh
+  UNBORN_WS="$F/qa-f04-child-unborn"
+  mkdir -p "$UNBORN_WS"
+  UPARENT=$(control-agent-server conversation start --tools none --no-autotitle \
+    --workspace "$UNBORN_WS" --print-id)
+  test -d "$UNBORN_WS/.git"
+  if git -C "$UNBORN_WS" rev-parse --verify HEAD >/dev/null 2>&1; then false; fi
+  SHARED_CHILD=$(control-agent-server api POST "/api/conversations/$UPARENT/children" \
+    --json '{"task":"Reply with ok.","isolation":"shared"}' --expect 201 \
+    --check isolation eq shared --save F04.child-unborn/shared --field conversation_id)
+  control-agent-server conversation wait "$SHARED_CHILD" --until finished --timeout 180
+  control-agent-server api DELETE "/api/conversations/$SHARED_CHILD" --expect 200
+  control-agent-server api POST "/api/conversations/$UPARENT/children" \
+    --json '{"task":"Reply with ok."}' --expect 201 --save F04.child-unborn/default  # bug: status eq 500 && response.body.exception contains 'git worktree add'
+  UCHILD=$(jq -r .response.body.conversation_id "$AGENT_SERVER_VERIFY_RUN/evidence/F04.child-unborn/default.json")
+  control-agent-server conversation wait "$UCHILD" --until finished --timeout 180
+  control-agent-server api GET "/api/conversations/$UPARENT" --check sub_conversation_ids contains "$UCHILD"
+  control-agent-server api DELETE "/api/conversations/$UCHILD" --expect 200
+  control-agent-server api DELETE "/api/conversations/$UPARENT" --expect 200
+  ```
+  Both launches should return 201 and finish. A workspace created through the
+  ordinary conversation flow must not require a manual git commit before a
+  parent can start a child with the default isolation. Today the shared
+  control succeeds, but the default launch returns 500: worktree planning
+  accepts the unborn repository and `git worktree add ... HEAD` fails because
+  `HEAD` does not resolve to a commit
+  ([OpenHands/software-agent-sdk#6186](https://github.com/OpenHands/software-agent-sdk/issues/6186)).
+- **Child launch errors (`F04.child-errors`).** Invalid input and an unknown
+  parent create no child; authentication is required.
+  ```sh
+  EPARENT=$(control-agent-server conversation start --placeholder-agent --tools none \
+    --no-autotitle --workspace "$W" --print-id)
+  CHILD_BEFORE=$(control-agent-server api GET /api/conversations/count --field .)
+  control-agent-server api POST "/api/conversations/$EPARENT/children" --json '{}' --expect 422 --save F04.child-errors/missing-task
+  control-agent-server api POST "/api/conversations/$EPARENT/children" --json '{"task":""}' --expect 422
+  control-agent-server api POST "/api/conversations/$EPARENT/children" --json '{"task":"QA child","isolation":"other"}' --expect 422
+  control-agent-server api POST "/api/conversations/$NOPE/children" --json '{"task":"QA child"}' --expect 404 --save F04.child-errors/missing-parent
+  control-agent-server api POST /api/conversations/not-a-uuid/children --json '{"task":"QA child"}' --expect 422
+  control-agent-server api POST "/api/conversations/$EPARENT/children" --auth none --json '{"task":"QA child"}' --expect 401
+  control-agent-server api GET /api/conversations/count --check . eq "$CHILD_BEFORE"
+  control-agent-server api GET "/api/conversations/$EPARENT" --check sub_conversation_ids len-eq 0 --save F04.child-errors/unchanged-parent
+  control-agent-server api DELETE "/api/conversations/$EPARENT" --expect 200
+  ```
+  Validation is 422, an unknown parent is 404 and missing authentication is
+  401; the catalog count and parent's child list are unchanged.
+- **Child launch at capacity (`F04.child-capacity`).** One hanging provider
+  call occupies the only run slot, so a child is rejected before creation.
+  ```sh
+  CRUN=$(control-agent-server launch --new --name f04-child-capacity --config-json '{"max_concurrent_runs":1}' --print-run)
+  trap 'control-agent-server stop --run "$CRUN" >/dev/null' EXIT
+  control-agent-server doctor --run "$CRUN"
+  FULL_PARENT=$(control-agent-server api POST /api/conversations --run "$CRUN" \
+    --json "{\"workspace\":{\"working_dir\":\"$REPO\"},\"agent\":$HANG_AGENT,\"autotitle\":false,\"initial_message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Wait.\"}]}}" \
+    --expect 201 --field id)
+  control-agent-server conversation wait "$FULL_PARENT" --run "$CRUN" --until running --timeout 30
+  control-agent-server api POST "/api/conversations/$FULL_PARENT/children" --run "$CRUN" \
+    --json '{"task":"QA child","isolation":"worktree"}' --expect 429 --save F04.child-capacity/rejected
+  control-agent-server api GET /api/conversations/count --run "$CRUN" --check . eq 1 --save F04.child-capacity/count
+  control-agent-server api GET "/api/conversations/$FULL_PARENT" --run "$CRUN" --check sub_conversation_ids len-eq 0
+  test ! -d "$CRUN/worktrees" || test -z "$(ls -A "$CRUN/worktrees")"
+  control-agent-server stop --run "$CRUN"
+  ```
+  No child appears in the catalog or the parent, and no child worktree exists.
+
 ## Gotchas
 
 - A create with `initial_message` always starts a run (`initial_message.run`
@@ -740,11 +877,8 @@ EOF
   `base_state.json` is missing, so the two can differ on a damaged store.
 - `agent.agent_context.skills` is trimmed to `[]` on every route unless
   `include_skills=true`; the stored agent keeps them.
-- Unknown ids: GET and `agent_final_response` are 404, PATCH is 200
-  `{"success": false}` and DELETE is 400, although the OpenAPI document lists
-  404 for PATCH and DELETE (the router tests lock the current codes; known
-  bugs `F04.patch-unknown-id` and `F04.delete-unknown-id`). Check `success`
-  on a PATCH, not only the status.
+- Unknown ids: GET, PATCH, DELETE and `agent_final_response` are 404, as
+  the OpenAPI document lists; a repeated DELETE is 404 too.
 - `GET /api/conversations` takes at most 99 ids; more are a 422 (see
   `F04.batch-get-limit`). Repeat `--query ids=...` once per id.
 - PATCH `tags` replaces the whole map; PATCH `title` alone leaves tags alone.

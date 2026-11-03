@@ -968,7 +968,16 @@ async def download_trajectory(
 )
 async def archive_directory(
     path: Annotated[
-        str, Query(description="Absolute path of the directory to archive")
+        str,
+        Query(
+            description=(
+                "Absolute path of the directory to archive. If it is not a git "
+                "repository but holds exactly one git repository (up to three "
+                "levels down), that repository is archived instead, for both "
+                "formats; pass the repository itself, or a directory holding "
+                "zero or several repositories, to control what is archived."
+            )
+        ),
     ],
     archive_format: Annotated[
         ArchiveFormat,
@@ -977,8 +986,13 @@ async def archive_directory(
             description=(
                 "Archive format: 'git-delta' for a git patch of the working-tree "
                 "changes against a base ref (requires a git repository); 'tar.gz' "
-                "for a full gzip tarball of the entire directory (works on "
-                "non-git directories too)."
+                "for a gzip tarball of the files (works on non-git directories "
+                "too). Both formats archive the directory at path, except that "
+                "a non-repository path holding exactly one git repository (up "
+                "to three levels down, skipping hidden and vendored "
+                "directories) is archived as that repository, so files beside "
+                "it are not included; with zero or several repositories the "
+                "directory is archived as given."
             ),
         ),
     ] = "git-delta",

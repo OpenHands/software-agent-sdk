@@ -95,6 +95,7 @@ def _oauth_auth_from_authentication_config(
     authentication: MCPOAuthAuthentication | None,
     *,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
+    mcp_oauth_class: type[MCPOAuth] = MCPOAuth,
 ) -> OAuth | None:
     """Build FastMCP OAuth auth from explicit SDK MCP auth metadata."""
     if authentication is None:
@@ -105,7 +106,7 @@ def _oauth_auth_from_authentication_config(
     if client_auth_method is not None:
         additional_client_metadata["token_endpoint_auth_method"] = client_auth_method
 
-    return MCPOAuth(
+    return mcp_oauth_class(
         scopes=authentication.scopes,
         client_name=authentication.client_name or "FastMCP Client",
         token_storage=mcp_oauth_token_storage,
@@ -169,6 +170,7 @@ def _prepare_mcp_config(
     *,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
     mcp_oauth_factory: MCPOAuthFactory | None = None,
+    mcp_oauth_class: type[MCPOAuth] = MCPOAuth,
 ) -> FastMCPConfig:
     """Validate MCP config and apply explicit OpenHands runtime auth metadata."""
     prepared = FastMCPConfig.model_validate(to_fastmcp_mcp_config(mcp_config))
@@ -198,12 +200,13 @@ def _prepare_mcp_config(
             else _oauth_auth_from_authentication_config(
                 auth.authentication,
                 mcp_oauth_token_storage=mcp_oauth_token_storage,
+                mcp_oauth_class=mcp_oauth_class,
             )
         )
         if oauth_auth is not None:
             server.auth = oauth_auth
         elif mcp_oauth_token_storage is not None:
-            server.auth = MCPOAuth(token_storage=mcp_oauth_token_storage)
+            server.auth = mcp_oauth_class(token_storage=mcp_oauth_token_storage)
 
     return prepared
 
@@ -377,6 +380,7 @@ def create_mcp_tools(
     on_tools_reconciled: ToolsReconciledCallback | None = None,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
     mcp_oauth_factory: MCPOAuthFactory | None = None,
+    mcp_oauth_class: type[MCPOAuth] = MCPOAuth,
 ) -> MCPClient:
     """Create MCP tools from OpenHands-native MCP server settings.
 
@@ -408,6 +412,7 @@ def create_mcp_tools(
         mcp_config,
         mcp_oauth_token_storage=mcp_oauth_token_storage,
         mcp_oauth_factory=mcp_oauth_factory,
+        mcp_oauth_class=mcp_oauth_class,
     )
     handler = _ToolListChangedHandler(
         client=None,  # type: ignore[arg-type]

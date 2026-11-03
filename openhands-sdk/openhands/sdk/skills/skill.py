@@ -105,6 +105,7 @@ class SkillInfo(BaseModel):
     type: Literal["repo", "knowledge", "agentskills"]
     content: str
     triggers: list[str] = Field(default_factory=list)
+    paths: list[str] = Field(default_factory=list)
     source: str | None = None
     description: str | None = None
     is_agentskills_format: bool = False
@@ -819,6 +820,9 @@ class Skill(BaseModel):
             type=self.get_skill_type(),
             content=self.content,
             triggers=self.get_triggers(),
+            paths=list(self.trigger.paths)
+            if isinstance(self.trigger, PathTrigger)
+            else [],
             source=self.source,
             description=self.description,
             is_agentskills_format=self.is_agentskills_format,
@@ -1179,7 +1183,7 @@ PUBLIC_SKILLS_PATH_ENV = "EXTENSIONS_PATH"
 # Cache value: (timestamp, skills)
 # For mutable refs (branches), timestamp is time.monotonic() at write time and
 # the entry expires after _PUBLIC_SKILLS_CACHE_TTL_SECONDS.
-# For immutable refs (tags, commit SHAs), timestamp is float("inf") so the
+# For pinned refs (tags and commit SHAs), timestamp is float("inf") so the
 # TTL check is never satisfied and the entry lives for the process lifetime.
 _PUBLIC_SKILLS_CACHE: dict[
     tuple[str, str, str | None], tuple[float, list["Skill"]]
@@ -1266,8 +1270,8 @@ def load_public_skills(
     https://github.com/OpenHands/extensions. On first run, it clones the repository
     to ~/.openhands/skills-cache/. On subsequent runs within the same process, it
     returns cached results. For branch refs it re-fetches after the cache TTL; for
-    tags and commit SHAs (immutable refs) the cache never expires so no further
-    network calls are made.
+    pinned tags and commit SHAs the cache never expires. The loader makes no
+    further network calls for those refs.
 
     When ``EXTENSIONS_PATH`` names a local copy of the default repository, such
     as an installed ``@openhands/extensions`` package, skills are read from it
@@ -1287,8 +1291,8 @@ def load_public_skills(
             OpenHands skills repository.
         ref: Branch name, tag (e.g. ``"v1.0.0"``), or full 40-character commit
             SHA to load skills from. Defaults to ``'main'``. Tags and commit
-            SHAs are treated as immutable: once loaded, the result is cached
-            for the lifetime of the process without further remote polling.
+            SHAs are pinned after loading. The result stays cached for the
+            lifetime of the process without further remote polling.
         marketplace_path: Relative path to the marketplace JSON file within the
             repository. Pass None to load all public skills without filtering.
 
@@ -1331,9 +1335,7 @@ def load_public_skills(
                 logger.warning("Failed to access public skills repository")
                 return all_skills
 
-            # Detect whether the ref is immutable (tag or commit SHA in detached
-            # HEAD). Pinned repos are cached indefinitely — no re-fetching needed.
-            is_pinned = is_skills_repo_pinned(repo_path)
+            is_pinned = is_skills_repo_pinned(repo_path, ref)
 
         # Load skills from the local repository
         skills_dir = repo_path / "skills"

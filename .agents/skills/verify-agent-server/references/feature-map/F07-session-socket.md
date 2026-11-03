@@ -304,14 +304,13 @@ Preconditions:
   `ws stop` capture starts with an `opened` entry and ends with a `stopped`
   entry, so `frames.5.direction ne received` says exactly four frames
   arrived.
-- **Live frames in seq order (`F07.live-order`), known bug.** Durable frames
-  on one connection should arrive in `seq` order, like the replay. A user
-  message is published after the `last_user_message_id` update it causes,
-  because `LocalConversation`'s persist callback appends the message, sets
-  `last_user_message_id` (which appends and publishes the update at once),
-  and only then lets the message reach the publish callback. A client that
-  stores the highest `seq` it saw and drops between the two frames resumes
-  past the message and loses it.
+- **Live frames in seq order (`F07.live-order`).** Durable frames on one
+  connection arrive in `seq` order, like the replay. A user message is
+  published before the `last_user_message_id` update it causes:
+  `LocalConversation` sets `last_user_message_id` (which appends and
+  publishes the update at once) only after the message has reached the
+  publish callback. A client that stores the highest `seq` it saw can resume
+  from it without losing the message.
   ```sh
   ORD=$(control-agent-server conversation start --tools none --no-autotitle --print-id)
   control-agent-server ws start "/sockets/session/$ORD" --name "order-$ORD" --settle 2
@@ -323,15 +322,14 @@ Preconditions:
   control-agent-server state cat "evidence/F07.live-order/order-$ORD.json" --contains QA_F07_ORDER --check frames.6.direction ne received \
     --check frames.1.frame.type eq sync --check frames.2.frame.type eq transient \
     --check frames.3.frame.type eq durable --check frames.4.frame.type eq durable --check frames.5.frame.type eq durable
-  control-agent-server state cat "evidence/F07.live-order/order-$ORD.json" --check frames.3.frame.seq eq 0 --check frames.4.frame.seq eq 1 --check frames.5.frame.seq eq 2  # bug: checks.0.actual eq 0 && checks.1.actual eq 2 && checks.2.actual eq 1
+  control-agent-server state cat "evidence/F07.live-order/order-$ORD.json" --check frames.3.frame.seq eq 0 --check frames.4.frame.seq eq 1 --check frames.5.frame.seq eq 2
   ```
   The arrange steps and positive controls hold either way: the message is
   persisted, the capture holds `sync`, the snapshot and exactly three
   durable frames, and those carry `seq` 0 (the system prompt), 1 (the
   message) and 2 (its `last_user_message_id` update). Only the last line
-  judges their order: expected 0, 1, 2; today they arrive as 0, 2, 1 (the
-  update, then the message), on every user message, whether it came over
-  REST or over the socket, so it fails at `frames.4.frame.seq eq 1`.
+  judges their order: 0, 1, 2 (the message, then its update), on every
+  user message, whether it came over REST or over the socket.
 - **Replay and live tail, each event once (`F07.replay-then-live`).** Open a
   full-history capture while four more messages are being appended in the
   background, so the connect lands before, inside or after the appends;
@@ -707,10 +705,9 @@ Preconditions:
   message count. A `websockets` client is a poor stall: it keeps reading
   into its own buffer even with `max_queue=1`.
 - Durable frames dropped with a connection (oversize, slow consumer) are not
-  lost: reconnect with `after_seq` set to the highest `seq` below which
-  nothing is missing. Today that is not always the last `seq` received,
-  because live frames can arrive out of order (`F07.live-order`). Progress
-  frames are never replayed, by design.
+  lost: reconnect with `after_seq` set to the last `seq` received; live
+  frames arrive in `seq` order (`F07.live-order`). Progress frames are
+  never replayed, by design.
 - An open streaming item ends either with the `durable` frame whose
   `event.id` is its `item_id` or with one `item_aborted`. The abort `reason`
   is `cancelled` for an interrupt (`F07.item-aborted`), the exception's
