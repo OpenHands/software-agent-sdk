@@ -246,7 +246,7 @@ class PersistedSettings(BaseModel):
         ``agent_settings_diff`` is applied via :func:`apply_agent_settings_diff`:
         RFC 7386 merge-patch semantics with kind-switch awareness. When
         ``agent_kind`` changes, the diff is applied onto a fresh base of the
-        target variant that keeps only the shared ``mcp_config`` catalog.
+        target variant that keeps only the server-wide settings.
         Same-kind diffs deep-merge within the variant. A ``None`` value at any
         level removes that key and resets it to default.
 

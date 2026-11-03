@@ -38,7 +38,7 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
 - `F18.misc-settings-merge`: `misc_settings_diff` deep-merges nested objects, replaces lists, removes a nested key on `null`, and stores a top-level `null` as `null`.
 - `F18.patch-validation`: an empty or unknown-keys-only PATCH is 400, an invalid value is 422 `Settings validation failed` without echoing the posted secret, malformed pointers are 422, and nothing is stored.
 - `F18.active-profile-pointer`: PATCH `active_profile` applies that LLM profile to `agent_settings.llm`, an unknown profile is 404, an explicit `llm` diff wins over the profile, and `null` clears only the pointer.
-- `F18.agent-kind-switch`: switching `agent_kind` to `acp` rebuilds from a fresh ACP base (no `llm`, no key); switching back gives fresh OpenHands defaults. The shared `mcp_config` catalog survives both switches.
+- `F18.agent-kind-switch`: switching `agent_kind` to `acp` rebuilds from a fresh ACP base (no `llm`, no key); switching back gives fresh OpenHands defaults. The server-wide `mcp_config`, `agent_context.load_memory` and `verification.critic_api_key` survive both switches.
 - `F18.secret-put-list-get`: `PUT /api/settings/secrets` answers `{name, description}`, the list shows names and descriptions but never values, GET by name returns the raw value as `text/plain`, and a second PUT overwrites value and description.
 - `F18.secret-delete`: DELETE answers `{"deleted": true}`; afterwards GET and a second DELETE are 404 `Secret not found` and the list omits the name.
 - `F18.secret-name-validation`: names that do not match `^[a-zA-Z][a-zA-Z0-9_]{0,63}$` are 422 on GET, PUT and DELETE (64 characters are accepted, 65 are not); a PUT without `value` is 422; an unknown valid name is 404.
@@ -451,23 +451,32 @@ Preconditions:
   ```sh
   control-agent-server api POST /api/settings/mcp/qa-f18-switch --expect 201 \
     --json '{"transport": "http", "url": "https://example.invalid/mcp"}'
+  control-agent-server api PATCH /api/settings --expect 200 \
+    --json '{"agent_settings_diff": {"agent_context": {"load_memory": true}, "verification": {"critic_api_key": "qa-f18-critic"}}}'
   control-agent-server api PATCH /api/settings --json '{"agent_settings_diff": {"agent_kind": "acp", "acp_server": "claude-code"}}' \
     --expect 200 --check agent_settings.agent_kind eq acp --check agent_settings.acp_server eq claude-code \
     --check agent_settings.llm missing --check llm_api_key_is_set eq false \
-    --check agent_settings.mcp_config.qa-f18-switch.url eq https://example.invalid/mcp --save F18.agent-kind-switch/to-acp
+    --check agent_settings.mcp_config.qa-f18-switch.url eq https://example.invalid/mcp \
+    --check agent_settings.agent_context.load_memory eq true --check agent_settings.verification.critic_api_key exists \
+    --save F18.agent-kind-switch/to-acp
   control-agent-server api GET /api/settings --check agent_settings.agent_kind eq acp --check conversation_settings.max_iterations eq 77
   control-agent-server api PATCH /api/settings --json '{"agent_settings_diff": {"agent_kind": "openhands"}}' --expect 200 \
     --check agent_settings.agent_kind eq openhands --check agent_settings.llm.model eq "$DEFAULT_MODEL" \
     --check llm_api_key_is_set eq false \
-    --check agent_settings.mcp_config.qa-f18-switch.url eq https://example.invalid/mcp --save F18.agent-kind-switch/back
+    --check agent_settings.mcp_config.qa-f18-switch.url eq https://example.invalid/mcp \
+    --check agent_settings.agent_context.load_memory eq true --check agent_settings.verification.critic_api_key exists \
+    --save F18.agent-kind-switch/back
   control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --check agent_settings.llm.api_key missing
   control-agent-server api PATCH /api/settings --json "{\"agent_settings_diff\": {\"llm\": {\"model\": \"openai/qa-f18-model\", \"api_key\": \"$QA_F18_LLM_KEY\"}}}" \
     --expect 200 --check llm_api_key_is_set eq true
   control-agent-server api DELETE /api/settings/mcp/qa-f18-switch --expect 200
+  control-agent-server api PATCH /api/settings --expect 200 \
+    --json '{"agent_settings_diff": {"agent_context": {"load_memory": false}, "verification": {"critic_api_key": null}}}'
   ```
   ACP settings have no `llm`, so the key is gone; switching back starts from
   fresh OpenHands defaults (the default model, no key), not from the old LLM.
-  The MCP catalog is not variant state and survives both switches.
+  The MCP catalog, the memory flag and the critic key are not variant state
+  and survive both switches.
   Conversation settings are untouched. The last PATCH restores the LLM.
 - **Upsert, list and read a secret (`F18.secret-put-list-get`).** Create,
   list, read, overwrite, restore.
@@ -942,8 +951,10 @@ Preconditions:
   `SettingsUpdateRequest` docstring ("same semantics as
   `agent_settings_diff`") both overstate this.
 - Changing `agent_kind` starts from a fresh base of the target variant that
-  keeps only `mcp_config`, so a switch to ACP and back drops the LLM and its
-  key but not the MCP servers.
+  keeps only `mcp_config`, `agent_context.load_memory` and
+  `verification.critic_api_key`, so a switch to ACP and back drops the LLM and
+  its key but not those. ACP settings hold only the critic key under
+  `verification` and do not list that section in the agent schema.
 - A corrupted `settings.json` is indistinguishable from "never configured" on
   GET; only a PATCH (409) reveals it. A corrupted `secrets.json` lists as
   empty; PUT and DELETE answer 500.
