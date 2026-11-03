@@ -578,6 +578,13 @@ def test_deepseek_v4_models_use_structured_content(model):
         ("claude-opus-4-5-20251101", False),
         ("claude-sonnet-4-5-20250929", False),
         ("gemini/gemini-2.5-pro", False),
+        # ``openai/prod/<upstream>`` is an OpenAI-compatible proxy route, not
+        # an OpenAI upstream: the deployment segment must be stripped before
+        # resolving the real provider, or Claude behind it is misread as
+        # OpenAI and sent prompt_cache_key (examples 49 / 59 regression).
+        ("openai/prod/claude-sonnet-4-5-20250929", False),
+        ("openai/prod/gpt-5.5", True),
+        ("litellm_proxy/prod/claude-opus-4-5-20251101", False),
         # Unresolved alias -> safe default False (call still succeeds)
         ("prod/my-unknown-alias", False),
     ],
