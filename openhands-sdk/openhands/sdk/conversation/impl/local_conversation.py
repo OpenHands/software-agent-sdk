@@ -3,7 +3,6 @@ import atexit
 import contextlib
 import copy
 import json
-import tempfile
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePath
@@ -1910,7 +1909,9 @@ class LocalConversation(BaseConversation):
         assert message.role == "user", (
             "Only user messages are allowed to be sent to the agent."
         )
-        attachments_note = save_message_images(message, self._attachments_dir())
+        attachments_note = save_message_images(
+            message, Path(self.workspace.working_dir)
+        )
         with self._state:
             if self._state.execution_status in (
                 ConversationExecutionStatus.FINISHED,
@@ -1952,11 +1953,6 @@ class LocalConversation(BaseConversation):
                 sender=sender,
             )
             self._on_event(user_msg_event)
-
-    def _attachments_dir(self) -> Path:
-        if self._state.persistence_dir is not None:
-            return Path(self._state.persistence_dir) / "attachments"
-        return Path(tempfile.gettempdir()) / "openhands-attachments" / self.id.hex
 
     def _on_event_with_state_lock(self, event: Event) -> None:
         """Emit an event while holding the conversation state lock."""

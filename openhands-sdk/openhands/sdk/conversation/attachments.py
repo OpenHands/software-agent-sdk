@@ -25,9 +25,9 @@ def _decode_data_url(url: str) -> tuple[bytes, str]:
 
 def _write_attachment(data: bytes, mime_type: str, target_dir: Path) -> Path:
     extension = mimetypes.guess_extension(mime_type) or ".bin"
-    path = target_dir / f"{hashlib.sha256(data).hexdigest()[:16]}{extension}"
+    digest = hashlib.sha256(data).hexdigest()[:16]
+    path = target_dir / f"pasted-image-{digest}{extension}"
     if not path.exists():
-        target_dir.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
     return path.resolve()
 

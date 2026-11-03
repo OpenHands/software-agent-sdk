@@ -50,16 +50,20 @@ def _llm_text(event: MessageEvent) -> str:
     return "".join(content_to_str(event.to_llm_message().content))
 
 
-def test_pasted_image_is_saved_outside_the_workspace(tmp_path: Path):
+def _saved_images(tmp_path: Path) -> list[Path]:
+    return sorted((tmp_path / "workspace").glob("pasted-image-*"))
+
+
+def test_pasted_image_is_saved_in_the_workspace(tmp_path: Path):
     conversation = _conversation(tmp_path, persistence_dir=tmp_path / "conversations")
 
     conversation.send_message(_image_message(_png_data_url()))
 
-    saved = list((tmp_path / "conversations").rglob("attachments/*.png"))
+    saved = _saved_images(tmp_path)
     assert len(saved) == 1
+    assert saved[0].suffix == ".png"
     assert saved[0].read_bytes() == PNG_BYTES
     assert str(saved[0].resolve()) in _llm_text(_user_event(conversation))
-    assert not any((tmp_path / "workspace").iterdir())
 
 
 def test_saved_image_path_survives_resume(tmp_path: Path):
@@ -74,34 +78,31 @@ def test_saved_image_path_survives_resume(tmp_path: Path):
     )
 
     assert _llm_text(_user_event(resumed)) == expected
-    assert next(persistence.rglob("attachments/*.png")).read_bytes() == PNG_BYTES
+    assert _saved_images(tmp_path)[0].read_bytes() == PNG_BYTES
 
 
 def test_image_that_cannot_be_decoded_is_reported(tmp_path: Path):
-    conversation = _conversation(tmp_path, persistence_dir=tmp_path / "conversations")
+    conversation = _conversation(tmp_path)
 
     conversation.send_message(_image_message("data:image/png;base64,not*base64"))
 
     assert "could not be saved" in _llm_text(_user_event(conversation))
-    assert not list((tmp_path / "conversations").rglob("attachments/*"))
+    assert _saved_images(tmp_path) == []
 
 
 def test_remote_image_urls_and_text_messages_are_unchanged(tmp_path: Path):
-    conversation = _conversation(tmp_path, persistence_dir=tmp_path / "conversations")
+    conversation = _conversation(tmp_path)
 
     conversation.send_message(_image_message("https://example.com/screenshot.png"))
 
     assert _user_event(conversation).extended_content == []
-    assert not list((tmp_path / "conversations").rglob("attachments"))
+    assert _saved_images(tmp_path) == []
 
 
-def test_in_memory_conversation_saves_to_a_temporary_directory(tmp_path: Path):
+def test_same_image_twice_is_saved_once(tmp_path: Path):
     conversation = _conversation(tmp_path)
 
-    conversation.send_message(_image_message(_png_data_url()))
+    conversation.send_message(_image_message(_png_data_url(), _png_data_url()))
 
-    text = _llm_text(_user_event(conversation))
-    saved = Path(text.split("\n- ", 1)[1].split(" (", 1)[0])
-    assert saved.read_bytes() == PNG_BYTES
-    assert conversation.id.hex in str(saved)
-    saved.unlink()
+    assert len(_saved_images(tmp_path)) == 1
+    assert _llm_text(_user_event(conversation)).count("pasted-image-") == 2
