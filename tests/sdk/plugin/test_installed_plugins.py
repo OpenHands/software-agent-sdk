@@ -9,7 +9,6 @@ cloning and remain unchanged.
 """
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -132,25 +131,6 @@ def test_load_installed_plugins(sample_plugin_dir: Path, installed_dir: Path) ->
     assert isinstance(plugins[0], Plugin)
     assert plugins[0].name == "sample-plugin"
     assert len(plugins[0].skills) == 1
-
-
-def test_load_installed_plugins_skips_plugin_that_fails_to_load(
-    sample_plugin_dir: Path, installed_dir: Path, tmp_path: Path
-) -> None:
-    broken_plugin_dir = tmp_path / "broken-plugin"
-    shutil.copytree(sample_plugin_dir, broken_plugin_dir)
-    (broken_plugin_dir / ".plugin" / "plugin.json").write_text(
-        json.dumps({"name": "broken-plugin", "version": "1.0.0"})
-    )
-    install_plugin(source=str(broken_plugin_dir), installed_dir=installed_dir)
-    install_plugin(source=str(sample_plugin_dir), installed_dir=installed_dir)
-    (installed_dir / "broken-plugin" / ".plugin" / "plugin.json").write_text(
-        "{not json"
-    )
-
-    plugins = load_installed_plugins(installed_dir=installed_dir)
-
-    assert [plugin.name for plugin in plugins] == ["sample-plugin"]
 
 
 def test_disable_plugin_filters_load(

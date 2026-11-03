@@ -1073,13 +1073,23 @@ class LocalConversation(BaseConversation):
                 for entry in marketplace.plugins:
                     if not registration.auto_loads_plugin(entry.name):
                         continue
-                    source, ref, repo_path = marketplace.resolve_plugin_source(entry)
-                    plugins_to_load.append(
-                        (
-                            PluginSource(source=source, ref=ref, repo_path=repo_path),
-                            True,
+                    try:
+                        source, ref, repo_path = marketplace.resolve_plugin_source(
+                            entry
                         )
-                    )
+                        plugin_source = PluginSource(
+                            source=source, ref=ref, repo_path=repo_path
+                        )
+                    except ValueError:
+                        logger.warning(
+                            "Failed to load plugin '%s' from marketplace '%s'; "
+                            "continuing without it",
+                            entry.name,
+                            registration.name,
+                            exc_info=True,
+                        )
+                        continue
+                    plugins_to_load.append((plugin_source, True))
                 # Standalone skills. Merged below as low precedence; plugins
                 # loaded afterwards override same-named skills, matching the
                 # catalog.
@@ -1107,7 +1117,6 @@ class LocalConversation(BaseConversation):
             self._resolved_plugins = []
 
             for spec, auto_loaded in plugins_to_load:
-                # Marketplace sources were expanded with their registration above.
                 if auto_loaded:
                     fetch_source = spec.source
                     fetch_ref = spec.ref
