@@ -2160,3 +2160,148 @@ def test_max_output_tokens_not_capped_when_below_context_window(
 
 
 # LLM Registry Tests
+
+
+def test_proxy_system_identity_prepended_for_bare_chat_messages():
+    """System-less calls to the OpenHands proxy get the default identity.
+
+    The proxy rejects requests whose leading system text does not start with
+    the OpenHands identity (403 "Request rejected by proxy policy"), which hit
+    bare ``LLM.completion()`` calls that send no system message at all.
+    """
+    llm = LLM(
+        model="openhands/claude-haiku-4-5-20251001",
+        api_key=SecretStr("test_key"),
+        usage_id="test-proxy-identity",
+    )
+    from openhands.sdk.llm.utils.openhands_provider import (
+        OPENHANDS_SYSTEM_IDENTITY,
+    )
+
+    formatted = llm.format_messages_for_llm(
+        [Message(role="user", content=[TextContent(text="Hello")])]
+    )
+    assert formatted[0]["role"] == "system"
+    assert OPENHANDS_SYSTEM_IDENTITY in str(formatted[0]["content"])
+    assert formatted[1]["role"] == "user"
+
+
+def test_proxy_system_identity_prepended_before_caller_system():
+    """A caller system message is kept verbatim, after the identity lead.
+
+    Hook evaluators lead with a task-specific policy prompt; the proxy still
+    requires the identity first. The caller's message must not be rewritten.
+    """
+    llm = LLM(
+        model="openhands/claude-haiku-4-5-20251001",
+        api_key=SecretStr("test_key"),
+        usage_id="test-proxy-identity-caller-system",
+    )
+    from openhands.sdk.llm.utils.openhands_provider import (
+        OPENHANDS_SYSTEM_IDENTITY,
+    )
+
+    formatted = llm.format_messages_for_llm(
+        [
+            Message(role="system", content=[TextContent(text="Be concise.")]),
+            Message(role="user", content=[TextContent(text="Hello")]),
+        ]
+    )
+    assert len(formatted) == 3
+    assert OPENHANDS_SYSTEM_IDENTITY in str(formatted[0]["content"])
+    assert "Be concise." in str(formatted[1]["content"])
+
+
+def test_proxy_system_identity_not_duplicated_when_already_leading():
+    """Calls already leading with the identity are left untouched."""
+    llm = LLM(
+        model="openhands/claude-haiku-4-5-20251001",
+        api_key=SecretStr("test_key"),
+        usage_id="test-proxy-identity-already-leading",
+    )
+    from openhands.sdk.llm.utils.openhands_provider import (
+        OPENHANDS_SYSTEM_IDENTITY,
+    )
+
+    formatted = llm.format_messages_for_llm(
+        [
+            Message(
+                role="system",
+                content=[
+                    TextContent(text=f"<SOUL>\n{OPENHANDS_SYSTEM_IDENTITY}\n</SOUL>")
+                ],
+            ),
+            Message(role="user", content=[TextContent(text="Hello")]),
+        ]
+    )
+    # The <SOUL>-wrapped lead does not start with the identity, so one is
+    # prepended; the wrapped original is preserved as the second message.
+    assert len(formatted) == 3
+    assert OPENHANDS_SYSTEM_IDENTITY in str(formatted[0]["content"])
+
+
+def test_proxy_system_identity_not_prepended_off_proxy():
+    """Non-proxy endpoints keep system-less calls untouched."""
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        usage_id="test-proxy-identity-off-proxy",
+    )
+    formatted = llm.format_messages_for_llm(
+        [Message(role="user", content=[TextContent(text="Hello")])]
+    )
+    assert len(formatted) == 1
+    assert formatted[0]["role"] == "user"
+
+
+def test_proxy_system_identity_in_responses_instructions():
+    """Responses calls to the proxy get identity instructions when unset."""
+    llm = LLM(
+        model="openhands/claude-haiku-4-5-20251001",
+        api_key=SecretStr("test_key"),
+        usage_id="test-proxy-identity-responses",
+    )
+    from openhands.sdk.llm.utils.openhands_provider import (
+        OPENHANDS_SYSTEM_IDENTITY,
+    )
+
+    instructions, _ = llm.format_messages_for_responses(
+        [Message(role="user", content=[TextContent(text="Hello")])]
+    )
+    assert instructions == OPENHANDS_SYSTEM_IDENTITY
+
+    instructions, _ = llm.format_messages_for_responses(
+        [
+            Message(role="system", content=[TextContent(text="Be concise.")]),
+            Message(role="user", content=[TextContent(text="Hello")]),
+        ]
+    )
+    assert instructions == f"{OPENHANDS_SYSTEM_IDENTITY}\n\nBe concise."
+
+
+def test_proxy_routing_for_vendor_prefixed_model():
+    """Vendor-prefixed models pointed at the proxy route through it.
+
+    ``anthropic/claude-...`` with the proxy as base_url otherwise keeps the
+    Anthropic Messages transport, which the proxy rejects outright.
+    """
+    from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
+
+    assert litellm_call_kwargs(
+        "anthropic/claude-sonnet-4-5-20250929",
+        "https://llm-proxy.app.all-hands.dev",
+    ) == {
+        "model": "litellm_proxy/claude-sonnet-4-5-20250929",
+        "api_base": "https://llm-proxy.app.all-hands.dev",
+    }
+    # Off-proxy, the vendor prefix is preserved.
+    assert litellm_call_kwargs("anthropic/claude-sonnet-4-5-20250929", None) == {
+        "model": "anthropic/claude-sonnet-4-5-20250929",
+        "api_base": None,
+    }
+    assert litellm_call_kwargs(
+        "anthropic/claude-sonnet-4-5-20250929", "https://api.anthropic.com"
+    ) == {
+        "model": "anthropic/claude-sonnet-4-5-20250929",
+        "api_base": "https://api.anthropic.com",
+    }
