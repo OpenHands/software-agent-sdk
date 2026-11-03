@@ -18,7 +18,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from pydantic import SecretStr
 
@@ -280,6 +280,34 @@ def _load_context(cipher: Cipher | None, strict: bool) -> dict[str, Any] | None:
     return {"cipher": cipher, STRICT_DECRYPT_CONTEXT_KEY: strict}
 
 
+class SettingsFileUnreadableError(RuntimeError):
+    """``settings.json`` exists but cannot be parsed, validated, or decrypted.
+
+    Raised by :meth:`FileSettingsStore.load_existing` so callers can fail
+    closed instead of substituting defaults for an unreadable file.
+    """
+
+    def __init__(
+        self, path: Path, reason: Literal["parse", "validation", "decryption"]
+    ):
+        self.path = path
+        self.reason = reason
+        super().__init__(f"Cannot read settings from {path}: {reason}")
+
+
+def _settings_unreadable(
+    path: Path, reason: Literal["parse", "validation", "decryption"]
+) -> SettingsFileUnreadableError:
+    """Log and build the error for a settings file that exists but is unreadable.
+
+    Only the path and the failure class are logged. The underlying exception is
+    kept as ``__cause__`` but never rendered here: a ``ValidationError`` carries
+    the offending input, which is plaintext when no cipher is configured.
+    """
+    logger.error("Settings file %s exists but cannot be read (%s)", path, reason)
+    return SettingsFileUnreadableError(path, reason)
+
+
 class SettingsStore(ABC):
     """Abstract base class for settings storage."""
 
@@ -356,6 +384,16 @@ class FileSettingsStore(SettingsStore):
         self._path = self.persistence_dir / filename
         self._lock_path = self.persistence_dir / ".settings.lock"
 
+    def _read(self, *, strict: bool) -> PersistedSettings:
+        """Parse and validate the settings file. Raises on any failure."""
+        with self._path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        # Pass cipher in context for automatic decryption of all secret fields
+        # This flows through to field validators using validate_secret()
+        context = _load_context(self.cipher, strict)
+        return PersistedSettings.from_persisted(data, context=context)
+
     def load(self, *, strict: bool = False) -> PersistedSettings | None:
         """Load settings from file.
 
@@ -366,19 +404,17 @@ class FileSettingsStore(SettingsStore):
         A secret the cipher cannot decrypt loads as ``None``. With
         ``strict=True`` (read-modify-write paths) the load fails instead,
         returning ``None``, so the caller refuses to overwrite the file.
+
+        Every unreadable state collapses to ``None`` here, which is
+        indistinguishable from "no settings file yet". Read paths that build
+        conversations use :meth:`load_existing` instead.
         """
         if not self._path.exists():
             logger.debug(f"Settings file not found: {self._path}")
             return None
 
         try:
-            with self._path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            # Pass cipher in context for automatic decryption of all secret fields
-            # This flows through to field validators using validate_secret()
-            context = _load_context(self.cipher, strict)
-            return PersistedSettings.from_persisted(data, context=context)
+            return self._read(strict=strict)
         except SecretDecryptionError as e:
             logger.error(f"Cannot load settings for update: {e}")
             return None
@@ -394,6 +430,38 @@ class FileSettingsStore(SettingsStore):
             # Validation or other errors - log and return None
             logger.error("Failed to load settings", exc_info=True)
             return None
+
+    def load_existing(self) -> PersistedSettings | None:
+        """Load settings, failing when the file exists but cannot be read.
+
+        ``load()`` reports every unreadable state as ``None``, which is
+        indistinguishable from "no settings file yet". Read paths that build
+        conversations use this method so a present-but-unreadable file cannot
+        quietly turn into permissive defaults.
+
+        Returns:
+            The stored settings, or ``None`` when ``settings.json`` is absent.
+
+        Raises:
+            SettingsFileUnreadableError: The file exists but cannot be parsed,
+                validated, or decrypted with the configured keys.
+            PermissionError: The file exists but cannot be opened.
+            OSError: Any other filesystem error.
+        """
+        if not self._path.exists():
+            logger.debug(f"Settings file not found: {self._path}")
+            return None
+
+        try:
+            return self._read(strict=True)
+        except (PermissionError, OSError):
+            raise
+        except SecretDecryptionError as e:
+            raise _settings_unreadable(self._path, "decryption") from e
+        except json.JSONDecodeError as e:
+            raise _settings_unreadable(self._path, "parse") from e
+        except Exception as e:
+            raise _settings_unreadable(self._path, "validation") from e
 
     def save(self, settings: PersistedSettings) -> None:
         """Save settings to file atomically with secure permissions.
@@ -452,17 +520,17 @@ class FileSettingsStore(SettingsStore):
                 data loss from overwriting existing settings with defaults.
         """
         with _file_lock(self._lock_path):
-            settings = self.load(strict=True)
+            try:
+                settings = self.load_existing()
+            except SettingsFileUnreadableError as e:
+                raise RuntimeError(
+                    f"Cannot load settings from {self._path}. "
+                    "File may be corrupted or encrypted with a different key "
+                    f"({_KEY_HINT}). "
+                    "Refusing to overwrite with defaults to prevent data loss."
+                ) from e
             if settings is None:
-                # File doesn't exist or is empty - safe to use defaults
-                if self._path.exists():
-                    # File exists but load() returned None - corrupted or unreadable
-                    raise RuntimeError(
-                        f"Cannot load settings from {self._path}. "
-                        "File may be corrupted or encrypted with a different key "
-                        f"({_KEY_HINT}). "
-                        "Refusing to overwrite with defaults to prevent data loss."
-                    )
+                # File doesn't exist - safe to use defaults
                 settings = PersistedSettings()
             updated = update_fn(settings)
             self.save(updated)
@@ -956,6 +1024,18 @@ def get_settings_store(config: Config | None = None) -> FileSettingsStore:
                 cipher=_get_cipher(config),
             )
         return _settings_store
+
+
+def load_settings_or_defaults(config: Config | None = None) -> PersistedSettings:
+    """Settings for read paths that must fail closed on an unreadable file.
+
+    Defaults are returned only when ``settings.json`` is absent.
+
+    Raises:
+        SettingsFileUnreadableError: The file exists but cannot be parsed,
+            validated, or decrypted with the configured keys.
+    """
+    return get_settings_store(config).load_existing() or PersistedSettings()
 
 
 def get_secrets_store(config: Config | None = None) -> FileSecretsStore:

@@ -23,6 +23,7 @@ from openhands.agent_server.persistence.store import (
     FileSettingsStore,
     FileWorkspacesStore,
     SecretsStore,
+    SettingsFileUnreadableError,
     SettingsStore,
     WorkspacesStore,
     get_agent_profile_store,
@@ -31,6 +32,7 @@ from openhands.agent_server.persistence.store import (
     get_secrets_store,
     get_settings_store,
     get_workspaces_store,
+    load_settings_or_defaults,
     reencrypt_stale_stores,
     reset_stores,
 )
@@ -62,6 +64,7 @@ __all__ = [
     "FileWorkspacesStore",
     "ProviderConnectionStore",
     "SecretsStore",
+    "SettingsFileUnreadableError",
     "SettingsStore",
     "WorkspacesStore",
     "get_agent_profile_store",
@@ -70,6 +73,7 @@ __all__ = [
     "get_secrets_store",
     "get_settings_store",
     "get_workspaces_store",
+    "load_settings_or_defaults",
     "reencrypt_stale_stores",
     "reset_stores",
 ]
