@@ -1,0 +1,98 @@
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.42.1                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+[08/20/26 08:27:32] INFO     Registered file-based agent          default.py:148
+                             'bash-runner' from                                 
+                             /home/glitchenstein/repos/software-a               
+                             gent-sdk/openhands-tools/openhands/t               
+                             ools/preset/subagents/bash_runner.md               
+[08/20/26 08:27:32] INFO     Registered file-based agent          default.py:148
+                             'code-explorer' from                               
+                             /home/glitchenstein/repos/software-a               
+                             gent-sdk/openhands-tools/openhands/t               
+                             ools/preset/subagents/code_explorer.               
+                             md                                                 
+[08/20/26 08:27:32] INFO     Registered file-based agent          default.py:148
+                             'general-purpose' from                             
+                             /home/glitchenstein/repos/software-a               
+                             gent-sdk/openhands-tools/openhands/t               
+                             ools/preset/subagents/default.md                   
+[08/20/26 08:27:32] INFO     Registered file-based agent          default.py:148
+                             'web-researcher' from                              
+                             /home/glitchenstein/repos/software-a               
+                             gent-sdk/openhands-tools/openhands/t               
+                             ools/preset/subagents/web_researcher               
+                             .md                                                
+[08/20/26 08:27:32] WARNING  No persistence_dir provided; falling   state.py:506
+                             back to InMemoryFileStore. EventLog                
+                             data will not persist across requests.             
+[08/20/26 08:27:32] INFO     Created new conversation               state.py:583
+                             c28d0b1a-e60c-4abd-9cb5-6b67f7a4f8d7               
+[08/20/26 08:27:32] INFO     Loaded 1 tools from spec                base.py:563
+[08/20/26 08:27:32] INFO     [Profile Store] Loaded     llm_profile_store.py:302
+                             profile `kimi` from                                
+                             /home/glitchenstein/.openh                         
+                             ands/profiles/kimi.json                            
+[08/20/26 08:27:32] INFO     [Profile Store] Loaded     llm_profile_store.py:302
+                             profile `mimo` from                                
+                             /home/glitchenstein/.openh                         
+                             ands/profiles/mimo.json                            
+[08/20/26 08:27:32] INFO     [Profile Store] Loaded     llm_profile_store.py:302
+                             profile `minimax` from                             
+                             /home/glitchenstein/.openh                         
+                             ands/profiles/minimax.json                         
+/home/glitchenstein/repos/software-agent-sdk/openhands-sdk/openhands/sdk/llm/utils/telemetry.py:291: UserWarning: Cost calculation failed: This model isn't mapped yet. model=glm-4.7, custom_llm_provider=openai. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json.
+  warnings.warn(f"Cost calculation failed: {e}")
+[08/20/26 08:27:38] INFO     Task refused (disabled_agents):          impl.py:59
+                             Sub-agent 'code-explorer' is disabled              
+                             for this conversation                              
+                             (agent_context.disabled_agents). Choose            
+                             another sub-agent type.                            
+[08/20/26 08:27:42] INFO     Created new conversation               state.py:583
+                             28e4a49d-eac1-4dc1-845a-036fcf5a1cc5               
+[08/20/26 08:27:42] INFO     Confirmation policy set  local_conversation.py:2542
+                             to: kind='NeverConfirm'                            
+[08/20/26 08:27:42] INFO     TaskTrackerExecutor initialized   definition.py:161
+                             with save_dir:                                     
+                             /tmp/openhands_tasks_uamzbq7p/28e                  
+                             4a49deac14dc1845a036fcf5a1cc5                      
+[08/20/26 08:27:42] INFO     FileEditor initialized with cwd:      editor.py:105
+                             /tmp/e2e_disabled_agents_laft4v7w                  
+[08/20/26 08:27:42] INFO     TmuxPanePool initialized:     tmux_pane_pool.py:140
+                             session=openhands-pool-None-e                      
+                             c285348-69ed-414c-8412-96336e                      
+                             ee19b2, max_panes=4                                
+[08/20/26 08:27:42] INFO     TerminalExecutor initialized (pool      impl.py:145
+                             mode) working_dir:                                 
+                             /tmp/e2e_disabled_agents_laft4v7w,                 
+                             username: None, max_panes: 4                       
+[08/20/26 08:27:42] INFO     Loaded 3 tools from spec                base.py:563
+[08/20/26 08:27:42] INFO     [Profile Store] Loaded     llm_profile_store.py:302
+                             profile `kimi` from                                
+                             /home/glitchenstein/.openh                         
+                             ands/profiles/kimi.json                            
+[08/20/26 08:27:42] INFO     [Profile Store] Loaded     llm_profile_store.py:302
+                             profile `mimo` from                                
+                             /home/glitchenstein/.openh                         
+                             ands/profiles/mimo.json                            
+[08/20/26 08:27:42] INFO     [Profile Store] Loaded     llm_profile_store.py:302
+                             profile `minimax` from                             
+                             /home/glitchenstein/.openh                         
+                             ands/profiles/minimax.json                         
+/home/glitchenstein/repos/software-agent-sdk/openhands-sdk/openhands/sdk/llm/utils/telemetry.py:291: UserWarning: Cost calculation failed: This model isn't mapped yet. model=glm-4.7, custom_llm_provider=openai. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json.
+  warnings.warn(f"Cost calculation failed: {e}")
+[08/20/26 08:27:50] INFO     Task 'task_00000001' completed.      manager.py:413
+=== E2E RESULT ===
+task tool calls by subagent_type: ['code-explorer', 'general-purpose']
+refusals observed: 1
+  -> Failed to execute task: Sub-agent 'code-explorer' is disabled for this conversation (agent_context.disabled_agents). Choose another sub-agent type.
+final status: ConversationExecutionStatus.FINISHED
+cost: $0.0000
+final agent response: I calculated 17 * 23 = 391 using the task tool. The answer is 391.
