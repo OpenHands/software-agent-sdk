@@ -830,3 +830,27 @@ def test_get_git_changes_non_repo_without_repo_below_still_raises():
 
         with pytest.raises(GitRepositoryError):
             get_git_changes(temp_dir)
+
+def _commit_all(repo_dir: Path) -> None:
+    """Stage and commit everything in the repo under test."""
+    run_bash_command("git add -A", str(repo_dir))
+    run_bash_command("git commit -q -m 'commit'", str(repo_dir))
+
+
+def test_get_changes_in_repo_type_change_does_not_abort_listing(tmp_path):
+    """A type change ('T', file -> symlink) must not abort the change listing."""
+    setup_git_repo(str(tmp_path))
+    (tmp_path / "target.txt").write_text("target")
+    (tmp_path / "link.txt").write_text("regular file")
+    (tmp_path / "other.txt").write_text("before")
+    _commit_all(tmp_path)
+    (tmp_path / "link.txt").unlink()
+    (tmp_path / "link.txt").symlink_to("target.txt")
+    (tmp_path / "other.txt").write_text("after")
+
+    changes = get_changes_in_repo(tmp_path, ref="HEAD")
+
+    assert {change.path for change in changes} == {
+        Path("link.txt"),
+        Path("other.txt"),
+    }
