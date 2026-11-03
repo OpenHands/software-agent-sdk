@@ -343,10 +343,15 @@ class AgentDefinition(BaseModel):
         fm = post.metadata
         content = post.content.strip()
 
-        # Extract frontmatter fields with proper type handling
-        name: str = str(fm.get("name", agent_path.stem))
-        description: str = str(fm.get("description", ""))
-        model: str = str(fm.get("model", "inherit"))
+        # Extract frontmatter fields with proper type handling.
+        # An explicit empty YAML value (e.g. "name:") parses as None; treat it
+        # as absent so the documented default is used instead of "None".
+        name_raw = fm.get("name")
+        name: str = agent_path.stem if name_raw is None else str(name_raw)
+        description_raw = fm.get("description")
+        description: str = "" if description_raw is None else str(description_raw)
+        model_raw = fm.get("model")
+        model: str = "inherit" if model_raw is None else str(model_raw)
         color: str | None = _extract_color(fm)
         tools: list[str] = _extract_tools(fm)
         skills: list[str] = _extract_skills(fm)
