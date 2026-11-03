@@ -87,6 +87,15 @@ class TestHookExecutor:
 
         assert result.decision == HookDecision.ALLOW
 
+    def test_null_reason_is_not_stringified(self, executor, sample_event):
+        """A JSON null reason must be treated as no reason, not "None"."""
+        hook = HookDefinition(command="""echo '{'"decision": "deny", "reason": null}'""")
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.blocked
+        assert result.reason is None
+
     def test_execute_blocking_exit_code(self, executor, sample_event):
         """Test that exit code 2 blocks the operation."""
         hook = HookDefinition(command=python_command("import sys; sys.exit(2)"))
