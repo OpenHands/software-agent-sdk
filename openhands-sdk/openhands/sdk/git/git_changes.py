@@ -189,8 +189,20 @@ def get_changes_in_repo(
     # ``git ls-files --others`` below, so a subdirectory of a repository does
     # not mix repository-relative and subdirectory-relative paths.
     try:
+        # ``-c core.quotepath=false`` keeps non-ASCII paths as raw UTF-8: with
+        # git's default ``core.quotePath`` they come back C-quoted (e.g.
+        # '"caf\303\251.txt"'), which the parser cannot unquote.
         changed_files_output = run_git_command(
-            ["git", "--no-pager", "diff", "--name-status", "--relative", ref],
+            [
+                "git",
+                "--no-pager",
+                "-c",
+                "core.quotepath=false",
+                "diff",
+                "--name-status",
+                "--relative",
+                ref,
+            ],
             validated_repo,
         )
         changed_files = (
@@ -204,7 +216,15 @@ def get_changes_in_repo(
     # Get untracked files
     try:
         untracked_output = run_git_command(
-            ["git", "--no-pager", "ls-files", "--others", "--exclude-standard"],
+            [
+                "git",
+                "--no-pager",
+                "-c",
+                "core.quotepath=false",
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+            ],
             validated_repo,
         )
         untracked_files = untracked_output.splitlines() if untracked_output else []

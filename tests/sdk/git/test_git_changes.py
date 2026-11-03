@@ -830,3 +830,25 @@ def test_get_git_changes_non_repo_without_repo_below_still_raises():
 
         with pytest.raises(GitRepositoryError):
             get_git_changes(temp_dir)
+
+def _commit_all(repo_dir: Path) -> None:
+    run_bash_command("git add -A", str(repo_dir))
+    run_bash_command("git commit -q -m bommit", str(repo_dir))
+
+
+@pytest.mark.parametrize("tracked", [True, False], ids=["modified", "untracked"])
+def test_get_changes_in_repo_non_ascii_path(tmp_path, tracked):
+    """"Non-ASCII paths must come back verbatim, not C-quoted by core.quotePath.""""
+    setup_git_repo(str(tmp_path))
+    # Pin git's default so a developer's global core.quotePath=false cannot
+    # hide the behavior under test.
+    run_bash_command("git config core.quotePath true", str(tmp_path))
+    (tmp_path / "base.txt").write_text("base")
+    if tracked:
+        (tmp_path / "café.txt").write_text("before")
+    _commit_all(tmp_path)
+    (tmp_path / "café.txt").write_text("after")
+
+    changes = get_changes_in_repo(tmp_path, ref="HEAD")
+
+    assert [change.path for change in changes] == [Path("café.txt")]
