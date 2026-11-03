@@ -174,6 +174,8 @@ def build_server_info(
         app_backend_ingress_url=app_backend_ingress_url,
         usable_tools=_usable_tools(browser_available),
     )
+    info.capabilities.append("canvas_app_backend_secret_grants_v1")
+    info.capabilities.append("canvas_app_backend_enable_lifecycle_v1")
     if app_backend_ingress_url:
         info.capabilities.append("canvas_app_backend_bridge_v1")
     return info

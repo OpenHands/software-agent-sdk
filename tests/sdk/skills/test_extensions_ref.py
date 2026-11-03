@@ -9,9 +9,25 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from openhands.sdk.skills.utils import is_skills_repo_pinned
+
+
+def _fake_skill_time(*values: float) -> SimpleNamespace:
+    """A stand-in for the ``time`` module as seen by ``skills/skill.py``.
+
+    ``load_public_skills`` does ``import time`` and reads ``time.monotonic``,
+    so patching ``skill.time.monotonic`` mutates the process-global ``time``
+    module: any unrelated caller (background threads, telemetry, pytest
+    internals) consumes a value from a fixed-length ``side_effect`` and raises
+    ``StopIteration``. Patch ``skill.time`` instead so only the code under test
+    sees the fake, and repeat the final value so the fake never exhausts.
+    """
+    sequence = iter(values)
+    last = values[-1]
+    return SimpleNamespace(monotonic=lambda: next(sequence, last))
 
 
 def _run_in_subprocess(test_code: str, env_extra: dict | None = None) -> None:
@@ -192,8 +208,8 @@ def test_tag_ref_keeps_public_skills_cache_without_detached_head(tmp_path: Path)
             return_value=repo,
         ) as mock_update,
         patch(
-            "openhands.sdk.skills.skill.time.monotonic",
-            side_effect=[0.0, _PUBLIC_SKILLS_CACHE_TTL_SECONDS + 1],
+            "openhands.sdk.skills.skill.time",
+            _fake_skill_time(0.0, _PUBLIC_SKILLS_CACHE_TTL_SECONDS + 1),
         ),
     ):
         first = load_public_skills(

@@ -43,7 +43,7 @@ Routes: `POST /api/mcp/test`, `POST /api/mcp/oauth/start`,
 - `F19.oauth-start-errors`: OAuth start is 400 for a stdio or non-oauth2 server, reports `ok: false` with a failed job for an unreachable server (whose callback is then 409), and finishes without consent for a server that needs no OAuth.
 - `F19.oauth-unknown-job`: status and callback for an unknown job id are 404, and a callback without `callback_url` is 422.
 - `F19.oauth-flow`: against a local OAuth-protected MCP server, start returns an `authorization_url`, status reports `authorizing` and `callback_ready`, and submitting the browser's redirect URL completes the job with tools, the tool result and an encrypted `oauth_state`.
-- `F19.oauth-callback-replay`: submitting a callback again after the job finished answers the job's status or a client error (4xx), not 500, and the job stays `succeeded`.
+- `F19.oauth-callback-replay`: submitting a callback again after the job finished answers 200 with the job's status, not 500, and the job stays `succeeded`.
 - `F19.oauth-callback-bad-port`: a callback URL with a port outside 0-65535 is rejected with 400, not 500.
 - `F19.oauth-callback-validation`: on a live job, an https URL, a foreign host, another port or another path is 400 and the job keeps waiting; the redirect URL with `127.0.0.1` instead of `localhost` completes it.
 - `F19.oauth-consent-denied`: submitting the redirect a provider sends when the user denies consent (`error=access_denied`) answers `ok: false` and fails the job without tokens.
@@ -512,25 +512,23 @@ Preconditions:
   after the callback the job is `succeeded` with `read_subject`, its result
   `QA_HTTP_SUBJECT:hi`, and Fernet-encrypted tokens (the run has
   `OH_SECRET_KEY`).
-- **Replayed callback (`F19.oauth-callback-replay`), known bug.** Once the
-  probe finished, its local callback server is closed; the route forwards the
-  URL with `httpx` without handling the connection error, so a second submit
-  (or a submit after the browser already reached the callback itself) is a 500
-  `All connection attempts failed`. The first command shows the job already
-  finished; the `# bug` line asserts the correct behavior, a handled answer
-  (the job's status, or a 4xx such as 409), and the last that the job is
-  unchanged.
+- **Replayed callback (`F19.oauth-callback-replay`).** Once the probe
+  finished, its local callback server is closed. A second submit (or a submit
+  after the browser already reached the callback itself) is not forwarded:
+  the route answers 200 with the finished job's status. The first command
+  shows the job already finished, the second the replay, and the last that
+  the job is unchanged.
 
   Requires: `F19.oauth-flow`
   ```sh
   control-agent-server api GET "/api/mcp/oauth/status/$J" --check status eq succeeded --check callback_ready eq true
   RBODY=$(jq -nc --arg u "$CALLBACK" '{callback_url: $u}')
-  control-agent-server api POST "/api/mcp/oauth/callback/$J" --json "$RBODY" --expect 200,4xx --save F19.oauth-callback-replay/replay  # bug: status eq 500 && response.body.exception contains 'All connection attempts failed'
+  control-agent-server api POST "/api/mcp/oauth/callback/$J" --json "$RBODY" --expect 200 --check status eq succeeded --save F19.oauth-callback-replay/replay
   control-agent-server api GET "/api/mcp/oauth/status/$J" --check status eq succeeded
   ```
-  Today the `# bug` line gets 500 `All connection attempts failed`. The same
-  500 (with an empty message) is returned for a callback submitted after a
-  job failed on its consent timeout.
+  A callback submitted after a job failed on its consent timeout likewise
+  answers the `failed` status; one that reaches a live job whose callback
+  server is gone is 409 `OAuth callback server is not listening`.
 - **Port out of range (`F19.oauth-callback-bad-port`).**
   `_validate_callback_url` reads `urlparse(...).port`, which raises
   `ValueError` for `99999` or a non-numeric port; the route turns that into
@@ -844,8 +842,8 @@ Preconditions:
   submitting earlier is 409, so poll status with `--until-ok` first.
 - When playing the browser, read the redirect `Location` without following it
   (`curl -w '%{redirect_url}'`). Following it delivers the code to the probe
-  directly, completes the job, and a later callback POST hits the
-  `F19.oauth-callback-replay` 500. The whole consent, including the user's
+  directly, completes the job, and a later callback POST only reports the
+  finished job (`F19.oauth-callback-replay`). The whole consent, including the user's
   sign-in, must finish within the request's `timeout` (default 15 s, at most
   120 s) or the job fails with `error_kind: timeout`.
 - `oauth_state` is Fernet-encrypted when the server has `OH_SECRET_KEY`
