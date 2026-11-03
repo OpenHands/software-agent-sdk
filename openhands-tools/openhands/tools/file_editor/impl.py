@@ -69,6 +69,12 @@ class FileEditorExecutor(ToolExecutor):
             result = FileEditorObservation.from_text(
                 text=e.message, command=action.command, is_error=True
             )
+        except OSError as e:
+            # e.g. an unreadable (chmod 0) or otherwise inaccessible file:
+            # surface it as a tool error instead of raising out of the executor.
+            result = FileEditorObservation.from_text(
+                text=f"Error: {e}", command=action.command, is_error=True
+            )
         assert result is not None, "file_editor should always return a result"
         return result
 
@@ -102,6 +108,12 @@ def file_editor(
     except ToolError as e:
         result = FileEditorObservation.from_text(
             text=e.message, command=command, is_error=True
+        )
+    except OSError as e:
+        # e.g. an unreadable (chmod 0) or otherwise inaccessible file: surface
+        # it as a tool error instead of raising out of the tool.
+        result = FileEditorObservation.from_text(
+            text=f"Error: {e}", command=command, is_error=True
         )
     assert result is not None, "file_editor should always return a result"
     return result
