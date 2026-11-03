@@ -25,6 +25,24 @@ from openhands.tools.utils import (
 logger = get_logger(__name__)
 
 
+def _expand_brace_pattern(pattern: str) -> list[str]:
+    """Expand shell-style ``{a,b}`` groups into concrete patterns.
+
+    ``fnmatch`` has no brace expansion, so the include patterns advertised in
+    the tool description (e.g. ``*.{ts,tsx}``) would never match a filename.
+    Nested groups are expanded recursively; patterns without braces come back
+    unchanged.
+    """
+    match = re.search(r"\{(?P<alts>[^{}]+)\}", pattern)
+    if not match:
+        return [pattern]
+    prefix, suffix = pattern[: match.start()], pattern[match.end() :]
+    expanded: list[str] = []
+    for alternative in match.group("alts").split(","):
+        expanded.extend(_expand_brace_pattern(prefix + alternative + suffix))
+    return expanded
+
+
 class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
     """Executor for grep content search operations.
 
@@ -161,7 +179,10 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
 
         filename = relative_parts[-1] if relative_parts else path.name
         if include_pattern:
-            return fnmatch.fnmatch(filename, include_pattern)
+            return any(
+                fnmatch.fnmatch(filename, candidate)
+                for candidate in _expand_brace_pattern(include_pattern)
+            )
         return not filename.startswith(".")
 
     def _match_mtime(self, path: Path) -> float:
@@ -231,6 +252,9 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             "rg",
             "-l",
             "-i",
+            # Pass the pattern with -e so a value starting with a dash is never
+            # parsed as a CLI flag.
+            "-e",
             action.pattern,
             str(search_path),
             "--sortr=modified",
@@ -258,7 +282,7 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
     ) -> GrepObservation:
         """Execute grep content search using the system grep binary."""
         result = subprocess.run(
-            ["grep", "-R", "-I", "-l", "-i", action.pattern, str(search_path)],
+            ["grep", "-R", "-I", "-l", "-i", "-E", action.pattern, str(search_path)],
             capture_output=True,
             text=True,
             timeout=30,
