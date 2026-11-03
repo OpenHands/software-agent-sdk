@@ -57,6 +57,8 @@ export interface ConversationInfo {
   workspace: unknown;
   persistence_dir: string;
   max_iterations?: number;
+  /** USD limit on accumulated conversation cost; a completed step may overshoot. */
+  max_budget_per_run?: number | null;
   stuck_detection?: boolean;
   conversation_stats?: ConversationStats;
   /** API may return stats instead of conversation_stats */
@@ -118,6 +120,8 @@ export interface CreateConversationRequest {
   agent: AgentBase;
   initial_message?: Message;
   max_iterations: number;
+  /** Positive USD limit on accumulated conversation cost; null means unbounded. */
+  max_budget_per_run?: number | null;
   stuck_detection: boolean;
   workspace: Record<string, unknown>;
   hook_config?: HookConfig | null;
@@ -128,6 +132,8 @@ export interface CreateACPConversationRequest {
   agent: ACPAgentConfig;
   initial_message?: Message;
   max_iterations: number;
+  /** Positive USD limit on accumulated conversation cost; null means unbounded. */
+  max_budget_per_run?: number | null;
   stuck_detection: boolean;
   workspace: Record<string, unknown>;
   hook_config?: HookConfig | null;
@@ -137,6 +143,8 @@ export interface CreateACPConversationRequest {
 export interface UpdateConversationRequest {
   title?: string;
   tags?: Record<string, string>;
+  /** New positive USD limit; omit to keep it, null to remove the limit. */
+  max_budget_per_run?: number | null;
 }
 
 export interface StaticSecret {

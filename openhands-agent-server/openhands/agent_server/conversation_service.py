@@ -387,7 +387,6 @@ def _compose_conversation_info(
     return ConversationInfo(
         **state.model_dump(mode="json"),
         title=stored.title,
-        max_budget_per_run=stored.max_budget_per_run,
         metrics=stored.metrics,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
@@ -1697,6 +1696,7 @@ class ConversationService:
                 "agent_settings",
                 "agent_profile_id",
                 "agent_launch_additions",
+                "max_budget_per_run",
             },
         )
         launched_agent_profile = launched.profile or runtime_launched_profile
@@ -1730,6 +1730,7 @@ class ConversationService:
                 else None
             ),
             reuse_request=request,
+            max_budget_per_run=request.max_budget_per_run,
         )
 
     async def _launch_prepared_conversation(
@@ -1740,6 +1741,7 @@ class ConversationService:
         run_slot: RunSlot,
         initial_message: Message | None,
         reuse_request: StartConversationRequest | None = None,
+        max_budget_per_run: float | None = None,
     ) -> tuple[ConversationInfo, bool]:
         """Persist a prepared conversation, deliver its first message and notify.
 
@@ -1769,7 +1771,10 @@ class ConversationService:
             # New conversation: the agent is written to base_state.json (its
             # single source of truth), not to meta.json. Pass it explicitly.
             event_service = await self._start_event_service(
-                stored, is_new_conversation=True, launched=launched
+                stored,
+                is_new_conversation=True,
+                launched=launched,
+                max_budget_per_run=max_budget_per_run,
             )
         if initial_message is not None:
             await event_service.send_message(initial_message, False)
@@ -1913,8 +1918,6 @@ class ConversationService:
             update["tags"] = request.tags
         # Membership, not None: an explicit null removes the budget limit.
         budget_updated = "max_budget_per_run" in request.model_fields_set
-        if budget_updated:
-            update["max_budget_per_run"] = request.max_budget_per_run
         # Persist first: a refused write (e.g. lost lease ownership) must leave
         # the in-memory metadata and state untouched.
         await event_service.save_meta(event_service.stored.model_copy(update=update))
@@ -1925,7 +1928,9 @@ class ConversationService:
                 None, _update_state_tags_sync, state, request.tags
             )
         if budget_updated:
-            event_service.set_max_budget_per_run(request.max_budget_per_run)
+            # base_state.json owns the budget; the event service is loaded
+            # above, so this writes the live state under its lock.
+            await event_service.set_max_budget_per_run(request.max_budget_per_run)
         record = self._conversation_records.get(conversation_id)
         if record is not None:
             record.stored = event_service.stored
@@ -2138,6 +2143,8 @@ class ConversationService:
         with await RunSlot.acquire(self._run_semaphore) as run_slot:
             parent_stored = parent_service.stored
             parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
+            # A child spends under the same cap as its parent.
+            max_budget_per_run = parent_service.get_conversation().max_budget_per_run
             child_id = uuid4()
 
             # Reuse the worktree machinery of a regular start: a worktree is
@@ -2187,6 +2194,7 @@ class ConversationService:
                 child_stored,
                 launched,
                 run_slot=run_slot,
+                max_budget_per_run=max_budget_per_run,
                 initial_message=Message(
                     role="user", content=[TextContent(text=request.task)]
                 ),
@@ -2467,6 +2475,7 @@ class ConversationService:
         is_new_conversation: bool = False,
         launched: LaunchedAgent | None = None,
         persisted_agent: AgentBase | None = None,
+        max_budget_per_run: float | None = None,
     ) -> EventService:
         event_services = self._event_services
         if event_services is None:
@@ -2483,6 +2492,7 @@ class ConversationService:
             stored=stored,
             conversations_dir=self.conversations_dir,
             agent=launched.agent if launched is not None else None,
+            initial_max_budget_per_run=max_budget_per_run,
             cipher=self._cipher_for(stored.id),
             mcp_tool_provider=self.mcp_tool_provider,
             credential_bindings=credential_bindings,
