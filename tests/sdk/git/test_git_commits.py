@@ -225,3 +225,18 @@ def test_get_commit_file_diff_rejects_oversize_blob():
         # Act + Assert
         with pytest.raises(GitPathError):
             get_commit_file_diff(Path(temp_dir) / "big.txt", sha)
+
+def test_get_commit_file_diff_preserves_edge_whitespace():
+    """A blob leading indentation is content: _show_file_at_rev must read it
+    verbatim (strip=False), not lose the first line indentation to
+    run_git_command default strip=True."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        commit_file(temp_dir, "a.py", "    x = 1\n", "base")
+        sha = commit_file(temp_dir, "a.py", "    x = 2\n", "edit")
+
+        diff = get_commit_file_diff(Path(temp_dir) / "a.py", sha)
+
+        assert diff.original is not None and diff.modified is not None
+        assert diff.original.startswith("    x = 1")
+        assert diff.modified.startswith("    x = 2")
