@@ -13,6 +13,7 @@ registry is replacing (proposal #2827).
 # ruff: noqa: E501
 
 from openhands.sdk.context.prompts.section import CacheTier, PromptContext
+from openhands.sdk.context.prompts.sections.static import _ESCALATION_RULES, _refine
 
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "DateTimeSection",
     "MemoryContextSection",
     "RepoContextSection",
+    "SecurityRiskEscalationSection",
 ]
 
 
@@ -158,3 +160,25 @@ class CustomSecretsSection:
             f"{lines}\n"
             "</CUSTOM_SECRETS>"
         )
+
+
+class SecurityRiskEscalationSection:
+    """``<SECURITY_RISK_ASSESSMENT>`` escalation rules for when a custom static prompt
+    replaces the default static prompt, ensuring escalation guidance is preserved.
+    """
+
+    name = "security_risk_escalation"
+    cache_tier = CacheTier.DYNAMIC
+
+    def guard(self, ctx: PromptContext) -> bool:
+        return (
+            bool(ctx.template_kwargs.get("llm_security_analyzer"))
+            and ctx.has_custom_system_prompt
+        )
+
+    def render(self, ctx: PromptContext) -> str | None:
+        body = f"""\
+<SECURITY_RISK_ASSESSMENT>
+{_ESCALATION_RULES}
+</SECURITY_RISK_ASSESSMENT>"""
+        return _refine(body, ctx.platform)
