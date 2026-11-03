@@ -60,7 +60,10 @@ def _softmax_normalize(probs: dict[str, float]) -> dict[str, float]:
         return {}
 
     values = list(probs.values())
-    exp_values = [math.exp(v) for v in values]
+    # Subtract the max logit before exponentiating so large logits do not
+    # overflow math.exp. Softmax is shift-invariant, so results are unchanged.
+    max_value = max(values)
+    exp_values = [math.exp(v - max_value) for v in values]
     exp_sum = sum(exp_values)
     normalized = [exp_v / exp_sum for exp_v in exp_values]
 
