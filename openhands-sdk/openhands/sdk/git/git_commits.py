@@ -171,7 +171,14 @@ def _show_file_at_rev(repo: Path, rev: str, relative_path: Path) -> str:
         )
 
     try:
-        return run_git_command(["git", "--no-pager", "show", spec], repo)
+        # Read the blob verbatim: run_git_command default strip=True
+        # would drop the first line indentation (and any trailing
+        # newline). Normalize like get_git_diff does, so both diff APIs
+        # agree on edge whitespace.
+        content = run_git_command(
+            ["git", "--no-pager", "show", spec], repo, strip=False
+        )
+        return "\n".join(content.splitlines())
     except GitCommandError:
         return ""
 
