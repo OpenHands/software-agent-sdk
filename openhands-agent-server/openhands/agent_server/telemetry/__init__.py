@@ -57,6 +57,12 @@ from openhands.agent_server.telemetry.subscriber import (
     ConversationTelemetryContext,
     TelemetrySubscriber,
 )
+from openhands.agent_server.telemetry.timing import (
+    DEFAULT_EMITTER,
+    DEFAULT_STUCK_BUDGET_MS,
+    OperationTimingResult,
+    timed_operation,
+)
 
 
 __all__ = [
@@ -87,4 +93,8 @@ __all__ = [
     "reset_telemetry_sink",
     "resolve",
     "shutdown_telemetry_sink",
+    "timed_operation",
+    "DEFAULT_STUCK_BUDGET_MS",
+    "DEFAULT_EMITTER",
+    "OperationTimingResult",
 ]
