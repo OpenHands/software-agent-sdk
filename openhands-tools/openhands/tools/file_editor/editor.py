@@ -200,15 +200,17 @@ class FileEditor:
         file_content = self.read_file(path)
 
         # Find all occurrences using regex
-        # Escape special regex characters in old_str to match it literally
+        # Escape special regex characters in old_str to match it literally. The
+        # lookahead keeps overlapping occurrences (e.g. old_str "aa" in "aaa")
+        # visible to the uniqueness check below.
         pattern = re.escape(old_str)
         occurrences = [
             (
                 file_content.count("\n", 0, match.start()) + 1,  # line number
-                match.group(),  # matched text
+                old_str,  # matched text
                 match.start(),  # start position
             )
-            for match in re.finditer(pattern, file_content)
+            for match in re.finditer(f"(?={pattern})", file_content)
         ]
 
         if not occurrences:
@@ -223,10 +225,10 @@ class FileEditor:
             occurrences = [
                 (
                     file_content.count("\n", 0, match.start()) + 1,  # line number
-                    match.group(),  # matched text
+                    old_str,  # matched text
                     match.start(),  # start position
                 )
-                for match in re.finditer(pattern, file_content)
+                for match in re.finditer(f"(?={pattern})", file_content)
             ]
             if not occurrences:
                 raise ToolError(
