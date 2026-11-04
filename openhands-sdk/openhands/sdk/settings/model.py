@@ -2275,6 +2275,8 @@ def apply_agent_settings_diff(
       validation (ACP's nullable ``agent_context`` is invalid for OpenHands) or
       silently drop the outgoing variant's fields (the variants ignore unknown
       keys), producing a mongrel row.
+    * ``mcp_config`` is a server-wide catalog, not variant state: it is preserved
+      across a kind change and the diff patches it as it would within a variant.
     * When ``agent_kind`` is unchanged or omitted, deep-merge the diff within
       the variant (``None`` unsets a key, per :func:`_merge_patch`).
 
@@ -2287,15 +2289,11 @@ def apply_agent_settings_diff(
     base_settings = validate_agent_settings(base, context=context, persisted=True)
     if not diff:
         return base_settings
+    merge_base = base_settings.model_dump(mode="json", context={"expose_secrets": True})
     new_kind = diff.get("agent_kind")
     if new_kind and new_kind != base_settings.agent_kind:
-        merged = _merge_patch({"agent_kind": new_kind}, diff)
-    else:
-        merged = _merge_patch(
-            base_settings.model_dump(mode="json", context={"expose_secrets": True}),
-            diff,
-        )
-    return validate_agent_settings(merged, context=context)
+        merge_base = {"agent_kind": new_kind, "mcp_config": merge_base["mcp_config"]}
+    return validate_agent_settings(_merge_patch(merge_base, diff), context=context)
 
 
 def default_agent_settings() -> OpenHandsAgentSettings:

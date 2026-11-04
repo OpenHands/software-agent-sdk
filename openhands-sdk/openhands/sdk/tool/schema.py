@@ -174,7 +174,14 @@ def _process_schema_node(
     # Handle arrays
     if node.get("type") == "array" and "items" in node:
         result["type"] = "array"
-        result["items"] = _process_schema_node(node["items"], defs, _visiting)
+        items = node["items"]
+        if isinstance(items, list):
+            # Draft-07 tuple form: one schema per position.
+            result["items"] = [
+                _process_schema_node(item, defs, _visiting) for item in items
+            ]
+        else:
+            result["items"] = _process_schema_node(items, defs, _visiting)
 
     # Handle enum
     if "enum" in node:
