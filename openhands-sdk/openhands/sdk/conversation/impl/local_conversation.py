@@ -113,6 +113,7 @@ from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.deprecation import warn_deprecated
+from openhands.sdk.utils.redact import redact_url_credentials
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -1072,13 +1073,23 @@ class LocalConversation(BaseConversation):
                 for entry in marketplace.plugins:
                     if not registration.auto_loads_plugin(entry.name):
                         continue
-                    source, ref, repo_path = marketplace.resolve_plugin_source(entry)
-                    plugins_to_load.append(
-                        (
-                            PluginSource(source=source, ref=ref, repo_path=repo_path),
-                            True,
+                    try:
+                        source, ref, repo_path = marketplace.resolve_plugin_source(
+                            entry
                         )
-                    )
+                        plugin_source = PluginSource(
+                            source=source, ref=ref, repo_path=repo_path
+                        )
+                    except ValueError:
+                        logger.warning(
+                            "Failed to load plugin '%s' from marketplace '%s'; "
+                            "continuing without it",
+                            entry.name,
+                            registration.name,
+                            exc_info=True,
+                        )
+                        continue
+                    plugins_to_load.append((plugin_source, True))
                 # Standalone skills. Merged below as low precedence; plugins
                 # loaded afterwards override same-named skills, matching the
                 # catalog.
@@ -1105,8 +1116,8 @@ class LocalConversation(BaseConversation):
             logger.info(f"Loading {len(plugins_to_load)} plugin(s)...")
             self._resolved_plugins = []
 
-            for spec, source_refs_expanded in plugins_to_load:
-                if source_refs_expanded:
+            for spec, auto_loaded in plugins_to_load:
+                if auto_loaded:
                     fetch_source = spec.source
                     fetch_ref = spec.ref
                 else:
@@ -1117,12 +1128,25 @@ class LocalConversation(BaseConversation):
                         else spec.ref
                     )
 
-                # Fetch plugin and get resolved commit SHA
-                path, resolved_ref = fetch_plugin_with_resolution(
-                    source=fetch_source,
-                    ref=fetch_ref,
-                    repo_path=spec.repo_path,
-                )
+                try:
+                    path, resolved_ref = fetch_plugin_with_resolution(
+                        source=fetch_source,
+                        ref=fetch_ref,
+                        repo_path=spec.repo_path,
+                    )
+                    plugin = Plugin.load(path)
+                except Exception:
+                    # Attaching a plugin that cannot load is an error, but an
+                    # auto-loaded one must not prevent the conversation from
+                    # starting.
+                    if not auto_loaded:
+                        raise
+                    logger.warning(
+                        "Failed to load plugin '%s'; continuing without it",
+                        redact_url_credentials(spec.source),
+                        exc_info=True,
+                    )
+                    continue
 
                 # Store resolved ref for persistence. Build this from the
                 # ORIGINAL spec (not the expanded values) so the persisted
@@ -1131,9 +1155,6 @@ class LocalConversation(BaseConversation):
                 # credentials. Resume re-fetches via the resolved commit SHA.
                 resolved = ResolvedPluginSource.from_plugin_source(spec, resolved_ref)
                 self._resolved_plugins.append(resolved)
-
-                # Load the plugin
-                plugin = Plugin.load(path)
                 logger.debug(
                     f"Loaded plugin '{plugin.manifest.name}'"
                     + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
@@ -1153,7 +1174,9 @@ class LocalConversation(BaseConversation):
                 if plugin.agents:
                     all_plugin_agents.extend(plugin.agents)
 
-            logger.info(f"Loaded {len(plugins_to_load)} plugin(s) via Conversation")
+            logger.info(
+                f"Loaded {len(self._resolved_plugins)} plugin(s) via Conversation"
+            )
 
         # Ambient plugins: enabled installed plugins plus local user/project
         # plugins, mirroring how installed/local skills already auto-load. These
