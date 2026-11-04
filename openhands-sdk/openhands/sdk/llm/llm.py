@@ -162,9 +162,12 @@ from openhands.sdk.llm.utils.retry_mixin import RetryMixin, transient_error_cond
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.llm.utils.vertex_preflight import assert_vertex_sdk_available
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
+from openhands.sdk.logger.logger import apply_litellm_debug_flags
 
 
 logger = get_logger(__name__)
+
+apply_litellm_debug_flags()
 
 litellm.modify_params = True
 
