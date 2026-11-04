@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Self
@@ -16,7 +17,7 @@ from litellm.types.utils import (
     Message as LiteLLMMessage,
     ModelResponse,
 )
-from pydantic import SecretStr
+from pydantic import AliasChoices, ConfigDict, Field, SecretStr
 
 from openhands.sdk.agent import Agent, utils as agent_utils
 from openhands.sdk.conversation import Conversation, LocalConversation
@@ -611,10 +612,11 @@ def test_malformed_tool_name_bash_xml_tag(tmp_path):
     test_file = tmp_path / "hello.txt"
     test_file.write_text("hello\n")
 
+    cmd = "type hello.txt" if sys.platform == "win32" else "cat hello.txt"
     events = _run_tool_call(
         tmp_path,
         tool_name="bash </request>",  # Malformed: XML tag appended
-        arguments={"command": "cat hello.txt"},
+        arguments={"command": cmd},
         tool_names=(TERMINAL_TOOL_SPEC,),
     )
 
@@ -744,3 +746,357 @@ def test_shell_tool_name_git_falls_back_to_terminal(tmp_path):
     assert action_event.tool_name == TERMINAL_TOOL_NAME
     assert action_event.action is not None
     assert getattr(action_event.action, "command") == "git"
+
+
+def test_terminal_tool_with_description_canonicalizes_to_summary(tmp_path):
+    """Test issue #18952: tool call with 'description' instead of 'summary'.
+
+    When an LLM emits 'description' instead of 'summary', it should not fail
+    with pydantic extra_forbidden, but canonicalize to summary and execute.
+    """
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="terminal",
+        arguments={"command": "echo hello", "description": "saying hello"},
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    action_event = next((e for e in events if isinstance(e, ActionEvent)), None)
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors, f"Expected no errors but got: {errors}"
+    assert action_event is not None
+    assert action_event.tool_name == TERMINAL_TOOL_NAME
+    assert action_event.action is not None
+    assert getattr(action_event.action, "command") == "echo hello"
+    assert action_event.summary == "saying hello"
+
+
+def test_terminal_tool_with_both_summary_and_description(tmp_path):
+    """When both 'summary' and 'description' are provided, 'summary' wins."""
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="terminal",
+        arguments={
+            "command": "echo hello",
+            "summary": "real summary",
+            "description": "extra description",
+        },
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    action_event = next((e for e in events if isinstance(e, ActionEvent)), None)
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors, f"Expected no errors but got: {errors}"
+    assert action_event is not None
+    assert action_event.summary == "real summary"
+    assert getattr(action_event.action, "command") == "echo hello"
+
+
+def test_terminal_tool_with_instruction_canonicalizes_to_summary(tmp_path):
+    """When LLM emits 'instruction' instead of 'summary', it canonicalizes."""
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="terminal",
+        arguments={"command": "echo hello", "instruction": "instruction summary"},
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    action_event = next((e for e in events if isinstance(e, ActionEvent)), None)
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors, f"Expected no errors but got: {errors}"
+    assert action_event is not None
+    assert action_event.summary == "instruction summary"
+    assert getattr(action_event.action, "command") == "echo hello"
+
+
+def test_tool_with_unexpected_extra_arguments_succeeds(tmp_path):
+    """Unexpected extra parameters should be ignored without extra_forbidden crash."""
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="terminal",
+        arguments={
+            "command": "echo hello",
+            "unexpected_arg": "some_value",
+            "another_extra": 123,
+        },
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    action_event = next((e for e in events if isinstance(e, ActionEvent)), None)
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors, f"Expected no errors but got: {errors}"
+    assert action_event is not None
+    assert getattr(action_event.action, "command") == "echo hello"
+
+
+def test_think_tool_with_unexpected_extra_key_succeeds(tmp_path):
+    """Think tool with unexpected extra parameters should execute normally."""
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="think",
+        arguments={
+            "thought": "considering alternatives",
+            "extra_key": "some_noise",
+        },
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    action_event = next((e for e in events if isinstance(e, ActionEvent)), None)
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors, f"Expected no errors but got: {errors}"
+    assert action_event is not None
+    assert action_event.tool_name == "think"
+    assert getattr(action_event.action, "thought") == "considering alternatives"
+
+
+def test_tool_missing_required_parameter_still_fails_validation(tmp_path):
+    """Missing required parameters must still raise validation error."""
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="terminal",
+        arguments={"description": "saying hello"},
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    action_event = next(
+        (e for e in events if isinstance(e, ActionEvent) and e.action is not None),
+        None,
+    )
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert action_event is None
+    assert len(errors) == 1
+    assert "command" in errors[0].error
+    assert "Field required" in errors[0].error
+
+
+class _ToolWithDescriptionAction(Action):
+    command: str
+    description: str
+
+
+class _ToolWithDescriptionObservation(Observation):
+    pass
+
+
+class _ToolWithDescriptionExecutor(
+    ToolExecutor[_ToolWithDescriptionAction, _ToolWithDescriptionObservation]
+):
+    def __call__(
+        self, action: _ToolWithDescriptionAction, conversation=None
+    ) -> _ToolWithDescriptionObservation:
+        return _ToolWithDescriptionObservation.from_text(
+            f"Executed: {action.command} with desc {action.description}"
+        )
+
+
+class _ToolWithDescriptionTool(
+    ToolDefinition[_ToolWithDescriptionAction, _ToolWithDescriptionObservation]
+):
+    name = "tool_with_description"
+
+    @classmethod
+    def create(cls, conv_state=None):
+        return [
+            cls(
+                description="Tool declaring description parameter",
+                action_type=_ToolWithDescriptionAction,
+                observation_type=_ToolWithDescriptionObservation,
+                executor=_ToolWithDescriptionExecutor(),
+            )
+        ]
+
+
+register_tool("ToolWithDescriptionSpec", _ToolWithDescriptionTool)
+
+
+def test_tool_with_declared_description_preserves_description(tmp_path):
+    """When a tool declares 'description' in its schema,
+    it must NOT be popped as summary.
+    """
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="tool_with_description",
+        arguments={
+            "command": "run_test",
+            "description": "real tool parameter",
+        },
+        tool_names=("ToolWithDescriptionSpec",),
+    )
+
+    action_event = next((e for e in events if isinstance(e, ActionEvent)), None)
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors, f"Expected no errors but got: {errors}"
+    assert action_event is not None
+    assert getattr(action_event.action, "command") == "run_test"
+    assert getattr(action_event.action, "description") == "real tool parameter"
+
+
+def test_schema_model_config_still_forbids_extra():
+    """Action schemas must retain extra='forbid' in model_config."""
+    assert _TerminalAction.model_config.get("extra") == "forbid"
+
+
+class _ToolWithAliasChoicesAction(Action):
+    cmd: str = Field(validation_alias=AliasChoices("cmd", "command"))
+
+
+class _ToolWithAliasChoicesObservation(Observation):
+    pass
+
+
+class _ToolWithAliasChoicesExecutor(
+    ToolExecutor[_ToolWithAliasChoicesAction, _ToolWithAliasChoicesObservation]
+):
+    def __call__(
+        self, action: _ToolWithAliasChoicesAction, conversation=None
+    ) -> _ToolWithAliasChoicesObservation:
+        return _ToolWithAliasChoicesObservation.from_text(f"Executed: {action.cmd}")
+
+
+class _ToolWithAliasChoicesTool(
+    ToolDefinition[_ToolWithAliasChoicesAction, _ToolWithAliasChoicesObservation]
+):
+    name = "tool_with_alias_choices"
+
+    @classmethod
+    def create(cls, conv_state=None):
+        return [
+            cls(
+                description="Tool with AliasChoices validation_alias",
+                action_type=_ToolWithAliasChoicesAction,
+                observation_type=_ToolWithAliasChoicesObservation,
+                executor=_ToolWithAliasChoicesExecutor(),
+            )
+        ]
+
+
+register_tool("ToolWithAliasChoicesSpec", _ToolWithAliasChoicesTool)
+
+
+def test_tool_with_validation_alias_choices_and_extra_arguments(tmp_path):
+    """Fields with AliasChoices validation_alias must be accepted
+    while extra keys are ignored.
+    """
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="tool_with_alias_choices",
+        arguments={
+            "command": "run_via_alias",
+            "extra_hallucination": "discard_me",
+        },
+        tool_names=("ToolWithAliasChoicesSpec",),
+    )
+
+    action_event = next((e for e in events if isinstance(e, ActionEvent)), None)
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors, f"Expected no errors but got: {errors}"
+    assert action_event is not None
+    assert getattr(action_event.action, "cmd") == "run_via_alias"
+
+
+class _ToolWithValidationAliasDescAction(Action):
+    command: str
+    custom_desc: str = Field(
+        validation_alias=AliasChoices("custom_desc", "description")
+    )
+
+
+class _ToolWithValidationAliasDescObservation(Observation):
+    pass
+
+
+class _ToolWithValidationAliasDescExecutor(
+    ToolExecutor[
+        _ToolWithValidationAliasDescAction, _ToolWithValidationAliasDescObservation
+    ]
+):
+    def __call__(
+        self, action: _ToolWithValidationAliasDescAction, conversation=None
+    ) -> _ToolWithValidationAliasDescObservation:
+        return _ToolWithValidationAliasDescObservation.from_text(
+            f"Executed: {action.command} {action.custom_desc}"
+        )
+
+
+class _ToolWithValidationAliasDescTool(
+    ToolDefinition[
+        _ToolWithValidationAliasDescAction, _ToolWithValidationAliasDescObservation
+    ]
+):
+    name = "tool_with_validation_alias_desc"
+
+    @classmethod
+    def create(cls, conv_state=None):
+        return [
+            cls(
+                description="Tool with validation_alias description",
+                action_type=_ToolWithValidationAliasDescAction,
+                observation_type=_ToolWithValidationAliasDescObservation,
+                executor=_ToolWithValidationAliasDescExecutor(),
+            )
+        ]
+
+
+register_tool("ToolWithValidationAliasDescSpec", _ToolWithValidationAliasDescTool)
+
+
+def test_tool_with_validation_alias_description_preserves_description(tmp_path):
+    """When a tool declares 'description' via validation_alias AliasChoices,
+    it must NOT be popped as a summary alias.
+    """
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="tool_with_validation_alias_desc",
+        arguments={
+            "command": "check",
+            "description": "payload_description",
+        },
+        tool_names=("ToolWithValidationAliasDescSpec",),
+    )
+
+    action_event = next((e for e in events if isinstance(e, ActionEvent)), None)
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors, f"Expected no errors but got: {errors}"
+    assert action_event is not None
+    assert getattr(action_event.action, "custom_desc") == "payload_description"
+
+
+def test_tool_with_non_string_description_does_not_crash(tmp_path):
+    """Non-string description argument should be safely dropped without crashing."""
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="terminal",
+        arguments={
+            "command": "echo test_non_str",
+            "description": {"complex": "object"},
+        },
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    action_event = next((e for e in events if isinstance(e, ActionEvent)), None)
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors, f"Expected no errors but got: {errors}"
+    assert action_event is not None
+    assert getattr(action_event.action, "command") == "echo test_non_str"
+
+
+def test_action_subclass_with_extra_allow_preserves_extra():
+    """Action subclasses with extra='allow' must retain unexpected fields."""
+
+    class _AllowAction(Action):
+        model_config = ConfigDict(extra="allow", frozen=True)
+        command: str
+
+    act = _AllowAction.model_validate({"command": "test", "extra_param": 123})
+    assert act.command == "test"
+    assert getattr(act, "extra_param") == 123
