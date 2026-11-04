@@ -165,6 +165,25 @@ def test_parse_ssh_with_custom_user():
     assert url == ssh_url
 
 
+def test_parse_ssh_scheme_url():
+    ssh_url = "ssh://git@git.example.com:2222/org/repo.git"
+    assert parse_extension_source(ssh_url) == (SourceType.GIT, ssh_url)
+
+
+def test_parse_github_shorthand_with_git_suffix():
+    assert parse_extension_source("github:owner/repo.git") == (
+        SourceType.GITHUB,
+        "https://github.com/owner/repo.git",
+    )
+
+
+def test_parse_https_url_with_git_suffix_and_trailing_slash():
+    assert parse_extension_source("https://github.com/owner/repo.git/") == (
+        SourceType.GIT,
+        "https://github.com/owner/repo.git",
+    )
+
+
 def test_parse_relative_path_with_slash():
     source_type, url = parse_extension_source("extensions/my-ext")
     assert source_type == SourceType.LOCAL

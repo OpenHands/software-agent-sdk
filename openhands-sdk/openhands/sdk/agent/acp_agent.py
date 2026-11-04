@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import contextlib
+import functools
 import inspect
 import json
 import os
@@ -1342,6 +1343,14 @@ class _OpenHandsACPBridge:
         self.accumulated_text: list[str] = []
         self.accumulated_thoughts: list[str] = []
         self.accumulated_tool_calls: list[dict[str, Any]] = []
+        # Text and thoughts said before a tool call are emitted as their own
+        # message ahead of that call (``on_text_segment``), so the transcript
+        # keeps the agent's narration where it was said. These mark where the
+        # segment not yet emitted starts; the rest of the turn ends it.
+        self._segment_text_start = 0
+        self._segment_thought_start = 0
+        self.text_segments_emitted = 0
+        self.on_text_segment: Callable[[str, str], None] | None = None
         # Emits the LLM/TOOL spans an ACP turn would otherwise never produce.
         self.trace = ACPTurnTrace(acp_server=None, model_id=None)
         self.on_token: Any = None  # ConversationTokenCallbackType | None
@@ -1387,6 +1396,10 @@ class _OpenHandsACPBridge:
         self.accumulated_text.clear()
         self.accumulated_thoughts.clear()
         self.accumulated_tool_calls.clear()
+        self._segment_text_start = 0
+        self._segment_thought_start = 0
+        self.text_segments_emitted = 0
+        self.on_text_segment = None
         self.on_token = None
         self.on_event = None
         self.on_activity = None
@@ -1529,6 +1542,7 @@ class _OpenHandsACPBridge:
             if event is not None:
                 event.set()
         elif isinstance(update, ToolCallStart):
+            self._emit_text_segment()
             entry = {
                 "tool_call_id": update.tool_call_id,
                 "title": update.title,
@@ -1598,6 +1612,41 @@ class _OpenHandsACPBridge:
             self._maybe_signal_activity()
         else:
             logger.debug("ACP session update: %s", type(update).__name__)
+
+    def segment_text(self) -> str:
+        """Text said since the last emitted segment (the whole turn if none)."""
+        return "".join(self.accumulated_text[self._segment_text_start :])
+
+    def segment_thoughts(self) -> str:
+        """Thoughts since the last emitted segment (the whole turn if none)."""
+        return "".join(self.accumulated_thoughts[self._segment_thought_start :])
+
+    def _emit_text_segment(self) -> None:
+        """Hand the text and thoughts said so far to ``on_text_segment``.
+
+        Called when a tool call starts, so that narration such as "let me run
+        the tests" lands before the tool call it announces instead of joining
+        the turn's final message. The joined segment is masked again because a
+        secret split across chunks only reassembles here.
+        """
+        if self.on_text_segment is None:
+            return
+        text = self.segment_text()
+        thoughts = self.segment_thoughts()
+        if not text.strip() and not thoughts.strip():
+            return
+        try:
+            self.on_text_segment(self._mask_value(text), self._mask_value(thoughts))
+        except CredentialBindingError:
+            # Keep the segment: the turn's final text carries it, and the
+            # recorded masking error fails the turn before anything persists.
+            return
+        except Exception:
+            logger.debug("on_text_segment callback failed", exc_info=True)
+            return
+        self._segment_text_start = len(self.accumulated_text)
+        self._segment_thought_start = len(self.accumulated_thoughts)
+        self.text_segments_emitted += 1
 
     def _emit_tool_call_event(self, tc: dict[str, Any]) -> None:
         """Emit an ACPToolCallEvent reflecting the current state of ``tc``.
@@ -2805,16 +2854,19 @@ class ACPAgent(AgentBase):
                     if self._closed:
                         raise CredentialSyncError("Credential binding is closed.")
                 try:
-                    lifecycle.materialize(state.secret_registry, env)
-                    durable_path = (
-                        self._acp_file_secret_dir(state, spec.subdir) / spec.filename
-                    )
-                    try:
-                        durable_path.unlink(missing_ok=True)
-                    except OSError as exc:
-                        raise CredentialSyncError(
-                            "Durable credential copy could not be removed."
-                        ) from exc
+                    # The CLI keeps its state in the conversation's durable
+                    # directory; the lifecycle links the credential in from a
+                    # temporary file, so it never persists there.
+                    home = self._acp_file_secret_dir(state, spec.subdir)
+                    lifecycle.materialize(state.secret_registry, env, home=home)
+                    durable_path = home / spec.filename
+                    if lifecycle.path != durable_path:
+                        try:
+                            durable_path.unlink(missing_ok=True)
+                        except OSError as exc:
+                            raise CredentialSyncError(
+                                "Durable credential copy could not be removed."
+                            ) from exc
                 except BaseException:
                     env.pop("CODEX_HOME", None)
                     lifecycle.discard()
@@ -3469,10 +3521,40 @@ class ACPAgent(AgentBase):
         self._client.trace.start_turn(prompt)
         self._client.on_token = on_token
         self._client.on_event = on_event
+        self._client.on_text_segment = functools.partial(
+            self._emit_text_segment, on_event
+        )
         self._client.on_activity = self._on_activity
         # Start the idle-timeout clock fresh for this attempt so the deadline
         # is measured from the send (or retry), not from a stale value.
         self._client.arm_activity_clock()
+
+    def _emit_text_segment(
+        self, on_event: ConversationCallbackType, text: str, thoughts: str
+    ) -> None:
+        """Emit text the agent said before a tool call as its own message.
+
+        It retires the stream slot that carried this text and opens a new one,
+        so the rest of the turn streams below the tool call.
+        """
+        minted: dict[str, Any] = {}
+        if self._stream is not None and (item_id := self._stream.claim()):
+            minted["id"] = item_id
+        on_event(
+            MessageEvent(
+                **minted,
+                source="agent",
+                llm_message=Message(
+                    role="assistant",
+                    content=[TextContent(text=text)],
+                    reasoning_content=thoughts or None,
+                ),
+            )
+        )
+        if self._stream is not None:
+            if minted:
+                self._stream.commit()
+            self._stream.next_item()
 
     def _cancel_inflight_tool_calls(self) -> None:
         """Emit a terminal ``failed`` ACPToolCallEvent for every tool call
@@ -3857,13 +3939,18 @@ class ACPAgent(AgentBase):
         # gets caught before landing in the persisted event stream.
         self._track_file_credentials_for_masking()
         mask = state.secret_registry.mask_secrets_in_output
-        response_text = mask("".join(self._client.accumulated_text))
-        thought_text = mask("".join(self._client.accumulated_thoughts))
-        if not response_text:
+        # Text said before a tool call was already emitted as its own message
+        # (``_emit_text_segment``); the finish carries what the agent said
+        # after its last tool call.
+        response_text = mask(self._client.segment_text())
+        thought_text = mask(self._client.segment_thoughts())
+        if not response_text and not self._client.text_segments_emitted:
             response_text = "(No response from ACP server)"
 
         self._client.trace.finish_turn(
-            response_text, thought_text, self._client.accumulated_tool_calls
+            mask("".join(self._client.accumulated_text)) or response_text,
+            mask("".join(self._client.accumulated_thoughts)),
+            self._client.accumulated_tool_calls,
         )
 
         # ACP step() boundaries are full remote assistant turns, not
@@ -4039,6 +4126,7 @@ class ACPAgent(AgentBase):
             return
         self._client.trace.abandon()
         self._client.on_event = None
+        self._client.on_text_segment = None
         self._client.on_token = None
         self._client.on_activity = None
 

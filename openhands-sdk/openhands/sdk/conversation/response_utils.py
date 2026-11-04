@@ -22,6 +22,7 @@ def get_agent_final_response(events: Sequence[Event]) -> str:
         The final response message from the agent, or empty string if not found.
     """
     # Find the last finish action or message event from the agent
+    empty_finish = False
     for event in reversed(events):
         # Case 1: finish tool call
         if (
@@ -29,11 +30,20 @@ def get_agent_final_response(events: Sequence[Event]) -> str:
             and event.source == "agent"
             and event.tool_name == FinishTool.name
         ):
+            if empty_finish:
+                break
             # Extract message from finish tool call
             if event.action is not None and isinstance(event.action, FinishAction):
-                return event.action.message
+                if event.action.message:
+                    return event.action.message
+                empty_finish = True
             else:
                 break
+        elif (
+            empty_finish and isinstance(event, MessageEvent) and event.source == "user"
+        ):
+            # An empty finish may use this turn's text, never a previous turn's.
+            break
         # Case 2: text message with no tool calls (MessageEvent)
         elif isinstance(event, MessageEvent) and event.source == "agent":
             text_parts = content_to_str(event.llm_message.content)
