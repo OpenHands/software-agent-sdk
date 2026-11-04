@@ -10,8 +10,10 @@ from pydantic import SecretStr
 from openhands.sdk.llm import LLM, LLM_PROFILE_SCHEMA_VERSION
 from openhands.sdk.llm.llm_profile_store import (
     LLMProfileStore,
+    ProfileDecryptionError,
     ProfileLimitExceeded,
 )
+from openhands.sdk.utils.cipher import Cipher
 
 
 @pytest.fixture
@@ -308,6 +310,24 @@ def test_save_with_secrets(
 
     # Secret should be present
     assert "secret-api-key-12345" in content
+
+
+def test_execution_load_checks_actual_case_variant_path(
+    profile_store: LLMProfileStore,
+    sample_llm_with_secrets: LLM,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile_store.save(
+        "Prod",
+        sample_llm_with_secrets,
+        include_secrets=True,
+        cipher=Cipher("right-secret"),
+    )
+    stored_path = profile_store.base_dir / "Prod.json"
+    monkeypatch.setattr(profile_store, "_get_profile_path", lambda _name: stored_path)
+
+    with pytest.raises(ProfileDecryptionError, match="api_key.*prod"):
+        profile_store._load_for_execution("prod")
 
 
 @pytest.mark.parametrize("name", ["my_profile", "my_profile.json"])
