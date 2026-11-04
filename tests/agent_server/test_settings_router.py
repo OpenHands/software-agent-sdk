@@ -1756,6 +1756,72 @@ def test_patch_settings_kind_switch_applies_mcp_patch(
         assert keep["url"] == "https://keep.invalid/mcp"
 
 
+@pytest.mark.parametrize(
+    ("seed", "switch"),
+    [
+        ({}, {"agent_kind": "acp", "acp_server": "codex"}),
+        (
+            {"agent_kind": "acp", "acp_server": "codex"},
+            {"agent_kind": "openhands"},
+        ),
+    ],
+    ids=["openhands-to-acp", "acp-to-openhands"],
+)
+def test_patch_settings_kind_switch_preserves_server_wide_settings(
+    client_with_settings, temp_persistence_dir, seed, switch
+):
+    seeded = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                **seed,
+                "agent_context": {"load_memory": True},
+                "verification": {"critic_api_key": "critic-key"},
+            }
+        },
+    )
+    assert seeded.status_code == 200
+
+    switched = client_with_settings.patch(
+        "/api/settings", json={"agent_settings_diff": switch}
+    )
+
+    assert switched.status_code == 200
+    persisted = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]
+    assert persisted["agent_kind"] == switch["agent_kind"]
+    assert persisted["agent_context"]["load_memory"] is True
+    assert persisted["verification"]["critic_api_key"] == "critic-key"
+    assert "critic-key" not in (temp_persistence_dir / "settings.json").read_text()
+
+
+def test_patch_settings_stores_critic_key_on_acp_settings(
+    client_with_settings, temp_persistence_dir
+):
+    switched = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"agent_kind": "acp", "acp_server": "codex"}},
+    )
+    assert switched.status_code == 200
+
+    saved = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"verification": {"critic_api_key": "typed-key"}}},
+    )
+
+    assert saved.status_code == 200
+    assert saved.json()["agent_settings"]["verification"]["critic_api_key"] == (
+        "**********"
+    )
+    persisted = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]
+    assert persisted["agent_kind"] == "acp"
+    assert persisted["verification"]["critic_api_key"] == "typed-key"
+    assert "typed-key" not in (temp_persistence_dir / "settings.json").read_text()
+
+
 def test_patch_settings_same_kind_restated_still_deep_merges(client_with_settings):
     """Re-stating the current ``agent_kind`` is NOT a variant switch: the diff
     must still deep-merge so unrelated fields survive.
