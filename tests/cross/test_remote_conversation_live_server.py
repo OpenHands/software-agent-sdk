@@ -13,7 +13,7 @@ import threading
 import time
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -29,6 +29,7 @@ from pydantic import SecretStr
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect
 
+from openhands.agent_server import mint_conversation_token
 from openhands.agent_server.config import load_config
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
 from openhands.sdk.conversation import RemoteConversation
@@ -469,6 +470,57 @@ def test_remote_conversation_websocket_first_message_auth(
         assert conversation.id
     finally:
         conversation.close()
+
+
+def test_conversation_token_reaches_only_its_conversation(authenticated_server_env):
+    host = authenticated_server_env["host"]
+    key_headers = {"X-Session-API-Key": authenticated_server_env["api_key"]}
+    with httpx.Client(base_url=host, timeout=30, trust_env=False) as client:
+        conversation_ids = []
+        for name in ("a", "b"):
+            workspace = authenticated_server_env["workspace_path"] / name
+            workspace.mkdir()
+            response = client.post(
+                "/api/conversations",
+                headers=key_headers,
+                json={
+                    "agent": {
+                        "llm": {"model": "gpt-4o-mini", "api_key": "test"},
+                        "tools": [],
+                    },
+                    "workspace": {"working_dir": str(workspace)},
+                    "autotitle": False,
+                },
+            )
+            assert response.status_code == 201, response.text
+            conversation_ids.append(response.json()["id"])
+        own, other = conversation_ids
+        token = mint_conversation_token(
+            authenticated_server_env["api_key"], own, timedelta(minutes=5)
+        )
+        token_headers = {"X-Session-API-Key": token}
+
+        assert (
+            "conversation_token_v1" in client.get("/server_info").json()["capabilities"]
+        )
+        assert (
+            client.get(f"/api/conversations/{own}", headers=token_headers).status_code
+            == 200
+        )
+        for url in (f"/api/conversations/{other}", "/api/settings"):
+            assert client.get(url, headers=token_headers).status_code == 403, url
+
+    socket_origin = host.replace("http://", "ws://")
+    auth_frame = json.dumps({"type": "auth", "session_api_key": token})
+    with connect(f"{socket_origin}/sockets/session/{own}") as websocket:
+        websocket.send(auth_frame)
+        assert json.loads(websocket.recv(timeout=10))["type"] == "sync"
+    with connect(f"{socket_origin}/sockets/session/{other}") as websocket:
+        websocket.send(auth_frame)
+        with pytest.raises(ConnectionClosed) as forbidden:
+            websocket.recv(timeout=10)
+        assert forbidden.value.rcvd is not None
+        assert forbidden.value.rcvd.code == 4003
 
 
 def test_preloaded_custom_tool_resolves_in_live_server(

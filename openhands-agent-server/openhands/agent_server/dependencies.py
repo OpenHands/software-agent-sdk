@@ -9,6 +9,11 @@ from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.conversation_token import (
+    conversation_token_allows,
+    is_conversation_token,
+    verify_conversation_token,
+)
 from openhands.agent_server.event_service import EventService
 
 
@@ -28,15 +33,29 @@ def check_session_api_key(
     request: Request,
     session_api_key: str | None = Depends(_SESSION_API_KEY_HEADER),
 ) -> None:
-    """Reject the request if the supplied key is not in the current session keys.
+    """Reject the request unless it carries a session key or an in-scope token.
 
     Reads ``session_api_keys`` from ``request.app.state.config`` at request time
     so that keys delivered via ``POST /api/init`` take effect immediately without
     restarting the server or re-registering routes.
     """
     config: Config = request.app.state.config
-    if config.session_api_keys and session_api_key not in config.session_api_keys:
+    if not config.session_api_keys or session_api_key in config.session_api_keys:
+        return
+    if session_api_key and is_conversation_token(session_api_key):
+        _authorize_conversation_token(request, session_api_key, config)
+        return
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+
+
+def _authorize_conversation_token(request: Request, token: str, config: Config) -> None:
+    """401 for an invalid token; 403 if the matched route is outside its scope."""
+    conversation_id = verify_conversation_token(token, config.session_api_keys)
+    if conversation_id is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+    route_path = getattr(request.scope.get("route"), "path", "")
+    if not conversation_token_allows(route_path, request.path_params, conversation_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN)
 
 
 def check_workspace_session(
@@ -52,7 +71,8 @@ def check_workspace_session(
     The cookie is required because browsers cannot attach custom headers to
     ``<iframe src>`` or ``<img src>`` requests, which is how the canvas
     frontend embeds workspace artifacts. The cookie is deliberately scoped
-    to this router only; no other endpoint honors it.
+    to this router only; no other endpoint honors it. Conversation tokens are
+    accepted in the header only, since they can never mint the cookie.
     """
     config: Config = request.app.state.config
     if not config.session_api_keys:
@@ -60,6 +80,9 @@ def check_workspace_session(
     for candidate in (header_key, cookie_key):
         if candidate and candidate in config.session_api_keys:
             return
+    if header_key and is_conversation_token(header_key):
+        _authorize_conversation_token(request, header_key, config)
+        return
     raise HTTPException(status.HTTP_401_UNAUTHORIZED)
 
 

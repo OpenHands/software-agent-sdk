@@ -449,7 +449,9 @@ async def _proxy_socket(
 ) -> None:
     from openhands.agent_server.sockets import _accept_authenticated_websocket
 
-    if not await _accept_authenticated_websocket(websocket, session_api_key):
+    if not await _accept_authenticated_websocket(
+        websocket, session_api_key, allow_conversation_token=True
+    ):
         return
     registry = websocket.app.state.conversation_registry
     if not isinstance(registry, DockerConversationRegistry):

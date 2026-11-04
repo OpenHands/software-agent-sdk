@@ -87,6 +87,9 @@ class ServerInfo(BaseModel):
             "agent_launch_pipeline_v1",
             "profile_public_skills_v1",
             "skill_catalog_v1",
+            # Accepts ``oh1.`` tokens scoped to one conversation; see
+            # ``openhands.agent_server.conversation_token``.
+            "conversation_token_v1",
         ]
     )
     app_backend_ingress_url: str | None = Field(

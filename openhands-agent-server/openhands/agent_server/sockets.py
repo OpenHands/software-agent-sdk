@@ -17,7 +17,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NamedTuple
 from uuid import UUID
 
 from fastapi import (
@@ -37,6 +37,11 @@ from openhands.agent_server.conversation_service import (
     ConversationService,
     CredentialBindingActivationRequired,
     get_default_conversation_service,
+)
+from openhands.agent_server.conversation_token import (
+    conversation_token_allows,
+    is_conversation_token,
+    verify_conversation_token,
 )
 from openhands.agent_server.event_router import normalize_datetime_to_server_timezone
 from openhands.agent_server.models import (
@@ -131,9 +136,44 @@ def _resolve_websocket_session_api_key(
 _FIRST_MESSAGE_AUTH_TIMEOUT_SECONDS = 10
 
 
+class _AuthRejection(NamedTuple):
+    code: int
+    reason: str
+    detail: str
+
+
+_INVALID_KEY = _AuthRejection(4001, "Authentication failed", "invalid API key")
+_TOKEN_OUT_OF_SCOPE = _AuthRejection(
+    4003, "Forbidden", "conversation token outside its scope"
+)
+
+
+def _websocket_auth_rejection(
+    websocket: WebSocket,
+    config: Config,
+    presented_key: object,
+    allow_conversation_token: bool,
+) -> _AuthRejection | None:
+    if not isinstance(presented_key, str) or not presented_key:
+        return _INVALID_KEY
+    if presented_key in config.session_api_keys:
+        return None
+    if not allow_conversation_token or not is_conversation_token(presented_key):
+        return _INVALID_KEY
+    conversation_id = verify_conversation_token(presented_key, config.session_api_keys)
+    if conversation_id is None:
+        return _INVALID_KEY
+    route_path = getattr(websocket.scope.get("route"), "path", "")
+    if conversation_token_allows(route_path, websocket.path_params, conversation_id):
+        return None
+    return _TOKEN_OUT_OF_SCOPE
+
+
 async def _accept_authenticated_websocket(
     websocket: WebSocket,
     session_api_key: str | None,
+    *,
+    allow_conversation_token: bool = False,
 ) -> bool:
     """Authenticate and accept the socket, or close with an auth error.
 
@@ -145,6 +185,10 @@ async def _accept_authenticated_websocket(
 
     The WebSocket is always *accepted* before first-message auth is attempted
     because raw WebSocket requires ``accept()`` before any frames can be read.
+
+    Per-conversation sockets pass ``allow_conversation_token`` so a token for
+    that conversation is accepted in place of a session key; a token for
+    another conversation closes with 4003. Server-wide sockets refuse tokens.
     """
     config = _get_config(websocket)
     resolved_key = _resolve_websocket_session_api_key(websocket, session_api_key)
@@ -156,15 +200,18 @@ async def _accept_authenticated_websocket(
 
     # Legacy path: key supplied via query param or header.
     if resolved_key is not None:
-        if resolved_key and resolved_key in config.session_api_keys:
+        rejection = _websocket_auth_rejection(
+            websocket, config, resolved_key, allow_conversation_token
+        )
+        if rejection is None:
             logger.warning(
                 "session_api_key passed via query param or header is deprecated. "
                 "Use first-message auth instead."
             )
             await websocket.accept()
             return True
-        logger.warning("WebSocket authentication failed: invalid API key")
-        await websocket.close(code=4001, reason="Authentication failed")
+        logger.warning("WebSocket authentication failed: %s", rejection.detail)
+        await websocket.close(code=rejection.code, reason=rejection.reason)
         return False
 
     # First-message auth: we must accept() before reading frames because the
@@ -213,11 +260,13 @@ async def _accept_authenticated_websocket(
             websocket, code=4001, reason="Authentication failed"
         )
         return False
-    presented_key = data.get("session_api_key")
-    if not presented_key or presented_key not in config.session_api_keys:
-        logger.warning("WebSocket first-message auth failed: invalid API key")
+    rejection = _websocket_auth_rejection(
+        websocket, config, data.get("session_api_key"), allow_conversation_token
+    )
+    if rejection is not None:
+        logger.warning("WebSocket first-message auth failed: %s", rejection.detail)
         await _safe_close_websocket(
-            websocket, code=4001, reason="Authentication failed"
+            websocket, code=rejection.code, reason=rejection.reason
         )
         return False
 
@@ -278,7 +327,9 @@ async def events_socket(
             backward compatibility - if True and resend_mode is None, behaves
             as resend_mode='all'.
     """
-    if not await _accept_authenticated_websocket(websocket, session_api_key):
+    if not await _accept_authenticated_websocket(
+        websocket, session_api_key, allow_conversation_token=True
+    ):
         return
 
     logger.info(f"Event Websocket Connected: {conversation_id}")
