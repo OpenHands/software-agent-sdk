@@ -112,6 +112,10 @@ from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.redact import (
+    redact_url_credentials,
+    redact_url_credentials_in_text,
+)
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -783,6 +787,22 @@ class LocalConversation(BaseConversation):
             ConversationErrorEvent(source="environment", code=code, detail=detail)
         )
 
+    def _emit_auto_load_error(self, code: str, detail: str) -> None:
+        """Tell the user an auto-loaded marketplace or plugin was skipped.
+
+        Auto-load failures do not stop the conversation, but a dropped
+        marketplace silently loses its agents and hooks, so surface the
+        failure as a non-fatal ConversationErrorEvent (the run status is
+        left untouched).
+        """
+        self._on_event(
+            ConversationErrorEvent(
+                source="environment",
+                code=code,
+                detail=redact_url_credentials_in_text(detail),
+            )
+        )
+
     def _check_stuck_or_nudge(self) -> bool:
         """Nudge once on a repeating action-error streak, else apply is_stuck().
 
@@ -1051,23 +1071,40 @@ class LocalConversation(BaseConversation):
                     marketplace, marketplace_path = registry.get_marketplace(
                         registration.name
                     )
-                except Exception:
+                except Exception as exc:
                     logger.warning(
                         "Failed to load marketplace '%s'; continuing without it",
                         registration.name,
                         exc_info=True,
                     )
+                    self._emit_auto_load_error(
+                        "MarketplaceLoadError",
+                        f"Marketplace '{registration.name}' "
+                        f"({redact_url_credentials(registration.source)}) could "
+                        "not be loaded, so its plugin skills, agents and hooks "
+                        f"are unavailable: {exc}",
+                    )
                     continue
                 for entry in marketplace.plugins:
                     if not registration.auto_loads_plugin(entry.name):
                         continue
-                    source, ref, repo_path = marketplace.resolve_plugin_source(entry)
-                    plugins_to_load.append(
-                        (
-                            PluginSource(source=source, ref=ref, repo_path=repo_path),
-                            True,
+                    try:
+                        source, ref, repo_path = marketplace.resolve_plugin_source(
+                            entry
                         )
-                    )
+                        plugin_source = PluginSource(
+                            source=source, ref=ref, repo_path=repo_path
+                        )
+                    except ValueError:
+                        logger.warning(
+                            "Failed to load plugin '%s' from marketplace '%s'; "
+                            "continuing without it",
+                            entry.name,
+                            registration.name,
+                            exc_info=True,
+                        )
+                        continue
+                    plugins_to_load.append((plugin_source, True))
                 # Standalone skills. Merged below as low precedence; plugins
                 # loaded afterwards override same-named skills, matching the
                 # catalog.
@@ -1094,8 +1131,8 @@ class LocalConversation(BaseConversation):
             logger.info(f"Loading {len(plugins_to_load)} plugin(s)...")
             self._resolved_plugins = []
 
-            for spec, source_refs_expanded in plugins_to_load:
-                if source_refs_expanded:
+            for spec, auto_loaded in plugins_to_load:
+                if auto_loaded:
                     fetch_source = spec.source
                     fetch_ref = spec.ref
                 else:
@@ -1106,12 +1143,31 @@ class LocalConversation(BaseConversation):
                         else spec.ref
                     )
 
-                # Fetch plugin and get resolved commit SHA
-                path, resolved_ref = fetch_plugin_with_resolution(
-                    source=fetch_source,
-                    ref=fetch_ref,
-                    repo_path=spec.repo_path,
-                )
+                try:
+                    path, resolved_ref = fetch_plugin_with_resolution(
+                        source=fetch_source,
+                        ref=fetch_ref,
+                        repo_path=spec.repo_path,
+                    )
+                    plugin = Plugin.load(path)
+                except Exception as exc:
+                    # Attaching a plugin that cannot load is an error, but an
+                    # auto-loaded one must not prevent the conversation from
+                    # starting.
+                    if not auto_loaded:
+                        raise
+                    logger.warning(
+                        "Failed to load plugin '%s'; continuing without it",
+                        redact_url_credentials(spec.source),
+                        exc_info=True,
+                    )
+                    self._emit_auto_load_error(
+                        "PluginLoadError",
+                        f"Plugin {redact_url_credentials(spec.source)} could not "
+                        "be loaded, so its skills, agents and hooks are "
+                        f"unavailable: {exc}",
+                    )
+                    continue
 
                 # Store resolved ref for persistence. Build this from the
                 # ORIGINAL spec (not the expanded values) so the persisted
@@ -1120,9 +1176,6 @@ class LocalConversation(BaseConversation):
                 # credentials. Resume re-fetches via the resolved commit SHA.
                 resolved = ResolvedPluginSource.from_plugin_source(spec, resolved_ref)
                 self._resolved_plugins.append(resolved)
-
-                # Load the plugin
-                plugin = Plugin.load(path)
                 logger.debug(
                     f"Loaded plugin '{plugin.manifest.name}'"
                     + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
@@ -1142,7 +1195,9 @@ class LocalConversation(BaseConversation):
                 if plugin.agents:
                     all_plugin_agents.extend(plugin.agents)
 
-            logger.info(f"Loaded {len(plugins_to_load)} plugin(s) via Conversation")
+            logger.info(
+                f"Loaded {len(self._resolved_plugins)} plugin(s) via Conversation"
+            )
 
         # Ambient plugins: enabled installed plugins plus local user/project
         # plugins, mirroring how installed/local skills already auto-load. These
@@ -1293,6 +1348,7 @@ class LocalConversation(BaseConversation):
             register_plugin_agents(
                 agents=all_plugin_agents,
                 work_dir=self.workspace.working_dir,
+                cipher=self._cipher,
             )
 
         # Combine explicit hook_config with plugin hooks
@@ -1536,6 +1592,7 @@ class LocalConversation(BaseConversation):
                 register_plugin_agents(
                     agents=plugin.agents,
                     work_dir=self.workspace.working_dir,
+                    cipher=self._cipher,
                 )
             if plugin.hooks and not plugin.hooks.is_empty():
                 self._merge_runtime_plugin_hooks(plugin.hooks)
@@ -1574,7 +1631,7 @@ class LocalConversation(BaseConversation):
                 then `~/.openhands/agents/*.md`)
         """
         # register project-level and then user-level file-based agents
-        register_file_agents(self.workspace.working_dir)
+        register_file_agents(self.workspace.working_dir, cipher=self._cipher)
 
     def _ensure_agent_ready(self) -> None:
         """Ensure the agent is fully initialized with plugins and agents loaded.
