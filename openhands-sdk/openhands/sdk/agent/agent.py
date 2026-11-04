@@ -130,6 +130,10 @@ def _latest_user_message_contains_image(messages: list[Message]) -> bool:
     Scans the message list in reverse order to find the latest user message
     and checks whether it contains any image attachments.
 
+    Request-only turns (such as the trailing nudge appended by
+    ``prepare_llm_messages``) are skipped, so the check reflects the latest
+    user-authored message rather than a synthetic one.
+
     Args:
         messages: List of conversation messages to search.
 
@@ -138,7 +142,7 @@ def _latest_user_message_contains_image(messages: list[Message]) -> bool:
         Returns False if no user messages are found.
     """
     for message in reversed(messages):
-        if message.role == "user":
+        if message.role == "user" and not message._request_only:
             return message.contains_image
     return False
 

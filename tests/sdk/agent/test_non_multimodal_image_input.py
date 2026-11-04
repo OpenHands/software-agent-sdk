@@ -1,7 +1,11 @@
+import asyncio
+import threading
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import MagicMock
 
 import pytest
+from litellm.types.utils import ModelResponse
 from pydantic import PrivateAttr
 
 from openhands.sdk.agent import Agent
@@ -10,14 +14,17 @@ from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import MessageEvent, ObservationEvent
 from openhands.sdk.llm import (
+    LLM,
     ImageContent,
+    LLMCallContext,
     LLMResponse,
     Message,
     MessageToolCall,
     TextContent,
 )
 from openhands.sdk.llm.router.impl.multimodal import MultimodalRouter
-from openhands.sdk.llm.streaming import TokenCallbackType
+from openhands.sdk.llm.streaming import AnyTokenCallbackType, TokenCallbackType
+from openhands.sdk.llm.utils.metrics import MetricsSnapshot, TokenUsage
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.tool.builtins.vision_inspect import (
@@ -274,3 +281,84 @@ def test_profile_helper_registers_auxiliary_vision_llm(monkeypatch):
 
     assert loaded is conversation.llm_registry.get(usage_id)
     assert conversation.state.stats.usage_to_metrics[usage_id] is loaded.metrics
+
+
+class _ImageInjectingLLM(LLM):
+    """LLM whose first call injects an image user message mid-step."""
+
+    __test__ = False
+    _convo_box: list[LocalConversation] = PrivateAttr(default_factory=list)
+    _calls: list[list[tuple[str, bool]]] = PrivateAttr(default_factory=list)
+
+    def uses_responses_api(self) -> bool:
+        return False
+
+    async def acompletion(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        add_security_risk_prediction: bool = False,
+        on_token: AnyTokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        self._calls.append([(m.role, m.contains_image) for m in messages])
+        if len(self._calls) == 1:
+            convo = self._convo_box[0]
+
+            def _send() -> None:
+                convo.send_message(_image_message())
+
+            sender = threading.Thread(target=_send)
+            sender.start()
+            await asyncio.to_thread(sender.join)
+        return LLMResponse(
+            message=Message(role="assistant", content=[TextContent(text="done")]),
+            metrics=MetricsSnapshot(
+                model_name=self.model,
+                accumulated_cost=0.0,
+                max_budget_per_task=0.0,
+                accumulated_token_usage=TokenUsage(model=self.model),
+            ),
+            raw_response=MagicMock(spec=ModelResponse, id="resp-1"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_image_sent_mid_step_is_not_passed_to_nonvision_model(
+    monkeypatch, tmp_path
+):
+    """An image arriving mid-step must still trigger the vision guard.
+
+    A user message that lands while the LLM call is in flight is recorded before
+    the agent's reply, so the continued run ends with an assistant turn and
+    ``prepare_llm_messages`` appends a request-only user nudge. That synthetic
+    turn is the *latest* user message, so the "does the latest user message
+    contain an image" check misses the real image and the image is handed to a
+    non-vision model.
+    """
+    monkeypatch.setattr(
+        "openhands.sdk.agent.base.has_vision_profile_available", lambda: False
+    )
+    llm = _ImageInjectingLLM(
+        model="litellm_proxy/openrouter/z-ai/glm-4.7", disable_vision=True
+    )
+    conversation = LocalConversation(
+        agent=Agent(llm=llm, tools=[]),
+        workspace=tmp_path,
+        visualizer=None,
+    )
+    llm._convo_box.append(conversation)
+
+    conversation.send_message("first message")
+    await conversation.arun()
+
+    assert not any(
+        contains_image for call in llm._calls for (_role, contains_image) in call
+    ), f"image was sent to a non-vision model: {llm._calls}"
+    assert any(
+        isinstance(event, MessageEvent)
+        and "does not support image understanding" in str(event.llm_message)
+        for event in conversation.state.events
+    ), "capability message was not emitted for the mid-step image"
+    conversation.close()
