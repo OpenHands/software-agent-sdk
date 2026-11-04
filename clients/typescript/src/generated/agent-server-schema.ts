@@ -494,6 +494,10 @@ export type AcpAgentSettings = {
    * Schema Version
    */
   schema_version?: number;
+  /**
+   * Verification state shared with OpenHands profiles.
+   */
+  verification?: AcpVerificationSettings;
 };
 
 /**
@@ -741,6 +745,20 @@ export type AcpToolCallEvent = {
    * Tool Kind
    */
   tool_kind?: string | null;
+};
+
+/**
+ * ACPVerificationSettings
+ *
+ * The server-wide part of :class:`VerificationSettings`.
+ */
+export type AcpVerificationSettings = {
+  /**
+   * Critic Api Key
+   *
+   * API key used to authenticate with the critic service. ACP agents run no critic; the key is kept for OpenHands profiles on this server.
+   */
+  critic_api_key?: string | null;
 };
 
 /**
@@ -16071,6 +16089,10 @@ export type AcpAgentSettingsWritable = {
    * Schema Version
    */
   schema_version?: number;
+  /**
+   * Verification state shared with OpenHands profiles.
+   */
+  verification?: AcpVerificationSettingsWritable;
 };
 
 /**
@@ -16095,6 +16117,20 @@ export type AcpModelDiscoveryRequestWritable = {
   secrets?: {
     [key: string]: SecretSourceInputWritable;
   };
+};
+
+/**
+ * ACPVerificationSettings
+ *
+ * The server-wide part of :class:`VerificationSettings`.
+ */
+export type AcpVerificationSettingsWritable = {
+  /**
+   * Critic Api Key
+   *
+   * API key used to authenticate with the critic service. ACP agents run no critic; the key is kept for OpenHands profiles on this server.
+   */
+  critic_api_key?: string | string | null;
 };
 
 /**
