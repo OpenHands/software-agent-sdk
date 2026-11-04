@@ -1,3 +1,4 @@
+import pytest
 from litellm.exceptions import (
     APIConnectionError,
     BadRequestError,
@@ -11,6 +12,7 @@ from openhands.sdk.llm.exceptions import (
     is_prompt_cache_too_small,
     is_quota_exhaustion_error,
     looks_like_auth_error,
+    looks_like_json_parse_error,
     looks_like_malformed_conversation_history_error,
 )
 
@@ -129,6 +131,29 @@ def test_looks_like_malformed_conversation_history_error_anthropic_first_sentenc
 
     assert looks_like_malformed_conversation_history_error(error) is True
     assert is_context_window_exceeded(error) is False
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "failed to parse tool call arguments as json",
+        "OpenAIException - Failed to parse tool call arguments as JSON: "
+        "invalid string: missing closing quote",
+        "OpenAIException - [json.exception.parse_error.101] parse error at line 1",
+        "OpenAIException - invalid string: control character in string",
+        "OpenAIException - unexpected end of input",
+    ],
+)
+def test_looks_like_json_parse_error_wrapped_in_rate_limit(message: str):
+    error = RateLimitError(message=message, llm_provider="openai", model=MODEL)
+    assert looks_like_json_parse_error(error) is True
+
+
+def test_looks_like_json_parse_error_negative():
+    error = RateLimitError(
+        message="Rate limit exceeded", llm_provider="openai", model=MODEL
+    )
+    assert looks_like_json_parse_error(error) is False
 
 
 def test_is_context_window_exceeded_negative():
