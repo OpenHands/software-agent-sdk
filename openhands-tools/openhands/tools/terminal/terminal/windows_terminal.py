@@ -42,6 +42,9 @@ _SETUP_DELAY_SECONDS = 0.5
 _SETUP_POLL_INTERVAL_SECONDS = 0.05
 _MAX_SETUP_WAIT_SECONDS = 2.0
 _INTERRUPT_GRACE_SECONDS = 0.5
+_DEFAULT_STDIN_TIMEOUT_SECONDS = 5.0
+_PROCESS_TERMINATE_TIMEOUT_SECONDS = 5.0
+_PROCESS_KILL_TIMEOUT_SECONDS = 2.0
 
 _WINDOWS_SPECIALS: dict[str, str] = {
     "ENTER": "\n",
@@ -189,32 +192,46 @@ class WindowsTerminal(TerminalInterface):
         self._stop_reader.set()
         self._terminate_child_processes()
 
-        if self.process is not None:
+        proc = self.process
+        if proc is not None:
+            self._terminate_child_processes()
             try:
-                if self.process.stdin is not None:
-                    self.process.stdin.close()
-            except (OSError, ValueError) as exc:
-                logger.debug("Error closing PowerShell stdin: %s", exc)
+                proc.terminate()
+                proc.wait(timeout=_PROCESS_TERMINATE_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                logger.warning("PowerShell process did not terminate, forcing kill")
+                try:
+                    proc.kill()
+                    proc.wait(timeout=_PROCESS_KILL_TIMEOUT_SECONDS)
+                except Exception as exc:
+                    logger.debug("Error killing PowerShell process: %s", exc)
+            except Exception as exc:
+                logger.debug("Error terminating PowerShell process: %s", exc)
 
+        # Terminating the process causes the OS to close the pipe write end,
+        # unblocking stdout.read() with EOF (b""). Safe to join now.
         if self.reader_thread and self.reader_thread.is_alive():
             self.reader_thread.join(timeout=_READER_THREAD_TIMEOUT_SECONDS)
 
-        if self.process is not None:
+        if proc is not None:
             try:
-                if self.process.stdout is not None:
-                    self.process.stdout.close()
+                if proc.stdin is not None:
+                    proc.stdin.close()
             except (OSError, ValueError) as exc:
-                logger.debug("Error closing PowerShell stdout: %s", exc)
-            try:
-                self.process.terminate()
-                self.process.wait(timeout=5.0)
-            except subprocess.TimeoutExpired:
-                logger.warning("PowerShell process did not terminate, forcing kill")
-                self.process.kill()
-            except Exception as exc:
-                logger.debug("Error terminating PowerShell process: %s", exc)
-            finally:
-                self.process = None
+                logger.debug("Error closing PowerShell stdin: %s", exc)
+
+            # Close stdout pipe only after reader thread is no longer reading it.
+            # On Windows, closing a pipe while another thread is blocked in
+            # ReadFile deadlocks.
+            if proc.stdout is not None and (
+                self.reader_thread is None or not self.reader_thread.is_alive()
+            ):
+                try:
+                    proc.stdout.close()
+                except (OSError, ValueError) as exc:
+                    logger.debug("Error closing PowerShell stdout: %s", exc)
+
+            self.process = None
 
         self._closed = True
 
@@ -289,15 +306,51 @@ class WindowsTerminal(TerminalInterface):
     def _escape_single_quoted(text: str) -> str:
         return text.replace("'", "''")
 
-    def _write_to_stdin(self, text: str) -> None:
+    def _write_to_stdin(
+        self, text: str, timeout: float | None = _DEFAULT_STDIN_TIMEOUT_SECONDS
+    ) -> None:
         if self.process is None or self.process.stdin is None:
             raise RuntimeError("PowerShell stdin is not available")
-        try:
-            self.process.stdin.write(text.encode("utf-8"))
-            self.process.stdin.flush()
-        except (BrokenPipeError, OSError) as exc:
-            logger.error("Failed to write to PowerShell stdin: %s", exc)
-            raise RuntimeError("Failed to write to PowerShell session") from exc
+
+        encoded = text.encode("utf-8")
+        stdin = self.process.stdin
+
+        if timeout is None:
+            try:
+                stdin.write(encoded)
+                stdin.flush()
+            except (BrokenPipeError, OSError) as exc:
+                logger.error("Failed to write to PowerShell stdin: %s", exc)
+                raise RuntimeError("Failed to write to PowerShell session") from exc
+            return
+
+        write_error: list[Exception] = []
+
+        def _do_write() -> None:
+            try:
+                stdin.write(encoded)
+                stdin.flush()
+            except Exception as exc:
+                write_error.append(exc)
+
+        writer_thread = threading.Thread(target=_do_write, daemon=True)
+        writer_thread.start()
+        writer_thread.join(timeout=timeout)
+
+        if writer_thread.is_alive():
+            logger.warning(
+                "Writing to PowerShell stdin timed out after %s seconds", timeout
+            )
+            raise TimeoutError(
+                f"Writing to PowerShell stdin timed out after {timeout} seconds"
+            )
+
+        if write_error:
+            exc = write_error[0]
+            if isinstance(exc, (BrokenPipeError, OSError)):
+                logger.error("Failed to write to PowerShell stdin: %s", exc)
+                raise RuntimeError("Failed to write to PowerShell session") from exc
+            raise exc
 
     def _read_output(self) -> None:
         if self.process is None or self.process.stdout is None:
@@ -414,9 +467,11 @@ class WindowsTerminal(TerminalInterface):
         sent_ctrl_c_input = False
         if not sent_ctrl_break and not terminated_children:
             try:
-                self._write_to_stdin(_WINDOWS_SPECIALS["C-C"])
+                self._write_to_stdin(
+                    _WINDOWS_SPECIALS["C-C"], timeout=_INTERRUPT_GRACE_SECONDS
+                )
                 sent_ctrl_c_input = True
-            except RuntimeError as exc:
+            except (RuntimeError, TimeoutError) as exc:
                 logger.debug("Failed to write Ctrl+C to PowerShell stdin: %s", exc)
                 return False
 
