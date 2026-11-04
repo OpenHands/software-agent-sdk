@@ -51,7 +51,12 @@ class ACPFileCredentialLifecycle(Protocol):
     secret_name: str
     path: Path | None
 
-    def materialize(self, registry: SecretRegistry, env: dict[str, str]) -> None: ...
+    def materialize(
+        self,
+        registry: SecretRegistry,
+        env: dict[str, str],
+        home: Path | None = None,
+    ) -> None: ...
 
     def track_current(self) -> None: ...
 
@@ -114,6 +119,7 @@ class _CodexAuthLifecycle:
         self.run_async = run_async
         self.path: Path | None = None
         self._runtime_dir: Path | None = None
+        self._home_link: Path | None = None
         self._registry: SecretRegistry | None = None
         self._expected_version: str | None = None
         self._local_digest: str | None = None
@@ -126,7 +132,20 @@ class _CodexAuthLifecycle:
         self._monitor: threading.Thread | None = None
         self._closed = False
 
-    def materialize(self, registry: SecretRegistry, env: dict[str, str]) -> None:
+    def materialize(
+        self,
+        registry: SecretRegistry,
+        env: dict[str, str],
+        home: Path | None = None,
+    ) -> None:
+        """Write the credential to a private temporary file for the CLI.
+
+        With ``home`` (the conversation's durable Codex directory), ``CODEX_HOME``
+        points there so the CLI's threads and state survive a restart, and
+        ``home/auth.json`` is a symlink to the temporary file. codex resolves that
+        link and replaces its target when it refreshes the login, so the
+        credential itself never lands in ``home``.
+        """
         resolved = self._load()
         if not is_valid_codex_auth(resolved.value):
             raise CredentialNeedsReauthentication(
@@ -135,8 +154,13 @@ class _CodexAuthLifecycle:
         runtime_dir = Path(tempfile.mkdtemp(prefix="openhands-codex-"))
         runtime_dir.chmod(0o700)
         path = runtime_dir / "auth.json"
+        codex_home = runtime_dir
         try:
             write_secret_file(path, resolved.value)
+            if home is not None:
+                link = self._link_into_home(home, path)
+                if link is not None:
+                    path, codex_home = link, home
         except BaseException:
             shutil.rmtree(runtime_dir, ignore_errors=True)
             raise
@@ -146,7 +170,7 @@ class _CodexAuthLifecycle:
         self._expected_version = resolved.version
         self._local_digest = self._digest(resolved.value)
         self._track(resolved.value)
-        env["CODEX_HOME"] = str(runtime_dir)
+        env["CODEX_HOME"] = str(codex_home)
         monitor = threading.Thread(
             target=self._monitor_loop,
             name="codex-credential-monitor",
@@ -163,6 +187,26 @@ class _CodexAuthLifecycle:
             "credential_binding_materialized",
             extra={"credential": self.secret_name},
         )
+
+    def _link_into_home(self, home: Path, target: Path) -> Path | None:
+        link = home / "auth.json"
+        try:
+            home.mkdir(mode=0o700, parents=True, exist_ok=True)
+            # A real file here is a stale copy (older releases, or a CLI that
+            # replaced the link): the binding's value supersedes it.
+            link.unlink(missing_ok=True)
+            link.symlink_to(target)
+        except OSError:
+            # No symlinks (e.g. Windows without the privilege): keep the CLI's
+            # state in the temporary directory, as before.
+            logger.warning(
+                "credential_binding_home_link_failed",
+                extra={"credential": self.secret_name},
+                exc_info=True,
+            )
+            return None
+        self._home_link = link
+        return link
 
     def track_current(self) -> None:
         try:
@@ -230,12 +274,22 @@ class _CodexAuthLifecycle:
         self._cleanup_runtime()
 
     def _cleanup_runtime(self) -> None:
+        home_link = self._home_link
+        if home_link is not None:
+            try:
+                home_link.unlink(missing_ok=True)
+            except OSError:
+                logger.warning(
+                    "credential_binding_home_link_cleanup_failed",
+                    extra={"credential": self.secret_name},
+                )
         runtime_dir = self._runtime_dir
         if runtime_dir is not None:
             shutil.rmtree(runtime_dir, ignore_errors=True)
         with self._lock:
             self.path = None
             self._runtime_dir = None
+            self._home_link = None
             self._registry = None
             self._monitor = None
             self._closed = True
