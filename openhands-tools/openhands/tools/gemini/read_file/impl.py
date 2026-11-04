@@ -1,6 +1,7 @@
 """Read file tool executor implementation."""
 
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -9,6 +10,10 @@ from openhands.tools.gemini.read_file.definition import (
     MAX_LINES_PER_READ,
     ReadFileAction,
     ReadFileObservation,
+)
+from openhands.tools.utils.path_containment import (
+    PathContainment,
+    PathOutsideWorkspaceError,
 )
 
 
@@ -19,13 +24,24 @@ if TYPE_CHECKING:
 class ReadFileExecutor(ToolExecutor[ReadFileAction, ReadFileObservation]):
     """Executor for read_file tool."""
 
-    def __init__(self, workspace_root: str):
+    def __init__(
+        self,
+        workspace_root: str,
+        restrict_to_workspace: bool = False,
+        allowed_roots: Sequence[str] | None = None,
+    ):
         """Initialize executor with workspace root.
 
         Args:
             workspace_root: Root directory for file operations
+            restrict_to_workspace: Reject paths outside the workspace root
+                (and ``allowed_roots``) after resolving symlinks.
+            allowed_roots: Extra absolute directories allowed when restricted.
         """
         self.workspace_root = Path(workspace_root)
+        self.containment: PathContainment | None = PathContainment.from_settings(
+            workspace_root, restrict_to_workspace, allowed_roots
+        )
 
     def __call__(
         self,
@@ -51,6 +67,17 @@ class ReadFileExecutor(ToolExecutor[ReadFileAction, ReadFileObservation]):
             resolved_path = self.workspace_root / file_path
         else:
             resolved_path = Path(file_path)
+
+        if self.containment is not None:
+            try:
+                self.containment.check(resolved_path)
+            except PathOutsideWorkspaceError as e:
+                return ReadFileObservation.from_text(
+                    is_error=True,
+                    text=str(e),
+                    file_path=str(resolved_path),
+                    file_content="",
+                )
 
         # Check if file exists
         if not resolved_path.exists():

@@ -4,12 +4,17 @@ import fnmatch
 import os
 import re
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import ToolExecutor
 from openhands.sdk.utils import sanitized_env
+from openhands.tools.utils.path_containment import (
+    PathContainment,
+    PathOutsideWorkspaceError,
+)
 
 
 if TYPE_CHECKING:
@@ -35,13 +40,25 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
 
     _MAX_MATCHES = 100
 
-    def __init__(self, working_dir: str):
+    def __init__(
+        self,
+        working_dir: str,
+        restrict_to_workspace: bool = False,
+        allowed_roots: Sequence[str] | None = None,
+    ):
         """Initialize the grep executor.
 
         Args:
             working_dir: The working directory to use as the base for searches
+            restrict_to_workspace: Reject search paths outside the working
+                directory (and ``allowed_roots``) and drop results that
+                resolve outside them, e.g. through symlinks.
+            allowed_roots: Extra absolute directories allowed when restricted.
         """
         self.working_dir: Path = Path(working_dir).resolve()
+        self.containment: PathContainment | None = PathContainment.from_settings(
+            self.working_dir, restrict_to_workspace, allowed_roots
+        )
         self._search_backend = self._select_search_backend()
 
         if self._search_backend == "grep":
@@ -76,6 +93,19 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
                     )
             else:
                 search_path = self.working_dir
+
+            if self.containment is not None:
+                try:
+                    self.containment.check(search_path)
+                except PathOutsideWorkspaceError as e:
+                    return GrepObservation.from_text(
+                        text=str(e),
+                        matches=[],
+                        pattern=action.pattern,
+                        search_path=str(search_path),
+                        include_pattern=action.include,
+                        is_error=True,
+                    )
 
             try:
                 regex = re.compile(action.pattern, re.IGNORECASE)
@@ -185,6 +215,8 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             except OSError:
                 continue
             if not self._path_matches_filters(resolved, search_path, include_pattern):
+                continue
+            if self.containment is not None and not self.containment.contains(resolved):
                 continue
             unique_matches[str(resolved)] = resolved
 

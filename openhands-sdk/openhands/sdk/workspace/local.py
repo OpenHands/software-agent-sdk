@@ -21,6 +21,15 @@ class LocalWorkspace(BaseWorkspace):
     environment. It's suitable for development and testing scenarios where the agent
     should operate directly on the host system.
 
+    ``working_dir`` is the agent's starting directory, not a security boundary:
+    tools can reach any path the host process can. File tools (file_editor,
+    grep, glob, the Gemini-style file tools and planning_file_editor) accept an
+    opt-in ``restrict_to_workspace=True`` param (plus optional
+    ``allowed_roots``) that rejects paths resolving outside ``working_dir``,
+    e.g. ``Tool(name="file_editor", params={"restrict_to_workspace": True})``.
+    The terminal is never confined; use a container-backed workspace such as
+    ``DockerWorkspace`` when you need isolation.
+
     Example:
         >>> workspace = LocalWorkspace(working_dir="/path/to/project")
         >>> with workspace:
