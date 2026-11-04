@@ -253,9 +253,12 @@ class LLMSummarizingCondenserSettings(CondenserSettings):
         },
     )
     keep_first: int = Field(
-        default=2,
+        default=0,
         ge=0,
-        description="Minimum number of initial events to preserve before condensation.",
+        description=(
+            "Minimum number of initial events to preserve before condensation. "
+            "The system prompt is always preserved."
+        ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Keep first",
