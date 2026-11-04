@@ -56,7 +56,12 @@ def test_get_includes_manifest_page_contributions(client: TestClient, tmp_path: 
         name="demo-extension",
         display_name="Demo Extension",
         pages=[
-            {"id": "dashboard", "title": "Dashboard", "path": "/dashboard"},
+            {
+                "id": "dashboard",
+                "title": "Dashboard",
+                "path": "/dashboard",
+                "nav_label": "Home",
+            },
             {"id": "reports", "title": "Reports", "path": "/reports"},
         ],
     )
@@ -68,8 +73,18 @@ def test_get_includes_manifest_page_contributions(client: TestClient, tmp_path: 
     manifest = resp.json()["manifest"]
     assert manifest["display_name"] == "Demo Extension"
     assert manifest["contributes"]["pages"] == [
-        {"id": "dashboard", "title": "Dashboard", "path": "/dashboard"},
-        {"id": "reports", "title": "Reports", "path": "/reports"},
+        {
+            "id": "dashboard",
+            "title": "Dashboard",
+            "path": "/dashboard",
+            "nav_label": "Home",
+        },
+        {
+            "id": "reports",
+            "title": "Reports",
+            "path": "/reports",
+            "nav_label": None,
+        },
     ]
 
 
@@ -93,6 +108,10 @@ def test_list_includes_manifest_page_contributions(client: TestClient, tmp_path:
     assert [p["id"] for p in ext["manifest"]["contributes"]["pages"]] == [
         "dashboard",
         "reports",
+    ]
+    assert [p["nav_label"] for p in ext["manifest"]["contributes"]["pages"]] == [
+        None,
+        None,
     ]
 
 
