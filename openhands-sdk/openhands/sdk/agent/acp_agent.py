@@ -2854,16 +2854,19 @@ class ACPAgent(AgentBase):
                     if self._closed:
                         raise CredentialSyncError("Credential binding is closed.")
                 try:
-                    lifecycle.materialize(state.secret_registry, env)
-                    durable_path = (
-                        self._acp_file_secret_dir(state, spec.subdir) / spec.filename
-                    )
-                    try:
-                        durable_path.unlink(missing_ok=True)
-                    except OSError as exc:
-                        raise CredentialSyncError(
-                            "Durable credential copy could not be removed."
-                        ) from exc
+                    # The CLI keeps its state in the conversation's durable
+                    # directory; the lifecycle links the credential in from a
+                    # temporary file, so it never persists there.
+                    home = self._acp_file_secret_dir(state, spec.subdir)
+                    lifecycle.materialize(state.secret_registry, env, home=home)
+                    durable_path = home / spec.filename
+                    if lifecycle.path != durable_path:
+                        try:
+                            durable_path.unlink(missing_ok=True)
+                        except OSError as exc:
+                            raise CredentialSyncError(
+                                "Durable credential copy could not be removed."
+                            ) from exc
                 except BaseException:
                     env.pop("CODEX_HOME", None)
                     lifecycle.discard()
