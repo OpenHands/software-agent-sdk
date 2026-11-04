@@ -22,6 +22,7 @@ from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.plugin.format.agent_plugins_mcp import get_plugin_data_dir
+from openhands.sdk.utils.cipher import Cipher
 
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "plugins" / "agent_plugins"
@@ -301,6 +302,23 @@ class TestClientExtension:
 
         registered = register.call_args.kwargs["agents"]
         assert [definition.name for definition in registered] == ["full-package-helper"]
+        conversation.close()
+
+    def test_agents_are_registered_with_the_conversation_cipher(
+        self, agent: Agent, workspace: Path
+    ):
+        """Plugin agents can decrypt the LLM profiles they name."""
+        cipher = Cipher("plugin-profile-key")
+        conversation = conversation_with(
+            "full-package", agent, workspace, cipher=cipher
+        )
+
+        with patch(
+            "openhands.sdk.conversation.impl.local_conversation.register_plugin_agents"
+        ) as register:
+            conversation._ensure_plugins_loaded()
+
+        assert register.call_args.kwargs["cipher"] is cipher
         conversation.close()
 
 
