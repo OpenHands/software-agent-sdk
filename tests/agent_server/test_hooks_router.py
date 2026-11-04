@@ -191,3 +191,38 @@ class TestHooksRouterUserHooks:
         assert [m["hooks"][0]["command"] for m in no_project["pre_tool_use"]] == [
             "echo user"
         ]
+
+    def test_corrupt_hooks_reported_in_response_and_strict_mode(
+        self, client, tmp_path, monkeypatch
+    ):
+        user_dir = tmp_path / "user"
+        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(user_dir))
+        project = tmp_path / "project"
+        project_hooks = project / ".openhands" / "hooks.json"
+        project_hooks.parent.mkdir(parents=True)
+        project_hooks.write_text('{"PreToolUse":[{"matcher":"terminal",}]}')
+
+        response = client.post(
+            "/api/hooks",
+            json={"project_dir": str(project), "load_user_hooks": False},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["hook_config"] is None
+        assert len(data["errors"]) == 1
+        assert data["errors"][0]["source"] == "project"
+        assert data["errors"][0]["path"] == str(project_hooks)
+        assert data["errors"][0]["message"]
+
+        strict_resp = client.post(
+            "/api/hooks",
+            json={
+                "project_dir": str(project),
+                "load_user_hooks": False,
+                "strict": True,
+            },
+        )
+        assert strict_resp.status_code == 409
+        detail = strict_resp.json()["detail"]
+        assert detail["errors"][0]["source"] == "project"
+        assert detail["errors"][0]["path"] == str(project_hooks)
