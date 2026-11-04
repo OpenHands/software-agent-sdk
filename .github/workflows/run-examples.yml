@@ -79,8 +79,9 @@ jobs:
                   # prompt, which the proxy's identity guardrail would 403, so
                   # they use a dedicated bypass key (alias `acp-llm-api-key`,
                   # listed in the proxy's `ignored_key_aliases`; see saas-deploy
-                  # PR #1913 and issue #6434). Falls back to LLM_API_KEY so the
-                  # examples still run for contributors without the secret.
+                  # PRs #1929 (staging) / #1930 (prod) and issue #6434). Falls
+                  # back to LLM_API_KEY so the examples still run for
+                  # contributors without the secret.
                   ANTHROPIC_BASE_URL: https://llm-proxy.app.all-hands.dev
                   ANTHROPIC_API_KEY: ${{ secrets.ACP_LLM_API_KEY || secrets.LLM_API_KEY }}
                   OPENAI_BASE_URL: https://llm-proxy.app.all-hands.dev
