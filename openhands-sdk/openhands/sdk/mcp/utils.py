@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
-import httpx
+import httpx2
 import mcp.types
 from fastmcp.client.auth import OAuth
 from fastmcp.client.logging import LogMessage
@@ -136,9 +136,9 @@ class _PackageRemoteMCPServer(RemoteMCPServer):
 
 
 def _origin_bound_client_factory(url: str, header_names: tuple[str, ...]):
-    origin = _origin(httpx.URL(url))
+    origin = _origin(httpx2.URL(url))
 
-    async def drop_headers_off_origin(request: httpx.Request) -> None:
+    async def drop_headers_off_origin(request: httpx2.Request) -> None:
         # Request hooks run on every redirect hop, after httpx has copied the
         # previous request's headers onto the next one.
         if _origin(request.url) != origin:
@@ -147,10 +147,10 @@ def _origin_bound_client_factory(url: str, header_names: tuple[str, ...]):
 
     def factory(
         headers: dict[str, str] | None = None,
-        timeout: httpx.Timeout | None = None,
-        auth: httpx.Auth | None = None,
+        timeout: httpx2.Timeout | None = None,
+        auth: httpx2.Auth | None = None,
         **_: object,
-    ) -> httpx.AsyncClient:
+    ) -> httpx2.AsyncClient:
         client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
         client.event_hooks = {"request": [drop_headers_off_origin], "response": []}
         return client
@@ -158,7 +158,7 @@ def _origin_bound_client_factory(url: str, header_names: tuple[str, ...]):
     return factory
 
 
-def _origin(url: httpx.URL) -> tuple[str, str, int | None]:
+def _origin(url: httpx2.URL) -> tuple[str, str, int | None]:
     default_port = {"http": 80, "https": 443}.get(url.scheme)
     return url.scheme, url.host, url.port or default_port
 

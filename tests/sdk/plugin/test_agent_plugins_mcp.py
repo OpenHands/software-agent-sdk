@@ -936,13 +936,10 @@ def test_configured_headers_do_not_follow_a_redirect_off_origin(
         with create_mcp_tools(servers, timeout=10):
             pass
 
-    first, same_origin, other_origin = (
-        seen["a/mcp"][0],
-        seen["a/moved"][0],
-        seen["b/mcp"][0],
-    )
+    first, same_origin = seen["a/mcp"][0], seen["a/moved"][0]
     assert first["x-tenant"] == "public-tenant"
     assert first["host"] == a_url.removeprefix("http://")
     assert same_origin["x-tenant"] == "public-tenant"
-    assert "x-tenant" not in other_origin
-    assert other_origin["host"] == b_url.removeprefix("http://")
+    # mcp 2.x refuses an off-origin redirect outright rather than following it
+    # and stripping the configured headers, so server b never sees the request.
+    assert "b/mcp" not in seen
