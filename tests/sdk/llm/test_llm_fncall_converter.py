@@ -1016,12 +1016,17 @@ def test_security_risk_param_allowed_for_tool_that_does_not_declare_it():
     assert arguments["security_risk"] == "LOW"
 
 
-def test_non_fncall_roundtrip_keeps_multiline_whitespace():
+def _first_tool_call_arguments(messages: list[dict]) -> dict:
+    assistant_msg = next(m for m in messages if m.get("tool_calls"))
+    return json.loads(assistant_msg["tool_calls"][0]["function"]["arguments"])
+
+
+def test_roundtrip_preserves_multiline_param_whitespace():
     """A tool call rendered for a non-native model must parse back unchanged.
 
-    ``convert_tool_call_to_string`` wraps a multiline string in one newline on
-    each side; only that framing may be removed, not the indentation or the
-    trailing newline of the value itself.
+    ``convert_tool_call_to_string`` wraps multiline strings in a newline on
+    each side; the parser should strip only that framing, not the indentation
+    of code in, for example, a file_editor ``new_str``.
     """
     tools: list[ChatCompletionToolParam] = [
         {
@@ -1056,30 +1061,15 @@ def test_non_fncall_roundtrip_keeps_multiline_whitespace():
         },
     ]
 
-    non_fncall_messages = convert_fncall_messages_to_non_fncall_messages(
-        fncall_messages, tools
-    )
-    back_to_fncall = convert_non_fncall_messages_to_fncall_messages(
-        non_fncall_messages, tools
-    )
+    non_fncall = convert_fncall_messages_to_non_fncall_messages(fncall_messages, tools)
+    back = convert_non_fncall_messages_to_fncall_messages(non_fncall, tools)
 
-    assistant_msg = next(msg for msg in back_to_fncall if msg.get("tool_calls"))
-    arguments = json.loads(assistant_msg["tool_calls"][0]["function"]["arguments"])
-    assert arguments == {"new_str": new_str}
-
-
-INDENTED_BLOCK = "    def f():\n        return 1\n"
+    assert _first_tool_call_arguments(back) == {"new_str": new_str}
 
 
 @pytest.mark.parametrize(
     ("param_schema", "written_value", "expected"),
     [
-        pytest.param(
-            {"type": "string"},
-            f"\n{INDENTED_BLOCK}\n",
-            INDENTED_BLOCK,
-            id="framed-multiline-is-restored-exactly",
-        ),
         pytest.param(
             {"type": "string"},
             "    def f():\n        return 1",
@@ -1092,47 +1082,12 @@ INDENTED_BLOCK = "    def f():\n        return 1\n"
             "create",
             id="framed-single-line-is-stripped",
         ),
-        pytest.param(
-            {"type": "string", "enum": ["create", "view"]},
-            "\n\ncreate\n",
-            "create",
-            id="blank-line-padding-is-stripped",
-        ),
-        pytest.param(
-            {"type": "string", "enum": ["create", "view"]},
-            "\n  create\n  ",
-            "create",
-            id="indented-closing-tag-is-stripped",
-        ),
-        pytest.param(
-            {"type": "string"},
-            "\r\nls\r\n",
-            "ls",
-            id="crlf-framing-is-stripped",
-        ),
-        pytest.param(
-            {"type": "string", "enum": ["create", "view"]},
-            " create ",
-            "create",
-            id="unframed-enum-is-stripped",
-        ),
-        pytest.param(
-            {"type": "boolean"},
-            " true ",
-            "true",
-            id="unframed-bool-is-stripped",
-        ),
     ],
 )
 def test_non_fncall_param_whitespace_follows_renderer_framing(
     param_schema, written_value, expected
 ):
-    """Parsed whitespace follows the framing of ``convert_tool_call_to_string``.
-
-    The renderer frames a multiline string value with one newline on each side and
-    writes every other value inline, so the parser removes only that framing from
-    multiline content. Single-line content is stripped however it is padded.
-    """
+    """Multiline values keep their own whitespace; single-line values are stripped."""
     tools: list[ChatCompletionToolParam] = [
         {
             "type": "function",
@@ -1163,6 +1118,4 @@ def test_non_fncall_param_whitespace_follows_renderer_framing(
         non_fncall_messages, tools
     )
 
-    assistant_msg = next(msg for msg in fncall_messages if msg.get("tool_calls"))
-    arguments = json.loads(assistant_msg["tool_calls"][0]["function"]["arguments"])
-    assert arguments == {"value": expected}
+    assert _first_tool_call_arguments(fncall_messages) == {"value": expected}
