@@ -497,7 +497,7 @@ class StartConversationRequest(ConversationConfig):
             return data
         # An explicit null means "not this source"; ``agent`` has no nullable
         # type of its own.
-        payload = {
+        payload: dict[str, Any] = {
             name: value
             for name, value in data.items()
             if value is not None or name not in ("agent", "agent_settings")
