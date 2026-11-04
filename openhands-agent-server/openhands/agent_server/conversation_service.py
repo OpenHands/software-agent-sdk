@@ -2913,7 +2913,7 @@ class WebhookSubscriber(Subscriber):
         # mode="json" makes types such as set and SecretStr JSON-safe.
         if hasattr(event, "model_dump"):
             return event.model_dump(mode="json")
-        return event.__dict__
+        return dict(event.__dict__)
 
     @classmethod
     def _event_size(cls, event: Event) -> int:
