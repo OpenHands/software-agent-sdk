@@ -4,17 +4,15 @@
 Sets two scoped StaticSecrets in agent_context.secrets, then creates a
 conversation asking the agent to name the org token.
 """
-import json
+
 import os
 import sys
-import time
 
 import httpx
 
+
 BASE = "http://localhost:20010"
-APIKEY_FILE = os.path.expanduser(
-    "~/workspace/.oh-pr6276/agent-canvas/.apikey"
-)
+APIKEY_FILE = os.path.expanduser("~/workspace/.oh-pr6276/agent-canvas/.apikey")
 with open(APIKEY_FILE) as f:
     _APIKEY = f.read().strip()
 AUTH = {"X-Session-API-Key": _APIKEY}
@@ -70,18 +68,19 @@ def main() -> int:
     print(f"secrets set: {list(secrets.keys())}")
 
     print("\n=== 2b. Verify rendered system prompt shows grouped scopes ===")
-    resp = httpx.get(
-        f"{BASE}/api/agent-schema", headers=AUTH, timeout=30
-    )
+    resp = httpx.get(f"{BASE}/api/agent-schema", headers=AUTH, timeout=30)
     # The system prompt is rendered at conversation start; we'll verify via
-    # the standalone SDK script output instead (see scripts/test_pr6276_scope_grouping.py).
+    # the standalone SDK script output instead
+    # (see scripts/test_pr6276_scope_grouping.py).
 
     print("\n=== 3. Create a conversation ===")
     resp = httpx.post(
         f"{BASE}/api/conversations",
         headers=AUTH,
         json={
-            "workspace": {"working_dir": os.path.expanduser("~/workspace/.oh-pr6276/test-ws")},
+            "workspace": {
+                "working_dir": os.path.expanduser("~/workspace/.oh-pr6276/test-ws")
+            },
             "agent_settings": settings["agent_settings"],
         },
         timeout=30,
@@ -138,7 +137,10 @@ def main() -> int:
     print(answer or "(no assistant text found)")
     print()
 
-    if "ORG_GITHUB_TOKEN" in answer.upper() and "PERSONAL_GITHUB_TOKEN" not in answer.upper():
+    if (
+        "ORG_GITHUB_TOKEN" in answer.upper()
+        and "PERSONAL_GITHUB_TOKEN" not in answer.upper()
+    ):
         print("PASS: agent picked ORG_GITHUB_TOKEN (organization scope).")
         return 0
     print("RESULT: see answer above.", file=sys.stderr)

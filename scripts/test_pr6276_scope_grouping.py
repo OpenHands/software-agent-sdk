@@ -49,7 +49,9 @@ def render_secret_section() -> str:
             ),
         )
     )
-    return CustomSecretsSection().render(ctx)
+    rendered = CustomSecretsSection().render(ctx)
+    assert rendered is not None
+    return rendered
 
 
 def main() -> int:
@@ -63,7 +65,9 @@ def main() -> int:
     # Verify the grouping is present
     assert "### personal" in rendered, "personal scope heading missing"
     assert "### organization" in rendered, "organization scope heading missing"
-    assert "The user's own credentials" in rendered, "personal scope_description missing"
+    assert "The user's own credentials" in rendered, (
+        "personal scope_description missing"
+    )
     assert "Shared service-account credentials" in rendered, (
         "organization scope_description missing"
     )
@@ -128,17 +132,22 @@ def main() -> int:
     conversation.run()
 
     # Inspect the agent's final text answer.
-    from openhands.sdk.event import TextContent, Message
+    from openhands.sdk.event.base import LLMConvertibleEvent
+    from openhands.sdk.llm import TextContent
 
     last_text = ""
     for event in reversed(conversation.state.events):
-        if isinstance(event, Message) and event.role == "assistant":
-            for block in event.content:
-                if isinstance(block, TextContent) and block.text.strip():
-                    last_text = block.text
-                    break
-            if last_text:
+        if not isinstance(event, LLMConvertibleEvent):
+            continue
+        msg = event.to_llm_message()
+        if msg.role != "assistant":
+            continue
+        for block in msg.content:
+            if isinstance(block, TextContent) and block.text.strip():
+                last_text = block.text
                 break
+        if last_text:
+            break
 
     print("Agent's answer:")
     print(last_text or "(no assistant text found)")
