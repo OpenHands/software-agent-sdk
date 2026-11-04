@@ -6,6 +6,8 @@ from openhands.sdk.conversation.types import StuckDetectionThresholds
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
+    Condensation,
+    CondensationRequest,
     CondensationSummaryEvent,
     Event,
     MessageEvent,
@@ -22,6 +24,10 @@ logger = get_logger(__name__)
 # This window should be large enough to capture repetitive patterns
 # (4 repeats × 2 events per cycle = 8 events minimum, plus buffer for user messages)
 MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION: int = 20
+
+# Condensations in a row that the very next LLM call still rejected as too long.
+# Five cycles are the ten events scenario 5 waits for.
+CONTEXT_WINDOW_ERROR_LOOP_THRESHOLD: int = 5
 
 
 class StuckDetector:
@@ -449,15 +455,28 @@ class StuckDetector:
 
         return False
 
-    def _is_stuck_context_window_error(self, _events: list[Event]) -> bool:
+    def _is_stuck_context_window_error(self, events: list[Event]) -> bool:
         """Detects if we are stuck in a loop of context window errors.
 
         This happens when we repeatedly get context window errors and try to trim,
         but the trimming does not work, causing us to get more context window errors.
-        The pattern is repeated AgentCondensationObservation events without any other
-        events between them.
+        Each failed attempt is a Condensation followed directly by another
+        CondensationRequest, with no other events between them.
         """
-        # TODO: blocked by https://github.com/OpenHands/agent-sdk/issues/282
+        failed_condensations = 0
+        for newer, older in zip(reversed(events), list(reversed(events))[1:]):
+            if isinstance(newer, CondensationRequest) and isinstance(
+                older, Condensation
+            ):
+                failed_condensations += 1
+                if failed_condensations >= CONTEXT_WINDOW_ERROR_LOOP_THRESHOLD:
+                    logger.warning("Context window error loop detected")
+                    return True
+            elif not (
+                isinstance(newer, Condensation)
+                and isinstance(older, CondensationRequest)
+            ):
+                return False
         return False
 
     def _event_eq(self, event1: Event, event2: Event) -> bool:
