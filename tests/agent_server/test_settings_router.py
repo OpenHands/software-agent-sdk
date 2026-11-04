@@ -1803,7 +1803,12 @@ def test_secret_upsert_rejects_unusable_value_without_changing_existing(
     assert stored.status_code == 200
     assert stored.text == "original-value"
     assert client_with_settings.get("/api/settings/secrets").json()["secrets"] == [
-        {"name": "MY_SECRET", "description": "Original"}
+        {
+            "name": "MY_SECRET",
+            "description": "Original",
+            "scope": None,
+            "scope_description": None,
+        }
     ]
 
 
@@ -2014,7 +2019,12 @@ def test_secret_upsert_updates_existing(client_with_settings):
     assert get_response.status_code == 200
     assert get_response.text == "updated-value"
     assert client_with_settings.get("/api/settings/secrets").json()["secrets"] == [
-        {"name": "MY_SECRET", "description": "Updated"}
+        {
+            "name": "MY_SECRET",
+            "description": "Updated",
+            "scope": None,
+            "scope_description": None,
+        }
     ]
 
 
