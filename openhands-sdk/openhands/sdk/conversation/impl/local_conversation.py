@@ -113,7 +113,10 @@ from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.deprecation import warn_deprecated
-from openhands.sdk.utils.redact import redact_url_credentials
+from openhands.sdk.utils.redact import (
+    redact_url_credentials,
+    redact_url_credentials_in_text,
+)
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -785,6 +788,22 @@ class LocalConversation(BaseConversation):
             ConversationErrorEvent(source="environment", code=code, detail=detail)
         )
 
+    def _emit_auto_load_error(self, code: str, detail: str) -> None:
+        """Tell the user an auto-loaded marketplace or plugin was skipped.
+
+        Auto-load failures do not stop the conversation, but a dropped
+        marketplace silently loses its agents and hooks, so surface the
+        failure as a non-fatal ConversationErrorEvent (the run status is
+        left untouched).
+        """
+        self._on_event(
+            ConversationErrorEvent(
+                source="environment",
+                code=code,
+                detail=redact_url_credentials_in_text(detail),
+            )
+        )
+
     def _check_stuck_or_nudge(self) -> bool:
         """Nudge once on a repeating action-error streak, else apply is_stuck().
 
@@ -1063,11 +1082,18 @@ class LocalConversation(BaseConversation):
                     marketplace, marketplace_path = registry.get_marketplace(
                         registration.name
                     )
-                except Exception:
+                except Exception as exc:
                     logger.warning(
                         "Failed to load marketplace '%s'; continuing without it",
                         registration.name,
                         exc_info=True,
+                    )
+                    self._emit_auto_load_error(
+                        "MarketplaceLoadError",
+                        f"Marketplace '{registration.name}' "
+                        f"({redact_url_credentials(registration.source)}) could "
+                        "not be loaded, so its plugin skills, agents and hooks "
+                        f"are unavailable: {exc}",
                     )
                     continue
                 for entry in marketplace.plugins:
@@ -1135,7 +1161,7 @@ class LocalConversation(BaseConversation):
                         repo_path=spec.repo_path,
                     )
                     plugin = Plugin.load(path)
-                except Exception:
+                except Exception as exc:
                     # Attaching a plugin that cannot load is an error, but an
                     # auto-loaded one must not prevent the conversation from
                     # starting.
@@ -1145,6 +1171,12 @@ class LocalConversation(BaseConversation):
                         "Failed to load plugin '%s'; continuing without it",
                         redact_url_credentials(spec.source),
                         exc_info=True,
+                    )
+                    self._emit_auto_load_error(
+                        "PluginLoadError",
+                        f"Plugin {redact_url_credentials(spec.source)} could not "
+                        "be loaded, so its skills, agents and hooks are "
+                        f"unavailable: {exc}",
                     )
                     continue
 
