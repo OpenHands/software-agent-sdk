@@ -77,6 +77,122 @@ def test_inline_fields_land_on_fresh_base_during_switch() -> None:
     assert result.llm.model == "model-c"
 
 
+# ── the shared mcp_config catalog survives a kind switch ───────────────
+
+
+def _server(name: str) -> dict:
+    return {
+        "transport": "http",
+        "url": f"https://{name}.invalid/mcp",
+        "headers": {"X-Api-Key": f"{name}-key"},
+        "auth": {"strategy": "bearer", "value": f"{name}-token"},
+    }
+
+
+def _plain_catalog(settings: OpenHandsAgentSettings | ACPAgentSettings) -> dict:
+    dumped = settings.model_dump(mode="json", context={"expose_secrets": True})
+    return dumped["mcp_config"]
+
+
+def _kind_switch_case(target: str) -> tuple[dict, dict]:
+    """Return a non-empty base of the other variant and a switch to ``target``."""
+    catalog = {"keep": _server("keep"), "other": _server("other")}
+    if target == "acp":
+        return (
+            {"agent_kind": "openhands", "persona": "x", "mcp_config": catalog},
+            {"agent_kind": "acp", "acp_server": "codex"},
+        )
+    return (
+        {"agent_kind": "acp", "acp_server": "codex", "mcp_config": catalog},
+        {"agent_kind": "openhands", "llm": {"model": "gpt"}},
+    )
+
+
+@pytest.mark.parametrize("target", ["acp", "openhands"])
+def test_switch_preserves_mcp_catalog_with_credentials(target: str) -> None:
+    base, diff = _kind_switch_case(target)
+
+    result = apply_agent_settings_diff(base, diff)
+
+    assert result.agent_kind == target
+    catalog = _plain_catalog(result)
+    assert set(catalog) == {"keep", "other"}
+    assert catalog["keep"]["url"] == "https://keep.invalid/mcp"
+    assert catalog["keep"]["headers"] == {"X-Api-Key": "keep-key"}
+    assert catalog["keep"]["auth"]["value"] == "keep-token"
+
+
+def test_switch_with_mcp_catalog_still_resets_variant_fields() -> None:
+    base, diff = _kind_switch_case("acp")
+    to_acp = apply_agent_settings_diff(base, diff)
+    assert isinstance(to_acp, ACPAgentSettings)
+    assert "persona" not in to_acp.model_dump()
+    assert to_acp.acp_server == "codex"
+
+    base, diff = _kind_switch_case("openhands")
+    to_openhands = apply_agent_settings_diff(base, diff)
+    assert isinstance(to_openhands, OpenHandsAgentSettings)
+    assert "acp_server" not in to_openhands.model_dump()
+    assert to_openhands.llm.model == "gpt"
+
+
+@pytest.mark.parametrize("target", ["acp", "openhands"])
+def test_switch_null_mcp_config_deletes_catalog(target: str) -> None:
+    base, diff = _kind_switch_case(target)
+
+    result = apply_agent_settings_diff(base, {**diff, "mcp_config": None})
+
+    assert result.mcp_config == {}
+
+
+@pytest.mark.parametrize("target", ["acp", "openhands"])
+def test_switch_null_server_entry_deletes_only_that_server(target: str) -> None:
+    base, diff = _kind_switch_case(target)
+
+    result = apply_agent_settings_diff(base, {**diff, "mcp_config": {"other": None}})
+
+    assert set(result.mcp_config) == {"keep"}
+
+
+@pytest.mark.parametrize("target", ["acp", "openhands"])
+def test_switch_sparse_server_patch_keeps_rest_of_server(target: str) -> None:
+    base, diff = _kind_switch_case(target)
+
+    result = apply_agent_settings_diff(
+        base, {**diff, "mcp_config": {"keep": {"enabled": False}}}
+    )
+
+    catalog = _plain_catalog(result)
+    assert set(catalog) == {"keep", "other"}
+    assert catalog["keep"]["enabled"] is False
+    assert catalog["keep"]["url"] == "https://keep.invalid/mcp"
+    assert catalog["keep"]["headers"] == {"X-Api-Key": "keep-key"}
+    assert catalog["keep"]["auth"]["value"] == "keep-token"
+
+
+@pytest.mark.parametrize("target", ["acp", "openhands"])
+def test_switch_new_server_merges_into_catalog(target: str) -> None:
+    base, diff = _kind_switch_case(target)
+
+    result = apply_agent_settings_diff(
+        base, {**diff, "mcp_config": {"new": _server("new")}}
+    )
+
+    assert set(result.mcp_config) == {"keep", "other", "new"}
+
+
+def test_restated_kind_is_not_a_switch_for_mcp_config() -> None:
+    base = {"agent_kind": "openhands", "mcp_config": {"keep": _server("keep")}}
+
+    merged = apply_agent_settings_diff(
+        base, {"agent_kind": "openhands", "mcp_config": {"new": _server("new")}}
+    )
+    cleared = apply_agent_settings_diff(base, {"mcp_config": None})
+
+    assert set(merged.mcp_config) == {"keep", "new"}
+    assert cleared.mcp_config == {}
+
+
 # ── same-variant deep merge ────────────────────────────────────────────
 
 

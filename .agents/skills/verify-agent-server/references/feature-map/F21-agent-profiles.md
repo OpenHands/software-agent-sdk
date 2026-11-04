@@ -1029,10 +1029,9 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
 - A create keeps a client-supplied `revision` (a body with `"revision": 7`
   starts at 7); only overwrites ignore it. The recipes leave it out of
   creates.
-- `PATCH /api/settings` that switches `agent_kind` rebuilds
-  `agent_settings` from a fresh base and drops `mcp_config` (F18), so the
-  ACP bullet adds `qa-f21-mcp` after the switch; deleting the active
-  profile, in contrast, keeps it.
+- `PATCH /api/settings` that switches `agent_kind` and deleting the active
+  profile both rebuild `agent_settings` from a fresh base that keeps
+  `mcp_config` (F18).
 - Materialize discovers user and public skills; the public catalog may be
   cloned from GitHub into `OH_PERSISTENCE_DIR/cache/skills` on first use
   (tolerated when offline). The recipes assert only on the run's own
