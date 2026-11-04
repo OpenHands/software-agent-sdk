@@ -17,6 +17,7 @@ from acp.schema import (
 
 from openhands.sdk.agent.acp_agent import ACPAgent, _OpenHandsACPBridge
 from openhands.sdk.agent.stream_context import StreamStarted
+from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.event import (
     ACPToolCallEvent,
@@ -171,6 +172,7 @@ def test_consecutive_tool_calls_without_text_between_add_no_empty_message(
         [_text("Checking."), _start("a"), _start("b"), _done("a"), _done("b")],
     )
 
+    assert get_agent_final_response(events) == "Checking."
     assert _summary(events) == [
         ("message", "Checking."),
         ("tool", "a:in_progress"),
