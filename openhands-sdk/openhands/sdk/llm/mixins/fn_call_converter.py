@@ -518,9 +518,11 @@ def _unframe_param_value(raw: str) -> str:
 
     Single-line content is stripped. Content that is still multiline once
     stripped keeps its own indentation and trailing newline and loses only the
-    framing newline on each side.
+    frame on each side: one newline (LF or CRLF) and any spaces or tabs
+    between it and the tag.
     """
-    unframed = raw.removeprefix("\n").removesuffix("\n")
+    unframed = re.sub(r"\A[ \t]*\r?\n", "", raw)
+    unframed = re.sub(r"\r?\n[ \t]*\Z", "", unframed)
     stripped = unframed.strip()
     return unframed if "\n" in stripped else stripped
 

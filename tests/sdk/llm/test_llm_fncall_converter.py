@@ -1082,6 +1082,24 @@ def test_roundtrip_preserves_multiline_param_whitespace():
             "create",
             id="framed-single-line-is-stripped",
         ),
+        pytest.param(
+            {"type": "string"},
+            "\r\n    a()\r\n    b()\r\n",
+            "    a()\r\n    b()",
+            id="crlf-frame-is-removed",
+        ),
+        pytest.param(
+            {"type": "string"},
+            " \n    a()\n    b()\n ",
+            "    a()\n    b()",
+            id="space-padded-frame-is-removed",
+        ),
+        pytest.param(
+            {"type": "string"},
+            "\t\n    a()\n    b()\n\t",
+            "    a()\n    b()",
+            id="tab-padded-frame-is-removed",
+        ),
     ],
 )
 def test_non_fncall_param_whitespace_follows_renderer_framing(
