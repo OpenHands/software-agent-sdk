@@ -3,7 +3,7 @@
 import multiprocessing
 import os
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
+from threading import Barrier, Event
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -15,9 +15,10 @@ from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm import Message, TextContent
 
 
-def message() -> MessageEvent:
+def message(parent: str | None = None) -> MessageEvent:
     return MessageEvent(
         id=str(uuid4()),
+        parent_id=parent,
         source="user",
         llm_message=Message(role="user", content=[TextContent(text="persisted")]),
     )
@@ -45,6 +46,110 @@ def interrupted_writer(root, after_publish):
 
     with patch.object(store, "write", side_effect=interrupted):
         EventLog(store).append(message())
+
+
+def interrupted_inflight_writer(root, value, reserved, publish):
+    store = LocalFileStore(root)
+    original_write = store.write
+
+    def interrupted(path, contents):
+        if "/event-00001-" in path:
+            reserved.set()
+            if not publish.wait(15):
+                raise RuntimeError("parent did not release publication")
+            original_write(path, contents)
+            os._exit(17)
+        original_write(path, contents)
+
+    with patch.object(store, "write", side_effect=interrupted):
+        EventLog(store).append(value)
+
+
+@pytest.mark.parametrize("explicit_parent", [False, True])
+def test_constructor_during_publication_refreshes_after_marker_cleanup_failure(
+    tmp_path, explicit_parent
+):
+    store = LocalFileStore(str(tmp_path))
+    writer = EventLog(store)
+    first = message()
+    writer.append(first)
+    second = message(first.id)
+    third = message(second.id if explicit_parent else None)
+    reserved, publish = Event(), Event()
+    original_write, original_delete = store.write, store.delete
+
+    def gated_write(path, contents):
+        if "/event-00001-" in path:
+            reserved.set()
+            assert publish.wait(10)
+        original_write(path, contents)
+
+    def fail_marker_delete(path):
+        if path.endswith(".eventlog-len-1.marker"):
+            raise OSError("count marker cleanup unavailable")
+        original_delete(path)
+
+    with (
+        patch.object(store, "write", side_effect=gated_write),
+        patch.object(store, "delete", side_effect=fail_marker_delete),
+        ThreadPoolExecutor(max_workers=1) as workers,
+    ):
+        writing = workers.submit(writer.append, second)
+        try:
+            assert reserved.wait(10)
+            resumed = EventLog(LocalFileStore(str(tmp_path)))
+            assert [value.id for value in resumed] == [first.id]
+        finally:
+            publish.set()
+        assert writing.result(timeout=10) == 1
+
+    assert resumed.append(third) == 2
+    assert [value.id for value in resumed] == [first.id, second.id, third.id]
+    assert [resumed.get_seq(i) for i in range(3)] == [0, 1, 2]
+    assert [value.id for value in EventLog(LocalFileStore(str(tmp_path)))] == [
+        first.id,
+        second.id,
+        third.id,
+    ]
+
+
+@pytest.mark.parametrize("explicit_parent", [False, True])
+def test_constructor_during_publication_refreshes_after_writer_process_death(
+    tmp_path, explicit_parent
+):
+    first = message()
+    EventLog(LocalFileStore(str(tmp_path))).append(first)
+    second = message(first.id)
+    third = message(second.id if explicit_parent else None)
+    context = multiprocessing.get_context("spawn")
+    reserved, publish = context.Event(), context.Event()
+    worker = context.Process(
+        target=interrupted_inflight_writer,
+        args=(str(tmp_path), second, reserved, publish),
+    )
+    try:
+        worker.start()
+        assert reserved.wait(15)
+        resumed = EventLog(LocalFileStore(str(tmp_path)))
+        assert [value.id for value in resumed] == [first.id]
+        publish.set()
+        worker.join(timeout=20)
+        assert worker.exitcode == 17
+    finally:
+        publish.set()
+        if worker.is_alive():
+            worker.terminate()
+        if worker.pid is not None:
+            worker.join(timeout=5)
+
+    assert resumed.append(third) == 2
+    assert [value.id for value in resumed] == [first.id, second.id, third.id]
+    assert [resumed.get_seq(i) for i in range(3)] == [0, 1, 2]
+    assert [value.id for value in EventLog(LocalFileStore(str(tmp_path)))] == [
+        first.id,
+        second.id,
+        third.id,
+    ]
 
 
 def test_two_warm_processes_refresh_after_loss_and_a_same_count_append(tmp_path):

@@ -21,7 +21,7 @@ reuse its sequence. Native local storage and the real server restart/reconnect p
 After:  a:0, c:2, d:3, e:4     after_seq=3 → [e]</pre></section>
 <section><h2>Allocation protocol</h2>
 <pre>existing FileStore lock
-  refresh if the expected next reservation exists or the count marker differs
+  refresh if the snapshot is untrusted, the next reservation exists, or the count differs
   validate event ID and parent
   existing write guard / conversation lease
     publish immutable .eventlog-seq-N.marker
@@ -32,6 +32,9 @@ release lock</pre>
 both the highest surviving filename and every retained reservation. A stale writer probes
 its expected next reservation with one <code>exists()</code>; old reservations remain, so it
 cannot miss a later writer that has already advanced several times.</p>
+<p>Constructor and read-repair scans are untrusted because they run outside the write lock
+and may observe a reservation before its event. The first append refreshes under the lock;
+later appends keep the constant-time probes until another scan invalidates that snapshot.</p>
 <p>Reservation contents are immutable and empty. No mutable metadata read depends on
 FileStore cache freshness, and no FileStore interface or backend dependency is added.</p></section>
 <section><h2>Compatibility and failure behavior</h2>

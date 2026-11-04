@@ -72,6 +72,7 @@ class EventLog(EventsListBase):
         self._write_guard = None
         self._sequences = SequenceJournal(fs, dir_path)
         self._index_scan_failed = False
+        self._index_synchronized = False
         self._length = self._scan_and_build_index()
 
     def set_write_guard(
@@ -314,7 +315,8 @@ class EventLog(EventsListBase):
         """
         try:
             return (
-                not self._index_scan_failed
+                self._index_synchronized
+                and not self._index_scan_failed
                 and not self._sequences.contains(self._next_disk_idx)
                 and bool(self._fs.exists(self._marker_path(self._length)))
             )
@@ -352,6 +354,7 @@ class EventLog(EventsListBase):
                 self._disk_idx[idx] = disk_idx
             self._next_disk_idx = max(self._next_disk_idx, disk_idx + 1)
         self._length = max(scanned_length, max(self._idx_to_id, default=-1) + 1)
+        self._index_synchronized = True
 
     def __len__(self) -> int:
         return self._length
@@ -373,6 +376,10 @@ class EventLog(EventsListBase):
         self._next_disk_idx = 0
 
     def _scan_and_build_index(self, *, strict: bool = False) -> int:
+        # Read-side scans do not hold the write lock and can see a reservation
+        # before its payload. Only _sync_from_disk, called under that lock, may
+        # establish the snapshot used by the constant-time append fast path.
+        self._index_synchronized = False
         try:
             paths = self._fs.list(self._dir)
         except FileNotFoundError:
