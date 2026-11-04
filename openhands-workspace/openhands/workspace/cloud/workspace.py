@@ -13,7 +13,7 @@ import tenacity
 from pydantic import Field, PrivateAttr, SecretStr
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import MCPServer, MCPTransport
+from openhands.sdk.mcp.config import MCPServer, MCPTransport, coerce_mcp_config
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
 from openhands.sdk.workspace.repo import CloneResult, RepoMapping, RepoSource
 
@@ -693,8 +693,11 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     def get_mcp_config(self) -> dict[str, MCPServer]:
         """Fetch MCP servers from the user's SaaS account.
 
-        Calls ``GET /api/v1/users/me`` to retrieve the user's MCP configuration
-        and transforms it into the native server map expected by the SDK Agent.
+        Calls ``GET /api/v1/users/me?expose_secrets=true`` to retrieve the
+        user's MCP configuration with its credentials unmasked, and returns the
+        native ``{name: server}`` map expected by the SDK Agent. The legacy
+        ``sse_servers``/``shttp_servers``/``stdio_servers`` arrays are still
+        transformed when a server returns them.
 
         Returns:
             A dictionary mapping server names to server configurations, or an
@@ -716,6 +719,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         resp = self._send_api_request(
             "GET",
             f"{self.cloud_api_url}/api/v1/users/me",
+            params={"expose_secrets": "true"},
             headers={"X-Session-API-Key": self._session_api_key or ""},
         )
         data = resp.json()
@@ -731,6 +735,11 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             ("shttp_servers", "shttp", "streamable-http"),
             ("stdio_servers", None, None),
         )
+        if not any(source in cloud_mcp_config for source, _, _ in server_sources):
+            # The app server mirrors ``agent_settings.mcp_config``, the native
+            # ``{name: server}`` map; only the legacy V0 shape uses the arrays.
+            return coerce_mcp_config(cloud_mcp_config)
+
         for source, name_prefix, transport in server_sources:
             for index, server in enumerate(cloud_mcp_config.get(source) or []):
                 if transport is None:

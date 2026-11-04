@@ -313,6 +313,7 @@ class TestGetMcpServers:
         mock_req.assert_called_once_with(
             "GET",
             f"{CLOUD_URL}/api/v1/users/me",
+            params={"expose_secrets": "true"},
             headers={"X-Session-API-Key": SESSION_KEY},
         )
 
@@ -479,6 +480,52 @@ class TestGetMcpServers:
         assert "sse_0" in config
         assert "shttp_0" in config
         assert "fetch" in config
+
+    def test_get_mcp_config_keeps_native_server_map(self, mock_workspace):
+        """get_mcp_config returns the native ``{name: server}`` map unchanged.
+
+        The app server mirrors ``agent_settings.mcp_config``, so names, headers,
+        OAuth state and stdio commands reach the agent exactly as saved.
+        """
+        # Arrange
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "mcp_config": {
+                "linear": {
+                    "url": "https://mcp.linear.app/mcp",
+                    "transport": "http",
+                    "auth": {
+                        "strategy": "oauth2",
+                        "state": {"tokens": {"access_token": "linear-access-token"}},
+                    },
+                },
+                "gitlab": {
+                    "url": "https://gitlab.example.com/mcp",
+                    "transport": "streamable-http",
+                    "headers": {"PRIVATE-TOKEN": "${GITLAB_TOKEN}"},
+                },
+                "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]},
+            }
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        # Act
+        with patch.object(
+            mock_workspace, "_send_api_request", return_value=mock_response
+        ):
+            mcp_config = mock_workspace.get_mcp_config()
+
+        # Assert
+        servers = dump_mcp_config(mcp_config)
+        assert set(servers) == {"linear", "gitlab", "fetch"}
+        assert servers["linear"]["url"] == "https://mcp.linear.app/mcp"
+        assert (
+            servers["linear"]["auth"]["state"]["tokens"]["access_token"]
+            == "linear-access-token"
+        )
+        assert servers["gitlab"]["headers"] == {"PRIVATE-TOKEN": "${GITLAB_TOKEN}"}
+        assert servers["fetch"]["command"] == "uvx"
+        assert servers["fetch"]["args"] == ["mcp-server-fetch"]
 
 
 class TestRetry:
