@@ -15,6 +15,7 @@ from openhands.sdk.agent.stream_context import StreamProgressCallbackType
 from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
 from openhands.sdk.context.memory import load_memory
 from openhands.sdk.context.prompts.prompt import render_template
+from openhands.sdk.conversation.attachments import save_message_images
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.event_store import ROOT_PARENT_ID, EventLog
@@ -2007,6 +2008,9 @@ class LocalConversation(BaseConversation):
         assert message.role == "user", (
             "Only user messages are allowed to be sent to the agent."
         )
+        attachments_note = save_message_images(
+            message, Path(self.workspace.working_dir)
+        )
         with self._state:
             if self._state.execution_status in (
                 ConversationExecutionStatus.FINISHED,
@@ -2037,6 +2041,8 @@ class LocalConversation(BaseConversation):
                     )
                     extended_content.append(content)
                     self._state.activated_knowledge_skills.extend(activated_skill_names)
+            if attachments_note:
+                extended_content.append(attachments_note)
 
             user_msg_event = MessageEvent(
                 source="user",
