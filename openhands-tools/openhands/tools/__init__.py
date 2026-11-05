@@ -19,6 +19,11 @@ from ``openhands.tools.browser_use``.
 from importlib.metadata import PackageNotFoundError, version
 
 from openhands.tools.ask_oracle import AskOracleTool
+
+# Register legacy event kinds even when callers only import current tools.
+from openhands.tools.delegate import (
+    definition as _legacy_delegate_definition,  # noqa: F401
+)
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.preset.default import (
     get_default_agent,
