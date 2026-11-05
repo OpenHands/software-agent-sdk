@@ -5,6 +5,7 @@ import copy
 import json
 import uuid
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePath
 from typing import Any, Final, TypeGuard, cast
 
@@ -112,8 +113,10 @@ from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.deprecation import warn_deprecated
-from openhands.sdk.utils.redact import redact_url_credentials
+from openhands.sdk.utils.redact import (
+    redact_url_credentials,
+    redact_url_credentials_in_text,
+)
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -785,6 +788,22 @@ class LocalConversation(BaseConversation):
             ConversationErrorEvent(source="environment", code=code, detail=detail)
         )
 
+    def _emit_auto_load_error(self, code: str, detail: str) -> None:
+        """Tell the user an auto-loaded marketplace or plugin was skipped.
+
+        Auto-load failures do not stop the conversation, but a dropped
+        marketplace silently loses its agents and hooks, so surface the
+        failure as a non-fatal ConversationErrorEvent (the run status is
+        left untouched).
+        """
+        self._on_event(
+            ConversationErrorEvent(
+                source="environment",
+                code=code,
+                detail=redact_url_credentials_in_text(detail),
+            )
+        )
+
     def _check_stuck_or_nudge(self) -> bool:
         """Nudge once on a repeating action-error streak, else apply is_stuck().
 
@@ -859,10 +878,10 @@ class LocalConversation(BaseConversation):
                 if ``None``).
             agent: Agent for the fork. Defaults to a deep-copy of the
                 source agent.
-            title: Deprecated. ``LocalConversation`` has no title field;
-                ``ConversationState`` does not store titles (they live on
-                ``StoredConversation`` in the agent-server layer). Passing a
-                value is accepted for backwards compatibility but has no effect.
+            title: Accepted for signature compatibility with
+                ``RemoteConversation.fork()`` but ignored: ``LocalConversation``
+                has no title field (titles live on ``StoredConversation`` in
+                the agent-server layer).
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
@@ -877,17 +896,7 @@ class LocalConversation(BaseConversation):
         Raises:
             ValueError: If ``from_event_id`` is not an event in this conversation.
         """
-        if title is not None:
-            warn_deprecated(
-                "LocalConversation.fork() title parameter",
-                deprecated_in="1.54.0",
-                removed_in="1.60.0",
-                details=(
-                    "LocalConversation has no title field; titles are managed by "
-                    "StoredConversation in the agent-server layer."
-                ),
-                stacklevel=2,
-            )
+        del title  # no local title storage; see docstring
         fork_id = conversation_id or uuid.uuid4()
         # Always deep-copy the agent (supplied or source) so the fork owns
         # its own object graph. Required because __init__ binds
@@ -1063,11 +1072,18 @@ class LocalConversation(BaseConversation):
                     marketplace, marketplace_path = registry.get_marketplace(
                         registration.name
                     )
-                except Exception:
+                except Exception as exc:
                     logger.warning(
                         "Failed to load marketplace '%s'; continuing without it",
                         registration.name,
                         exc_info=True,
+                    )
+                    self._emit_auto_load_error(
+                        "MarketplaceLoadError",
+                        f"Marketplace '{registration.name}' "
+                        f"({redact_url_credentials(registration.source)}) could "
+                        "not be loaded, so its plugin skills, agents and hooks "
+                        f"are unavailable: {exc}",
                     )
                     continue
                 for entry in marketplace.plugins:
@@ -1135,7 +1151,7 @@ class LocalConversation(BaseConversation):
                         repo_path=spec.repo_path,
                     )
                     plugin = Plugin.load(path)
-                except Exception:
+                except Exception as exc:
                     # Attaching a plugin that cannot load is an error, but an
                     # auto-loaded one must not prevent the conversation from
                     # starting.
@@ -1145,6 +1161,12 @@ class LocalConversation(BaseConversation):
                         "Failed to load plugin '%s'; continuing without it",
                         redact_url_credentials(spec.source),
                         exc_info=True,
+                    )
+                    self._emit_auto_load_error(
+                        "PluginLoadError",
+                        f"Plugin {redact_url_credentials(spec.source)} could not "
+                        "be loaded, so its skills, agents and hooks are "
+                        f"unavailable: {exc}",
                     )
                     continue
 
@@ -1327,6 +1349,7 @@ class LocalConversation(BaseConversation):
             register_plugin_agents(
                 agents=all_plugin_agents,
                 work_dir=self.workspace.working_dir,
+                cipher=self._cipher,
             )
 
         # Combine explicit hook_config with plugin hooks
@@ -1465,18 +1488,63 @@ class LocalConversation(BaseConversation):
                 "removals/updates won't reach the agent for this provider",
                 type(self._mcp_tool_provider).__name__,
             )
-        try:
-            client = self._mcp_tool_provider.create_tools(
-                mcp_config, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
+        # One connection per server, so a server that fails or never answers
+        # costs only its own tools. They start side by side: startup takes as
+        # long as the slowest server, not all of them in a row.
+        prefixed = len(mcp_config) > 1
+        with ThreadPoolExecutor(
+            max_workers=len(mcp_config), thread_name_prefix="mcp-startup"
+        ) as pool:
+            started = {
+                name: pool.submit(
+                    self._start_runtime_mcp_server,
+                    name,
+                    server,
+                    create_kwargs,
+                    prefixed,
+                )
+                for name, server in mcp_config.items()
+            }
+        tools: list[ToolDefinition] = []
+        for name, future in started.items():
+            try:
+                tools.extend(future.result())
+            except Exception as exc:
+                logger.warning(
+                    "MCP server startup failed for %s; continuing without its "
+                    "tools: %s",
+                    name,
+                    exc,
+                )
+        return tools
+
+    def _start_runtime_mcp_server(
+        self,
+        name: str,
+        server: MCPServer,
+        create_kwargs: dict[str, Any],
+        prefixed: bool,
+    ) -> list[MCPToolDefinition]:
+        # A multi-server config has always named its tools `{server}_{tool}`;
+        # keep that, also for tools the server adds or changes later.
+        def named(tools: Sequence[MCPToolDefinition]) -> list[MCPToolDefinition]:
+            if not prefixed:
+                return list(tools)
+            return [tool.with_server_prefix(name) for tool in tools]
+
+        create_kwargs = dict(create_kwargs)
+        on_changed = create_kwargs.get("on_tools_changed")
+        if on_changed is not None:
+            create_kwargs["on_tools_changed"] = lambda tools: on_changed(named(tools))
+        on_reconciled = create_kwargs.get("on_tools_reconciled")
+        if on_reconciled is not None:
+            create_kwargs["on_tools_reconciled"] = lambda client, tools: (
+                on_reconciled(client, named(tools))
             )
-        except Exception as exc:
-            logger.warning(
-                "MCP server startup failed for %s; continuing without its tools: %s",
-                ", ".join(sorted(mcp_config)),
-                exc,
-            )
-            return []
-        return list(client.tools)
+        client = self._mcp_tool_provider.create_tools(
+            {name: server}, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
+        )
+        return named(client.tools)
 
     def _on_mcp_tools_reconciled(
         self,
@@ -1570,6 +1638,7 @@ class LocalConversation(BaseConversation):
                 register_plugin_agents(
                     agents=plugin.agents,
                     work_dir=self.workspace.working_dir,
+                    cipher=self._cipher,
                 )
             if plugin.hooks and not plugin.hooks.is_empty():
                 self._merge_runtime_plugin_hooks(plugin.hooks)
@@ -1608,7 +1677,7 @@ class LocalConversation(BaseConversation):
                 then `~/.openhands/agents/*.md`)
         """
         # register project-level and then user-level file-based agents
-        register_file_agents(self.workspace.working_dir)
+        register_file_agents(self.workspace.working_dir, cipher=self._cipher)
 
     def _ensure_agent_ready(self) -> None:
         """Ensure the agent is fully initialized with plugins and agents loaded.
