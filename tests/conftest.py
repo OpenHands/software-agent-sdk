@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from hypothesis import HealthCheck, settings
 from pydantic import SecretStr
 
 from openhands.sdk import Agent
@@ -16,6 +17,19 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.tool import ToolExecutor
 from openhands.sdk.workspace import LocalWorkspace
 
+
+# Property-based tests: a fixed, deadline-free profile for CI, and a longer
+# search for local bug hunting (``pytest --hypothesis-profile=explore``).
+settings.register_profile(
+    "ci", max_examples=100, deadline=None, derandomize=True, print_blob=True
+)
+settings.register_profile(
+    "explore",
+    max_examples=5000,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow, HealthCheck.filter_too_much],
+)
+settings.load_profile("ci")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TOKENIZER_FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "tokenizers"
