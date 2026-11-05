@@ -40,30 +40,18 @@ def test_critic_client_with_secret_str_api_key():
     assert client.api_key.get_secret_value() == "secret_api_key_456"
 
 
-def test_critic_client_empty_string_api_key():
-    """Test that CriticClient normalizes an empty string api_key to None."""
-    client = CriticClient(api_key="")
-
-    assert client.api_key is None
-
-
-def test_critic_client_whitespace_only_api_key():
-    """Test that CriticClient normalizes a whitespace-only api_key to None."""
-    client = CriticClient(api_key="   \t\n  ")
-
-    assert client.api_key is None
-
-
-def test_critic_client_empty_secret_str_api_key():
-    """Test that CriticClient normalizes an empty SecretStr api_key to None."""
-    client = CriticClient(api_key=SecretStr(""))
-
-    assert client.api_key is None
-
-
-def test_critic_client_normalizes_redacted_api_key_placeholder():
-    """Test that redacted critic api_key placeholders become None."""
-    client = CriticClient(api_key="**********")
+@pytest.mark.parametrize(
+    "api_key",
+    [
+        pytest.param("", id="empty_string"),
+        pytest.param("   \t\n  ", id="whitespace_only"),
+        pytest.param(SecretStr(""), id="empty_secret_str"),
+        pytest.param("**********", id="redacted_placeholder"),
+        pytest.param(SecretStr("   \t\n  "), id="whitespace_secret_str"),
+    ],
+)
+def test_critic_client_normalizes_api_key_to_none(api_key: str | SecretStr):
+    client = CriticClient(api_key=api_key)
 
     assert client.api_key is None
 
@@ -74,13 +62,6 @@ def test_critic_client_rejects_none_api_key_for_inference():
 
     with pytest.raises(ValueError, match="api_key must be non-empty"):
         client._get_api_key_value()
-
-
-def test_critic_client_whitespace_secret_str_api_key():
-    """Test that CriticClient normalizes a whitespace-only SecretStr api_key."""
-    client = CriticClient(api_key=SecretStr("   \t\n  "))
-
-    assert client.api_key is None
 
 
 def test_critic_client_api_key_not_exposed_in_repr():

@@ -5,6 +5,7 @@ import copy
 import json
 import uuid
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePath
 from typing import Any, Final, TypeGuard, cast
 
@@ -112,7 +113,6 @@ from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.redact import (
     redact_url_credentials,
     redact_url_credentials_in_text,
@@ -878,10 +878,10 @@ class LocalConversation(BaseConversation):
                 if ``None``).
             agent: Agent for the fork. Defaults to a deep-copy of the
                 source agent.
-            title: Deprecated. ``LocalConversation`` has no title field;
-                ``ConversationState`` does not store titles (they live on
-                ``StoredConversation`` in the agent-server layer). Passing a
-                value is accepted for backwards compatibility but has no effect.
+            title: Accepted for signature compatibility with
+                ``RemoteConversation.fork()`` but ignored: ``LocalConversation``
+                has no title field (titles live on ``StoredConversation`` in
+                the agent-server layer).
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
@@ -896,17 +896,7 @@ class LocalConversation(BaseConversation):
         Raises:
             ValueError: If ``from_event_id`` is not an event in this conversation.
         """
-        if title is not None:
-            warn_deprecated(
-                "LocalConversation.fork() title parameter",
-                deprecated_in="1.54.0",
-                removed_in="1.60.0",
-                details=(
-                    "LocalConversation has no title field; titles are managed by "
-                    "StoredConversation in the agent-server layer."
-                ),
-                stacklevel=2,
-            )
+        del title  # no local title storage; see docstring
         fork_id = conversation_id or uuid.uuid4()
         # Always deep-copy the agent (supplied or source) so the fork owns
         # its own object graph. Required because __init__ binds
@@ -1498,18 +1488,63 @@ class LocalConversation(BaseConversation):
                 "removals/updates won't reach the agent for this provider",
                 type(self._mcp_tool_provider).__name__,
             )
-        try:
-            client = self._mcp_tool_provider.create_tools(
-                mcp_config, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
+        # One connection per server, so a server that fails or never answers
+        # costs only its own tools. They start side by side: startup takes as
+        # long as the slowest server, not all of them in a row.
+        prefixed = len(mcp_config) > 1
+        with ThreadPoolExecutor(
+            max_workers=len(mcp_config), thread_name_prefix="mcp-startup"
+        ) as pool:
+            started = {
+                name: pool.submit(
+                    self._start_runtime_mcp_server,
+                    name,
+                    server,
+                    create_kwargs,
+                    prefixed,
+                )
+                for name, server in mcp_config.items()
+            }
+        tools: list[ToolDefinition] = []
+        for name, future in started.items():
+            try:
+                tools.extend(future.result())
+            except Exception as exc:
+                logger.warning(
+                    "MCP server startup failed for %s; continuing without its "
+                    "tools: %s",
+                    name,
+                    exc,
+                )
+        return tools
+
+    def _start_runtime_mcp_server(
+        self,
+        name: str,
+        server: MCPServer,
+        create_kwargs: dict[str, Any],
+        prefixed: bool,
+    ) -> list[MCPToolDefinition]:
+        # A multi-server config has always named its tools `{server}_{tool}`;
+        # keep that, also for tools the server adds or changes later.
+        def named(tools: Sequence[MCPToolDefinition]) -> list[MCPToolDefinition]:
+            if not prefixed:
+                return list(tools)
+            return [tool.with_server_prefix(name) for tool in tools]
+
+        create_kwargs = dict(create_kwargs)
+        on_changed = create_kwargs.get("on_tools_changed")
+        if on_changed is not None:
+            create_kwargs["on_tools_changed"] = lambda tools: on_changed(named(tools))
+        on_reconciled = create_kwargs.get("on_tools_reconciled")
+        if on_reconciled is not None:
+            create_kwargs["on_tools_reconciled"] = lambda client, tools: (
+                on_reconciled(client, named(tools))
             )
-        except Exception as exc:
-            logger.warning(
-                "MCP server startup failed for %s; continuing without its tools: %s",
-                ", ".join(sorted(mcp_config)),
-                exc,
-            )
-            return []
-        return list(client.tools)
+        client = self._mcp_tool_provider.create_tools(
+            {name: server}, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
+        )
+        return named(client.tools)
 
     def _on_mcp_tools_reconciled(
         self,
