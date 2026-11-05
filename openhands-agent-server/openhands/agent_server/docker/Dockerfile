@@ -85,7 +85,12 @@ ARG APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::ht
 # 20261021 is the oldest snapshot whose ca-certificates (20250419+deb13u1,
 # trixie-security) drops emSign ECC Root CA - G3; 20261019 still ships
 # 20250419, which trusts the compromised root (GHSA-6q48-6c7w-9gw2).
-ARG DEBIAN_SNAPSHOT=20261021T000000Z
+# 20261105 keeps that ca-certificates fix and is a snapshot whose
+# trixie-security archive carries apt-utils 3.0.4, matching the apt 3.0.4 that
+# debian:trixie-slim now ships. Older snapshots only offer apt-utils 3.0.3,
+# whose `Depends: apt (= 3.0.3)` is unsatisfiable against the base image's apt
+# 3.0.4, so installing apt-utils aborts the build.
+ARG DEBIAN_SNAPSHOT=20261105T000000Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
