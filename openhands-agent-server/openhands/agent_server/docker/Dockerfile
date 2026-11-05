@@ -74,7 +74,11 @@ RUN set -eux; \
     /tmp/vendoring/bin/vendoring sync; \
     python -m pip wheel --no-deps --no-cache-dir --wheel-dir /dist .
 
-FROM debian:trixie-slim AS python-node-runtime
+# The digest is pinned so a Docker Hub rebuild cannot ship packages newer than
+# DEBIAN_SNAPSHOT: apt then refuses to install tools such as apt-utils, whose
+# versions must match the installed apt. Move the digest and the snapshot
+# together, and only to an image no newer than the snapshot.
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS python-node-runtime
 ARG NPM_VERSION
 # Package fetches ride out transient snapshot.debian.org overloads (503
 # TooManyRequests / 504 first byte timeout, seen failing the v1.60.0 release
@@ -97,20 +101,25 @@ COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 
 RUN node /usr/local/lib/node_modules/npm/bin/npm-cli.js install --global "npm@${NPM_VERSION}"
 
-RUN set -eux; \
+# apt fetches over HTTPS. debian:trixie-slim has no CA bundle until
+# ca-certificates is installed below, so this step trusts the bundle from
+# pip-revendored, whose ca-certificates (20250419+deb13u1) already drops the
+# compromised emSign ECC Root CA - G3.
+RUN --mount=type=bind,from=pip-revendored,source=/etc/ssl/certs/ca-certificates.crt,target=/tmp/bootstrap-ca.crt \
+    set -eux; \
     ln -sfn ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm; \
     ln -sfn ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx; \
     ln -sfn ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack; \
     printf '%s\n' \
         'Types: deb' \
-        "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/" \
+        "URIs: https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/" \
         'Suites: trixie' \
         'Components: main' \
         'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
         'Check-Valid-Until: no' \
         '' \
         'Types: deb' \
-        "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}/" \
+        "URIs: https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}/" \
         'Suites: trixie-security' \
         'Components: main' \
         'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
@@ -124,10 +133,11 @@ RUN set -eux; \
         'Acquire::Queue-Mode "access";' \
         'Acquire::Pipeline-Depth "0";' \
         > /etc/apt/apt.conf.d/80-snapshot-resilience; \
+    BOOTSTRAP_CA="-o Acquire::https::CaInfo=/tmp/bootstrap-ca.crt"; \
     for attempt in 1 2 3 4 5; do \
-        if apt-get ${APT_OPTS} update \
-            && apt-get upgrade -y \
-            && apt-get ${APT_OPTS} install -y --no-install-recommends \
+        if apt-get $BOOTSTRAP_CA ${APT_OPTS} update \
+            && apt-get $BOOTSTRAP_CA upgrade -y \
+            && apt-get $BOOTSTRAP_CA ${APT_OPTS} install -y --no-install-recommends \
                 ca-certificates \
                 libbz2-1.0 \
                 libdb5.3t64 \
@@ -276,6 +286,10 @@ RUN set -eux; \
       echo "INSTALL_ACP_PROVIDERS is empty; no ACP providers will be installed"; \
       exit 0; \
     fi; \
+    # python:3.13-bookworm ships apt 2.6.1, which is exposed to CVE-2026-109518
+    # over HTTP; it ships a CA bundle, so fetch from deb.debian.org over HTTPS.
+    sed -i 's#http://deb.debian.org/#https://deb.debian.org/#' \
+        /etc/apt/sources.list.d/debian.sources; \
     for attempt in 1 2 3 4 5; do \
         apt-get ${APT_OPTS} update \
             && apt-get ${APT_OPTS} install -y --no-install-recommends \
