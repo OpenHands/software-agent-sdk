@@ -11,6 +11,7 @@ import uvicorn
 from uvicorn import Config
 
 from openhands.agent_server.logging_config import LOGGING_CONFIG
+from openhands.sdk.agent import seal_agent_registry
 from openhands.sdk.logger import DEBUG, get_logger
 
 
@@ -271,6 +272,7 @@ def main() -> None:
 
     # Import user modules after early-exit checks
     preload_modules(args.import_modules)
+    seal_agent_registry()
 
     # Resolve the bind host. When the operator does not pass --host we pick a
     # safe default: loopback unless a session API key is configured, in which

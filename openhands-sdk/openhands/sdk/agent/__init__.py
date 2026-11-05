@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.agent.agent import Agent
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.registry import register_agent, seal_agent_registry
 
 
 if TYPE_CHECKING:
@@ -25,4 +26,6 @@ __all__ = [
     "Agent",
     "AgentBase",
     "ACPAgent",
+    "register_agent",
+    "seal_agent_registry",
 ]

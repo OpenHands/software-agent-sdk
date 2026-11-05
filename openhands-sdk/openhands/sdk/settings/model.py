@@ -75,7 +75,7 @@ from .metadata import (
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.agent import ACPAgent, Agent
+    from openhands.sdk.agent import ACPAgent
     from openhands.sdk.agent.base import AgentBase
     from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
     from openhands.sdk.critic.base import CriticBase
@@ -1141,10 +1141,7 @@ class ConversationSettings(BaseModel):
         payload = dict(kwargs)
 
         # --- agent (from agent_settings) ------------------------------------
-        # Both settings variants expose a .create_agent() method; the LLM
-        # variant returns an ``Agent`` and the ACP variant returns an
-        # ``ACPAgent``. Callers that want a narrowed type should access
-        # ``self.agent_settings.create_agent()`` directly.
+        # Both settings variants construct an AgentBase through .create_agent().
         if "agent" not in payload and self.agent_settings is not None:
             payload["agent"] = self.agent_settings.create_agent()
 
@@ -1229,7 +1226,10 @@ class OpenHandsAgentSettings(AgentSettingsBase):
     )
     agent: str = Field(
         default="CodeActAgent",
-        description="Agent class to use.",
+        description=(
+            "Agent class selected from the trusted startup registry. CodeActAgent "
+            "uses the stock Agent; other names must be explicitly registered."
+        ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Agent",
@@ -1362,8 +1362,12 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             return LLMSummarizingCondenserSettings.model_validate(value.model_dump())
         return value
 
-    def create_agent(self) -> Agent:
-        """Build an :class:`Agent` purely from these settings.
+    def create_agent(self) -> AgentBase:
+        """Build the registered :class:`AgentBase` selected by these settings.
+
+        ``CodeActAgent`` selects the stock Agent. Other names must be registered
+        during trusted startup; unregistered selections raise ``ValueError``.
+        All configuration must be accepted before the unactivated agent is returned.
 
         Example::
 
@@ -1373,7 +1377,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             )
             agent = settings.create_agent()
         """
-        from openhands.sdk.agent import Agent
+        from openhands.sdk.agent.registry import _get_agent_class
         from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
         from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, SwitchLLMTool
         from openhands.sdk.tool.defaults import default_tool_specs
@@ -1392,16 +1396,32 @@ class OpenHandsAgentSettings(AgentSettingsBase):
 
         llm = create_subscription_llm_from_config(self.llm)
         condenser = self.build_condenser(llm)
-        return Agent(
-            llm=llm,
-            tools=tools,
-            mcp_config=self.mcp_config,
-            include_default_tools=include_default_tools,
-            agent_context=self.agent_context,
-            condenser=condenser,
-            critic=self.build_critic(),
-            tool_concurrency_limit=self.tool_concurrency_limit,
-        )
+        constructor_kwargs: dict[str, Any] = {
+            "llm": llm,
+            "tools": tools,
+            "mcp_config": self.mcp_config,
+            "include_default_tools": include_default_tools,
+            "agent_context": self.agent_context,
+            "condenser": condenser,
+            "critic": self.build_critic(),
+            "tool_concurrency_limit": self.tool_concurrency_limit,
+        }
+        agent_class = _get_agent_class(self.agent)
+        unsupported_fields = constructor_kwargs.keys() - agent_class.model_fields.keys()
+        if unsupported_fields:
+            raise ValueError(
+                "Agent does not support configuration fields: "
+                + ", ".join(sorted(unsupported_fields))
+            )
+
+        agent = agent_class(**constructor_kwargs)
+        unapplied_fields = constructor_kwargs.keys() - agent.model_fields_set
+        if unapplied_fields:
+            raise ValueError(
+                "Agent did not accept configuration fields: "
+                + ", ".join(sorted(unapplied_fields))
+            )
+        return agent
 
     def build_condenser(self, llm: LLM) -> CondenserBase | None:
         """Create a condenser from these settings, or ``None`` if disabled."""
@@ -2031,8 +2051,8 @@ def create_agent_from_settings(
 ) -> AgentBase:
     """Dispatch to the variant's ``create_agent()`` method.
 
-    Returns either :class:`~openhands.sdk.agent.Agent` (LLM variant) or
-    :class:`~openhands.sdk.agent.ACPAgent` (ACP variant).
+    Returns the selected registered :class:`~openhands.sdk.agent.AgentBase`
+    (OpenHands variant) or :class:`~openhands.sdk.agent.ACPAgent` (ACP variant).
     """
     return settings.create_agent()
 
