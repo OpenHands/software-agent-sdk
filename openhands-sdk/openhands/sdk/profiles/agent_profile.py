@@ -328,7 +328,7 @@ class ACPAgentProfile(AgentProfileBase):
     # No skill-selection field: ACP agents own their tooling and prompt
     # construction. Project skills never reach one (the CLI reads the repo
     # itself, #4019); whether any managed skill does is a deployment choice the
-    # caller expresses through ``resolve_agent_profile``'s ``available_skills``.
+    # caller expresses through ``openhands.sdk.launch.resolve``'s skill catalog.
     acp_server: ACPServerKind = Field(
         default="claude-code",
         description=(
