@@ -5,6 +5,7 @@ import copy
 import json
 import uuid
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePath
 from typing import Any, Final, TypeGuard, cast
 
@@ -1498,18 +1499,63 @@ class LocalConversation(BaseConversation):
                 "removals/updates won't reach the agent for this provider",
                 type(self._mcp_tool_provider).__name__,
             )
-        try:
-            client = self._mcp_tool_provider.create_tools(
-                mcp_config, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
+        # One connection per server, so a server that fails or never answers
+        # costs only its own tools. They start side by side: startup takes as
+        # long as the slowest server, not all of them in a row.
+        prefixed = len(mcp_config) > 1
+        with ThreadPoolExecutor(
+            max_workers=len(mcp_config), thread_name_prefix="mcp-startup"
+        ) as pool:
+            started = {
+                name: pool.submit(
+                    self._start_runtime_mcp_server,
+                    name,
+                    server,
+                    create_kwargs,
+                    prefixed,
+                )
+                for name, server in mcp_config.items()
+            }
+        tools: list[ToolDefinition] = []
+        for name, future in started.items():
+            try:
+                tools.extend(future.result())
+            except Exception as exc:
+                logger.warning(
+                    "MCP server startup failed for %s; continuing without its "
+                    "tools: %s",
+                    name,
+                    exc,
+                )
+        return tools
+
+    def _start_runtime_mcp_server(
+        self,
+        name: str,
+        server: MCPServer,
+        create_kwargs: dict[str, Any],
+        prefixed: bool,
+    ) -> list[MCPToolDefinition]:
+        # A multi-server config has always named its tools `{server}_{tool}`;
+        # keep that, also for tools the server adds or changes later.
+        def named(tools: Sequence[MCPToolDefinition]) -> list[MCPToolDefinition]:
+            if not prefixed:
+                return list(tools)
+            return [tool.with_server_prefix(name) for tool in tools]
+
+        create_kwargs = dict(create_kwargs)
+        on_changed = create_kwargs.get("on_tools_changed")
+        if on_changed is not None:
+            create_kwargs["on_tools_changed"] = lambda tools: on_changed(named(tools))
+        on_reconciled = create_kwargs.get("on_tools_reconciled")
+        if on_reconciled is not None:
+            create_kwargs["on_tools_reconciled"] = lambda client, tools: (
+                on_reconciled(client, named(tools))
             )
-        except Exception as exc:
-            logger.warning(
-                "MCP server startup failed for %s; continuing without its tools: %s",
-                ", ".join(sorted(mcp_config)),
-                exc,
-            )
-            return []
-        return list(client.tools)
+        client = self._mcp_tool_provider.create_tools(
+            {name: server}, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
+        )
+        return named(client.tools)
 
     def _on_mcp_tools_reconciled(
         self,
