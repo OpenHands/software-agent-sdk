@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from typing import IO, TYPE_CHECKING, Self, cast
 from unittest.mock import MagicMock
 
+import pytest
 from pydantic import Field
 from rich.console import Group
 from rich.text import Text
@@ -338,6 +339,25 @@ def test_message_event_visualize_omits_empty_responses_reasoning_label():
 
     assert "Reasoning:" not in text_content
     assert "Hello, how can you help me?" in text_content
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param([], id="no_blocks"),
+        pytest.param([TextContent(text="")], id="empty_text_block"),
+    ],
+)
+def test_message_event_visualize_empty_text_uses_placeholder(content):
+    """Both empty message representations render the placeholder (#4774)."""
+    event = MessageEvent(
+        source="user",
+        llm_message=Message(role="user", content=content),
+    )
+    visualizer = DefaultConversationVisualizer()
+
+    assert event.visualize.plain == "[no text content]"
+    assert visualizer._create_event_block(event) is not None
 
 
 def test_environment_user_role_message_is_not_titled_as_human_user():
