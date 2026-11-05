@@ -95,13 +95,19 @@ class ApplyPatchExecutor(ToolExecutor[ApplyPatchAction, ApplyPatchObservation]):
 
         def write_file(path: str, content: str) -> None:
             fp = self._resolve_path(path)
-            fp.parent.mkdir(parents=True, exist_ok=True)
-            with open(fp, "w", encoding="utf-8") as f:
-                f.write(content)
+            try:
+                fp.parent.mkdir(parents=True, exist_ok=True)
+                with open(fp, "w", encoding="utf-8") as f:
+                    f.write(content)
+            except OSError as e:
+                raise OSError(f"{path}: {e}") from e
 
         def remove_file(path: str) -> None:
             fp = self._resolve_path(path)
-            fp.unlink(missing_ok=False)
+            try:
+                fp.unlink(missing_ok=False)
+            except OSError as e:
+                raise OSError(f"{path}: {e}") from e
 
         try:
             msg, fuzz, commit = process_patch(
@@ -117,6 +123,8 @@ class ApplyPatchExecutor(ToolExecutor[ApplyPatchAction, ApplyPatchObservation]):
                 )
             return obs
         except DiffError as e:
+            return ApplyPatchObservation.from_text(text=str(e), is_error=True)
+        except OSError as e:
             return ApplyPatchObservation.from_text(text=str(e), is_error=True)
 
 
