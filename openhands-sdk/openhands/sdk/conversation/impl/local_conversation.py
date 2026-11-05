@@ -88,6 +88,7 @@ from openhands.sdk.plugin import (
     fetch_plugin_with_resolution,
     load_available_plugins,
 )
+from openhands.sdk.plugin.strict_fetch import expand_plugin_source
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
@@ -1057,7 +1058,7 @@ class LocalConversation(BaseConversation):
             registrations = [
                 registration.model_copy(
                     update={
-                        "source": self._expand_plugin_source_ref(registration.source),
+                        "source": self._expand_plugin_source(registration.source),
                         "ref": self._expand_plugin_source_ref(registration.ref)
                         if registration.ref
                         else None,
@@ -1137,7 +1138,7 @@ class LocalConversation(BaseConversation):
                     fetch_source = spec.source
                     fetch_ref = spec.ref
                 else:
-                    fetch_source = self._expand_plugin_source_ref(spec.source)
+                    fetch_source = self._expand_plugin_source(spec.source)
                     fetch_ref = (
                         self._expand_plugin_source_ref(spec.ref)
                         if spec.ref
@@ -1394,6 +1395,12 @@ class LocalConversation(BaseConversation):
 
         self._plugins_loaded = True
 
+    def _expand_plugin_source(self, source: str) -> str:
+        # As strict fetch does: a value in a URL's user info is percent-encoded.
+        return expand_plugin_source(
+            source, self._state.secret_registry.get_secret_value
+        )
+
     def _expand_plugin_source_ref(self, value: str) -> str:
         return expand_variable_references(
             value,
@@ -1420,7 +1427,7 @@ class LocalConversation(BaseConversation):
             [
                 registration.model_copy(
                     update={
-                        "source": self._expand_plugin_source_ref(registration.source),
+                        "source": self._expand_plugin_source(registration.source),
                         "ref": self._expand_plugin_source_ref(registration.ref)
                         if registration.ref
                         else None,
@@ -1593,7 +1600,7 @@ class LocalConversation(BaseConversation):
         self._ensure_plugins_loaded()
         spec = self._marketplace_registry_from_context().resolve_plugin(plugin_ref)
 
-        fetch_source = self._expand_plugin_source_ref(spec.source)
+        fetch_source = self._expand_plugin_source(spec.source)
         fetch_ref = self._expand_plugin_source_ref(spec.ref) if spec.ref else spec.ref
         path, resolved_ref = fetch_plugin_with_resolution(
             source=fetch_source,

@@ -771,16 +771,31 @@ class TestEventServiceCountEvents:
         assert await event_service.count_events(source="user") == 2
 
     @pytest.mark.asyncio
-    async def test_count_events_timestamp_gte_filter(
-        self, event_service, mock_conversation_with_timestamped_events
+    @pytest.mark.parametrize(
+        ("filter_time", "expected"),
+        [
+            pytest.param(datetime(2025, 1, 1, 12, 0, 0), 3, id="gte_filter"),
+            # Event timestamps are naive (server local time); the REST/WebSocket
+            # layer normalizes timezone-aware datetimes to naive via
+            # normalize_datetime_to_server_timezone() before filtering.
+            pytest.param(
+                datetime(2025, 1, 1, 12, 0, 0), 3, id="filter_with_timezone_aware"
+            ),
+            pytest.param(datetime(2025, 1, 1, 15, 0, 0), 0, id="filter_no_matches"),
+            pytest.param(datetime(2025, 1, 1, 9, 0, 0), 5, id="filter_all_events"),
+        ],
+    )
+    async def test_count_events_timestamp_gte(
+        self,
+        event_service,
+        mock_conversation_with_timestamped_events,
+        filter_time,
+        expected,
     ):
-        """Test counting events with timestamp__gte filter."""
         event_service._conversation = mock_conversation_with_timestamped_events
 
-        # Count events >= 12:00:00 (should return 3)
-        filter_time = datetime(2025, 1, 1, 12, 0, 0)
         result = await event_service.count_events(timestamp__gte=filter_time)
-        assert result == 3
+        assert result == expected
 
     @pytest.mark.asyncio
     async def test_count_events_timestamp_lt_filter(
@@ -808,47 +823,6 @@ class TestEventServiceCountEvents:
             timestamp__gte=gte_time, timestamp__lt=lt_time
         )
         assert result == 2
-
-    @pytest.mark.asyncio
-    async def test_count_events_timestamp_filter_with_timezone_aware(
-        self, event_service, mock_conversation_with_timestamped_events
-    ):
-        """Test counting events with timezone-aware datetime requires normalization.
-
-        Event timestamps are naive (server local time), so callers must normalize
-        timezone-aware datetimes to naive before filtering. This is done by the
-        REST/WebSocket API layer via normalize_datetime_to_server_timezone().
-        """
-        event_service._conversation = mock_conversation_with_timestamped_events
-
-        # Count events >= 12:00:00 (naive, as if normalized by API layer)
-        filter_time = datetime(2025, 1, 1, 12, 0, 0)  # naive datetime
-        result = await event_service.count_events(timestamp__gte=filter_time)
-        assert result == 3
-
-    @pytest.mark.asyncio
-    async def test_count_events_timestamp_filter_no_matches(
-        self, event_service, mock_conversation_with_timestamped_events
-    ):
-        """Test counting events with timestamps that don't match any events."""
-        event_service._conversation = mock_conversation_with_timestamped_events
-
-        # Count events >= 15:00:00 (should return 0)
-        filter_time = datetime(2025, 1, 1, 15, 0, 0)
-        result = await event_service.count_events(timestamp__gte=filter_time)
-        assert result == 0
-
-    @pytest.mark.asyncio
-    async def test_count_events_timestamp_filter_all_events(
-        self, event_service, mock_conversation_with_timestamped_events
-    ):
-        """Test counting events with timestamps that include all events."""
-        event_service._conversation = mock_conversation_with_timestamped_events
-
-        # Count events >= 09:00:00 (should return 5)
-        filter_time = datetime(2025, 1, 1, 9, 0, 0)
-        result = await event_service.count_events(timestamp__gte=filter_time)
-        assert result == 5
 
 
 class TestEventServiceSendMessage:
