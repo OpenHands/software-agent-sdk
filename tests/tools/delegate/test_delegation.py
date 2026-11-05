@@ -610,3 +610,105 @@ def test_spawn_no_persistence_when_parent_has_none():
     sub_conv = executor._sub_agents["sub1"]
     # The sub-conversation should have no persistence_dir
     assert sub_conv._state.persistence_dir is None
+
+
+def _make_mock_sub_agent(
+    status: ConversationExecutionStatus,
+    final_response: str | None = None,
+) -> MagicMock:
+    """Create a mock sub-agent conversation with a given execution status.
+
+    The ``run`` side-effect sets execution_status on the mock, matching the
+    technique used in the existing TaskManager tests.
+    """
+    sub = MagicMock()
+    sub.state.events = []
+    sub.run.side_effect = lambda s=sub, st=status: setattr(
+        s.state, "execution_status", st
+    )
+    sub.state.execution_status = ConversationExecutionStatus.FINISHED
+    # Pre-set so _run_until_finished loop terminates without looping.
+    sub.conversation_stats.get_combined_metrics.return_value = MagicMock(
+        accumulated_cost=0.0
+    )
+    return sub
+
+
+def _make_parent_for_status_tests() -> MagicMock:
+    """Return a minimal parent-conversation mock for status delegation tests."""
+    parent = MagicMock()
+    parent._visualizer = None
+    parent.conversation_stats = ConversationStats()
+    return parent
+
+
+def test_delegate_finished_sub_agent_is_not_error():
+    """A FINISHED sub-agent produces is_error=False on the observation."""
+    executor = DelegateExecutor()
+    parent = _make_parent_for_status_tests()
+    executor._parent_conversation = parent
+
+    sub = _make_mock_sub_agent(ConversationExecutionStatus.FINISHED)
+    executor._sub_agents["worker"] = sub
+
+    obs = executor._delegate_tasks(
+        DelegateAction(command="delegate", tasks={"worker": "do it"})
+    )
+
+    assert obs.is_error is False
+
+
+def test_delegate_error_sub_agent_sets_is_error():
+    """A sub-agent that ends in ERROR produces is_error=True and names the status."""
+    executor = DelegateExecutor()
+    parent = _make_parent_for_status_tests()
+    executor._parent_conversation = parent
+
+    sub = _make_mock_sub_agent(ConversationExecutionStatus.ERROR)
+    executor._sub_agents["worker"] = sub
+
+    obs = executor._delegate_tasks(
+        DelegateAction(command="delegate", tasks={"worker": "do it"})
+    )
+
+    assert obs.is_error is True
+    assert "ERROR" in obs.text or "error" in obs.text.lower()
+
+
+def test_delegate_stuck_sub_agent_sets_is_error():
+    """A sub-agent that ends in STUCK produces is_error=True and names the status."""
+    executor = DelegateExecutor()
+    parent = _make_parent_for_status_tests()
+    executor._parent_conversation = parent
+
+    sub = _make_mock_sub_agent(ConversationExecutionStatus.STUCK)
+    executor._sub_agents["worker"] = sub
+
+    obs = executor._delegate_tasks(
+        DelegateAction(command="delegate", tasks={"worker": "do it"})
+    )
+
+    assert obs.is_error is True
+    assert "stuck" in obs.text.lower()
+
+
+def test_delegate_mixed_results_sets_is_error():
+    """When one sub-agent finishes and another errors, is_error=True overall."""
+    executor = DelegateExecutor()
+    parent = _make_parent_for_status_tests()
+    executor._parent_conversation = parent
+
+    good = _make_mock_sub_agent(ConversationExecutionStatus.FINISHED)
+    bad = _make_mock_sub_agent(ConversationExecutionStatus.ERROR)
+    executor._sub_agents["good"] = good
+    executor._sub_agents["bad"] = bad
+
+    obs = executor._delegate_tasks(
+        DelegateAction(command="delegate", tasks={"good": "task A", "bad": "task B"})
+    )
+
+    assert obs.is_error is True
+    # The good agent's slot should NOT contain an error label
+    assert "Agent good ERROR" not in obs.text
+    # The bad agent's slot should contain an error label
+    assert "Agent bad ERROR" in obs.text
