@@ -24,8 +24,8 @@ def message_to_responses_dict(
       (when vision enabled)
     - assistant: emits prior assistant content as input_text,
       and function_call items for tool_calls
-    - tool: emits function_call_output items (one per TextContent)
-      with matching call_id
+    - tool: emits function_call_output items (combining TextContent parts into
+      a single output) with matching call_id
     """
     match message.role:
         case "system":
@@ -136,28 +136,32 @@ def _tool_to_responses_items(
         return []
 
     items: list[dict[str, Any]] = []
-    for c in message.content:
-        if isinstance(c, TextContent):
-            items.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": message.tool_call_id,
-                    "output": message._maybe_truncate_tool_text(c.text),
-                }
-            )
-        elif isinstance(c, ImageContent) and vision_enabled:
-            for url in c.image_urls:
-                items.append(
-                    {
-                        "type": "function_call_output",
-                        "call_id": message.tool_call_id,
-                        "output": [
-                            {
-                                "type": "input_image",
-                                "image_url": url,
-                                "detail": "auto",
-                            }
-                        ],
-                    }
-                )
+    text_parts = [c.text for c in message.content if isinstance(c, TextContent)]
+    if text_parts:
+        combined_text = "\n\n".join(text_parts)
+        items.append(
+            {
+                "type": "function_call_output",
+                "call_id": message.tool_call_id,
+                "output": message._maybe_truncate_tool_text(combined_text),
+            }
+        )
+
+    if vision_enabled:
+        for c in message.content:
+            if isinstance(c, ImageContent):
+                for url in c.image_urls:
+                    items.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": message.tool_call_id,
+                            "output": [
+                                {
+                                    "type": "input_image",
+                                    "image_url": url,
+                                    "detail": "auto",
+                                }
+                            ],
+                        }
+                    )
     return items
