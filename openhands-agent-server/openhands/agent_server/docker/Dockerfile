@@ -79,7 +79,11 @@ ARG NPM_VERSION
 # 20261021 is the oldest snapshot whose ca-certificates (20250419+deb13u1,
 # trixie-security) drops emSign ECC Root CA - G3; 20261019 still ships
 # 20250419, which trusts the compromised root (GHSA-6q48-6c7w-9gw2).
-ARG DEBIAN_SNAPSHOT=20261021T000000Z
+# 20261105 skips the three-day window to pick up apt 3.0.4 (DSA-6607-1,
+# CVE-2026-109518, root code execution through a download-verification
+# bypass), first published in snapshot 20261104T120337Z. debian:trixie-slim
+# already ships apt 3.0.4, so older snapshots fail to install apt-utils.
+ARG DEBIAN_SNAPSHOT=20261105T000000Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
