@@ -1,0 +1,137 @@
+{
+  "ok": true,
+  "mode": "scripted",
+  "status": "waiting_for_confirmation",
+  "risks": [
+    "LOW",
+    "HIGH"
+  ],
+  "details": [
+    {
+      "probabilities": {
+        "dangerous_operation": 0.0,
+        "prompt_injection": 0.0
+      }
+    },
+    {
+      "probabilities": {
+        "dangerous_operation": 1.0,
+        "prompt_injection": 0.0
+      }
+    }
+  ],
+  "injection_risk": "HIGH",
+  "injection_detail": {
+    "probabilities": {
+      "dangerous_operation": 0.0,
+      "prompt_injection": 1.0
+    }
+  },
+  "confirm_risky": [
+    false,
+    true
+  ],
+  "final": "finished",
+  "nothing_ran": true,
+  "safe_executed": true,
+  "policy_status": "waiting_for_confirmation",
+  "dangerous_waited": true,
+  "policy_final": "finished",
+  "restored": "JevSecurityAnalyzer",
+  "transport_kind": "JevSecurityAnalyzer",
+  "transport_secret_preserved": true,
+  "async_status": "waiting_for_confirmation",
+  "async_risk": "LOW",
+  "requests": 5,
+  "first_questions": 4,
+  "actor_risk_sent": false,
+  "_exit": 0,
+  "_seconds": 6.8,
+  "checks": [
+    {
+      "check": "status eq waiting_for_confirmation",
+      "ok": true,
+      "actual": "waiting_for_confirmation"
+    },
+    {
+      "check": "risks.1 eq HIGH",
+      "ok": true,
+      "actual": "HIGH"
+    },
+    {
+      "check": "injection_risk eq HIGH",
+      "ok": true,
+      "actual": "HIGH"
+    },
+    {
+      "check": "nothing_ran eq true",
+      "ok": true,
+      "actual": "true"
+    },
+    {
+      "check": "final eq finished",
+      "ok": true,
+      "actual": "finished"
+    },
+    {
+      "check": "restored eq JevSecurityAnalyzer",
+      "ok": true,
+      "actual": "JevSecurityAnalyzer"
+    },
+    {
+      "check": "transport_kind eq JevSecurityAnalyzer",
+      "ok": true,
+      "actual": "JevSecurityAnalyzer"
+    },
+    {
+      "check": "transport_secret_preserved eq true",
+      "ok": true,
+      "actual": "true"
+    },
+    {
+      "check": "safe_executed eq true",
+      "ok": true,
+      "actual": "true"
+    },
+    {
+      "check": "policy_status eq waiting_for_confirmation",
+      "ok": true,
+      "actual": "waiting_for_confirmation"
+    },
+    {
+      "check": "dangerous_waited eq true",
+      "ok": true,
+      "actual": "true"
+    },
+    {
+      "check": "policy_final eq finished",
+      "ok": true,
+      "actual": "finished"
+    },
+    {
+      "check": "requests eq 5",
+      "ok": true,
+      "actual": "5"
+    },
+    {
+      "check": "first_questions eq 4",
+      "ok": true,
+      "actual": "4"
+    },
+    {
+      "check": "actor_risk_sent eq false",
+      "ok": true,
+      "actual": "false"
+    },
+    {
+      "check": "risks.0 eq LOW",
+      "ok": true,
+      "actual": "LOW"
+    },
+    {
+      "check": "async_risk eq LOW",
+      "ok": true,
+      "actual": "LOW"
+    }
+  ]
+}
