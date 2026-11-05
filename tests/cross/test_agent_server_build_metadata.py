@@ -214,10 +214,30 @@ def test_python_image_uses_canonical_minimal_runtime() -> None:
         == 2
     )
     assert "Check-Valid-Until: no" in dockerfile_text
-    assert (
-        "apt-get $BOOTSTRAP_CA update; \\\n    apt-get $BOOTSTRAP_CA upgrade -y;"
-        in dockerfile_text
-    )
+    # The first apt run has no CA bundle yet, so it trusts the bootstrap bundle
+    # mounted from pip-revendored while still using the resilient APT_OPTS.
+    assert "apt-get $BOOTSTRAP_CA ${APT_OPTS} update" in dockerfile_text
+    assert "apt-get $BOOTSTRAP_CA upgrade -y" in dockerfile_text
+    # Resilient apt for the pinned snapshot archive: APT_OPTS (retries,
+    # timeouts, Retry-Delay, serial queue, Pipeline-Depth=0) is defined once
+    # and used at every apt site; python-node-runtime also persists it to
+    # apt.conf.d (inherited by derived stages when BASE_IMAGE is this image)
+    # and wraps update+install in an invocation-level retry loop, so a
+    # multi-minute snapshot.debian.org 503 outage does not fail the build.
+    assert "ARG APT_OPTS=" in dockerfile_text
+    assert "Acquire::Retries=5" in dockerfile_text
+    assert "Acquire::Retry-Delay=10" in dockerfile_text
+    assert "Acquire::Pipeline-Depth=0" in dockerfile_text
+    assert "80-snapshot-resilience" in dockerfile_text
+    assert "for attempt in 1 2 3 4 5" in dockerfile_text
+    apt_lines = [
+        line.strip()
+        for line in dockerfile_text.splitlines()
+        if "apt-get" in line and (" update" in line or " install" in line)
+    ]
+    assert apt_lines
+    for line in apt_lines:
+        assert "${APT_OPTS}" in line, line
     acp_stage = dockerfile_text.partition("FROM python:3.13-bookworm AS acp-providers")[
         2
     ].partition("####")[0]
