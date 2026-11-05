@@ -3,23 +3,49 @@
 ## Observation
 
 A long-running agent conversation on a local 27B deployment (Qwen3.8-27B Q4,
-`max_input_tokens=233472`, server `n_ctx=262144`) reached a **193,553 token
-prompt** with an `LLMSummarizingCondenser` configured with `max_tokens=235000`
-and `max_size=240` events.
+`max_input_tokens=233472`, server `n_ctx=262144`) used an
+`LLMSummarizingCondenser` configured with `max_tokens=235000` and
+`max_size=240` events.
+
+Prompt size per model call over the affected turn: 173,019, 178,512, 182,268,
+**183,553** (the call that lost the task), 190,042, 188,775, 193,553.
 
 - The token trigger could not fire: the request is capped at the model's input
-  budget (233,472), so `total_tokens > max_tokens` was unreachable.
-- The event trigger did not fire either: 145 events had accrued since the last
-  condensation, below `max_size=240`.
-- Result: the conversation ran at ~83% of its input budget with no
-  condensation, and the agent lost the current instruction, reverting to a
-  topic from the previous day.
+  budget (233,472), so `total_tokens > 235,000` was unreachable at any point.
+- The event trigger did not fire either: fewer than `max_size=240` events had
+  accrued since the last condensation.
+- Result: the turn ran to 183,553 tokens with no condensation and the agent
+  abandoned the current instruction for a topic from the previous day.
 
 The upstream default has the same shape: `build_condenser` uses
 `llm.effective_max_input_tokens` verbatim when `max_tokens` is unset (#3746).
-That value is the largest prompt the model can ever receive, so the trigger is
-at or below the cap and cannot fire before the request itself is rejected or
-truncated.
+That value is the largest prompt the model can ever receive, so a trigger at
+or above it cannot fire before the request itself is rejected or truncated.
+
+## Replication attempt
+
+The drifting turn was replayed from a fork of the stored conversation, with the
+same model (temperature 1.0), the same instruction and the same workspace:
+
+- Fork context: 147,408 prompt tokens, prefill 141,495, cache hits 0.
+- 15 actions, through the same `page.tpl.php` edit the original made
+  immediately before drifting. The plan was correct and every action stayed on
+  the portal task; no recall of the stale topic, no topic change.
+- The replay's context was therefore smaller than the 183,553 at the original
+  drift call, and the drift did not reproduce.
+
+Conclusion: the drift is not deterministic at this context size; sampling
+variance at temperature 1.0 remains the leading explanation. The guardrail
+defect is independent of that: the configured limit could not fire at any
+context size.
+
+Operational notes from the replay:
+
+- A forked conversation restores the agent LLM from `base_state.json`, which is
+  the pristine profile LLM (mimo), not the model the conversation was switched
+  to at runtime (Qwen). The replay required an explicit `switch_llm`.
+- Cold prefill of a 147k-token replayed context took about 12 minutes at roughly
+  215 tokens/second with zero prompt-cache reuse.
 
 ## Change
 
