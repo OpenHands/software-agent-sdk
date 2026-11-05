@@ -234,7 +234,10 @@ async def get_conversation(
     return _with_runtime_info(request, conversation)
 
 
-@conversation_router.get("/{conversation_id}/runtime")
+@conversation_router.get(
+    "/{conversation_id}/runtime",
+    responses={404: {"description": "Conversation not found"}},
+)
 async def get_local_conversation_runtime(
     conversation_id: UUID,
     request: Request,
@@ -251,7 +254,10 @@ async def get_local_conversation_runtime(
     )
 
 
-@conversation_router.post("/{conversation_id}/runtime/reprovision")
+@conversation_router.post(
+    "/{conversation_id}/runtime/reprovision",
+    responses={404: {"description": "Conversation not found"}},
+)
 async def reprovision_local_conversation_runtime(
     conversation_id: UUID,
     request: Request,
