@@ -8,7 +8,7 @@ ARG USERNAME=openhands
 ARG UID=10001
 ARG GID=10001
 ARG PORT=8000
-ARG NPM_VERSION=11.21.0
+ARG NPM_VERSION=12.2.2
 # Opt-in build flag for the Vertex AI extra (`openhands-sdk[vertex]`). Off by
 # default to keep the published image lean. Pass `--build-arg ENABLE_VERTEX=1`
 # to bundle google-cloud-aiplatform so the resulting binary supports
@@ -38,7 +38,7 @@ ARG ENABLE_VSCODE=true
 # newly published Debian packages have a three-day observation period.
 ####################################################################################
 FROM python:3.13.15-slim-trixie AS python-runtime
-FROM node:24.22.1-trixie-slim AS node-runtime
+FROM node:24.22.2-trixie-slim AS node-runtime
 
 # pip 26.2.2 vendors urllib3 2.7.0 (CVE-2026-97689) and msgpack 1.1.2
 # (GHSA-6v7p-g79w-8964), and no pip release vendors the fixed versions yet.
@@ -200,9 +200,9 @@ ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
 ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 
 # uv 0.11.5+ embeds python-build-standalone 20260408 metadata, which is the
-# first release with the PT_GNU_STACK fix. Pin to 0.13.5 (latest eligible at time of
+# first release with the PT_GNU_STACK fix. Pin to 0.13.7 (latest eligible at time of
 # writing) rather than :latest so builds are reproducible.
-COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.7 /uv /uvx /bin/
 
 RUN groupadd -g ${GID} ${USERNAME} \
  && useradd -m -u ${UID} -g ${GID} -s /usr/sbin/nologin ${USERNAME} \
@@ -301,13 +301,13 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     ARCH=$(uname -m); \
     case "$ARCH" in \
-      x86_64|amd64) NARCH=x64; NODE_SHA256=6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6;; \
-      aarch64|arm64) NARCH=arm64; NODE_SHA256=dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e;; \
+      x86_64|amd64) NARCH=x64; NODE_SHA256=48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75;; \
+      aarch64|arm64) NARCH=arm64; NODE_SHA256=eb187837a2230d4047161ac0be008584e16b46f726e9c9490ee35dc6b17d9ba8;; \
       *) echo "Unsupported architecture for ACP providers: '$ARCH'" >&2; exit 1;; \
     esac; \
-    NODE_TARBALL="/tmp/node-v24.22.1-linux-${NARCH}.tar.xz"; \
+    NODE_TARBALL="/tmp/node-v24.22.2-linux-${NARCH}.tar.xz"; \
     curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused \
-        "https://nodejs.org/dist/v24.22.1/node-v24.22.1-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
+        "https://nodejs.org/dist/v24.22.2/node-v24.22.2-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
     echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
     tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL"; \
     rm -f "$NODE_TARBALL"; \
@@ -507,7 +507,7 @@ RUN set -eux; \
     echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Keep uv as part of the full development environment, but not binary-minimal.
-COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.7 /uv /uvx /bin/
 
 # Fail fast on a typo'd capability name before spending any time on the
 # installs below (each block only checks for ITS OWN keyword's presence, so
@@ -526,17 +526,17 @@ ENV EDITOR=code \
     VISUAL=code \
     GIT_EDITOR="code --wait" \
     CODE_SERVER_ROOT=/openhands/.code-server
-# Published 2026-10-29; digests from coder/code-server GitHub release assets.
+# Published 2026-11-04; digests from coder/code-server GitHub release assets.
 # Update the version and both architecture digests together.
-ARG CODE_SERVER_VERSION="4.144.0"
+ARG CODE_SERVER_VERSION="4.145.0"
 RUN set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
       *,vscode,*) ;; \
       *) echo "INSTALL_CAPABILITIES excludes vscode; skipping code-server"; exit 0;; \
     esac; \
     case "$(uname -m)" in \
-      x86_64) arch=amd64; sha256=710f749c40a0f3d0ab3be09c0de65314e5c2907cc50646f5fbc0f24c0e8fba2d;; \
-      aarch64) arch=arm64; sha256=4404c784f541bd56a2a8d6e2a9474ed0b4e37bc8502aa3a247898ca933434482;; \
+      x86_64) arch=amd64; sha256=771bf6038658034d7caf509fcc44af50f0b8bdac5e738177b6cf9c4181dd3382;; \
+      aarch64) arch=arm64; sha256=425d3bc5167c85dc070427d2aa93760083b02aec852ea9ce75c2906c99138f45;; \
       *) echo "Unsupported code-server architecture" >&2; exit 1;; \
     esac; \
     wget -O /tmp/code-server.tar.gz "https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server-${CODE_SERVER_VERSION}-linux-${arch}.tar.gz"; \
@@ -545,12 +545,27 @@ RUN set -eux; \
     tar -xzf /tmp/code-server.tar.gz -C "${CODE_SERVER_ROOT}" --strip-components=1; \
     rm /tmp/code-server.tar.gz; \
     cp "${CODE_SERVER_ROOT}/lib/vscode/bin/remote-cli/code-server" "${CODE_SERVER_ROOT}/lib/vscode/bin/remote-cli/code"; \
-    # code-server 4.144.0 already bundles Node v24.22.1, which fixes the
-    # Brotli decoder overflow CVE-2026-111497, so the Node replacement
-    # carried forward from #6200 for 4.141.0 is no longer needed. Assert
-    # the bundled version so a future downgrade cannot silently reintroduce
-    # the vulnerable build.
+    # code-server bundles Node v24.22.1, which fixes the Brotli decoder
+    # overflow CVE-2026-111497, so the Node replacement carried forward
+    # from #6200 for 4.141.0 is no longer needed. Assert the bundled
+    # version so a future downgrade cannot silently reintroduce the
+    # vulnerable build.
     test "$("${CODE_SERVER_ROOT}/lib/node" --version)" = "v24.22.1"; \
+    # code-server 4.145.0 bundles undici 7.29.1 (CVE-2026-109383,
+    # CVE-2026-109829, CVE-2026-109869, CVE-2026-87018; fixed in 7.30.1,
+    # which no code-server release ships yet). Swap in the fixed undici
+    # from the npm registry; drop this once code-server ships >= 7.30.1.
+    UNDICI_TMP=$(mktemp -d); \
+    wget -qO "${UNDICI_TMP}/undici.tgz" "https://registry.npmjs.org/undici/-/undici-7.30.1.tgz"; \
+    echo "c98bd3881137c11341e8be8d2ec509ebf973b6f8b36d0a4c6d2afcda15e0d712  ${UNDICI_TMP}/undici.tgz" | sha256sum -c -; \
+    tar -xzf "${UNDICI_TMP}/undici.tgz" -C "${UNDICI_TMP}"; \
+    test "$(node -p "require('${UNDICI_TMP}/package/package.json').version")" = "7.30.1"; \
+    rm -rf "${CODE_SERVER_ROOT}/lib/vscode/node_modules/undici"; \
+    mkdir -p "${CODE_SERVER_ROOT}/lib/vscode/node_modules/undici"; \
+    tar -cf - -C "${UNDICI_TMP}/package" . | tar -xf - -C "${CODE_SERVER_ROOT}/lib/vscode/node_modules/undici"; \
+    rm -rf "${UNDICI_TMP}"; \
+    UNDICI_INSTALLED=$(node -p "require('${CODE_SERVER_ROOT}/lib/vscode/node_modules/undici/package.json').version"); \
+    test "${UNDICI_INSTALLED}" = "7.30.1"; \
     chown -R ${USERNAME}:${USERNAME} "${CODE_SERVER_ROOT}"
 
 # This bind mount builds the builder stage even when vscode is excluded.

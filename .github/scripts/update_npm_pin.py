@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Select stable same-major npm releases after a seven-day observation period."""
+"""Select the newest stable npm release after a seven-day observation period.
+
+Majors are no longer held back: npm 12 is required for the fixed bundled
+undici/brace-expansion. The seven-day window still applies, so a brand-new
+major is only picked up once it has baked for a week.
+"""
 
 import argparse
 import json
@@ -21,7 +26,7 @@ def select_version(metadata: dict, current: str, now: datetime) -> str:
         if not VERSION.fullmatch(version) or release.get("deprecated"):
             continue
         parts = tuple(map(int, version.split(".")))
-        if parts[0] != current_parts[0] or parts <= current_parts:
+        if parts <= current_parts:
             continue
         published = datetime.fromisoformat(
             metadata["time"][version].replace("Z", "+00:00")
