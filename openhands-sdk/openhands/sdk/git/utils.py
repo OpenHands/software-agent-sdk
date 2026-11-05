@@ -84,7 +84,8 @@ def run_git_command(
             intentionally probes for a fallback condition.
         strip: Strip leading and trailing whitespace from the output. Pass
             ``False`` to read file contents (e.g. ``git show rev:path``)
-            verbatim.
+            verbatim, or for ``-z`` output, where leading or trailing spaces
+            belong to a file name.
 
     Returns:
         Command output as string

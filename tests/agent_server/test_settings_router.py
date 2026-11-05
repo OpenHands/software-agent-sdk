@@ -1663,21 +1663,77 @@ def test_patch_settings_switch_agent_kind_from_openhands_to_acp(client_with_sett
     assert body["agent_settings"]["acp_command"] == ["echo", "hello"]
 
 
-def test_patch_settings_preserves_mcp_catalog_when_switching_agent_kind(
-    client_with_settings,
+@pytest.mark.parametrize(
+    ("seed", "switch"),
+    [
+        ({}, {"agent_kind": "acp", "acp_server": "codex"}),
+        (
+            {"agent_kind": "acp", "acp_server": "codex"},
+            {"agent_kind": "openhands"},
+        ),
+    ],
+    ids=["openhands-to-acp", "acp-to-openhands"],
+)
+def test_patch_settings_kind_switch_preserves_mcp_catalog(
+    client_with_settings, seed, switch
 ):
     server = {
         "transport": "http",
         "url": "https://example.invalid/mcp",
+        "headers": {"X-Api-Key": "mcp-key"},
+        "auth": {"strategy": "bearer", "value": "mcp-token"},
     }
     seeded = client_with_settings.patch(
         "/api/settings",
-        json={"agent_settings_diff": {"mcp_config": {"example": server}}},
+        json={"agent_settings_diff": {**seed, "mcp_config": {"example": server}}},
     )
     assert seeded.status_code == 200
-    assert (
-        seeded.json()["agent_settings"]["mcp_config"]["example"]["url"] == server["url"]
+
+    switched = client_with_settings.patch(
+        "/api/settings", json={"agent_settings_diff": switch}
     )
+
+    assert switched.status_code == 200
+    assert switched.json()["agent_settings"]["agent_kind"] == switch["agent_kind"]
+    persisted = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]
+    assert persisted["agent_kind"] == switch["agent_kind"]
+    example = persisted["mcp_config"]["example"]
+    assert example["url"] == server["url"]
+    assert example["headers"] == server["headers"]
+    assert example["auth"] == server["auth"]
+
+
+@pytest.mark.parametrize(
+    ("mcp_patch", "expected_servers", "keep_enabled"),
+    [
+        ({"other": None}, {"keep"}, True),
+        ({"keep": {"enabled": False}}, {"keep", "other"}, False),
+        (
+            {"new": {"transport": "http", "url": "https://new.invalid/mcp"}},
+            {"keep", "other", "new"},
+            True,
+        ),
+        (None, set(), None),
+    ],
+    ids=["delete-server", "sparse-server-patch", "add-server", "delete-catalog"],
+)
+def test_patch_settings_kind_switch_applies_mcp_patch(
+    client_with_settings, mcp_patch, expected_servers, keep_enabled
+):
+    def server(name):
+        return {"transport": "http", "url": f"https://{name}.invalid/mcp"}
+
+    seeded = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "mcp_config": {"keep": server("keep"), "other": server("other")}
+            }
+        },
+    )
+    assert seeded.status_code == 200
 
     switched = client_with_settings.patch(
         "/api/settings",
@@ -1685,6 +1741,7 @@ def test_patch_settings_preserves_mcp_catalog_when_switching_agent_kind(
             "agent_settings_diff": {
                 "agent_kind": "acp",
                 "acp_server": "codex",
+                "mcp_config": mcp_patch,
             }
         },
     )
@@ -1692,7 +1749,77 @@ def test_patch_settings_preserves_mcp_catalog_when_switching_agent_kind(
     assert switched.status_code == 200
     agent_settings = switched.json()["agent_settings"]
     assert agent_settings["agent_kind"] == "acp"
-    assert agent_settings["mcp_config"]["example"]["url"] == server["url"]
+    assert set(agent_settings["mcp_config"]) == expected_servers
+    if keep_enabled is not None:
+        keep = agent_settings["mcp_config"]["keep"]
+        assert keep["enabled"] is keep_enabled
+        assert keep["url"] == "https://keep.invalid/mcp"
+
+
+@pytest.mark.parametrize(
+    ("seed", "switch"),
+    [
+        ({}, {"agent_kind": "acp", "acp_server": "codex"}),
+        (
+            {"agent_kind": "acp", "acp_server": "codex"},
+            {"agent_kind": "openhands"},
+        ),
+    ],
+    ids=["openhands-to-acp", "acp-to-openhands"],
+)
+def test_patch_settings_kind_switch_preserves_server_wide_settings(
+    client_with_settings, temp_persistence_dir, seed, switch
+):
+    seeded = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                **seed,
+                "agent_context": {"load_memory": True},
+                "verification": {"critic_api_key": "critic-key"},
+            }
+        },
+    )
+    assert seeded.status_code == 200
+
+    switched = client_with_settings.patch(
+        "/api/settings", json={"agent_settings_diff": switch}
+    )
+
+    assert switched.status_code == 200
+    persisted = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]
+    assert persisted["agent_kind"] == switch["agent_kind"]
+    assert persisted["agent_context"]["load_memory"] is True
+    assert persisted["verification"]["critic_api_key"] == "critic-key"
+    assert "critic-key" not in (temp_persistence_dir / "settings.json").read_text()
+
+
+def test_patch_settings_stores_critic_key_on_acp_settings(
+    client_with_settings, temp_persistence_dir
+):
+    switched = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"agent_kind": "acp", "acp_server": "codex"}},
+    )
+    assert switched.status_code == 200
+
+    saved = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"verification": {"critic_api_key": "typed-key"}}},
+    )
+
+    assert saved.status_code == 200
+    assert saved.json()["agent_settings"]["verification"]["critic_api_key"] == (
+        "**********"
+    )
+    persisted = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]
+    assert persisted["agent_kind"] == "acp"
+    assert persisted["verification"]["critic_api_key"] == "typed-key"
+    assert "typed-key" not in (temp_persistence_dir / "settings.json").read_text()
 
 
 def test_patch_settings_same_kind_restated_still_deep_merges(client_with_settings):
