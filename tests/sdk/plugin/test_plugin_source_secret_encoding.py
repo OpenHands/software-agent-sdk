@@ -10,17 +10,28 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import subprocess
 import threading
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import quote
 
 import pytest
+from pydantic import SecretStr
 
-from openhands.sdk.plugin import PluginSourceError, preflight_plugin
+from openhands.sdk import LLM, Agent, AgentContext
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.marketplace import MarketplaceRegistration
+from openhands.sdk.plugin import (
+    PluginFetchError,
+    PluginSource,
+    PluginSourceError,
+    preflight_plugin,
+)
 from openhands.sdk.plugin.strict_fetch import (
     _classify_git_error,
     _expand_source_and_ref,
@@ -145,6 +156,10 @@ def _make_bare_repo(root: Path) -> str:
     (work / ".plugin" / "plugin.json").write_text(
         json.dumps({"name": "private-plugin", "version": "1.0.0"})
     )
+    (work / "skills" / "private-skill").mkdir(parents=True)
+    (work / "skills" / "private-skill" / "SKILL.md").write_text(
+        "---\nname: private-skill\ndescription: From a private repo\n---\nHi"
+    )
     _git("init", "-q", "-b", "main", cwd=work)
     _git("add", "-A", cwd=work)
     _git(
@@ -260,3 +275,159 @@ def test_a_malformed_source_fails_as_invalid_source():
 
     assert exc_info.value.code == "invalid_source"
     assert exc_info.value.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# The same rule when a conversation loads its plugins
+# ---------------------------------------------------------------------------
+
+
+def _conversation(tmp_path: Path, **kwargs: object) -> LocalConversation:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    agent = kwargs.pop("agent", None) or Agent(
+        llm=LLM(model="test/model", api_key=SecretStr("test-key")), tools=[]
+    )
+    return LocalConversation(
+        agent=agent,  # type: ignore[arg-type]
+        workspace=workspace,
+        visualizer=None,
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+TRICKY = "tok/en+=@:%"
+ENCODED = quote(TRICKY, safe="")
+
+
+def test_conversation_plugin_source_is_encoded_like_strict_fetch(tmp_path: Path):
+    conversation = _conversation(
+        tmp_path,
+        plugins=[
+            PluginSource(
+                source="https://x-access-token:${TOKEN}@git.example.com/p.git",
+                ref="${REF}",
+            )
+        ],
+    )
+    conversation.update_secrets({"TOKEN": TRICKY, "REF": "release/x"})
+    plugin_dir = tmp_path / "plugin"
+    (plugin_dir / ".plugin").mkdir(parents=True)
+    (plugin_dir / ".plugin" / "plugin.json").write_text('{"name": "p"}')
+
+    try:
+        with patch(
+            "openhands.sdk.conversation.impl.local_conversation."
+            "fetch_plugin_with_resolution",
+            return_value=(plugin_dir, "abc123"),
+        ) as fetch:
+            conversation._ensure_plugins_loaded()
+    finally:
+        conversation.close()
+
+    fetch.assert_called_once_with(
+        source=f"https://x-access-token:{ENCODED}@git.example.com/p.git",
+        ref="release/x",
+        repo_path=None,
+    )
+    # The persisted record holds neither form of the value.
+    assert conversation.resolved_plugins is not None
+    persisted = conversation.resolved_plugins[0].source
+    assert TRICKY not in persisted
+    assert ENCODED not in persisted
+
+
+def test_conversation_marketplace_sources_are_encoded(tmp_path: Path):
+    agent = Agent(
+        llm=LLM(model="test/model", api_key=SecretStr("test-key")),
+        tools=[],
+        agent_context=AgentContext(
+            registered_marketplaces=[
+                MarketplaceRegistration(
+                    name="private",
+                    source="https://${TOKEN}@git.example.com/catalog.git",
+                    auto_load=True,
+                )
+            ]
+        ),
+    )
+    conversation = _conversation(tmp_path, agent=agent)
+    conversation.update_secrets({"TOKEN": TRICKY})
+    catalog = tmp_path / "catalog"
+    (catalog / ".plugin").mkdir(parents=True)
+    (catalog / ".plugin" / "marketplace.json").write_text(
+        json.dumps({"name": "private", "owner": {"name": "t"}, "plugins": []})
+    )
+
+    try:
+        with patch(
+            "openhands.sdk.marketplace.registry.fetch_plugin_with_resolution",
+            return_value=(catalog, "abc123"),
+        ) as fetch:
+            conversation._ensure_plugins_loaded()
+    finally:
+        conversation.close()
+
+    assert fetch.call_args.kwargs["source"] == (
+        f"https://{ENCODED}@git.example.com/catalog.git"
+    )
+
+
+@pytest.fixture
+def plugin_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    cache = tmp_path / "plugin-cache"
+    monkeypatch.setattr("openhands.sdk.plugin.fetch.DEFAULT_CACHE_DIR", cache)
+    return cache
+
+
+@pytest.mark.parametrize("value", TRICKY_VALUES)
+def test_conversation_loads_a_private_plugin_with_a_token_that_needs_encoding(
+    private_repo: tuple[Path, str], plugin_cache: Path, tmp_path: Path, value: str
+):
+    root, _sha = private_repo
+    with _PrivateGitServer(root, value) as server:
+        conversation = _conversation(
+            tmp_path,
+            plugins=[
+                PluginSource(
+                    source=f"http://x-access-token:${{TOKEN}}@{server.host}/plugin.git"
+                )
+            ],
+        )
+        conversation.update_secrets({"TOKEN": value})
+        try:
+            conversation._ensure_plugins_loaded()
+            assert conversation.agent.agent_context is not None
+            assert "private-skill" in [
+                skill.name for skill in conversation.agent.agent_context.skills
+            ]
+        finally:
+            conversation.close()
+
+
+def test_conversation_fetch_errors_mask_both_forms(
+    private_repo: tuple[Path, str],
+    plugin_cache: Path,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    root, _sha = private_repo
+    with _PrivateGitServer(root, "the-right-token") as server:
+        conversation = _conversation(
+            tmp_path,
+            plugins=[
+                PluginSource(
+                    source=f"http://x-access-token:${{TOKEN}}@{server.host}/plugin.git"
+                )
+            ],
+        )
+        conversation.update_secrets({"TOKEN": TRICKY})
+        try:
+            with caplog.at_level(logging.DEBUG), pytest.raises(PluginFetchError) as exc:
+                conversation._ensure_plugins_loaded()
+        finally:
+            conversation.close()
+
+    for text in (str(exc.value), caplog.text):
+        assert TRICKY not in text
+        assert ENCODED not in text

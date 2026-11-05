@@ -8,7 +8,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -245,8 +245,8 @@ def _expand_source_and_ref(
             raise PluginSourceError("missing_secret", f"Missing secret: {name}")
         resolved[name] = plain_value
 
-    expanded_source = _expand_source(source, resolved)
-    expanded_ref = _expand(ref, resolved) if ref is not None else None
+    expanded_source = expand_plugin_source(source, resolved.get)
+    expanded_ref = _expand(ref, resolved.get) if ref is not None else None
     encoded = {_encode_userinfo(value) for value in resolved.values()}
     return (
         expanded_source,
@@ -255,10 +255,10 @@ def _expand_source_and_ref(
     )
 
 
-def _expand(value: str, variables: Mapping[str, str]) -> str:
+def _expand(value: str, lookup: Callable[[str], str | None]) -> str:
     return expand_variable_references(
         value,
-        variables=dict(variables),
+        get_secret=lookup,
         check_env=False,
         support_unbraced=False,
         expand_defaults=False,
@@ -269,9 +269,10 @@ def _encode_userinfo(value: str) -> str:
     return quote(value, safe="")
 
 
-def _expand_source(source: str, values: Mapping[str, str]) -> str:
-    """Expand ``${NAME}`` placeholders in a plugin source.
+def expand_plugin_source(source: str, lookup: Callable[[str], str | None]) -> str:
+    """Expand the ``${NAME}`` placeholders of a plugin source.
 
+    ``lookup`` returns a secret's value, or ``None`` to keep its placeholder.
     A value put in the user info of an http(s) URL is percent-encoded, so a
     token containing ``/``, ``@`` or ``:`` keeps its meaning instead of
     breaking the URL; git decodes it before sending it. Placeholders anywhere
@@ -285,15 +286,19 @@ def _expand_source(source: str, values: Mapping[str, str]) -> str:
         or "@" not in parts.netloc
         or source[authority_start:authority_end] != parts.netloc
     ):
-        return _expand(source, values)
+        return _expand(source, lookup)
     userinfo, _, hostport = parts.netloc.rpartition("@")
-    encoded = {name: _encode_userinfo(value) for name, value in values.items()}
+
+    def encoded(name: str) -> str | None:
+        value = lookup(name)
+        return _encode_userinfo(value) if value is not None else None
+
     return (
-        _expand(source[:authority_start], values)
+        _expand(source[:authority_start], lookup)
         + _expand(userinfo, encoded)
         + "@"
-        + _expand(hostport, values)
-        + _expand(source[authority_end:], values)
+        + _expand(hostport, lookup)
+        + _expand(source[authority_end:], lookup)
     )
 
 
