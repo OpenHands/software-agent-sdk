@@ -75,7 +75,25 @@ takes major/newest versions instead of waiting:
   `pre-commit` on changed files: passed.
 - Agent-server container boots from the bumped binary image and serves
   `/health`.
-- Trivy rescan (binary, same DB/flags): see table in the PR description.
+- **CI-built binary (`ghcr.io/openhands/agent-server:c122226-python-amd64`,
+  head `c122226`) rescan, binary-to-binary, same DB/flags**: **total
+  2283 (main) → 2232 (this PR); C+H 175 → 158; fixable C+H 19 → 2**
+  (C2/H156/M888/L1114). Per-CVE: `brace-expansion` CVE-2026-102276/-102278 2→0
+  each, all four editor `undici` HIGHs →0 (plus CVE-2026-19534 ×2),
+  `msgpack` CVE-2026-114613 →0. **Zero new C+H vs main.** The only
+  remaining fixable C+H are the two `docker-buildx` Go modules below.
+  (Release 1.59.0 for reference: 3160 total, C+H 308.)
+- CI caught a real bug the local build couldn't: the undici-swap probes
+  used plain `node`, which doesn't exist in the golang/java base-image
+  variants (no system Node there) — `Build & Push (golang-*/java-*)`
+  failed on head `1bec757`. Fixed in `c122226` by probing with
+  code-server's bundled `"${CODE_SERVER_ROOT}/lib/node"`; all
+  `Build & Push` variants then passed (python-amd64 10m48s).
+- Manual end-to-end check: isolated Agent Canvas stack
+  (`run-code-server-canvas.sh`, SDK `main@232d0b0`, editor tree
+  4.145.0/undici 7.30.1) raised at `https://oh-pr6307.ngrok-free.app`
+  for a by-hand VS Code tab sanity pass (no `/setup`, file edit/save,
+  settings kept) by the PR owner.
 
 ## Remaining, genuinely not fixable from this repo today
 
