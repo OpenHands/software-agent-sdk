@@ -62,11 +62,11 @@ RUN set -eux; \
     cd /tmp/pip; \
     sed -i -E \
         -e 's/^( +)urllib3==2\.7\.0$/\1urllib3==2.8.0/' \
-        -e 's/^msgpack==1\.1\.2$/msgpack==1.2.1/' \
+        -e 's/^msgpack==1\.1\.2$/msgpack==1.2.3/' \
         -e '/^setuptools==70\.3\.0$/d' \
         src/pip/_vendor/vendor.txt; \
     grep -qx '    urllib3==2.8.0' src/pip/_vendor/vendor.txt; \
-    grep -qx 'msgpack==1.2.1' src/pip/_vendor/vendor.txt; \
+    grep -qx 'msgpack==1.2.3' src/pip/_vendor/vendor.txt; \
     if grep -q '^setuptools==' src/pip/_vendor/vendor.txt; then exit 1; fi; \
     rm tools/vendoring/patches/pkg_resources.patch; \
     python -m venv /tmp/vendoring; \
