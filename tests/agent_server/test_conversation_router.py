@@ -3222,6 +3222,19 @@ def test_runtime_requires_existing_conversation(
     assert response.status_code == 404
 
 
+@pytest.mark.parametrize(
+    "path,http_method",
+    [
+        ("/api/conversations/{conversation_id}/runtime", "get"),
+        ("/api/conversations/{conversation_id}/runtime/reprovision", "post"),
+    ],
+)
+def test_runtime_routes_declare_404(client, path, http_method):
+    """The 404 is part of the published contract, not just runtime behavior."""
+    operation = client.app.openapi()["paths"][path][http_method]
+    assert "404" in operation["responses"]
+
+
 def test_condense_conversation_without_condenser_returns_409(
     client, mock_conversation_service, sample_conversation_id
 ):
