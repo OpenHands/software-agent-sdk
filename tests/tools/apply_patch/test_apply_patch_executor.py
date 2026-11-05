@@ -221,6 +221,15 @@ def test_invalid_patch_returns_error(tmp_ws: Path, patch: str, expected_message:
     assert expected_message in obs.text
 
 
+def test_update_missing_file_error_names_update(tmp_ws: Path):
+    patch = "*** Begin Patch\n*** Update File: missing.txt\n@@\n-a\n+b\n*** End Patch"
+    obs = run_exec(tmp_ws, patch)
+
+    assert obs.is_error
+    assert "Missing File" in obs.text
+    assert "Delete File" not in obs.text
+
+
 def test_update_non_utf8_file_returns_error_observation(tmp_ws: Path):
     fp = tmp_ws / "latin1.txt"
     fp.write_bytes("café\n".encode("latin-1"))
