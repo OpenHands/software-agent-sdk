@@ -126,7 +126,9 @@ download, git views, bash event history, and `/sockets/events/{id}` and
 LLM, profile, plugin, credential-binding, security-analyzer, confirmation
 and update routes, fork, children, delete, the direct bash command routes, and
 `/vscode/*`. An invalid or expired token gets 401 (WebSocket close 4001); a
-valid token outside its scope gets 403 (close 4003). Rotating the session keys
+valid token outside its scope gets 403 (close 4003). A socket opened with a
+token closes with 4001 when the token expires, so reconnect with a fresh token
+(the session socket resumes from `after_seq`). Rotating the session keys
 revokes every token. Servers that support tokens list `conversation_token_v1`
 in `/server_info` `capabilities`.
 

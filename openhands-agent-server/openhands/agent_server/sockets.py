@@ -15,6 +15,7 @@ authentication.  Three auth methods are supported (highest to lowest precedence)
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Literal, NamedTuple
@@ -41,7 +42,7 @@ from openhands.agent_server.conversation_service import (
 from openhands.agent_server.conversation_token import (
     conversation_token_allows,
     is_conversation_token,
-    verify_conversation_token,
+    verify_conversation_token_claims,
 )
 from openhands.agent_server.event_router import normalize_datetime_to_server_timezone
 from openhands.agent_server.models import (
@@ -148,27 +149,55 @@ _TOKEN_OUT_OF_SCOPE = _AuthRejection(
 )
 
 
-def _websocket_auth_rejection(
+class _AuthResult(NamedTuple):
+    rejection: _AuthRejection | None
+    token_expires_at: int | None = None
+
+
+def _websocket_auth(
     websocket: WebSocket,
     config: Config,
     presented_key: object,
     allow_conversation_token: bool,
-) -> _AuthRejection | None:
+) -> _AuthResult:
     if not isinstance(presented_key, str) or not presented_key:
-        return _INVALID_KEY
+        return _AuthResult(_INVALID_KEY)
     if presented_key in config.session_api_keys:
-        return None
+        return _AuthResult(None)
     if not allow_conversation_token or not is_conversation_token(presented_key):
-        return _INVALID_KEY
-    conversation_id = verify_conversation_token(presented_key, config.session_api_keys)
-    if conversation_id is None:
-        return _INVALID_KEY
+        return _AuthResult(_INVALID_KEY)
+    claims = verify_conversation_token_claims(presented_key, config.session_api_keys)
+    if claims is None:
+        return _AuthResult(_INVALID_KEY)
     route_path = getattr(websocket.scope.get("route"), "path", "")
-    if conversation_token_allows(
-        "WS", route_path, websocket.path_params, conversation_id
+    if not conversation_token_allows(
+        "WS", route_path, websocket.path_params, claims.conversation_id
     ):
-        return None
-    return _TOKEN_OUT_OF_SCOPE
+        return _AuthResult(_TOKEN_OUT_OF_SCOPE)
+    return _AuthResult(None, claims.expires_at)
+
+
+_token_expiry_watchers: set[asyncio.Task] = set()
+
+
+def _close_at_token_expiry(websocket: WebSocket, expires_at: int) -> None:
+    """Close a token-authenticated socket with 4001 once its token expires.
+
+    The watcher is cancelled when the connection's task ends, so a socket
+    closed earlier leaves nothing behind.
+    """
+
+    async def close_when_expired() -> None:
+        await asyncio.sleep(max(0.0, expires_at - time.time()))
+        logger.info("WebSocket closed: conversation token expired")
+        await _safe_close_websocket(websocket, code=4001, reason="Token expired")
+
+    watcher = asyncio.create_task(close_when_expired())
+    _token_expiry_watchers.add(watcher)
+    watcher.add_done_callback(_token_expiry_watchers.discard)
+    connection = asyncio.current_task()
+    if connection is not None:
+        connection.add_done_callback(lambda _: watcher.cancel())
 
 
 async def _accept_authenticated_websocket(
@@ -190,7 +219,8 @@ async def _accept_authenticated_websocket(
 
     Per-conversation sockets pass ``allow_conversation_token`` so a token for
     that conversation is accepted in place of a session key; a token for
-    another conversation closes with 4003. Server-wide sockets refuse tokens.
+    another conversation closes with 4003, and an accepted token's socket
+    closes with 4001 when the token expires. Server-wide sockets refuse tokens.
     """
     config = _get_config(websocket)
     resolved_key = _resolve_websocket_session_api_key(websocket, session_api_key)
@@ -202,18 +232,22 @@ async def _accept_authenticated_websocket(
 
     # Legacy path: key supplied via query param or header.
     if resolved_key is not None:
-        rejection = _websocket_auth_rejection(
+        result = _websocket_auth(
             websocket, config, resolved_key, allow_conversation_token
         )
-        if rejection is None:
+        if result.rejection is None:
             logger.warning(
                 "session_api_key passed via query param or header is deprecated. "
                 "Use first-message auth instead."
             )
             await websocket.accept()
+            if result.token_expires_at is not None:
+                _close_at_token_expiry(websocket, result.token_expires_at)
             return True
-        logger.warning("WebSocket authentication failed: %s", rejection.detail)
-        await websocket.close(code=rejection.code, reason=rejection.reason)
+        logger.warning("WebSocket authentication failed: %s", result.rejection.detail)
+        await websocket.close(
+            code=result.rejection.code, reason=result.rejection.reason
+        )
         return False
 
     # First-message auth: we must accept() before reading frames because the
@@ -262,15 +296,19 @@ async def _accept_authenticated_websocket(
             websocket, code=4001, reason="Authentication failed"
         )
         return False
-    rejection = _websocket_auth_rejection(
+    result = _websocket_auth(
         websocket, config, data.get("session_api_key"), allow_conversation_token
     )
-    if rejection is not None:
-        logger.warning("WebSocket first-message auth failed: %s", rejection.detail)
+    if result.rejection is not None:
+        logger.warning(
+            "WebSocket first-message auth failed: %s", result.rejection.detail
+        )
         await _safe_close_websocket(
-            websocket, code=rejection.code, reason=rejection.reason
+            websocket, code=result.rejection.code, reason=result.rejection.reason
         )
         return False
+    if result.token_expires_at is not None:
+        _close_at_token_expiry(websocket, result.token_expires_at)
 
     logger.info("WebSocket authenticated via first-message auth")
     return True

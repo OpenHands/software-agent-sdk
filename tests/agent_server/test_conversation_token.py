@@ -778,3 +778,60 @@ def test_token_cannot_create_or_delete_conversations(server):
     count = server.client.get("/api/conversations/count", headers=_as(KEY_1))
     assert count.json() == 2
     assert server.client.get(a, headers=_as(KEY_1)).status_code == 200
+
+
+def _short_lived_token(conversation_id: str, seconds: int) -> str:
+    return _token_for_claims(
+        KEY_1, {"cid": conversation_id, "exp": int(time.time()) + seconds}
+    )
+
+
+@pytest.mark.timeout(20)
+@pytest.mark.parametrize("socket", ["session", "events"])
+def test_token_socket_closes_when_the_token_expires(server, socket):
+    token = _short_lived_token(server.a, 2)
+    with server.client.websocket_connect(f"/sockets/{socket}/{server.a}") as ws:
+        ws.send_text(_first_frame(token))
+        if socket == "session":
+            assert json.loads(ws.receive_text())["type"] == "sync"
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            while True:
+                ws.receive_text()
+
+    assert exc_info.value.code == 4001
+
+
+@pytest.mark.timeout(20)
+def test_legacy_query_param_token_socket_also_closes_at_expiry(server):
+    token = _short_lived_token(server.a, 2)
+    url = f"/sockets/events/{server.a}?session_api_key={token}"
+    with server.client.websocket_connect(url) as ws:
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            while True:
+                ws.receive_text()
+
+    assert exc_info.value.code == 4001
+
+
+def test_expiry_watcher_ends_with_the_socket(server):
+    from openhands.agent_server import sockets
+
+    with server.client.websocket_connect(f"/sockets/session/{server.a}") as ws:
+        ws.send_text(_first_frame(server.token_a))
+        assert json.loads(ws.receive_text())["type"] == "sync"
+        assert len(sockets._token_expiry_watchers) == 1
+
+    deadline = time.time() + 5
+    while sockets._token_expiry_watchers and time.time() < deadline:
+        time.sleep(0.05)
+    assert not sockets._token_expiry_watchers
+
+
+def test_session_key_socket_has_no_expiry_watcher(server):
+    from openhands.agent_server import sockets
+
+    with server.client.websocket_connect(f"/sockets/session/{server.a}") as ws:
+        ws.send_text(_first_frame(KEY_1))
+        assert json.loads(ws.receive_text())["type"] == "sync"
+
+        assert not sockets._token_expiry_watchers
