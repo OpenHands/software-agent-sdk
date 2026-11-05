@@ -24,6 +24,15 @@ class HookEvent(BaseModel):
     tool_name: str | None = None
     tool_input: dict[str, Any] | None = None
     tool_response: dict[str, Any] | None = None
+    tool_use_id: str | None = Field(
+        default=None,
+        description=(
+            "Identifies the tool call: the ActionEvent's tool_call_id for "
+            "PreToolUse and the paired ObservationEvent's tool_call_id for "
+            "PostToolUse, so both hooks for one call see the same value. "
+            "Null for non-tool hook events."
+        ),
+    )
     message: str | None = None
     session_id: str | None = None
     working_dir: str | None = None
