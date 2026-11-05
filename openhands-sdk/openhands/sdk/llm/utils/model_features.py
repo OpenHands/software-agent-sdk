@@ -49,6 +49,33 @@ def apply_ordered_model_rules(model: str | None, rules: list[str]) -> bool:
     return bool(decided)
 
 
+# Fraction of a model's input budget at which condensation should trigger.
+# The trigger has to stay strictly below the budget: a prompt cannot exceed the
+# budget, so a limit equal to it never fires. Ordered rules, last match wins.
+CONDENSER_INPUT_RATIO_RULES: tuple[tuple[str, float], ...] = (
+    # Long-context 27B deployment measured losing instruction-following at ~83%
+    # of a 233k budget; condense earlier than the generic default.
+    ("qwen3.8-27b", 0.685),
+)
+DEFAULT_CONDENSER_INPUT_RATIO = 0.70
+
+
+def condenser_input_ratio(model: str | None) -> float:
+    """Fraction of the input budget that should trigger condensation.
+
+    Rules semantics:
+    - Case-insensitive substring matching against the raw model string.
+    - Evaluated in order; the last matching rule wins.
+    - Falls back to ``DEFAULT_CONDENSER_INPUT_RATIO`` when nothing matches.
+    """
+    raw = (model or "").strip().lower()
+    ratio = DEFAULT_CONDENSER_INPUT_RATIO
+    for token, rule_ratio in CONDENSER_INPUT_RATIO_RULES:
+        if token.strip().lower() in raw:
+            ratio = rule_ratio
+    return ratio
+
+
 @dataclass(frozen=True)
 class ModelFeatures:
     supports_reasoning_effort: bool
