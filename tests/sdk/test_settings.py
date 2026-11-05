@@ -26,6 +26,7 @@ from openhands.sdk.agent.acp_agent import ACP_SENTINEL_USAGE_ID, ACPAgent
 from openhands.sdk.context.condenser import LLMSummarizingCondenser, NoOpCondenser
 from openhands.sdk.critic.base import IterativeRefinementConfig
 from openhands.sdk.critic.impl.api import APIBasedCritic
+from openhands.sdk.llm.utils.model_features import DEFAULT_CONDENSER_INPUT_RATIO
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, dump_mcp_config
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm, ConfirmRisky
@@ -1627,13 +1628,16 @@ def test_llm_create_agent_builds_condenser_when_enabled() -> None:
     assert agent.condenser.llm.metrics is not agent_metrics
 
 
-def test_llm_summarizing_condenser_inherits_max_tokens_from_llm() -> None:
-    """When the condenser's ``max_tokens`` is left unset, it should inherit
-    the agent LLM's ``effective_max_input_tokens`` so that condensation can
-    be triggered by token count, not just event count. See #3746: a
-    configured ``max_input_tokens`` on the LLM had no effect on the
-    condenser, so long tool outputs could blow past the context window
-    without ever triggering summarization.
+def test_llm_summarizing_condenser_derives_max_tokens_from_llm_budget() -> None:
+    """When the condenser's ``max_tokens`` is left unset, derive it from the
+    agent LLM's ``effective_max_input_tokens`` so that condensation can be
+    triggered by token count, not just event count. See #3746: a configured
+    ``max_input_tokens`` on the LLM had no effect on the condenser, so long
+    tool outputs could blow past the context window without ever triggering
+    summarization.
+
+    The derived limit is a fraction of the budget: a prompt cannot exceed the
+    budget, so a limit equal to it never fires.
     """
     llm = LLM(model="test-model", usage_id="agent", max_input_tokens=65536)
     settings = OpenHandsAgentSettings(
@@ -1643,7 +1647,7 @@ def test_llm_summarizing_condenser_inherits_max_tokens_from_llm() -> None:
     agent = settings.create_agent()
 
     assert isinstance(agent.condenser, LLMSummarizingCondenser)
-    assert agent.condenser.max_tokens == 65536
+    assert agent.condenser.max_tokens == int(65536 * DEFAULT_CONDENSER_INPUT_RATIO)
 
 
 def test_llm_summarizing_condenser_respects_explicit_max_tokens_over_llm() -> None:
