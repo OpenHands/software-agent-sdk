@@ -73,24 +73,27 @@ def clean_env():
     os.environ.update(original_env)
 
 
-def test_bool_env_parser(clean_env):
-    """Test BoolEnvParser with various boolean representations."""
-    parser = BoolEnvParser()
+def test_bool_env_parser_missing_key(clean_env):
+    assert BoolEnvParser().from_env("MISSING_KEY") is MISSING
 
-    # Test missing key
-    assert parser.from_env("MISSING_KEY") is MISSING
 
-    # Test truthy values
-    for value in ["1", "TRUE", "true", "True"]:
-        os.environ["TEST_BOOL"] = value
-        assert parser.from_env("TEST_BOOL") is True
-        del os.environ["TEST_BOOL"]
-
-    # Test falsy values
-    for value in ["0", "FALSE", "false", "False", ""]:
-        os.environ["TEST_BOOL"] = value
-        assert parser.from_env("TEST_BOOL") is False
-        del os.environ["TEST_BOOL"]
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1", True),
+        ("TRUE", True),
+        ("true", True),
+        ("True", True),
+        ("0", False),
+        ("FALSE", False),
+        ("false", False),
+        ("False", False),
+        pytest.param("", False, id="empty"),
+    ],
+)
+def test_bool_env_parser(clean_env, value, expected):
+    os.environ["TEST_BOOL"] = value
+    assert BoolEnvParser().from_env("TEST_BOOL") is expected
 
 
 def test_int_env_parser(clean_env):
