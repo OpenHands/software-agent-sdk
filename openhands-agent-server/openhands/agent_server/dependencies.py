@@ -54,7 +54,9 @@ def _authorize_conversation_token(request: Request, token: str, config: Config) 
     if conversation_id is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED)
     route_path = getattr(request.scope.get("route"), "path", "")
-    if not conversation_token_allows(route_path, request.path_params, conversation_id):
+    if not conversation_token_allows(
+        request.method, route_path, request.path_params, conversation_id
+    ):
         raise HTTPException(status.HTTP_403_FORBIDDEN)
 
 

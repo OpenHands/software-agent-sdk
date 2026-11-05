@@ -171,94 +171,251 @@ DOCKER_TAIL = (
 
 
 @pytest.mark.parametrize(
-    ("route", "params"),
+    ("method", "route", "params"),
     [
-        ("/api/conversations/{conversation_id}", {}),
-        ("/api/conversations/{conversation_id}/events/search", {}),
-        ("/api/conversations/{conversation_id}/run", {}),
-        ("/api/conversations/{conversation_id}/workspace/{file_path:path}", {}),
+        ("GET", "/api/conversations/{conversation_id}", {}),
+        ("HEAD", "/api/conversations/{conversation_id}", {}),
+        ("GET", "/api/conversations/{conversation_id}/events/search", {}),
+        ("POST", "/api/conversations/{conversation_id}/run", {}),
+        ("POST", "/api/conversations/{conversation_id}/switch_acp_model", {}),
+        ("GET", "/api/conversations/{conversation_id}/workspace/{file_path:path}", {}),
         (
+            "GET",
             "/api/conversations/{runtime_conversation_id}/bash/bash_events/search",
             {},
         ),
-        ("/api/conversations/{runtime_conversation_id}/file/download", {}),
+        ("GET", "/api/conversations/{runtime_conversation_id}/file/download", {}),
         (
+            "GET",
             "/api/conversations/{runtime_conversation_id}/file/download-trajectory/"
             "{conversation_id}",
             {"conversation_id": str(CID)},
         ),
-        ("/sockets/events/{conversation_id}", {}),
-        ("/sockets/session/{conversation_id}", {}),
-        (f"{DOCKER_ROUTE_PREFIX}/sockets/session/{{conversation_id}}", {}),
-        (DOCKER_TAIL, {"tail": "events/search"}),
-        (DOCKER_TAIL, {"tail": "bash/bash_events/"}),
+        ("WS", "/sockets/events/{conversation_id}", {}),
+        ("WS", "/sockets/session/{conversation_id}", {}),
+        ("WS", f"{DOCKER_ROUTE_PREFIX}/sockets/session/{{conversation_id}}", {}),
+        ("GET", DOCKER_TAIL, {"tail": "events/search"}),
+        ("GET", DOCKER_TAIL, {"tail": "bash/bash_events/"}),
+        ("POST", DOCKER_TAIL, {"tail": "run"}),
+        ("GET", DOCKER_TAIL, {"tail": f"file/download-trajectory/{CID}"}),
     ],
 )
-def test_scope_allows_own_conversation_routes(route, params):
+def test_scope_allows_own_conversation_routes(method, route, params):
     id_param = (
         "runtime_conversation_id" if "{runtime_conversation_id}" in route else None
     )
     path_params = {id_param or "conversation_id": str(CID), **params}
 
-    assert conversation_token_allows(route, path_params, CID)
+    assert conversation_token_allows(method, route, path_params, CID)
 
 
 @pytest.mark.parametrize(
-    ("route", "params"),
+    ("method", "route", "params"),
     [
         # Server-level routes, including ones that carry a conversation ID.
-        ("/api/settings", {}),
-        ("/api/conversations", {}),
-        ("/api/conversations/search", {}),
-        ("/api/conversations/count", {}),
-        ("/api/bash/execute_bash_command", {}),
-        ("/api/file/download", {}),
-        ("/api/file/download-trajectory/{conversation_id}", {}),
-        ("/api/auth/workspace-session", {}),
-        ("/api/skills/installed", {}),
-        ("/sockets/bash-events", {}),
+        ("GET", "/api/settings", {}),
+        ("GET", "/api/conversations", {}),
+        ("POST", "/api/conversations", {}),
+        ("GET", "/api/conversations/search", {}),
+        ("GET", "/api/conversations/count", {}),
+        ("POST", "/api/bash/execute_bash_command", {}),
+        ("GET", "/api/file/download", {}),
+        ("GET", "/api/file/download-trajectory/{conversation_id}", {}),
+        ("POST", "/api/auth/workspace-session", {}),
+        ("GET", "/api/skills/installed", {}),
+        ("WS", "/sockets/bash-events", {}),
         # Direct shell and IDE under the token's own conversation.
-        ("/api/conversations/{runtime_conversation_id}/bash/execute_bash_command", {}),
-        ("/api/conversations/{runtime_conversation_id}/bash/start_bash_command", {}),
         (
+            "POST",
+            "/api/conversations/{runtime_conversation_id}/bash/execute_bash_command",
+            {},
+        ),
+        (
+            "POST",
+            "/api/conversations/{runtime_conversation_id}/bash/start_bash_command",
+            {},
+        ),
+        (
+            "POST",
             "/api/conversations/{runtime_conversation_id}/bash/bash_commands/"
             "{command_id}/stop",
             {"command_id": "x"},
         ),
-        ("/api/conversations/{runtime_conversation_id}/vscode/url", {}),
-        ("/api/conversations/{runtime_conversation_id}/vscode/status", {}),
+        ("GET", "/api/conversations/{runtime_conversation_id}/vscode/url", {}),
+        ("GET", "/api/conversations/{runtime_conversation_id}/vscode/status", {}),
+        # Routes of the token's own conversation that reach server-wide state,
+        # create or delete things, or change the operator's controls.
+        ("POST", "/api/conversations/{conversation_id}/secrets", {}),
+        ("POST", "/api/conversations/{conversation_id}/switch_llm", {}),
+        ("POST", "/api/conversations/{conversation_id}/switch_profile", {}),
+        ("POST", "/api/conversations/{conversation_id}/load_plugin", {}),
+        (
+            "PUT",
+            "/api/conversations/{conversation_id}/credential-bindings/{secret_name}",
+            {"secret_name": "x"},
+        ),
+        ("POST", "/api/conversations/{conversation_id}/security_analyzer", {}),
+        ("POST", "/api/conversations/{conversation_id}/confirmation_policy", {}),
+        ("POST", "/api/conversations/{conversation_id}/fork", {}),
+        ("POST", "/api/conversations/{conversation_id}/children", {}),
+        ("POST", "/api/conversations/{conversation_id}/runtime/reprovision", {}),
+        ("DELETE", "/api/conversations/{conversation_id}/runtime", {}),
+        ("PATCH", "/api/conversations/{conversation_id}", {}),
+        ("DELETE", "/api/conversations/{conversation_id}", {}),
+        ("DELETE", "/api/conversations/{runtime_conversation_id}/bash/bash_events", {}),
+        # An allowed path with another method.
+        ("POST", "/api/conversations/{conversation_id}/events/search", {}),
+        ("WS", "/api/conversations/{conversation_id}", {}),
+        ("GET", "/sockets/session/{conversation_id}", {}),
         # A second conversation ID must also match.
         (
+            "GET",
             "/api/conversations/{runtime_conversation_id}/file/download-trajectory/"
             "{conversation_id}",
             {"conversation_id": str(OTHER)},
         ),
-        # The Docker catch-all is checked against the tail it will proxy.
-        ("/api/conversations/{conversation_id}/runtime/credentials", {}),
-        (DOCKER_TAIL, {"tail": "bash/execute_bash_command"}),
-        (DOCKER_TAIL, {"tail": "bash//execute_bash_command"}),
-        (DOCKER_TAIL, {"tail": "./bash/start_bash_command"}),
-        (DOCKER_TAIL, {"tail": "bash/bash_commands/abc/stop"}),
-        (DOCKER_TAIL, {"tail": "vscode/url"}),
-        (DOCKER_TAIL, {"tail": "runtime/credentials"}),
-        (DOCKER_TAIL, {"tail": "events/../vscode/url"}),
-        (DOCKER_TAIL, {"tail": "bash%2Fexecute_bash_command"}),
-        (DOCKER_TAIL, {"tail": "bash\\execute_bash_command"}),
+        # The Docker catch-all is checked against the method and tail it proxies.
+        ("POST", "/api/conversations/{conversation_id}/runtime/credentials", {}),
+        ("POST", DOCKER_TAIL, {"tail": "bash/execute_bash_command"}),
+        ("POST", DOCKER_TAIL, {"tail": "bash//execute_bash_command"}),
+        ("POST", DOCKER_TAIL, {"tail": "./bash/start_bash_command"}),
+        ("POST", DOCKER_TAIL, {"tail": "bash/bash_commands/abc/stop"}),
+        ("GET", DOCKER_TAIL, {"tail": "vscode/url"}),
+        ("POST", DOCKER_TAIL, {"tail": "runtime/credentials"}),
+        ("GET", DOCKER_TAIL, {"tail": "events/../vscode/url"}),
+        ("POST", DOCKER_TAIL, {"tail": "bash%2Fexecute_bash_command"}),
+        ("POST", DOCKER_TAIL, {"tail": "bash\\execute_bash_command"}),
+        ("POST", DOCKER_TAIL, {"tail": "secrets"}),
+        ("POST", DOCKER_TAIL, {"tail": "switch_profile"}),
+        ("PATCH", DOCKER_TAIL, {"tail": ""}),
+        ("OPTIONS", DOCKER_TAIL, {"tail": "events"}),
+        ("GET", DOCKER_TAIL, {"tail": f"file/download-trajectory/{OTHER}"}),
     ],
 )
-def test_scope_refuses_routes_outside_the_conversation(route, params):
+def test_scope_refuses_routes_outside_the_conversation(method, route, params):
     path_params = {"conversation_id": str(CID), "runtime_conversation_id": str(CID)}
     path_params.update(params)
 
-    assert not conversation_token_allows(route, path_params, CID)
+    assert not conversation_token_allows(method, route, path_params, CID)
 
 
 def test_scope_refuses_another_conversation_with_shared_prefix():
     assert not conversation_token_allows(
+        "GET",
         "/api/conversations/{conversation_id}",
         {"conversation_id": str(OTHER)},
         CID,
     )
+
+
+# Every (method, route after the conversation ID) a token could reach, with the
+# decision for it. A route added later fails the coverage test below until it
+# is listed here, so nobody opens a route to tokens without deciding to.
+TOKEN_ROUTE_DECISIONS: dict[tuple[str, str], bool] = {
+    ("WS", "/sockets"): True,
+    ("GET", ""): True,
+    ("GET", "/agent_final_response"): True,
+    ("GET", "/events"): True,
+    ("GET", "/events/count"): True,
+    ("GET", "/events/search"): True,
+    ("GET", "/events/{event_id}"): True,
+    ("POST", "/events"): True,
+    ("POST", "/events/respond_to_confirmation"): True,
+    ("POST", "/ask_agent"): True,
+    ("POST", "/run"): True,
+    ("POST", "/pause"): True,
+    ("POST", "/interrupt"): True,
+    ("POST", "/goal"): True,
+    ("POST", "/goal/resume"): True,
+    ("POST", "/goal/stop"): True,
+    ("POST", "/condense"): True,
+    ("POST", "/navigate"): True,
+    ("POST", "/switch_acp_model"): True,
+    ("GET", "/runtime"): True,
+    ("GET", "/workspace"): True,
+    ("GET", "/workspace/{file_path:path}"): True,
+    ("GET", "/bash/bash_events/"): True,
+    ("GET", "/bash/bash_events/search"): True,
+    ("GET", "/bash/bash_events/{event_id}"): True,
+    ("GET", "/file/archive"): True,
+    ("GET", "/file/download"): True,
+    ("GET", "/file/download-trajectory/{conversation_id}"): True,
+    ("POST", "/file/upload"): True,
+    ("POST", "/file/create_directory"): True,
+    ("GET", "/git/changes"): True,
+    ("GET", "/git/commits"): True,
+    ("GET", "/git/commits/{sha}/changes"): True,
+    ("GET", "/git/diff"): True,
+    # Server-wide state: secrets, profiles, LLM and provider connections,
+    # plugins, and caller-chosen URLs the server would fetch.
+    ("POST", "/secrets"): False,
+    ("POST", "/switch_llm"): False,
+    ("POST", "/switch_profile"): False,
+    ("POST", "/load_plugin"): False,
+    ("PUT", "/credential-bindings/{secret_name}"): False,
+    # The operator's safety settings and budget.
+    ("POST", "/security_analyzer"): False,
+    ("POST", "/confirmation_policy"): False,
+    ("PATCH", ""): False,
+    # Creating or deleting conversations and runtimes.
+    ("POST", "/fork"): False,
+    ("POST", "/children"): False,
+    ("DELETE", ""): False,
+    ("POST", "/runtime/reprovision"): False,
+    ("DELETE", "/runtime"): False,
+    ("DELETE", "/bash/bash_events"): False,
+    # Host shell, host IDE, and the Docker runtime's own session key.
+    ("POST", "/bash/execute_bash_command"): False,
+    ("POST", "/bash/start_bash_command"): False,
+    ("POST", "/bash/bash_commands/{command_id}/stop"): False,
+    ("GET", "/vscode/status"): False,
+    ("GET", "/vscode/url"): False,
+    ("POST", "/runtime/credentials"): False,
+    # The Docker proxy's root, forwarded to the inner server's collection.
+    ("OPTIONS", ""): False,
+    ("POST", ""): False,
+    ("PUT", ""): False,
+}
+
+
+def _token_routes(app) -> dict[tuple[str, str], tuple[str, str]]:
+    """Map each token-reachable (method, route rest) to its template and method.
+
+    The Docker catch-all is left out: it forwards to the inner server's own
+    routes, which the local app lists, and its tails are tested above.
+    """
+    routes = {}
+    for route in app.routes:
+        path = getattr(route, "path", "")
+        match = conversation_token._SCOPED_ROUTE.match(path)
+        if match is None or "{tail:path}" in path:
+            continue
+        is_socket = "/sockets/" in path
+        for method in getattr(route, "methods", None) or {"WS"}:
+            if method != "HEAD":
+                key = (method, "/sockets" if is_socket else match["rest"])
+                routes[key] = (path, method)
+    return routes
+
+
+@pytest.mark.parametrize("runtime", ["local", "docker"])
+def test_every_token_reachable_route_has_a_decision(tmp_path, monkeypatch, runtime):
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / ".openhands"))
+    extra = (
+        {"conversation_runtime": "docker", "secret_key": SecretStr("outer")}
+        if runtime == "docker"
+        else {}
+    )
+    app = create_app(Config(session_api_keys=[KEY_1], **extra))
+    params = {"conversation_id": str(CID), "runtime_conversation_id": str(CID)}
+
+    routes = _token_routes(app)
+
+    unlisted = sorted(set(routes) - set(TOKEN_ROUTE_DECISIONS))
+    assert not unlisted, f"decide whether tokens may use: {unlisted}"
+    for key, (path, method) in routes.items():
+        allowed = conversation_token_allows(method, path, params, CID)
+        assert allowed is TOKEN_ROUTE_DECISIONS[key], key
 
 
 # ---- the real app ----------------------------------------------------------
@@ -331,6 +488,12 @@ def _in_scope_requests(s) -> list[tuple[str, str, dict]]:
             {"params": {"path": str(s.workspace_a)}},
         ),
         ("GET", f"/api/conversations/{s.a}/workspace/index.html", {}),
+        ("POST", f"/api/conversations/{s.a}/pause", {}),
+        (
+            "POST",
+            f"/api/conversations/{s.a}/switch_acp_model",
+            {"json": {"model": "other-model"}},
+        ),
     ]
 
 
@@ -563,3 +726,55 @@ def test_docker_runtime_proxy_refuses_shell_ide_and_runtime_key(tmp_path, monkey
 
     assert response.status_code == 200
     assert proxied == [f"/api/conversations/{cid}/run"]
+
+
+def test_token_cannot_reach_server_wide_state_through_its_conversation(server):
+    """The routes the live validation used to reach server-wide state."""
+    a = f"/api/conversations/{server.a}"
+    lookup = {"kind": "LookupSecret", "url": "/api/settings/secrets/OPERATOR_TOKEN"}
+    for method, url, body in [
+        ("POST", f"{a}/secrets", {"secrets": {"STOLEN": lookup}}),
+        (
+            "POST",
+            f"{a}/secrets",
+            {"secrets": {"X": {"kind": "LookupSecret", "url": "http://127.0.0.1:9"}}},
+        ),
+        ("POST", f"{a}/switch_profile", {"profile_name": "operator-profile"}),
+        (
+            "POST",
+            f"{a}/switch_llm",
+            {"llm": {"model": "gpt-4o-mini", "provider_connection_id": "shared"}},
+        ),
+        ("POST", f"{a}/load_plugin", {"plugin_ref": "anything"}),
+        (
+            "PUT",
+            f"{a}/credential-bindings/GITHUB_TOKEN",
+            {"url": "http://127.0.0.1:9", "headers": {}},
+        ),
+        ("POST", f"{a}/security_analyzer", {"security_analyzer": None}),
+        ("POST", f"{a}/confirmation_policy", {"policy": {"kind": "NeverConfirm"}}),
+        ("PATCH", a, {"max_budget_per_run": None}),
+    ]:
+        response = server.client.request(
+            method, url, headers=_as(server.token_a), json=body
+        )
+
+        assert response.status_code == 403, (method, url, response.text)
+
+
+def test_token_cannot_create_or_delete_conversations(server):
+    a = f"/api/conversations/{server.a}"
+    for method, url, body in [
+        ("POST", f"{a}/fork", {}),
+        ("POST", f"{a}/children", {"task": "do something"}),
+        ("DELETE", a, None),
+        ("POST", f"{a}/runtime/reprovision", None),
+    ]:
+        response = server.client.request(
+            method, url, headers=_as(server.token_a), json=body
+        )
+
+        assert response.status_code == 403, (method, url)
+    count = server.client.get("/api/conversations/count", headers=_as(KEY_1))
+    assert count.json() == 2
+    assert server.client.get(a, headers=_as(KEY_1)).status_code == 200

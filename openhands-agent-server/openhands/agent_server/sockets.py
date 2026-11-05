@@ -164,7 +164,9 @@ def _websocket_auth_rejection(
     if conversation_id is None:
         return _INVALID_KEY
     route_path = getattr(websocket.scope.get("route"), "path", "")
-    if conversation_token_allows(route_path, websocket.path_params, conversation_id):
+    if conversation_token_allows(
+        "WS", route_path, websocket.path_params, conversation_id
+    ):
         return None
     return _TOKEN_OUT_OF_SCOPE
 

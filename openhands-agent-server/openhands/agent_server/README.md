@@ -104,9 +104,10 @@ Create a JSON configuration file (default: `workspace/openhands_agent_server_con
 
 ### Conversation tokens
 
-When several users share one server, give each browser a short-lived token for
-its own conversation instead of the session key. Mint it with one of the
-server's session keys:
+When an application server shares one agent-server between several users, it
+can give each browser a short-lived token for its own conversation instead of
+the session key. The application server keeps the session key, mints tokens
+with it, and makes every server-wide call itself:
 
 ```python
 from datetime import timedelta
@@ -116,13 +117,18 @@ token = mint_conversation_token(session_api_key, conversation_id, timedelta(minu
 ```
 
 Send the token where a session key goes: the `X-Session-API-Key` header, or
-the `session_api_key` field of the WebSocket auth frame. It reaches only
-`/api/conversations/{id}/...`, `/sockets/events/{id}`, and
-`/sockets/session/{id}` for its own conversation, and never the direct bash
-command routes or `/vscode/*`. An invalid or expired token gets 401 (WebSocket
-close 4001); a valid token outside its scope gets 403 (close 4003). Rotating
-the session keys revokes every token. Servers that support tokens list
-`conversation_token_v1` in `/server_info` `capabilities`.
+the `session_api_key` field of the WebSocket auth frame. A token reaches only
+an allow list of routes under its own conversation: reading the conversation
+and its events, sending messages, run, pause, interrupt, goals, condense,
+navigate, ask_agent, the ACP model switch, workspace files, file upload and
+download, git views, bash event history, and `/sockets/events/{id}` and
+`/sockets/session/{id}`. Everything else gets 403, including the secrets,
+LLM, profile, plugin, credential-binding, security-analyzer, confirmation
+and update routes, fork, children, delete, the direct bash command routes, and
+`/vscode/*`. An invalid or expired token gets 401 (WebSocket close 4001); a
+valid token outside its scope gets 403 (close 4003). Rotating the session keys
+revokes every token. Servers that support tokens list `conversation_token_v1`
+in `/server_info` `capabilities`.
 
 ### Telemetry
 
