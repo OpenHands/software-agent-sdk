@@ -1,6 +1,6 @@
 import uuid
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, ClassVar
 
 from pydantic import ConfigDict, Field, field_validator
@@ -27,7 +27,7 @@ class Event(DiscriminatedUnionMixin, ABC):
         description="Unique event id (ULID/UUID)",
     )
     timestamp: Annotated[str, SkipSecretMasking()] = Field(
-        default_factory=lambda: datetime.now().isoformat(),
+        default_factory=lambda: datetime.now(UTC).isoformat(),
         description="Event timestamp",
     )  # consistent with V1
     source: SourceType = Field(..., description="The source of this event")
