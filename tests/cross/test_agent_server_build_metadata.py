@@ -181,7 +181,10 @@ def test_python_image_uses_canonical_minimal_runtime() -> None:
     dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
     workflow_text = SERVER_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "FROM debian:trixie-slim AS python-node-runtime" in dockerfile_text
+    assert re.search(
+        r"(?m)^FROM debian:trixie-slim@sha256:[0-9a-f]{64} AS python-node-runtime$",
+        dockerfile_text,
+    )
     assert re.search(
         r"(?m)^FROM python:\d+\.\d+\.\d+-slim-trixie AS python-runtime$",
         dockerfile_text,
@@ -193,12 +196,16 @@ def test_python_image_uses_canonical_minimal_runtime() -> None:
     assert "ARG BASE_IMAGE=python-node-runtime" in dockerfile_text
     assert re.search(r"ARG DEBIAN_SNAPSHOT=\d{8}T000000Z", dockerfile_text)
     assert (
-        "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}"
+        "URIs: https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}"
         in dockerfile_text
     )
     assert (
-        "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}"
+        "URIs: https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}"
         in dockerfile_text
+    )
+    assert (
+        "from=pip-revendored,source=/etc/ssl/certs/ca-certificates.crt,"
+        "target=/tmp/bootstrap-ca.crt" in dockerfile_text
     )
     assert (
         dockerfile_text.count(
@@ -207,7 +214,14 @@ def test_python_image_uses_canonical_minimal_runtime() -> None:
         == 2
     )
     assert "Check-Valid-Until: no" in dockerfile_text
-    assert "apt-get update; \\\n    apt-get upgrade -y;" in dockerfile_text
+    assert (
+        "apt-get $BOOTSTRAP_CA update; \\\n    apt-get $BOOTSTRAP_CA upgrade -y;"
+        in dockerfile_text
+    )
+    acp_stage = dockerfile_text.partition("FROM python:3.13-bookworm AS acp-providers")[
+        2
+    ].partition("####")[0]
+    assert "s#http://deb.debian.org/#https://deb.debian.org/#" in acp_stage
     minimal_stage = "FROM ${BASE_IMAGE} AS base-image-minimal"
     full_stage = "FROM base-image-minimal AS base-image"
     minimal_packages = dockerfile_text.partition(minimal_stage)[2].partition(
