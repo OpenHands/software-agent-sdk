@@ -559,12 +559,12 @@ RUN set -eux; \
     wget -qO "${UNDICI_TMP}/undici.tgz" "https://registry.npmjs.org/undici/-/undici-7.30.1.tgz"; \
     echo "c98bd3881137c11341e8be8d2ec509ebf973b6f8b36d0a4c6d2afcda15e0d712  ${UNDICI_TMP}/undici.tgz" | sha256sum -c -; \
     tar -xzf "${UNDICI_TMP}/undici.tgz" -C "${UNDICI_TMP}"; \
-    test "$(node -p "require('${UNDICI_TMP}/package/package.json').version")" = "7.30.1"; \
+    test "$("${CODE_SERVER_ROOT}/lib/node" -p "require('${UNDICI_TMP}/package/package.json').version")" = "7.30.1"; \
     rm -rf "${CODE_SERVER_ROOT}/lib/vscode/node_modules/undici"; \
     mkdir -p "${CODE_SERVER_ROOT}/lib/vscode/node_modules/undici"; \
     tar -cf - -C "${UNDICI_TMP}/package" . | tar -xf - -C "${CODE_SERVER_ROOT}/lib/vscode/node_modules/undici"; \
     rm -rf "${UNDICI_TMP}"; \
-    UNDICI_INSTALLED=$(node -p "require('${CODE_SERVER_ROOT}/lib/vscode/node_modules/undici/package.json').version"); \
+    UNDICI_INSTALLED=$("${CODE_SERVER_ROOT}/lib/node" -p "require('${CODE_SERVER_ROOT}/lib/vscode/node_modules/undici/package.json').version"); \
     test "${UNDICI_INSTALLED}" = "7.30.1"; \
     chown -R ${USERNAME}:${USERNAME} "${CODE_SERVER_ROOT}"
 
