@@ -76,6 +76,12 @@ RUN set -eux; \
 
 FROM debian:trixie-slim AS python-node-runtime
 ARG NPM_VERSION
+# Package fetches ride out transient snapshot.debian.org overloads (503
+# TooManyRequests / 504 first byte timeout, seen failing the v1.60.0 release
+# builds): per-file retries with a delay, plus an invocation-level loop in
+# the RUN below. Pipeline-Depth=0 keeps apt's memory footprint low while
+# BuildKit runs stages in parallel on memory-constrained runners.
+ARG APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 -o Acquire::Queue-Mode=access -o Acquire::Pipeline-Depth=0"
 # 20261021 is the oldest snapshot whose ca-certificates (20250419+deb13u1,
 # trixie-security) drops emSign ECC Root CA - G3; 20261019 still ships
 # 20250419, which trusts the compromised root (GHSA-6q48-6c7w-9gw2).
@@ -106,27 +112,45 @@ RUN set -eux; \
         'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
         'Check-Valid-Until: no' \
         > /etc/apt/sources.list.d/debian.sources; \
-    apt-get update; \
-    apt-get upgrade -y; \
-    apt-get install -y --no-install-recommends \
-        ca-certificates \
-        libbz2-1.0 \
-        libdb5.3t64 \
-        libffi8 \
-        libgcc-s1 \
-        libgdbm6t64 \
-        liblzma5 \
-        libncursesw6 \
-        libreadline8t64 \
-        libsqlite3-0 \
-        libssl3t64 \
-        libstdc++6 \
-        libtinfo6 \
-        libuuid1 \
-        libzstd1 \
-        netbase \
-        tzdata \
-        zlib1g; \
+    printf '%s\n' \
+        'Acquire::Retries "5";' \
+        'Acquire::http::Timeout "120";' \
+        'Acquire::https::Timeout "120";' \
+        'Acquire::Retry-Delay "10";' \
+        'Acquire::Queue-Mode "access";' \
+        'Acquire::Pipeline-Depth "0";' \
+        > /etc/apt/apt.conf.d/80-snapshot-resilience; \
+    for attempt in 1 2 3 4 5; do \
+        if apt-get ${APT_OPTS} update \
+            && apt-get upgrade -y \
+            && apt-get ${APT_OPTS} install -y --no-install-recommends \
+                ca-certificates \
+                libbz2-1.0 \
+                libdb5.3t64 \
+                libffi8 \
+                libgcc-s1 \
+                libgdbm6t64 \
+                liblzma5 \
+                libncursesw6 \
+                libreadline8t64 \
+                libsqlite3-0 \
+                libssl3t64 \
+                libstdc++6 \
+                libtinfo6 \
+                libuuid1 \
+                libzstd1 \
+                netbase \
+                tzdata \
+                zlib1g; then \
+            break; \
+        fi; \
+        if [ "$attempt" = 5 ]; then \
+            echo "apt failed after 5 attempts (snapshot.debian.org unreachable?)" >&2; \
+            exit 1; \
+        fi; \
+        echo "apt attempt $attempt failed; retrying in 30s" >&2; \
+        sleep 30; \
+    done; \
     rm -rf /var/lib/apt/lists/*; \
     python3 --version; \
     node --version; \
@@ -225,6 +249,7 @@ RUN test -x /agent-server/dist/openhands-agent-server
 FROM python:3.13-bookworm AS acp-providers
 ARG INSTALL_ACP_PROVIDERS
 ARG NPM_VERSION
+ARG APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 -o Acquire::Queue-Mode=access -o Acquire::Pipeline-Depth=0"
 # A fresh top-level path, not nested under a directory (e.g. /opt) that base
 # images commonly already populate (SWE-bench images ship /opt/miniconda3):
 # COPY --from=<stage> only produces a byte-identical layer across different
@@ -247,9 +272,14 @@ RUN set -eux; \
       echo "INSTALL_ACP_PROVIDERS is empty; no ACP providers will be installed"; \
       exit 0; \
     fi; \
-    apt-get -o Acquire::Retries=5 update; \
-    apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-        ca-certificates curl xz-utils; \
+    for attempt in 1 2 3 4 5; do \
+        apt-get ${APT_OPTS} update \
+            && apt-get ${APT_OPTS} install -y --no-install-recommends \
+                ca-certificates curl xz-utils \
+            && break; \
+        if [ "$attempt" = 5 ]; then echo "apt failed after 5 attempts" >&2; exit 1; fi; \
+        echo "apt attempt $attempt failed; retrying in 30s" >&2; sleep 30; \
+    done; \
     rm -rf /var/lib/apt/lists/*; \
     ARCH=$(uname -m); \
     case "$ARCH" in \
@@ -289,6 +319,7 @@ RUN set -eux; \
 ####################################################################################
 FROM ${BASE_IMAGE} AS base-image-minimal
 ARG USERNAME UID GID PORT ENABLE_VSCODE
+ARG APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 -o Acquire::Queue-Mode=access -o Acquire::Pipeline-Depth=0"
 ENV OH_ENABLE_VSCODE=${ENABLE_VSCODE}
 
 ARG OPENHANDS_BUILD_GIT_SHA=unknown
@@ -305,9 +336,14 @@ RUN set -eux; \
     # Every path must end with a working `tini` on PATH, because the ENTRYPOINT
     # of this image invokes it unconditionally.
     if command -v apt-get >/dev/null 2>&1; then \
-        apt-get -o Acquire::Retries=5 update; \
-        apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-            bash ca-certificates git tini tmux; \
+        for attempt in 1 2 3 4 5; do \
+            apt-get ${APT_OPTS} update \
+                && apt-get ${APT_OPTS} install -y --no-install-recommends \
+                    bash ca-certificates git tini tmux \
+                && break; \
+            if [ "$attempt" = 5 ]; then echo "apt failed after 5 attempts" >&2; exit 1; fi; \
+            echo "apt attempt $attempt failed; retrying in 30s" >&2; sleep 30; \
+        done; \
         rm -rf /var/lib/apt/lists/*; \
     elif command -v apk >/dev/null 2>&1; then \
         apk add --no-cache bash ca-certificates git shadow tini tmux; \
@@ -405,6 +441,7 @@ EXPOSE ${PORT}
 FROM base-image-minimal AS base-image
 ARG USERNAME
 ARG INSTALL_CAPABILITIES
+ARG APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 -o Acquire::Queue-Mode=access -o Acquire::Pipeline-Depth=0"
 
 USER root
 
@@ -412,11 +449,16 @@ USER root
 # package/repository helpers, and command-line utilities out of binary-minimal.
 RUN set -eux; \
     if command -v apt-get >/dev/null 2>&1; then \
-        apt-get -o Acquire::Retries=5 update; \
-        apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-            apt-transport-https apt-utils build-essential coreutils curl \
-            findutils gnupg grep jq lsb-release procps sed sudo tar util-linux \
-            wget xz-utils; \
+        for attempt in 1 2 3 4 5; do \
+            apt-get ${APT_OPTS} update \
+                && apt-get ${APT_OPTS} install -y --no-install-recommends \
+                    apt-transport-https apt-utils build-essential coreutils curl \
+                    findutils gnupg grep jq lsb-release procps sed sudo tar util-linux \
+                    wget xz-utils \
+                && break; \
+            if [ "$attempt" = 5 ]; then echo "apt failed after 5 attempts" >&2; exit 1; fi; \
+            echo "apt attempt $attempt failed; retrying in 30s" >&2; sleep 30; \
+        done; \
         rm -rf /var/lib/apt/lists/*; \
     elif command -v apk >/dev/null 2>&1; then \
         apk add --no-cache \
@@ -565,8 +607,13 @@ RUN set -eux; \
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null; \
     fi; \
     # Install Docker Engine, containerd, and Docker Compose
-    apt-get update; \
-    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; \
+    for attempt in 1 2 3 4 5; do \
+        apt-get ${APT_OPTS} update \
+            && apt-get ${APT_OPTS} install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
+            && break; \
+        if [ "$attempt" = 5 ]; then echo "apt failed after 5 attempts" >&2; exit 1; fi; \
+        echo "apt attempt $attempt failed; retrying in 30s" >&2; sleep 30; \
+    done; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*; \
     \
@@ -582,8 +629,13 @@ RUN set -eux; \
     chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list; \
-    apt-get update; \
-    apt-get install -y gh; \
+    for attempt in 1 2 3 4 5; do \
+        apt-get ${APT_OPTS} update \
+            && apt-get ${APT_OPTS} install -y gh \
+            && break; \
+        if [ "$attempt" = 5 ]; then echo "apt failed after 5 attempts" >&2; exit 1; fi; \
+        echo "apt attempt $attempt failed; retrying in 30s" >&2; sleep 30; \
+    done; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
@@ -603,9 +655,14 @@ ENV CHROME_BIN=/usr/bin/chromium \
 RUN set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
       *,browser,*) \
-        apt-get update; \
-        apt-get install -y --no-install-recommends \
-          "$(if grep -q "ubuntu" /etc/os-release; then echo "chromium-browser"; else echo "chromium"; fi)"; \
+        for attempt in 1 2 3 4 5; do \
+          apt-get ${APT_OPTS} update \
+            && apt-get ${APT_OPTS} install -y --no-install-recommends \
+              "$(if grep -q "ubuntu" /etc/os-release; then echo "chromium-browser"; else echo "chromium"; fi)" \
+            && break; \
+          if [ "$attempt" = 5 ]; then echo "apt failed after 5 attempts" >&2; exit 1; fi; \
+          echo "apt attempt $attempt failed; retrying in 30s" >&2; sleep 30; \
+        done; \
         apt-get clean; rm -rf /var/lib/apt/lists/*; \
         ;; \
     esac
