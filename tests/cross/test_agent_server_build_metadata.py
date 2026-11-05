@@ -207,7 +207,18 @@ def test_python_image_uses_canonical_minimal_runtime() -> None:
         == 2
     )
     assert "Check-Valid-Until: no" in dockerfile_text
-    assert "apt-get update; \\\n    apt-get upgrade -y;" in dockerfile_text
+    assert "apt-get upgrade -y;" in dockerfile_text
+    # Every apt-get update/install carries the resilient acquire options so a
+    # transient snapshot.debian.org 503/504 does not fail the image build.
+    apt_lines = [
+        line.strip()
+        for line in dockerfile_text.splitlines()
+        if "apt-get" in line and (" update" in line or " install" in line)
+    ]
+    assert apt_lines
+    for line in apt_lines:
+        assert "Acquire::Retries=5" in line, line
+        assert "Acquire::Retry-Delay=10" in line, line
     minimal_stage = "FROM ${BASE_IMAGE} AS base-image-minimal"
     full_stage = "FROM base-image-minimal AS base-image"
     minimal_packages = dockerfile_text.partition(minimal_stage)[2].partition(

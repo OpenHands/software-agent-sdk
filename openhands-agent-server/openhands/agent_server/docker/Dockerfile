@@ -106,9 +106,9 @@ RUN set -eux; \
         'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
         'Check-Valid-Until: no' \
         > /etc/apt/sources.list.d/debian.sources; \
-    apt-get update; \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 update; \
     apt-get upgrade -y; \
-    apt-get install -y --no-install-recommends \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 install -y --no-install-recommends \
         ca-certificates \
         libbz2-1.0 \
         libdb5.3t64 \
@@ -247,8 +247,8 @@ RUN set -eux; \
       echo "INSTALL_ACP_PROVIDERS is empty; no ACP providers will be installed"; \
       exit 0; \
     fi; \
-    apt-get -o Acquire::Retries=5 update; \
-    apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 update; \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 install -y --no-install-recommends \
         ca-certificates curl xz-utils; \
     rm -rf /var/lib/apt/lists/*; \
     ARCH=$(uname -m); \
@@ -305,8 +305,8 @@ RUN set -eux; \
     # Every path must end with a working `tini` on PATH, because the ENTRYPOINT
     # of this image invokes it unconditionally.
     if command -v apt-get >/dev/null 2>&1; then \
-        apt-get -o Acquire::Retries=5 update; \
-        apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+        apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 update; \
+        apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 install -y --no-install-recommends \
             bash ca-certificates git tini tmux; \
         rm -rf /var/lib/apt/lists/*; \
     elif command -v apk >/dev/null 2>&1; then \
@@ -412,8 +412,8 @@ USER root
 # package/repository helpers, and command-line utilities out of binary-minimal.
 RUN set -eux; \
     if command -v apt-get >/dev/null 2>&1; then \
-        apt-get -o Acquire::Retries=5 update; \
-        apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+        apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 update; \
+        apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 install -y --no-install-recommends \
             apt-transport-https apt-utils build-essential coreutils curl \
             findutils gnupg grep jq lsb-release procps sed sudo tar util-linux \
             wget xz-utils; \
@@ -565,8 +565,8 @@ RUN set -eux; \
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null; \
     fi; \
     # Install Docker Engine, containerd, and Docker Compose
-    apt-get update; \
-    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 update; \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*; \
     \
@@ -582,8 +582,8 @@ RUN set -eux; \
     chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list; \
-    apt-get update; \
-    apt-get install -y gh; \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 update; \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 install -y gh; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
@@ -603,8 +603,8 @@ ENV CHROME_BIN=/usr/bin/chromium \
 RUN set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
       *,browser,*) \
-        apt-get update; \
-        apt-get install -y --no-install-recommends \
+        apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 update; \
+        apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 install -y --no-install-recommends \
           "$(if grep -q "ubuntu" /etc/os-release; then echo "chromium-browser"; else echo "chromium"; fi)"; \
         apt-get clean; rm -rf /var/lib/apt/lists/*; \
         ;; \
