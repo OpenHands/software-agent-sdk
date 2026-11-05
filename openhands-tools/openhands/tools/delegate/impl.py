@@ -341,6 +341,15 @@ class DelegateExecutor(ToolExecutor):
                     self._run_until_finished(agent_id, conversation)
 
                     final_response = get_agent_final_response(conversation.state.events)
+                    status = conversation.state.execution_status
+                    if status != ConversationExecutionStatus.FINISHED:
+                        errors[agent_id] = (
+                            f"Sub-agent stopped with status {status.value}"
+                        )
+                        if final_response:
+                            errors[agent_id] += f": {final_response}"
+                        logger.warning(errors[agent_id])
+                        return
                     if final_response:
                         results[agent_id] = final_response
                         logger.info(f"Sub-agent {agent_id} completed successfully")
@@ -406,6 +415,7 @@ class DelegateExecutor(ToolExecutor):
             return DelegateObservation.from_text(
                 text=output_text,
                 command=action.command,
+                is_error=bool(errors),
             )
 
         except Exception as e:
