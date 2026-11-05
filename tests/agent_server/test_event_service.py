@@ -16,10 +16,13 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from fastapi import HTTPException
 from pydantic import SecretStr
 
+from openhands.agent_server import event_router
 from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.event_router import run_gateway_message
 from openhands.agent_server.event_service import (
     CondensationUnavailable,
     EventService,
@@ -45,6 +48,7 @@ from openhands.sdk.conversation.impl.local_conversation import (
     ACP_SUPERSEDE_INFLIGHT_PROMPT,
     LocalConversation,
 )
+from openhands.sdk.conversation.message_request import SendMessageRequest
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -111,6 +115,26 @@ def event_service(sample_stored_conversation, sample_agent):
         conversations_dir=Path("test_conversation_dir"),
     )
     return service
+
+
+@pytest.mark.asyncio
+async def test_gateway_does_not_save_while_a_previous_run_remains_active(
+    event_service, monkeypatch
+):
+    monkeypatch.setattr(event_router, "_GATEWAY_RUN_TIMEOUT_SECONDS", 0.02)
+    previous_run = asyncio.create_task(asyncio.Event().wait())
+    event_service._run_task = previous_run
+    event_service.send_message = AsyncMock()
+    try:
+        with pytest.raises(HTTPException) as error:
+            await run_gateway_message(SendMessageRequest(), event_service)
+    finally:
+        previous_run.cancel()
+        with suppress(asyncio.CancelledError):
+            await previous_run
+
+    assert error.value.status_code == 504
+    event_service.send_message.assert_not_awaited()
 
 
 @pytest.fixture
