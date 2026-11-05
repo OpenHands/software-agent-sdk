@@ -22,30 +22,55 @@ The upstream default has the same shape: `build_condenser` uses
 That value is the largest prompt the model can ever receive, so a trigger at
 or above it cannot fire before the request itself is rejected or truncated.
 
-## Replication attempt
+## Replication attempts
 
-The drifting turn was replayed from a fork of the stored conversation, with the
-same model (temperature 1.0), the same instruction and the same workspace:
+The instruction was replayed from forks of the stored conversation, with the
+same model (temperature 1.0), the same instruction text and the same workspace.
 
-- Fork context: 147,408 prompt tokens, prefill 141,495, cache hits 0.
-- 15 actions, through the same `page.tpl.php` edit the original made
-  immediately before drifting. The plan was correct and every action stayed on
-  the portal task; no recall of the stale topic, no topic change.
-- The replay's context was therefore smaller than the 183,553 at the original
-  drift call, and the drift did not reproduce.
+### Run A: 147,408 tokens
 
-Conclusion: the drift is not deterministic at this context size; sampling
-variance at temperature 1.0 remains the leading explanation. The guardrail
-defect is independent of that: the configured limit could not fire at any
-context size.
+Fifteen actions, including the same `page.tpl.php` edit the original made
+immediately before drifting. The plan was correct, every action stayed on the
+portal task, and there was no stale-topic recall. Cold prefill: 141,495 of
+147,408 tokens, 0 cache hits, about 12 minutes at roughly 215 tokens/second.
+The drift did not reproduce, but this run stayed 36k tokens below the original
+drift call.
 
-Operational notes from the replay:
+### Run B: up to 166,506 tokens
+
+Prompt sizes per call: 94,339 (57,344 cached), 116,348, 135,805, 145,427,
+149,160, 154,750, 157,178, 159,356, 160,102, 161,331, 161,380, 161,825,
+163,827, 166,506.
+
+- **Stale-topic intrusion at about 154,700 tokens.** The model wrote a plan
+  consisting of the *previous* workstream in the same conversation (the vault
+  overlay: `SecretVault` class, `settings.inc.php` wiring, `vault-read.php`,
+  deploy, the FL OpenBao AppRole step), all entries marked done, before
+  resuming the current task.
+- Execution stayed on task otherwise: marketing CSS/tailwind/wordmark study,
+  `portal.css` review, `page.tpl.php` edits, a PHP render test, a browser
+  preview, `php -l`, then two commits (Cache-Control and the visual restyle)
+  and an attempted `git push`.
+- Stopped at 166,506 tokens (91% of the original drift call) once the replay
+  began pushing.
+
+Conclusion: the drift is not deterministic. Stale-workstream intrusions appear
+from about 155k tokens, while the hard derail (abandoning the task to answer a
+day-old question) did not recur below 166.5k. Sampling variance at temperature
+1.0 is the leading explanation, with context size a contributing factor. The
+guardrail defect is independent of all of this: the configured limit could not
+fire at any context size.
+
+Operation notes from the replays:
 
 - A forked conversation restores the agent LLM from `base_state.json`, which is
-  the pristine profile LLM (mimo), not the model the conversation was switched
-  to at runtime (Qwen). The replay required an explicit `switch_llm`.
-- Cold prefill of a 147k-token replayed context took about 12 minutes at roughly
-  215 tokens/second with zero prompt-cache reuse.
+  the pristine profile LLM, not the model the conversation had been switched to
+  at runtime. The replay required an explicit `switch_llm`.
+- Cold prefill of a replayed long context costs minutes with zero cache reuse;
+  the original conversation was fast because nearly all prompt tokens were
+  cache reads.
+- A replay of a long tool-using turn will edit files and commit. Run it with the
+  git remote removed or renamed, and restore the working tree afterwards.
 
 ## Change
 
