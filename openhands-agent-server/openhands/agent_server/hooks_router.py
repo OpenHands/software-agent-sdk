@@ -4,7 +4,7 @@ This module defines the HTTP API endpoints for hook operations.
 Business logic is delegated to hooks_service.py.
 """
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from openhands.agent_server.hooks_service import (
@@ -29,12 +29,6 @@ class HooksRequest(BaseModel):
     )
     load_user_hooks: bool = Field(
         default=True, description="Load user hooks from ~/.openhands/hooks.json"
-    )
-    strict: bool = Field(
-        default=False,
-        description=(
-            "Fail with 409 Conflict when any present hooks file cannot be parsed"
-        ),
     )
 
 
@@ -72,12 +66,4 @@ def get_hooks(request: HooksRequest) -> HooksResponse:
         load_project_hooks=request.load_project_hooks,
         load_user_hooks=request.load_user_hooks,
     )
-    if request.strict and errors:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "message": "Failed to load hooks configuration",
-                "errors": [e.model_dump() for e in errors],
-            },
-        )
     return HooksResponse(hook_config=hook_config, errors=errors)

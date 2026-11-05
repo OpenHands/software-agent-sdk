@@ -34,15 +34,6 @@ class HooksSourceError(BaseModel):
     message: str = Field(description="Error message describing why loading failed")
 
 
-class HooksLoadError(ValueError):
-    """Raised in strict mode when one or more hooks files fail to load."""
-
-    def __init__(self, errors: list[HooksSourceError]) -> None:
-        self.errors = errors
-        summary = "; ".join(f"{e.source} ({e.path}): {e.message}" for e in errors)
-        super().__init__(f"Failed to load hooks: {summary}")
-
-
 def load_hooks_with_errors(
     project_dir: str | None = None,
     load_project_hooks: bool = True,
@@ -51,8 +42,9 @@ def load_hooks_with_errors(
     """Load project and user hooks, returning both merged config and source errors.
 
     Absent or empty hooks files are treated as "no hooks" without error.
-    Files that exist on disk but fail to parse or validate are recorded in the
-    returned ``errors`` list while valid sources are still merged.
+    Files that exist on disk but fail to parse or validate are logged with
+    ``logger.error`` and recorded in the returned ``errors`` list while valid
+    sources are still merged.
     """
     sources: list[tuple[HookSource, Path]] = []
     if load_project_hooks:
@@ -81,7 +73,6 @@ def load_hooks(
     project_dir: str | None = None,
     load_project_hooks: bool = True,
     load_user_hooks: bool = True,
-    strict: bool = False,
 ) -> HookConfig | None:
     """Load project and user hooks, merged.
 
@@ -94,19 +85,15 @@ def load_hooks(
         project_dir: Workspace directory path for project hooks.
         load_project_hooks: Load ``{project_dir}/.openhands/hooks.json``.
         load_user_hooks: Load the user hooks file, ``~/.openhands/hooks.json``.
-        strict: When True, raise ``HooksLoadError`` if any present hooks file
-            cannot be parsed or validated instead of ignoring the broken source.
 
     Returns:
         The merged HookConfig, or None if no source has hooks.
     """
-    config, errors = load_hooks_with_errors(
+    config, _ = load_hooks_with_errors(
         project_dir=project_dir,
         load_project_hooks=load_project_hooks,
         load_user_hooks=load_user_hooks,
     )
-    if strict and errors:
-        raise HooksLoadError(errors)
     return config
 
 
@@ -135,7 +122,7 @@ def _load_hooks_file_with_error(
         return hook_config, None
 
     except Exception as e:
-        logger.warning(f"Failed to load hooks from {hooks_path}: {e}")
+        logger.error(f"Failed to load hooks from {hooks_path}: {e}", exc_info=True)
         return None, HooksSourceError(
             source=source,
             path=str(hooks_path),

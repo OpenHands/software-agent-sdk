@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from openhands.agent_server import hooks_service
 from openhands.agent_server.hooks_service import (
-    HooksLoadError,
     load_hooks,
     load_hooks_with_errors,
 )
@@ -269,7 +269,7 @@ class TestLoadHooks:
 
 
 class TestLoadHooksWithErrors:
-    """Tests for load_hooks_with_errors and strict mode."""
+    """Tests for load_hooks_with_errors and error logging."""
 
     def test_absent_and_empty_files_report_no_errors(self, tmp_path):
         config, errors = load_hooks_with_errors(
@@ -288,10 +288,19 @@ class TestLoadHooksWithErrors:
         assert config is None
         assert errors == []
 
-    def test_corrupt_project_file_surfaces_source_error(self, tmp_path):
+    def test_corrupt_project_file_surfaces_source_error(self, tmp_path, monkeypatch):
         hooks_file = tmp_path / ".openhands" / "hooks.json"
         hooks_file.parent.mkdir(parents=True)
         hooks_file.write_text('{"PreToolUse": [invalid json}')
+
+        logged: list[tuple[str, bool]] = []
+        monkeypatch.setattr(
+            hooks_service.logger,
+            "error",
+            lambda msg, *args, **kwargs: logged.append(
+                (str(msg), bool(kwargs.get("exc_info")))
+            ),
+        )
 
         config, errors = load_hooks_with_errors(
             project_dir=str(tmp_path), load_user_hooks=False
@@ -301,11 +310,9 @@ class TestLoadHooksWithErrors:
         assert errors[0].source == "project"
         assert errors[0].path == str(hooks_file)
         assert errors[0].message
-
-        with pytest.raises(HooksLoadError) as exc_info:
-            load_hooks(project_dir=str(tmp_path), load_user_hooks=False, strict=True)
-        assert len(exc_info.value.errors) == 1
-        assert exc_info.value.errors[0].source == "project"
+        assert len(logged) == 1
+        assert str(hooks_file) in logged[0][0]
+        assert logged[0][1] is True
 
     def test_corrupt_user_file_with_valid_project_file(self, tmp_path, monkeypatch):
         user_dir = tmp_path / "user"
@@ -322,7 +329,3 @@ class TestLoadHooksWithErrors:
         assert len(errors) == 1
         assert errors[0].source == "user"
         assert errors[0].path == str(user_hooks)
-
-        with pytest.raises(HooksLoadError) as exc_info:
-            load_hooks(project_dir=str(project), strict=True)
-        assert exc_info.value.errors[0].source == "user"

@@ -192,7 +192,7 @@ class TestHooksRouterUserHooks:
             "echo user"
         ]
 
-    def test_corrupt_hooks_reported_in_response_and_strict_mode(
+    def test_corrupt_hooks_reported_in_response(
         self, client, tmp_path, monkeypatch
     ):
         user_dir = tmp_path / "user"
@@ -213,16 +213,3 @@ class TestHooksRouterUserHooks:
         assert data["errors"][0]["source"] == "project"
         assert data["errors"][0]["path"] == str(project_hooks)
         assert data["errors"][0]["message"]
-
-        strict_resp = client.post(
-            "/api/hooks",
-            json={
-                "project_dir": str(project),
-                "load_user_hooks": False,
-                "strict": True,
-            },
-        )
-        assert strict_resp.status_code == 409
-        detail = strict_resp.json()["detail"]
-        assert detail["errors"][0]["source"] == "project"
-        assert detail["errors"][0]["path"] == str(project_hooks)
