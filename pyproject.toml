@@ -48,6 +48,7 @@ dev = [
     "streamlit>=1.66.1",
     "pytest-timeout>=2.4.0",
     "griffe[pypi]>=2.3.0",
+    "hypothesis>=6.170.13",
 ]
 
 # Ruff configuration

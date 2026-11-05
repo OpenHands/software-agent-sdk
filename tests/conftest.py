@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from hypothesis import settings
 from pydantic import SecretStr
 
 from openhands.sdk import Agent
@@ -16,6 +17,12 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.tool import ToolExecutor
 from openhands.sdk.workspace import LocalWorkspace
 
+
+# No deadline: xdist and --forked runs make per-example timing too noisy to
+# gate on. No example database, so runs leave nothing behind in the checkout;
+# print_blob lets a CI failure be replayed locally with @reproduce_failure.
+settings.register_profile("openhands", deadline=None, database=None, print_blob=True)
+settings.load_profile("openhands")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TOKENIZER_FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "tokenizers"
