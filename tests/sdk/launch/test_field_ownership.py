@@ -152,6 +152,9 @@ ACP_FIELDS: dict[str, Any] = {
     ),
     "acp_file_secrets": NotOnProfile("a code-level spec for other ACP CLIs"),
     "agent_context": Nested(ACP_CONTEXT),
+    "verification": NotOnProfile(
+        "ACP runs no critic; the stored key serves OpenHands profiles"
+    ),
 }
 
 PROFILE_IDENTITY = {"schema_version", "id", "name", "revision", "agent_kind"}

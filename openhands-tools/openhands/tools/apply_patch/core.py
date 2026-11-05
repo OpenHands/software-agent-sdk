@@ -453,7 +453,13 @@ def load_files(paths: list[str], open_fn: Callable[[str], str]) -> dict[str, str
         try:
             orig[path] = open_fn(path)
         except FileNotFoundError:
+            # The parser reports the missing path under the action that
+            # references it; see load_files' docstring.
             continue
+        except (OSError, UnicodeDecodeError) as exc:
+            # An unreadable path (a directory, a denied file, bytes that are not
+            # UTF-8 text) must surface as a tool error, not escape the executor.
+            raise DiffError(f"Cannot read {path}: {exc}") from exc
     return orig
 
 

@@ -54,11 +54,17 @@ from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.llm import MessageToolCall, TextContent
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.settings import ACPAgentSettings
+from openhands.sdk.subagent.registry import (
+    _reset_registry_for_tests,
+    get_agent_factory,
+)
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
@@ -209,6 +215,90 @@ async def test_server_resolved_tool_modules_are_persisted(tmp_path):
     assert meta["tool_module_qualnames"]["terminal"] == (
         "openhands.tools.terminal.definition"
     )
+
+
+def _encrypted_profile_subagent(tmp_path: Path, cipher: Cipher) -> AgentDefinition:
+    """Save profile ``enc`` encrypted at rest and return a sub-agent that uses it."""
+    profiles = tmp_path / "profiles"
+    LLMProfileStore(base_dir=profiles).save(
+        "enc",
+        LLM(model="gpt-4o", api_key=SecretStr("sk-profile-secret"), usage_id="enc"),
+        include_secrets=True,
+        cipher=cipher,
+    )
+    return AgentDefinition(
+        name="profile-subagent", model="enc", profile_store_dir=str(profiles)
+    )
+
+
+@pytest.fixture
+def clean_agent_registry():
+    _reset_registry_for_tests()
+    yield
+    _reset_registry_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_start_conversation_registers_subagents_with_server_cipher(
+    tmp_path, clean_agent_registry
+):
+    """A forwarded sub-agent definition decrypts its profile with the server key."""
+    cipher = Cipher("server-secret-key")
+    agent_def = _encrypted_profile_subagent(tmp_path, cipher)
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+        agent_definitions=[agent_def],
+    )
+
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations", cipher=cipher
+    ) as service:
+        await service.start_conversation(request)
+        sub_agent = get_agent_factory("profile-subagent").factory_func(
+            LLM(model="gpt-4o", usage_id="parent")
+        )
+
+    assert isinstance(sub_agent.llm.api_key, SecretStr)
+    assert sub_agent.llm.api_key.get_secret_value() == "sk-profile-secret"
+
+
+@pytest.mark.asyncio
+async def test_resumed_conversation_registers_subagents_with_server_cipher(
+    tmp_path, clean_agent_registry
+):
+    """Definitions restored from meta.json decrypt their profile after a restart."""
+    cipher = Cipher("server-secret-key")
+    agent_def = _encrypted_profile_subagent(tmp_path, cipher)
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    conversations_dir = tmp_path / "conversations"
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+        agent_definitions=[agent_def],
+    )
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as service:
+        info, _ = await service.start_conversation(request)
+    # A restarted server starts with an empty in-process registry.
+    _reset_registry_for_tests()
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as restarted:
+        await restarted.get_event_service(info.id)
+        sub_agent = get_agent_factory("profile-subagent").factory_func(
+            LLM(model="gpt-4o", usage_id="parent")
+        )
+
+    assert isinstance(sub_agent.llm.api_key, SecretStr)
+    assert sub_agent.llm.api_key.get_secret_value() == "sk-profile-secret"
 
 
 @pytest.mark.asyncio
