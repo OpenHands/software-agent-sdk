@@ -49,6 +49,7 @@ namespaces = true
 "*" = ["py.typed"]
 # Include Docker-related files and VSCode extensions
 "openhands.agent_server" = [
+  "code_server_proxy.cjs",
   "docker/Dockerfile",
   "docker/wallpaper.svg",
   "vscode_extensions/**/*.json",
