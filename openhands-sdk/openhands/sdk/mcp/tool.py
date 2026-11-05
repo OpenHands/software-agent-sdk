@@ -103,16 +103,21 @@ class MCPToolExecutor(ToolExecutor):
     tool_name: str
     client: MCPClient
     timeout: float
+    server_tool_name: str
 
     def __init__(
         self,
         tool_name: str,
         client: MCPClient,
         timeout: float = MCP_TOOL_TIMEOUT_SECONDS,
+        server_tool_name: str | None = None,
     ):
         self.tool_name = tool_name
         self.client = client
         self.timeout = timeout
+        # The name the server knows the tool by, when the agent sees it under
+        # a server prefix.
+        self.server_tool_name = server_tool_name or tool_name
 
     @observe(name="MCPToolExecutor.call_tool", span_type="TOOL")
     async def call_tool(self, action: MCPToolAction) -> MCPToolObservation:
@@ -153,7 +158,7 @@ class MCPToolExecutor(ToolExecutor):
                 f"Calling MCP tool {self.tool_name} with args: {action.model_dump()}"
             )
             result: mcp.types.CallToolResult = await self.client.call_tool_mcp(
-                name=self.tool_name, arguments=action.to_mcp_arguments()
+                name=self.server_tool_name, arguments=action.to_mcp_arguments()
             )
             return MCPToolObservation.from_call_tool_result(
                 tool_name=self.tool_name, result=result
@@ -415,6 +420,27 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
                 exc_info=True,
             )
             raise e
+
+    def with_server_prefix(self, server_name: str) -> "MCPToolDefinition":
+        """Return this tool named ``{server_name}_{name}``.
+
+        This is the name a multi-server MCP config gives a server's tools; the
+        server is still called by the tool's own name.
+        """
+        executor = self.executor
+        assert isinstance(executor, MCPToolExecutor)
+        name = f"{server_name}_{self.name}"
+        return self.model_copy(
+            update={
+                "mcp_tool": self.mcp_tool.model_copy(update={"name": name}),
+                "executor": MCPToolExecutor(
+                    tool_name=name,
+                    client=executor.client,
+                    timeout=executor.timeout,
+                    server_tool_name=executor.server_tool_name,
+                ),
+            }
+        )
 
     def to_mcp_tool(
         self,

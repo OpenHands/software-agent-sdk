@@ -135,6 +135,26 @@ async def start_conversation(
         raise HTTPException(400, "Invalid JSON body") from exc
     if not isinstance(body, dict):
         raise HTTPException(422, "Expected a JSON object")
+    status_code, content, conversation_id = await start_docker_conversation(
+        body,
+        get_registry(request),
+        include_skills=include_skills,
+    )
+    if status_code < 400:
+        await get_conversation_service(request).refresh_persisted_conversation(
+            conversation_id
+        )
+    return JSONResponse(content=content, status_code=status_code)
+
+
+async def start_docker_conversation(
+    body: dict[str, Any],
+    registry: DockerConversationRegistry,
+    *,
+    include_skills: bool = False,
+) -> tuple[int, Any, UUID]:
+    """Start a Docker conversation through the same path as the REST route."""
+    body = body.copy()
     if body.pop("conversation_runtime", None) not in (None, "docker"):
         raise HTTPException(422, "This server only runs docker conversations")
 
@@ -156,7 +176,6 @@ async def start_conversation(
     body["conversation_id"] = str(conversation_id)
     body["workspace"] = {"kind": "LocalWorkspace", "working_dir": "/workspace"}
 
-    registry = get_registry(request)
     # Only a conversation the container already created is left alone on
     # failure; a manifest from a failed earlier start is retried like a new one.
     try:
@@ -214,11 +233,7 @@ async def start_conversation(
         if not existing:
             await registry.stop(conversation_id)
         content = {"detail": "Conversation runtime rejected the request"}
-    else:
-        await get_conversation_service(request).refresh_persisted_conversation(
-            conversation_id
-        )
-    return JSONResponse(content=content, status_code=response.status_code)
+    return response.status_code, content, conversation_id
 
 
 async def _prepare_forward(
@@ -333,12 +348,12 @@ async def delete_conversation(conversation_id: UUID, request: Request) -> Respon
     # partially deleted state.
     try:
         await registry.stop(conversation_id)
-        registry.provisioning.manifest_path(conversation_id).unlink(missing_ok=True)
-        registry.archived_marker(conversation_id).unlink(missing_ok=True)
         await asyncio.to_thread(
             safe_rmtree, registry.provisioning.runtime_dir(conversation_id)
         )
         await asyncio.to_thread(safe_rmtree, registry.conversation_dir(conversation_id))
+        registry.provisioning.manifest_path(conversation_id).unlink(missing_ok=True)
+        registry.archived_marker(conversation_id).unlink(missing_ok=True)
         await get_conversation_service(request).refresh_persisted_conversation(
             conversation_id
         )

@@ -13,7 +13,9 @@ from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import MessageEvent
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.hooks.config import HookDefinition, HookMatcher
 from openhands.sdk.marketplace import MarketplaceRegistration
@@ -645,6 +647,87 @@ class TestLocalConversationPlugins:
             if isinstance(event, MessageEvent) and event.source == "user"
         ]
         assert len(user_messages) == 1
+        conversation.close()
+
+    def test_auto_load_marketplace_failure_is_reported_to_the_user(
+        self, tmp_path: Path, mock_llm
+    ):
+        """A marketplace that cannot be cloned (for example a private repository
+        without credentials in the sandbox) is reported as a non-fatal error,
+        so its missing agents and hooks are not a silent surprise."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(
+                        name="private",
+                        source="https://user:s3cr3t-token@127.0.0.1:9/catalog.git",
+                        auto_load=True,
+                    )
+                ]
+            ),
+        )
+        conversation = LocalConversation(
+            agent=agent, workspace=workspace, visualizer=None
+        )
+
+        conversation.send_message("hello")
+
+        errors = [
+            event
+            for event in conversation.state.events
+            if isinstance(event, ConversationErrorEvent)
+        ]
+        assert [error.code for error in errors] == ["MarketplaceLoadError"]
+        assert "'private'" in errors[0].detail
+        assert "****@127.0.0.1:9/catalog.git" in errors[0].detail
+        assert "s3cr3t-token" not in errors[0].detail
+        assert conversation.state.execution_status != ConversationExecutionStatus.ERROR
+        conversation.close()
+
+    def test_auto_load_plugin_failure_is_reported_to_the_user(
+        self, tmp_path: Path, mock_llm
+    ):
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {"name": "broken-plugin", "source": "./plugins/does-not-exist"},
+                {
+                    "name": "good-plugin",
+                    "skills": [{"name": "good-skill", "content": "Good skill"}],
+                },
+            ],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(
+                        name="auto", source=str(marketplace_dir), auto_load=True
+                    )
+                ]
+            ),
+        )
+        conversation = LocalConversation(
+            agent=agent, workspace=workspace, visualizer=None
+        )
+
+        conversation.send_message("hello")
+
+        errors = [
+            event
+            for event in conversation.state.events
+            if isinstance(event, ConversationErrorEvent)
+        ]
+        assert [error.code for error in errors] == ["PluginLoadError"]
+        assert "does-not-exist" in errors[0].detail
+        assert conversation.state.execution_status != ConversationExecutionStatus.ERROR
         conversation.close()
 
     def test_auto_load_marketplace_duplicate_names_fail(self, tmp_path: Path, mock_llm):
