@@ -133,6 +133,12 @@ class LLMRegistry:
 
         self._usage_to_llm[usage_id] = llm
         self.notify(RegistryEvent(llm=llm))
+        # A subscriber (e.g. ConversationStats.register_llm) may have called
+        # restore_metrics() on this LLM, replacing its metrics object with a
+        # restored one whose id was never recorded.  Track the current id so
+        # that any subsequent model_copy() derivative will be detected as
+        # sharing metrics and given its own independent instance.
+        self._metrics_ids.add(id(llm.metrics))
         logger.debug(
             f"[LLM registry {self.registry_id}]: Added LLM for usage {usage_id}"
         )

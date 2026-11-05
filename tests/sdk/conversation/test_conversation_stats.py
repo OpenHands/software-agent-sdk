@@ -296,6 +296,50 @@ def test_multiple_llm_usages(connected_registry_and_stats):
     )  # max of 8000 and 4000
 
 
+def test_resume_then_derive_no_double_count(connected_registry_and_stats):
+    """Regression test for issue #6487: resume-then-derive double-counts cost.
+
+    After a conversation is resumed, ConversationStats.register_llm() calls
+    restore_metrics() on the agent LLM, replacing its metrics with a restored
+    object whose id was never tracked by the registry.  A subsequent
+    model_copy() derivative (ask-agent) therefore shares that restored object,
+    and get_combined_metrics() counts the spend twice.
+
+    The fix: LLMRegistry.add() re-records the LLM's metrics id after notifying
+    subscribers, so any post-notify restore is reflected in _metrics_ids and a
+    later model_copy() derivative is detected as sharing metrics.
+    """
+    registry, stats = connected_registry_and_stats
+
+    # Seed persisted metrics as if the conversation was resumed from storage.
+    persisted = Metrics(model_name="gpt-4o")
+    persisted.add_cost(2.0)
+    stats.usage_to_metrics["agent"] = persisted
+
+    # Register the agent LLM.  The subscriber (register_llm) will call
+    # restore_metrics() and replace the LLM's metrics with `persisted`.
+    agent_llm = LLM(model="gpt-4o", api_key=SecretStr("test-key"), usage_id="agent")
+    registry.add(agent_llm)
+
+    # Simulate what LocalConversation.ask_agent() does: derive a copy via
+    # model_copy() and register it under a different usage id.
+    question_llm = agent_llm.model_copy(
+        update={"usage_id": "ask-agent", "stream": False}
+    )
+    registry.add(question_llm)
+
+    # The derived LLM must have its own independent metrics object.
+    assert question_llm.metrics is not agent_llm.metrics
+
+    # Charging cost to the derived LLM must not affect the agent LLM.
+    question_llm.metrics.add_cost(1.0)
+    assert agent_llm.metrics.accumulated_cost == 2.0
+    assert question_llm.metrics.accumulated_cost == 1.0
+
+    # Combined cost must equal persisted + new spend, not double-counted.
+    assert stats.get_combined_metrics().accumulated_cost == 3.0
+
+
 def test_register_llm_with_multiple_restored_usage_ids(conversation_stats):
     """
     Test that reproduces the bug where del self.restored_metrics
