@@ -1,14 +1,18 @@
 """Tests for redact utility functions."""
 
+import json
+
 import pytest
 
 from openhands.sdk.utils.redact import (
+    SECRET_KEY_PATTERNS,
     SENSITIVE_URL_PARAMS,
     redact_api_key_literals,
     redact_text_secrets,
     redact_url_credentials,
     redact_url_credentials_in_text,
     redact_url_params,
+    sanitize_dict,
 )
 
 
@@ -305,6 +309,24 @@ def test_redact_text_secrets_redacts_multiline_values(key, key_quote, value_quot
     tail = f"{value_quote}, 'note': 'first public line\nsecond public line'}}"
 
     assert redact_text_secrets(f"{head}{secret}{tail}") == f"{head}<redacted>{tail}"
+
+
+@pytest.mark.parametrize("pattern", sorted(SECRET_KEY_PATTERNS))
+def test_redact_text_secrets_redacts_serialized_secret_values(pattern):
+    key = f"prefix_{pattern.swapcase()}_suffix"
+    secret = f"secret-value-for-{pattern.lower()}"
+    data = {key: secret, "name": "non-sensitive"}
+
+    for serialized in (
+        repr(data),
+        json.dumps(data),
+        json.dumps(json.dumps(data)),
+    ):
+        assert secret not in redact_text_secrets(serialized)
+
+    sanitized = sanitize_dict(data)
+    assert sanitized[key] == "<redacted>"
+    assert sanitized["name"] == "non-sensitive"
 
 
 class TestRedactTextSecretsHeaders:
