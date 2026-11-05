@@ -333,6 +333,42 @@ class TestRedactTextSecretsHeaders:
         assert redact_text_secrets(text) == text
 
 
+@pytest.mark.parametrize(
+    "argument",
+    [
+        "--connection-token opaque-test-credential",
+        "--connection-token=opaque-test-credential",
+        '--access-token "opaque-test-credential with spaces"',
+        "--client-secret='opaque-test-credential with spaces'",
+        "--api-key opaque-test-credential",
+        "--API_KEY=opaque-test-credential",
+        "--password opaque-test-credential",
+    ],
+)
+def test_redact_text_secrets_cli_credentials(argument):
+    text = f"23 editor-server --host 0.0.0.0 {argument} --port 8080"
+    redacted = redact_text_secrets(text)
+    assert "opaque-test-credential" not in redacted
+    assert "with spaces" not in redacted
+    assert redacted.startswith("23 editor-server --host 0.0.0.0 ")
+    assert redacted.endswith("<redacted> --port 8080")
+    assert redact_text_secrets(redacted) == redacted
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "server --connection-token-file /tmp/credential --port 8080",
+        "server --tokenizer text --disable-token-auth --port 8080",
+        "server --token --verbose",
+        "server --password\nnext process",
+        "compiler --keymap default --monkey banana",
+    ],
+)
+def test_redact_text_secrets_preserves_noncredential_options(text):
+    assert redact_text_secrets(text) == text
+
+
 # ---------------------------------------------------------------------------
 # redact_api_key_literals
 # ---------------------------------------------------------------------------

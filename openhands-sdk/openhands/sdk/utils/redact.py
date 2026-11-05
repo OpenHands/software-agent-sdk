@@ -287,9 +287,16 @@ _SENSITIVE_ENTRY_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_CLI_SECRET_RE = re.compile(
+    r"(?P<head>(?<![\w-])--(?:\w+[-_])*"
+    r"(?:token|password|secret|api[-_]?key)(?:=|[ \t]+(?!--)))"
+    r"""(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[^\s]+)""",
+    re.IGNORECASE,
+)
+
 
 def redact_text_secrets(text: str) -> str:
-    """Redact secrets from a string representation of a config object.
+    """Redact recognizable credentials in text.
 
     Useful when you have a pydantic model or other object whose ``str()``
     output contains credentials but cannot be converted to a dict for
@@ -315,6 +322,7 @@ def redact_text_secrets(text: str) -> str:
     # style (also backslash-escaped, as in JSON embedded in a message), any
     # case, and hyphenated header names such as x-api-key.
     text = _SENSITIVE_ENTRY_RE.sub(r"\g<head>\g<q><redacted>\g<q>", text)
+    text = _CLI_SECRET_RE.sub(r"\g<head><redacted>", text)
 
     # URL query params
     text = re.sub(

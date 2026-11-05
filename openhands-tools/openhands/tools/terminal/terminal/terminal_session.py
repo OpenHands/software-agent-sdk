@@ -7,6 +7,7 @@ from enum import Enum
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import maybe_truncate
+from openhands.sdk.utils.redact import redact_text_secrets
 from openhands.tools.terminal.constants import (
     CMD_OUTPUT_PS1_END,
     MAX_CMD_OUTPUT_SIZE,
@@ -236,7 +237,8 @@ class TerminalSession(TerminalSessionBase):
             # Flush any pending bytes when command completes
             command_output += self._query_filter.flush()
 
-        return command_output.rstrip()
+        # Redact before clipping can remove the credential's identifying option.
+        return redact_text_secrets(command_output.rstrip())
 
     def _handle_completed_command(
         self,

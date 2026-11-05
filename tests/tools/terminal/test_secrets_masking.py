@@ -3,13 +3,16 @@
 import tempfile
 from unittest.mock import Mock
 
+import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.llm import LLM
 from openhands.sdk.tool.schema import TextContent
+from openhands.sdk.utils.truncate import DEFAULT_TRUNCATE_NOTICE
 from openhands.tools.terminal import TerminalAction, TerminalObservation
+from openhands.tools.terminal.constants import MAX_CMD_OUTPUT_SIZE
 from openhands.tools.terminal.impl import TerminalExecutor
 
 
@@ -134,3 +137,58 @@ def test_terminal_executor_masks_secret_not_referenced_by_command():
         finally:
             executor.close()
             conversation.close()
+
+
+@pytest.mark.parametrize("terminal_type", ["subprocess", "tmux"])
+@pytest.mark.parametrize("redirect", ["", " >&2"])
+def test_terminal_masks_unregistered_cli_credential(tmp_path, terminal_type, redirect):
+    credential = "opaque-test-credential"
+    line = f"23 editor-server --connection-token {credential} --port 8080"
+    executor = TerminalExecutor(
+        working_dir=str(tmp_path), terminal_type=terminal_type, env={"TEST_LINE": line}
+    )
+    try:
+        result = executor(
+            TerminalAction(command=f'printf "%s\\n" "$TEST_LINE"{redirect}')
+        )
+    finally:
+        executor.close()
+
+    assert result.exit_code == 0
+    assert "23 editor-server --connection-token <redacted> --port 8080" in result.text
+    assert credential not in result.model_dump_json()
+    assert credential not in str(result.visualize)
+    for item in result.to_llm_content:
+        assert isinstance(item, TextContent)
+        assert credential not in item.text
+
+
+def test_terminal_masks_before_clipping(tmp_path):
+    credential = "opaque-test-credential"
+    line = f"--connection-token {credential} "
+    executor = TerminalExecutor(
+        working_dir=str(tmp_path),
+        terminal_type="subprocess",
+        env={"TEST_LINE": line},
+    )
+    padding = (MAX_CMD_OUTPUT_SIZE - len(DEFAULT_TRUNCATE_NOTICE) + 1) // 2 - 40
+    try:
+        result = executor(
+            TerminalAction(
+                command=f'printf "%{padding}s%s%20000sEND\\n" "" "$TEST_LINE" ""'
+            )
+        )
+    finally:
+        executor.close()
+
+    assert "--connection-token <redacted>" in result.text
+    assert "opaque" not in result.text
+    result = result.model_copy(
+        update={"full_output_save_dir": str(tmp_path / "outputs")}
+    )
+    for item in result.to_llm_content:
+        assert isinstance(item, TextContent)
+        assert "opaque" not in item.text
+    saved_outputs = list((tmp_path / "outputs").glob("*.txt"))
+    assert saved_outputs
+    assert all("opaque" not in output.read_text() for output in saved_outputs)
