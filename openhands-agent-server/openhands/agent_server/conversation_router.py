@@ -69,6 +69,7 @@ from openhands.sdk.marketplace.registry import (
     PluginResolutionError,
 )
 from openhands.sdk.plugin import PluginFetchError
+from openhands.sdk.plugin.errors import PluginManifestError, PluginNameError
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
 
@@ -679,6 +680,16 @@ async def load_conversation_plugin(
     except (PluginNotFoundError, MarketplaceNotFoundError) as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+    except PluginManifestError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=e.to_dict(),
+        )
+    except PluginNameError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
     except (
