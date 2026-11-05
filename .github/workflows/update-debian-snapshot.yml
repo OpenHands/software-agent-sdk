@@ -25,7 +25,7 @@ jobs:
             IMAGE: openhands/agent-server-binary-minimal:snapshot-update
         steps:
             - name: Checkout
-              uses: actions/checkout@v7.0.1
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
 
@@ -99,3 +99,4 @@ jobs:
                         --title "chore(agent-server): update Debian snapshot to $SNAPSHOT" \
                         --body "$BODY"
                   fi
+
