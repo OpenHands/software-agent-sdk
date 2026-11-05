@@ -207,9 +207,19 @@ def test_python_image_uses_canonical_minimal_runtime() -> None:
         == 2
     )
     assert "Check-Valid-Until: no" in dockerfile_text
-    assert "apt-get upgrade -y;" in dockerfile_text
-    # Every apt-get update/install carries the resilient acquire options so a
-    # transient snapshot.debian.org 503/504 does not fail the image build.
+    assert "apt-get upgrade -y" in dockerfile_text
+    # Resilient apt for the pinned snapshot archive: APT_OPTS (retries,
+    # timeouts, Retry-Delay, serial queue, Pipeline-Depth=0) is defined once
+    # and used at every apt site; python-node-runtime also persists it to
+    # apt.conf.d (inherited by derived stages when BASE_IMAGE is this image)
+    # and wraps update+install in an invocation-level retry loop, so a
+    # multi-minute snapshot.debian.org 503 outage does not fail the build.
+    assert "ARG APT_OPTS=" in dockerfile_text
+    assert "Acquire::Retries=5" in dockerfile_text
+    assert "Acquire::Retry-Delay=10" in dockerfile_text
+    assert "Acquire::Pipeline-Depth=0" in dockerfile_text
+    assert "80-snapshot-resilience" in dockerfile_text
+    assert "for attempt in 1 2 3 4 5" in dockerfile_text
     apt_lines = [
         line.strip()
         for line in dockerfile_text.splitlines()
@@ -217,8 +227,7 @@ def test_python_image_uses_canonical_minimal_runtime() -> None:
     ]
     assert apt_lines
     for line in apt_lines:
-        assert "Acquire::Retries=5" in line, line
-        assert "Acquire::Retry-Delay=10" in line, line
+        assert "${APT_OPTS}" in line, line
     minimal_stage = "FROM ${BASE_IMAGE} AS base-image-minimal"
     full_stage = "FROM base-image-minimal AS base-image"
     minimal_packages = dockerfile_text.partition(minimal_stage)[2].partition(
