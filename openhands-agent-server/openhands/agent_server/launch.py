@@ -46,10 +46,12 @@ from openhands.sdk.llm.meta_profile_store import (
     MetaProfileStore,
     default_meta_profile_dir,
 )
+from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFound
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.settings.model import (
     ACPAgentSettings,
+    OpenHandsAgentSettings,
     validate_agent_settings,
 )
 from openhands.sdk.tool import BROWSER_TOOL_NAME, is_tool_usable
@@ -161,6 +163,27 @@ def launch_source(
         settings = validate_agent_settings(request.agent_settings, context=context)
     except (TypeError, ValueError) as exc:
         raise AgentLaunchError(f"Invalid agent_settings: {exc}") from exc
+
+    # Read-at-use resolution for provider-linked LLMs carried by inline
+    # agent_settings. The activation path bakes the resolved connection
+    # credentials into settings.agent_settings.llm alongside provider_connection_id,
+    # so a later key rotation leaves that inline copy stale and new
+    # conversations keep using the old key. Re-resolving here makes every
+    # launch pick up the latest rotated credential, mirroring what the
+    # agent_profile_id path already gets from LLMProfileStore.load() (#5497).
+    if isinstance(settings, OpenHandsAgentSettings):
+        llm = settings.llm
+        if getattr(llm, "provider_connection_id", None):
+            try:
+                llm = get_llm_profile_store().resolve_provider_connection(
+                    llm, cipher=cipher
+                )
+            except ProviderConnectionNotFound as exc:
+                raise AgentLaunchError(
+                    f"LLM references missing provider connection: {exc}"
+                ) from exc
+            settings = settings.model_copy(update={"llm": llm})
+
     return ResolvedLaunch(settings=settings)
 
 
