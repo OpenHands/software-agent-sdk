@@ -603,8 +603,8 @@ ENV CHROME_BIN=/usr/bin/chromium \
 RUN set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
       *,browser,*) \
-        apt-get update; \
-        apt-get install -y --no-install-recommends \
+        apt-get -o Acquire::Retries=5 update; \
+        apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
           "$(if grep -q "ubuntu" /etc/os-release; then echo "chromium-browser"; else echo "chromium"; fi)"; \
         apt-get clean; rm -rf /var/lib/apt/lists/*; \
         ;; \
