@@ -3213,3 +3213,45 @@ def test_condense_conversation_without_condenser_returns_409(
         )
     finally:
         client.app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize("kind", [[], {}])
+def test_start_conversation_non_string_secret_kind_is_422(
+    client, mock_conversation_service, sample_start_conversation_request, kind
+):
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+    try:
+        request = sample_start_conversation_request.model_dump(mode="json")
+        request["secrets"] = {"BAD": {"kind": kind}}
+        with TestClient(client.app, raise_server_exceptions=False) as http:
+            response = http.post("/api/conversations", json=request)
+
+        assert response.status_code == 422
+        assert response.json()["detail"][0]["loc"] == ["body", "secrets", "BAD"]
+        mock_conversation_service.start_conversation.assert_not_called()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize("kind", [[], {}])
+def test_confirmation_policy_non_string_kind_is_422(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id, kind
+):
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+    try:
+        with TestClient(client.app, raise_server_exceptions=False) as http:
+            response = http.post(
+                f"/api/conversations/{sample_conversation_id}/confirmation_policy",
+                json={"policy": {"kind": kind}},
+            )
+
+        assert response.status_code == 422
+        assert response.json()["detail"][0]["loc"] == ["body", "policy"]
+        mock_event_service.set_confirmation_policy.assert_not_called()
+    finally:
+        client.app.dependency_overrides.clear()

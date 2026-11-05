@@ -364,7 +364,7 @@ class DiscriminatedUnionMixin(OpenHandsModel):
     @classmethod
     def resolve_kind(cls, kind: str) -> type[Self]:
         subclasses = _get_checked_concrete_subclasses(cls)
-        subclass = subclasses.get(kind)
+        subclass = subclasses.get(kind) if isinstance(kind, str) else None
         if subclass:
             return subclass
         raise ValueError(
