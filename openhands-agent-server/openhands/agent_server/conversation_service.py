@@ -436,6 +436,7 @@ def _register_agent_definitions(
     agent_defs: list["AgentDefinition"],
     *,
     context: str,
+    cipher: Cipher | None = None,
 ) -> None:
     """Register agent definitions into the subagent registry.
 
@@ -450,7 +451,7 @@ def _register_agent_definitions(
     registered = 0
     for agent_def in agent_defs:
         try:
-            factory = agent_definition_to_factory(agent_def)
+            factory = agent_definition_to_factory(agent_def, cipher=cipher)
             register_agent_if_absent(
                 name=agent_def.name,
                 factory_func=factory,
@@ -1035,6 +1036,7 @@ class ConversationService:
             _register_agent_definitions(
                 stored.agent_definitions,
                 context=f"resuming conversation {stored.id}",
+                cipher=self.cipher,
             )
 
     def _get_conversation_lock(self, conversation_id: UUID) -> asyncio.Lock:
@@ -1672,6 +1674,7 @@ class ConversationService:
             _register_agent_definitions(
                 request.agent_definitions,
                 context=f"conversation {conversation_id}",
+                cipher=self.cipher,
             )
 
         # Plugin loading is handled lazily by LocalConversation, which fetches
@@ -1696,6 +1699,7 @@ class ConversationService:
                 "agent_settings",
                 "agent_profile_id",
                 "agent_launch_additions",
+                "max_budget_per_run",
             },
         )
         launched_agent_profile = launched.profile or runtime_launched_profile
@@ -1729,6 +1733,7 @@ class ConversationService:
                 else None
             ),
             reuse_request=request,
+            max_budget_per_run=request.max_budget_per_run,
         )
 
     async def _launch_prepared_conversation(
@@ -1739,6 +1744,7 @@ class ConversationService:
         run_slot: RunSlot,
         initial_message: Message | None,
         reuse_request: StartConversationRequest | None = None,
+        max_budget_per_run: float | None = None,
     ) -> tuple[ConversationInfo, bool]:
         """Persist a prepared conversation, deliver its first message and notify.
 
@@ -1768,7 +1774,10 @@ class ConversationService:
             # New conversation: the agent is written to base_state.json (its
             # single source of truth), not to meta.json. Pass it explicitly.
             event_service = await self._start_event_service(
-                stored, is_new_conversation=True, launched=launched
+                stored,
+                is_new_conversation=True,
+                launched=launched,
+                max_budget_per_run=max_budget_per_run,
             )
         if initial_message is not None:
             await event_service.send_message(initial_message, False)
@@ -1910,6 +1919,8 @@ class ConversationService:
             update["title"] = request.title.strip()
         if request.tags is not None:
             update["tags"] = request.tags
+        # Membership, not None: an explicit null removes the budget limit.
+        budget_updated = "max_budget_per_run" in request.model_fields_set
         # Persist first: a refused write (e.g. lost lease ownership) must leave
         # the in-memory metadata and state untouched.
         await event_service.save_meta(event_service.stored.model_copy(update=update))
@@ -1919,6 +1930,10 @@ class ConversationService:
             state = await loop.run_in_executor(
                 None, _update_state_tags_sync, state, request.tags
             )
+        if budget_updated:
+            # base_state.json owns the budget; the event service is loaded
+            # above, so this writes the live state under its lock.
+            await event_service.set_max_budget_per_run(request.max_budget_per_run)
         record = self._conversation_records.get(conversation_id)
         if record is not None:
             record.stored = event_service.stored
@@ -1937,6 +1952,8 @@ class ConversationService:
             updated_fields.append("title")
         if request.tags is not None:
             updated_fields.append("tags")
+        if budget_updated:
+            updated_fields.append("max_budget_per_run")
         logger.info(
             "Successfully updated conversation %s (%s)",
             conversation_id,
@@ -2129,6 +2146,8 @@ class ConversationService:
         with await RunSlot.acquire(self._run_semaphore) as run_slot:
             parent_stored = parent_service.stored
             parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
+            # A child spends under the same cap as its parent.
+            max_budget_per_run = parent_service.get_conversation().max_budget_per_run
             child_id = uuid4()
 
             # Reuse the worktree machinery of a regular start: a worktree is
@@ -2178,6 +2197,7 @@ class ConversationService:
                 child_stored,
                 launched,
                 run_slot=run_slot,
+                max_budget_per_run=max_budget_per_run,
                 initial_message=Message(
                     role="user", content=[TextContent(text=request.task)]
                 ),
@@ -2458,6 +2478,7 @@ class ConversationService:
         is_new_conversation: bool = False,
         launched: LaunchedAgent | None = None,
         persisted_agent: AgentBase | None = None,
+        max_budget_per_run: float | None = None,
     ) -> EventService:
         event_services = self._event_services
         if event_services is None:
@@ -2474,6 +2495,7 @@ class ConversationService:
             stored=stored,
             conversations_dir=self.conversations_dir,
             agent=launched.agent if launched is not None else None,
+            initial_max_budget_per_run=max_budget_per_run,
             cipher=self._cipher_for(stored.id),
             mcp_tool_provider=self.mcp_tool_provider,
             credential_bindings=credential_bindings,
@@ -2894,7 +2916,7 @@ class WebhookSubscriber(Subscriber):
         # mode="json" makes types such as set and SecretStr JSON-safe.
         if hasattr(event, "model_dump"):
             return event.model_dump(mode="json")
-        return event.__dict__
+        return dict(event.__dict__)
 
     @classmethod
     def _event_size(cls, event: Event) -> int:

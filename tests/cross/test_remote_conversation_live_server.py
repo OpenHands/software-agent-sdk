@@ -6,14 +6,14 @@ while keeping the LLM deterministic via monkeypatching.
 
 import json
 import os
-import shutil
 import sys
 import tempfile
 import textwrap
 import threading
 import time
 from collections.abc import Generator
-from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -21,18 +21,18 @@ from uuid import UUID
 
 import httpx
 import pytest
-import uvicorn
 from fastapi import WebSocket
+from filelock import FileLock
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
 from openai.types.responses import ResponseInputItemParam
 from pydantic import SecretStr
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect
 
-from openhands.agent_server.__main__ import preload_modules
 from openhands.agent_server.config import load_config
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
 from openhands.sdk.conversation import RemoteConversation
+from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -44,11 +44,15 @@ from openhands.sdk.event import (
     MessageEvent,
     ObservationEvent,
     PauseEvent,
+    SecurityAnalysisEvent,
     SystemPromptEvent,
 )
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
+from openhands.sdk.io.local import LocalFileStore
+from openhands.sdk.llm import MessageToolCall
+from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.skills import Skill
 from openhands.sdk.subagent import AgentDefinition
 from openhands.sdk.subagent.registry import (
@@ -58,139 +62,13 @@ from openhands.sdk.subagent.registry import (
     register_agent,
     register_agent_if_absent,
 )
+from openhands.sdk.testing import TestLLM
+from openhands.sdk.tool import Tool
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace import RemoteWorkspace
-from openhands.workspace.docker.workspace import find_available_tcp_port
-
-
-@contextmanager
-def live_server_env(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    import_modules: str | None = None,
-    session_api_keys: list[str] | None = None,
-    deferred_init: bool = False,
-    config_overrides: dict[str, object] | None = None,
-) -> Generator[dict]:
-    """Launch a real FastAPI server backed by temp workspace and conversations.
-
-    We set OPENHANDS_AGENT_SERVER_CONFIG_PATH before creating the app so that
-    routers pick up the correct default config and in-memory services.
-    """
-
-    # Create an isolated config pointing to tmp dirs
-    conversations_path = tmp_path / "conversations"
-    workspace_path = tmp_path / "workspace"
-
-    # Ensure clean directories (both tmp and any leftover in cwd)
-    # Clean up any leftover directories from previous runs in current working directory
-    cwd_conversations = Path("workspace/conversations")
-    if cwd_conversations.exists():
-        shutil.rmtree(cwd_conversations)
-
-    # Also clean up the workspace directory entirely to be safe
-    cwd_workspace = Path("workspace")
-    if cwd_workspace.exists():
-        # Only remove conversations subdirectory to avoid interfering with other tests
-        for item in cwd_workspace.iterdir():
-            if item.name == "conversations":
-                shutil.rmtree(item)
-
-    # Clean up tmp directories
-    if conversations_path.exists():
-        shutil.rmtree(conversations_path)
-    if workspace_path.exists():
-        shutil.rmtree(workspace_path)
-
-    conversations_path.mkdir(parents=True, exist_ok=True)
-    workspace_path.mkdir(parents=True, exist_ok=True)
-
-    # Verify the conversations directory is truly empty
-    assert not list(conversations_path.iterdir()), (
-        f"Conversations path not empty: {list(conversations_path.iterdir())}"
-    )
-
-    cfg: dict[str, object] = {
-        "session_api_keys": session_api_keys or [],
-        "conversations_path": str(conversations_path),
-        "workspace_path": str(workspace_path),
-        "bash_events_dir": str(tmp_path / "bash-events"),
-    }
-    if deferred_init:
-        cfg.update(deferred_init=True, secret_key="test-bootstrap-key")
-    cfg.update(config_overrides or {})
-    cfg_file = tmp_path / "config.json"
-    cfg_file.write_text(json.dumps(cfg))
-
-    # Ensure default config uses our file and disable any env key override
-    monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg_file))
-    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / ".openhands"))
-    monkeypatch.delenv("OH_CONVERSATIONS_PATH", raising=False)
-    monkeypatch.delenv("SESSION_API_KEY", raising=False)
-    monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
-    monkeypatch.delenv("TMUX_TMPDIR", raising=False)
-
-    if import_modules is not None:
-        preload_modules(import_modules)
-
-    # Build app after env is set
-    from openhands.agent_server.api import create_app
-    from openhands.agent_server.config import Config
-    from openhands.agent_server.persistence import reset_stores
-
-    reset_stores()
-    cfg_obj = Config.model_validate_json(cfg_file.read_text())
-
-    app = create_app(cfg_obj)
-
-    # Start uvicorn on a free port
-    port = find_available_tcp_port()
-    config = uvicorn.Config(
-        app, host="127.0.0.1", port=port, log_level="warning", ws="wsproto"
-    )
-    server = uvicorn.Server(config)
-
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-
-    # Wait for the server to be ready with health check
-
-    base_url = f"http://127.0.0.1:{port}"
-    server_ready = False
-    for attempt in range(50):  # Wait up to 5 seconds
-        try:
-            with httpx.Client() as client:
-                response = client.get(f"{base_url}/health", timeout=2.0)
-                if response.status_code == 200:
-                    server_ready = True
-                    break
-        except (httpx.RequestError, httpx.TimeoutException):
-            pass
-        time.sleep(0.1)
-
-    if not server_ready:
-        raise RuntimeError("Server failed to start within timeout")
-
-    try:
-        yield {
-            "app": app,
-            "conversation_service": (
-                None if deferred_init else app.state.conversation_service
-            ),
-            "host": f"http://127.0.0.1:{port}",
-            "workspace_path": workspace_path,
-        }
-    finally:
-        # uvicorn.Server lacks a robust shutdown API here; rely on daemon thread exit.
-        server.should_exit = True
-        thread.join(timeout=2)
-
-        # Clean up any leftover directories created during the test
-        cwd_conversations = Path("workspace/conversations")
-        if cwd_conversations.exists():
-            shutil.rmtree(cwd_conversations)
-        reset_stores()
+from openhands.tools.file_editor import FileEditorTool
+from tests.cross.conftest import live_server_env
 
 
 def _assert_secret(value: "str | SecretStr", expected: str) -> None:
@@ -3117,3 +2995,260 @@ def test_interrupt_endpoint_cancels_running_conversation(
         assert events_resp.status_code == 200
         items = events_resp.json()["items"]
         assert len(items) >= 1, f"Expected at least one InterruptEvent, got: {items}"
+
+
+@pytest.mark.parametrize(
+    ("lock_file", "method", "path", "payload", "expected_status"),
+    [
+        ("profiles/.profiles.lock", "GET", "/v1/models", None, 200),
+        (
+            "profiles/.profiles.lock",
+            "PATCH",
+            "/api/settings",
+            {"active_profile": "qa-missing"},
+            404,
+        ),
+        (
+            "agent-profiles/.agent-profiles.lock",
+            "GET",
+            "/api/settings/secrets?agent_profile_id=qa-missing",
+            None,
+            404,
+        ),
+    ],
+)
+def test_profile_store_consumers_keep_live_server_responsive(
+    server_env, tmp_path, lock_file, method, path, payload, expected_status
+):
+    lock_path = tmp_path / ".openhands" / lock_file
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    held = FileLock(lock_path, thread_local=False)
+    held.acquire()
+    safety = threading.Timer(5.0, held.release)
+    safety.start()
+    try:
+        with (
+            httpx.Client(base_url=server_env["host"], timeout=10) as client,
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            waiting = executor.submit(client.request, method, path, json=payload)
+            time.sleep(0.3)
+            started = time.monotonic()
+            alive = client.get("/alive")
+            assert alive.status_code == 200
+            assert time.monotonic() - started < 2.0
+            assert not waiting.done()
+            held.release()
+            response = waiting.result(timeout=5)
+            assert response.status_code == expected_status, response.text
+    finally:
+        safety.cancel()
+        held.release(force=True)
+
+
+def test_secret_masked_timestamp_cursor_with_live_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    year = datetime.now().year
+    # Events are stamped in the next year if the test runs across New Year.
+    secrets = {"YEAR": str(year), "NEXT_YEAR": str(year + 1)}
+    target = tmp_path / "synthetic.txt"
+    target.write_text(f"synthetic content {year}")
+    scripted = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                tool_calls=[
+                    MessageToolCall(
+                        id="call-view",
+                        name=FileEditorTool.name,
+                        arguments=json.dumps({"command": "view", "path": str(target)}),
+                        origin="completion",
+                    )
+                ],
+            ),
+            Message(
+                role="assistant",
+                tool_calls=[
+                    MessageToolCall(
+                        id="call-finish",
+                        name="finish",
+                        arguments='{"message": "done"}',
+                        origin="completion",
+                    )
+                ],
+            ),
+        ],
+        model="gpt-4o-mini",
+    )
+
+    async def acompletion(self, messages, tools=None, **kwargs):
+        return await scripted.acompletion(messages, tools=tools, **kwargs)
+
+    def completion(self, messages, **kwargs):
+        return TestLLM.from_messages(
+            [Message(role="assistant", content=[TextContent(text="Timestamp test")])]
+        ).completion(messages, **kwargs)
+
+    monkeypatch.setattr(LLM, "completion", completion)
+    monkeypatch.setattr(LLM, "acompletion", acompletion)
+    with live_server_env(tmp_path / "server", monkeypatch) as env:
+        workspace = RemoteWorkspace(
+            host=env["host"], working_dir=str(env["workspace_path"])
+        )
+        agent = Agent(
+            llm=LLM(model="gpt-4o-mini", api_key=SecretStr("unused")),
+            tools=[Tool(name=FileEditorTool.name)],
+        )
+        conversation = Conversation(
+            agent=agent,
+            workspace=workspace,
+            visualizer=None,
+            secrets=secrets,
+            delete_on_close=False,
+        )
+        try:
+            conversation.set_security_analyzer(LLMSecurityAnalyzer())
+            conversation.send_message("Read the synthetic file and finish.")
+            conversation.run()
+            endpoint = f"/api/conversations/{conversation.id}/events/search"
+            with httpx.Client(base_url=env["host"], trust_env=False) as client:
+                response = client.get(endpoint, params={"sort_order": "TIMESTAMP_DESC"})
+                assert response.status_code == 200, response.text
+                items = response.json()["items"]
+                analysis = next(
+                    i for i in items if i["kind"] == "SecurityAnalysisEvent"
+                )
+                cursor = analysis["timestamp"]
+                older = client.get(endpoint, params={"timestamp__lt": cursor})
+                assert older.status_code == 200, older.text
+                newer = client.get(endpoint, params={"timestamp__gte": cursor})
+                assert newer.status_code == 200, newer.text
+                assert older.json()["items"]
+                assert newer.json()["items"]
+                assert all(i["timestamp"] < cursor for i in older.json()["items"])
+                assert all(i["timestamp"] >= cursor for i in newer.json()["items"])
+                assert {i["id"] for i in items} == {
+                    i["id"] for i in older.json()["items"] + newer.json()["items"]
+                }
+                for item in items:
+                    datetime.fromisoformat(item["timestamp"])
+                observations = [i for i in items if i["kind"] == "ObservationEvent"]
+                assert any("<secret-hidden>" in json.dumps(i) for i in observations)
+
+        finally:
+            conversation.close()
+
+        event_paths = list((tmp_path / "server").rglob("events/*.json"))
+        (analysis_path,) = [
+            p for p in event_paths if json.loads(p.read_text())["id"] == analysis["id"]
+        ]
+        stored = json.loads(analysis_path.read_text())
+        assert stored["timestamp"] == cursor
+        assert cursor[:4] in secrets.values()
+        log = EventLog(LocalFileStore(str(analysis_path.parent.parent)))
+        restored = log[log.get_index(analysis["id"])]
+        assert isinstance(restored, SecurityAnalysisEvent)
+        assert restored.timestamp == cursor
+
+
+def test_max_budget_per_run_set_updated_and_cleared_over_live_server(
+    server_env, monkeypatch: pytest.MonkeyPatch
+):
+    """The budget set at creation and changed via PATCH governs the live run."""
+    from openhands.sdk.conversation.exceptions import ConversationRunError
+    from openhands.sdk.llm.llm_response import LLMResponse
+
+    llm_calls = 0
+
+    def fake_completion_costing_one_dollar(
+        self, messages, tools, add_security_risk_prediction=False, **kwargs
+    ):  # type: ignore[no-untyped-def]
+        nonlocal llm_calls
+        llm_calls += 1
+        # A think call never finishes the run, so only a limit can stop it.
+        litellm_msg = LiteLLMMessage.model_validate(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": f"call_think_{llm_calls}",
+                        "type": "function",
+                        "function": {
+                            "name": "think",
+                            "arguments": '{"thought": "still working"}',
+                        },
+                    }
+                ],
+            }
+        )
+        raw_response = ModelResponse(
+            id=f"resp-{llm_calls}",
+            created=int(time.time()),
+            model="test-model",
+            choices=[Choices(index=0, finish_reason="stop", message=litellm_msg)],
+        )
+        self.metrics.add_cost(1.0)
+        return LLMResponse(
+            message=Message.from_llm_chat_message(litellm_msg),
+            metrics=self.metrics.get_snapshot(),
+            raw_response=raw_response,
+        )
+
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion_costing_one_dollar(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(
+        LLM, "completion", fake_completion_costing_one_dollar, raising=True
+    )
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
+
+    agent = Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(
+        agent=agent,
+        workspace=workspace,
+        max_iteration_per_run=12,
+        max_budget_per_run=2.5,
+        stuck_detection=False,
+    )
+    url = f"{server_env['host']}/api/conversations/{conv.id}"
+
+    def run_and_get_error_code() -> str:
+        conv.send_message("keep going")
+        with pytest.raises(ConversationRunError) as exc_info:
+            conv.run(poll_interval=0.1, timeout=60)
+        assert exc_info.value.conversation_error is not None
+        return exc_info.value.conversation_error.code
+
+    try:
+        with httpx.Client(timeout=10) as client:
+            assert client.get(url).json()["max_budget_per_run"] == 2.5
+
+            assert run_and_get_error_code() == "MaxBudgetReached"
+            assert llm_calls == 3
+
+            for invalid in (0, -1):
+                resp = client.patch(url, json={"max_budget_per_run": invalid})
+                assert resp.status_code == 422
+
+            # Omitting the field leaves the budget untouched.
+            assert client.patch(url, json={"title": "renamed"}).status_code == 200
+            assert client.get(url).json()["max_budget_per_run"] == 2.5
+
+            resp = client.patch(url, json={"max_budget_per_run": 6})
+            assert resp.status_code == 200
+            assert client.get(url).json()["max_budget_per_run"] == 6
+            assert run_and_get_error_code() == "MaxBudgetReached"
+            assert llm_calls == 6
+
+            resp = client.patch(url, json={"max_budget_per_run": None})
+            assert resp.status_code == 200
+            assert client.get(url).json()["max_budget_per_run"] is None
+            assert run_and_get_error_code() == "MaxIterationsReached"
+            assert llm_calls == 18
+    finally:
+        conv.close()

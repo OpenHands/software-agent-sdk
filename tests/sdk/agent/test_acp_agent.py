@@ -177,11 +177,11 @@ def _make_state(tmp_path) -> ConversationState:
 
 def test_logs_matching_acp_provider_version(caplog):
     with caplog.at_level("INFO"):
-        _log_acp_provider_version("codex-acp", "1.10.0")
+        _log_acp_provider_version("codex-acp", "2.2.2")
 
     assert "provider=codex" in caplog.text
-    assert "pinned_version='1.10.0'" in caplog.text
-    assert "reported_version='1.10.0'" in caplog.text
+    assert "pinned_version='2.2.2'" in caplog.text
+    assert "reported_version='2.2.2'" in caplog.text
     assert "mismatch" not in caplog.text
 
 
@@ -3439,8 +3439,10 @@ class TestACPAgentCleanup:
         env: dict[str, str] = {}
         agent._materialise_file_secrets(state, env)
         assert Path(env["CODEX_HOME"], "auth.json").read_text() == valid
-        assert not durable_auth.exists()
+        # The legacy durable copy is replaced by a link to the temporary file.
+        assert durable_auth.is_symlink()
         agent.close()
+        assert not durable_auth.exists() and not durable_auth.is_symlink()
 
     def test_failed_init_keeps_agent_reusable(self, tmp_path):
         agent = _make_agent()
@@ -6457,6 +6459,44 @@ class TestACPSessionIdPersistence:
         conn.new_session.assert_awaited_once()
         conn.load_session.assert_not_awaited()
         assert agent._session_id == "fresh-sess"
+
+    @pytest.mark.parametrize("with_skills", [True, False])
+    def test_skills_directory_is_shared_with_the_session(self, tmp_path, with_skills):
+        context = (
+            AgentContext(
+                skills=[Skill(name="s", content="body", is_agentskills_format=True)]
+            )
+            if with_skills
+            else None
+        )
+        agent = _make_agent().model_copy(update={"agent_context": context})
+        state = _make_state(tmp_path)
+        agent._materialize_skills(state)
+        conn = self._make_conn()
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        extra = conn.new_session.await_args.kwargs["additional_directories"]
+        assert extra == ([str(agent._skills_root)] if with_skills else None)
+
+    def test_skills_directory_is_not_sent_when_the_server_lacks_the_capability(
+        self, tmp_path
+    ):
+        agent = _make_agent().model_copy(
+            update={
+                "agent_context": AgentContext(
+                    skills=[Skill(name="s", content="body", is_agentskills_format=True)]
+                )
+            }
+        )
+        state = _make_state(tmp_path)
+        agent._materialize_skills(state)
+        conn = self._make_conn()
+        conn.initialize.return_value.agent_capabilities.session_capabilities = None
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        assert conn.new_session.await_args.kwargs["additional_directories"] is None
 
     def test_cancel_drain_restart_keeps_retry_flag_when_init_fails(self, tmp_path):
         """A failed replacement session should leave the deferred restart armed."""
@@ -9836,7 +9876,7 @@ class TestACPDataDirIsolation:
             encoding="utf-8"
         ) == '{"tokens": "x"}'
 
-    def test_binding_overrides_isolated_codex_home(self, tmp_path):
+    def test_binding_links_auth_into_durable_codex_home(self, tmp_path):
         agent = self._agent(["codex-acp"])
         state = self._H._state(tmp_path)
         durable_codex_home = Path(state.persistence_dir or "") / "acp" / "codex"
@@ -9858,12 +9898,14 @@ class TestACPDataDirIsolation:
             env = self._H._run_start(agent, state, conn=self._H._make_conn())
         try:
             codex_home = Path(env["CODEX_HOME"])
-            assert codex_home != durable_codex_home
-            assert (codex_home / "auth.json").read_text(encoding="utf-8") == auth
-            assert not durable_auth.exists()
-            assert durable_codex_home.exists()
+            assert codex_home == durable_codex_home
+            assert durable_auth.is_symlink()
+            assert not durable_auth.resolve().is_relative_to(durable_codex_home)
+            assert durable_auth.read_text(encoding="utf-8") == auth
         finally:
             agent.close()
+        assert not durable_auth.exists() and not durable_auth.is_symlink()
+        assert durable_codex_home.exists()
 
     # --- Claude: isolation applies under either auth mode (#3588) ------------
 

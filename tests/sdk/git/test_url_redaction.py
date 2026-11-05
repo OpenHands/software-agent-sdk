@@ -22,6 +22,13 @@ from openhands.sdk.utils.redact import (
 class TestRedactUrlCredentials:
     """Tests for redact_url_credentials function."""
 
+    def test_uppercase_scheme(self):
+        """A scheme is case-insensitive, so its credentials must still be masked."""
+        url = "HTTPS://oauth2:SECRET@github.com/o/r.git"
+        result = redact_url_credentials(url)
+        assert result == "HTTPS://****@github.com/o/r.git"
+        assert "SECRET" not in result
+
     def test_https_with_oauth2_token(self):
         """Should redact oauth2 tokens in HTTPS URLs."""
         url = "https://oauth2:SECRET_TOKEN@gitlab.com/org/repo.git"

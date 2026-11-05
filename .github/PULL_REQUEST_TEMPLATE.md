@@ -58,8 +58,8 @@ before/after of your change, then link it here via htmlpreview so reviewers see 
 
   https://htmlpreview.github.io/?https://github.com/<your-fork>/<repo>/blob/<your-branch>/.pr/design.html
 
-The `.pr/` directory is temporary. After the PR merges to `main`, the workflow opens or
-updates a cleanup PR to remove it automatically. See
+The `.pr/` directory is temporary. It stays on `main` after the PR merges, until the next
+release PR removes it. See
 CONTRIBUTING.md ("Design doc for non-trivial PRs") for details.
 -->
 
