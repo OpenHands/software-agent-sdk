@@ -3,6 +3,7 @@
 import asyncio
 import signal
 from unittest.mock import AsyncMock, MagicMock, call, patch
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -271,9 +272,35 @@ def test_get_vscode_url_no_token(vscode_service):
     assert url is None
 
 
+def test_get_vscode_url_none_when_not_running(vscode_service):
+    """A token alone is not a server: a keyed server seeds the token before
+    start() runs, so a server that never started must not be advertised."""
+    vscode_service.connection_token = "session-key"
+    assert vscode_service.get_vscode_url() is None
+
+    # A server that exited is not advertised either.
+    vscode_service.process = MagicMock(returncode=1)
+    assert vscode_service.get_vscode_url() is None
+
+
+@pytest.mark.asyncio
+async def test_get_vscode_url_none_after_failed_start(
+    vscode_service, mock_openvscode_binary
+):
+    """start() mints a token before its port check; failing that check must
+    not leave a URL behind."""
+    vscode_service.openvscode_server_root = mock_openvscode_binary
+    with patch.object(vscode_service, "_is_port_available", return_value=False):
+        assert await vscode_service.start() is False
+
+    assert vscode_service.connection_token is not None
+    assert vscode_service.get_vscode_url() is None
+
+
 def test_get_vscode_url_with_token(vscode_service):
     """Test getting VSCode URL with token."""
     vscode_service.connection_token = "test-token-123"
+    vscode_service.process = MagicMock(returncode=None)  # running
 
     # Test with default base_url (should use configured port)
     url = vscode_service.get_vscode_url()
@@ -287,10 +314,44 @@ def test_get_vscode_url_with_token(vscode_service):
     assert custom_url == "http://example.com:9000/?tkn=test-token-123&folder=workspace"
 
 
+@pytest.mark.parametrize(
+    "workspace_dir",
+    ["/tmp/qa f16&x=1#frag", "/w/a?b=c", "/w/100% +plus", "/workspace"],
+)
+def test_get_vscode_url_folder_round_trips(vscode_service, workspace_dir):
+    """The folder parameter decodes back to the exact workspace path."""
+    vscode_service.connection_token = "test-token-123"
+    vscode_service.process = MagicMock(returncode=None)  # running
+
+    url = vscode_service.get_vscode_url(workspace_dir=workspace_dir)
+
+    assert url is not None
+    parts = urlsplit(url)
+    assert parts.fragment == ""
+    assert parse_qs(parts.query) == {
+        "tkn": ["test-token-123"],
+        "folder": [workspace_dir],
+    }
+
+
+def test_get_vscode_url_keeps_slashes_readable(vscode_service):
+    """Path separators in the folder parameter are not percent-encoded."""
+    vscode_service.connection_token = "test-token-123"
+    vscode_service.process = MagicMock(returncode=None)  # running
+
+    url = vscode_service.get_vscode_url(workspace_dir="/tmp/qa f16&x=1#frag")
+
+    assert url == (
+        f"http://localhost:{vscode_service.port}/"
+        "?tkn=test-token-123&folder=/tmp/qa%20f16%26x%3D1%23frag"
+    )
+
+
 def test_get_vscode_url_with_custom_port():
     """Test getting VSCode URL with custom port."""
     service = VSCodeService(port=9001)
     service.connection_token = "test-token-456"
+    service.process = MagicMock(returncode=None)  # running
 
     url = service.get_vscode_url()
     assert url == "http://localhost:9001/?tkn=test-token-456&folder=workspace"
@@ -304,6 +365,7 @@ def test_get_vscode_url_includes_server_base_path():
     """
     service = VSCodeService(port=19000, server_base_path="/vscode")
     service.connection_token = "test-token-789"
+    service.process = MagicMock(returncode=None)  # running
 
     assert (
         service.get_vscode_url()
@@ -321,17 +383,18 @@ def test_get_vscode_url_base_path_with_caller_supplied_base_url():
     """
     service = VSCodeService(port=19000, server_base_path="vscode")
     service.connection_token = "test-token-789"
+    service.process = MagicMock(returncode=None)  # running
 
-    expected = "https://example.com/vscode/?tkn=test-token-789&folder=%2Fsrv%2Fwork"
+    expected = "https://example.com/vscode/?tkn=test-token-789&folder=/srv/work"
     assert (
         service.get_vscode_url(
-            base_url="https://example.com", workspace_dir="%2Fsrv%2Fwork"
+            base_url="https://example.com", workspace_dir="/srv/work"
         )
         == expected
     )
     assert (
         service.get_vscode_url(
-            base_url="https://example.com/", workspace_dir="%2Fsrv%2Fwork"
+            base_url="https://example.com/", workspace_dir="/srv/work"
         )
         == expected
     )
@@ -345,6 +408,7 @@ def test_get_vscode_url_without_base_path_is_unchanged():
     """
     service = VSCodeService(port=8001)
     service.connection_token = "test-token-000"
+    service.process = MagicMock(returncode=None)  # running
 
     assert (
         service.get_vscode_url()

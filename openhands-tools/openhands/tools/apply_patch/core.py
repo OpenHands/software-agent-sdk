@@ -455,6 +455,10 @@ def load_files(paths: list[str], open_fn: Callable[[str], str]) -> dict[str, str
             FileNotFoundError
         ) as exc:  # pragma: no cover - exercised via higher-level tests
             raise DiffError(f"Delete File Error: Missing File: {path}") from exc
+        except (OSError, UnicodeDecodeError) as exc:
+            # An unreadable path (a directory, a denied file, bytes that are not
+            # UTF-8 text) must surface as a tool error, not escape the executor.
+            raise DiffError(f"Cannot read {path}: {exc}") from exc
     return orig
 
 

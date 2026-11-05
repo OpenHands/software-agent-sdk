@@ -122,11 +122,6 @@
           "unknown"
         ],
         [
-          "models/agent-profile.d.ts::interface:OpenHandsAgentProfile/property:skills::unknown",
-          "unknown",
-          "unknown[]"
-        ],
-        [
           "models/api.d.ts::interface:EventPage/type-parameter:TEvent::unknown",
           "unknown",
           "unknown"

@@ -8,6 +8,7 @@ import pytest
 from openhands.sdk.plugin import (
     AgentPluginsFormat,
     ClaudeCodePluginFormat,
+    Plugin,
     PluginManifest,
     detect_format,
 )
@@ -77,7 +78,7 @@ def write_extension_components(root: Path) -> None:
 
 
 class TestDetect:
-    """Detection is presence-only: a root plugin.json claims the directory."""
+    """A root plugin.json claims the directory unless it lacks a $schema key."""
 
     def test_detects_root_manifest(self, tmp_path: Path):
         write_manifest(tmp_path / "p", EXAMPLE_MANIFEST)
@@ -99,6 +100,41 @@ class TestDetect:
         write_manifest(tmp_path / "p", "{not json")
 
         assert AgentPluginsFormat.detect(tmp_path / "p") is True
+
+    def test_claims_manifest_with_unsupported_schema(self, tmp_path: Path):
+        write_manifest(
+            tmp_path / "p", {"$schema": "https://example.com/x", "name": "p"}
+        )
+
+        assert AgentPluginsFormat.detect(tmp_path / "p") is True
+
+    def test_claims_non_object_manifest(self, tmp_path: Path):
+        write_manifest(tmp_path / "p", '["not", "an", "object"]')
+
+        assert AgentPluginsFormat.detect(tmp_path / "p") is True
+
+    def test_ignores_manifest_without_schema(self, tmp_path: Path):
+        """Another tool's root plugin.json (no $schema) is not Agent Plugins."""
+        write_manifest(tmp_path / "p", {"name": "p", "skills": ["./skills/"]})
+
+        assert AgentPluginsFormat.detect(tmp_path / "p") is False
+
+    def test_manifest_without_schema_loads_claude_code_layout(self, tmp_path: Path):
+        """Skills of a plugin with a GitHub Copilot style manifest still load."""
+        plugin_dir = tmp_path / "dotnet"
+        write_manifest(
+            plugin_dir, {"name": "dotnet", "version": "0.2.5", "skills": ["./skills/"]}
+        )
+        skill_dir = plugin_dir / "skills" / "csharp-refactoring"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: csharp-refactoring\ndescription: Refactor C#.\n---\nBody\n"
+        )
+
+        assert isinstance(detect_format(plugin_dir), ClaudeCodePluginFormat)
+        plugin = Plugin.load(plugin_dir)
+        assert plugin.name == "dotnet"
+        assert [s.name for s in plugin.get_all_skills()] == ["csharp-refactoring"]
 
     def test_ignores_manifest_directory(self, tmp_path: Path):
         """A plugin.json *directory* is not a manifest."""

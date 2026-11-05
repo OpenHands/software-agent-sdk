@@ -64,11 +64,7 @@ def build_seed_profile(
         llm_profile_ref=active_llm_profile or SEED_PROFILE_NAME,
         agent=agent_settings.agent,
         tools=agent_settings.tools,
-        # Deny-list defaults to [] — the seeded default profile launches with all
-        # discovered skills, matching the "all skills by default" model. No names
-        # are frozen, so nothing can dangle at launch (the freeze-by-name seed
-        # was the #4017 launch-break; the deny-list removes that failure mode).
-        disabled_skills=[],
+        disabled_skills=list(context.disabled_skills),
         persona=agent_settings.persona,
         system_message_suffix=context.system_message_suffix,
         condenser=agent_settings.condenser,

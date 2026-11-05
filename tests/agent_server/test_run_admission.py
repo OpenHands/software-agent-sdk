@@ -11,6 +11,7 @@ import pytest_asyncio
 
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import ConversationRunLimitExceeded
+from openhands.agent_server.openai.service import _run_agent
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -259,6 +260,50 @@ async def test_message_retained_but_run_rejected(runs):
         )
     assert spare._run_task is None
     assert spare.get_conversation().state.last_user_message_id is not None
+
+
+async def test_gateway_turn_refused_before_message_is_saved(runs, tmp_path):
+    holders = [await runs.create() for _ in range(2)]
+    spare = await runs.create()
+    for holder in holders:
+        await holder.run()
+    events_before = len((await spare.get_state()).events)
+    for _ in range(2):  # an OpenAI client retries a 429 with the same request
+        with pytest.raises(
+            ConversationRunLimitExceeded, match="Retry the request later"
+        ):
+            await _run_agent(
+                start_request=StartConversationRequest(
+                    agent=Agent(llm=LLM(model="gpt-4o", usage_id="test"), tools=[]),
+                    workspace=LocalWorkspace(working_dir=str(tmp_path)),
+                ),
+                user_content=[TextContent(text="hi")],
+                conversation_service=runs.owner,
+                reusable_conversation_id=spare.stored.id,
+            )
+    assert spare._run_task is None
+    assert len((await spare.get_state()).events) == events_before
+    assert spare.get_conversation().state.last_user_message_id is None
+    runs.release.set()
+    await asyncio.gather(*(h.wait_for_run_completion(5) for h in holders))
+    slot = await spare.reserve_run_slot()
+    assert slot is not None
+    await spare.send_message(
+        Message(role="user", content=[TextContent(text="hi")]),
+        run=True,
+        run_slot=slot,
+    )
+    slot.release()
+    await spare.wait_for_run_completion(5)
+    assert runs.tracker.entered == 3
+    assert runs.tracker.active == 0
+
+
+async def test_reservation_skipped_while_conversation_holds_its_permit(runs):
+    holders = [await runs.create() for _ in range(2)]
+    for holder in holders:
+        await holder.run()
+    assert await holders[0].reserve_run_slot() is None
 
 
 async def test_goal_rejected_before_scheduling(runs):

@@ -22,6 +22,13 @@ from openhands.sdk.utils.redact import (
 class TestRedactUrlCredentials:
     """Tests for redact_url_credentials function."""
 
+    def test_uppercase_scheme(self):
+        """A scheme is case-insensitive, so its credentials must still be masked."""
+        url = "HTTPS://oauth2:SECRET@github.com/o/r.git"
+        result = redact_url_credentials(url)
+        assert result == "HTTPS://****@github.com/o/r.git"
+        assert "SECRET" not in result
+
     def test_https_with_oauth2_token(self):
         """Should redact oauth2 tokens in HTTPS URLs."""
         url = "https://oauth2:SECRET_TOKEN@gitlab.com/org/repo.git"
@@ -286,6 +293,17 @@ class TestRunGitCommandCredentialRedaction:
                 run_git_command(self._args())
         assert CREDENTIAL_URL not in exc_info.value.command
         assert REDACTED_URL in exc_info.value.command
+
+    def test_nonzero_returncode_redacts_embedded_url(self):
+        args = ["git", "check-ref-format", f"refs/heads/{CREDENTIAL_URL}"]
+        completed = subprocess.CompletedProcess(
+            args=args, returncode=1, stdout="", stderr="invalid ref"
+        )
+        with patch("subprocess.run", return_value=completed):
+            with pytest.raises(GitCommandError) as exc_info:
+                run_git_command(args)
+        assert all("SUPERSECRET" not in arg for arg in exc_info.value.command)
+        assert f"refs/heads/{REDACTED_URL}" in exc_info.value.command
 
     def test_timeout_expired_redacts_command(self):
         with patch(

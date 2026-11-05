@@ -4,6 +4,7 @@ import asyncio
 import os
 import signal
 from pathlib import Path
+from urllib.parse import quote, urlencode
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import sanitized_env
@@ -120,9 +121,11 @@ class VSCodeService:
             workspace_dir: Path to workspace directory
 
         Returns:
-            VSCode URL with token, or None if not available
+            VSCode URL with token, or None if the server is not running
         """
-        if self.connection_token is None:
+        # A keyed server seeds the token before start() runs, so the token
+        # alone does not mean a server is there to open.
+        if self.connection_token is None or not self.is_running():
             return None
 
         if base_url is None:
@@ -132,7 +135,14 @@ class VSCodeService:
         if self.server_base_path:
             base = f"{base}/{self.server_base_path.strip('/')}"
 
-        return f"{base}/?tkn={self.connection_token}&folder={workspace_dir}"
+        # Encode the values so a path with '&', '#', '?' or spaces decodes back
+        # to the same folder; '/' stays readable.
+        query = urlencode(
+            {"tkn": self.connection_token, "folder": workspace_dir},
+            quote_via=quote,
+            safe="/",
+        )
+        return f"{base}/?{query}"
 
     def is_running(self) -> bool:
         """Check if VSCode server is running.

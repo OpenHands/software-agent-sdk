@@ -144,7 +144,7 @@ def _deep_merge(
     return result
 
 
-PERSISTED_SETTINGS_SCHEMA_VERSION = 5
+PERSISTED_SETTINGS_SCHEMA_VERSION = 6
 
 
 class PersistedSettings(BaseModel):
@@ -246,8 +246,9 @@ class PersistedSettings(BaseModel):
         ``agent_settings_diff`` is applied via :func:`apply_agent_settings_diff`:
         RFC 7386 merge-patch semantics with kind-switch awareness. When
         ``agent_kind`` changes, the diff is applied onto a fresh base of the
-        target variant. Same-kind diffs deep-merge within the variant. A
-        ``None`` value at any level removes that key and resets it to default.
+        target variant that keeps only the server-wide settings.
+        Same-kind diffs deep-merge within the variant. A ``None`` value at any
+        level removes that key and resets it to default.
 
         ``conversation_settings_diff`` uses :func:`_deep_merge`: ``None`` inside
         a nested map removes that entry; ``None`` on a top-level field flows to
@@ -400,8 +401,10 @@ class PersistedSettings(BaseModel):
           step with the nested shape change.
         - **v4**: nested ``agent_settings`` advanced to schema v7
           (dropped the deprecated ``llm`` from ACP settings).
-        - **v5** (current): nested ``agent_settings`` advanced to schema v8
+        - **v5**: nested ``agent_settings`` advanced to schema v8
           (retired tool switches folded into ``tools``).
+        - **v6** (current): nested ``agent_settings`` advanced to schema v9
+          (removed deprecated live input paths; persisted inputs still migrate).
         """
         if not isinstance(data, dict):
             return cls.model_validate(data, context=context)

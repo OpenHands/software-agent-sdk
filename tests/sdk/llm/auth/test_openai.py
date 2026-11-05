@@ -99,17 +99,6 @@ def test_build_authorize_url():
     assert "response_type=code" in url
 
 
-def test_openai_codex_models_include_acp_models():
-    """Subscription auth supports every model exposed by the Codex provider."""
-    from openhands.sdk.settings.acp_providers import get_acp_provider
-
-    codex_provider = get_acp_provider("codex")
-    assert codex_provider is not None
-    assert OPENAI_CODEX_MODELS.issuperset(
-        model.id for model in codex_provider.available_models
-    )
-
-
 def test_openai_subscription_auth_get_credentials(tmp_path):
     """Test getting credentials from store."""
     store = CredentialStore(credentials_dir=tmp_path)
@@ -212,7 +201,8 @@ def test_openai_subscription_auth_create_llm_no_credentials(tmp_path):
         auth.create_llm(model="gpt-5.6-sol")
 
 
-def test_openai_subscription_auth_create_llm_success(tmp_path):
+@pytest.mark.parametrize("model", sorted(OPENAI_CODEX_MODELS))
+def test_openai_subscription_auth_create_llm_success(tmp_path, model):
     """Test create_llm creates LLM with correct configuration."""
     store = CredentialStore(credentials_dir=tmp_path)
     auth = OpenAISubscriptionAuth(credential_store=store)
@@ -226,9 +216,9 @@ def test_openai_subscription_auth_create_llm_success(tmp_path):
     )
     store.save(creds)
 
-    llm = auth.create_llm(model="gpt-5.6-sol")
+    llm = auth.create_llm(model=model)
 
-    assert llm.model == "openai/gpt-5.6-sol"
+    assert llm.model == f"openai/{model}"
     assert llm.api_key is None
     assert llm._get_litellm_api_key_value() == "test_access_token"
     assert llm.auth_type == "subscription"

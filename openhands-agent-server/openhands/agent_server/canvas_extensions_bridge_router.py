@@ -77,11 +77,20 @@ async def delete_app_backend_session_endpoint(
     return response
 
 
+# The root routes have no ``{path}`` segment, so they take no ``path`` argument:
+# FastAPI would bind it from a ``?path=`` query parameter instead.
 @app_backend_bridge_router.api_route(
     "/app-backends/{extension_name}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
     include_in_schema=False,
 )
+async def proxy_app_backend_http_root_endpoint(
+    extension_name: AppBackendNamePath,
+    request: Request,
+) -> Response:
+    return await proxy_app_backend_http(request, extension_name, "")
+
+
 @app_backend_bridge_router.api_route(
     "/app-backends/{extension_name}/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
@@ -90,16 +99,23 @@ async def delete_app_backend_session_endpoint(
 async def proxy_app_backend_http_endpoint(
     extension_name: AppBackendNamePath,
     request: Request,
-    path: str = "",
+    path: str,
 ) -> Response:
     return await proxy_app_backend_http(request, extension_name, path)
 
 
 @app_backend_bridge_router.websocket("/app-backends/{extension_name}")
+async def proxy_app_backend_websocket_root_endpoint(
+    extension_name: AppBackendNamePath,
+    websocket: WebSocket,
+) -> None:
+    await proxy_app_backend_websocket(websocket, extension_name, "")
+
+
 @app_backend_bridge_router.websocket("/app-backends/{extension_name}/{path:path}")
 async def proxy_app_backend_websocket_endpoint(
     extension_name: AppBackendNamePath,
     websocket: WebSocket,
-    path: str = "",
+    path: str,
 ) -> None:
     await proxy_app_backend_websocket(websocket, extension_name, path)

@@ -140,6 +140,10 @@ def _extract_permission_mode(fm: dict[str, object]) -> str | None:
 def _extract_max_iteration_per_run(fm: dict[str, object]) -> int | None:
     """Extract max iterations per run from frontmatter file."""
     max_iter_raw = fm.get("max_iteration_per_run")
+    # YAML reads an unquoted yes/no/on/off as a bool, and bool is an int in
+    # Python; treating it as a count would silently cap the run at one.
+    if isinstance(max_iter_raw, bool):
+        return None
     if isinstance(max_iter_raw, str):
         return int(max_iter_raw)
     if isinstance(max_iter_raw, int):
@@ -253,7 +257,10 @@ class AgentDefinition(BaseModel):
     )
     mcp_config: dict[str, MCPServer] | None = Field(
         default=None,
-        description="MCP servers for this agent.",
+        description=(
+            "MCP servers for this agent. Ignored when it runs as a delegated "
+            "sub-agent, which always inherits its parent's MCP servers."
+        ),
         examples=[
             {
                 "fetch": {
