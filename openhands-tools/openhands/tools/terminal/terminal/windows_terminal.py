@@ -186,37 +186,47 @@ class WindowsTerminal(TerminalInterface):
         if self._closed:
             return
 
+        self._closed = True
         self._stop_reader.set()
         self._terminate_child_processes()
 
-        if self.process is not None:
+        proc = self.process
+        self.process = None
+
+        if proc is not None:
             try:
-                if self.process.stdin is not None:
-                    self.process.stdin.close()
-            except (OSError, ValueError) as exc:
-                logger.debug("Error closing PowerShell stdin: %s", exc)
+                proc.terminate()
+                proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                logger.warning("PowerShell process did not terminate, forcing kill")
+                try:
+                    proc.kill()
+                    proc.wait(timeout=2.0)
+                except Exception as exc:
+                    logger.debug("Error killing PowerShell process: %s", exc)
+            except Exception as exc:
+                logger.debug("Error terminating PowerShell process: %s", exc)
 
         if self.reader_thread and self.reader_thread.is_alive():
             self.reader_thread.join(timeout=_READER_THREAD_TIMEOUT_SECONDS)
 
-        if self.process is not None:
-            try:
-                if self.process.stdout is not None:
-                    self.process.stdout.close()
-            except (OSError, ValueError) as exc:
-                logger.debug("Error closing PowerShell stdout: %s", exc)
-            try:
-                self.process.terminate()
-                self.process.wait(timeout=5.0)
-            except subprocess.TimeoutExpired:
-                logger.warning("PowerShell process did not terminate, forcing kill")
-                self.process.kill()
-            except Exception as exc:
-                logger.debug("Error terminating PowerShell process: %s", exc)
-            finally:
-                self.process = None
-
-        self._closed = True
+        if proc is not None:
+            if proc.stdin is not None:
+                try:
+                    proc.stdin.close()
+                except (OSError, ValueError) as exc:
+                    logger.debug("Error closing PowerShell stdin: %s", exc)
+            if proc.stdout is not None:
+                if self.reader_thread and self.reader_thread.is_alive():
+                    logger.warning(
+                        "Reader thread still alive after timeout; "
+                        "skipping stdout.close to avoid Windows deadlock"
+                    )
+                else:
+                    try:
+                        proc.stdout.close()
+                    except (OSError, ValueError) as exc:
+                        logger.debug("Error closing PowerShell stdout: %s", exc)
 
     def send_keys(self, text: str, enter: bool = True) -> None:
         """Send text or supported control sequences to the PowerShell session."""
@@ -290,7 +300,11 @@ class WindowsTerminal(TerminalInterface):
         return text.replace("'", "''")
 
     def _write_to_stdin(self, text: str) -> None:
-        if self.process is None or self.process.stdin is None:
+        if (
+            self.process is None
+            or self.process.stdin is None
+            or self.process.poll() is not None
+        ):
             raise RuntimeError("PowerShell stdin is not available")
         try:
             self.process.stdin.write(text.encode("utf-8"))
