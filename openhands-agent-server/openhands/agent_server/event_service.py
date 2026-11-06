@@ -265,6 +265,7 @@ class EventService:
     _closing: bool = field(default=False, init=False)
     _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _gateway_run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    _active_gateway_runs: int = field(default=0, init=False)
     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
     _lease: ConversationLease | None = field(default=None, init=False)
     _lease_generation: int | None = field(default=None, init=False)
