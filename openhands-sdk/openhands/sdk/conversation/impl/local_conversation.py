@@ -1061,9 +1061,10 @@ class LocalConversation(BaseConversation):
         merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
 
         # Discover ambient plugins up front (they are merged further below).
-        # ``None`` means discovery failed: then the previous contributions are
-        # kept and their record is left as is, so a transient failure does not
-        # strip a still-enabled plugin from the resumed conversation.
+        # A plugin that fails to load is skipped, as for a new conversation.
+        # ``None`` means a whole plugin source could not be read (e.g. corrupt
+        # installation metadata): then the previous contributions are kept and
+        # their record is left as is, so a still-enabled plugin is not stripped.
         try:
             ambient_plugins: dict[str, Plugin] | None = load_available_plugins(
                 work_dir=self.workspace.working_dir,
@@ -1081,12 +1082,14 @@ class LocalConversation(BaseConversation):
 
         # Drop what ambient plugins contributed at the last load: ambient
         # discovery only adds, so without this a plugin disabled or removed
-        # since then would keep its skills and MCP servers on resume.
-        stale_skills, stale_servers = (
-            self._previous_ambient_contributions()
-            if ambient_plugins is not None
-            else (set(), set())
-        )
+        # since then would keep its skills and MCP servers on resume. A
+        # conversation persisted before this record existed has none; matching
+        # names alone cannot tell plugin content from caller content.
+        stale_skills: set[str] = set()
+        stale_servers: set[str] = set()
+        if ambient_plugins is not None:
+            stale_skills = set(self._state.ambient_plugin_skills or [])
+            stale_servers = set(self._state.ambient_plugin_mcp_servers or [])
         ambient_contributions_dropped = False
         if merged_context is not None and stale_skills:
             kept = [s for s in merged_context.skills if s.name not in stale_skills]
@@ -1444,14 +1447,6 @@ class LocalConversation(BaseConversation):
             self._hook_processor.run_session_start()
 
         self._plugins_loaded = True
-
-    def _previous_ambient_contributions(self) -> tuple[set[str], set[str]]:
-        # Legacy conversations have no ownership record. Matching names alone
-        # cannot distinguish their caller-supplied content from plugin content.
-        return (
-            set(self._state.ambient_plugin_skills or []),
-            set(self._state.ambient_plugin_mcp_servers or []),
-        )
 
     def _expand_plugin_source(self, source: str) -> str:
         # As strict fetch does: a value in a URL's user info is percent-encoded.

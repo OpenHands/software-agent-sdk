@@ -41,7 +41,7 @@ class MetadataSession:
     def extensions(self) -> dict[str, InstallationInfo]:
         return self.metadata.extensions
 
-    def sync(self, *, strict: bool = False) -> list[InstallationInfo]:
+    def sync(self) -> list[InstallationInfo]:
         """Reconcile metadata with what is actually on disk.
 
         Prunes stale tracked entries whose directories are missing and
@@ -60,7 +60,7 @@ class MetadataSession:
         )
         valid = self.metadata.validate_tracked(self.installed_dir)
         discovered = self.metadata.discover_untracked(
-            self.installed_dir, self.interface, strict=strict
+            self.installed_dir, self.interface
         )
         return valid + discovered
 
@@ -204,8 +204,6 @@ class InstallationMetadata(BaseModel):
         self,
         installed_dir: Path,
         installation_interface: InstallationInterface,
-        *,
-        strict: bool = False,
     ) -> list[InstallationInfo]:
         """Discover extension directories not tracked by the metadata.
 
@@ -232,8 +230,6 @@ class InstallationMetadata(BaseModel):
             try:
                 extension = installation_interface.load_from_dir(item)
             except Exception as e:
-                if strict:
-                    raise
                 logger.debug(f"Skipping directory {item}: {e}")
                 continue
 

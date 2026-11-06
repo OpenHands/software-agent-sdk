@@ -41,9 +41,7 @@ PROJECT_PLUGINS_SUBDIRS = [
 ]
 
 
-def _load_plugins_from_dir(
-    plugins_dir: Path, skip_dirs: set[Path], *, strict: bool = False
-) -> list[Plugin]:
+def _load_plugins_from_dir(plugins_dir: Path, skip_dirs: set[Path]) -> list[Plugin]:
     """Load every plugin subdirectory in ``plugins_dir``.
 
     Mirrors ``Plugin.load_all`` but skips any directory in ``skip_dirs``. This is
@@ -65,8 +63,6 @@ def _load_plugins_from_dir(
         try:
             plugins.append(Plugin.load(item))
         except Exception as e:
-            if strict:
-                raise
             logger.warning(f"Failed to load plugin from {item}: {e}")
     return plugins
 
@@ -111,9 +107,7 @@ def load_user_plugins(*, strict: bool = False) -> list[Plugin]:
     installed_dir = get_installed_plugins_dir().resolve()
 
     for plugins_dir in USER_PLUGINS_DIRS:
-        found = _load_plugins_from_dir(
-            plugins_dir, skip_dirs={installed_dir}, strict=strict
-        )
+        found = _load_plugins_from_dir(plugins_dir, skip_dirs={installed_dir})
         _merge_plugins_by_name(found, seen_names, all_plugins, str(plugins_dir))
 
     # Enabled installed plugins (lower precedence than directory plugins).
@@ -133,7 +127,7 @@ def load_user_plugins(*, strict: bool = False) -> list[Plugin]:
     return all_plugins
 
 
-def load_project_plugins(work_dir: str | Path, *, strict: bool = False) -> list[Plugin]:
+def load_project_plugins(work_dir: str | Path) -> list[Plugin]:
     """Load plugins from project-specific directories.
 
     Scans ``{root}/.agents/plugins`` and ``{root}/.openhands/plugins`` for the
@@ -158,7 +152,7 @@ def load_project_plugins(work_dir: str | Path, *, strict: bool = False) -> list[
     for root in search_roots:
         for subdir in PROJECT_PLUGINS_SUBDIRS:
             plugins_dir = root / subdir
-            found = _load_plugins_from_dir(plugins_dir, skip_dirs=set(), strict=strict)
+            found = _load_plugins_from_dir(plugins_dir, skip_dirs=set())
             _merge_plugins_by_name(found, seen_names, all_plugins, str(plugins_dir))
 
     logger.debug(
@@ -189,8 +183,10 @@ def load_available_plugins(
         include_user: Load user-level plugins (``~/.agents/plugins`` etc.) and
             enabled installed plugins.
         include_project: Load project-level plugins (requires ``work_dir``).
-        strict: Raise on discovery errors so callers can distinguish a failed
-            scan from plugins that have been disabled or removed.
+        strict: Raise when a plugin source cannot be read at all (for example
+            corrupt installation metadata) instead of treating it as empty, so
+            callers can tell a failed scan from plugins that were disabled or
+            removed. A single plugin that fails to load is still skipped.
 
     Returns:
         Dict mapping plugin name → Plugin, with higher-precedence sources
@@ -209,7 +205,7 @@ def load_available_plugins(
 
     if include_project and work_dir:
         try:
-            for plugin in load_project_plugins(work_dir, strict=strict):
+            for plugin in load_project_plugins(work_dir):
                 available[plugin.name] = plugin
         except Exception as e:
             if strict:

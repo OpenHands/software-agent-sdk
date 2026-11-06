@@ -291,7 +291,7 @@ class InstallationManager[T: ExtensionProtocol]:
             interface=self.installation_interface,
             strict=strict,
         ) as session:
-            return session.sync(strict=strict)
+            return session.sync()
 
     def load_installed(self, *, strict: bool = False) -> list[T]:
         """Load all enabled extensions as ``T`` objects.

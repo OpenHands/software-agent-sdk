@@ -695,8 +695,10 @@ Preconditions:
   `activated_skills: ["qa-f26-inst:qa-hello"]` on the user message), and the
   agent context lists none of its skills. Ambient contributions are merged
   into the agent persisted in `base_state.json`, so the conversation records
-  their skill and MCP server names and drops them after successful discovery.
-  A failed scan preserves the previous contributions and ownership record.
+  their skill and MCP server names and drops them before re-discovery. A
+  plugin that fails to load contributes nothing, as in a new conversation;
+  only when a whole source cannot be read (corrupt installation metadata)
+  are the previous contributions and their record kept.
   Read from source and not driven here: MCP servers follow the same path;
   explicit replacement agents start with no inherited ownership, and legacy
   conversations without a record retain unidentifiable contributions rather

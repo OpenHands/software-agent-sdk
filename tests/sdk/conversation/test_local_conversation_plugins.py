@@ -2155,15 +2155,17 @@ class TestAmbientPluginResume:
         assert "exp-server" in servers
 
     @pytest.mark.parametrize(
-        "failure",
-        ["installed_manifest", "metadata", "local_manifest", "untracked_manifest"],
+        "failure", ["installed_manifest", "local_manifest", "untracked_manifest"]
     )
-    def test_failed_discovery_keeps_ambient_contributions_on_resume(
+    def test_plugin_that_fails_to_load_is_dropped_on_resume(
         self, tmp_path: Path, mock_llm, monkeypatch, failure
     ):
+        """A broken plugin contributes nothing, as in a new conversation, and
+        does not keep a since-disabled plugin or hide a healthy one."""
         install_store, user_dir, workspace = self._setup(tmp_path, monkeypatch)
-        source = self._make_plugin(tmp_path / "src", "amb")
-        install_plugin(str(source), installed_dir=install_store)
+        for name in ("amb", "dis"):
+            source = self._make_plugin(tmp_path / "src" / name, name)
+            install_plugin(str(source), installed_dir=install_store)
         if failure == "local_manifest":
             broken_dir = self._make_plugin(user_dir / "bbb", "bbb")
         else:
@@ -2171,31 +2173,56 @@ class TestAmbientPluginResume:
             install_plugin(str(other), installed_dir=install_store)
             broken_dir = install_store / "bbb"
         cid = uuid.uuid4()
-        self._load(tmp_path, workspace, cid, agent=self._caller_agent(mock_llm))
-
-        damaged = (
-            install_store / ".installed.json"
-            if failure == "metadata"
-            else broken_dir / ".plugin" / "plugin.json"
+        skills, _ = self._load(
+            tmp_path, workspace, cid, agent=self._caller_agent(mock_llm)
         )
+        assert {"amb-skill", "bbb-skill", "dis-skill"} <= skills
+
         if failure == "untracked_manifest":
             metadata_path = install_store / ".installed.json"
             metadata = json.loads(metadata_path.read_text())
             del metadata["extensions"]["bbb"]
             metadata_path.write_text(json.dumps(metadata))
-        original = damaged.read_text()
-        damaged.write_text("{invalid json")
+        manifest = broken_dir / ".plugin" / "plugin.json"
+        original = manifest.read_text()
+        manifest.write_text("{invalid json")
+        disable_plugin("dis", installed_dir=install_store)
         skills, servers = self._load(tmp_path, workspace, cid)
-        assert {"amb-skill", "amb:hello", "bbb-skill", "caller-skill"} <= skills
-        assert {"amb-server", "bbb-server", "caller-server"} <= servers
-        assert damaged.read_text() == "{invalid json"
+        assert {"amb-skill", "amb:hello", "caller-skill"} <= skills
+        assert {"amb-server", "caller-server"} <= servers
+        assert not {"bbb-skill", "bbb:hello", "dis-skill", "dis:hello"} & skills
+        assert not {"bbb-server", "dis-server"} & servers
 
-        damaged.write_text(original)
+        manifest.write_text(original)
+        skills, servers = self._load(tmp_path, workspace, cid)
+        assert {"amb-skill", "bbb-skill", "bbb:hello", "caller-skill"} <= skills
+        assert "bbb-server" in servers
+
+    def test_unreadable_installation_metadata_keeps_contributions_on_resume(
+        self, tmp_path: Path, mock_llm, monkeypatch
+    ):
+        """When the installed set cannot be read, nothing is dropped and the
+        metadata file is left for the user to repair."""
+        install_store, _, workspace = self._setup(tmp_path, monkeypatch)
+        source = self._make_plugin(tmp_path / "src", "amb")
+        install_plugin(str(source), installed_dir=install_store)
+        cid = uuid.uuid4()
+        self._load(tmp_path, workspace, cid, agent=self._caller_agent(mock_llm))
+
+        metadata_path = install_store / ".installed.json"
+        original = metadata_path.read_text()
+        metadata_path.write_text("{invalid json")
+        skills, servers = self._load(tmp_path, workspace, cid)
+        assert {"amb-skill", "amb:hello", "caller-skill"} <= skills
+        assert {"amb-server", "caller-server"} <= servers
+        assert metadata_path.read_text() == "{invalid json"
+
+        metadata_path.write_text(original)
         disable_plugin("amb", installed_dir=install_store)
         skills, servers = self._load(tmp_path, workspace, cid)
         assert not {"amb-skill", "amb:hello"} & skills
         assert "amb-server" not in servers
-        assert {"bbb-skill", "caller-skill"} <= skills
+        assert "caller-skill" in skills
 
     @pytest.mark.parametrize("operation", ["resume", "fork"])
     def test_explicit_agent_keeps_same_named_caller_contributions(
