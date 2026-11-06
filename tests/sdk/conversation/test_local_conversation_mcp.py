@@ -95,7 +95,7 @@ def test_reconciliation_targets_replaced_agent(tmp_path: Path) -> None:
         mcp_tool=mcp_types.Tool(
             name="initial",
             description="initial",
-            inputSchema={"type": "object", "properties": {}},
+            input_schema={"type": "object", "properties": {}},
         ),
         mcp_client=cast(MCPClient, client),
     )[0]
@@ -118,7 +118,7 @@ def test_reconciliation_targets_replaced_agent(tmp_path: Path) -> None:
         mcp_tool=mcp_types.Tool(
             name="replacement",
             description="replacement",
-            inputSchema={"type": "object", "properties": {}},
+            input_schema={"type": "object", "properties": {}},
         ),
         mcp_client=cast(MCPClient, client),
     )[0]

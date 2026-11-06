@@ -7,6 +7,8 @@ those decorators on top of add_request_handler() so that BrowserUseServer can
 be constructed under either mcp major version.
 """
 
+from typing import Any
+
 import mcp.types as types
 import pytest
 from mcp.server.lowlevel.server import Server
@@ -14,14 +16,17 @@ from mcp.server.lowlevel.server import Server
 from openhands.tools.browser_use import logging_fix
 
 
+# The shim adds the decorators at runtime, so type checkers do not see them.
+_SERVER_CLS: Any = Server
+
+
 def _shim_active() -> bool:
     """True when Server.list_tools comes from the shim, not from mcp itself."""
-    return getattr(Server, "list_tools", None) is not None and (
-        Server.list_tools.__module__ == logging_fix.__name__
-    )
+    list_tools = getattr(_SERVER_CLS, "list_tools", None)
+    return list_tools is not None and list_tools.__module__ == logging_fix.__name__
 
 
-def _shimmed_server() -> Server:
+def _shimmed_server() -> Any:
     if hasattr(Server, "list_tools") and not _shim_active():
         pytest.skip("mcp 1.x environment: decorators exist natively, shim is a no-op")
     logging_fix._patch_mcp2_server_compat()
@@ -33,9 +38,9 @@ def test_shim_is_noop_when_mcp_decorators_exist():
     """On mcp 1.x the native decorators must not be replaced."""
     if not hasattr(Server, "list_tools") or _shim_active():
         pytest.skip("requires an mcp 1.x environment")
-    native = Server.list_tools
+    native = _SERVER_CLS.list_tools
     logging_fix._patch_mcp2_server_compat()
-    assert Server.list_tools is native
+    assert _SERVER_CLS.list_tools is native
 
 
 async def test_list_tools_decorator_registers_handler():
@@ -43,7 +48,7 @@ async def test_list_tools_decorator_registers_handler():
 
     @server.list_tools()
     async def handle_list_tools() -> list[types.Tool]:
-        return [types.Tool(name="echo", inputSchema={"type": "object"})]
+        return [types.Tool(name="echo", input_schema={"type": "object"})]
 
     handlers = server._request_handlers  # type: ignore[attr-defined]
     entry = handlers.get("tools/list")
@@ -84,7 +89,9 @@ async def test_call_tool_decorator_registers_handler():
     params = types.CallToolRequestParams(name="echo", arguments={"x": 1})
     result = await entry.handler(None, params)  # type: ignore[arg-type]
     assert isinstance(result, types.CallToolResult)
-    assert result.content[0].text == "called echo with {'x': 1}"
+    content = result.content[0]
+    assert isinstance(content, types.TextContent)
+    assert content.text == "called echo with {'x': 1}"
 
 
 def test_shimmed_decorators_support_browser_use_server_construction():
