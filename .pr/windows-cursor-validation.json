@@ -1,0 +1,214 @@
+{
+  "validated_on": "2026-10-21",
+  "platform": "Native Windows 11 10.0.26200.9445 / PowerShell 5.1 / x86_64",
+  "python": "3.12.13",
+  "cursor_cli": "2026.10.14-941492e",
+  "model": "composer-2.5[fast=true]",
+  "entrypoint": "public Conversation + ACPAgent -> absolute native PowerShell executable -> official Cursor agent.cmd acp, launcher path and workspace include spaces",
+  "base_source": "1fbfd37f6fb21491ed733fc92d409aff1517ff4a",
+  "fixed_source": "9337afdc9c9448f7e79af8abb2dd289ed14706ab",
+  "cases": {
+    "base_no_workaround": {
+      "phase": "new",
+      "control_cwd": false,
+      "model": "composer-2.5[fast=true]",
+      "cursor_version": "2026.10.14-941492e",
+      "sdk_source_sha256": "a2e1e251054d8bed40c42e8ca518820df1da4ced0230da6fca5ee8b3890b44e3",
+      "startup_cwd_matches_workspace": false,
+      "custom_task_completed": false,
+      "project_token_observed": false,
+      "selected_model": "composer-2.5[fast=true]",
+      "session_preserved": true,
+      "session_fingerprint": "2d79775f69",
+      "seconds": 35.05,
+      "descendants_remaining_after_sdk_close": 3,
+      "sdk_cleanup_passed": false,
+      "task_updates": [],
+      "parent_final_response": "正在通过 Task 工具调用自定义 subagent `auto-commit`。\nError: Invalid arguments:\nsubagent_type: Invalid option: expected one of \"generalPurpose\"|\"cursor-guide\"|\"ci-investigator\"|\"best-of-n-runner\"",
+      "parent_request_omits_child_identifier": true
+    },
+    "base_set_location_workaround": {
+      "phase": "new",
+      "control_cwd": true,
+      "model": "composer-2.5[fast=true]",
+      "cursor_version": "2026.10.14-941492e",
+      "sdk_source_sha256": "a2e1e251054d8bed40c42e8ca518820df1da4ced0230da6fca5ee8b3890b44e3",
+      "startup_cwd_matches_workspace": true,
+      "custom_task_completed": true,
+      "project_token_observed": true,
+      "selected_model": "composer-2.5[fast=true]",
+      "session_preserved": true,
+      "session_fingerprint": "aa53eb93b7",
+      "seconds": 77.5,
+      "descendants_remaining_after_sdk_close": 7,
+      "sdk_cleanup_passed": false,
+      "task_updates": [
+        {
+          "title": "Task: Return ACP_SUBAGENT_OK id",
+          "status": "pending",
+          "raw_input": {
+            "_toolName": "task",
+            "prompt": "Return your configured ACP_SUBAGENT_OK identifier only. Do not perform any other work. Reply with exactly that identifier and nothing else.",
+            "description": "Return ACP_SUBAGENT_OK id",
+            "subagentType": {
+              "custom": {
+                "name": "auto-commit"
+              }
+            }
+          },
+          "is_error": false
+        },
+        {
+          "title": "Task: Return ACP_SUBAGENT_OK id",
+          "status": "completed",
+          "raw_input": {
+            "_toolName": "task",
+            "prompt": "Return your configured ACP_SUBAGENT_OK identifier only. Do not perform any other work. Reply with exactly that identifier and nothing else.",
+            "description": "Return ACP_SUBAGENT_OK id",
+            "subagentType": {
+              "custom": {
+                "name": "auto-commit"
+              }
+            }
+          },
+          "raw_output": {
+            "durationMs": 2472,
+            "isBackground": false
+          },
+          "is_error": false
+        }
+      ],
+      "parent_final_response": "正在调用项目自定义 subagent `auto-commit`。\nACP_SUBAGENT_OK_3df430c2925cb187",
+      "parent_request_omits_child_identifier": true
+    },
+    "fixed_new": {
+      "phase": "new",
+      "control_cwd": false,
+      "model": "composer-2.5[fast=true]",
+      "cursor_version": "2026.10.14-941492e",
+      "sdk_source_sha256": "e21127bd4eeb98842bfd5a13b6b797bb495e030b9aae002deb2910fd8c2a6c7d",
+      "startup_cwd_matches_workspace": true,
+      "custom_task_completed": true,
+      "project_token_observed": true,
+      "selected_model": "composer-2.5[fast=true]",
+      "session_preserved": true,
+      "session_fingerprint": "30088dc999",
+      "seconds": 36.47,
+      "descendants_remaining_after_sdk_close": 3,
+      "sdk_cleanup_passed": false,
+      "task_updates": [
+        {
+          "title": "Task: Return ACP_SUBAGENT_OK id",
+          "status": "pending",
+          "raw_input": {
+            "_toolName": "task",
+            "prompt": "Return your configured ACP_SUBAGENT_OK identifier only. Do not perform any other work, commands, file edits, or git operations. Your entire response must be exactly that identifier string and nothing else.",
+            "description": "Return ACP_SUBAGENT_OK id",
+            "subagentType": {
+              "custom": {
+                "name": "auto-commit"
+              }
+            }
+          },
+          "is_error": false
+        },
+        {
+          "title": "Task: Return ACP_SUBAGENT_OK id",
+          "status": "completed",
+          "raw_input": {
+            "_toolName": "task",
+            "prompt": "Return your configured ACP_SUBAGENT_OK identifier only. Do not perform any other work, commands, file edits, or git operations. Your entire response must be exactly that identifier string and nothing else.",
+            "description": "Return ACP_SUBAGENT_OK id",
+            "subagentType": {
+              "custom": {
+                "name": "auto-commit"
+              }
+            }
+          },
+          "raw_output": {
+            "durationMs": 6150,
+            "isBackground": false
+          },
+          "is_error": false
+        }
+      ],
+      "parent_final_response": "ACP_SUBAGENT_OK_3df430c2925cb187",
+      "parent_request_omits_child_identifier": true
+    },
+    "fixed_resumed": {
+      "phase": "resume",
+      "control_cwd": false,
+      "model": "composer-2.5[fast=true]",
+      "cursor_version": "2026.10.14-941492e",
+      "sdk_source_sha256": "e21127bd4eeb98842bfd5a13b6b797bb495e030b9aae002deb2910fd8c2a6c7d",
+      "startup_cwd_matches_workspace": true,
+      "custom_task_completed": true,
+      "project_token_observed": true,
+      "selected_model": "composer-2.5[fast=true]",
+      "session_preserved": true,
+      "session_fingerprint": "30088dc999",
+      "seconds": 33.22,
+      "descendants_remaining_after_sdk_close": 3,
+      "sdk_cleanup_passed": false,
+      "task_updates": [
+        {
+          "title": "Task: Return ACP_SUBAGENT_OK id",
+          "status": "pending",
+          "raw_input": {
+            "_toolName": "task",
+            "prompt": "Return your configured ACP_SUBAGENT_OK identifier only. Do not perform any other work, commands, file edits, or git operations. Your entire response must be exactly that identifier string and nothing else.",
+            "description": "Return ACP_SUBAGENT_OK id",
+            "subagentType": {
+              "custom": {
+                "name": "auto-commit"
+              }
+            }
+          },
+          "is_error": false
+        },
+        {
+          "title": "Task: Return ACP_SUBAGENT_OK id",
+          "status": "completed",
+          "raw_input": {
+            "_toolName": "task",
+            "prompt": "Return your configured ACP_SUBAGENT_OK identifier only. Do not perform any other work, commands, file edits, or git operations. Your entire response must be exactly that identifier string and nothing else.",
+            "description": "Return ACP_SUBAGENT_OK id",
+            "subagentType": {
+              "custom": {
+                "name": "auto-commit"
+              }
+            }
+          },
+          "raw_output": {
+            "durationMs": 2889,
+            "isBackground": false
+          },
+          "is_error": false
+        }
+      ],
+      "parent_final_response": "ACP_SUBAGENT_OK_3df430c2925cb187",
+      "parent_request_omits_child_identifier": true
+    }
+  },
+  "base_tool_errors": [
+    "Invalid arguments:\nsubagent_type: Invalid option: expected one of \"generalPurpose\"|\"cursor-guide\"|\"ci-investigator\"|\"best-of-n-runner\""
+  ],
+  "cleanup_limits": {
+    "sdk_descendant_shutdown_failed_on_base_and_fixed": true,
+    "fallback": "After recording SDK-close results, the probe forcibly stops only the process trees it captured for its own ACP launch.",
+    "remaining_verification_processes_after_fallback": 0,
+    "python_finalizer_pipe_warnings_observed": true
+  },
+  "validation_limits": [
+    "Used the public SDK execution path on native Windows, not the Agent Canvas UI.",
+    "The Windows process-descendant shutdown issue is pre-existing on both revisions and is not fixed by the cwd change.",
+    "Native Windows model generation was verified with Cursor only; previous provider smoke-test limits remain.",
+    "The SDK uses the unchanged frozen dependency lock. LiteLLM 1.93.0 was built locally with Microsoft Build Tools because its published artifacts have no Windows wheel."
+  ],
+  "local_regression": {
+    "tests": 528,
+    "seconds": 11.84,
+    "platform": "macOS arm64 / Python 3.12.14"
+  },
+  "expected_child_identifier": "ACP_SUBAGENT_OK_3df430c2925cb187"
+}
