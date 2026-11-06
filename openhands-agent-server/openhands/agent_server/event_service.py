@@ -87,6 +87,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.datetime import utc_now
 from openhands.sdk.utils.files import atomic_write_text
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -1079,9 +1080,7 @@ class EventService:
             def locked_on_event():
                 with conversation._state:
                     conversation._on_event(
-                        event.model_copy(
-                            update={"timestamp": datetime.now().isoformat()}
-                        )
+                        event.model_copy(update={"timestamp": utc_now().isoformat()})
                     )
 
             # Run the locked callback in an executor to ensure the event is

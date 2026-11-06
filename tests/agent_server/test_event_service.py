@@ -3891,7 +3891,7 @@ async def test_emit_event_from_thread_stamps_event_when_persisted(
         event_service._emit_event_from_thread(event)
         await asyncio.sleep(0.01)
         # Stands in for the step's action/observation appended under the lock.
-        step_end = datetime.now().isoformat()
+        step_end = datetime.now(UTC)
         await asyncio.sleep(0.01)
 
     for _ in range(200):
@@ -3901,7 +3901,10 @@ async def test_emit_event_from_thread_stamps_event_when_persisted(
     assert len(appended) == 1
     persisted = appended[0]
     assert persisted.id == event.id
-    assert persisted.timestamp > step_end > event.timestamp
+    persisted_timestamp = datetime.fromisoformat(persisted.timestamp)
+    event_timestamp = datetime.fromisoformat(event.timestamp)
+    assert persisted_timestamp > step_end > event_timestamp
+    assert persisted_timestamp.tzinfo is not None
 
 
 def test_llm_log_callback_swallows_emit_failures(
