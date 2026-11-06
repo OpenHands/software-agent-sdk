@@ -13,6 +13,11 @@ from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 
+from openhands.agent_server.acp_permissions import (
+    ACPPermissionBroker,
+    ACPPermissionDecision,
+    ACPPermissionPage,
+)
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.conversation_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
@@ -263,6 +268,7 @@ class EventService:
     # so a later Stop/Pause cannot be overwritten by an automatic restart.
     _explicit_interrupt_generation: int = field(default=0, init=False)
     _closing: bool = field(default=False, init=False)
+    _acp_permissions: ACPPermissionBroker | None = field(default=None, init=False)
     _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _gateway_run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
@@ -1391,6 +1397,14 @@ class EventService:
                 conversation.set_token_callbacks(None)
         self._conversation = conversation
         if isinstance(conversation.agent, ACPAgent):
+            if conversation.agent.acp_permission_mode == "callback":
+                self._acp_permissions = ACPPermissionBroker(
+                    conversation.agent.acp_permission_timeout,
+                    conversation.state.secret_registry.mask_secrets_in_output,
+                )
+                conversation.agent.set_acp_permission_handler(
+                    self._acp_permissions.request
+                )
             for secret_name, binding in self.credential_bindings.items():
                 conversation.agent.activate_file_credential_binding(
                     secret_name,
@@ -2107,6 +2121,8 @@ class EventService:
         )
 
     async def pause(self):
+        if self._acp_permissions is not None:
+            self._acp_permissions.cancel_pending()
         if self._conversation:
             self._explicit_interrupt_generation += 1
             self._rerun_requested = False
@@ -2123,6 +2139,8 @@ class EventService:
         ``arun()`` task.  If no async run is in progress the call falls
         back to :meth:`pause`.
         """
+        if self._acp_permissions is not None:
+            self._acp_permissions.cancel_pending()
         if self._conversation:
             if not internal_acp_rerun:
                 self._explicit_interrupt_generation += 1
@@ -2225,7 +2243,27 @@ class EventService:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
 
+    def pending_acp_permissions(self) -> ACPPermissionPage:
+        if self._acp_permissions is None or self._closing:
+            return ACPPermissionPage(items=[])
+        return self._acp_permissions.snapshot()
+
+    async def decide_acp_permission(
+        self, request_id: UUID, decision: ACPPermissionDecision
+    ) -> bool:
+        if self._acp_permissions is None or self._closing:
+            return False
+
+        def decide() -> bool:
+            with self._write_guard():
+                assert self._acp_permissions is not None
+                return self._acp_permissions.decide(request_id, decision)
+
+        return await asyncio.to_thread(decide)
+
     async def close(self):
+        if self._acp_permissions is not None:
+            self._acp_permissions.cancel_pending(close=True)
         if self.bash_event_service is not None:
             await self.bash_event_service.close()
         self._closing = True

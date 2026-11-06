@@ -45,6 +45,12 @@ def build_seed_profile(
             acp_server=agent_settings.acp_server,
             acp_model=agent_settings.acp_model,
             acp_session_mode=agent_settings.acp_session_mode,
+            acp_permission_mode=agent_settings.acp_permission_mode,
+            acp_permission_timeout=agent_settings.acp_permission_timeout,
+            acp_env_allowlist=agent_settings.acp_env_allowlist,
+            acp_allow_model_switch=agent_settings.acp_allow_model_switch,
+            acp_resume_policy=agent_settings.acp_resume_policy,
+            acp_secret_allowlist=agent_settings.acp_secret_allowlist,
             acp_prompt_timeout=agent_settings.acp_prompt_timeout,
             acp_startup_timeout=agent_settings.acp_startup_timeout,
             # Settings store the command as a token list; the profile holds a

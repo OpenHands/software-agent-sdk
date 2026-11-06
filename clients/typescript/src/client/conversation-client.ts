@@ -22,6 +22,7 @@ import type {
   UpdateSecretsRequest,
 } from '../models/conversation';
 import type { ConfirmationPolicyBase } from '../types/base';
+import type { ACPPermissionPage, ACPPermissionDecision } from '../models/acp-permissions';
 
 export interface ConversationClientOptions {
   host: string;
@@ -440,6 +441,25 @@ export class ConversationClient {
   ): Promise<TConversation> {
     await this.client.patch<Success>(`/api/conversations/${conversationId}`, update);
     return this.getConversation<TConversation>(conversationId);
+  }
+
+  async listACPPermissions(conversationId: string): Promise<ACPPermissionPage> {
+    const response = await this.client.get<ACPPermissionPage>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/acp/permissions`
+    );
+    return response.data;
+  }
+
+  async respondToACPPermission(
+    conversationId: string,
+    requestId: string,
+    decision: ACPPermissionDecision
+  ): Promise<Success> {
+    const response = await this.client.post<Success>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/acp/permissions/${encodeURIComponent(requestId)}`,
+      decision
+    );
+    return response.data;
   }
 
   close(): void {
