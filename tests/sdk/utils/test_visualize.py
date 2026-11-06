@@ -1,5 +1,6 @@
 """Tests for openhands.sdk.utils.visualize module."""
 
+import pytest
 from rich.text import Text
 
 from openhands.sdk.utils.visualize import display_json
@@ -38,14 +39,21 @@ def test_display_json_with_list():
     assert "True" in text_content
 
 
-def test_display_json_with_string():
-    """Test display_json with a string input."""
-    data = "simple string"
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        pytest.param("simple string", '"simple string"', id="string"),
+        pytest.param(42, "42", id="number"),
+        pytest.param(3.14159, "3.14159", id="float"),
+        pytest.param(None, "null", id="none"),
+    ],
+)
+def test_display_json_scalar(data: object, expected: str):
     result = display_json(data)
 
     assert isinstance(result, Text)
     text_content = str(result)
-    assert '"simple string"' in text_content
+    assert expected in text_content
 
 
 def test_display_json_with_multiline_string():
@@ -59,26 +67,6 @@ def test_display_json_with_multiline_string():
     assert "line1" in text_content
     assert "line2" in text_content
     assert "line3" in text_content
-
-
-def test_display_json_with_number():
-    """Test display_json with a number input."""
-    data = 42
-    result = display_json(data)
-
-    assert isinstance(result, Text)
-    text_content = str(result)
-    assert "42" in text_content
-
-
-def test_display_json_with_float():
-    """Test display_json with a float input."""
-    data = 3.14159
-    result = display_json(data)
-
-    assert isinstance(result, Text)
-    text_content = str(result)
-    assert "3.14159" in text_content
 
 
 def test_display_json_with_boolean():
@@ -96,16 +84,6 @@ def test_display_json_with_boolean():
     assert isinstance(result, Text)
     text_content = str(result)
     assert "False" in text_content
-
-
-def test_display_json_with_none():
-    """Test display_json with None input."""
-    data = None
-    result = display_json(data)
-
-    assert isinstance(result, Text)
-    text_content = str(result)
-    assert "null" in text_content
 
 
 def test_display_json_with_nested_structures():

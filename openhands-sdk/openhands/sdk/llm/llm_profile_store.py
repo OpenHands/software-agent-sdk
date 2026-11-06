@@ -60,7 +60,7 @@ def _api_key_present(llm: LLM) -> bool:
 
 @runtime_checkable
 class LLMProfileLoader(Protocol):
-    """Minimal load-only contract consumed by ``resolve_agent_profile``.
+    """Minimal load-only contract consumed by ``openhands.sdk.launch.resolve``.
 
     The resolver reads an LLM profile by name via ``load`` only, so an alternate
     backend — e.g. a cloud adapter over the ``org.llm_profiles`` column — need
