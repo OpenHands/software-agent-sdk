@@ -302,6 +302,34 @@ async def test_git_changes_query_param_ref_head_on_empty_repo_returns_200(
     assert response.json() == [{"status": "ADDED", "path": "untracked.txt"}]
 
 
+def test_git_changes_lists_repo_below_non_repo_path(client, tmp_path):
+    """A non-repository path holding a repository lists that repository's changes.
+
+    Real git (no mock): the ``{base}/{repo}`` workspace of a repository-backed
+    conversation used to answer ``200 []``.
+    """
+    repo = tmp_path / "proj"
+    repo.mkdir()
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    (repo / "README.md").write_text("hello\n")
+    git("add", "README.md")
+    git("-c", "user.name=qa", "-c", "user.email=qa@example.com", "commit", "-qm", "i")
+    (repo / "README.md").write_text("hello\nedit\n")
+    (repo / "notes.txt").write_text("note\n")
+
+    response = client.get("/api/git/changes", params={"path": str(tmp_path)})
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {"status": "UPDATED", "path": "proj/README.md"},
+        {"status": "ADDED", "path": "proj/notes.txt"},
+    ]
+
+
 @pytest.mark.asyncio
 async def test_git_changes_query_param_ref_head_on_orphan_branch_returns_200(
     client, tmp_path

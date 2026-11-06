@@ -56,10 +56,12 @@ def _request_is_secure_context(request: Request) -> bool:
 
     forwarded_host = request.headers.get("x-forwarded-host", "")
     host = forwarded_host.split(",")[0].strip() or request.url.hostname or ""
-    # Strip an optional ``:port`` suffix; IPv6 hosts are bracketed.
+    # Strip an optional ``:port`` suffix. IPv6 hosts are bracketed in
+    # ``X-Forwarded-Host``; ``request.url.hostname`` returns them bare
+    # (``::1``), so only split on a single colon.
     if host.startswith("["):
         host = host.partition("]")[0].lstrip("[")
-    else:
+    elif host.count(":") == 1:
         host = host.split(":")[0]
     return host.lower() in _LOOPBACK_HOSTS
 

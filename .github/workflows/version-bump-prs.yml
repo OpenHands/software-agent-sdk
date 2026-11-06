@@ -15,9 +15,21 @@ jobs:
     create-version-bump-prs:
         runs-on: ubuntu-24.04
         env:
-            GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
             SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
         steps:
+            # Open bump PRs as openhands-release-bot[bot] (the shared release
+            # App), matching release-please and the bump-cloud-chart job below.
+            # The PAT (openhands-bot) is no longer used for PR creation here;
+            # a PAT failure should fail the run rather than silently fall back.
+            - name: Mint GitHub App token (release bot)
+              id: app-token
+              uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+              with:
+                  app-id: ${{ secrets.RELEASE_APP_ID }}
+                  private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+                  owner: OpenHands
+                  repositories: automation,OpenHands,enterprise
+
             - name: Checkout
               uses: actions/checkout@v7.0.1
 
@@ -101,6 +113,7 @@ jobs:
               id: automation_pr
               continue-on-error: true
               env:
+                  GH_TOKEN: ${{ steps.app-token.outputs.token }}
                   VERSION: ${{ steps.get_version.outputs.version }}
               run: |
                   set -euo pipefail
@@ -193,6 +206,7 @@ jobs:
               id: openhands_pr
               continue-on-error: true
               env:
+                  GH_TOKEN: ${{ steps.app-token.outputs.token }}
                   VERSION: ${{ steps.get_version.outputs.version }}
               run: |
                   set -euo pipefail
@@ -484,6 +498,7 @@ jobs:
               id: enterprise_pr
               continue-on-error: true
               env:
+                  GH_TOKEN: ${{ steps.app-token.outputs.token }}
                   VERSION: ${{ steps.get_version.outputs.version }}
               run: |
                   set -euo pipefail
@@ -522,6 +537,12 @@ jobs:
                   sed -i -E 's/"openhands-agent-server==[^"]*"/"openhands-agent-server=='"$VERSION"'"/' pyproject.toml
                   sed -i -E 's/"openhands-tools==[^"]*"/"openhands-tools=='"$VERSION"'"/' pyproject.toml
 
+                  # The dev stack's sandbox image default must match the SDK pins
+                  # (enterprise's own bump-sdk.yml updates it the same way).
+                  echo "📝 Updating dev compose agent-server image tag..."
+                  grep -qE 'AGENT_SERVER_IMAGE_TAG:-[^}]+' containers/dev/compose.yml || { echo "::error::No AGENT_SERVER_IMAGE_TAG default in containers/dev/compose.yml"; exit 1; }
+                  sed -i -E "s/AGENT_SERVER_IMAGE_TAG:-[^}]+/AGENT_SERVER_IMAGE_TAG:-$VERSION-python/" containers/dev/compose.yml
+
                   # --no-cache avoids stale index data from the just-published packages.
 
                   echo "📝 Regenerating uv.lock..."
@@ -536,9 +557,9 @@ jobs:
                   # Commit and push. Use a Conventional Commit `chore(deps):` subject so the
                   # target repo's release-please does not cut a release from these bumps
                   # (the manual bump this replaces, #484, used the same convention).
-                  git add pyproject.toml uv.lock
+                  git add pyproject.toml uv.lock containers/dev/compose.yml
                   git commit -m "chore(deps): bump SDK to $VERSION" \
-                    -m "Bump openhands-sdk, openhands-agent-server, openhands-tools to $VERSION (regenerated uv.lock)." \
+                    -m "Bump openhands-sdk, openhands-agent-server, openhands-tools to $VERSION (regenerated uv.lock) and point the dev compose agent-server image at $VERSION-python." \
                     -m "Automated version bump after PyPI release." \
                     -m "Co-authored-by: openhands <openhands@all-hands.dev>"
                   git push -u origin "$BRANCH"
@@ -559,6 +580,8 @@ jobs:
                   - \`openhands-sdk\`
                   - \`openhands-agent-server\`
                   - \`openhands-tools\`
+
+                  It also points the dev compose \`AGENT_SERVER_IMAGE_TAG\` default at \`$VERSION-python\`.
 
                   **Triggered by:** Release of [software-agent-sdk v$VERSION](https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION)
 
@@ -664,14 +687,25 @@ jobs:
         # agent-server image and generated contract to this SDK release.
         runs-on: ubuntu-24.04
         timeout-minutes: 60
-        env:
-            GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
         steps:
+            # Open the bump PR as openhands-release-bot[bot] (the shared
+            # release App), matching release-please; no PAT fallback.
+            - name: Mint GitHub App token (release bot)
+              id: app-token
+              uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+              with:
+                  app-id: ${{ secrets.RELEASE_APP_ID }}
+                  private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+                  owner: OpenHands
+                  repositories: software-agent-sdk
+
             - name: Checkout SDK release tooling
               uses: actions/checkout@v7.0.1
+              env:
+                  GH_TOKEN: ${{ steps.app-token.outputs.token }}
               with:
                   # The default GITHUB_TOKEN cannot push the bump branch.
-                  token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
+                  token: ${{ steps.app-token.outputs.token }}
 
             - name: Install Node.js
               uses: actions/setup-node@v7
@@ -866,7 +900,7 @@ jobs:
             # agent-canvas callers, with deliberately no PAT/GITHUB_TOKEN fallback.
             - name: Mint GitHub App token (scoped to OpenHands-Cloud)
               id: app-token
-              uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+              uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
               with:
                   app-id: ${{ secrets.RELEASE_APP_ID }}
                   private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

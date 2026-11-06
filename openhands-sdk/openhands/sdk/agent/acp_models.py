@@ -8,9 +8,30 @@ can import them for its public ``ConversationInfo`` schema without importing
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+@runtime_checkable
+class _ModelInfoWithModelId(Protocol):
+    model_id: str
+
+
+@runtime_checkable
+class _ModelInfoWithValue(Protocol):
+    value: str
+
+
+@runtime_checkable
+class _ModelInfoWithName(Protocol):
+    name: str | None
+
+
+@runtime_checkable
+class _ModelInfoWithDescription(Protocol):
+    description: str | None
 
 
 class ACPModelInfo(BaseModel):
@@ -61,11 +82,89 @@ class ACPModelInfo(BaseModel):
         for a ``models``-capability ``ModelInfo``, ``"value"`` for a
         ``configOptions`` select option.
         """
-        model_id = getattr(raw, id_attr, None)
-        name = getattr(raw, "name", None)
-        description = getattr(raw, "description", None)
+        if isinstance(raw, ACPModelInfo):
+            if id_attr == "model_id":
+                return raw
+            return cls(
+                model_id=raw.model_id,
+                name=raw.name,
+                description=raw.description,
+            )
+
+        model_id = None
+        name = None
+        description = None
+
+        if isinstance(raw, Mapping):
+            model_id = raw.get(id_attr)
+            name = raw.get("name")
+            description = raw.get("description")
+        else:
+            if id_attr == "model_id" and isinstance(raw, _ModelInfoWithModelId):
+                model_id = raw.model_id
+            elif id_attr == "value" and isinstance(raw, _ModelInfoWithValue):
+                model_id = raw.value
+            elif isinstance(raw, _ModelInfoWithModelId):
+                model_id = raw.model_id
+            elif isinstance(raw, _ModelInfoWithValue):
+                model_id = raw.value
+
+            if isinstance(raw, _ModelInfoWithName):
+                name = raw.name
+            if isinstance(raw, _ModelInfoWithDescription):
+                description = raw.description
+
         return cls(
             model_id=model_id if isinstance(model_id, str) else "",
             name=name if isinstance(name, str) else None,
             description=description if isinstance(description, str) else None,
         )
+
+
+class ACPModelDiscoveryError(BaseModel):
+    """Why an ACP server could not report its models."""
+
+    code: str = Field(
+        description=(
+            "Same codes as a conversation's cold-start ``ConversationErrorEvent``: "
+            "``ACPAuthRequired``, ``ACPStartupTimeout``, ``ACPSpawnError`` or "
+            "``ACPInitError``."
+        ),
+    )
+    detail: str = Field(description="Human-readable, secret-free cause.")
+
+
+class ACPModelDiscovery(BaseModel):
+    """What an ACP server reports for a fresh session, before any conversation."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    agent_name: str | None = Field(
+        default=None, description="Server name from ``initialize``."
+    )
+    agent_version: str | None = Field(
+        default=None, description="Server version from ``initialize``."
+    )
+    current_model_id: str | None = Field(
+        default=None,
+        description=(
+            "Model the server picks when none is requested — its own default "
+            "for the given credentials. May be an opaque alias such as "
+            '``"default"``; match it against ``available_models`` for a label.'
+        ),
+    )
+    available_models: list[ACPModelInfo] = Field(
+        default_factory=list,
+        description=(
+            "Models the server offers for the given credentials. Empty when the "
+            "server does not report any."
+        ),
+    )
+    supports_runtime_model_switch: bool = Field(
+        default=False,
+        description="Whether a conversation can switch among these models live.",
+    )
+    error: ACPModelDiscoveryError | None = Field(
+        default=None,
+        description="Set when the server could not start a session.",
+    )

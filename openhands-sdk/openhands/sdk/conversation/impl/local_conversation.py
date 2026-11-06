@@ -5,6 +5,7 @@ import copy
 import json
 import uuid
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePath
 from typing import Any, Final, TypeGuard, cast
 
@@ -16,7 +17,7 @@ from openhands.sdk.context.memory import load_memory
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
-from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.event_store import ROOT_PARENT_ID, EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
@@ -87,6 +88,7 @@ from openhands.sdk.plugin import (
     fetch_plugin_with_resolution,
     load_available_plugins,
 )
+from openhands.sdk.plugin.strict_fetch import expand_plugin_source
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
@@ -112,6 +114,10 @@ from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.redact import (
+    redact_url_credentials,
+    redact_url_credentials_in_text,
+)
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -171,9 +177,26 @@ def _is_acp_prompt_message(event: Event) -> TypeGuard[MessageEvent]:
     )
 
 
-def _copy_event_for_fork(event: Event) -> Event:
+def _copy_event_for_fork(event: Event, source: EventLog) -> Event:
     # Mirrors persisted event loading and skips runtime-only fields like executors.
-    return Event.model_validate_json(event.model_dump_json(exclude_none=True))
+    copied = Event.model_validate_json(event.model_dump_json(exclude_none=True))
+    parent_id = copied.parent_id
+    if parent_id is None or parent_id == ROOT_PARENT_ID or parent_id in source:
+        return copied
+    # The parent's file was lost from the source log: link the copy to the
+    # event the source's own branch walk bridges to instead.
+    bridged = source._effective_parent_id(source.get_index(event.id), event)
+    return copied.model_copy(update={"parent_id": bridged})
+
+
+def _same_llm_config(a: LLM, b: LLM) -> bool:
+    """Return whether two LLMs serialize to the same config, secrets included."""
+    if a is b:
+        return True
+    context = {"expose_secrets": True}
+    return a.model_dump(mode="json", context=context) == b.model_dump(
+        mode="json", context=context
+    )
 
 
 class LocalConversation(BaseConversation):
@@ -204,6 +227,7 @@ class LocalConversation(BaseConversation):
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _mcp_tool_provider: MCPToolProvider
+    _mcp_config_from_parent: bool
     _llm_call_context: LLMCallContext
 
     def __init__(
@@ -243,6 +267,7 @@ class LocalConversation(BaseConversation):
         profile_store_dir: str | Path | None = None,
         stream_callbacks: list[StreamProgressCallbackType] | None = None,
         _parent_llm_call_context: LLMCallContext | None = None,
+        _mcp_config_from_parent: bool = False,
         **_: object,
     ):
         """Initialize the conversation.
@@ -270,6 +295,9 @@ class LocalConversation(BaseConversation):
             hook_config: Optional hook configuration to auto-wire session hooks.
                 If plugins are loaded, their hooks are combined with this config.
             max_iteration_per_run: Maximum number of iterations per run
+            max_budget_per_run: Accumulated LLM cost limit. On resume, None keeps
+                the persisted cap; a number replaces it. Assign None to the
+                conversation's max_budget_per_run property to clear a saved cap.
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
@@ -305,6 +333,9 @@ class LocalConversation(BaseConversation):
                 for state and EventLog storage.
             _parent_llm_call_context: Runtime LLM context inherited by an internal
                 child conversation. Conversation-local identity is always replaced.
+            _mcp_config_from_parent: The agent's ``mcp_config`` is the resolved
+                config of a delegating parent. It is used as-is: no plugin MCP
+                servers are merged into it and no ``${VAR}`` is expanded again.
             profile_store_dir: Optional directory containing saved LLM profiles.
                 Defaults to ``~/.openhands/profiles``.
         """
@@ -325,6 +356,7 @@ class LocalConversation(BaseConversation):
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
+        self._mcp_config_from_parent = _mcp_config_from_parent
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
@@ -395,6 +427,7 @@ class LocalConversation(BaseConversation):
             else None,
             file_store=file_store,
             max_iterations=max_iteration_per_run,
+            max_budget_per_run=max_budget_per_run,
             stuck_detection=stuck_detection,
             cipher=cipher,
             tags=tags,
@@ -429,8 +462,14 @@ class LocalConversation(BaseConversation):
             # Single chokepoint: stamps parent_id (catching any event a hook
             # swapped in downstream of _tree_stamping) and advances HEAD.
             self._state.append_event(e)
+
+        def _track_last_user_message(e):
             # Track user MessageEvent IDs here so hook callbacks (which may
             # synthesize or alter user messages) are captured in one place.
+            # This runs after the caller-supplied callbacks: setting the field
+            # can emit a ConversationStateUpdateEvent through on_state_change
+            # (the agent server wires it to this chain), and that update must
+            # reach subscribers after the message that caused it.
             if isinstance(e, MessageEvent) and e.source == "user":
                 # Track the latest real user message ID for hook-blocked checks.
                 # Stop-hook feedback is emitted with source="environment".
@@ -444,7 +483,7 @@ class LocalConversation(BaseConversation):
         # list never run. The visualizer is prepended below and so still renders
         # ahead of persist — that is local terminal output, not an announcement
         # a client can act on.
-        composed_list = [_default_callback] + callback_list
+        composed_list = [_default_callback] + callback_list + [_track_last_user_message]
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
             # Use custom visualizer instance
@@ -490,8 +529,6 @@ class LocalConversation(BaseConversation):
         )
 
         self.max_iteration_per_run = max_iteration_per_run
-        # Hard cost ceiling (USD) for a run; None disables the budget check.
-        self.max_budget_per_run = max_budget_per_run
 
         # Initialize stuck detector
         if stuck_detection:
@@ -521,8 +558,8 @@ class LocalConversation(BaseConversation):
         # Idempotent with the create_request() lift; lower priority than
         # request.secrets (below). On resume, fill-if-absent so a persisted
         # value is never downgraded (or lost to redacted/no-cipher serialization).
-        if (ctx := getattr(self.agent, "agent_context", None)) is not None:
-            ctx_secrets = getattr(ctx, "secrets", None)
+        if self.agent is not None and self.agent.agent_context is not None:
+            ctx_secrets = self.agent.agent_context.secrets
             if ctx_secrets:
                 existing_sources = self._state.secret_registry.secret_sources
                 fill_secrets: dict[str, SecretValue] = {}
@@ -705,6 +742,16 @@ class LocalConversation(BaseConversation):
         return self._state
 
     @property
+    def max_budget_per_run(self) -> float | None:
+        """The persisted accumulated-cost limit; None means unbounded."""
+        return self._state.max_budget_per_run
+
+    @max_budget_per_run.setter
+    def max_budget_per_run(self, value: float | None) -> None:
+        with self._state:
+            self._state.max_budget_per_run = value
+
+    @property
     def conversation_stats(self):
         return self._state.stats
 
@@ -723,14 +770,15 @@ class LocalConversation(BaseConversation):
         Bounds total spend across all of the run's LLMs (agent, condenser, ...),
         complementing the iteration cap which only bounds step count.
         """
-        if self.max_budget_per_run is None:
+        max_budget = self.max_budget_per_run
+        if max_budget is None:
             return None
         spent = self.conversation_stats.get_combined_metrics().accumulated_cost
-        if spent < self.max_budget_per_run:
+        if spent < max_budget:
             return None
         return (
             f"Agent reached maximum budget limit "
-            f"(${self.max_budget_per_run:.4f}); accumulated cost ${spent:.4f}."
+            f"(${max_budget:.4f}); accumulated cost ${spent:.4f}."
         )
 
     def _emit_run_limit_error(self, code: str, detail: str) -> None:
@@ -739,6 +787,22 @@ class LocalConversation(BaseConversation):
         self._state.execution_status = ConversationExecutionStatus.ERROR
         self._on_event(
             ConversationErrorEvent(source="environment", code=code, detail=detail)
+        )
+
+    def _emit_auto_load_error(self, code: str, detail: str) -> None:
+        """Tell the user an auto-loaded marketplace or plugin was skipped.
+
+        Auto-load failures do not stop the conversation, but a dropped
+        marketplace silently loses its agents and hooks, so surface the
+        failure as a non-fatal ConversationErrorEvent (the run status is
+        left untouched).
+        """
+        self._on_event(
+            ConversationErrorEvent(
+                source="environment",
+                code=code,
+                detail=redact_url_credentials_in_text(detail),
+            )
         )
 
     def _check_stuck_or_nudge(self) -> bool:
@@ -815,7 +879,10 @@ class LocalConversation(BaseConversation):
                 if ``None``).
             agent: Agent for the fork. Defaults to a deep-copy of the
                 source agent.
-            title: Optional title for the forked conversation.
+            title: Accepted for signature compatibility with
+                ``RemoteConversation.fork()`` but ignored: ``LocalConversation``
+                has no title field (titles live on ``StoredConversation`` in
+                the agent-server layer).
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
@@ -830,6 +897,7 @@ class LocalConversation(BaseConversation):
         Raises:
             ValueError: If ``from_event_id`` is not an event in this conversation.
         """
+        del title  # no local title storage; see docstring
         fork_id = conversation_id or uuid.uuid4()
         # Always deep-copy the agent (supplied or source) so the fork owns
         # its own object graph. Required because __init__ binds
@@ -869,6 +937,7 @@ class LocalConversation(BaseConversation):
                 persistence_dir=fork_persistence,
                 conversation_id=fork_id,
                 max_iteration_per_run=self.max_iteration_per_run,
+                max_budget_per_run=self.max_budget_per_run,
                 stuck_detection=self._stuck_detector is not None,
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
@@ -888,7 +957,9 @@ class LocalConversation(BaseConversation):
                 fork_leaf = self._state.leaf_event_id
 
             for event in source_events:
-                fork_conv._state.events.append(_copy_event_for_fork(event))
+                fork_conv._state.events.append(
+                    _copy_event_for_fork(event, self._state.events)
+                )
             fork_conv._state.leaf_event_id = fork_leaf
             # A full fork inherits the source's empty-HEAD state; a branch slice
             # roots HEAD at a real event (from_event_id), so it is never empty.
@@ -910,13 +981,6 @@ class LocalConversation(BaseConversation):
                 self._state.activated_path_rules
             )
             fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
-
-            # Copy title via tags if provided
-            if title is not None:
-                fork_conv._state.tags = {
-                    **fork_conv._state.tags,
-                    "title": title,
-                }
 
             # Reset or copy metrics
             if not reset_metrics:
@@ -994,7 +1058,7 @@ class LocalConversation(BaseConversation):
             registrations = [
                 registration.model_copy(
                     update={
-                        "source": self._expand_plugin_source_ref(registration.source),
+                        "source": self._expand_plugin_source(registration.source),
                         "ref": self._expand_plugin_source_ref(registration.ref)
                         if registration.ref
                         else None,
@@ -1009,23 +1073,40 @@ class LocalConversation(BaseConversation):
                     marketplace, marketplace_path = registry.get_marketplace(
                         registration.name
                     )
-                except Exception:
+                except Exception as exc:
                     logger.warning(
                         "Failed to load marketplace '%s'; continuing without it",
                         registration.name,
                         exc_info=True,
                     )
+                    self._emit_auto_load_error(
+                        "MarketplaceLoadError",
+                        f"Marketplace '{registration.name}' "
+                        f"({redact_url_credentials(registration.source)}) could "
+                        "not be loaded, so its plugin skills, agents and hooks "
+                        f"are unavailable: {exc}",
+                    )
                     continue
                 for entry in marketplace.plugins:
                     if not registration.auto_loads_plugin(entry.name):
                         continue
-                    source, ref, repo_path = marketplace.resolve_plugin_source(entry)
-                    plugins_to_load.append(
-                        (
-                            PluginSource(source=source, ref=ref, repo_path=repo_path),
-                            True,
+                    try:
+                        source, ref, repo_path = marketplace.resolve_plugin_source(
+                            entry
                         )
-                    )
+                        plugin_source = PluginSource(
+                            source=source, ref=ref, repo_path=repo_path
+                        )
+                    except ValueError:
+                        logger.warning(
+                            "Failed to load plugin '%s' from marketplace '%s'; "
+                            "continuing without it",
+                            entry.name,
+                            registration.name,
+                            exc_info=True,
+                        )
+                        continue
+                    plugins_to_load.append((plugin_source, True))
                 # Standalone skills. Merged below as low precedence; plugins
                 # loaded afterwards override same-named skills, matching the
                 # catalog.
@@ -1052,24 +1133,43 @@ class LocalConversation(BaseConversation):
             logger.info(f"Loading {len(plugins_to_load)} plugin(s)...")
             self._resolved_plugins = []
 
-            for spec, source_refs_expanded in plugins_to_load:
-                if source_refs_expanded:
+            for spec, auto_loaded in plugins_to_load:
+                if auto_loaded:
                     fetch_source = spec.source
                     fetch_ref = spec.ref
                 else:
-                    fetch_source = self._expand_plugin_source_ref(spec.source)
+                    fetch_source = self._expand_plugin_source(spec.source)
                     fetch_ref = (
                         self._expand_plugin_source_ref(spec.ref)
                         if spec.ref
                         else spec.ref
                     )
 
-                # Fetch plugin and get resolved commit SHA
-                path, resolved_ref = fetch_plugin_with_resolution(
-                    source=fetch_source,
-                    ref=fetch_ref,
-                    repo_path=spec.repo_path,
-                )
+                try:
+                    path, resolved_ref = fetch_plugin_with_resolution(
+                        source=fetch_source,
+                        ref=fetch_ref,
+                        repo_path=spec.repo_path,
+                    )
+                    plugin = Plugin.load(path)
+                except Exception as exc:
+                    # Attaching a plugin that cannot load is an error, but an
+                    # auto-loaded one must not prevent the conversation from
+                    # starting.
+                    if not auto_loaded:
+                        raise
+                    logger.warning(
+                        "Failed to load plugin '%s'; continuing without it",
+                        redact_url_credentials(spec.source),
+                        exc_info=True,
+                    )
+                    self._emit_auto_load_error(
+                        "PluginLoadError",
+                        f"Plugin {redact_url_credentials(spec.source)} could not "
+                        "be loaded, so its skills, agents and hooks are "
+                        f"unavailable: {exc}",
+                    )
+                    continue
 
                 # Store resolved ref for persistence. Build this from the
                 # ORIGINAL spec (not the expanded values) so the persisted
@@ -1078,9 +1178,6 @@ class LocalConversation(BaseConversation):
                 # credentials. Resume re-fetches via the resolved commit SHA.
                 resolved = ResolvedPluginSource.from_plugin_source(spec, resolved_ref)
                 self._resolved_plugins.append(resolved)
-
-                # Load the plugin
-                plugin = Plugin.load(path)
                 logger.debug(
                     f"Loaded plugin '{plugin.manifest.name}'"
                     + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
@@ -1100,7 +1197,9 @@ class LocalConversation(BaseConversation):
                 if plugin.agents:
                     all_plugin_agents.extend(plugin.agents)
 
-            logger.info(f"Loaded {len(plugins_to_load)} plugin(s) via Conversation")
+            logger.info(
+                f"Loaded {len(self._resolved_plugins)} plugin(s) via Conversation"
+            )
 
         # Ambient plugins: enabled installed plugins plus local user/project
         # plugins, mirroring how installed/local skills already auto-load. These
@@ -1215,7 +1314,9 @@ class LocalConversation(BaseConversation):
         # - This is the ONLY place where defaults are applied (plugin loading preserves
         #   placeholders with expand_defaults=False to avoid double-expansion)
         # Agent Plugins servers are left literal (see expand_mcp_servers).
-        if merged_mcp:
+        if self._mcp_config_from_parent:
+            merged_mcp = dict(self.agent.mcp_config)
+        elif merged_mcp:
             # Pass the registry's lookup method as a callback - secrets are retrieved
             # lazily, one at a time, only when actually referenced in the config
             merged_mcp = expand_mcp_servers(
@@ -1249,6 +1350,7 @@ class LocalConversation(BaseConversation):
             register_plugin_agents(
                 agents=all_plugin_agents,
                 work_dir=self.workspace.working_dir,
+                cipher=self._cipher,
             )
 
         # Combine explicit hook_config with plugin hooks
@@ -1293,6 +1395,12 @@ class LocalConversation(BaseConversation):
 
         self._plugins_loaded = True
 
+    def _expand_plugin_source(self, source: str) -> str:
+        # As strict fetch does: a value in a URL's user info is percent-encoded.
+        return expand_plugin_source(
+            source, self._state.secret_registry.get_secret_value
+        )
+
     def _expand_plugin_source_ref(self, value: str) -> str:
         return expand_variable_references(
             value,
@@ -1319,7 +1427,7 @@ class LocalConversation(BaseConversation):
             [
                 registration.model_copy(
                     update={
-                        "source": self._expand_plugin_source_ref(registration.source),
+                        "source": self._expand_plugin_source(registration.source),
                         "ref": self._expand_plugin_source_ref(registration.ref)
                         if registration.ref
                         else None,
@@ -1387,18 +1495,63 @@ class LocalConversation(BaseConversation):
                 "removals/updates won't reach the agent for this provider",
                 type(self._mcp_tool_provider).__name__,
             )
-        try:
-            client = self._mcp_tool_provider.create_tools(
-                mcp_config, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
+        # One connection per server, so a server that fails or never answers
+        # costs only its own tools. They start side by side: startup takes as
+        # long as the slowest server, not all of them in a row.
+        prefixed = len(mcp_config) > 1
+        with ThreadPoolExecutor(
+            max_workers=len(mcp_config), thread_name_prefix="mcp-startup"
+        ) as pool:
+            started = {
+                name: pool.submit(
+                    self._start_runtime_mcp_server,
+                    name,
+                    server,
+                    create_kwargs,
+                    prefixed,
+                )
+                for name, server in mcp_config.items()
+            }
+        tools: list[ToolDefinition] = []
+        for name, future in started.items():
+            try:
+                tools.extend(future.result())
+            except Exception as exc:
+                logger.warning(
+                    "MCP server startup failed for %s; continuing without its "
+                    "tools: %s",
+                    name,
+                    exc,
+                )
+        return tools
+
+    def _start_runtime_mcp_server(
+        self,
+        name: str,
+        server: MCPServer,
+        create_kwargs: dict[str, Any],
+        prefixed: bool,
+    ) -> list[MCPToolDefinition]:
+        # A multi-server config has always named its tools `{server}_{tool}`;
+        # keep that, also for tools the server adds or changes later.
+        def named(tools: Sequence[MCPToolDefinition]) -> list[MCPToolDefinition]:
+            if not prefixed:
+                return list(tools)
+            return [tool.with_server_prefix(name) for tool in tools]
+
+        create_kwargs = dict(create_kwargs)
+        on_changed = create_kwargs.get("on_tools_changed")
+        if on_changed is not None:
+            create_kwargs["on_tools_changed"] = lambda tools: on_changed(named(tools))
+        on_reconciled = create_kwargs.get("on_tools_reconciled")
+        if on_reconciled is not None:
+            create_kwargs["on_tools_reconciled"] = lambda client, tools: (
+                on_reconciled(client, named(tools))
             )
-        except Exception as exc:
-            logger.warning(
-                "MCP server startup failed for %s; continuing without its tools: %s",
-                ", ".join(sorted(mcp_config)),
-                exc,
-            )
-            return []
-        return list(client.tools)
+        client = self._mcp_tool_provider.create_tools(
+            {name: server}, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
+        )
+        return named(client.tools)
 
     def _on_mcp_tools_reconciled(
         self,
@@ -1447,7 +1600,7 @@ class LocalConversation(BaseConversation):
         self._ensure_plugins_loaded()
         spec = self._marketplace_registry_from_context().resolve_plugin(plugin_ref)
 
-        fetch_source = self._expand_plugin_source_ref(spec.source)
+        fetch_source = self._expand_plugin_source(spec.source)
         fetch_ref = self._expand_plugin_source_ref(spec.ref) if spec.ref else spec.ref
         path, resolved_ref = fetch_plugin_with_resolution(
             source=fetch_source,
@@ -1492,6 +1645,7 @@ class LocalConversation(BaseConversation):
                 register_plugin_agents(
                     agents=plugin.agents,
                     work_dir=self.workspace.working_dir,
+                    cipher=self._cipher,
                 )
             if plugin.hooks and not plugin.hooks.is_empty():
                 self._merge_runtime_plugin_hooks(plugin.hooks)
@@ -1530,7 +1684,7 @@ class LocalConversation(BaseConversation):
                 then `~/.openhands/agents/*.md`)
         """
         # register project-level and then user-level file-based agents
-        register_file_agents(self.workspace.working_dir)
+        register_file_agents(self.workspace.working_dir, cipher=self._cipher)
 
     def _ensure_agent_ready(self) -> None:
         """Ensure the agent is fully initialized with plugins and agents loaded.
@@ -1579,6 +1733,13 @@ class LocalConversation(BaseConversation):
                     self._state,
                     on_event=self._on_event,
                 )
+
+                # Deliver any SessionStart additional_context now that
+                # init_state() has emitted the SystemPromptEvent, so the system
+                # prompt stays first in the LLM request. The hook processor
+                # collected it earlier during _ensure_plugins_loaded().
+                if self._hook_processor is not None:
+                    self._hook_processor.inject_pending_additional_context()
             except Exception:
                 self._close_runtime_tools(runtime_mcp_tools)
                 raise
@@ -1648,18 +1809,31 @@ class LocalConversation(BaseConversation):
         """Swap the agent's LLM to the given object.
 
         The caller owns ``llm.usage_id``; it is the registry key. If an
-        entry with that key already exists, the cached LLM is reused and
-        the passed ``llm`` is dropped — matching the rest of the
-        registry's "first-write-wins" contract.
+        entry with that key already exists and has the same config, the
+        cached LLM is reused. If its config differs (e.g. ``default``, which
+        agent initialization registers, posted with another model), the
+        passed ``llm`` replaces the entry and takes over the metrics already
+        recorded under that ``usage_id``.
 
         Args:
             llm: LLM to install on the agent.
         """
+        usage_id = llm.usage_id
         try:
-            new_llm = self.llm_registry.get(llm.usage_id)
+            registered = self.llm_registry.get(usage_id)
         except KeyError:
+            registered = None
+        if registered is not None and _same_llm_config(registered, llm):
+            new_llm = registered
+        else:
             new_llm = create_subscription_llm_from_config(llm)
+            if registered is not None:
+                self.llm_registry.remove(usage_id)
             self.llm_registry.add(new_llm)
+            if registered is not None:
+                # Keep one metrics object per usage_id: ConversationStats
+                # tracks the registered LLM's, so accrued usage is retained.
+                new_llm.restore_metrics(registered.metrics)
         # A switch_llm tool runs on a worker thread while run()/arun() holds the
         # state lock across the agent step on another thread, blocked awaiting
         # this very tool. Re-acquiring _state here would deadlock, so skip it:
@@ -1744,7 +1918,8 @@ class LocalConversation(BaseConversation):
 
         Raises:
             ValueError: If the conversation's agent is not an :class:`ACPAgent`,
-                or (for a live switch) the provider does not support runtime
+                if ``model`` is empty or whitespace-only (live or not), or
+                (for a live switch) the provider does not support runtime
                 model switching, or the ACP server rejects the switch.
             TimeoutError: If a live switch's ``session/set_model`` round-trip
                 exceeds ``acp_prompt_timeout`` seconds.
@@ -1753,6 +1928,10 @@ class LocalConversation(BaseConversation):
             raise ValueError(
                 "switch_acp_model is only supported for ACP conversations."
             )
+        # Check here, not only in set_acp_model: the pre-run path below skips
+        # that call and would persist a blank model unchecked.
+        if not model or not model.strip():
+            raise ValueError("model must be a non-empty string")
         with self._state:
             # With a live session, perform the protocol switch first; if it
             # fails we leave the persisted state untouched. Without one (pre
@@ -1910,6 +2089,14 @@ class LocalConversation(BaseConversation):
         - Creates and executes actions immediately
 
         Can be paused between steps
+
+        Reaching the iteration limit or getting stuck does not raise: the run
+        returns with ``state.execution_status`` set to ``ERROR`` or ``STUCK``.
+        ``RemoteConversation.run()`` raises ``ConversationRunError`` instead.
+
+        Raises:
+            ConversationRunError: If an error is raised during the run, such
+                as an LLM error.
         """
         with llm_call_context_scope(self._llm_call_context):
             self._run()
@@ -2802,9 +2989,9 @@ class LocalConversation(BaseConversation):
 
     def close(self) -> None:
         """Close the conversation and clean up all tool executors."""
-        if getattr(self, "_cleanup_complete", False):
+        if self._cleanup_complete:
             return
-        first_attempt = not getattr(self, "_cleanup_initiated", False)
+        first_attempt = not self._cleanup_initiated
         if first_attempt:
             self._cleanup_initiated = True
 
@@ -2819,7 +3006,7 @@ class LocalConversation(BaseConversation):
                 logger.debug(f"Could not register accumulated cost: {e}")
 
             logger.debug("Closing conversation and cleaning up tool executors")
-            hook_processor = getattr(self, "_hook_processor", None)
+            hook_processor = self._hook_processor
             if hook_processor is not None:
                 hook_processor.run_session_end()
             try:

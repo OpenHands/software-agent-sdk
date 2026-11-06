@@ -522,3 +522,28 @@ def test_issue_2749_validation(hook_type: HookType, match: str):
     """
     with pytest.raises(ValidationError, match=match):
         HookDefinition(type=hook_type)  # type: ignore[call-arg]
+
+
+def test_hook_config_typed_events_and_merge():
+    """HookConfig methods access events typed without dynamic getattr."""
+    matcher = HookMatcher(matcher="*")
+    cfg1 = HookConfig(pre_tool_use=[matcher], session_start=[matcher])
+    cfg2 = HookConfig(post_tool_use=[matcher], stop=[matcher])
+
+    for evt in HookEventType:
+        matchers = cfg1._get_matchers_for_event(evt)
+        assert isinstance(matchers, list)
+
+    assert len(cfg1._get_matchers_for_event(HookEventType.PRE_TOOL_USE)) == 1
+    assert len(cfg1._get_matchers_for_event(HookEventType.POST_TOOL_USE)) == 0
+
+    merged = HookConfig.merge([cfg1, cfg2])
+    assert merged is not None
+    assert len(merged.pre_tool_use) == 1
+    assert len(merged.post_tool_use) == 1
+    assert len(merged.session_start) == 1
+    assert len(merged.stop) == 1
+    assert len(merged.user_prompt_submit) == 0
+
+    with pytest.raises(RuntimeError, match="Unhandled hook event type"):
+        cfg1._get_matchers_for_event("unknown_event")  # type: ignore[arg-type]

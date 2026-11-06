@@ -1,5 +1,10 @@
+import ast
 import re
+from importlib.resources import files
 from pathlib import Path
+from typing import Any
+
+from PyInstaller.utils.hooks import collect_data_files
 
 from openhands.sdk.settings.acp_install_catalog import (
     ACP_INSTALL_CATALOG,
@@ -23,6 +28,10 @@ AGENT_SERVER_SPEC = (
     / "openhands"
     / "agent_server"
     / "agent-server.spec"
+)
+MANIFEST_IN = REPO_ROOT / "MANIFEST.in"
+PLUGIN_FORMAT_SCHEMAS_DIR = (
+    REPO_ROOT / "openhands-sdk" / "openhands" / "sdk" / "plugin" / "format" / "schemas"
 )
 ACP_INSTALL_CATALOG_PY = (
     REPO_ROOT
@@ -113,22 +122,90 @@ def test_agent_server_binary_copies_openhands_distribution_metadata() -> None:
         assert f'*copy_metadata("{distribution}")' in spec_text
 
 
+def test_agent_server_binary_collects_plugin_format_schemas() -> None:
+    """Frozen agent-server must ship plugin/MCP JSON schemas next to the module.
+
+    ``openhands.sdk.plugin.format.base._load_schema`` reads
+    ``schemas/*.json`` via ``Path(__file__).parent / "schemas"``. The schemas
+    are in the SDK wheel, but the published ``*-python`` image builds from an
+    sdist governed by ``MANIFEST.in``, then PyInstaller only packs what
+    ``agent-server.spec`` explicitly ``collect_data_files``. Both layers are
+    required — without either, the onefile binary raises FileNotFoundError for
+    ``plugin-1.0.0.schema.json`` at SETTING_UP_SKILLS
+    (OpenHands/OpenHands#18418 / software-agent-sdk#5989).
+    """
+    package = "openhands.sdk.plugin.format"
+    schema_names = sorted(p.name for p in PLUGIN_FORMAT_SCHEMAS_DIR.glob("*.json"))
+    assert schema_names == ["mcp-1.0.0.schema.json", "plugin-1.0.0.schema.json"]
+
+    # Build context for ghcr.io/openhands/agent-server:*-python comes from the
+    # workspace sdist (see docker/build.py::_make_build_context). MANIFEST.in
+    # must include the schemas or collect_data_files matches nothing in-image.
+    manifest_text = MANIFEST_IN.read_text(encoding="utf-8")
+    assert "recursive-include openhands-sdk schemas/*.json" in manifest_text
+
+    schemas = list(files(package).joinpath("schemas").iterdir())
+    assert {schema.name for schema in schemas} == set(schema_names)
+
+    bundled = _spec_collected_datas(package)
+    dest = f"{package.replace('.', '/')}/schemas"
+    for name in schema_names:
+        assert (name, dest) in bundled
+
+
+def _spec_collected_datas(package: str) -> set[tuple[str, str]]:
+    """Resolve the spec's ``collect_data_files(package, ...)`` calls as
+    PyInstaller would, returning ``(file name, bundle dir)`` pairs."""
+    tree = ast.parse(AGENT_SERVER_SPEC.read_text(encoding="utf-8"))
+    bundled: set[tuple[str, str]] = set()
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "collect_data_files"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == package
+        ):
+            continue
+        kwargs: dict[str, Any] = {}
+        for kw in node.keywords:
+            assert kw.arg is not None
+            kwargs[kw.arg] = ast.literal_eval(kw.value)
+        for src, dst in collect_data_files(package, **kwargs):
+            bundled.add((Path(src).name, dst))
+    return bundled
+
+
 def test_python_image_uses_canonical_minimal_runtime() -> None:
     dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
     workflow_text = SERVER_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "FROM debian:trixie-slim AS python-node-runtime" in dockerfile_text
-    assert "FROM python:3.13.15-slim-trixie AS python-runtime" in dockerfile_text
-    assert "FROM node:24.21.0-trixie-slim AS node-runtime" in dockerfile_text
+    assert re.search(
+        r"(?m)^FROM debian:trixie-slim@sha256:[0-9a-f]{64} AS python-node-runtime$",
+        dockerfile_text,
+    )
+    assert re.search(
+        r"(?m)^FROM python:\d+\.\d+\.\d+-slim-trixie AS python-runtime$",
+        dockerfile_text,
+    )
+    assert re.search(
+        r"(?m)^FROM node:\d+\.\d+\.\d+-trixie-slim AS node-runtime$",
+        dockerfile_text,
+    )
     assert "ARG BASE_IMAGE=python-node-runtime" in dockerfile_text
     assert re.search(r"ARG DEBIAN_SNAPSHOT=\d{8}T000000Z", dockerfile_text)
     assert (
-        "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}"
+        "URIs: https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}"
         in dockerfile_text
     )
     assert (
-        "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}"
+        "URIs: https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}"
         in dockerfile_text
+    )
+    assert (
+        "from=pip-revendored,source=/etc/ssl/certs/ca-certificates.crt,"
+        "target=/tmp/bootstrap-ca.crt" in dockerfile_text
     )
     assert (
         dockerfile_text.count(
@@ -137,7 +214,34 @@ def test_python_image_uses_canonical_minimal_runtime() -> None:
         == 2
     )
     assert "Check-Valid-Until: no" in dockerfile_text
-    assert "apt-get update; \\\n    apt-get upgrade -y;" in dockerfile_text
+    # The first apt run has no CA bundle yet, so it trusts the bootstrap bundle
+    # mounted from pip-revendored while still using the resilient APT_OPTS.
+    assert "apt-get $BOOTSTRAP_CA ${APT_OPTS} update" in dockerfile_text
+    assert "apt-get $BOOTSTRAP_CA upgrade -y" in dockerfile_text
+    # Resilient apt for the pinned snapshot archive: APT_OPTS (retries,
+    # timeouts, Retry-Delay, serial queue, Pipeline-Depth=0) is defined once
+    # and used at every apt site; python-node-runtime also persists it to
+    # apt.conf.d (inherited by derived stages when BASE_IMAGE is this image)
+    # and wraps update+install in an invocation-level retry loop, so a
+    # multi-minute snapshot.debian.org 503 outage does not fail the build.
+    assert "ARG APT_OPTS=" in dockerfile_text
+    assert "Acquire::Retries=5" in dockerfile_text
+    assert "Acquire::Retry-Delay=10" in dockerfile_text
+    assert "Acquire::Pipeline-Depth=0" in dockerfile_text
+    assert "80-snapshot-resilience" in dockerfile_text
+    assert "for attempt in 1 2 3 4 5" in dockerfile_text
+    apt_lines = [
+        line.strip()
+        for line in dockerfile_text.splitlines()
+        if "apt-get" in line and (" update" in line or " install" in line)
+    ]
+    assert apt_lines
+    for line in apt_lines:
+        assert "${APT_OPTS}" in line, line
+    acp_stage = dockerfile_text.partition("FROM python:3.13-bookworm AS acp-providers")[
+        2
+    ].partition("####")[0]
+    assert "s#http://deb.debian.org/#https://deb.debian.org/#" in acp_stage
     minimal_stage = "FROM ${BASE_IMAGE} AS base-image-minimal"
     full_stage = "FROM base-image-minimal AS base-image"
     minimal_packages = dockerfile_text.partition(minimal_stage)[2].partition(
@@ -158,7 +262,6 @@ def test_agent_server_uses_one_pinned_npm_version_for_both_node_runtimes() -> No
 
     match = re.search(r"(?m)^ARG NPM_VERSION=(\d+\.\d+\.\d+)$", dockerfile_text)
     assert match
-    assert match.group(1) == "11.19.1"
     assert dockerfile_text.count("ARG NPM_VERSION\n") == 2
     assert (
         "node /usr/local/lib/node_modules/npm/bin/npm-cli.js install --global "
@@ -245,16 +348,23 @@ def test_default_preinstalled_acp_providers_matches_dockerfile_and_workflow() ->
     assert f"'{default_csv}'" in workflow_text
 
 
-def test_server_workflow_publishes_python_slim_without_acp_providers() -> None:
+def test_server_workflow_publishes_python_slim_without_optional_extras() -> None:
     workflow_text = SERVER_WORKFLOW.read_text(encoding="utf-8")
 
-    assert re.search(
+    slim_entries = re.findall(
         r"- variant: python-slim\n"
         r"\s+custom_tags: python\n"
         r"\s+image_flavor: slim\n"
-        r"\s+acp_provider_flavor: none",
+        r"\s+acp_provider_flavor: none\n"
+        r"\s+install_capabilities: browser,docker\n"
+        r"\s+enable_vscode: 'false'\n"
+        r"\s+target: binary\n"
+        r"\s+arch: (amd64|arm64)",
         workflow_text,
     )
+    assert slim_entries == ["amd64", "arm64"]
+    assert 'elif [ -n "${{ matrix.install_capabilities }}" ]; then' in workflow_text
+    assert "ENABLE_VSCODE=${{ env.ENABLE_VSCODE }}" in workflow_text
     assert (
         "INSTALL_ACP_PROVIDERS=${{ steps.prep.outputs.install_acp_providers }}"
         in workflow_text

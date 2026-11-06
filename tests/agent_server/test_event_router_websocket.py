@@ -264,7 +264,7 @@ async def test_websocket_general_exception_continues_loop(
             sample_conversation_id, mock_websocket, session_api_key=None
         )
 
-        log_exception.assert_called_once()
+        log_exception.assert_called_once_with("error_in_subscription")
 
     assert mock_websocket.receive_json.call_count == 2
     mock_event_service.unsubscribe_from_events.assert_called_once()

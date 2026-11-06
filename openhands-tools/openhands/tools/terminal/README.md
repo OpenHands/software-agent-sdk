@@ -63,6 +63,12 @@ Raw secret values passed through `env` become session-scoped environment
 variables. Use the SDK secret registry when you need command-scoped secret
 injection behavior.
 
+Terminal processes run below the agent server's CPU priority so CPU-heavy
+commands cannot starve it: `taskpolicy -c utility` on macOS, `nice -n 10` on
+Linux and Below Normal priority on Windows. Set
+`OH_TERMINAL_PROCESS_PRIORITY=none` in the server or terminal environment to
+keep the server's priority, e.g. for benchmarks.
+
 ## Usage Examples
 
 ### Basic Usage

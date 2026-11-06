@@ -103,12 +103,14 @@ class GoalController:
     def on_run_finished(self, events: Sequence[Event]) -> GoalStep:
         """Judge the objective after a run and decide whether to continue.
 
-        Increments the iteration count, audits ``events`` with the judge LLM,
-        and returns a :class:`GoalContinue` (with a followup) or a terminal
-        :class:`GoalDone` (with a :class:`GoalOutcome`).
+        Audits ``events`` with the judge LLM, counts the round once the judge
+        has returned a verdict, and returns a :class:`GoalContinue` (with a
+        followup) or a terminal :class:`GoalDone` (with a :class:`GoalOutcome`).
+        A judge call that raises leaves the count unchanged: a failed or
+        abandoned audit is not a completed round.
         """
-        self.iteration += 1
         verdict = judge_goal(self.judge_llm, self.objective, events)
+        self.iteration += 1
         logger.info(
             "Goal audit %d/%d: score=%.2f complete=%s",
             self.iteration,

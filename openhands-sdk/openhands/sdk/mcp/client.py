@@ -57,6 +57,10 @@ class MCPClient(AsyncMCPClient):
 
     async def connect(self) -> None:
         """Establish connection to the MCP server."""
+        async with self._session_state.lock:
+            session_task = self._session_state.session_task
+            if session_task is not None and session_task.done():
+                self._reset_session_state(full=True)
         try:
             await self.__aenter__()
         except RuntimeError as exc:

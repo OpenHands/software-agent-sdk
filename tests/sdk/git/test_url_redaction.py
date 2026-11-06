@@ -22,72 +22,91 @@ from openhands.sdk.utils.redact import (
 class TestRedactUrlCredentials:
     """Tests for redact_url_credentials function."""
 
-    def test_https_with_oauth2_token(self):
-        """Should redact oauth2 tokens in HTTPS URLs."""
-        url = "https://oauth2:SECRET_TOKEN@gitlab.com/org/repo.git"
+    @pytest.mark.parametrize(
+        ("url", "expected", "secret"),
+        [
+            pytest.param(
+                "HTTPS://oauth2:SECRET@github.com/o/r.git",
+                "HTTPS://****@github.com/o/r.git",
+                "SECRET",
+                id="uppercase_scheme",
+            ),
+            pytest.param(
+                "https://oauth2:SECRET_TOKEN@gitlab.com/org/repo.git",
+                "https://****@gitlab.com/org/repo.git",
+                "SECRET_TOKEN",
+                id="https_oauth2_token",
+            ),
+            # Bitbucket style.
+            pytest.param(
+                "https://x-token-auth:MY_TOKEN@bitbucket.org/team/repo.git",
+                "https://****@bitbucket.org/team/repo.git",
+                "MY_TOKEN",
+                id="https_x_token_auth",
+            ),
+            # GitHub PAT style.
+            pytest.param(
+                "https://ghp_xxxxxxxxxxxx@github.com/owner/repo.git",
+                "https://****@github.com/owner/repo.git",
+                "ghp_xxxxxxxxxxxx",
+                id="https_just_token",
+            ),
+            # URL-encoded special characters in credentials.
+            pytest.param(
+                "https://user%40domain:p%40ss%3Aword@github.com/repo.git",
+                "https://****@github.com/repo.git",
+                "user%40domain",
+                id="special_characters_in_token",
+            ),
+        ],
+    )
+    def test_redacts_credentials(self, url: str, expected: str, secret: str):
         result = redact_url_credentials(url)
-        assert result == "https://****@gitlab.com/org/repo.git"
-        assert "SECRET_TOKEN" not in result
+        assert result == expected
+        assert secret not in result
 
-    def test_https_with_username_password(self):
-        """Should redact username:password in HTTPS URLs."""
-        url = "https://user:password123@github.com/owner/repo.git"
+    @pytest.mark.parametrize(
+        ("url", "expected", "user", "password"),
+        [
+            pytest.param(
+                "https://user:password123@github.com/owner/repo.git",
+                "https://****@github.com/owner/repo.git",
+                "user",
+                "password123",
+                id="https",
+            ),
+            pytest.param(
+                "http://user:pass@internal-git.company.com/repo.git",
+                "http://****@internal-git.company.com/repo.git",
+                "user",
+                "pass",
+                id="http",
+            ),
+        ],
+    )
+    def test_redacts_username_password(
+        self, url: str, expected: str, user: str, password: str
+    ):
         result = redact_url_credentials(url)
-        assert result == "https://****@github.com/owner/repo.git"
-        assert "user" not in result
-        assert "password123" not in result
+        assert result == expected
+        assert user not in result
+        assert password not in result
 
-    def test_https_with_x_token_auth(self):
-        """Should redact x-token-auth credentials (Bitbucket style)."""
-        url = "https://x-token-auth:MY_TOKEN@bitbucket.org/team/repo.git"
-        result = redact_url_credentials(url)
-        assert result == "https://****@bitbucket.org/team/repo.git"
-        assert "MY_TOKEN" not in result
-
-    def test_https_with_just_token(self):
-        """Should redact token-only auth (GitHub PAT style)."""
-        url = "https://ghp_xxxxxxxxxxxx@github.com/owner/repo.git"
-        result = redact_url_credentials(url)
-        assert result == "https://****@github.com/owner/repo.git"
-        assert "ghp_xxxxxxxxxxxx" not in result
-
-    def test_https_without_credentials(self):
-        """Should not modify URLs without credentials."""
-        url = "https://github.com/owner/repo.git"
-        result = redact_url_credentials(url)
-        assert result == url
-
-    def test_http_with_credentials(self):
-        """Should redact credentials in HTTP URLs."""
-        url = "http://user:pass@internal-git.company.com/repo.git"
-        result = redact_url_credentials(url)
-        assert result == "http://****@internal-git.company.com/repo.git"
-        assert "user" not in result
-        assert "pass" not in result
-
-    def test_ssh_url_unchanged(self):
-        """Should not modify SSH URLs (no embedded credentials)."""
-        url = "git@github.com:owner/repo.git"
-        result = redact_url_credentials(url)
-        assert result == url
-
-    def test_ssh_gitlab_url_unchanged(self):
-        """Should not modify GitLab SSH URLs."""
-        url = "git@gitlab.com:org/project.git"
-        result = redact_url_credentials(url)
-        assert result == url
-
-    def test_local_path_unchanged(self):
-        """Should not modify local paths."""
-        path = "/path/to/local/repo"
-        result = redact_url_credentials(path)
-        assert result == path
-
-    def test_github_shorthand_unchanged(self):
-        """Should not modify GitHub shorthand format (no credentials)."""
-        source = "github:owner/repo"
-        result = redact_url_credentials(source)
-        assert result == source
+    @pytest.mark.parametrize(
+        "url",
+        [
+            pytest.param(
+                "https://github.com/owner/repo.git", id="https_no_credentials"
+            ),
+            pytest.param("git@github.com:owner/repo.git", id="ssh"),
+            pytest.param("git@gitlab.com:org/project.git", id="ssh_gitlab"),
+            pytest.param("/path/to/local/repo", id="local_path"),
+            pytest.param("github:owner/repo", id="github_shorthand"),
+            pytest.param("", id="empty_string"),
+        ],
+    )
+    def test_url_without_credentials_unchanged(self, url: str):
+        assert redact_url_credentials(url) == url
 
     def test_preserves_port_in_url(self):
         """Should preserve port numbers in URLs while redacting credentials."""
@@ -103,19 +122,6 @@ class TestRedactUrlCredentials:
         result = redact_url_credentials(url)
         assert result == "https://****@github.com/org/repo/tree/main/subdir"
         assert "/org/repo/tree/main/subdir" in result
-
-    def test_empty_string(self):
-        """Should handle empty string."""
-        result = redact_url_credentials("")
-        assert result == ""
-
-    def test_special_characters_in_token(self):
-        """Should handle special characters in tokens."""
-        # URL-encoded special characters in credentials
-        url = "https://user%40domain:p%40ss%3Aword@github.com/repo.git"
-        result = redact_url_credentials(url)
-        assert result == "https://****@github.com/repo.git"
-        assert "user%40domain" not in result
 
     def test_preserve_placeholders_keeps_var_reference(self):
         """A ${VAR} userinfo is not a secret and must survive when asked."""
@@ -286,6 +292,17 @@ class TestRunGitCommandCredentialRedaction:
                 run_git_command(self._args())
         assert CREDENTIAL_URL not in exc_info.value.command
         assert REDACTED_URL in exc_info.value.command
+
+    def test_nonzero_returncode_redacts_embedded_url(self):
+        args = ["git", "check-ref-format", f"refs/heads/{CREDENTIAL_URL}"]
+        completed = subprocess.CompletedProcess(
+            args=args, returncode=1, stdout="", stderr="invalid ref"
+        )
+        with patch("subprocess.run", return_value=completed):
+            with pytest.raises(GitCommandError) as exc_info:
+                run_git_command(args)
+        assert all("SUPERSECRET" not in arg for arg in exc_info.value.command)
+        assert f"refs/heads/{REDACTED_URL}" in exc_info.value.command
 
     def test_timeout_expired_redacts_command(self):
         with patch(

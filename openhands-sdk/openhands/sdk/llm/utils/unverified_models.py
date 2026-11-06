@@ -51,23 +51,39 @@ def _list_bedrock_foundation_models(
         return []
 
 
+def _is_litellm_bedrock_model(model: str) -> bool:
+    """Whether LiteLLM serves ``model`` only through AWS Bedrock.
+
+    Many Bedrock ids carry no ``bedrock`` prefix (``deepseek.r1-v1:0``,
+    ``us.anthropic.claude-...``), so ask LiteLLM's model-cost map which provider
+    it files the id under (``bedrock``, ``bedrock_converse``, ``bedrock_mantle``).
+    """
+    if model.startswith("bedrock"):
+        return True
+    provider = litellm.model_cost.get(model, {}).get("litellm_provider")
+    return isinstance(provider, str) and provider.startswith("bedrock")
+
+
 def get_supported_llm_models(
     aws_region_name: str | None = None,
     aws_access_key_id: SecretStr | None = None,
     aws_secret_access_key: SecretStr | None = None,
 ) -> list[str]:
-    """Get all models supported by LiteLLM.
+    """Get models from LiteLLM, verified OpenRouter routes, and Bedrock.
 
-    This function combines models from litellm and Bedrock, removing any
-    error-prone Bedrock models.
+    Bedrock models are excluded unless AWS credentials are configured.
 
     Returns:
-        list[str]: A sorted list of unique model names.
+        list[str]: Available model identifiers.
     """
-    litellm_model_list = litellm.model_list + list(litellm.model_cost.keys())
-    litellm_model_list_without_bedrock = list(
-        filter(lambda m: not m.startswith("bedrock"), litellm_model_list)
+    litellm_model_list = (
+        litellm.model_list
+        + list(litellm.model_cost.keys())
+        + [f"openrouter/{model}" for model in VERIFIED_MODELS["openrouter"]]
     )
+    litellm_model_list_without_bedrock = [
+        m for m in litellm_model_list if not _is_litellm_bedrock_model(m)
+    ]
     bedrock_model_list = []
     if aws_region_name and aws_access_key_id and aws_secret_access_key:
         bedrock_model_list = _list_bedrock_foundation_models(

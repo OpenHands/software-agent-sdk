@@ -389,6 +389,9 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     catalog_description: ClassVar[str] = ""
     """User-facing catalog blurb; ``description`` is what the LLM reads."""
 
+    conversation_local: ClassVar[bool] = False
+    """Whether the tool only reads and writes its own conversation's state."""
+
     def __init_subclass__(cls, **kwargs):
         """Automatically set name from class name when subclass is created."""
         super().__init_subclass__(**kwargs)

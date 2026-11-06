@@ -1,6 +1,10 @@
 import asyncio
+import json
+import shutil
 import subprocess
 import threading
+from collections.abc import Iterator
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
@@ -16,7 +20,9 @@ from openhands.agent_server.docker_runtime.registry import (
     DockerConversationRegistry,
 )
 from openhands.agent_server.models import StartConversationRequest
+from openhands.agent_server.storage import trash as trash_module
 from openhands.sdk import LLM, Agent, Message, TextContent
+from openhands.sdk.conversation.request import ConversationContainerOptions
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
@@ -245,6 +251,229 @@ async def test_running_idle_runtime_is_retained(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [
+        ConversationExecutionStatus.ERROR,
+        ConversationExecutionStatus.STUCK,
+    ],
+)
+async def test_other_terminal_idle_runtimes_are_stopped(tmp_path, monkeypatch, status):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    runtime._containers[conversation_id] = container(conversation_id)
+    runtime._last_access[conversation_id] = 0
+    set_execution_status(runtime, status)
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer,
+        "stop",
+        lambda self: stopped.append(self.container_id),
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
+    )
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is None
+    assert stopped == [f"container-{conversation_id}"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [
+        ConversationExecutionStatus.IDLE,
+        ConversationExecutionStatus.PAUSED,
+        ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
+    ],
+)
+async def test_non_terminal_idle_runtime_is_retained(tmp_path, monkeypatch, status):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+    runtime._last_access[conversation_id] = 0
+    set_execution_status(runtime, status)
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
+    )
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is active
+
+
+@pytest.mark.asyncio
+async def test_active_lease_prevents_idle_eviction(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+    runtime._last_access[conversation_id] = 0
+    set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
+    release = runtime.acquire_lease(conversation_id)
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer,
+        "stop",
+        lambda self: stopped.append(self.container_id),
+    )
+    now = 20.0
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: now
+    )
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is active
+    assert stopped == []
+
+    release()
+    now = 40.0
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is None
+    assert stopped == [active.container_id]
+
+
+@pytest.mark.asyncio
+async def test_lease_during_status_read_prevents_eviction(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+    runtime._last_access[conversation_id] = 0
+    service = AsyncMock(spec=ConversationService)
+
+    async def get_conversation(_conversation_id):
+        release = runtime.acquire_lease(_conversation_id)
+        release()
+        return SimpleNamespace(execution_status=ConversationExecutionStatus.FINISHED)
+
+    service.get_conversation.side_effect = get_conversation
+    runtime.configure_service(cast(ConversationService, service))
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer,
+        "stop",
+        lambda self: stopped.append(self.container_id),
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
+    )
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is active
+    assert stopped == []
+
+
+@pytest.mark.asyncio
+async def test_eviction_skips_a_deleting_container(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+    runtime._last_access[conversation_id] = 0
+    runtime._deleting.add(conversation_id)
+    set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer,
+        "stop",
+        lambda self: stopped.append(self.container_id),
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
+    )
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is active
+    assert stopped == []
+
+
+@pytest.mark.asyncio
+async def test_eviction_keeps_a_container_when_stop_fails(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    failed_id = uuid4()
+    stopped_id = uuid4()
+    failed = container(failed_id)
+    runtime._containers[failed_id] = failed
+    runtime._containers[stopped_id] = container(stopped_id)
+    runtime._last_access[failed_id] = 0
+    runtime._last_access[stopped_id] = 0
+    set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
+    )
+
+    def stop(self):
+        if self.container_id == failed.container_id:
+            raise RuntimeError("docker stop failed")
+
+    monkeypatch.setattr(ConversationContainer, "stop", stop)
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(failed_id) is failed
+    assert runtime.get(stopped_id) is None
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_reuses_container_after_failed_stop(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+
+    def fail_stop(_self):
+        raise RuntimeError("transient docker stop failure")
+
+    monkeypatch.setattr(ConversationContainer, "stop", fail_stop)
+    monkeypatch.setattr(ConversationContainer, "is_running", lambda _self: True)
+
+    with pytest.raises(RuntimeError, match="transient docker stop failure"):
+        await runtime.stop_if_idle(conversation_id, 0)
+
+    built = False
+
+    def build(conversation_id):
+        nonlocal built
+        built = True
+        return container(conversation_id)
+
+    runtime._build_container = build
+
+    assert await runtime.get_or_create(conversation_id) is active
+    assert not built
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_waits_while_container_is_stopping(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    stop_event = asyncio.Event()
+    runtime._stopping[conversation_id] = stop_event
+    resumed = container(conversation_id)
+    resumed.container_id = "rebuilt-after-stop"
+    runtime._build_container = lambda conversation_id: resumed
+
+    task = asyncio.create_task(runtime.get_or_create(conversation_id))
+    await asyncio.sleep(0.01)
+    assert not task.done()
+
+    runtime._stopping.pop(conversation_id, None)
+    stop_event.set()
+
+    result = await task
+    assert result is resumed
+    assert result.container_id == "rebuilt-after-stop"
+
+
+@pytest.mark.asyncio
 async def test_attached_session_prevents_idle_eviction(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id = uuid4()
@@ -367,7 +596,10 @@ async def test_shutdown_cancels_eviction_and_stops_containers(tmp_path, monkeypa
 
 
 def _build_container(runtime, monkeypatch, conversation_id):
-    runtime.provisioning.create(conversation_id)
+    """Run ``_build_container`` with docker mocked out; return the result and
+    the recorded ``docker run`` command with its environment."""
+    if runtime.provisioning.load_optional(conversation_id) is None:
+        runtime.provisioning.create(conversation_id)
     commands = []
 
     def run(command, **kwargs):
@@ -397,7 +629,6 @@ def _build_container(runtime, monkeypatch, conversation_id):
 def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id = uuid4()
-
     result, command, env = _build_container(runtime, monkeypatch, conversation_id)
     assert result.host == "http://127.0.0.1:32123"
     assert ["--cap-drop", "ALL"] == command[
@@ -407,7 +638,7 @@ def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monke
     assert "host.docker.internal:host-gateway" in command
     assert "127.0.0.1::8000" in command
     mounts = [command[index + 1] for index, item in enumerate(command) if item == "-v"]
-    assert len(mounts) == 3
+    assert len(mounts) == 4
     assert all(
         conversation_id.hex in mount or mount.endswith(":/workspace")
         for mount in mounts
@@ -417,6 +648,597 @@ def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monke
         command.index("HOME") - 1 : command.index("HOME") + 1
     ]
     assert env["OH_SECRET_KEY"] != "outer-key"
+
+
+def test_worktree_root_resolves_identically_on_host_and_in_container(
+    tmp_path, monkeypatch
+):
+    """Regression test for #5307: git worktrees link the repository and the
+    worktree with absolute paths, so the conversation worktree root must be a
+    host directory mounted into the container at its own host path — otherwise
+    the host repository sees the live worktree as prunable."""
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    identity = runtime.provisioning.create(
+        conversation_id, workspace_path=repository
+    ).model_copy(update={"worktree_repository_path": repository})
+    runtime.provisioning.save(identity)
+
+    _, command, env = _build_container(runtime, monkeypatch, conversation_id)
+
+    worktree_root = env["OH_CONVERSATION_WORKTREE_ROOT"]
+    runtime_dir = runtime.provisioning.runtime_dir(conversation_id)
+    assert Path(worktree_root) == runtime_dir / "worktrees"
+    assert Path(worktree_root).is_dir()
+    assert ["-e", "OH_CONVERSATION_WORKTREE_ROOT"] == command[
+        command.index("OH_CONVERSATION_WORKTREE_ROOT") - 1 : command.index(
+            "OH_CONVERSATION_WORKTREE_ROOT"
+        )
+        + 1
+    ]
+    mounts = [command[index + 1] for index, item in enumerate(command) if item == "-v"]
+    assert f"{repository}:/workspace" in mounts
+    assert f"{repository}:{repository}" in mounts
+    assert f"{worktree_root}:{worktree_root}" in mounts
+
+
+def test_nested_worktree_workspace_mounts_repository_at_its_host_path(
+    tmp_path, monkeypatch
+):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    repository = tmp_path / "repository"
+    workspace = repository / "src" / "package"
+    workspace.mkdir(parents=True)
+    identity = runtime.provisioning.create(
+        conversation_id, workspace_path=workspace
+    ).model_copy(update={"worktree_repository_path": repository})
+    runtime.provisioning.save(identity)
+
+    _, command, _ = _build_container(runtime, monkeypatch, conversation_id)
+
+    mounts = [command[index + 1] for index, item in enumerate(command) if item == "-v"]
+    assert f"{workspace}:/workspace" in mounts
+    assert f"{repository}:{repository}" in mounts
+    assert f"{workspace}:{workspace}" not in mounts
+
+
+def test_linked_source_worktree_mounts_its_external_git_common_dir(
+    tmp_path, monkeypatch
+):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    repository = tmp_path / "source-worktree"
+    repository.mkdir()
+    git_common_dir = tmp_path / "primary" / ".git"
+    git_common_dir.mkdir(parents=True)
+    identity = runtime.provisioning.create(
+        conversation_id, workspace_path=repository
+    ).model_copy(
+        update={
+            "worktree_repository_path": repository,
+            "worktree_git_common_dir_path": git_common_dir,
+        }
+    )
+    runtime.provisioning.save(identity)
+
+    _, command, _ = _build_container(runtime, monkeypatch, conversation_id)
+
+    mounts = [command[index + 1] for index, item in enumerate(command) if item == "-v"]
+    assert f"{repository}:{repository}" in mounts
+    assert f"{git_common_dir}:{git_common_dir}" in mounts
+
+
+def test_container_command_does_not_forward_unset_observability_vars(
+    tmp_path, monkeypatch
+):
+    runtime = registry(tmp_path, monkeypatch)
+    for name in (
+        "LMNR_PROJECT_API_KEY",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "OPENHANDS_OBSERVABILITY_METADATA",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    _, command, env = _build_container(runtime, monkeypatch, uuid4())
+
+    assert "LMNR_PROJECT_API_KEY" not in env
+    assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in env
+    assert "LMNR_PROJECT_API_KEY" not in command
+    assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in command
+
+
+def test_container_command_forwards_observability_vars(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    values = {
+        "LMNR_PROJECT_API_KEY": "laminar-key",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://localhost:4317",
+        "OTEL_EXPORTER_OTLP_HEADERS": "Authorization=Bearer%20token",
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+        "OTEL_PROTOCOL": "grpc",
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+    _, command, env = _build_container(runtime, monkeypatch, uuid4())
+
+    for name, value in values.items():
+        assert env[name] == value
+        index = command.index(name)
+        assert ["-e", name] == command[index - 1 : index + 1]
+
+
+def test_container_command_does_not_forward_empty_observability_vars(
+    tmp_path, monkeypatch
+):
+    runtime = registry(tmp_path, monkeypatch)
+    names = ("LMNR_PROJECT_API_KEY", "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_PROTOCOL")
+    for name in names:
+        monkeypatch.setenv(name, "")
+
+    _, command, env = _build_container(runtime, monkeypatch, uuid4())
+
+    for name in names:
+        assert name not in env
+        assert name not in command
+
+
+def seed_runtime(
+    runtime: DockerConversationRegistry,
+    status: ConversationExecutionStatus | None = ConversationExecutionStatus.FINISHED,
+    npm: bool = False,
+) -> tuple[UUID, dict[Path, bytes]]:
+    """Provision a runtime with a populated cache and the state that must survive.
+
+    Returns the conversation id and a snapshot of every kept file's contents.
+    """
+    conversation_id = uuid4()
+    runtime.provisioning.create(conversation_id)
+    runtime_dir = runtime.provisioning.runtime_dir(conversation_id)
+    cache = runtime_dir / "persistence" / ".cache" / "uv" / "wheels-v5"
+    cache.mkdir(parents=True)
+    (cache / "requests.whl").write_bytes(b"wheel")
+    if npm:
+        npm_cache = runtime_dir / "persistence" / ".npm" / "_cacache"
+        npm_cache.mkdir(parents=True)
+        (npm_cache / "index").write_bytes(b"left-pad")
+    kept = {
+        runtime_dir / "persistence" / ".bash_history": b"uv pip install requests",
+        runtime_dir / "workspace" / ".venv" / "pyvenv.cfg": b"home = /usr",
+        runtime_dir / "workspace" / "main.py": b"print('hi')",
+        runtime.conversation_dir(conversation_id) / "events" / "event-0.json": b"{}",
+    }
+    if status is not None:
+        base_state = runtime.conversation_dir(conversation_id) / "base_state.json"
+        kept[base_state] = json.dumps({"execution_status": status.value}).encode()
+    for path, content in kept.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    manifest = runtime.provisioning.manifest_path(conversation_id)
+    kept[manifest] = manifest.read_bytes()
+    return conversation_id, kept
+
+
+def cache_dir(
+    runtime: DockerConversationRegistry, conversation_id: UUID, name: str = ".cache"
+) -> Path:
+    return runtime.provisioning.runtime_dir(conversation_id) / "persistence" / name
+
+
+def in_trash(runtime: DockerConversationRegistry) -> list[Path]:
+    trash = runtime.reclaimer.trash.dir
+    return list(trash.iterdir()) if trash.exists() else []
+
+
+def assert_kept(kept: dict[Path, bytes]) -> None:
+    assert {path: path.read_bytes() for path in kept} == kept
+
+
+async def reclaimed(runtime: DockerConversationRegistry) -> None:
+    await runtime.reclaimer.trash.drain()
+
+
+@pytest.fixture
+def stopped_containers(monkeypatch) -> list[str]:
+    stopped: list[str] = []
+    monkeypatch.setattr(
+        ConversationContainer, "stop", lambda self: stopped.append(self.container_id)
+    )
+    return stopped
+
+
+@pytest.fixture
+def slow_remove(monkeypatch) -> Iterator[SimpleNamespace]:
+    """Hold every cache deletion until ``release`` is set."""
+    real_remove = trash_module._remove
+    gate = SimpleNamespace(
+        started=threading.Event(), release=threading.Event(), removed=threading.Event()
+    )
+
+    def remove(path: Path) -> None:
+        gate.started.set()
+        assert gate.release.wait(5)
+        real_remove(path)
+        gate.removed.set()
+
+    monkeypatch.setattr(trash_module, "_remove", remove)
+    yield gate
+    gate.release.set()
+
+
+@pytest.mark.asyncio
+async def test_idle_eviction_prunes_cache_and_keeps_conversation_state(
+    tmp_path, monkeypatch, stopped_containers
+):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id, kept = seed_runtime(runtime)
+    runtime._containers[conversation_id] = container(conversation_id)
+    runtime._last_access[conversation_id] = 0
+    set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
+    )
+
+    await runtime._evict_idle_runtimes(10)
+    await reclaimed(runtime)
+
+    assert stopped_containers == [f"container-{conversation_id}"]
+    assert not cache_dir(runtime, conversation_id).exists()
+    assert_kept(kept)
+    assert in_trash(runtime) == []
+
+
+@pytest.mark.asyncio
+async def test_running_idle_runtime_keeps_its_cache(
+    tmp_path, monkeypatch, stopped_containers
+):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id, kept = seed_runtime(runtime, ConversationExecutionStatus.RUNNING)
+    runtime._containers[conversation_id] = container(conversation_id)
+    runtime._last_access[conversation_id] = 0
+    set_execution_status(runtime, ConversationExecutionStatus.RUNNING)
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
+    )
+
+    await runtime._evict_idle_runtimes(10)
+    await reclaimed(runtime)
+
+    assert stopped_containers == []
+    assert cache_dir(runtime, conversation_id).is_dir()
+    assert_kept(kept)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    # RUNNING on disk is stale once the container is gone (e.g. a stop that
+    # escalated to SIGKILL mid-run), so it must not pin the cache forever.
+    [*ConversationExecutionStatus, None],
+)
+async def test_explicit_stop_prunes_cache(
+    tmp_path, monkeypatch, stopped_containers, status
+):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id, kept = seed_runtime(runtime, status)
+    runtime._containers[conversation_id] = container(conversation_id)
+
+    await runtime.stop(conversation_id)
+    await reclaimed(runtime)
+
+    assert stopped_containers == [f"container-{conversation_id}"]
+    assert not cache_dir(runtime, conversation_id).exists()
+    assert_kept(kept)
+    assert in_trash(runtime) == []
+
+
+@pytest.mark.asyncio
+async def test_stop_prunes_npm_cache_too(tmp_path, monkeypatch, stopped_containers):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id, kept = seed_runtime(runtime, npm=True)
+    runtime._containers[conversation_id] = container(conversation_id)
+
+    await runtime.stop(conversation_id)
+    await reclaimed(runtime)
+
+    assert not cache_dir(runtime, conversation_id).exists()
+    assert not cache_dir(runtime, conversation_id, ".npm").exists()
+    assert_kept(kept)
+    assert in_trash(runtime) == []
+
+
+@pytest.mark.asyncio
+async def test_startup_prunes_npm_cache_too(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id, kept = seed_runtime(runtime, npm=True)
+
+    await runtime.reclaimer.start()
+    await reclaimed(runtime)
+
+    assert not cache_dir(runtime, conversation_id).exists()
+    assert not cache_dir(runtime, conversation_id, ".npm").exists()
+    assert_kept(kept)
+
+
+@pytest.mark.asyncio
+async def test_stop_returns_before_cache_deletion_finishes(
+    tmp_path, monkeypatch, stopped_containers, slow_remove
+):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id, _ = seed_runtime(runtime)
+    runtime._containers[conversation_id] = container(conversation_id)
+
+    await runtime.stop(conversation_id)
+
+    # Detached from the mount already, but not yet deleted.
+    assert not cache_dir(runtime, conversation_id).exists()
+    assert len(in_trash(runtime)) == 1
+    slow_remove.release.set()
+    await reclaimed(runtime)
+    assert in_trash(runtime) == []
+
+
+@pytest.mark.asyncio
+async def test_failed_stop_keeps_cache(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id, _ = seed_runtime(runtime)
+    runtime._containers[conversation_id] = container(conversation_id)
+
+    def fail(_self):
+        raise RuntimeError("docker stop failed")
+
+    monkeypatch.setattr(ConversationContainer, "stop", fail)
+
+    with pytest.raises(RuntimeError):
+        await runtime.stop(conversation_id)
+
+    assert cache_dir(runtime, conversation_id).is_dir()
+
+
+@pytest.mark.asyncio
+async def test_prune_skips_runtime_that_restarted_after_stop(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id, _ = seed_runtime(runtime)
+    runtime._containers[conversation_id] = container(conversation_id)
+
+    await runtime.reclaimer.on_stop(conversation_id)
+    await reclaimed(runtime)
+
+    assert cache_dir(runtime, conversation_id).is_dir()
+
+
+@pytest.mark.asyncio
+async def test_prune_skips_runtime_being_deleted(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id, _ = seed_runtime(runtime)
+    assert await runtime.begin_delete(conversation_id)
+
+    await runtime.reclaimer.on_stop(conversation_id)
+    await reclaimed(runtime)
+
+    # The DELETE route owns this runtime's files now.
+    assert cache_dir(runtime, conversation_id).is_dir()
+
+
+@pytest.mark.asyncio
+async def test_prune_is_idempotent_when_cache_is_absent(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id, kept = seed_runtime(runtime)
+
+    await runtime.reclaimer.on_stop(conversation_id)
+    await runtime.reclaimer.on_stop(conversation_id)
+    await reclaimed(runtime)
+
+    assert not cache_dir(runtime, conversation_id).exists()
+    assert_kept(kept)
+    assert in_trash(runtime) == []
+
+
+@pytest.mark.asyncio
+async def test_prune_unlinks_symlinked_cache_without_following_it(
+    tmp_path, monkeypatch
+):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id, _ = seed_runtime(runtime)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "precious").write_text("keep")
+    cache = cache_dir(runtime, conversation_id)
+    shutil.rmtree(cache)
+    cache.symlink_to(outside, target_is_directory=True)
+
+    await runtime.reclaimer.on_stop(conversation_id)
+    await reclaimed(runtime)
+
+    assert not cache.is_symlink() and not cache.exists()
+    assert (outside / "precious").read_text() == "keep"
+    assert in_trash(runtime) == []
+
+
+@pytest.mark.asyncio
+async def test_startup_prunes_every_runtime_cache(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    monkeypatch.setattr(runtime, "cleanup_stale_containers", lambda: None)
+    seeded = [
+        seed_runtime(runtime, status)
+        for status in (
+            ConversationExecutionStatus.FINISHED,
+            None,
+            # Left RUNNING by a crash; startup has removed every container.
+            ConversationExecutionStatus.RUNNING,
+        )
+    ]
+    unrelated = runtime.provisioning.data_root / "not-a-conversation" / ".cache"
+    unrelated.mkdir(parents=True)
+
+    await runtime.start()
+    await reclaimed(runtime)
+    await runtime.shutdown()
+
+    for conversation_id, kept in seeded:
+        assert not cache_dir(runtime, conversation_id).exists()
+        assert_kept(kept)
+    assert unrelated.is_dir()
+    assert in_trash(runtime) == []
+
+    # A second pass, with the caches already gone, changes nothing.
+    await runtime.reclaimer.start()
+    await reclaimed(runtime)
+    for _, kept in seeded:
+        assert_kept(kept)
+
+
+@pytest.mark.asyncio
+async def test_startup_does_not_wait_for_cache_deletion(
+    tmp_path, monkeypatch, slow_remove
+):
+    runtime = registry(tmp_path, monkeypatch)
+    monkeypatch.setattr(runtime, "cleanup_stale_containers", lambda: None)
+    conversation_id, _ = seed_runtime(runtime)
+
+    await runtime.start()
+
+    assert not cache_dir(runtime, conversation_id).exists()
+    assert len(in_trash(runtime)) == 1
+    slow_remove.release.set()
+    await reclaimed(runtime)
+    assert in_trash(runtime) == []
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_abandons_deletions_and_next_start_sweeps_them(
+    tmp_path, monkeypatch, slow_remove
+):
+    runtime = registry(tmp_path, monkeypatch)
+    monkeypatch.setattr(runtime, "cleanup_stale_containers", lambda: None)
+    for _ in range(2):
+        seed_runtime(runtime)
+
+    await runtime.start()
+    await asyncio.to_thread(slow_remove.started.wait, 5)
+    await runtime.shutdown()
+
+    assert runtime.reclaimer.trash._emptying is None
+    slow_remove.release.set()
+    # The in-flight deletion finishes; the queued one was abandoned.
+    assert await asyncio.to_thread(slow_remove.removed.wait, 5)
+    assert len(in_trash(runtime)) == 1
+
+    restarted = registry(tmp_path, monkeypatch)
+    monkeypatch.setattr(restarted, "cleanup_stale_containers", lambda: None)
+    await restarted.start()
+    await reclaimed(restarted)
+    await restarted.shutdown()
+    assert in_trash(restarted) == []
+
+
+@pytest.mark.asyncio
+async def test_startup_prune_continues_past_a_broken_runtime(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    broken_id, _ = seed_runtime(runtime)
+    healthy_id, _ = seed_runtime(runtime)
+    persistence = runtime.provisioning.runtime_dir(broken_id) / "persistence"
+    shutil.move(persistence, tmp_path / "moved-persistence")
+    persistence.symlink_to(tmp_path / "moved-persistence", target_is_directory=True)
+
+    await runtime.reclaimer.start()
+    await reclaimed(runtime)
+
+    assert (tmp_path / "moved-persistence" / ".cache").is_dir()
+    assert not cache_dir(runtime, healthy_id).exists()
+    assert in_trash(runtime) == []
+
+
+@pytest.mark.asyncio
+async def test_startup_prune_skips_runtime_deleted_mid_listing(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    # No state file, so its age falls back to the runtime dir's own mtime.
+    gone_id, _ = seed_runtime(runtime, status=None)
+    healthy_id, _ = seed_runtime(runtime)
+    gone_dir = runtime.provisioning.runtime_dir(gone_id)
+    real_is_dir = Path.is_dir
+
+    def is_dir(path: Path, **kwargs) -> bool:
+        exists = real_is_dir(path, **kwargs)
+        if exists and path == gone_dir:
+            # A concurrent DELETE removes it right after the check.
+            shutil.rmtree(path)
+        return exists
+
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+
+    await runtime.reclaimer.start()
+    await reclaimed(runtime)
+
+    assert not gone_dir.exists()
+    assert not cache_dir(runtime, healthy_id).exists()
+
+
+@pytest.mark.asyncio
+async def test_resume_after_prune_mounts_a_fresh_cache_location(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id, kept = seed_runtime(runtime)
+    await runtime.reclaimer.start()
+    await reclaimed(runtime)
+    commands = capture_docker_run(runtime, monkeypatch)
+
+    runtime._build_container(conversation_id)
+
+    persistence = runtime.provisioning.runtime_dir(conversation_id) / "persistence"
+    assert f"{persistence}:/var/openhands/.openhands" in mounts(commands[0][0])
+    assert not (persistence / ".cache").exists()
+    assert_kept(kept)
+
+
+def capture_docker_run(
+    runtime: DockerConversationRegistry, monkeypatch
+) -> list[tuple[list[str], dict[str, str]]]:
+    commands: list[tuple[list[str], dict[str, str]]] = []
+
+    def run(command, **kwargs):
+        commands.append((command, kwargs["env"]))
+        return subprocess.CompletedProcess(
+            command, 0, stdout="container-id\n", stderr=""
+        )
+
+    def execute(command):
+        if command[:2] == ["docker", "port"]:
+            return subprocess.CompletedProcess(
+                command, 0, stdout="127.0.0.1:32123\n", stderr=""
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="true\n", stderr="")
+
+    monkeypatch.setattr("subprocess.run", run)
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.execute_command", execute
+    )
+    monkeypatch.setattr(runtime, "_wait_until_ready", lambda container: None)
+    return commands
+
+
+def mounts(command: list[str]) -> list[str]:
+    return [
+        command[index + 1]
+        for index, item in enumerate(command)
+        if item in ("-v", "--mount")
+    ]
+
+
+def test_container_writes_no_core_dumps(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    runtime.provisioning.create(conversation_id)
+    commands = capture_docker_run(runtime, monkeypatch)
+
+    runtime._build_container(conversation_id)
+
+    command, _ = commands[0]
+    assert ["--ulimit", "core=0"] == command[
+        command.index("--ulimit") : command.index("--ulimit") + 2
+    ]
 
 
 @pytest.mark.parametrize(
@@ -439,3 +1261,42 @@ def test_container_gets_the_host_browser_setting(
     assert ["-e", "OH_ENABLE_BROWSER"] == command[
         command.index("OH_ENABLE_BROWSER") - 1 : command.index("OH_ENABLE_BROWSER") + 1
     ]
+
+
+@pytest.mark.parametrize(
+    ("options", "memory", "cpus", "browser"),
+    [
+        (None, "2g", "1.5", "1"),
+        (
+            ConversationContainerOptions(memory="6g", cpus=3, browser=False),
+            "6g",
+            "3.0",
+            "0",
+        ),
+    ],
+)
+def test_container_options_override_the_host_limits(
+    tmp_path, monkeypatch, options, memory, cpus, browser
+):
+    runtime = registry(
+        tmp_path,
+        monkeypatch,
+        conversation_container_memory="2g",
+        conversation_container_cpus=1.5,
+        conversation_image_has_browser=True,
+    )
+    conversation_id = uuid4()
+    identity = runtime.provisioning.create(conversation_id)
+    runtime.provisioning.save(identity.model_copy(update={"container": options}))
+    commands = capture_docker_run(runtime, monkeypatch)
+
+    runtime._build_container(conversation_id)
+
+    command, env = commands[0]
+    assert ["--memory", memory] == command[
+        command.index("--memory") : command.index("--memory") + 2
+    ]
+    assert ["--cpus", cpus] == command[
+        command.index("--cpus") : command.index("--cpus") + 2
+    ]
+    assert env["OH_ENABLE_BROWSER"] == browser

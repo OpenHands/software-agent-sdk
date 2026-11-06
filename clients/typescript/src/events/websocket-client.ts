@@ -7,32 +7,7 @@ import {
   ConversationEventStream,
   buildConversationEventStreamUrl,
 } from '../client/conversation-event-stream';
-
-// Use native WebSocket in browser, ws library in Node.js.
-//
-// IMPORTANT: this block must never throw. It runs whenever this file is
-// imported, and this file is transitively imported by the package barrel
-// (via RemoteConversation), so any throw here crashes consumers that
-// merely `import { RemoteWorkspace } from "@openhands/typescript-client"`
-// even when they have no intent to open a WebSocket. The "no implementation
-// available" condition is deferred to connect() time, where it is surfaced
-// through the existing onError callback channel.
-let WebSocketImpl: any;
-
-if (typeof window !== 'undefined' && window.WebSocket) {
-  // Browser environment
-  WebSocketImpl = window.WebSocket;
-} else {
-  // Node.js environment
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const ws = require('ws');
-    WebSocketImpl = ws;
-  } catch {
-    // Leave WebSocketImpl undefined; connect() reports the error via onError.
-    WebSocketImpl = undefined;
-  }
-}
+import { WEBSOCKET_UNAVAILABLE_MESSAGE, getGlobalWebSocket } from './global-websocket';
 
 /**
  * Error callback type for reporting non-fatal errors.
@@ -63,12 +38,8 @@ export class WebSocketCallbackClient {
       sessionApiKey: options.apiKey,
       reconnect: { enabled: true },
       createWebSocket: (url) => {
-        if (!WebSocketImpl) {
-          throw new Error(
-            'WebSocket implementation not available. Install the `ws` package, ' +
-              'or run in an environment with a global WebSocket constructor.'
-          );
-        }
+        const WebSocketImpl = getGlobalWebSocket();
+        if (!WebSocketImpl) throw new Error(WEBSOCKET_UNAVAILABLE_MESSAGE);
         return new WebSocketImpl(url);
       },
       onMessage: (event) => {

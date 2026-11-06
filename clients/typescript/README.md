@@ -299,6 +299,35 @@ await conversation.updateSecrets({
 });
 ```
 
+### Displaying a Conversation Budget
+
+Set `maxBudgetPerRun` when creating a remote conversation, using an Agent Server
+that supports `max_budget_per_run`. Omit it or pass `null` for no limit.
+
+```typescript
+const conversation = await manager.createConversation(agent, { maxBudgetPerRun: 5 });
+const info = await manager.getConversation(conversation.id);
+const spent = Object.values(info.stats?.usage_to_metrics ?? {}).reduce(
+  (total, metrics) => total + (metrics.accumulated_cost ?? 0),
+  0
+);
+console.log({ spent, limit: info.max_budget_per_run });
+```
+
+Both amounts are in USD. Despite its legacy name, the limit applies to the
+conversation's accumulated cost, including earlier runs. The server checks the
+limit after each completed agent step, so a step may overshoot it. The same
+`stats.usage_to_metrics` costs arrive in WebSocket state updates while running;
+use those updates to refresh a live display. The configured limit remains
+available from the conversation's REST response after reconnecting.
+
+To change the limit later, send `max_budget_per_run` in a conversation update.
+Omit it to keep the current limit, or pass `null` to remove it:
+
+```typescript
+await manager.updateConversation(conversation.id, { max_budget_per_run: 10 });
+```
+
 ## API Reference
 
 ### Conversation
@@ -377,7 +406,10 @@ Manages conversation events with caching and synchronization.
 
 ### WebSocketCallbackClient
 
-Handles real-time event streaming via WebSocket.
+Handles real-time event streaming via WebSocket. It and `BashWebSocketClient`
+use the runtime's global `WebSocket` (browsers, Node 22+), looked up when a
+socket opens; on an older Node, assign a constructor such as the `ws` package to
+`globalThis.WebSocket` first.
 
 #### Methods
 
@@ -400,22 +432,45 @@ The library includes comprehensive TypeScript type definitions:
 
 ## Error Handling
 
-The client includes proper error handling with custom error types:
+When the server answers with an error status, the client throws an `HttpError`:
 
 ```typescript
-import { HttpError } from '@openhands/typescript-client';
+import { isHttpError } from '@openhands/typescript-client';
 
 try {
   await conversation.sendMessage('Hello');
 } catch (error) {
-  if (error instanceof HttpError) {
+  if (isHttpError(error)) {
     console.error(`HTTP Error ${error.status}: ${error.statusText}`);
+    // The server's own message, e.g. "Profile 'missing' not found".
+    console.error('Detail:', error.detail ?? 'none');
     console.error('Response:', error.response);
   } else {
     console.error('Unexpected error:', error);
   }
 }
 ```
+
+- `status`, `statusText`: the HTTP status.
+- `response`: the error body: parsed JSON when the server sent JSON, otherwise the text, or
+  `null` when the body could not be read.
+- `message`: transport text for logs, `HTTP request failed (<status> <text>): <body>`.
+- `detail`: the server's readable message, or `undefined` when the body has none:
+  - `{"detail": "..."}` gives the string.
+  - A validation error body (`{"detail": [{"loc", "msg", "type"}, ...]}`, usually a 422)
+    gives the `msg` of a single entry. Several entries are joined with `"; "`, each
+    prefixed with its field name (the last string in `loc`), e.g.
+    `name: Field required; model: Field required`.
+  - `{"detail": {"message": "...", ...}}` gives the `message`.
+  - Any other body, such as a proxy's HTML error page, gives `undefined`.
+- `validationErrors`: the `{ loc, msg, type }` entries of a validation error body, or
+  `undefined`. Use it to point each message at its form field.
+
+`isHttpError(error)` also recognizes an `HttpError` thrown by another copy of this package
+(for example when an app and a library each bundle their own), where
+`error instanceof HttpError` is false, as long as that copy is a version that
+includes `isHttpError` (older copies do not brand their errors). `instanceof` still
+works within one copy.
 
 ## Development
 

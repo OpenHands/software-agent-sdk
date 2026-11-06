@@ -2,6 +2,7 @@ import pytest
 
 from openhands.tools.terminal.utils.command import (
     escape_bash_special_chars,
+    needs_heredoc_completion_boundary,
     split_bash_commands,
 )
 
@@ -34,6 +35,14 @@ world "
 '
 """.strip(),
         """
+mkdir -p _modules && \
+for month in {01..04}; do
+    for day in {01..05}; do
+        touch "_modules/2024-${month}-${day}-sample.md"
+    done
+done
+""".strip(),
+        """
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: Pod
@@ -47,14 +56,6 @@ spec:
     - sleep
     - "1000000"
 EOF
-""".strip(),
-        """
-mkdir -p _modules && \
-for month in {01..04}; do
-    for day in {01..05}; do
-        touch "_modules/2024-${month}-${day}-sample.md"
-    done
-done
 """.strip(),
     ]
     joined_cmds = "\n".join(cmds)
@@ -71,6 +72,8 @@ done
         ("ls -l", ["ls -l"]),
         ("echo 'Hello, world!'", ["echo 'Hello, world!'"]),
         ("cd /tmp && touch test.txt", ["cd /tmp && touch test.txt"]),
+        ("test -f missing || echo absent", ["test -f missing || echo absent"]),
+        ("sleep 0 & wait", ["sleep 0 & wait"]),
         ("echo -e 'line1\\nline2\\nline3'", ["echo -e 'line1\\nline2\\nline3'"]),
         (
             "grep 'pattern' file.txt | sort | uniq",
@@ -91,15 +94,107 @@ def test_single_commands(input_command, expected_output):
     assert split_bash_commands(input_command) == expected_output
 
 
-def test_heredoc():
-    input_commands = """
-cat <<EOF
-multiline
-text
-EOF
-echo "Done"
-"""
-    expected_output = ["cat <<EOF\nmultiline\ntext\nEOF", 'echo "Done"']
+@pytest.mark.parametrize(
+    "input_commands",
+    [
+        "cat <<EOF\nmultiline\ntext\nEOF\necho done",
+        "cat <<'EOF'\n$VALUE\nEOF\nprintf done",
+        "cat <<-EOF\n\tindented\n\tEOF\nprintf done",
+        "cat <<EOF | sed 's/text/replaced/'\ntext\nEOF\nprintf done",
+        "value=$(cat <<EOF\ntext\nEOF\n) && printf '%s' \"$value\"",
+        (
+            "printf start; python - <<'PY'\n"
+            "print('first')\n"
+            "PY\n"
+            "printf middle; python - <<'PY'\n"
+            "print('second')\n"
+            "PY\n"
+            "printf done"
+        ),
+    ],
+)
+def test_heredoc_script_is_not_split(input_commands):
+    assert split_bash_commands(input_commands) == [input_commands]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat <<'EOF'\nbody\nEOF\nsleep 1; echo done",
+        "cat <<A <<B\na\nA\nb\nB\necho done",
+        'cat <<E"OF"\nbody\nEOF\necho done',
+        "cat <<EOF &\nbody\nEOF\nwait",
+    ],
+)
+def test_heredoc_scripts_need_completion_boundary(command):
+    assert needs_heredoc_completion_boundary(command)
+
+
+def test_single_heredoc_does_not_need_completion_boundary():
+    command = "cat <<'EOF'\nbody\nEOF\n"
+
+    assert not needs_heredoc_completion_boundary(command)
+
+
+def test_incomplete_heredoc_does_not_need_completion_boundary():
+    assert not needs_heredoc_completion_boundary("cat <<EOF\nbody")
+
+
+def test_completion_boundary_is_platform_independent():
+    """The guard must not depend on a `bash` executable being on PATH.
+
+    On Windows tree-sitter reports parse errors for these forms, so the
+    decision is made from the tree alone and must match on every platform.
+    """
+    assert needs_heredoc_completion_boundary(
+        "cat <<'EOF'\nbody\nEOF\nsleep 1; echo done"
+    )
+    assert needs_heredoc_completion_boundary("cat <<A <<B\na\nA\nb\nB\necho done")
+    assert needs_heredoc_completion_boundary('cat <<E"OF"\nbody\nEOF\necho done')
+    assert needs_heredoc_completion_boundary("cat <<EOF &\nbody\nEOF\nwait")
+    assert needs_heredoc_completion_boundary(
+        "cat <<-EOF\n\tindented\n\tEOF\nprintf done"
+    )
+    assert not needs_heredoc_completion_boundary("cat <<EOF\nbody")
+    assert not needs_heredoc_completion_boundary("cat <<EOF\nbody\nEOF\n")
+    assert not needs_heredoc_completion_boundary("cat <<'EOF'\nbody\nEOF\n")
+
+
+@pytest.mark.parametrize(
+    "input_commands, expected_output",
+    [
+        ("echo first\necho second", ["echo first", "echo second"]),
+        ("cat <<< text\necho second", ["cat <<< text", "echo second"]),
+        (
+            "cat <<EOF\ntext\nEOF\necho second\necho third",
+            ["cat <<EOF\ntext\nEOF\necho second", "echo third"],
+        ),
+        (
+            "cat <<EOF\nunterminated\necho second",
+            ["cat <<EOF\nunterminated\necho second"],
+        ),
+        # A heredoc *nested* in a compound statement or substitution does not
+        # end the statement: tree-sitter leaves the closing token (`fi`, `)`)
+        # unnamed, so the following newline must still split.
+        (
+            "if true; then\n  cat <<EOF\nx\nEOF\nfi\necho after",
+            ["if true; then\n  cat <<EOF\nx\nEOF\nfi", "echo after"],
+        ),
+        (
+            "x=$(cat <<EOF\nhi\nEOF\n)\nrm -rf /tmp/x",
+            ["x=$(cat <<EOF\nhi\nEOF\n)", "rm -rf /tmp/x"],
+        ),
+        (
+            "( cat <<EOF\nx\nEOF\n)\necho after",
+            ["( cat <<EOF\nx\nEOF\n)", "echo after"],
+        ),
+        (
+            "for i in 1 2; do cat <<EOF\nx\nEOF\ndone\necho after",
+            ["for i in 1 2; do cat <<EOF\nx\nEOF\ndone", "echo after"],
+        ),
+    ],
+)
+def test_non_heredoc_newlines_still_split(input_commands, expected_output):
     assert split_bash_commands(input_commands) == expected_output
 
 
@@ -240,65 +335,43 @@ text
 EOF
 echo "Done"
 """
-    expected_output = ["cat <<EOF\nmultiline\ntext\nEOF", 'echo "Done"']
-    result = split_bash_commands(input_commands)
-    assert result == expected_output, f"Expected {expected_output}, got {result}"
+    assert split_bash_commands(input_commands) == [input_commands.strip()]
 
 
-def test_split_commands_with_backslash_continuation():
-    input_commands = """
-echo "This is a long \
-command that spans \
-multiple lines"
-echo "Next command"
-"""
-    expected_output = [
-        'echo "This is a long command that spans multiple lines"',
-        'echo "Next command"',
-    ]
-    result = split_bash_commands(input_commands)
-    assert result == expected_output, f"Expected {expected_output}, got {result}"
-
-
-def test_split_commands_with_empty_lines():
-    input_commands = """
-ls -l
-
-echo "Hello"
-
-cd /tmp
-"""
-    expected_output = ["ls -l", 'echo "Hello"', "cd /tmp"]
-    result = split_bash_commands(input_commands)
-    assert result == expected_output, f"Expected {expected_output}, got {result}"
-
-
-def test_split_commands_with_comments():
-    input_commands = """
-echo "Hello" # This is a comment
-# This is another comment
-ls -l
-"""
-    expected_output = [
-        'echo "Hello" # This is a comment\n# This is another comment',
-        "ls -l",
-    ]
-    result = split_bash_commands(input_commands)
-    assert result == expected_output, f"Expected {expected_output}, got {result}"
-
-
-def test_split_commands_with_complex_quoting():
-    input_commands = """
-echo "This is a \\"quoted\\" string"
-echo "Mixed 'quotes' in \\"double quotes\\""
-"""
-    # echo 'This is a '\''single-quoted'\'' string'
-
-    expected_output = [
-        'echo "This is a \\"quoted\\" string"',
-        'echo "Mixed \'quotes\' in \\"double quotes\\""',
-    ]
-    # "echo 'This is a '\\''single-quoted'\\'' string'",
+@pytest.mark.parametrize(
+    ("input_commands", "expected_output"),
+    [
+        pytest.param(
+            '\necho "This is a long command that spans multiple lines"\n'
+            'echo "Next command"\n',
+            [
+                'echo "This is a long command that spans multiple lines"',
+                'echo "Next command"',
+            ],
+            id="backslash_continuation",
+        ),
+        pytest.param(
+            '\nls -l\n\necho "Hello"\n\ncd /tmp\n',
+            ["ls -l", 'echo "Hello"', "cd /tmp"],
+            id="empty_lines",
+        ),
+        pytest.param(
+            '\necho "Hello" # This is a comment\n# This is another comment\nls -l\n',
+            ['echo "Hello" # This is a comment\n# This is another comment', "ls -l"],
+            id="comments",
+        ),
+        pytest.param(
+            '\necho "This is a \\"quoted\\" string"\n'
+            'echo "Mixed \'quotes\' in \\"double quotes\\""\n',
+            [
+                'echo "This is a \\"quoted\\" string"',
+                'echo "Mixed \'quotes\' in \\"double quotes\\""',
+            ],
+            id="complex_quoting",
+        ),
+    ],
+)
+def test_split_commands(input_commands, expected_output):
     result = split_bash_commands(input_commands)
     assert result == expected_output, f"Expected {expected_output}, got {result}"
 

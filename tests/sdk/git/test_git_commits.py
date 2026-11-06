@@ -225,3 +225,20 @@ def test_get_commit_file_diff_rejects_oversize_blob():
         # Act + Assert
         with pytest.raises(GitPathError):
             get_commit_file_diff(Path(temp_dir) / "big.txt", sha)
+
+
+def test_get_commit_changes_lists_special_names_verbatim():
+    """A commit touching names with a space or non-ASCII characters lists
+    them under their real names instead of failing to parse."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        commit_file(temp_dir, "seed.txt", "seed", "seed")
+        (Path(temp_dir) / "my notes.md").write_text("a\n")
+        sha = commit_file(temp_dir, "café.txt", "b\n", "names")
+
+        changes = get_commit_changes(temp_dir, sha)
+
+        assert sorted((str(c.path), c.status) for c in changes) == [
+            ("café.txt", GitChangeStatus.ADDED),
+            ("my notes.md", GitChangeStatus.ADDED),
+        ]

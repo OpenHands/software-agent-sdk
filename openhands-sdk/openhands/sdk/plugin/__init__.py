@@ -49,6 +49,11 @@ from openhands.sdk.plugin.source import (
     resolve_source_path,
     validate_source_path,
 )
+from openhands.sdk.plugin.strict_fetch import (
+    CheckedPlugin,
+    PluginSourceError,
+    preflight_plugin,
+)
 from openhands.sdk.plugin.types import (
     CommandDefinition,
     PluginAuthor,
@@ -62,6 +67,8 @@ __all__ = [
     # Plugin classes
     "Plugin",
     "PluginFetchError",
+    "PluginSourceError",
+    "CheckedPlugin",
     "PluginManifest",
     "PluginAuthor",
     "PluginSource",
@@ -75,6 +82,7 @@ __all__ = [
     # Plugin loading
     "load_plugins",
     "fetch_plugin_with_resolution",
+    "preflight_plugin",
     # Local plugin discovery (ambient auto-load)
     "load_user_plugins",
     "load_project_plugins",
