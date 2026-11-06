@@ -274,6 +274,13 @@ def _secrets_before_run(conversation: BaseConversation) -> dict[str, Any]:
     return {}
 
 
+def _refresh_mcp_tools_before_run(conversation: BaseConversation) -> dict[str, Any]:
+    conversation.refresh_mcp_tools()
+    conversation.send_message("Answer.")
+    conversation.run()
+    return {}
+
+
 def _security_analyzer_before_run(conversation: BaseConversation) -> dict[str, Any]:
     conversation.set_security_analyzer(LLMSecurityAnalyzer())
     conversation.send_message("Echo.")
@@ -424,6 +431,11 @@ SCENARIOS: dict[str, Scenario] = {
         # Whether the LLM is told the secret's name, and whether it ever sees
         # the value, must match.
         markers=("PARITY_TOKEN", "parity-secret-value"),
+    ),
+    "refresh_mcp_tools_before_run": Scenario(
+        drive=_refresh_mcp_tools_before_run,
+        script=[_reply("Done.")],
+        covers=frozenset({"refresh_mcp_tools"}),
     ),
     "security_analyzer_before_run": Scenario(
         drive=_security_analyzer_before_run,
