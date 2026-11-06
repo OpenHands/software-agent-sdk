@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 import httpx
 from fastapi import HTTPException, status
+from httpx import ConnectTimeout, PoolTimeout
 from pydantic import ValidationError
 
 from openhands.agent_server.agent_profiles_router import active_agent_profile
@@ -90,6 +91,19 @@ class OpenAIAgentRunResult:
     conversation_id: UUID
     final_response: str
     usage: TokenUsage | None
+
+
+def _retry_unsafe_timeout(
+    conversation_id: UUID, detail: str = "Agent run timed out"
+) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+        detail=detail,
+        headers={
+            "x-should-retry": "false",
+            "X-OpenHands-ServerConversation-ID": str(conversation_id),
+        },
+    )
 
 
 def _profile_name_from_model(model: str) -> str:
@@ -627,22 +641,26 @@ async def _run_agent(
                 detail="Conversation did not start",
             )
 
+    assert conversation_id is not None
     if started_new_conversation:
         try:
             status_value = await event_service.wait_for_run_completion(
                 timeout=_GATEWAY_TIMEOUT_SECONDS
             )
         except TimeoutError:
-            raise HTTPException(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail="Agent run timed out",
-            ) from None
+            raise _retry_unsafe_timeout(conversation_id) from None
     else:
         assert min_event_count is not None
-        status_value = await _wait_for_reused_conversation_completion(
-            event_service,
-            min_event_count=min_event_count,
-        )
+        try:
+            status_value = await _wait_for_reused_conversation_completion(
+                event_service,
+                min_event_count=min_event_count,
+                timeout_seconds=_GATEWAY_TIMEOUT_SECONDS,
+            )
+        except HTTPException as exc:
+            if exc.status_code != status.HTTP_504_GATEWAY_TIMEOUT:
+                raise
+            raise _retry_unsafe_timeout(conversation_id) from exc
     _raise_for_terminal_error(status_value)
     state = await event_service.get_state()
     final_response = await event_service.get_agent_final_response()
@@ -706,6 +724,14 @@ async def _run_docker_agent(
                 ).model_dump(mode="json"),
             )
         if response.is_error:
+            if response.status_code == status.HTTP_504_GATEWAY_TIMEOUT:
+                if response.headers.get("x-should-retry") != "true":
+                    raise _retry_unsafe_timeout(conversation_id)
+                raise HTTPException(
+                    504,
+                    "Agent run timed out",
+                    headers={"x-should-retry": "true"},
+                )
             if response.status_code == 404:
                 try:
                     detail = response.json().get("detail")
@@ -732,7 +758,11 @@ async def _run_docker_agent(
             ),
         )
     except httpx.TimeoutException as exc:
-        raise HTTPException(504, "Conversation runtime timed out") from exc
+        if isinstance(exc, (ConnectTimeout, PoolTimeout)):
+            raise HTTPException(504, "Conversation runtime timed out") from exc
+        raise _retry_unsafe_timeout(
+            conversation_id, "Conversation runtime timed out"
+        ) from exc
     except httpx.HTTPError as exc:
         raise HTTPException(502, "Conversation container unreachable") from exc
     finally:

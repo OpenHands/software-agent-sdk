@@ -60,7 +60,7 @@ Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`, `PO
   `X-Session-API-Key`, `X-OpenHands-ServerConversation-ID` (chat only),
   `X-OpenHands-Observability-Span-Name`, `-Tags`, `-Metadata` and
   `-Parent-Span-Context`. Response header: `X-OpenHands-ServerConversation-ID`
-  on success only.
+  on success and on a post-send 504.
 - OpenAI SDKs: `OpenAI(base_url=<server>/v1, api_key=<session key>)`, then
   `models.list()`, `chat.completions.create(...)` (and
   `.with_raw_response.create` to read the conversation header,
@@ -782,15 +782,16 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   T0=$SECONDS
   control-agent-server api POST /v1/chat/completions --auth bearer --timeout 200 --header "X-OpenHands-ServerConversation-ID: $TOID" \
     --json '{"model": "openhands_qa-f30-slow", "messages": [{"role": "user", "content": "QA_F30_SLOW"}]}' \
-    --expect 504 --check detail eq 'Internal Server Error' --check exception eq '504: Agent run timed out' \
-    --check-header x-openhands-serverconversation-id missing --expect-max-ms 140000 --save F30.chat-timeout-504/timeout
+    --expect 504 --check detail eq 'Agent run timed out' \
+    --check-header x-should-retry eq false --check-header x-openhands-serverconversation-id eq "$TOID" \
+    --expect-max-ms 140000 --save F30.chat-timeout-504/timeout
   test $((SECONDS - T0)) -ge 115
   control-agent-server api GET "/api/conversations/$TOID" --check execution_status eq running --quiet
   control-agent-server sink read --name qa-f30-slow --expect-min 1 --expect-max 1
   control-agent-server api DELETE "/api/conversations/$TOID" --expect 200
   control-agent-server api GET "/api/conversations/$TOID" --expect 404 --quiet
   ```
-  The 504 arrives after 115 to 140 s with the reason in `exception`. The run
+  The 504 arrives after 115 to 140 s with the reason in `detail`. The run
   is not cancelled: right after the 504 the conversation is still `running`
   on its single model call, so the bullet deletes it.
 - **Responses (`F30.responses-basic`).** One real-model call with
@@ -974,8 +975,9 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   while the conversation runs is queued for a rerun. A local gateway request
   can then return another turn's answer (see `F30.chat-reuse-concurrent`).
   Docker gateway turns for one conversation wait in order inside the container.
-  A turn that cannot start before its deadline returns 504 without saving its
-  message. A new turn waits for a prior run that remains active after a 504.
+  A turn that cannot start before its deadline returns 504 with
+  `X-Should-Retry: true` without saving its message. A new turn waits for a
+  prior run that remains active after a 504.
 - In local runtime, `usage` is the conversation's accumulated token use
   (see `F30.chat-usage-per-request`). On a fresh conversation, that total
   equals the request's token use. Docker runtime reports the request's
@@ -987,13 +989,14 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
 - The 120 s timeout and the 2 s poll for continued conversations are fixed
   in `openai/service.py`; the CLI's `api` default timeout is 60 s, so
   model-backed calls pass `--timeout 180`. A 504 does not cancel the run.
-- Error bodies are FastAPI-shaped (`{"detail": ...}`), not OpenAI's
-  `{"error": {...}}`. 5xx bodies are rewritten to `detail` `Internal Server
-  Error` with the real reason in `exception` (`"504: Agent run timed out"`),
-  so OpenAI SDKs raise a generic `InternalServerError`. No error response
-  carries `X-OpenHands-ServerConversation-ID`, even when a conversation was
-  created (409, 500, 504); send a UUID of your own in the header to know the
-  id in advance, or search conversations by status.
+- Error bodies use `{"detail": ...}`, not OpenAI's `{"error": {...}}`.
+  A post-send 504 has `detail` `Agent run timed out`,
+  `X-Should-Retry: false`, and `X-OpenHands-ServerConversation-ID`.
+  The OpenAI Python client does not retry this 504. Use the returned ID to
+  inspect the conversation before a new turn. A 504 before message save remains
+  retryable. The Docker proxy treats an untagged inner 504 as unsafe to retry.
+  Other 5xx responses still hide their reason. The gateway does not
+  honor `Idempotency-Key`, so a manual resend can repeat a turn.
 - Validation order (chat): no user message 400, content parts 400 (system
   messages too), model prefix 404, profile name 400 or missing profile 404,
   then the run. Responses: `stream`/`store`/`previous_response_id` 400 first,

@@ -4,6 +4,7 @@ This validates RemoteConversation against actual REST + WebSocket endpoints,
 while keeping the LLM deterministic via monkeypatching.
 """
 
+import asyncio
 import json
 import os
 import sys
@@ -24,6 +25,7 @@ import pytest
 from fastapi import WebSocket
 from filelock import FileLock
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
+from openai import InternalServerError, OpenAI
 from openai.types.responses import ResponseInputItemParam
 from pydantic import SecretStr
 from websockets.exceptions import ConnectionClosed, InvalidStatus
@@ -1214,6 +1216,139 @@ def test_openai_chat_completions_gateway_over_real_server(
                 assert store_response.json()["detail"] == (
                     "Persistent response storage (store=True) is not supported yet"
                 )
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "continued"),
+    [("chat", False), ("chat", True), ("responses", False)],
+)
+def test_openai_gateway_post_send_timeout_does_not_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patched_llm: list[list[Message]],
+    endpoint: str,
+    continued: bool,
+) -> None:
+    from openhands.agent_server import (
+        config as config_module,
+        conversation_service as service_module,
+        event_router as event_router_module,
+    )
+    from openhands.agent_server.openai import service as gateway_service
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+    monkeypatch.setattr(config_module, "_default_config", None)
+    monkeypatch.setattr(service_module, "_conversation_service", None)
+    monkeypatch.setattr(gateway_service, "_GATEWAY_TIMEOUT_SECONDS", 0.03)
+    monkeypatch.setattr(gateway_service, "_POLL_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(event_router_module, "_GATEWAY_RUN_TIMEOUT_SECONDS", 0.03)
+    monkeypatch.delenv("OH_WEBHOOKS_0_BASE_URL", raising=False)
+
+    profiles_dir = tmp_path / "profiles"
+    store = LLMProfileStore(base_dir=profiles_dir)
+    store.save(
+        "smoke",
+        LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        include_secrets=True,
+    )
+
+    def llm_profiles() -> LLMProfileStore:
+        return LLMProfileStore(base_dir=profiles_dir)
+
+    original_acompletion = LLM.acompletion
+    slow_turn = {"enabled": not continued}
+
+    async def slow_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        if slow_turn["enabled"]:
+            await asyncio.sleep(0.6)
+        return await original_acompletion(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", slow_acompletion)
+
+    with (
+        patch(
+            "openhands.agent_server.openai.service.get_llm_profile_store", llm_profiles
+        ),
+        patch("openhands.agent_server.launch.get_llm_profile_store", llm_profiles),
+        live_server_env(tmp_path, monkeypatch) as env,
+    ):
+        conversation_id = None
+        if continued:
+            seed = httpx.post(
+                f"{env['host']}/v1/chat/completions",
+                json={
+                    "model": "openhands_smoke",
+                    "messages": [{"role": "user", "content": "Start conversation."}],
+                },
+                timeout=10.0,
+            )
+            assert seed.status_code == 200, seed.text
+            conversation_id = seed.headers["X-OpenHands-ServerConversation-ID"]
+            slow_turn["enabled"] = True
+
+        attempts: list[httpx.Request] = []
+        with httpx.Client(
+            trust_env=False, event_hooks={"request": [attempts.append]}
+        ) as http_client:
+            with OpenAI(
+                api_key="test",
+                base_url=f"{env['host']}/v1",
+                http_client=http_client,
+            ) as openai_client:
+                with pytest.raises(InternalServerError) as error:
+                    if endpoint == "chat":
+                        openai_client.chat.completions.create(
+                            model="openhands_smoke",
+                            messages=[{"role": "user", "content": "Slow turn."}],
+                            extra_headers=(
+                                {"X-OpenHands-ServerConversation-ID": conversation_id}
+                                if conversation_id
+                                else None
+                            ),
+                        )
+                    else:
+                        openai_client.responses.create(
+                            model="openhands_smoke",
+                            input="Slow turn.",
+                            store=False,
+                        )
+
+        assert len(attempts) == 1
+        response = error.value.response
+        assert response.status_code == 504
+        assert response.headers["x-should-retry"] == "false"
+        timed_out_id = response.headers["X-OpenHands-ServerConversation-ID"]
+        UUID(timed_out_id)
+        if conversation_id:
+            assert timed_out_id == conversation_id
+        assert response.json() == {"detail": "Agent run timed out"}
+
+        with httpx.Client(trust_env=False) as client:
+            if endpoint == "chat" and not continued:
+                pre_send = client.post(
+                    f"{env['host']}/api/conversations/{timed_out_id}/events/_gateway/run",
+                    json={
+                        "content": [{"type": "text", "text": "Do not save this."}],
+                        "run": True,
+                    },
+                )
+                assert pre_send.status_code == 504
+                assert pre_send.headers["x-should-retry"] == "true"
+            deadline = time.monotonic() + 5
+            while True:
+                state = client.get(f"{env['host']}/api/conversations/{timed_out_id}")
+                assert state.status_code == 200
+                if state.json()["execution_status"] == "finished":
+                    break
+                assert time.monotonic() < deadline, state.text
+                time.sleep(0.05)
+            user_events = client.get(
+                f"{env['host']}/api/conversations/{timed_out_id}/events/count",
+                params={"source": "user"},
+            )
+            assert user_events.status_code == 200
+            assert user_events.json() == (2 if continued else 1)
+        assert len(patched_llm) == (2 if continued else 1)
 
 
 def test_openai_gateway_replays_frozen_llm_fixtures(
