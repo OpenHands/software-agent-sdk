@@ -379,12 +379,14 @@ def _compose_conversation_info(
         or agent_state.get("acp_available_models")
         or []
     )
-    # Effort follows the same live → persisted hint → configured order.
-    current_effort = (
-        getattr(agent, "current_effort", None)
-        or agent_state.get("acp_current_effort")
-        or (None if agent_initialized else getattr(agent, "acp_effort", None))
-    )
+    # Effort: live → persisted hint → the configured ``acp_effort`` before any
+    # session wrote a hint. A stored ``None`` hint means the model offers none.
+    current_effort = getattr(agent, "current_effort", None)
+    if current_effort is None:
+        if "acp_current_effort" in agent_state:
+            current_effort = agent_state["acp_current_effort"]
+        elif not agent_initialized:
+            current_effort = getattr(agent, "acp_effort", None)
     available_efforts = (
         getattr(agent, "available_efforts", None)
         or agent_state.get("acp_available_efforts")
