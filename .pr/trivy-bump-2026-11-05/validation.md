@@ -52,6 +52,51 @@ takes major/newest versions instead of waiting:
   `lib/vscode/node_modules/undici`, and asserts the installed version.
   Drop the swap once code-server ships ≥ 7.30.1. The bundled-Node
   assertion (v24.22.1) is unchanged — that binary is upstream's.
+
+## Future-proofing (head `939b0da`)
+
+The one-off bumps above decay: left alone, the next editor/npm release is
+another manual Trivy fire drill. This follow-on commit makes the refresh
+persistent and removes the exact-version traps the bumps introduced:
+
+- **Scheduled code-server refresher** (`.github/scripts/update_code_server_pin.py`
+  + `.github/workflows/update-code-server-pin.yml`, weekly, mirroring the
+  npm/Debian-snapshot bots): selects the newest stable, non-draft
+  code-server release after the same 7-day observation window, then
+  updates `CODE_SERVER_VERSION` and **both** arch digests atomically from
+  the GitHub release assets (fail-closed if either digest is missing —
+  a partial pin would produce a Dockerfile that can never build). Lands
+  as a draft PR for review; no-ops when already current (verified against
+  the live release API: 4.145.0 stays 4.145.0).
+- **Self-retiring undici swap + bundled-Node floor**: the editor block no
+  longer asserts exact bundled versions. `CODE_SERVER_NODE_MIN_VERSION`
+  (24.22.1, the Brotli fix) and `CODE_SERVER_UNDICI_MIN_VERSION` (7.30.1)
+  are floors compared with `sort -V`: the undici download/replace only
+  runs while the bundled copy is below the floor, so the first
+  code-server release shipping ≥ 7.30.1 makes the swap inert with no
+  Dockerfile edit, while anything older still fails the build. Raising a
+  floor is a one-line ARG change; the refresher workflow does not need to
+  know the swap exists.
+- **npm major-crossing is explicit**: `update_npm_pin.py` defaults to
+  same-major again; crossing majors requires `--allow-major` /
+  `ALLOW_MAJOR_UPGRADE=true`, which the scheduled workflow sets
+  deliberately (bundled-dependency fixes are only guaranteed per major).
+  A future major therefore arrives as its own reviewed draft PR, not as
+  a silent side effect of a Trivy PR.
+- **Pin-consistency guards** (`tests/cross`): Node (`node:` image stage
+  vs tarball sites) and uv (both `COPY --from` sites) must agree across
+  the Dockerfile, and the code-server block must keep its single version
+  pin, both digest pins, and floor ARGs. Duplicated hand pins now fail CI
+  if they drift.
+- Verified: `test_update_npm_pin.py`, `test_update_code_server_pin.py`,
+  `test_agent_server_build_metadata.py` — 22 passed locally; pre-commit
+  clean. Full PR CI on `939b0da`: **50 SUCCESS, 1 skipped, 0 failures**
+  (incl. all `Build & Push` variants, which exercise the refactored
+  floor logic). CI-built `ghcr.io/openhands/agent-server:939b0da-python-amd64`
+  pulled and probed: Node v24.22.2, npm 12.2.2 (undici 6.29.1), editor
+  4.145.0 with bundled Node v24.22.1 / undici 7.30.1, uv 0.13.7; container
+  logs show VS Code service started. Trivy numbers are unchanged from
+  `c122226` (same pinned versions; the refactor changes no shipped bits).
 - **Node 24.22.1 → 24.22.2** for the `node-runtime` stage and the ACP
   runtime tarball (both arch sha256s updated). Newest 24.x LTS patch;
   no Trivy findings either way, taken as hygiene with the npm major.
