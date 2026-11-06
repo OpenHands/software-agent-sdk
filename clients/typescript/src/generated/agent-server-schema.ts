@@ -6264,6 +6264,12 @@ export type HookDefinition = {
    */
   name?: string | null;
   /**
+   * Plugin Root
+   *
+   * Resolved root directory of the plugin that supplied this hook. Set by the plugin loader rather than in hooks.json, and exported to command hooks as the PLUGIN_ROOT environment variable. None for hooks that do not come from a plugin.
+   */
+  plugin_root?: string | null;
+  /**
    * Prompt
    */
   prompt?: string | null;
@@ -12855,7 +12861,7 @@ export type StartConversationRequest = {
   /**
    * Worktree
    *
-   * If true and the workspace is already inside a git repository, create a dedicated git worktree for this conversation under `/tmp/conversation-worktrees/<conversation_id>/<project_name>`.
+   * If true and the workspace is already inside a git repository, create a dedicated git worktree for this conversation under the server's conversation worktree root (by default `/tmp/conversation-worktrees/<conversation_id>/<project_name>`).
    */
   worktree?: boolean;
   /**
@@ -20366,7 +20372,7 @@ export type StartConversationRequestWritable = {
   /**
    * Worktree
    *
-   * If true and the workspace is already inside a git repository, create a dedicated git worktree for this conversation under `/tmp/conversation-worktrees/<conversation_id>/<project_name>`.
+   * If true and the workspace is already inside a git repository, create a dedicated git worktree for this conversation under the server's conversation worktree root (by default `/tmp/conversation-worktrees/<conversation_id>/<project_name>`).
    */
   worktree?: boolean;
   /**
