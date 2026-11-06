@@ -6,7 +6,15 @@ from litellm.responses.streaming_iterator import (
     SyncResponsesAPIStreamingIterator,
 )
 from litellm.types.llms.openai import ResponsesAPIResponse
-from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse, Usage
+from litellm.types.utils import (
+    Choices,
+    Delta,
+    Message as LiteLLMMessage,
+    ModelResponse,
+    ModelResponseStream,
+    StreamingChoices,
+    Usage,
+)
 from openai.types.responses import ResponseOutputMessage, ResponseOutputText
 from pydantic import SecretStr
 
@@ -458,3 +466,123 @@ async def test_async_aresponses_stream_path_retry_bumps_temperature(
     assert mock_aresponses.call_count == 2
     _, second_kwargs = mock_aresponses.call_args_list[1]
     assert second_kwargs.get("temperature") == 1.0
+
+
+# ------------------------------------------------------------------
+# Chat-completions streaming tests: a stream that yields no chunks
+# reassembles to None and must raise the retryable LLMNoResponseError
+# instead of tripping the ModelResponse assertion (#4077 item 2).
+# ------------------------------------------------------------------
+
+
+def create_stream_chunks(text: str) -> list[ModelResponseStream]:
+    deltas = [Delta(role="assistant", content="")]
+    if text:
+        deltas.append(Delta(content=text))
+    deltas.append(Delta(content=""))
+    return [
+        ModelResponseStream(
+            id="chatcmpl-stream",
+            choices=[
+                StreamingChoices(
+                    index=0,
+                    delta=delta,
+                    finish_reason="stop" if i == len(deltas) - 1 else None,
+                )
+            ],
+            created=1,
+            model="gpt-4o",
+        )
+        for i, delta in enumerate(deltas)
+    ]
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_empty_chat_stream_retries_and_succeeds(mock_completion) -> None:
+    streaming_llm = LLM(
+        usage_id="test-chat-stream",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        stream=True,
+    )
+
+    chunks = create_stream_chunks("ok")
+    mock_completion.side_effect = [iter([]), iter(chunks)]
+
+    received: list[ModelResponseStream] = []
+    resp = streaming_llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])],
+        on_token=received.append,
+    )
+
+    assert isinstance(resp, LLMResponse)
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "ok"
+    assert received == chunks
+    assert mock_completion.call_count == 2
+
+
+@pytest.mark.asyncio
+@patch(
+    "openhands.sdk.llm.llm.litellm_acompletion",
+    new_callable=AsyncMock,
+)
+async def test_async_empty_chat_stream_retries_and_succeeds(
+    mock_acompletion: AsyncMock,
+) -> None:
+    async def _stream(stream_chunks: list[ModelResponseStream]):
+        for chunk in stream_chunks:
+            yield chunk
+
+    streaming_llm = LLM(
+        usage_id="test-chat-stream-async",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        stream=True,
+    )
+
+    chunks = create_stream_chunks("ok")
+    mock_acompletion.side_effect = [_stream([]), _stream(chunks)]
+
+    received: list[ModelResponseStream] = []
+    resp = await streaming_llm.acompletion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])],
+        on_token=received.append,
+    )
+
+    assert isinstance(resp, LLMResponse)
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "ok"
+    assert received == chunks
+    assert mock_acompletion.call_count == 2
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_empty_chat_stream_exhausts_retries(mock_completion) -> None:
+    streaming_llm = LLM(
+        usage_id="test-chat-stream",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        stream=True,
+    )
+
+    mock_completion.side_effect = [iter([]), iter([])]
+
+    with pytest.raises(LLMNoResponseError):
+        streaming_llm.completion(
+            messages=[Message(role="user", content=[TextContent(text="hi")])],
+            on_token=lambda _chunk: None,
+        )
+
+    assert mock_completion.call_count == streaming_llm.num_retries

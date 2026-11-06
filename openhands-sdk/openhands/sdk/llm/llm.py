@@ -2542,6 +2542,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 on_token(chunk)
                 chunks.append(chunk)
             ret = litellm.stream_chunk_builder(chunks, messages=messages)
+            if ret is None:
+                # A stream that yields no chunks reassembles to None; raise the
+                # retryable LLMNoResponseError instead of tripping the
+                # ModelResponse assertion below (#4077 item 2).
+                raise LLMNoResponseError("Streaming response produced no chunks.")
 
         assert isinstance(ret, ModelResponse), (
             f"Expected ModelResponse, got {type(ret)}"
@@ -2584,6 +2589,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     await _invoke_token_callback(on_token, chunk)
                     chunks.append(chunk)
             ret = litellm.stream_chunk_builder(chunks, messages=messages)
+            if ret is None:
+                # A stream that yields no chunks reassembles to None; raise the
+                # retryable LLMNoResponseError instead of tripping the
+                # ModelResponse assertion below (#4077 item 2).
+                raise LLMNoResponseError("Streaming response produced no chunks.")
 
         assert isinstance(ret, ModelResponse), (
             f"Expected ModelResponse, got {type(ret)}"
