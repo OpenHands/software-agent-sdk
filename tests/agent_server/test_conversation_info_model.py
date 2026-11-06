@@ -120,6 +120,15 @@ def test_effort_is_lifted_from_acp_agent_then_persisted_hints():
     assert cold.available_efforts == [ACPEffortOption(value="max", name="Max")]
 
 
+def test_effort_falls_back_to_acp_effort_before_the_session_starts():
+    agent = ACPAgent(acp_command=["echo", "test"], acp_effort="low")
+    state = _make_state(agent)
+
+    info = _compose_conversation_info(_make_stored(state), state)
+
+    assert info.current_effort == "low"
+
+
 def test_current_model_id_is_none_when_acp_agent_has_no_model():
     """Older ACP servers don't surface the field — we propagate ``None``."""
     agent = ACPAgent(acp_command=["echo", "test"])

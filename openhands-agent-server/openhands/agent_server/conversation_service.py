@@ -379,9 +379,11 @@ def _compose_conversation_info(
         or agent_state.get("acp_available_models")
         or []
     )
-    # Effort follows the same live → persisted-hint order as the model.
-    current_effort = getattr(agent, "current_effort", None) or agent_state.get(
-        "acp_current_effort"
+    # Effort follows the same live → persisted hint → configured order.
+    current_effort = (
+        getattr(agent, "current_effort", None)
+        or agent_state.get("acp_current_effort")
+        or (None if agent_initialized else getattr(agent, "acp_effort", None))
     )
     available_efforts = (
         getattr(agent, "available_efforts", None)
