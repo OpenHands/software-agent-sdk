@@ -14,6 +14,7 @@ from openhands.sdk.settings.acp_install_catalog import (
 from openhands.sdk.settings.acp_providers import (
     ACP_PROVIDERS,
     ACPProviderInfo,
+    build_fork_no_tools_meta,
     build_session_model_meta,
     detect_acp_provider_by_agent_name,
     detect_acp_provider_by_command,
@@ -395,6 +396,18 @@ class TestBuildSessionModelMeta:
     def test_non_claude_agent_returns_empty(self, agent_name, model):
         result = build_session_model_meta(agent_name, model)
         assert result == {}
+
+
+class TestBuildForkNoToolsMeta:
+    def test_claude_uses_meta_key(self):
+        result = build_fork_no_tools_meta("claude-agent-acp v0.93.0")
+        assert result == {"claudeCode": {"options": {"tools": []}}}
+
+    def test_codex_returns_empty(self):
+        assert build_fork_no_tools_meta("codex-acp") == {}
+
+    def test_unknown_agent_returns_empty(self):
+        assert build_fork_no_tools_meta("unknown-agent") == {}
 
 
 class TestACPFileSecrets:

@@ -113,6 +113,7 @@ from openhands.sdk.agent.acp_tracing import ACPTurnTrace
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.stream_context import StreamContext
 from openhands.sdk.context import AgentContext
+from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.credential import (
     CredentialBindingError,
@@ -136,6 +137,7 @@ from openhands.sdk.settings.acp_providers import (
     ACPEnvConflictSpec,
     ACPFileSecretSpec,
     ACPProviderInfo,
+    build_fork_no_tools_meta,
     build_session_model_meta,
     default_acp_file_secrets,
     detect_acp_provider_by_agent_name,
@@ -193,6 +195,12 @@ _ACP_NPX_CACHE_WARM_TIMEOUT: float = float(
 _ACP_VERSION_RE = re.compile(r"v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)")
 
 _ACP_PROMPT_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)  # seconds
+
+# Shared with the non-ACP ask_agent path in LocalConversation so an ACP fork
+# receives the same answer-only instruction instead of the raw question.
+_ASK_AGENT_TEMPLATE_DIR = (
+    Path(__file__).parent.parent / "context" / "prompts" / "templates"
+)
 
 # Exception types that indicate transient connection issues worth retrying
 _RETRIABLE_CONNECTION_ERRORS = (OSError, ConnectionError, BrokenPipeError, EOFError)
@@ -4536,7 +4544,12 @@ class ACPAgent(AgentBase):
             await self._flush_file_credentials()
 
     def ask_agent(self, question: str) -> str | None:
-        """Fork the ACP session, prompt the fork, and return the response."""
+        """Fork the ACP session, prompt the fork, and return the response.
+
+        The fork runs without the harness's built-in tools where the provider
+        supports that, receives the same answer-only instruction as the non-ACP
+        path, and is closed before returning.
+        """
         if self._conn is None:
             msg = "ACPAgent has no ACP connection; call init_state() first"
             raise RuntimeError(msg)
@@ -4547,11 +4560,16 @@ class ACPAgent(AgentBase):
         conn = self._conn
         session_id = self._session_id
         client = self._client
+        fork_meta = build_fork_no_tools_meta(self._agent_name)
+        question_text = render_template(
+            str(_ASK_AGENT_TEMPLATE_DIR), "ask_agent_template.j2", question=question
+        )
 
         async def _fork_and_prompt() -> str:
             fork_response = await conn.fork_session(
                 cwd=self._working_dir,
                 session_id=session_id,
+                **fork_meta,
             )
             fork_session_id = fork_response.session_id
 
@@ -4562,7 +4580,7 @@ class ACPAgent(AgentBase):
                 usage_sync = client.prepare_usage_sync(fork_session_id)
                 response = await conn.prompt(
                     session_id=fork_session_id,
-                    prompt=[text_block(question)],
+                    prompt=[text_block(question_text)],
                 )
                 if client.get_turn_usage_update(fork_session_id) is None:
                     try:
@@ -4590,6 +4608,14 @@ class ACPAgent(AgentBase):
                 )
                 return result
             finally:
+                try:
+                    await conn.close_session(session_id=fork_session_id)
+                except Exception:
+                    logger.warning(
+                        "Failed to close ask_agent fork session %s",
+                        _fingerprint_session_id(fork_session_id),
+                        exc_info=True,
+                    )
                 try:
                     await self._flush_file_credentials()
                 finally:
