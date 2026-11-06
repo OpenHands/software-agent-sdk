@@ -1,5 +1,8 @@
 """Tests for HookManager."""
 
+import json
+import os
+
 import pytest
 
 from openhands.sdk.hooks.config import HookConfig
@@ -383,3 +386,37 @@ class TestAsyncHookManager:
         assert len(results) == 1
         assert results[0].success
         assert marker.exists()
+
+    def test_project_dir_loads_hooks_from_it_and_runs_them_there(self, tmp_path):
+        """hooks.json is found under project_dir and its hooks run from there."""
+        repo = tmp_path / "repo"
+        (repo / ".openhands").mkdir(parents=True)
+        marker = tmp_path / "where.txt"
+        command = python_command(
+            "import json, os, sys; event = json.load(sys.stdin); "
+            f"open({str(marker)!r}, 'w').write('\\n'.join(["
+            "os.getcwd(), os.environ['OPENHANDS_PROJECT_DIR'], "
+            "str(event['working_dir']), str(event['project_dir'])]))"
+        )
+        (repo / ".openhands" / "hooks.json").write_text(
+            json.dumps({"hooks": {"SessionStart": [{"hooks": [{"command": command}]}]}})
+        )
+
+        manager = HookManager(working_dir=str(tmp_path), project_dir=str(repo))
+        results = manager.run_session_start()
+
+        assert len(results) == 1
+        assert results[0].success
+        cwd, env_dir, event_working_dir, event_project_dir = (
+            marker.read_text().splitlines()
+        )
+        assert os.path.realpath(cwd) == os.path.realpath(repo)
+        assert env_dir == str(repo)
+        assert event_working_dir == str(tmp_path)
+        assert event_project_dir == str(repo)
+
+    def test_project_dir_defaults_to_working_dir(self, tmp_working_dir):
+        manager = HookManager(config=HookConfig(), working_dir=tmp_working_dir)
+
+        assert manager.project_dir == tmp_working_dir
+        assert manager.executor.project_dir == tmp_working_dir

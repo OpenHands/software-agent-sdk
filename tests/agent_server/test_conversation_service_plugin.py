@@ -335,6 +335,11 @@ def test_start_conversation_request_has_hook_config_field():
     assert "hook_config" in fields
 
 
+def test_start_conversation_request_has_hook_project_dir_field():
+    """The request can name the directory command hooks run from."""
+    assert StartConversationRequest.model_fields["hook_project_dir"].default is None
+
+
 @pytest.mark.asyncio
 async def test_start_conversation_with_explicit_hook_config(conversation_service):
     """Test start_conversation with explicit hook_config (no plugins)."""
@@ -356,6 +361,7 @@ async def test_start_conversation_with_explicit_hook_config(conversation_service
             ),
             workspace=LocalWorkspace(working_dir=temp_dir),
             hook_config=explicit_hooks,
+            hook_project_dir=f"{temp_dir}/repo",
         )
 
         with patch(
@@ -387,6 +393,7 @@ async def test_start_conversation_with_explicit_hook_config(conversation_service
             assert len(stored.hook_config.pre_tool_use) == 1
             hook_cmd = stored.hook_config.pre_tool_use[0].hooks[0].command
             assert hook_cmd == "echo explicit"
+            assert stored.hook_project_dir == f"{temp_dir}/repo"
 
 
 @pytest.mark.asyncio

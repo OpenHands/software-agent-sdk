@@ -26,6 +26,7 @@ class HookManager:
         self,
         config: HookConfig | None = None,
         working_dir: str | None = None,
+        project_dir: str | None = None,
         session_id: str | None = None,
         llm: "LLM | None" = None,
         llm_getter: "Callable[[], LLM | None] | None" = None,
@@ -36,9 +37,10 @@ class HookManager:
         | None = None,
         conversation_stats: "ConversationStats | None" = None,
     ):
-        self.config = config or HookConfig.load(working_dir=working_dir)
+        self.config = config or HookConfig.load(working_dir=project_dir or working_dir)
         self.executor = HookExecutor(
             working_dir=working_dir,
+            project_dir=project_dir,
             llm=llm,
             llm_getter=llm_getter,
             llm_call_context=llm_call_context,
@@ -48,6 +50,7 @@ class HookManager:
         )
         self.session_id = session_id
         self.working_dir = working_dir
+        self.project_dir = project_dir or working_dir
 
     def _create_event(
         self,
@@ -67,6 +70,7 @@ class HookManager:
             message=message,
             session_id=self.session_id,
             working_dir=self.working_dir,
+            project_dir=self.project_dir,
             metadata=metadata or {},
         )
 

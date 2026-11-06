@@ -226,6 +226,7 @@ class LocalConversation(BaseConversation):
     _resolved_plugins: list[ResolvedPluginSource] | None
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
+    _hook_project_dir: str | None
     _mcp_tool_provider: MCPToolProvider
     _mcp_config_from_parent: bool
     _llm_call_context: LLMCallContext
@@ -240,6 +241,7 @@ class LocalConversation(BaseConversation):
         callbacks: list[ConversationCallbackType] | None = None,
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         hook_config: HookConfig | None = None,
+        hook_project_dir: str | Path | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
@@ -294,6 +296,9 @@ class LocalConversation(BaseConversation):
                 stream-progress frames minted by ``StreamContext``.
             hook_config: Optional hook configuration to auto-wire session hooks.
                 If plugins are loaded, their hooks are combined with this config.
+            hook_project_dir: Directory command hooks run from, when it is not
+                the workspace itself, e.g. the primary repository of a
+                workspace that holds several.
             max_iteration_per_run: Maximum number of iterations per run
             max_budget_per_run: Accumulated LLM cost limit. On resume, None keeps
                 the persisted cap; a number replaces it. Assign None to the
@@ -354,6 +359,7 @@ class LocalConversation(BaseConversation):
         self._resolved_plugins = None
         self._plugins_loaded = False
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
+        self._hook_project_dir = str(hook_project_dir) if hook_project_dir else None
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
         self._mcp_config_from_parent = _mcp_config_from_parent
@@ -1379,6 +1385,7 @@ class LocalConversation(BaseConversation):
             self._hook_processor, raw_on_event = create_hook_callback(
                 hook_config=final_hook_config,
                 working_dir=str(self.workspace.working_dir),
+                project_dir=self._hook_project_dir,
                 session_id=str(self._state.id),
                 original_callback=self._base_callback,
                 # Resolve lazily: switch_llm()/switch_profile() rebind self.agent,
@@ -1461,6 +1468,7 @@ class LocalConversation(BaseConversation):
         self._hook_processor, raw_on_event = create_hook_callback(
             hook_config=merged_config,
             working_dir=str(self.workspace.working_dir),
+            project_dir=self._hook_project_dir,
             session_id=str(self._state.id),
             original_callback=self._base_callback,
             llm_getter=lambda: self.agent.llm,

@@ -783,6 +783,7 @@ class RemoteConversation(BaseConversation):
             StuckDetectionThresholds | Mapping[str, int] | None
         ) = None,
         hook_config: HookConfig | None = None,
+        hook_project_dir: str | None = None,
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
@@ -819,6 +820,7 @@ class RemoteConversation(BaseConversation):
                       representing the number of repetitions before triggering.
             hook_config: Optional hook configuration sent to the server.
                       All hooks are executed server-side.
+            hook_project_dir: Directory the server runs command hooks from.
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
@@ -920,6 +922,7 @@ class RemoteConversation(BaseConversation):
                 "plugins": [p.model_dump() for p in plugins] if plugins else None,
                 # Include hook_config for server-side hooks
                 "hook_config": hook_config.model_dump() if hook_config else None,
+                "hook_project_dir": hook_project_dir,
                 # Include client-defined tool specs (no server-side executor)
                 "client_tools": (
                     [s.model_dump(mode="json") for s in client_tools]

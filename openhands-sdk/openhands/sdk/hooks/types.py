@@ -27,6 +27,7 @@ class HookEvent(BaseModel):
     message: str | None = None
     session_id: str | None = None
     working_dir: str | None = None
+    project_dir: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"use_enum_values": True}
