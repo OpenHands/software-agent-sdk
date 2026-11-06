@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import time
 import traceback
@@ -21,6 +22,17 @@ from openhands.sdk.utils.redact import is_secret_key, redact_text_secrets, sanit
 
 
 logger = get_logger(__name__)
+
+
+def _reported_cost(value: object) -> float | None:
+    """Accept finite nonnegative charges, including numeric HTTP header strings."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        cost = float(value)
+    except (ValueError, OverflowError):
+        return None
+    return cost if math.isfinite(cost) and cost >= 0 else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,9 +222,8 @@ class Telemetry(BaseModel):
 
         # 2) cost
         cost = self._compute_cost(resp, provider_info=provider_info)
-        # Intentionally skip logging zero-cost (0.0) responses; only record
-        # positive cost
-        if cost:
+        # A confirmed zero charge is different from unavailable pricing.
+        if cost is not None:
             self.metrics.add_cost(cost)
 
         # 3) tokens - normalize the provider's usage shape exactly once
@@ -360,7 +371,7 @@ class Telemetry(BaseModel):
         resp: ModelResponse | ResponsesAPIResponse,
         provider_info: LLMProvider | None = None,
     ) -> float | None:
-        """Try provider header → litellm direct. Return None on failure."""
+        """Try provider header, reported usage, then pricing; None is unavailable."""
         extra_kwargs = {}
         if (
             self.input_cost_per_token is not None
@@ -375,13 +386,30 @@ class Telemetry(BaseModel):
 
         try:
             hidden = resp._hidden_params or {}
-            cost = hidden.get("additional_headers", {}).get(
-                "llm_provider-x-litellm-response-cost"
+            cost = _reported_cost(
+                hidden.get("additional_headers", {}).get(
+                    "llm_provider-x-litellm-response-cost"
+                )
             )
             if cost is not None:
-                return float(cost)
+                return cost
         except Exception as e:
             logger.debug(f"Failed to get cost from LiteLLM headers: {e}")
+
+        # Final usage can contain a charge for an alias absent from the static
+        # price map. Select one total, never add header and usage copies. Explicit
+        # token rates remain an intentional pricing override when no header exists.
+        if "custom_cost_per_token" not in extra_kwargs:
+            usage = _response_usage(resp)
+            # LiteLLM deletes absent optional Usage attributes after construction.
+            cost = _reported_cost(
+                usage.model_dump().get("cost") if usage is not None else None
+            )
+            # Zero usage can be a gateway's unavailable-price placeholder. Keep
+            # existing static pricing in that case; explicit zero headers above
+            # remain authoritative. This fallback repairs positive charges only.
+            if cost is not None and cost > 0:
+                return cost
 
         if provider_info is None:
             call_kwargs = litellm_call_kwargs(self.model_name, None)
