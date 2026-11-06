@@ -41,7 +41,8 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 - `F06.send-image`: a message with a text part and an `image` part (a `data:` URL) is persisted with its `image_urls` intact and returned the same by search, get-one and the socket replay; an `image` part without `image_urls` is a 422 and appends nothing.
 - `F06.send-non-user-role`: a message with a schema-valid non-user role (`assistant`) is rejected as a client error (4xx), not a 500, and leaves no event behind (not even the system prompt of an empty log).
 - `F06.send-run`: `POST .../events` with `run: true` drives a real agent turn to `finished`, persisting the kinds of a normal run (user message, `execution_status` running and finished, `ActionEvent`/`ObservationEvent` pairs, `stats`).
-- `F06.ws-live`: a socket opened before the run receives each event live, every live frame is persisted, and a closing `full_state` snapshot follows the run.
+- `F06.ws-live`: a socket opened before the run receives each durable event live, durable frame IDs match the persisted log, and a transient closing `full_state` snapshot follows the run.
+- `F06.ws-streaming-deltas`: a streamed real-model reply emits transient `StreamingDeltaEvent` frames live; REST history and socket replay omit them.
 - `F06.search-timestamp-order`: after a tool-using run, `sort_order=TIMESTAMP` lists events in timestamp order, so a `timestamp__gte` or `resend_mode=since` cut at a listed event keeps every event listed after it.
 - `F06.send-resets-finished`: a message appended to a `finished` conversation sets it back to `idle` with a persisted `execution_status` update.
 - `F06.ws-snapshot`: the first frame after authentication is a transient `full_state` `ConversationStateUpdateEvent` that never appears in search; without `resend_mode` nothing else is replayed.
@@ -518,7 +519,7 @@ Preconditions:
   control-agent-server ws read f06-live --kinds ObservationEvent --contains '"tool_name": "file_editor"'
   control-agent-server ws read f06-live --kinds ConversationStateUpdateEvent --contains '"value": "finished"'
   LIVE_FRAMES=$(control-agent-server ws read f06-live --save F06.ws-live/all-frames | jq -r .saved)
-  jq -e --argjson ids "$LIVE_IDS" '[.frames[] | select(.direction == "received") | .frame | select(.key != "full_state") | .id] | (length > 0) and (. - $ids == [])' "$LIVE_FRAMES"
+  jq -e --argjson ids "$LIVE_IDS" '[.frames[] | select(.direction == "received") | .frame | select(.key != "full_state" and .kind != "StreamingDeltaEvent") | .id] | (length > 0) and (. - $ids == [])' "$LIVE_FRAMES"
   control-agent-server conversation events "$LIVE" --kinds ObservationEvent --contains file_editor --save F06.send-run/observations
   control-agent-server api GET "/api/conversations/$LIVE/events/count" \
     --query kind=openhands.sdk.event.llm_convertible.action.ActionEvent --check . ge 1
@@ -533,10 +534,11 @@ Preconditions:
   task publishes it after the REST status already says `finished`, so a
   stop right after the wait races it). The socket shows the user message,
   `execution_status` `running`, `ActionEvent`s with their `file_editor`
-  `ObservationEvent`s, `finished` and that closing snapshot; every live
+  `ObservationEvent`s, `finished` and that closing snapshot; every durable
   frame id is in the persisted log (read after the capture stops, because
   an event is persisted before it is published), which also has `stats`
-  updates, and the agent wrote `qa.txt`.
+  updates, and the agent wrote `qa.txt`. The `full_state` snapshots and
+  `StreamingDeltaEvent` frames of streaming runs are transient.
   A typical log:
   `SystemPromptEvent`, `MessageEvent` (user), state updates
   `last_user_message_id` and `execution_status=running`, then per step
@@ -673,6 +675,32 @@ Preconditions:
   (`EventService.interrupt`). The earlier `--expect-min 1 --expect-max 1`
   read is the positive control for the same sink query. Interrupting the
   holder frees the slot and the preset restores `deepseek-flash`.
+
+- **Streamed deltas are transient (`F06.ws-streaming-deltas`).** A real
+  streamed reply sends token deltas live, while REST history and a later
+  socket replay contain only durable events.
+  ```sh
+  STREAM_CID=$(control-agent-server conversation start --tools none --no-autotitle \
+    --llm-json '{"stream":true}' --print-id)
+  control-agent-server ws start "/sockets/events/$STREAM_CID" --name "stream-$STREAM_CID" --settle 1
+  control-agent-server api POST "/api/conversations/$STREAM_CID/events" \
+    --json '{"role":"user","content":[{"type":"text","text":"Write one short sentence about ocean waves. Reply in plain text without calling tools."}],"run":true}' \
+    --expect 200 --save F06.ws-streaming-deltas/send
+  control-agent-server conversation wait "$STREAM_CID" --until finished --timeout 180
+  control-agent-server ws read "stream-$STREAM_CID" --kinds ConversationStateUpdateEvent \
+    --contains '"key": "full_state"' --expect-min 2 --wait 30
+  STREAM_CAPTURE=$(control-agent-server ws stop "stream-$STREAM_CID" --kinds StreamingDeltaEvent --expect-min 1 \
+    --save F06.ws-streaming-deltas/live | jq -r .saved)
+  jq -e '[.frames[] | select(.direction == "received") | .frame | select(.kind == "StreamingDeltaEvent")] | length > 0 and any(.content != null or .reasoning_content != null)' "$STREAM_CAPTURE"
+  control-agent-server api GET "/api/conversations/$STREAM_CID/events/count" --query kind=StreamingDeltaEvent \
+    --check . eq 0 --save F06.ws-streaming-deltas/not-persisted
+  control-agent-server ws listen "/sockets/events/$STREAM_CID" --query resend_mode=all --duration 3 \
+    --expect-kind MessageEvent --expect-no-kind StreamingDeltaEvent --save F06.ws-streaming-deltas/replay
+  control-agent-server api DELETE "/api/conversations/$STREAM_CID" --expect 200
+  ```
+  The live frames contain `content` or `reasoning_content` deltas. None is
+  stored or replayed: clients use the final durable message after reconnect,
+  and keep transient tokens out of their event-log cache.
 
 ## Gotchas
 

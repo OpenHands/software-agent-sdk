@@ -200,7 +200,7 @@ EVENTS_BEFORE=$(control-agent-server api GET "/api/conversations/$CAT/events/cou
   received audio counters and sanitized broker status. Poll only Codex calls.
   End through the client, then verify that polling the ended Codex call is 404.
   A returned SDP alone does not prove audible speech.
-  For the browser-owned permission failure, use Canvas's F29.voice-start native
+  For the browser-owned permission failure, use Canvas's F30.voice-start native
   denial recipe: stop only the owned browser and restart it with
   `CONTROL_OPENHANDS_BROWSER_ARGS='--use-fake-device-for-media-stream --use-fake-ui-for-media-stream=deny'`.
   Click Talk and require an actual `NotAllowedError`, no captured audio tracks,
@@ -242,7 +242,7 @@ EVENTS_BEFORE=$(control-agent-server api GET "/api/conversations/$CAT/events/cou
   and verify from saved actions that the first tool was still pending at the
   correction. If not, repeat the timing probe. The same utterances and gap may
   be supplied by the browser's recorded microphone fixture; identify synthetic
-  input separately from actual provider speech. Use Canvas's F29.voice-handoff
+  input separately from actual provider speech. Use Canvas's F30.voice-handoff
   browser/media recipe and read this controller's saved events.
 
   Require the first accepted request, terminal observation and final answer to

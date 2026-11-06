@@ -16,7 +16,7 @@ Source: `openhands-agent-server/openhands/agent_server/skills_router.py`, `openh
 
 Needs: `git`
 
-Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
+Routes: `POST /api/skills`, `GET /api/skills/catalog`, `POST /api/skills/sync`, `POST /api/skills/install`,
 `GET /api/skills/installed`, `GET /api/skills/installed/{skill_name}`,
 `PATCH /api/skills/installed/{skill_name}`,
 `DELETE /api/skills/installed/{skill_name}`,
@@ -27,7 +27,8 @@ Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
 
 - `F25.auth`: every skills route answers 401 without a valid session key, and nothing is installed.
 - `F25.public-repo`: against the real public extensions repository (network), sync clones it into the public cache and `POST /api/skills` with `load_public` lists skills loaded from that clone.
-- `F25.marketplace-public`: against the real public extensions repository, `GET /api/skills/marketplace` lists its installable entries; today it returns an empty catalog because the repository has `.plugin/marketplace.json` but no `marketplaces/default.json`.
+- `F25.marketplace-public`: against the real public extensions repository, `GET /api/skills/marketplace` lists its installable entries, discovered from `.plugin/marketplace.json` (the repository has no `marketplaces/default.json`).
+- `F25.profile-catalog`: `GET /api/skills/catalog` lists the public and user skills available to profile launches with their `origin`, excluding project-only skills.
 - `F25.catalog-project`: `POST /api/skills` offline with a `project_dir` lists the project's AgentSkills (`agentskills`), legacy trigger skill (`knowledge`) and `AGENTS.md` (`repo`), counts them in `sources.project`, and silently skips a SKILL.md with an invalid name.
 - `F25.catalog-user-precedence`: user skills from `~/.agents/skills` appear only with `load_user`, and a project skill overrides a user skill of the same name.
 - `F25.catalog-server-sources`: `sandbox_config` URLs named `WORKER_*` become one always-on `work_hosts` skill, and `org_configs` repositories are cloned from a git URL (an unreachable one contributes nothing).
@@ -67,6 +68,10 @@ Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
   `org_configs`, `sandbox_config`) returns `{"skills": [SkillInfo], "sources":
   {...}}`; `POST /api/skills/sync` force-updates the public repository clone.
   Driven by the `F25.catalog-*` and `F25.sync*` bullets.
+- REST, profile launch catalog: `GET /api/skills/catalog` returns
+  `{"skills": [SkillCatalogEntry]}` with `origin: public|user`, matching the
+  public and user sources profiles can resolve (#6098). Project and org
+  sources need conversation context and are excluded (`F25.profile-catalog`).
 - REST, installed skills: `POST /api/skills/install` (`source`, `ref`,
   `repo_path`, `force`), `GET /api/skills/installed`,
   `GET|PATCH|DELETE /api/skills/installed/{skill_name}` and
@@ -114,8 +119,8 @@ Preconditions:
   preset themselves; the TypeScript bullet needs `node`.
   No launch flags are needed. Outbound HTTPS
   to github.com is needed by `F25.public-repo` and `F25.install-github`, which
-  arrange the network state for the two bullets after them
-  (`F25.marketplace-public`, a known bug, and `F25.install-documented-sources`); every other
+  arrange the network state for the bullets after them
+  (`F25.marketplace-public`, `F25.install-documented-sources`); every other
   bullet runs offline (apart from the DeepSeek calls). Each of these recipes
   declares what it needs on its own `Needs:` line (those two bullets
   inherit `network` through `Requires:`), so a machine without a model key,
@@ -166,6 +171,7 @@ Preconditions:
   with a wrong key).
   ```sh
   control-agent-server api POST /api/skills --auth none --json '{"load_public": false}' --expect 401
+  control-agent-server api GET /api/skills/catalog --auth none --expect 401
   control-agent-server api POST /api/skills/sync --auth bad --expect 401
   control-agent-server api POST /api/skills/install --auth none --json '{"source": "'"$S"'"}' --expect 401
   control-agent-server api GET /api/skills/installed --auth none --expect 401
@@ -176,7 +182,7 @@ Preconditions:
   control-agent-server api GET /api/skills/marketplace --auth none --expect 401 --save F25.auth/marketplace
   test ! -e "$I/qa-f25-skill"
   ```
-  All nine answer `401 {"detail": "Unauthorized"}` and nothing is installed.
+  All ten answer `401 {"detail": "Unauthorized"}` and nothing is installed.
 - **The real public repository (`F25.public-repo`).** Sync against
   `github.com/OpenHands/extensions` (network), which clones it into the public
   cache, then load the public tier from that clone.
@@ -195,21 +201,21 @@ Preconditions:
   the public tier lists skills whose `source` is a `SKILL.md` inside the
   clone. This bullet is the network arrange step for
   `F25.marketplace-public`; without network it fails here.
-- **Public marketplace catalog (`F25.marketplace-public`), known bug.** Read
+- **Public marketplace catalog (`F25.marketplace-public`).** Read
   the catalog against the clone of the real `OpenHands/extensions`
   repository that `F25.public-repo` made.
 
   Requires: `F25.public-repo`
   ```sh
-  control-agent-server api GET /api/skills/marketplace --timeout 180 --expect 200 --check skills len-ge 1 --save F25.marketplace-public/catalog  # bug: status eq 200 && response.body.skills len-eq 0
+  control-agent-server api GET /api/skills/marketplace --timeout 180 --expect 200 --check skills len-ge 1 --save F25.marketplace-public/catalog
   ```
   The clone holds `.plugin/marketplace.json` with about 70 plugin entries
-  whose sources are `./skills/<name>`, so the catalog should list them. Today
-  it returns `{"skills": []}`: `_fetch_catalog_entries` gives up when
-  `marketplaces/default.json` is missing (the repository ships
-  `marketplaces/openhands-extensions.json` and `large-codebase.json`
-  instead) before it tries `Marketplace.load`, and the empty list is then
-  cached for 5 minutes.
+  whose sources are `./skills/<name>`, and the catalog lists them (73 on
+  2026-10-13), each `source` an absolute path inside the clone.
+  `_fetch_catalog_entries` loads the manifest with `Marketplace.load` first
+  and reads `marketplaces/default.json` only as a fallback; the repository
+  ships `marketplaces/openhands-extensions.json` and `large-codebase.json`
+  instead of `default.json`.
 - **Project skills (`F25.catalog-project`).** Load only the fixture project.
   ```sh
   control-agent-server api POST /api/skills --json '{"load_public": false, "load_user": false, "load_org": false, "project_dir": "'"$P"'"}' \
@@ -414,7 +420,7 @@ Preconditions:
   commit, and the skill leaves the store again. This bullet is the network
   arrange step for `F25.install-documented-sources`: it proves github.com is
   reachable and `skills/github` installs.
-- **Documented install sources (`F25.install-documented-sources`).**
+- **Documented install sources (`F25.install-documented-sources`), known bug.**
   Install the same skill in each GitHub form the OpenAPI description of
   `InstallSkillRequest.source` advertises.
 
@@ -425,14 +431,20 @@ Preconditions:
     case "$DOC" in
       *"'$SRC'"*)
         control-agent-server api POST /api/skills/install --json '{"source": "'"$SRC"'"}' --timeout 240 --expect 200 \
-          --check name eq github --save F25.install-documented-sources/documented
+          --check name eq github --save F25.install-documented-sources/documented  # bug: status eq 422 && response.body.detail eq 'Invalid skill. Ensure the source contains a valid SKILL.md.'
         control-agent-server api DELETE /api/skills/installed/github --expect 200
         ;;
     esac
   done
   ```
-  `F25.install-github` showed the skill installs from github.com, so every
-  documented example installs it too. `github:owner/repo/<path>` clones
+  `F25.install-github` proves the skill installs from github.com when the
+  subpath is explicit. The shorthand should install the same skill, but
+  currently answers 422: the installation manager treats an omitted
+  `repo_path` as a repository-root install and loads the fetched `github`
+  skill from a temporary directory named `extensions`. Skill validation
+  rejects the resulting directory/name mismatch. This regression is tracked
+  in [OpenHands/software-agent-sdk#6184](https://github.com/OpenHands/software-agent-sdk/issues/6184).
+  The earlier parser rejection was fixed in #5909; the current shorthand clones
   `owner/repo` and uses `<path>` as `repo_path` (passing both is a `400`).
   The loop also covers the `/tree/<ref>/<path>` URL in case it is documented
   again; that form is not parsed (it would be cloned as
@@ -578,6 +590,24 @@ Preconditions:
   equals the origin's and the skill is listed. With the default
   `marketplace_path` only the entries of `marketplaces/default.json` load, so
   `qa-f25-pub-new` stays out.
+- **Profile launch catalog (`F25.profile-catalog`).** Use the local public
+  repository from the sync recipe and the user fixtures. The profile catalog
+  does not need a project directory and labels the two sources explicitly.
+
+  Requires: `F25.sync`
+  ```sh
+  mkdir -p "$P/.agents/skills/qa-f25-project-only"
+  printf -- '---\nname: qa-f25-project-only\ndescription: QA project-only skill\n---\nQA_PROJECT_ONLY\n' > "$P/.agents/skills/qa-f25-project-only/SKILL.md"
+  control-agent-server api POST /api/skills --json '{"load_public":false,"load_user":false,"load_org":false,"project_dir":"'"$P"'"}' \
+    --expect 200 --check skills contains qa-f25-project-only
+  PROFILE_CATALOG=$(control-agent-server api GET /api/skills/catalog --expect 200 \
+    --save F25.profile-catalog/catalog --field skills)
+  jq -e 'any(.name == "qa-f25-pub" and .origin == "public") and any(.name == "qa-f25-user" and .origin == "user") and all(.origin == "public" or .origin == "user") and all(.name != "qa-f25-project-only")' <<< "$PROFILE_CATALOG"
+  rm -r "$P/.agents/skills/qa-f25-project-only"
+  ```
+  The positive control sees the project-only skill through the workspace
+  catalog. The profile catalog includes the public and user fixtures with
+  their expected origins and omits that project-only skill.
 - **Sync without a reachable origin (`F25.sync-offline`).** Point
   the clone's origin at a missing path, sync, restore it on exit.
 
@@ -869,14 +899,18 @@ Preconditions:
   the local stand-in work: replacing `public-skills` with a clone of a local
   repository makes `load_public`, sync and the marketplace catalog offline and
   deterministic. The real repository has no `marketplaces/default.json`, so
-  `load_public` loads every `skills/` entry there while the catalog stays
-  empty (`F25.marketplace-public`).
+  `load_public` loads every `skills/` entry there, while the catalog reads
+  `.plugin/marketplace.json` (`F25.marketplace-public`).
 - Install sources: plain absolute paths are copied; `file://` and other URLs
   are cloned into `$OH_PERSISTENCE_DIR/cache/extensions/`.
   `github:OpenHands/extensions/skills/github` is the same install as
   `{"source": "github:OpenHands/extensions", "repo_path": "skills/github"}`
-  (`F25.install-documented-sources`), but the record keeps the source as
-  given; a GitHub `/tree/<ref>/<path>` URL is not parsed.
+  in the fetch layer, but installation currently rejects that shorthand with
+  422 because the loader renames the skill directory to the repository name
+  (`F25.install-documented-sources`,
+  [OpenHands/software-agent-sdk#6184](https://github.com/OpenHands/software-agent-sdk/issues/6184)). Use the
+  explicit `repo_path` form until fixed. A GitHub `/tree/<ref>/<path>` URL
+  is not parsed.
 - The 409 for an existing skill is decided after the fetch, so a conflicting
   git install still clones. `version` is always `1.0.0` (the frontmatter
   `version` is not read). Refresh reinstalls with `ref` dropped, so a skill
@@ -901,10 +935,11 @@ Preconditions:
   skill body in their reply, so select the `InvokeSkillObservation` by its
   `skill_name` before looking for the body text.
 - Network: only `F25.public-repo` and `F25.install-github` reach github.com.
-  They are normal bullets so that the two known-bug bullets after them start
-  from a proven clone or install, and those bullets `Require` them; without
-  network all four are reported `blocked` rather than failing or reporting a
-  misleading `xfail`.
+  They are normal bullets so that the two bullets after them
+  (`F25.marketplace-public`, `F25.install-documented-sources`) start from a
+  proven clone or install, and those bullets `Require` them; without network
+  all four are reported `blocked` rather than failing or reporting a
+  misleading result.
 - `conversation events --contains` fails when no selected event contains the
   text, so it asserts content on its own. `ws listen` has no content filter;
   `--until-kind K --until FIELD=VALUE` fails unless a frame of kind `K` with

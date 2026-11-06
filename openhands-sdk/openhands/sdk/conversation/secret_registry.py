@@ -11,7 +11,12 @@ from pydantic import BaseModel, Field, PrivateAttr, SecretStr
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.secret import SecretSource, SecretValue, StaticSecret
-from openhands.sdk.utils.masking import PreserveDataUrls, SkipSecretMasking
+from openhands.sdk.utils.masking import (
+    PreserveDataUrls,
+    SkipSecretMasking,
+    field_has_marker,
+    field_is_literal,
+)
 from openhands.sdk.utils.models import OpenHandsModel
 
 
@@ -98,18 +103,13 @@ def _mask_model[ModelT: BaseModel](model: ModelT, mask: Callable[[str], str]) ->
     """
     updates = {}
     for name, field in type(model).model_fields.items():
-        metadata = field.metadata
-        skip_secret_masking = any(
-            isinstance(item, SkipSecretMasking) for item in metadata
-        )
-        preserve_data_urls = any(
-            isinstance(item, PreserveDataUrls) for item in metadata
-        )
         updates[name] = _mask_value(
             getattr(model, name),
             mask,
-            skip_secret_masking=skip_secret_masking,
-            preserve_data_urls=preserve_data_urls,
+            skip_secret_masking=(
+                field_has_marker(field, SkipSecretMasking) or field_is_literal(field)
+            ),
+            preserve_data_urls=field_has_marker(field, PreserveDataUrls),
         )
     return model.model_copy(update=updates)
 
@@ -314,7 +314,9 @@ class SecretRegistry(OpenHandsModel):
         masked_text = text
         with self._exported_values_lock:
             exported_values = tuple(self._exported_values.values())
-        for value in exported_values:
+        # Longest first so an overlapping shorter value cannot mask half of a
+        # longer one and leave the rest in cleartext.
+        for value in sorted(exported_values, key=len, reverse=True):
             if value:
                 masked_text = masked_text.replace(value, "<secret-hidden>")
 

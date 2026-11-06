@@ -109,6 +109,7 @@ export type {
   AgentServerCanvasBackendLogsResponse,
   AgentServerCanvasBackendPrepareResponse,
   AgentServerCanvasBackendRevisionRequest,
+  AgentServerCanvasBackendSecretGrantRequest,
   AgentServerCanvasBackendStartResponse,
   AgentServerCanvasBackendStatus,
   AgentServerCanvasBackendStatusResponse,

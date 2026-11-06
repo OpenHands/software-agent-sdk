@@ -788,6 +788,41 @@ class TestServiceParallelization:
             assert os.environ["TMUX_TMPDIR"] == str(user_tmux_tmpdir)
             assert user_tmux_tmpdir.is_dir()
 
+    @pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix")
+    @pytest.mark.parametrize(
+        ("inherited", "overridden"),
+        [({"LC_ALL": "C"}, "LC_ALL"), ({"LANG": "C"}, "LC_CTYPE")],
+    )
+    async def test_lifespan_sets_and_restores_utf8_locale(
+        self, short_tmp_path, monkeypatch, no_locale_env, inherited, overridden
+    ):
+        """A non-UTF-8 locale is replaced while serving and restored after."""
+        for name, value in inherited.items():
+            monkeypatch.setenv(name, value)
+        original = os.environ.get(overridden)
+        monkeypatch.setattr(
+            "openhands.agent_server.api._default_server_tmux_tmpdir",
+            lambda: short_tmp_path / "tmux",
+        )
+        mock_conversation_service = AsyncMock()
+
+        with (
+            patch(
+                "openhands.agent_server.api.ConversationService.get_instance",
+                return_value=mock_conversation_service,
+            ),
+            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
+            patch(
+                "openhands.agent_server.api.get_tool_preload_service", return_value=None
+            ),
+        ):
+            mock_app = AsyncMock()
+            mock_app.state = SimpleNamespace(config=Config(), codex_voice=AsyncMock())
+            async with api_lifespan(mock_app):
+                assert os.environ[overridden] == "C.UTF-8"
+
+            assert os.environ.get(overridden) == original
+
     async def test_lifespan_removes_substitute_for_too_deep_tmux_tmpdir(
         self, deep_tmp_path, short_tmp_path, monkeypatch
     ):
@@ -896,44 +931,39 @@ class TestServiceParallelization:
 class TestRootPath:
     """Tests for _get_root_path function and root_path configuration."""
 
-    def test_get_root_path_returns_slash_when_web_url_is_none(self):
-        """Test that _get_root_path returns '' when web_url is not configured."""
-        config = Config(web_url=None)
-        assert _get_root_path(config) == ""
+    @pytest.mark.parametrize(
+        ("web_url", "expected"),
+        [
+            pytest.param(None, "", id="web_url_is_none"),
+            pytest.param(
+                "https://example.com/runtime/123",
+                "/runtime/123",
+                id="extracts_path_from_url",
+            ),
+            pytest.param("https://example.com", "", id="root_url"),
+            pytest.param("https://example.com/api/", "/api", id="trailing_slash"),
+            pytest.param(
+                "https://work-1-abc123.prod-runtime.all-hands.dev/runtime/456/api",
+                "/runtime/456/api",
+                id="complex_path",
+            ),
+        ],
+    )
+    def test_get_root_path(self, web_url, expected):
+        config = Config(web_url=web_url)
+        assert _get_root_path(config) == expected
 
-    def test_get_root_path_extracts_path_from_url(self):
-        """Test that _get_root_path extracts the path component from web_url."""
-        config = Config(web_url="https://example.com/runtime/123")
-        assert _get_root_path(config) == "/runtime/123"
-
-    def test_get_root_path_returns_slash_for_root_url(self):
-        """Test that _get_root_path returns '/' for a URL without path."""
-        config = Config(web_url="https://example.com")
-        assert _get_root_path(config) == ""
-
-    def test_get_root_path_with_trailing_slash(self):
-        """Test that _get_root_path preserves trailing slash."""
-        config = Config(web_url="https://example.com/api/")
-        assert _get_root_path(config) == "/api"
-
-    def test_get_root_path_with_complex_path(self):
-        """Test _get_root_path with a complex nested path."""
-        config = Config(
-            web_url="https://work-1-abc123.prod-runtime.all-hands.dev/runtime/456/api"
-        )
-        assert _get_root_path(config) == "/runtime/456/api"
-
-    def test_fastapi_instance_uses_root_path(self):
-        """Test that FastAPI instance is created with correct root_path."""
-        config = Config(web_url="https://example.com/mypath")
+    @pytest.mark.parametrize(
+        ("web_url", "expected"),
+        [
+            pytest.param("https://example.com/mypath", "/mypath", id="web_url_path"),
+            pytest.param(None, "", id="default_when_no_web_url"),
+        ],
+    )
+    def test_fastapi_instance_uses_root_path(self, web_url, expected):
+        config = Config(web_url=web_url)
         app = create_app(config)
-        assert app.root_path == "/mypath"
-
-    def test_fastapi_instance_uses_default_root_path_when_no_web_url(self):
-        """Test that FastAPI instance uses '/' root_path when web_url is None."""
-        config = Config(web_url=None)
-        app = create_app(config)
-        assert app.root_path == ""
+        assert app.root_path == expected
 
 
 class TestConfigWebUrl:

@@ -1517,14 +1517,38 @@ def test_switch_acp_model_not_found(
         client.app.dependency_overrides.clear()
 
 
-def test_switch_acp_model_non_acp_returns_400(
-    client, mock_conversation_service, mock_event_service, sample_conversation_id
+@pytest.mark.parametrize(
+    ("model", "error_message"),
+    [
+        pytest.param(
+            "haiku",
+            "switch_acp_model is only supported for ACP conversations.",
+            id="non_acp",
+        ),
+        # The event service raises the shared ``inactive_service`` ValueError for
+        # a closed or never-started conversation.
+        pytest.param("haiku", "inactive_service", id="inactive_service"),
+        # ``ACPAgent.set_acp_model`` translates ``acp.exceptions.RequestError``
+        # (e.g. method-not-found, invalid model id) into a ValueError, so a
+        # protocol-level rejection is a 400 rather than an opaque 500.
+        pytest.param(
+            "bogus",
+            "ACP server rejected model switch to 'bogus': method not found",
+            id="protocol_error",
+        ),
+    ],
+)
+def test_switch_acp_model_value_error_returns_400(
+    client,
+    mock_conversation_service,
+    mock_event_service,
+    sample_conversation_id,
+    model,
+    error_message,
 ):
-    """A ValueError (e.g. non-ACP agent / unsupported provider) maps to 400."""
+    """A ValueError from the event service maps to 400."""
     mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.switch_acp_model.side_effect = ValueError(
-        "switch_acp_model is only supported for ACP conversations."
-    )
+    mock_event_service.switch_acp_model.side_effect = ValueError(error_message)
 
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
@@ -1532,7 +1556,7 @@ def test_switch_acp_model_non_acp_returns_400(
     try:
         response = client.post(
             f"/api/conversations/{sample_conversation_id}/switch_acp_model",
-            json={"model": "haiku"},
+            json={"model": model},
         )
         assert response.status_code == 400
     finally:
@@ -1562,59 +1586,6 @@ def test_switch_acp_model_pre_session_returns_200(
         )
         assert response.status_code == 200
         mock_event_service.switch_acp_model.assert_awaited_once_with("haiku")
-    finally:
-        client.app.dependency_overrides.clear()
-
-
-def test_switch_acp_model_inactive_service_returns_400(
-    client, mock_conversation_service, mock_event_service, sample_conversation_id
-):
-    """An inactive service (closed/never-started) maps to 400.
-
-    The event service raises the shared ``inactive_service`` ValueError for a
-    missing live conversation, consistent with its other methods; the router's
-    generic ValueError handler turns it into a 400.
-    """
-    mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.switch_acp_model.side_effect = ValueError("inactive_service")
-
-    client.app.dependency_overrides[get_conversation_service] = lambda: (
-        mock_conversation_service
-    )
-    try:
-        response = client.post(
-            f"/api/conversations/{sample_conversation_id}/switch_acp_model",
-            json={"model": "haiku"},
-        )
-        assert response.status_code == 400
-    finally:
-        client.app.dependency_overrides.clear()
-
-
-def test_switch_acp_model_protocol_error_returns_400(
-    client, mock_conversation_service, mock_event_service, sample_conversation_id
-):
-    """A rejected ACP model-selection call maps to 400, not 500.
-
-    ``ACPAgent.set_acp_model`` translates ``acp.exceptions.RequestError`` (e.g.
-    method-not-found on a custom server, or an invalid model id) into a
-    ValueError, so a protocol-level rejection surfaces as a 400 client error
-    rather than an opaque 500.
-    """
-    mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.switch_acp_model.side_effect = ValueError(
-        "ACP server rejected model switch to 'bogus': method not found"
-    )
-
-    client.app.dependency_overrides[get_conversation_service] = lambda: (
-        mock_conversation_service
-    )
-    try:
-        response = client.post(
-            f"/api/conversations/{sample_conversation_id}/switch_acp_model",
-            json={"model": "bogus"},
-        )
-        assert response.status_code == 400
     finally:
         client.app.dependency_overrides.clear()
 
