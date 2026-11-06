@@ -167,6 +167,15 @@ def test_reports_the_default_model_effort(work_root: Path) -> None:
         ACPEffortOption(value="low", name="Low"),
         ACPEffortOption(value="high", name="High"),
     ]
+    assert result.efforts_by_model == {"m1": result.available_efforts, "m2": []}
+    assert result.current_model_id == "m1"
+
+
+def test_reports_no_efforts_without_an_effort_option(work_root: Path) -> None:
+    result = discover_acp_models(_settings(), work_root=work_root)
+
+    assert result.current_effort is None
+    assert result.efforts_by_model == {"m1": [], "m2": []}
 
 
 @pytest.mark.usefixtures("with_effort")

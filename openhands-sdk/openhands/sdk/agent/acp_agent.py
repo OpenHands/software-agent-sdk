@@ -2392,6 +2392,11 @@ class ACPAgent(AgentBase):
         """Reasoning-effort levels the live session offers for its current model."""
         return list(self._effort_state.available) if self._effort_state else []
 
+    @property
+    def reports_effort(self) -> bool:
+        """Whether the live session advertises config options, where effort lives."""
+        return self._effort_state is not None
+
     def _observe_config_options(self, response: Any) -> None:
         state = extract_session_effort(response)
         if state is not None:

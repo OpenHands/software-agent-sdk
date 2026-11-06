@@ -30,6 +30,8 @@ export interface ACPModelDiscovery {
   current_effort?: string | null;
   /** Effort levels the server offers for `current_model_id`. */
   available_efforts?: ACPEffortOption[];
+  /** Effort levels each model offers, keyed by `model_id`; `[]` when it offers none. */
+  efforts_by_model?: Record<string, ACPEffortOption[]>;
   supports_runtime_model_switch: boolean;
   error: ACPModelDiscoveryError | null;
 }

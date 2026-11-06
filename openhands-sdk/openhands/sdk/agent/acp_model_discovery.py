@@ -13,7 +13,11 @@ from openhands.sdk.agent.acp_agent import (
     _acp_error_detail,
     _classify_acp_init_error,
 )
-from openhands.sdk.agent.acp_models import ACPModelDiscovery, ACPModelDiscoveryError
+from openhands.sdk.agent.acp_models import (
+    ACPEffortOption,
+    ACPModelDiscovery,
+    ACPModelDiscoveryError,
+)
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.credential import VersionedCredentialBinding
 from openhands.sdk.event import Event
@@ -27,6 +31,25 @@ from openhands.sdk.workspace.local import LocalWorkspace
 logger = get_logger(__name__)
 
 _PROBE_DIR_PREFIX = ".acp-model-discovery-"
+
+
+def _efforts_by_model(agent: ACPAgent) -> dict[str, list[ACPEffortOption]]:
+    """Read each model's effort levels by selecting it in the probe session."""
+    if not agent.reports_effort:
+        return {}
+    efforts: dict[str, list[ACPEffortOption]] = {}
+    if agent.current_model_id:
+        efforts[agent.current_model_id] = agent.available_efforts
+    for model in agent.available_models:
+        if model.model_id in efforts:
+            continue
+        try:
+            agent.set_acp_model(model.model_id)
+        except Exception as exc:
+            logger.debug("Could not probe effort for model %r: %s", model.model_id, exc)
+            continue
+        efforts[model.model_id] = agent.available_efforts
+    return efforts
 
 
 def discover_acp_models(
@@ -68,13 +91,18 @@ def discover_acp_models(
         state.secret_registry.update_secrets(dict(secrets or {}))
         with state:
             agent.init_state(state, on_event=on_event)
+            current_model_id = agent.current_model_id
+            current_effort = agent.current_effort
+            available_efforts = agent.available_efforts
+            efforts_by_model = _efforts_by_model(agent)
         return ACPModelDiscovery(
             agent_name=agent.agent_name or None,
             agent_version=agent.agent_version or None,
-            current_model_id=agent.current_model_id,
+            current_model_id=current_model_id,
             available_models=agent.available_models,
-            current_effort=agent.current_effort,
-            available_efforts=agent.available_efforts,
+            current_effort=current_effort,
+            available_efforts=available_efforts,
+            efforts_by_model=efforts_by_model,
             supports_runtime_model_switch=agent.supports_runtime_model_switch,
         )
     except Exception as exc:

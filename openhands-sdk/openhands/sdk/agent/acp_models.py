@@ -189,6 +189,14 @@ class ACPModelDiscovery(BaseModel):
             "Empty when the model offers none."
         ),
     )
+    efforts_by_model: dict[str, list[ACPEffortOption]] = Field(
+        default_factory=dict,
+        description=(
+            "Reasoning-effort levels each model offers, keyed by ``model_id``; "
+            "an empty list when that model offers none. Empty when the server "
+            "has no config options."
+        ),
+    )
     supports_runtime_model_switch: bool = Field(
         default=False,
         description="Whether a conversation can switch among these models live.",

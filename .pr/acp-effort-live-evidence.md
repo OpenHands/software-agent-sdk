@@ -29,3 +29,15 @@ switch_acp_effort("not-a-level") -> ValueError: ... choose one of: low, medium, 
 switch_acp_model      model=gpt-5.6-luna effort=medium levels=[low ... max]   (pinned "ultra" not offered: skipped)
 rollout turn_context  (gpt-6.1-sol, max), (gpt-6.1-sol, ultra), (gpt-5.6-luna, medium)
 ```
+
+## Discovery: `efforts_by_model`
+
+`discover_acp_models` selects each model in its throwaway session to read the
+levels it offers. These are local adapter calls with no model traffic, cached
+for 5 minutes by `/api/acp/models`.
+
+```
+claude-code (10.3 s)  default=(opus[1m], xhigh)  haiku: []  every other model: default..max
+codex (3.5 s)         default=(gpt-6.1-terra, high)  gpt-6-luna, gpt-5.6-luna: low..max  others: low..ultra
+```
+
