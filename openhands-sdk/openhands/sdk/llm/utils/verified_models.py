@@ -83,6 +83,7 @@ VERIFIED_MINIMAX_MODELS = [
 VERIFIED_GLM_MODELS = [
     "glm-5.3",
     "glm-5.3-flash",
+    "glm-5.3-flashx",
     "glm-5.2",
 ]
 
@@ -142,6 +143,7 @@ VERIFIED_OPENROUTER_MODELS = [
     "mistralai/devstral-2512",
     "z-ai/glm-5.3",
     "z-ai/glm-5.3-flash",
+    "z-ai/glm-5.3-flashx",
     "z-ai/glm-5.2",
     "minimax/minimax-m3",
 ]
@@ -202,6 +204,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "devstral-medium-2512",
     "glm-5.3",
     "glm-5.3-flash",
+    "glm-5.3-flashx",
     "glm-5.2",
     "nemotron-3.5-lightning-30b-a3b",
     "nemotron-3-nano",

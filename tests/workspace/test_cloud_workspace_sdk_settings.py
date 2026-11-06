@@ -8,6 +8,7 @@ SaaS→sandbox, never to the SDK client.
 get_mcp_config() returns MCP server configuration in SDK Agent format.
 """
 
+import logging
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -313,6 +314,7 @@ class TestGetMcpServers:
         mock_req.assert_called_once_with(
             "GET",
             f"{CLOUD_URL}/api/v1/users/me",
+            params={"expose_secrets": "true"},
             headers={"X-Session-API-Key": SESSION_KEY},
         )
 
@@ -479,6 +481,132 @@ class TestGetMcpServers:
         assert "sse_0" in config
         assert "shttp_0" in config
         assert "fetch" in config
+
+
+def _users_me(mcp_config: object) -> MagicMock:
+    """``GET /api/v1/users/me`` as OpenHands Cloud serves it: the settings under
+    ``agent_settings``, with ``mcp_config`` also mirrored at the top level."""
+    response = MagicMock()
+    response.json.return_value = {
+        "agent_settings": {"mcp_config": mcp_config},
+        "mcp_config": mcp_config,
+    }
+    return response
+
+
+def test_get_mcp_config_reads_named_server_map(mock_workspace):
+    """The current {name: server} map is read with its secrets unmasked."""
+    named_servers = {
+        "jira-dc": {
+            "transport": "stdio",
+            "command": "uvx",
+            "args": ["mcp-atlassian"],
+            "env": {"JIRA_URL": "https://jira.example.com", "JIRA_TOKEN": "jira-pat"},
+            "enabled": True,
+        },
+        "tools": {
+            "url": "https://mcp.example.com/mcp",
+            "transport": "http",
+            "auth": {"strategy": "bearer", "value": "tools-token"},
+            "enabled": True,
+        },
+    }
+
+    with patch.object(
+        mock_workspace, "_send_api_request", return_value=_users_me(named_servers)
+    ) as mock_req:
+        mcp_config = mock_workspace.get_mcp_config()
+
+    mock_req.assert_called_once_with(
+        "GET",
+        f"{CLOUD_URL}/api/v1/users/me",
+        params={"expose_secrets": "true"},
+        headers={"X-Session-API-Key": SESSION_KEY},
+    )
+    assert dump_mcp_config(mcp_config) == {
+        "jira-dc": {
+            "transport": "stdio",
+            "command": "uvx",
+            "args": ["mcp-atlassian"],
+            "env": {"JIRA_URL": "https://jira.example.com", "JIRA_TOKEN": "jira-pat"},
+        },
+        "tools": {
+            "url": "https://mcp.example.com/mcp",
+            "transport": "http",
+            "auth": {"strategy": "bearer", "value": "tools-token"},
+        },
+    }
+
+
+def test_get_mcp_config_reads_mcp_servers_wrapper(mock_workspace):
+    """The earlier ``{"mcpServers": {...}}`` shape is still accepted."""
+    wrapped = {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-fetch"]}}}
+
+    with patch.object(
+        mock_workspace, "_send_api_request", return_value=_users_me(wrapped)
+    ):
+        mcp_config = mock_workspace.get_mcp_config()
+
+    assert dump_mcp_config(mcp_config) == {
+        "fetch": {"command": "uvx", "args": ["mcp-fetch"]}
+    }
+
+
+def test_get_mcp_config_skips_oauth_servers(mock_workspace, caplog):
+    """OAuth servers stay with the app server, which refreshes their tokens."""
+    named_servers = {
+        "linear": {
+            "url": "https://mcp.linear.app/mcp",
+            "auth": {
+                "strategy": "oauth2",
+                "authentication": {"type": "oauth"},
+                "state": {
+                    "tokens": {
+                        "access_token": "linear-access-token",
+                        "refresh_token": "linear-refresh-token",
+                    }
+                },
+            },
+        },
+        "fetch": {"command": "uvx", "args": ["mcp-fetch"]},
+    }
+
+    with (
+        patch.object(
+            mock_workspace, "_send_api_request", return_value=_users_me(named_servers)
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        mcp_config = mock_workspace.get_mcp_config()
+
+    assert list(mcp_config) == ["fetch"]
+    assert "'linear'" in caplog.text
+    assert "OAuth" in caplog.text
+    assert "linear-access-token" not in caplog.text
+    assert "linear-refresh-token" not in caplog.text
+
+
+def test_get_mcp_config_skips_unreadable_server(mock_workspace, caplog):
+    """A server this SDK cannot read is skipped without exposing its values."""
+    named_servers = {
+        "future": {
+            "url": "https://mcp.example.com/mcp",
+            "auth": {"strategy": "some-new-strategy", "value": "future-secret"},
+        },
+        "fetch": {"command": "uvx", "args": ["mcp-fetch"]},
+    }
+
+    with (
+        patch.object(
+            mock_workspace, "_send_api_request", return_value=_users_me(named_servers)
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        mcp_config = mock_workspace.get_mcp_config()
+
+    assert list(mcp_config) == ["fetch"]
+    assert "'future'" in caplog.text
+    assert "future-secret" not in caplog.text
 
 
 class TestRetry:

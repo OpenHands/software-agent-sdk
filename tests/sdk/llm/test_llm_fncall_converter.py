@@ -7,12 +7,14 @@ from typing import cast
 import pytest
 from litellm import ChatCompletionToolParam
 
+from openhands.sdk.agent.utils import normalize_tool_call
 from openhands.sdk.llm.exceptions import (
     FunctionCallConversionError,
     FunctionCallValidationError,
 )
 from openhands.sdk.llm.mixins.fn_call_converter import (
     STOP_WORDS,
+    TERMINAL_COMMAND_PREFIX_ALIASES,
     convert_fncall_messages_to_non_fncall_messages,
     convert_non_fncall_messages_to_fncall_messages,
     convert_tool_call_to_string,
@@ -1014,3 +1016,59 @@ def test_security_risk_param_allowed_for_tool_that_does_not_declare_it():
     arguments = json.loads(assistant_msg["tool_calls"][0]["function"]["arguments"])
     assert arguments["message"] == "Hello!"
     assert arguments["security_risk"] == "LOW"
+
+
+def _single_tool_call(messages: list[dict]) -> dict:
+    assistant = next(m for m in messages if m.get("tool_calls"))
+    assert len(assistant["tool_calls"]) == 1
+    return assistant["tool_calls"][0]["function"]
+
+
+@pytest.mark.parametrize("alias", ["bash", "command", "execute", "execute_bash"])
+def test_convert_non_fncall_applies_shared_terminal_aliases(alias):
+    """Pure renames resolve to the registered tool with the arguments unchanged."""
+    messages = [
+        {"role": "user", "content": "List the files"},
+        {
+            "role": "assistant",
+            "content": (
+                f"<function={alias}>\n<parameter=command>ls</parameter>\n</function>"
+            ),
+        },
+    ]
+
+    tool_call = _single_tool_call(
+        convert_non_fncall_messages_to_fncall_messages(messages, FNCALL_TOOLS)
+    )
+
+    assert tool_call["name"] == "terminal"
+    assert json.loads(tool_call["arguments"]) == {"command": "ls"}
+
+
+@pytest.mark.parametrize("alias", sorted(TERMINAL_COMMAND_PREFIX_ALIASES))
+def test_convert_non_fncall_keeps_command_prefix_alias_name(alias):
+    """``git`` and ``reset`` validate against the terminal schema but keep their
+    name, so that ``normalize_tool_call`` prepends the executable. Renaming
+    here would run ``status`` instead of ``git status``."""
+    messages = [
+        {"role": "user", "content": "Check the repository"},
+        {
+            "role": "assistant",
+            "content": (
+                f"<function={alias}>\n<parameter=command>status</parameter>\n"
+                "</function>"
+            ),
+        },
+    ]
+
+    tool_call = _single_tool_call(
+        convert_non_fncall_messages_to_fncall_messages(messages, FNCALL_TOOLS)
+    )
+    arguments = json.loads(tool_call["arguments"])
+
+    assert tool_call["name"] == alias
+    assert arguments == {"command": "status"}
+
+    name, normalized = normalize_tool_call(tool_call["name"], arguments, {"terminal"})
+    assert name == "terminal"
+    assert normalized["command"] == f"{alias} status"

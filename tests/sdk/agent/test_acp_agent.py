@@ -3439,8 +3439,10 @@ class TestACPAgentCleanup:
         env: dict[str, str] = {}
         agent._materialise_file_secrets(state, env)
         assert Path(env["CODEX_HOME"], "auth.json").read_text() == valid
-        assert not durable_auth.exists()
+        # The legacy durable copy is replaced by a link to the temporary file.
+        assert durable_auth.is_symlink()
         agent.close()
+        assert not durable_auth.exists() and not durable_auth.is_symlink()
 
     def test_failed_init_keeps_agent_reusable(self, tmp_path):
         agent = _make_agent()
@@ -9928,7 +9930,7 @@ class TestACPDataDirIsolation:
             encoding="utf-8"
         ) == '{"tokens": "x"}'
 
-    def test_binding_overrides_isolated_codex_home(self, tmp_path):
+    def test_binding_links_auth_into_durable_codex_home(self, tmp_path):
         agent = self._agent(["codex-acp"])
         state = self._H._state(tmp_path)
         durable_codex_home = Path(state.persistence_dir or "") / "acp" / "codex"
@@ -9950,12 +9952,14 @@ class TestACPDataDirIsolation:
             env = self._H._run_start(agent, state, conn=self._H._make_conn())
         try:
             codex_home = Path(env["CODEX_HOME"])
-            assert codex_home != durable_codex_home
-            assert (codex_home / "auth.json").read_text(encoding="utf-8") == auth
-            assert not durable_auth.exists()
-            assert durable_codex_home.exists()
+            assert codex_home == durable_codex_home
+            assert durable_auth.is_symlink()
+            assert not durable_auth.resolve().is_relative_to(durable_codex_home)
+            assert durable_auth.read_text(encoding="utf-8") == auth
         finally:
             agent.close()
+        assert not durable_auth.exists() and not durable_auth.is_symlink()
+        assert durable_codex_home.exists()
 
     # --- Claude: isolation applies under either auth mode (#3588) ------------
 
