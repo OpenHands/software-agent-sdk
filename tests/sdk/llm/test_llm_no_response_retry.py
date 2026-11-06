@@ -6,7 +6,15 @@ from litellm.responses.streaming_iterator import (
     SyncResponsesAPIStreamingIterator,
 )
 from litellm.types.llms.openai import ResponsesAPIResponse
-from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse, Usage
+from litellm.types.utils import (
+    Choices,
+    Delta,
+    Message as LiteLLMMessage,
+    ModelResponse,
+    ModelResponseStream,
+    StreamingChoices,
+    Usage,
+)
 from openai.types.responses import ResponseOutputMessage, ResponseOutputText
 from pydantic import SecretStr
 
@@ -43,6 +51,64 @@ def create_empty_choices_response(response_id: str = "empty-1") -> ModelResponse
         object="chat.completion",
         usage=Usage(prompt_tokens=1, completion_tokens=0, total_tokens=1),
     )
+
+
+def create_content_free_response(response_id: str = "empty-content-1") -> ModelResponse:
+    """HTTP-200 response whose only choice has no content, tool calls or reasoning."""
+    return ModelResponse(
+        id=response_id,
+        choices=[
+            Choices(
+                finish_reason="stop",
+                index=0,
+                message=LiteLLMMessage(content="", role="assistant"),
+            )
+        ],
+        created=1,
+        model="gpt-4o",
+        object="chat.completion",
+        usage=Usage(prompt_tokens=1, completion_tokens=0, total_tokens=1),
+    )
+
+
+def create_reasoning_only_response(
+    reasoning: str = "Let me think about this...",
+) -> ModelResponse:
+    msg = LiteLLMMessage(content="", role="assistant")
+    msg.reasoning_content = reasoning
+    return ModelResponse(
+        id="reasoning-1",
+        choices=[Choices(finish_reason="stop", index=0, message=msg)],
+        created=1,
+        model="gpt-4o",
+        object="chat.completion",
+        usage=Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+    )
+
+
+def create_stream_chunks(
+    text: str, chunk_id: str = "chatcmpl-stream"
+) -> list[ModelResponseStream]:
+    """Chat-completion stream chunks whose reassembly carries ``text``."""
+    deltas = [Delta(role="assistant", content="")]
+    if text:
+        deltas.append(Delta(content=text))
+    deltas.append(Delta(content=""))
+    return [
+        ModelResponseStream(
+            id=chunk_id,
+            choices=[
+                StreamingChoices(
+                    index=0,
+                    delta=delta,
+                    finish_reason="stop" if i == len(deltas) - 1 else None,
+                )
+            ],
+            created=1,
+            model="gpt-4o",
+        )
+        for i, delta in enumerate(deltas)
+    ]
 
 
 @pytest.fixture
@@ -112,6 +178,94 @@ def test_no_response_retry_bumps_temperature(mock_completion, base_llm: LLM) -> 
     # Grab kwargs from the second call
     _, second_kwargs = mock_completion.call_args_list[1]
     assert second_kwargs.get("temperature") == 1.0
+
+
+# ------------------------------------------------------------------
+# Content-free completion tests (#6085): HTTP-200 responses whose only
+# choice has no text, no tool calls and no reasoning are retried.
+# ------------------------------------------------------------------
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_content_free_response_retries_then_succeeds(
+    mock_completion, base_llm: LLM
+) -> None:
+    mock_completion.side_effect = [
+        create_content_free_response("empty-content-1"),
+        create_mock_response("success"),
+    ]
+
+    resp = base_llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])]
+    )
+
+    assert isinstance(resp, LLMResponse)
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "success"
+    assert mock_completion.call_count == 2
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_content_free_response_exhausts_retries(mock_completion, base_llm: LLM) -> None:
+    mock_completion.side_effect = [
+        create_content_free_response("empty-content-1"),
+        create_content_free_response("empty-content-2"),
+    ]
+
+    with pytest.raises(LLMNoResponseError):
+        base_llm.completion(
+            messages=[Message(role="user", content=[TextContent(text="hi")])]
+        )
+
+    assert mock_completion.call_count == base_llm.num_retries
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_reasoning_only_response_is_not_retried(mock_completion, base_llm: LLM) -> None:
+    """Reasoning without visible content is agent behaviour, not a provider
+    failure: it must be returned so the corrective-nudge path still sees it."""
+    reasoning_resp = create_reasoning_only_response()
+    mock_completion.return_value = reasoning_resp
+
+    resp = base_llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])]
+    )
+
+    assert isinstance(resp, LLMResponse)
+    assert resp.message.reasoning_content == "Let me think about this..."
+    assert mock_completion.call_count == 1
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_content_free_stream_reassembled_and_retried(mock_completion) -> None:
+    """A chat stream that reassembles to a content-free completion is retried."""
+    streaming_llm = LLM(
+        usage_id="test-stream-chat",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        temperature=0.0,
+        stream=True,
+    )
+
+    mock_completion.side_effect = [
+        create_stream_chunks(""),
+        create_stream_chunks("ok"),
+    ]
+
+    resp = streaming_llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])],
+        on_token=lambda _chunk: None,
+    )
+
+    assert isinstance(resp, LLMResponse)
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "ok"
+    assert mock_completion.call_count == 2
 
 
 # ------------------------------------------------------------------
@@ -186,6 +340,30 @@ async def test_async_no_response_exhausts_retries(
         )
 
     assert mock_acompletion.call_count == base_llm.num_retries
+
+
+@pytest.mark.asyncio
+@patch(
+    "openhands.sdk.llm.llm.litellm_acompletion",
+    new_callable=AsyncMock,
+)
+async def test_async_content_free_response_retries_then_succeeds(
+    mock_acompletion: AsyncMock, base_llm: LLM
+) -> None:
+    mock_acompletion.side_effect = [
+        create_content_free_response("empty-content-1"),
+        create_mock_response("success"),
+    ]
+
+    resp = await base_llm.acompletion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])]
+    )
+
+    assert isinstance(resp, LLMResponse)
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "success"
+    assert mock_acompletion.call_count == 2
 
 
 # ------------------------------------------------------------------
