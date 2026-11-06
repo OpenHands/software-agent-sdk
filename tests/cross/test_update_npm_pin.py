@@ -14,7 +14,7 @@ SPEC.loader.exec_module(updater)
 NOW = datetime(2026, 10, 8, tzinfo=UTC)
 
 
-def test_observation_window_major_prerelease_and_deprecation() -> None:
+def test_selects_newest_stable_across_majors_after_window() -> None:
     versions = {
         "11.19.1": {},
         "11.21.0": {},
@@ -28,8 +28,11 @@ def test_observation_window_major_prerelease_and_deprecation() -> None:
         "time": dict.fromkeys(versions, "2026-10-01T00:00:00Z"),
     }
     metadata["time"]["11.22.0"] = "2026-10-01T00:00:01Z"
+    assert updater.select_version(metadata, "11.19.1", NOW) == "12.2.0"
+    assert updater.select_version(metadata, "11.25.0", NOW) == "12.2.0"
+
+    metadata["time"]["12.2.0"] = "2026-10-01T00:00:01Z"
     assert updater.select_version(metadata, "11.19.1", NOW) == "11.21.0"
-    assert updater.select_version(metadata, "11.25.0", NOW) == "11.25.0"
 
 
 def test_update_is_idempotent_and_requires_exactly_one_pin() -> None:
