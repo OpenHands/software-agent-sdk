@@ -5409,9 +5409,16 @@ class TestModelConfigOptions:
         assert _model_config_options("codex-acp", "custom/provider/model") == (
             ("model", "custom/provider/model"),
         )
-        # `max` is a Claude level, not a Codex one.
-        assert _model_config_options("codex-acp", "gpt-5.5/max") == (
-            ("model", "gpt-5.5/max"),
+        # `ultra` is a Codex level, not a Claude one.
+        assert _model_config_options("claude-agent-acp", "opus[1m]/ultra") == (
+            ("model", "opus[1m]/ultra"),
+        )
+
+    @pytest.mark.parametrize("effort", ["max", "ultra"])
+    def test_codex_splits_top_reasoning_efforts(self, effort):
+        assert _model_config_options("codex-acp", f"gpt-6.1-sol/{effort}") == (
+            ("model", "gpt-6.1-sol"),
+            ("reasoning_effort", effort),
         )
 
     def test_provider_without_effort_option_is_unchanged(self):
@@ -5443,7 +5450,7 @@ class TestMaybeSetSessionModel:
         )
         conn.set_config_option.assert_not_called()
         # The override was actually pushed to the server via the protocol call.
-        assert applied is True
+        assert applied == "gpt-5.4"
 
     @pytest.mark.asyncio
     async def test_set_config_option_mechanism(self):
@@ -5463,7 +5470,7 @@ class TestMaybeSetSessionModel:
             session_id="session-1",
         )
         conn.set_session_model.assert_not_called()
-        assert applied is True
+        assert applied == "opus[1m]"
 
     @pytest.mark.asyncio
     async def test_rejected_effort_keeps_applied_model(self):
@@ -5487,7 +5494,7 @@ class TestMaybeSetSessionModel:
             call(config_id="model", value="haiku", session_id="session-1"),
             call(config_id="effort", value="high", session_id="session-1"),
         ]
-        assert applied is True
+        assert applied == "haiku"
 
     @pytest.mark.asyncio
     async def test_codex_config_option_splits_reasoning_effort(self):
@@ -5509,7 +5516,7 @@ class TestMaybeSetSessionModel:
             ]
         )
         assert conn.set_config_option.await_count == 2
-        assert applied is True
+        assert applied == "gpt-5.4/low"
 
     @pytest.mark.asyncio
     async def test_pi_model_switch_mechanism(self):
@@ -5527,7 +5534,7 @@ class TestMaybeSetSessionModel:
             value="anthropic/claude-sonnet-4-6",
             session_id="session-1",
         )
-        assert applied is True
+        assert applied == "anthropic/claude-sonnet-4-6"
 
     @pytest.mark.asyncio
     async def test_missing_model_skips_protocol_override(self):
@@ -5537,7 +5544,7 @@ class TestMaybeSetSessionModel:
         )
         conn.set_session_model.assert_not_called()
         conn.set_config_option.assert_not_called()
-        assert applied is False
+        assert applied is None
 
     @pytest.mark.asyncio
     async def test_unknown_provider_applies_via_detected_mechanism(self):
@@ -5551,7 +5558,7 @@ class TestMaybeSetSessionModel:
             config_id="model", value="kimi-k2-6", session_id="session-1"
         )
         conn_cfg.set_session_model.assert_not_called()
-        assert applied is True
+        assert applied == "kimi-k2-6"
 
         conn_set = AsyncMock()
         applied = await _maybe_set_session_model(
@@ -5561,7 +5568,7 @@ class TestMaybeSetSessionModel:
             model_id="kimi-k2-6", session_id="session-1"
         )
         conn_set.set_config_option.assert_not_called()
-        assert applied is True
+        assert applied == "kimi-k2-6"
 
     @pytest.mark.asyncio
     async def test_unknown_provider_apply_failure_is_tolerated(self):
@@ -5575,7 +5582,7 @@ class TestMaybeSetSessionModel:
             conn, "some-custom-acp", "session-1", "whatever", via_config_option=True
         )
         conn.set_config_option.assert_awaited_once()
-        assert applied is False
+        assert applied is None
 
     @pytest.mark.asyncio
     async def test_known_provider_apply_rejection_is_tolerated(self):
@@ -5594,7 +5601,7 @@ class TestMaybeSetSessionModel:
         )
         conn.set_config_option.assert_awaited_once()
         conn.set_session_model.assert_not_called()
-        assert applied is False
+        assert applied is None
 
 
 class TestReapplySessionModelOnResume:
@@ -5617,7 +5624,7 @@ class TestReapplySessionModelOnResume:
         conn.set_session_model.assert_awaited_once_with(
             model_id="claude-haiku-4-5-20251001", session_id="sess-1"
         )
-        assert applied is True
+        assert applied == "claude-haiku-4-5-20251001"
 
     @pytest.mark.asyncio
     async def test_reapply_via_set_config_option_mechanism(self):
@@ -5631,7 +5638,7 @@ class TestReapplySessionModelOnResume:
             config_id="model", value="gpt-5.5", session_id="sess-1"
         )
         conn.set_session_model.assert_not_called()
-        assert applied is True
+        assert applied == "gpt-5.5"
 
     @pytest.mark.asyncio
     async def test_codex_reapply_splits_reasoning_effort(self):
@@ -5651,7 +5658,7 @@ class TestReapplySessionModelOnResume:
             ]
         )
         assert conn.set_config_option.await_count == 2
-        assert applied is True
+        assert applied == "gpt-5.4/low"
 
     @pytest.mark.asyncio
     async def test_missing_model_skips_reapply(self):
@@ -5661,7 +5668,7 @@ class TestReapplySessionModelOnResume:
         )
         conn.set_session_model.assert_not_called()
         conn.set_config_option.assert_not_called()
-        assert applied is False
+        assert applied is None
 
     @pytest.mark.asyncio
     async def test_unknown_provider_reapplies_via_detected_mechanism(self):
@@ -5677,7 +5684,7 @@ class TestReapplySessionModelOnResume:
             value="kimi-k2-6",
             session_id="sess-1",
         )
-        assert applied is True
+        assert applied == "kimi-k2-6"
 
     @pytest.mark.asyncio
     async def test_known_unsupported_provider_skips_reapply(self):
@@ -5704,7 +5711,7 @@ class TestReapplySessionModelOnResume:
                 conn, "legacy-acp", "sess-1", "x", via_config_option=False
             )
         conn.set_session_model.assert_not_called()
-        assert applied is False
+        assert applied is None
 
     @pytest.mark.asyncio
     async def test_client_rejection_is_swallowed_on_resume(self):
@@ -5721,7 +5728,7 @@ class TestReapplySessionModelOnResume:
         conn.set_config_option.assert_awaited_once()
         # Rejected => the live session kept the server default, so the override
         # must NOT be reported as applied.
-        assert applied is False
+        assert applied is None
 
     @pytest.mark.asyncio
     async def test_any_request_error_is_swallowed_on_resume(self):
@@ -5736,7 +5743,7 @@ class TestReapplySessionModelOnResume:
             conn, "codex-acp", "sess-1", "gpt-5.5", via_config_option=False
         )
         conn.set_session_model.assert_awaited_once()
-        assert applied is False
+        assert applied is None
 
 
 class TestHasLiveACPSession:
@@ -5873,6 +5880,17 @@ class TestSetACPModel:
         )
         assert _agent_conn(agent).set_config_option.await_count == 2
         assert agent._current_model_id == "opus[1m]/high"
+
+    def test_switch_with_rejected_effort_reports_base_model(self):
+        agent = self._wire(_make_agent(), "claude-agent-acp", via_config_option=True)
+
+        async def _set_config_option(*, config_id, value, session_id):
+            if config_id == "effort":
+                raise ACPRequestError(code=-32603, message="Internal error")
+
+        _agent_conn(agent).set_config_option.side_effect = _set_config_option
+        agent.set_acp_model("haiku/low")
+        assert agent._current_model_id == "haiku"
 
     def test_switch_method_not_found_raises_no_fallback(self):
         # No cross-mechanism fallback: a -32601 surfaces as a ValueError naming

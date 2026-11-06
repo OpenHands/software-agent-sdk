@@ -48,3 +48,32 @@ acp_model='haiku/high' current_model_id='haiku/high'
 Without the best-effort handling, the same run logged "Could not set model
 'haiku/high' ... the session will use the server default" and reported
 `current_model_id='opus[1m]'` while the session was actually running Haiku.
+
+## Follow-up: Codex `max`/`ultra` and the reported model after a dropped effort
+
+Ran the same `ACPAgent` → `Conversation` flow with the pinned adapters
+(`claude-agent-acp@0.63.0`, `codex-acp@2.2.2`) and real subscription logins.
+Effort is checked where the provider records it: the Anthropic `/v1/messages`
+body (`output_config.effort`) and the Codex rollout `turn_context`.
+
+codex-acp 2.2.2 advertises `low, medium, high, xhigh, max, ultra` for
+`gpt-6.1-sol`. Before, `gpt-6.1-sol/max` was rejected as a model id
+(`Invalid params`) and the session silently ran on the default model. After:
+
+```
+set_config_option(model='gpt-6.1-sol')            -> reasoning_effort: high
+set_config_option(reasoning_effort='max')         -> reasoning_effort: max
+switch_acp_model('gpt-6.1-sol/ultra')
+set_config_option(reasoning_effort='ultra')       -> reasoning_effort: ultra
+rollout turn_context: (gpt-6.1-sol, max), (gpt-6.1-sol, ultra)
+```
+
+A dropped effort now reports the model the session actually runs:
+
+```
+acp_model='haiku/high'
+set_config_option(model='haiku')    -> ok
+set_config_option(effort='high')    -> rejected: Internal error (warning logged)
+current_model_id='haiku'            # was 'haiku/high'
+API: model=claude-haiku-4-5-20251001 output_config=None
+```

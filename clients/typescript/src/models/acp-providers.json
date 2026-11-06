@@ -59,7 +59,9 @@
       "low",
       "medium",
       "high",
-      "xhigh"
+      "xhigh",
+      "max",
+      "ultra"
     ],
     "env_conflicts": [],
     "file_secrets": [
