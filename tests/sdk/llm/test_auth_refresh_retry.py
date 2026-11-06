@@ -148,26 +148,24 @@ def test_completion_refresh_retries_only_once(mock_litellm_completion):
     assert calls["count"] == 1  # only refreshed once
 
 
+@pytest.mark.parametrize(
+    "refreshed_key",
+    [
+        pytest.param(None, id="none"),
+        # The already-rejected key.
+        pytest.param("stale_key", id="same_key"),
+        # Would otherwise trigger a credential-less retry.
+        pytest.param("", id="empty_key"),
+    ],
+)
 @patch("openhands.sdk.llm.llm.litellm_completion")
-def test_completion_no_retry_when_hook_returns_none(mock_litellm_completion):
-    """A hook that yields no key does not trigger a retry."""
+def test_completion_no_retry_when_hook_returns_unusable_key(
+    mock_litellm_completion, refreshed_key: str | None
+):
     mock_litellm_completion.side_effect = _auth_error()
 
     llm = _make_llm()
-    llm.set_api_key_refresh_hook(lambda: None)
-
-    with pytest.raises(LLMAuthenticationError):
-        llm.completion(messages=_message())
-    assert mock_litellm_completion.call_count == 1
-
-
-@patch("openhands.sdk.llm.llm.litellm_completion")
-def test_completion_no_retry_when_hook_returns_same_key(mock_litellm_completion):
-    """A hook that returns the already-rejected key does not retry."""
-    mock_litellm_completion.side_effect = _auth_error()
-
-    llm = _make_llm()
-    llm.set_api_key_refresh_hook(lambda: "stale_key")
+    llm.set_api_key_refresh_hook(lambda: refreshed_key)
 
     with pytest.raises(LLMAuthenticationError):
         llm.completion(messages=_message())
@@ -355,19 +353,6 @@ def test_non_api_key_auth_skips_refresh():
     llm = _make_llm(auth_type="subscription")
     llm.set_api_key_refresh_hook(lambda: "fresh_key")
     assert llm._resolve_refreshed_api_key(_auth_error()) is None
-
-
-@patch("openhands.sdk.llm.llm.litellm_completion")
-def test_completion_no_retry_when_hook_returns_empty_key(mock_litellm_completion):
-    """A hook returning an empty string does not trigger a (credential-less) retry."""
-    mock_litellm_completion.side_effect = _auth_error()
-
-    llm = _make_llm()
-    llm.set_api_key_refresh_hook(lambda: "")
-
-    with pytest.raises(LLMAuthenticationError):
-        llm.completion(messages=_message())
-    assert mock_litellm_completion.call_count == 1
 
 
 # ---------------------------------------------------------------------------
