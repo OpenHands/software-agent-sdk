@@ -1,0 +1,4 @@
+apiVersion: v2
+name: ohe3895-cost-chain
+version: 0.1.0
+description: Isolated two-proxy billing fixture for OHE-3895

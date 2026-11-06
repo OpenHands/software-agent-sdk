@@ -1,0 +1,47 @@
+{
+  "baseline_source_commit": "232d0b05fa5cd798c9c827d1a1c1aafa541757ad",
+  "candidate_production_commit": "ec94bbdb6b01c3cc67b6e35cade97ed78aa38926",
+  "scope": "Installed baseline/candidate wheels; identical hash-locked dependencies; real HTTP substitute and persisted SDK Conversation on isolated EKS Job",
+  "transport_cases_per_variant": 32,
+  "baseline_demo": {
+    "sdk_version": "1.60.1",
+    "litellm_version": "1.105.1",
+    "telemetry_sha256": "479ff7ecaaa2cfcb16bcc073e2a9f6bdfe0b3203df8b5e7be409cad041c651d4",
+    "requests": 2,
+    "reported_cost_per_request": 0.04,
+    "first_total": 0.0,
+    "restored_total": 0.0,
+    "final_total": 0.0,
+    "first_status": "ConversationExecutionStatus.FINISHED",
+    "final_status": "ConversationExecutionStatus.FINISHED",
+    "expected_total": 0.08,
+    "scope": "Real SDK Conversation, HTTP substitute, disk persistence and continuation; no live inference"
+  },
+  "candidate_demo": {
+    "sdk_version": "1.60.1",
+    "litellm_version": "1.105.1",
+    "telemetry_sha256": "0c9f5f7a698453807d28c5587c5bcf627984afabf3cc40c3d9398348c27648c3",
+    "requests": 2,
+    "reported_cost_per_request": 0.04,
+    "first_total": 0.04,
+    "restored_total": 0.04,
+    "final_total": 0.08,
+    "first_status": "ConversationExecutionStatus.FINISHED",
+    "final_status": "ConversationExecutionStatus.FINISHED",
+    "expected_total": 0.08,
+    "scope": "Real SDK Conversation, HTTP substitute, disk persistence and continuation; no live inference"
+  },
+  "job_completed": true,
+  "external_customer_proxy_or_live_inference": false,
+  "regression_test_commit": "d7de2574eb16ae8fa190bdf3c86b81f64da1239e",
+  "new_regressions_baseline": {
+    "failed": 25,
+    "passed": 6
+  },
+  "candidate_suite": {
+    "passed": 142,
+    "warnings": 18
+  },
+  "hooks": "all passed after generated build output cleanup",
+  "cleanup": "Disposable packaged EKS namespace verified absent"
+}

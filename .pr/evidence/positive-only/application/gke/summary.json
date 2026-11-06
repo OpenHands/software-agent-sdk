@@ -1,0 +1,458 @@
+{
+  "origin": "https://app.gke.raj.platform-team.all-hands.dev",
+  "org_id": "33123b09-1e64-43a8-937f-a954bb830ea6",
+  "enterprise": "1.79.0",
+  "canvas": "1.32.0",
+  "automation": "1.25.1",
+  "licensed_chart": "0.90.1",
+  "stock_app_sdk_runtime": "1.58.1-python",
+  "sdk_controls": {
+    "baseline": {
+      "cells": 16,
+      "telemetry_sha256": "479ff7ecaaa2cfcb16bcc073e2a9f6bdfe0b3203df8b5e7be409cad041c651d4",
+      "actual_stream_modes": [
+        false,
+        true
+      ],
+      "assertions_passed": true
+    },
+    "candidate": {
+      "cells": 16,
+      "telemetry_sha256": "f6a65f010af236b9e60940ebdd1cfdf353b73574bff4ba413e1fda8b32970a62",
+      "actual_stream_modes": [
+        false,
+        true
+      ],
+      "assertions_passed": true
+    }
+  },
+  "stock_app_chats": [
+    {
+      "case": "fixed_usage_only",
+      "stream_requested": false,
+      "run_id": "app-c111f8cbe970403391bf4b05ac6edd09",
+      "profile": "OHE3895-gpt-luna-sync",
+      "start": {
+        "id": "e18324ff2a184ff4802aacce170a5585",
+        "status": "WORKING"
+      },
+      "startup_status": "READY",
+      "conversation_id": "01c48ce192ed4f0691b37974842adf34",
+      "execution_status": "finished",
+      "sandbox_status": "RUNNING",
+      "sandbox_id": "6ramZeYNC5D3RoGj0Y8dmD",
+      "app_cost": 0.0,
+      "model": "openai/gpt-luna",
+      "ledger": [
+        {
+          "id": "fixture-4d96fca581d841948496286c328b408c",
+          "case": "fixed_usage_only",
+          "model": "gpt-luna",
+          "run_id": "app-c111f8cbe970403391bf4b05ac6edd09",
+          "stages": [
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.04",
+          "emitted_usage_cost": "0.04",
+          "emitted_header_cost": null,
+          "stream": false,
+          "has_tools": false,
+          "tool_names": [],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        },
+        {
+          "id": "fixture-9351b4fa57454b31813057a37bfedcaf",
+          "case": "fixed_usage_only",
+          "model": "gpt-luna",
+          "run_id": "app-c111f8cbe970403391bf4b05ac6edd09",
+          "stages": [
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.04",
+          "emitted_usage_cost": "0.04",
+          "emitted_header_cost": null,
+          "stream": true,
+          "has_tools": true,
+          "tool_names": [
+            "terminal",
+            "file_editor",
+            "task_tracker",
+            "browser_navigate",
+            "browser_click",
+            "browser_get_state",
+            "browser_get_content",
+            "browser_type",
+            "browser_scroll",
+            "browser_go_back",
+            "browser_list_tabs",
+            "browser_switch_tab",
+            "browser_close_tab",
+            "browser_get_storage",
+            "browser_set_storage",
+            "browser_start_recording",
+            "browser_stop_recording",
+            "finish",
+            "think",
+            "switch_llm",
+            "invoke_skill",
+            "create_pr",
+            "create_mr",
+            "create_bitbucket_pr",
+            "create_bitbucket_data_center_pr",
+            "create_azure_devops_pr"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ],
+      "agent_call_count": 1,
+      "auxiliary_call_count": 1,
+      "effective_stream_modes": [
+        true
+      ],
+      "requested_stream_honored": false,
+      "qualified": true
+    },
+    {
+      "case": "fixed_zero_header",
+      "stream_requested": false,
+      "run_id": "app-501753e9a2a74b2690fc2e53a831894e",
+      "profile": "OHE3895-gpt-luna-sync",
+      "start": {
+        "id": "5c27c3cdc2a54b5d87dd005fc9486e13",
+        "status": "WORKING"
+      },
+      "startup_status": "READY",
+      "conversation_id": "eaa82c8095ab4e809ad6080cafcf3914",
+      "execution_status": "finished",
+      "sandbox_status": "RUNNING",
+      "sandbox_id": "6ramZeYNC5D3RoGj0Y8dmD",
+      "app_cost": 0.0,
+      "model": "openai/gpt-luna",
+      "ledger": [
+        {
+          "id": "fixture-d0a1b290fa1a4040a825aecd7d60d44c",
+          "case": "fixed_zero_header",
+          "model": "gpt-luna",
+          "run_id": "app-501753e9a2a74b2690fc2e53a831894e",
+          "stages": [
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.04",
+          "emitted_usage_cost": "0.04",
+          "emitted_header_cost": "0",
+          "stream": false,
+          "has_tools": false,
+          "tool_names": [],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        },
+        {
+          "id": "fixture-c8fb9bb8433f4f2b9e4aae57b11d856c",
+          "case": "fixed_zero_header",
+          "model": "gpt-luna",
+          "run_id": "app-501753e9a2a74b2690fc2e53a831894e",
+          "stages": [
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.04",
+          "emitted_usage_cost": "0.04",
+          "emitted_header_cost": "0",
+          "stream": true,
+          "has_tools": true,
+          "tool_names": [
+            "terminal",
+            "file_editor",
+            "task_tracker",
+            "browser_navigate",
+            "browser_click",
+            "browser_get_state",
+            "browser_get_content",
+            "browser_type",
+            "browser_scroll",
+            "browser_go_back",
+            "browser_list_tabs",
+            "browser_switch_tab",
+            "browser_close_tab",
+            "browser_get_storage",
+            "browser_set_storage",
+            "browser_start_recording",
+            "browser_stop_recording",
+            "finish",
+            "think",
+            "switch_llm",
+            "invoke_skill",
+            "create_pr",
+            "create_mr",
+            "create_bitbucket_pr",
+            "create_bitbucket_data_center_pr",
+            "create_azure_devops_pr"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ],
+      "agent_call_count": 1,
+      "auxiliary_call_count": 1,
+      "effective_stream_modes": [
+        true
+      ],
+      "requested_stream_honored": false,
+      "qualified": true
+    },
+    {
+      "case": "router_aggregate_usage",
+      "stream_requested": false,
+      "run_id": "app-a9628aa0217e4c14885d839676266867",
+      "profile": "OHE3895-cost-auto-sync",
+      "start": {
+        "id": "d1ab18dfa3b241ef8b208d83d5ae04bc",
+        "status": "WORKING"
+      },
+      "startup_status": "READY",
+      "conversation_id": "eb6723d4b7334030952637bc07d82953",
+      "execution_status": "finished",
+      "sandbox_status": "RUNNING",
+      "sandbox_id": "6ramZeYNC5D3RoGj0Y8dmD",
+      "app_cost": 0.0,
+      "model": "openai/cost-auto",
+      "ledger": [
+        {
+          "id": "fixture-a02648f9c370456ebf3732c64c5d7c4a",
+          "case": "router_aggregate_usage",
+          "model": "cost-auto",
+          "run_id": "app-a9628aa0217e4c14885d839676266867",
+          "stages": [
+            {
+              "stage": "selection",
+              "cost_usd": "0.01"
+            },
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.05",
+          "emitted_usage_cost": "0.05",
+          "emitted_header_cost": null,
+          "stream": false,
+          "has_tools": false,
+          "tool_names": [],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        },
+        {
+          "id": "fixture-e81d3c3c03db4483b9fea1f3767112d1",
+          "case": "router_aggregate_usage",
+          "model": "cost-auto",
+          "run_id": "app-a9628aa0217e4c14885d839676266867",
+          "stages": [
+            {
+              "stage": "selection",
+              "cost_usd": "0.01"
+            },
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.05",
+          "emitted_usage_cost": "0.05",
+          "emitted_header_cost": null,
+          "stream": true,
+          "has_tools": true,
+          "tool_names": [
+            "terminal",
+            "file_editor",
+            "task_tracker",
+            "browser_navigate",
+            "browser_click",
+            "browser_get_state",
+            "browser_get_content",
+            "browser_type",
+            "browser_scroll",
+            "browser_go_back",
+            "browser_list_tabs",
+            "browser_switch_tab",
+            "browser_close_tab",
+            "browser_get_storage",
+            "browser_set_storage",
+            "browser_start_recording",
+            "browser_stop_recording",
+            "finish",
+            "think",
+            "switch_llm",
+            "invoke_skill",
+            "create_pr",
+            "create_mr",
+            "create_bitbucket_pr",
+            "create_bitbucket_data_center_pr",
+            "create_azure_devops_pr"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ],
+      "agent_call_count": 1,
+      "auxiliary_call_count": 1,
+      "effective_stream_modes": [
+        true
+      ],
+      "requested_stream_honored": false,
+      "qualified": true
+    }
+  ],
+  "default_cleanup_automation": {
+    "case": "fixed_matching_header",
+    "stream_requested": false,
+    "run_id": "app-a7390b7d9b134b2c91ad70a8c573b0ec",
+    "profile": "OHE3895-gpt-luna-sync",
+    "definition": {
+      "id": "74e18eae-fc3a-43ff-9f61-751cf4325c4e",
+      "org_id": "33123b09-1e64-43a8-937f-a954bb830ea6",
+      "model": "OHE3895-gpt-luna-sync"
+    },
+    "dispatch": {
+      "id": "7095da55-540e-44c5-98f7-4005e902227a",
+      "status": "PENDING"
+    },
+    "automation_status": "COMPLETED",
+    "automation_phase": "finish: {\"message\": \"Synthetic billing task completed.\", \"status\": \"success\", \"outcome_summary\": \"Synthetic billing task completed.\"}",
+    "automation_cost": 0.04,
+    "resolved_runtime": null,
+    "sandbox_id": "3lek2SZMhvTrTqCJeIXLLc",
+    "conversation_id": "88feccb5-bf6f-4317-90bc-7d2487e50973",
+    "execution_status": null,
+    "sandbox_status": "MISSING",
+    "app_cost": 0.0,
+    "model": "openai/gpt-luna",
+    "completion_verified_by": "Automation COMPLETED callback; app no longer has live runtime status",
+    "app_callback_cost_match": false,
+    "ledger": [
+      {
+        "id": "fixture-7bc9d42a0b1e4fa5a31021ea3ad8c19e",
+        "case": "fixed_matching_header",
+        "model": "gpt-luna",
+        "run_id": "app-a7390b7d9b134b2c91ad70a8c573b0ec",
+        "stages": [
+          {
+            "stage": "generation",
+            "cost_usd": "0.04"
+          }
+        ],
+        "ledger_total_usd": "0.04",
+        "emitted_usage_cost": "0.04",
+        "emitted_header_cost": "0.04",
+        "stream": true,
+        "has_tools": true,
+        "tool_names": [
+          "terminal",
+          "file_editor",
+          "task_tracker",
+          "finish",
+          "think",
+          "invoke_skill"
+        ],
+        "scope": "Synthetic selection/generation charges; no live inference"
+      }
+    ],
+    "agent_call_count": 1,
+    "auxiliary_call_count": 0,
+    "effective_stream_modes": [
+      true
+    ],
+    "requested_stream_honored": false,
+    "qualified": true,
+    "cleanup": [
+      {
+        "path": "/api/automation/v1/74e18eae-fc3a-43ff-9f61-751cf4325c4e",
+        "status": 200
+      }
+    ],
+    "persisted_app_cost_after_cleanup": 0.0,
+    "sandbox_status_after_cleanup": "MISSING",
+    "persisted_app_callback_cost_match": false
+  },
+  "controlled_cleanup_automation": {
+    "case": "fixed_matching_header",
+    "stream_requested": false,
+    "run_id": "app-64a4e4f7566c4d719ffc661ad094a25a",
+    "profile": "OHE3895-gpt-luna-sync",
+    "definition": {
+      "id": "f7f92745-37ec-45cb-9d4b-f8c83d7dda81",
+      "org_id": "33123b09-1e64-43a8-937f-a954bb830ea6",
+      "model": "OHE3895-gpt-luna-sync"
+    },
+    "dispatch": {
+      "id": "194a4ab5-ccec-47e8-81c6-72cd7e3e4a33",
+      "status": "PENDING"
+    },
+    "automation_status": "COMPLETED",
+    "automation_phase": "finish: {\"message\": \"Synthetic billing task completed.\", \"status\": \"success\", \"outcome_summary\": \"Synthetic billing task completed.\"}",
+    "automation_cost": 0.04,
+    "resolved_runtime": null,
+    "sandbox_id": "6WPV7OcWuG4F6txUIsJ4k9",
+    "conversation_id": "f9fdba39-a59d-426b-9a9f-4778a24e7e22",
+    "execution_status": "finished",
+    "sandbox_status": "RUNNING",
+    "app_cost": 0.04,
+    "model": "openai/gpt-luna",
+    "app_callback_cost_match": true,
+    "ledger": [
+      {
+        "id": "fixture-d1b418d4abd7497a9223d0f5b5fd5855",
+        "case": "fixed_matching_header",
+        "model": "gpt-luna",
+        "run_id": "app-64a4e4f7566c4d719ffc661ad094a25a",
+        "stages": [
+          {
+            "stage": "generation",
+            "cost_usd": "0.04"
+          }
+        ],
+        "ledger_total_usd": "0.04",
+        "emitted_usage_cost": "0.04",
+        "emitted_header_cost": "0.04",
+        "stream": true,
+        "has_tools": true,
+        "tool_names": [
+          "terminal",
+          "file_editor",
+          "task_tracker",
+          "finish",
+          "think",
+          "invoke_skill"
+        ],
+        "scope": "Synthetic selection/generation charges; no live inference"
+      }
+    ],
+    "agent_call_count": 1,
+    "auxiliary_call_count": 0,
+    "effective_stream_modes": [
+      true
+    ],
+    "requested_stream_honored": false,
+    "qualified": true,
+    "cleanup": [
+      {
+        "path": "/api/automation/v1/f7f92745-37ec-45cb-9d4b-f8c83d7dda81",
+        "status": 200
+      },
+      {
+        "path": "/api/v1/sandboxes/6WPV7OcWuG4F6txUIsJ4k9",
+        "status": 200
+      }
+    ],
+    "persisted_app_cost_after_cleanup": 0.04,
+    "sandbox_status_after_cleanup": "MISSING",
+    "persisted_app_callback_cost_match": true
+  },
+  "scope": "Fresh install cross-check; stock app runtime unchanged. Candidate/baseline SDK wheels run locally through real GKE bundled gateway and upstream proxy; not candidate GKE runtime deployment. All provider/selection charges synthetic; no customer endpoint contacted."
+}

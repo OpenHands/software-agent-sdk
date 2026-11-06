@@ -1,0 +1,48 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.13, pytest-9.0.3, pluggy-1.6.0
+rootdir: <SDK_REPO>
+configfile: pyproject.toml
+plugins: libtmux-0.62.0, cov-7.1.0, xdist-3.8.0, timeout-2.4.0, anyio-4.14.2, asyncio-1.3.0, forked-1.7.5
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 142 items
+
+tests/sdk/llm/test_reported_usage_cost.py ......................         [ 15%]
+tests/sdk/llm/test_reported_usage_cost_http.py .........                 [ 21%]
+tests/sdk/llm/test_llm_telemetry.py .................................... [ 47%]
+...........                                                              [ 54%]
+tests/sdk/llm/test_llm_span_cost.py .......                              [ 59%]
+tests/sdk/llm/test_llm_metrics.py ...................................... [ 86%]
+........                                                                 [ 92%]
+tests/sdk/llm/test_llm_retry_telemetry.py ....                           [ 95%]
+tests/sdk/conversation/test_conversation_stats.py .......                [100%]
+
+=============================== warnings summary ===============================
+tests/sdk/llm/test_reported_usage_cost.py::test_reported_usage_cost_reaches_metrics[0.0-False-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost.py::test_reported_usage_cost_reaches_metrics[0.0-True-gpt-luna]
+  <SDK_REPO>/.venv/lib/python3.13/site-packages/pydantic/_internal/_generate_schema.py:1480: UserWarning: Item 'summary' on TypedDict class 'ChatCompletionReasoningItem' is using the `ReadOnly` qualifier. Pydantic will not protect items from any mutation on dictionary instances.
+    warnings.warn(
+
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-cost-auto]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-cost-auto]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-cost-auto]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-cost-auto]
+  <SDK_REPO>/.venv/lib/python3.13/site-packages/litellm/litellm_core_utils/model_response_utils.py:18: PydanticDeprecatedSince211: Accessing the 'model_computed_fields' attribute on the instance is deprecated. Instead, you should access this attribute from the model class. Deprecated in Pydantic V2.11 to be removed in V3.0.
+    attribute: Final[_AttributeView] = {"value": getattr(source, name)}
+
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-cost-auto]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-cost-auto]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-cost-auto]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-cost-auto]
+  <SDK_REPO>/.venv/lib/python3.13/site-packages/litellm/litellm_core_utils/model_response_utils.py:18: PydanticDeprecatedSince211: Accessing the 'model_fields' attribute on the instance is deprecated. Instead, you should access this attribute from the model class. Deprecated in Pydantic V2.11 to be removed in V3.0.
+    attribute: Final[_AttributeView] = {"value": getattr(source, name)}
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+====================== 142 passed, 18 warnings in 12.75s =======================

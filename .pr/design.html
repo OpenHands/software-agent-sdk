@@ -1,0 +1,92 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OHE-3895 · Count the charge already reported</title><style>
+:root{--fg:#1a1a1a;--muted:#5a5a5a;--subtle:#8a8a82;--bg:#fdfdfb;--card:#fff;--elevated:#f7f6f1;--accent:#2b4eaa;--accent-soft:#e6ecfa;--rule:#e2e2dc;--code-bg:#f3f1ec;--warn:#b25b0e;--ok:#2f7a3a;--sans:system-ui,sans-serif;--mono:ui-monospace,monospace}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 var(--sans)}header,main{max-width:1160px;margin:auto;padding:36px}header{border-bottom:1px solid var(--rule)}h1{font-size:42px;line-height:1.15;max-width:900px;margin:14px 0}h2{font-size:25px;margin-top:8px}h3{font-size:18px}.eyebrow{font:13px var(--mono);color:var(--accent)}.lede{font-size:19px;max-width:890px;color:var(--muted)}.callout{border-left:4px solid var(--accent);padding:14px 18px;background:var(--accent-soft);margin:20px 0}.note{color:var(--muted);font-size:14px}nav{display:flex;gap:22px;flex-wrap:wrap}a{color:var(--accent)}section{padding:22px 0;border-bottom:1px solid var(--rule)}table{width:100%;border-collapse:collapse;font-size:14px}td,th{padding:12px;text-align:left;border-bottom:1px solid var(--rule);vertical-align:top}th{background:var(--elevated)}code,pre{font-family:var(--mono);font-size:13px}pre{background:var(--code-bg);padding:18px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}.cards{display:grid;grid-template-columns:1fr 1fr;gap:20px}.card{border:1px solid var(--rule);padding:20px;background:var(--card)}figure{margin:22px 0}svg{width:100%;height:auto}figcaption{font-size:14px;color:var(--muted)}details{margin:16px 0}summary{cursor:pointer;color:var(--accent)}.ok{color:var(--ok);font-weight:700}.pending{color:var(--warn)}footer{padding:25px 0;color:var(--muted);font-size:13px}@media(max-width:700px){header,main{padding:22px}h1{font-size:32px}.cards{grid-template-columns:1fr}}
+</style></head><body><header><div class="eyebrow">SDK ACCOUNTING / OHE-3895 / REVIEW AID</div><h1>Count the charge the provider already reported.</h1><p class="lede">A custom alias can return <code>usage.cost = 0.04</code> and still leave accumulated SDK cost at zero. This patch adds the missing reported-usage fallback while preserving authoritative headers and explicit token pricing.</p><div class="callout">★ Same HTTP input: <strong>$0.00 before → $0.04 after</strong>. A valid zero header still wins. This does not establish the customer's gateway forwarding or hidden router charges.</div><nav><a href="#flow">1 · The missing fallback</a><a href="#rules">2 · Selection rules</a><a href="#proof">3 · Before/after proof</a><a href="#scope">4 · Review & rollout</a></nav></header><main>
+<section id="flow"><h2>The response already contains the charge.</h2><p>Both public SDK completion transports assemble a response before <code>Telemetry.on_response()</code> selects the per-call charge. An unknown alias prevents static pricing from rescuing an ignored usage value. <a href="https://github.com/OpenHands/software-agent-sdk/blob/6650f289c86dd8ad4500e5bcf0f8c59b3aee166a/openhands-sdk/openhands/sdk/llm/utils/telemetry.py#L207">def on_response( · telemetry.py:207</a></p>
+<figure><svg viewBox="0 0 1080 440" role="img" aria-labelledby="flow-title flow-desc"><title id="flow-title">SDK accounting before and after</title><desc id="flow-desc">Before: the missing header leads to unknown alias pricing and no recorded cost. After: usage.cost supplies the charge before the pricing fallback.</desc><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="var(--subtle)"/></marker><marker id="change" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="var(--warn)"/></marker><style>.old{fill:var(--elevated);stroke:var(--subtle);stroke-dasharray:6 4}.new{fill:var(--accent-soft);stroke:var(--accent);stroke-width:2}.title{font:700 15px var(--sans);fill:var(--fg)}.detail{font:12px var(--mono);fill:var(--muted)}.edge{stroke:var(--subtle);stroke-width:2;fill:none;marker-end:url(#arrow)}.delta{stroke:var(--warn);stroke-width:2;stroke-dasharray:6 3;fill:none;marker-end:url(#change)}</style></defs>
+<text class="title" x="24" y="25">BEFORE · Telemetry._compute_cost()</text><text class="title" x="566" y="25">AFTER · Telemetry._compute_cost()</text>
+<g><rect class="old" x="24" y="47" width="470" height="66" rx="7"/><text class="title" x="44" y="73">Provider header absent</text><text class="detail" x="44" y="95">additional_headers has no authoritative charge</text><path class="edge" d="M259,114 V147"/><rect class="old" x="24" y="152" width="470" height="66" rx="7"/><text class="title" x="44" y="178">litellm_completion_cost()</text><text class="detail" x="44" y="200">cost-auto alias has no static price</text><path class="edge" d="M259,219 V252"/><rect class="old" x="24" y="257" width="470" height="66" rx="7"/><text class="title" x="44" y="283">Return None; on_response adds no cost</text><text class="detail" x="44" y="305">accumulated_cost remains $0.00</text><text class="detail" x="44" y="356">usage.cost = $0.04 was preserved, but unused</text></g>
+<g><rect class="old" x="566" y="47" width="490" height="66" rx="7"/><text class="title" x="586" y="73">Provider header absent</text><text class="detail" x="586" y="95">valid headers, including zero, retain precedence</text><path class="delta" d="M811,114 V147"/><rect class="new" x="566" y="152" width="490" height="66" rx="7"/><text class="title" x="586" y="178">Read and validate usage.cost</text><text class="detail" x="586" y="200">no explicit token-rate override → select $0.04</text><path class="delta" d="M811,219 V252"/><rect class="new" x="566" y="257" width="490" height="66" rx="7"/><text class="title" x="586" y="283">on_response → Metrics.add_cost(0.04)</text><text class="detail" x="586" y="305">accumulated_cost becomes $0.04, exactly once</text><text class="detail" x="586" y="356">No positive usage cost? Keep the pricing fallback.</text></g></svg><figcaption>Fig 1 · The new branch uses an already reported charge; it does not infer a price for the alias. <a href="https://github.com/OpenHands/software-agent-sdk/blob/6650f289c86dd8ad4500e5bcf0f8c59b3aee166a/openhands-sdk/openhands/sdk/llm/utils/telemetry.py#L369">def _compute_cost( · telemetry.py:369</a></figcaption></figure></section>
+<section id="rules"><h2>Choose one charge; preserve deliberate overrides.</h2><table><thead><tr><th>Input</th><th>Selected charge</th><th>Compatibility</th></tr></thead><tbody><tr><td>Valid cost header, including zero</td><td>Header</td><td>Existing precedence preserved</td></tr><tr><td>No usable header; both custom token rates configured</td><td>Explicit token pricing</td><td>Existing intentional estimate preserved</td></tr><tr><td>No usable header or explicit rate pair; valid usage.cost</td><td>Reported usage cost</td><td>New fallback for custom aliases</td></tr><tr><td>No valid reported charge</td><td>Static pricing, or unavailable</td><td>Warning/no entry if pricing fails</td></tr></tbody></table><p>Negative, nonfinite and malformed reported values are ignored. Confirmed zero now adds a zero-valued cost record; unavailable pricing adds none. The serialized metric shape and public method signatures do not change. <a href="https://github.com/OpenHands/software-agent-sdk/blob/6650f289c86dd8ad4500e5bcf0f8c59b3aee166a/openhands-sdk/openhands/sdk/llm/utils/telemetry.py#L27">def _reported_cost( · telemetry.py:27</a> · <a href="https://github.com/OpenHands/software-agent-sdk/blob/6650f289c86dd8ad4500e5bcf0f8c59b3aee166a/openhands-sdk/openhands/sdk/llm/utils/telemetry.py#L226">if cost is not None: · telemetry.py:226</a></p><details><summary>Exact production diff</summary><pre>diff --git a/openhands-sdk/openhands/sdk/llm/utils/telemetry.py b/openhands-sdk/openhands/sdk/llm/utils/telemetry.py
+index 93195f2b8..3056acafe 100644
+--- a/openhands-sdk/openhands/sdk/llm/utils/telemetry.py
++++ b/openhands-sdk/openhands/sdk/llm/utils/telemetry.py
+@@ -1,4 +1,5 @@
+ import json
++import math
+ import os
+ import time
+ import traceback
+@@ -23,6 +24,17 @@ from openhands.sdk.utils.redact import is_secret_key, redact_text_secrets, sanit
+ logger = get_logger(__name__)
+
+
++def _reported_cost(value: object) -&gt; float | None:
++    &quot;&quot;&quot;Accept finite nonnegative charges, including numeric HTTP header strings.&quot;&quot;&quot;
++    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
++        return None
++    try:
++        cost = float(value)
++    except (ValueError, OverflowError):
++        return None
++    return cost if math.isfinite(cost) and cost &gt;= 0 else None
++
++
+ @dataclass(frozen=True, slots=True)
+ class UsageSnapshot:
+     &quot;&quot;&quot;Provider-independent view of one response&#x27;s token accounting.
+@@ -210,9 +222,8 @@ class Telemetry(BaseModel):
+
+         # 2) cost
+         cost = self._compute_cost(resp, provider_info=provider_info)
+-        # Intentionally skip logging zero-cost (0.0) responses; only record
+-        # positive cost
+-        if cost:
++        # A confirmed zero charge is different from unavailable pricing.
++        if cost is not None:
+             self.metrics.add_cost(cost)
+
+         # 3) tokens - normalize the provider&#x27;s usage shape exactly once
+@@ -360,7 +371,7 @@ class Telemetry(BaseModel):
+         resp: ModelResponse | ResponsesAPIResponse,
+         provider_info: LLMProvider | None = None,
+     ) -&gt; float | None:
+-        &quot;&quot;&quot;Try provider header → litellm direct. Return None on failure.&quot;&quot;&quot;
++        &quot;&quot;&quot;Try provider header, reported usage, then pricing; None is unavailable.&quot;&quot;&quot;
+         extra_kwargs = {}
+         if (
+             self.input_cost_per_token is not None
+@@ -375,14 +386,28 @@ class Telemetry(BaseModel):
+
+         try:
+             hidden = resp._hidden_params or {}
+-            cost = hidden.get(&quot;additional_headers&quot;, {}).get(
+-                &quot;llm_provider-x-litellm-response-cost&quot;
++            cost = _reported_cost(
++                hidden.get(&quot;additional_headers&quot;, {}).get(
++                    &quot;llm_provider-x-litellm-response-cost&quot;
++                )
+             )
+             if cost is not None:
+-                return float(cost)
++                return cost
+         except Exception as e:
+             logger.debug(f&quot;Failed to get cost from LiteLLM headers: {e}&quot;)
+
++        # Final usage can contain a charge for an alias absent from the static
++        # price map. Select one total, never add header and usage copies. Explicit
++        # token rates remain an intentional pricing override when no header exists.
++        if &quot;custom_cost_per_token&quot; not in extra_kwargs:
++            usage = _response_usage(resp)
++            # LiteLLM deletes absent optional Usage attributes after construction.
++            cost = _reported_cost(
++                usage.model_dump().get(&quot;cost&quot;) if usage is not None else None
++            )
++            if cost is not None:
++                return cost
++
+         if provider_info is None:
+             call_kwargs = litellm_call_kwargs(self.model_name, None)
+             provider_info = LLMProvider.from_model(
+</pre></details></section>
+<section id="proof"><h2>Observe the same wrong result, then its correction.</h2><div class="cards"><div class="card"><h3>Regression and public transport</h3><p>Tests cover custom aliases, sync/async HTTP, streaming assembly, explicit rates, invalid values and Responses API usage. The same expected behavior fails on baseline and passes with the patch.</p><p><a href="evidence/positive-only/README.md">Runnable commands, raw results and hashes</a></p></div><div class="card"><h3>Installed wheel and real Conversation</h3><p>Baseline and candidate wheels differ only in <code>telemetry.py</code> and wheel RECORD. A shared hash-locked dependency set removes the previous whole-module substitution ambiguity.</p><p><a href="cost_demo.py">Runnable save/reopen/continue demo</a></p></div></div><table><thead><tr><th>Observable contract</th><th>Expected before</th><th>Expected after</th></tr></thead><tbody><tr><td>One reported $0.04 call, missing header</td><td>$0.00</td><td>$0.04</td></tr><tr><td>Conversation after saving/reopening</td><td>$0.00 retained</td><td>$0.04 retained</td></tr><tr><td>After a second reported $0.04 call</td><td>$0.00</td><td>$0.08</td></tr><tr><td>Header $0.09 plus usage $0.04</td><td>$0.09</td><td>$0.09; never $0.13</td></tr><tr><td>Known model, no header, usage $0 placeholder</td><td>Static price</td><td>Same static price</td></tr><tr><td>Header $0 plus usage $0.04</td><td>$0.00</td><td>$0.00; confirmed-zero entry</td></tr></tbody></table><p class="note">The table states assertions. Measured run status, exact source/wheel hashes, failures and cleanup are recorded separately in the evidence directory. Providers are controlled HTTP substitutes; no customer gateway or live inference is claimed.</p></section>
+<section id="scope"><h2>The SDK fix and demo installation have separate acceptance.</h2><p>The owner of this fix is <code>OpenHands/software-agent-sdk</code>; the companion guide belongs in <code>OpenHands/docs</code>. Review the accounting code, then its regressions, then the evidence. Enterprise consumers need a release containing this code in their inference runtime, not merely an updated Helm chart.</p><table><thead><tr><th>Review entry point</th><th>Question it answers</th></tr></thead><tbody><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/6650f289c86dd8ad4500e5bcf0f8c59b3aee166a/openhands-sdk/openhands/sdk/llm/utils/telemetry.py#L369">def _compute_cost( · telemetry.py:369</a></td><td>How are competing charges selected?</td></tr><tr><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/6650f289c86dd8ad4500e5bcf0f8c59b3aee166a/openhands-sdk/openhands/sdk/llm/utils/telemetry.py#L226">if cost is not None: · telemetry.py:226</a></td><td>How is unavailable distinguished from confirmed zero?</td></tr><tr><td><code>tests/sdk/llm/test_reported_usage_cost.py</code></td><td>Are preserved pricing and invalid-cost cases covered?</td></tr><tr><td><code>tests/sdk/llm/test_reported_usage_cost_http.py</code></td><td>Does the public transport and persisted Conversation carry the charge?</td></tr></tbody></table><h3>Reviewer decision: a zero header remains authoritative</h3><p>This preserves the existing contract. A gateway that sends zero as an unknown estimate needs a separate agreed precedence rule. Hidden router-selection calls, upstream user attribution, two-proxy rewriting and Enterprise UI formatting remain outside the proven SDK fix.</p><p class="note">Source baseline 232d0b05fa5cd798c9c827d1a1c1aafa541757ad; production candidate 6650f289c86dd8ad4500e5bcf0f8c59b3aee166a. The candidate source commit is local until publication; its GitHub links become available when the branch is pushed. This page is a temporary .pr review aid. No CI approval, independent human review or deployed customer fix is implied.</p></section><footer>OHE-3895 · Offline review page · No external scripts, fonts or assets</footer></main></body></html>

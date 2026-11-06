@@ -1,0 +1,48 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: billing-fixture
+  labels: {investigation: ohe-3895}
+data:
+  fixture.py: |
+{{ .Files.Get "fixture.py" | indent 4 }}
+  cases.json: |
+{{ .Files.Get "cases.json" | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing-fixture
+  labels: {investigation: ohe-3895}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: ohe3895-billing-fixture}
+  template:
+    metadata:
+      annotations:
+        checksum/fixture: {{ print (.Files.Get "fixture.py") (.Files.Get "cases.json") | sha256sum }}
+      labels: {app: ohe3895-billing-fixture, investigation: ohe-3895}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: fixture
+          image: {{ .Values.fixtureImage | quote }}
+          command: [python, /fixture/fixture.py]
+          ports: [{containerPort: 8080}]
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: "1", memory: 256Mi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          readinessProbe: {httpGet: {path: /health, port: 8080}}
+          volumeMounts: [{name: fixture, mountPath: /fixture, readOnly: true}]
+      volumes: [{name: fixture, configMap: {name: billing-fixture}}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: billing-fixture
+spec:
+  selector: {app: ohe3895-billing-fixture}
+  ports: [{port: 8080, targetPort: 8080}]

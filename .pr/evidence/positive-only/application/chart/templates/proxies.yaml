@@ -1,0 +1,86 @@
+{{- range $which := list "a" "b" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxy-{{ $which }}
+  labels: {investigation: ohe-3895}
+data:
+  config.yaml: |
+    general_settings:
+      master_key: os.environ/PROXY_{{ upper $which }}_KEY
+      forward_client_headers_to_llm_api: false
+      user_api_key_cache_ttl: 0
+    litellm_settings:
+      allowed_fails: 3
+      context_window_fallbacks: []
+      num_retries: 3
+      request_timeout: 600
+      return_response_headers: true
+      include_cost_in_streaming_usage: true
+    model_list:
+      - model_name: gpt-luna
+        litellm_params:
+          model: openai/gpt-luna
+{{- if eq $which "a" }}
+          api_base: http://proxy-b:4000/v1
+          api_key: os.environ/PROXY_B_KEY
+{{- else }}
+          api_base: http://billing-fixture:8080/v1
+          api_key: os.environ/SYNTHETIC_PROVIDER_KEY
+{{- end }}
+      - model_name: cost-auto
+        litellm_params:
+          model: openai/cost-auto
+{{- if eq $which "a" }}
+          api_base: http://proxy-b:4000/v1
+          api_key: os.environ/PROXY_B_KEY
+{{- else }}
+          api_base: http://billing-fixture:8080/v1
+          api_key: os.environ/SYNTHETIC_PROVIDER_KEY
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy-{{ $which }}
+  labels: {investigation: ohe-3895}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: ohe3895-proxy-{{ $which }}}
+  template:
+    metadata:
+      labels: {app: ohe3895-proxy-{{ $which }}, investigation: ohe-3895}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: proxy
+          image: {{ $.Values.proxyImage | quote }}
+          command: [litellm, --config, /fixture/config.yaml, --port, "4000", --host, 0.0.0.0, --num_workers, "1"]
+          envFrom: [{secretRef: {name: {{ $.Values.existingSecret }}}}]
+          env:
+            - {name: LITELLM_LOCAL_MODEL_COST_MAP, value: "True"}
+            - {name: DO_NOT_TRACK, value: "1"}
+            - {name: LITELLM_LOG, value: ERROR}
+            - {name: HOME, value: /tmp}
+          ports: [{containerPort: 4000}]
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: "2", memory: 2Gi}
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          readinessProbe:
+            httpGet: {path: /health/liveliness, port: 4000}
+            initialDelaySeconds: 15
+          volumeMounts: [{name: config, mountPath: /fixture, readOnly: true}]
+      volumes: [{name: config, configMap: {name: proxy-{{ $which }}}}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy-{{ $which }}
+spec:
+  selector: {app: ohe3895-proxy-{{ $which }}}
+  ports: [{port: 4000, targetPort: 4000}]
+---
+{{- end }}

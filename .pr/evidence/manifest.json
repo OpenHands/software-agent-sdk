@@ -1,0 +1,16 @@
+{
+  "compare_wheels.py": "f56d3a400c4c5c8cba1c5c70166387ad261b5ca3ab9db9b78069f01faefb7eca",
+  "cost_demo.py": "0e8a3178d3b7cb8796a63dc65b893672453c46c2b829a99877611e01e8e3de84",
+  "design.html": "1ec1d79304019069262b5630dac71ac436ee4ae94fe2cbca1c1d42f78cddb5ab",
+  "evidence/README.md": "33c978e6bc74593fa4af347f0bac5eb71d2b1d7c7b6654e85381fb9a2a311bd1",
+  "evidence/SELF-REVIEW.md": "d6d64b67f2e72af4853fb10a62ea2e8424b9a7030d04cb95c86d62d4bd0cc479",
+  "evidence/build-manifest.json": "042ac4644623659d47d53e303e1e764e5aceae67f61b17b0509fd694adc5d989",
+  "evidence/eks-packaged.log": "d82f251f9b86784dde2ad8419491c885831dc7548d7e1a75dbd46faffde753fa",
+  "evidence/portable-results.json": "b8f1e26d7924e30fac79fa924694dc70ebe87b534282a92bdd702d4bab034c41",
+  "evidence/pre-commit.txt": "3e023819bbbe91ed390828da8c633b662a29e6ed1e2cd04ad834b84ae1baf2b6",
+  "evidence/requirements.txt": "52307f1ef68af52e3c00c2edd62465ff73e0c5239cdc91d13f515e2d6404b37e",
+  "evidence/results.json": "a458f9ff206bcafd70f8bda3281262a5d07a161d9b709675c407cc9b76512b39",
+  "evidence/tests-baseline.txt": "459e9ebd833e03415b4ceac2df37d9a6d5c606b599c432213edc2e925a603d5b",
+  "evidence/tests-candidate.txt": "9e6c47c22567f7d6ebf2f44d335ff8362f1c417884111e9ca71d7b873e2466a4",
+  "http_probe.py": "c182280677850ebc3d0f41d3006a21b18e923b96b1b932f7f8ae528a7a3e09a8"
+}

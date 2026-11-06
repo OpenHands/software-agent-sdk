@@ -1,0 +1,607 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.13, pytest-9.0.3, pluggy-1.6.0
+rootdir: /Users/rajiv.shah/Code/install_replicate/investigations/ohe-3895/sdk
+configfile: pyproject.toml
+plugins: libtmux-0.62.0, cov-7.1.0, xdist-3.8.0, timeout-2.4.0, anyio-4.14.2, asyncio-1.3.0, forked-1.7.5
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 28 items
+
+tests/sdk/llm/test_reported_usage_cost.py FFFFF.FFFFF.......F            [ 67%]
+tests/sdk/llm/test_reported_usage_cost_http.py FFFFFFFFF                 [100%]
+
+=================================== FAILURES ===================================
+________ test_reported_usage_cost_reaches_metrics[0.04-False-gpt-luna] _________
+tests/sdk/llm/test_reported_usage_cost.py:59: in test_reported_usage_cost_reaches_metrics
+    assert telemetry._compute_cost(response, provider_info=provider) == cost
+E   AssertionError: assert None == 0.04
+E    +  where None = _compute_cost(ModelResponse(id='synthetic', created=1793932571, model='gpt-luna', object='chat.completion', system_fingerprint=None,...tokens=10, prompt_tokens=100, total_tokens=110, completion_tokens_details=None, prompt_tokens_details=None, cost=0.04)), provider_info=LLMProvider(model='gpt-luna', name='openai', api_base=None))
+E    +    where _compute_cost = Telemetry(model_name='gpt-luna', log_enabled=False, log_dir=None, input_cost_per_token=None, output_cost_per_token=Non...ontext_window': 0, 'per_turn_token': 0, 'response_id': ''}, 'costs': [], 'response_latencies': [], 'token_usages': []})._compute_cost
+________ test_reported_usage_cost_reaches_metrics[0.04-False-cost-auto] ________
+tests/sdk/llm/test_reported_usage_cost.py:59: in test_reported_usage_cost_reaches_metrics
+    assert telemetry._compute_cost(response, provider_info=provider) == cost
+E   AssertionError: assert None == 0.04
+E    +  where None = _compute_cost(ModelResponse(id='synthetic', created=1793932572, model='cost-auto', object='chat.completion', system_fingerprint=None...tokens=10, prompt_tokens=100, total_tokens=110, completion_tokens_details=None, prompt_tokens_details=None, cost=0.04)), provider_info=LLMProvider(model='cost-auto', name='openai', api_base=None))
+E    +    where _compute_cost = Telemetry(model_name='cost-auto', log_enabled=False, log_dir=None, input_cost_per_token=None, output_cost_per_token=No...ontext_window': 0, 'per_turn_token': 0, 'response_id': ''}, 'costs': [], 'response_latencies': [], 'token_usages': []})._compute_cost
+_________ test_reported_usage_cost_reaches_metrics[0.04-True-gpt-luna] _________
+tests/sdk/llm/test_reported_usage_cost.py:59: in test_reported_usage_cost_reaches_metrics
+    assert telemetry._compute_cost(response, provider_info=provider) == cost
+E   AssertionError: assert None == 0.04
+E    +  where None = _compute_cost(ModelResponse(id='synthetic', created=1793932572, model='gpt-luna', object='chat.completion', system_fingerprint=None,..._prediction_tokens=None, text_tokens=10, image_tokens=None, video_tokens=None), prompt_tokens_details=None, cost=0.04)), provider_info=LLMProvider(model='gpt-luna', name='openai', api_base=None))
+E    +    where _compute_cost = Telemetry(model_name='gpt-luna', log_enabled=False, log_dir=None, input_cost_per_token=None, output_cost_per_token=Non...ontext_window': 0, 'per_turn_token': 0, 'response_id': ''}, 'costs': [], 'response_latencies': [], 'token_usages': []})._compute_cost
+________ test_reported_usage_cost_reaches_metrics[0.04-True-cost-auto] _________
+tests/sdk/llm/test_reported_usage_cost.py:59: in test_reported_usage_cost_reaches_metrics
+    assert telemetry._compute_cost(response, provider_info=provider) == cost
+E   AssertionError: assert None == 0.04
+E    +  where None = _compute_cost(ModelResponse(id='synthetic', created=1793932572, model='cost-auto', object='chat.completion', system_fingerprint=None..._prediction_tokens=None, text_tokens=10, image_tokens=None, video_tokens=None), prompt_tokens_details=None, cost=0.04)), provider_info=LLMProvider(model='cost-auto', name='openai', api_base=None))
+E    +    where _compute_cost = Telemetry(model_name='cost-auto', log_enabled=False, log_dir=None, input_cost_per_token=None, output_cost_per_token=No...ontext_window': 0, 'per_turn_token': 0, 'response_id': ''}, 'costs': [], 'response_latencies': [], 'token_usages': []})._compute_cost
+_______________ test_authoritative_header_precedes_usage_cost[0] _______________
+tests/sdk/llm/test_reported_usage_cost.py:75: in test_authoritative_header_precedes_usage_cost
+    assert len(metrics.costs) == 1
+E   AssertionError: assert 0 == 1
+E    +  where 0 = len([])
+E    +    where [] = Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'default', 'prompt...odel': 'default', 'latency': 0.0, 'response_id': 'chatcmpl-97bc704b-6bf4-4607-a2f0-ec4ce675cc5c'}], 'token_usages': []}.costs
+______________ test_invalid_header_falls_back_to_reported_usage[] ______________
+tests/sdk/llm/test_reported_usage_cost.py:85: in test_invalid_header_falls_back_to_reported_usage
+    assert telemetry._compute_cost(response) == 0.04
+E   AssertionError: assert None == 0.04
+E    +  where None = _compute_cost(ModelResponse(id='chatcmpl-c5d6efa8-73d7-4d26-b620-a385b11f4f0b', created=1793932572, model='cost-auto', object='chat....tion_tokens=0, prompt_tokens=0, total_tokens=0, completion_tokens_details=None, prompt_tokens_details=None, cost=0.04)))
+E    +    where _compute_cost = Telemetry(model_name='cost-auto', log_enabled=False, log_dir=None, input_cost_per_token=None, output_cost_per_token=No...ontext_window': 0, 'per_turn_token': 0, 'response_id': ''}, 'costs': [], 'response_latencies': [], 'token_usages': []})._compute_cost
+____________ test_invalid_header_falls_back_to_reported_usage[bad] _____________
+tests/sdk/llm/test_reported_usage_cost.py:85: in test_invalid_header_falls_back_to_reported_usage
+    assert telemetry._compute_cost(response) == 0.04
+E   AssertionError: assert None == 0.04
+E    +  where None = _compute_cost(ModelResponse(id='chatcmpl-b618a194-09ac-49d2-9160-2bca272d13a4', created=1793932572, model='cost-auto', object='chat....tion_tokens=0, prompt_tokens=0, total_tokens=0, completion_tokens_details=None, prompt_tokens_details=None, cost=0.04)))
+E    +    where _compute_cost = Telemetry(model_name='cost-auto', log_enabled=False, log_dir=None, input_cost_per_token=None, output_cost_per_token=No...ontext_window': 0, 'per_turn_token': 0, 'response_id': ''}, 'costs': [], 'response_latencies': [], 'token_usages': []})._compute_cost
+____________ test_invalid_header_falls_back_to_reported_usage[nan] _____________
+tests/sdk/llm/test_reported_usage_cost.py:85: in test_invalid_header_falls_back_to_reported_usage
+    assert telemetry._compute_cost(response) == 0.04
+E   AssertionError: assert nan == 0.04
+E    +  where nan = _compute_cost(ModelResponse(id='chatcmpl-f3683f3c-8671-423e-a4b1-acafd9c78940', created=1793932572, model='cost-auto', object='chat....tion_tokens=0, prompt_tokens=0, total_tokens=0, completion_tokens_details=None, prompt_tokens_details=None, cost=0.04)))
+E    +    where _compute_cost = Telemetry(model_name='cost-auto', log_enabled=False, log_dir=None, input_cost_per_token=None, output_cost_per_token=No...ontext_window': 0, 'per_turn_token': 0, 'response_id': ''}, 'costs': [], 'response_latencies': [], 'token_usages': []})._compute_cost
+____________ test_invalid_header_falls_back_to_reported_usage[inf] _____________
+tests/sdk/llm/test_reported_usage_cost.py:85: in test_invalid_header_falls_back_to_reported_usage
+    assert telemetry._compute_cost(response) == 0.04
+E   AssertionError: assert inf == 0.04
+E    +  where inf = _compute_cost(ModelResponse(id='chatcmpl-c2581654-4e97-42f6-bbab-0df03a707281', created=1793932572, model='cost-auto', object='chat....tion_tokens=0, prompt_tokens=0, total_tokens=0, completion_tokens_details=None, prompt_tokens_details=None, cost=0.04)))
+E    +    where _compute_cost = Telemetry(model_name='cost-auto', log_enabled=False, log_dir=None, input_cost_per_token=None, output_cost_per_token=No...ontext_window': 0, 'per_turn_token': 0, 'response_id': ''}, 'costs': [], 'response_latencies': [], 'token_usages': []})._compute_cost
+____________ test_invalid_header_falls_back_to_reported_usage[-0.1] ____________
+tests/sdk/llm/test_reported_usage_cost.py:85: in test_invalid_header_falls_back_to_reported_usage
+    assert telemetry._compute_cost(response) == 0.04
+E   AssertionError: assert -0.1 == 0.04
+E    +  where -0.1 = _compute_cost(ModelResponse(id='chatcmpl-3c3e61e7-6974-47a7-aee6-87c8a6e05e5e', created=1793932572, model='cost-auto', object='chat....tion_tokens=0, prompt_tokens=0, total_tokens=0, completion_tokens_details=None, prompt_tokens_details=None, cost=0.04)))
+E    +    where _compute_cost = Telemetry(model_name='cost-auto', log_enabled=False, log_dir=None, input_cost_per_token=None, output_cost_per_token=No...ontext_window': 0, 'per_turn_token': 0, 'response_id': ''}, 'costs': [], 'response_latencies': [], 'token_usages': []})._compute_cost
+____________________ test_responses_api_reported_cost[0.04] ____________________
+tests/sdk/llm/test_reported_usage_cost.py:141: in test_responses_api_reported_cost
+    assert metrics.accumulated_cost == cost
+E   AssertionError: assert 0.0 == 0.04
+E    +  where 0.0 = Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'default', 'prompt...write_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'responses-cost'}]}.accumulated_cost
+____________ test_reported_cost_through_http[False-False-gpt-luna] _____________
+tests/sdk/llm/test_reported_usage_cost_http.py:134: in test_reported_cost_through_http
+    assert llm.metrics.accumulated_cost == 0.04
+E   AssertionError: assert 0.0 == 0.04
+E    +  where 0.0 = Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'openai/gpt-luna',..._write_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]}.accumulated_cost
+E    +    where Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'openai/gpt-luna',..._write_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]} = LLM(model='openai/gpt-luna', api_key=SecretStr('**********'), provider_connection_id=None, auth_type='api_key', subscr...ed=None, usage_id='default', litellm_extra_body={}, fallback_strategy=None, retry_listener=None, is_subscription=False).metrics
+____________ test_reported_cost_through_http[False-False-cost-auto] ____________
+tests/sdk/llm/test_reported_usage_cost_http.py:134: in test_reported_cost_through_http
+    assert llm.metrics.accumulated_cost == 0.04
+E   AssertionError: assert 0.0 == 0.04
+E    +  where 0.0 = Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'openai/cost-auto'..._write_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]}.accumulated_cost
+E    +    where Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'openai/cost-auto'..._write_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]} = LLM(model='openai/cost-auto', api_key=SecretStr('**********'), provider_connection_id=None, auth_type='api_key', subsc...ed=None, usage_id='default', litellm_extra_body={}, fallback_strategy=None, retry_listener=None, is_subscription=False).metrics
+_____________ test_reported_cost_through_http[False-True-gpt-luna] _____________
+tests/sdk/llm/test_reported_usage_cost_http.py:134: in test_reported_cost_through_http
+    assert llm.metrics.accumulated_cost == 0.04
+E   AssertionError: assert 0.0 == 0.04
+E    +  where 0.0 = Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'openai/gpt-luna',..._write_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]}.accumulated_cost
+E    +    where Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'openai/gpt-luna',..._write_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]} = LLM(model='openai/gpt-luna', api_key=SecretStr('**********'), provider_connection_id=None, auth_type='api_key', subscr...ed=None, usage_id='default', litellm_extra_body={}, fallback_strategy=None, retry_listener=None, is_subscription=False).metrics
+____________ test_reported_cost_through_http[False-True-cost-auto] _____________
+tests/sdk/llm/test_reported_usage_cost_http.py:134: in test_reported_cost_through_http
+    assert llm.metrics.accumulated_cost == 0.04
+E   AssertionError: assert 0.0 == 0.04
+E    +  where 0.0 = Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'openai/cost-auto'..._write_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]}.accumulated_cost
+E    +    where Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'openai/cost-auto'..._write_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]} = LLM(model='openai/cost-auto', api_key=SecretStr('**********'), provider_connection_id=None, auth_type='api_key', subsc...ed=None, usage_id='default', litellm_extra_body={}, fallback_strategy=None, retry_listener=None, is_subscription=False).metrics
+_____________ test_reported_cost_through_http[True-False-gpt-luna] _____________
+tests/sdk/llm/test_reported_usage_cost_http.py:134: in test_reported_cost_through_http
+    assert llm.metrics.accumulated_cost == 0.04
+E   AssertionError: assert 0.0 == 0.04
+E    +  where 0.0 = Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'openai/gpt-luna',..._write_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]}.accumulated_cost
+E    +    where Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'openai/gpt-luna',..._write_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]} = LLM(model='openai/gpt-luna', api_key=SecretStr('**********'), provider_connection_id=None, auth_type='api_key', subscr...ed=None, usage_id='default', litellm_extra_body={}, fallback_strategy=None, retry_listener=None, is_subscription=False).metrics
+____________ test_reported_cost_through_http[True-False-cost-auto] _____________
+tests/sdk/llm/test_reported_usage_cost_http.py:134: in test_reported_cost_through_http
+    assert llm.metrics.accumulated_cost == 0.04
+E   AssertionError: assert 0.0 == 0.04
+E    +  where 0.0 = Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'openai/cost-auto'..._write_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]}.accumulated_cost
+E    +    where Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'openai/cost-auto'..._write_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]} = LLM(model='openai/cost-auto', api_key=SecretStr('**********'), provider_connection_id=None, auth_type='api_key', subsc...ed=None, usage_id='default', litellm_extra_body={}, fallback_strategy=None, retry_listener=None, is_subscription=False).metrics
+_____________ test_reported_cost_through_http[True-True-gpt-luna] ______________
+tests/sdk/llm/test_reported_usage_cost_http.py:134: in test_reported_cost_through_http
+    assert llm.metrics.accumulated_cost == 0.04
+E   AssertionError: assert 0.0 == 0.04
+E    +  where 0.0 = Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'openai/gpt-luna',..._write_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]}.accumulated_cost
+E    +    where Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'openai/gpt-luna',..._write_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]} = LLM(model='openai/gpt-luna', api_key=SecretStr('**********'), provider_connection_id=None, auth_type='api_key', subscr...ed=None, usage_id='default', litellm_extra_body={}, fallback_strategy=None, retry_listener=None, is_subscription=False).metrics
+_____________ test_reported_cost_through_http[True-True-cost-auto] _____________
+tests/sdk/llm/test_reported_usage_cost_http.py:134: in test_reported_cost_through_http
+    assert llm.metrics.accumulated_cost == 0.04
+E   AssertionError: assert 0.0 == 0.04
+E    +  where 0.0 = Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'openai/cost-auto'..._write_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]}.accumulated_cost
+E    +    where Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'openai/cost-auto'..._write_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]} = LLM(model='openai/cost-auto', api_key=SecretStr('**********'), provider_connection_id=None, auth_type='api_key', subsc...ed=None, usage_id='default', litellm_extra_body={}, fallback_strategy=None, retry_listener=None, is_subscription=False).metrics
+_______________ test_reported_cost_survives_conversation_restart _______________
+tests/sdk/llm/test_reported_usage_cost_http.py:177: in test_reported_cost_survives_conversation_restart
+    assert first.conversation_stats.get_combined_metrics().accumulated_cost == 0.04
+E   AssertionError: assert 0.0 == 0.04
+E    +  where 0.0 = Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'default', 'prompt..._write_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]}.accumulated_cost
+E    +    where Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'accumulated_token_usage': {'model': 'default', 'prompt..._write_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]} = get_combined_metrics()
+E    +      where get_combined_metrics = ConversationStats(usage_to_metrics={'reported-cost': Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'a...rite_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]}}).get_combined_metrics
+E    +        where ConversationStats(usage_to_metrics={'reported-cost': Metrics({'accumulated_cost': 0.0, 'max_budget_per_task': None, 'a...rite_tokens': 0, 'reasoning_tokens': 0, 'context_window': 0, 'per_turn_token': 110, 'response_id': 'reported-cost'}]}}) = <openhands.sdk.conversation.impl.local_conversation.LocalConversation object at 0x1169de3c0>.conversation_stats
+----------------------------- Captured stderr call -----------------------------
+[11/05/26 20:36:16] INFO     Created new conversation               state.py:628
+                             ecfaaa10-698b-460d-ab4d-0a08838412ea               
+[11/05/26 20:36:16] INFO     Loaded 0 tools from spec                base.py:579
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `deepseek-chat`                            
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/deepseek-chat.                         
+                             json                                               
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile                                            
+                             `deepseek-v3.2-reasoner`                           
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/deepseek-v3.2-                         
+                             reasoner.json                                      
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `deepseek-v4-pro`                          
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/deepseek-v4-pr                         
+                             o.json                                             
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile                                            
+                             `deepseek-v4.1-flash` from                         
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/deepseek-v4.1-                         
+                             flash.json                                         
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `devstral-2512`                            
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/devstral-2512.                         
+                             json                                               
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile                                            
+                             `devstral-medium-2512`                             
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/devstral-mediu                         
+                             m-2512.json                                        
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `glm-5.2` from                             
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/glm-5.2.json                           
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `glm-5.3-flash`                            
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/glm-5.3-flash.                         
+                             json                                               
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `glm-5.3` from                             
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/glm-5.3.json                           
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `kimi-k2.7-code`                           
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/kimi-k2.7-code                         
+                             .json                                              
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `minimax-m2.7`                             
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/minimax-m2.7.j                         
+                             son                                                
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile                                            
+                             `minimax-m3.1-flash` from                          
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/minimax-m3.1-f                         
+                             lash.json                                          
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `minimax-m3` from                          
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/minimax-m3.jso                         
+                             n                                                  
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `nemotron-3-nano`                          
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/nemotron-3-nan                         
+                             o.json                                             
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile                                            
+                             `nemotron-3-super-120b-a12                         
+                             b` from                                            
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/nemotron-3-sup                         
+                             er-120b-a12b.json                                  
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile                                            
+                             `nemotron-3-ultra-550b-a55                         
+                             b` from                                            
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/nemotron-3-ult                         
+                             ra-550b-a55b.json                                  
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile                                            
+                             `nemotron-3.5-lightning-30                         
+                             b-a3b` from                                        
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/nemotron-3.5-l                         
+                             ightning-30b-a3b.json                              
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `qwen3-coder-480b`                         
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3-coder-48                         
+                             0b.json                                            
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile                                            
+                             `qwen3-coder-flash` from                           
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3-coder-fl                         
+                             ash.json                                           
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `qwen3-coder-next`                         
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3-coder-ne                         
+                             xt.json                                            
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `qwen3-coder-plus`                         
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3-coder-pl                         
+                             us.json                                            
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `qwen3.6-plus`                             
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3.6-plus.j                         
+                             son                                                
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `qwen3.7-flash`                            
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3.7-flash.                         
+                             json                                               
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `qwen3.7-max` from                         
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3.7-max.js                         
+                             on                                                 
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `qwen3.7-plus`                             
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3.7-plus.j                         
+                             son                                                
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `qwen3.8-flash`                            
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3.8-flash.                         
+                             json                                               
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `qwen3.8-max` from                         
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3.8-max.js                         
+                             on                                                 
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile                                            
+                             `trinity-large-thinking`                           
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/trinity-large-                         
+                             thinking.json                                      
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `deepseek-chat`                            
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/deepseek-chat.                         
+                             json                                               
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile                                            
+                             `deepseek-v3.2-reasoner`                           
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/deepseek-v3.2-                         
+                             reasoner.json                                      
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `deepseek-v4-pro`                          
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/deepseek-v4-pr                         
+                             o.json                                             
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile                                            
+                             `deepseek-v4.1-flash` from                         
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/deepseek-v4.1-                         
+                             flash.json                                         
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `devstral-2512`                            
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/devstral-2512.                         
+                             json                                               
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile                                            
+                             `devstral-medium-2512`                             
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/devstral-mediu                         
+                             m-2512.json                                        
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `glm-5.2` from                             
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/glm-5.2.json                           
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `glm-5.3-flash`                            
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/glm-5.3-flash.                         
+                             json                                               
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `glm-5.3` from                             
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/glm-5.3.json                           
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `kimi-k2.7-code`                           
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/kimi-k2.7-code                         
+                             .json                                              
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `minimax-m2.7`                             
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/minimax-m2.7.j                         
+                             son                                                
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile                                            
+                             `minimax-m3.1-flash` from                          
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/minimax-m3.1-f                         
+                             lash.json                                          
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `minimax-m3` from                          
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/minimax-m3.jso                         
+                             n                                                  
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `nemotron-3-nano`                          
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/nemotron-3-nan                         
+                             o.json                                             
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile                                            
+                             `nemotron-3-super-120b-a12                         
+                             b` from                                            
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/nemotron-3-sup                         
+                             er-120b-a12b.json                                  
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile                                            
+                             `nemotron-3-ultra-550b-a55                         
+                             b` from                                            
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/nemotron-3-ult                         
+                             ra-550b-a55b.json                                  
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile                                            
+                             `nemotron-3.5-lightning-30                         
+                             b-a3b` from                                        
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/nemotron-3.5-l                         
+                             ightning-30b-a3b.json                              
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `qwen3-coder-480b`                         
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3-coder-48                         
+                             0b.json                                            
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile                                            
+                             `qwen3-coder-flash` from                           
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3-coder-fl                         
+                             ash.json                                           
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `qwen3-coder-next`                         
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3-coder-ne                         
+                             xt.json                                            
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `qwen3-coder-plus`                         
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3-coder-pl                         
+                             us.json                                            
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `qwen3.6-plus`                             
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3.6-plus.j                         
+                             son                                                
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `qwen3.7-flash`                            
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3.7-flash.                         
+                             json                                               
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `qwen3.7-max` from                         
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3.7-max.js                         
+                             on                                                 
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `qwen3.7-plus`                             
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3.7-plus.j                         
+                             son                                                
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `qwen3.8-flash`                            
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3.8-flash.                         
+                             json                                               
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile `qwen3.8-max` from                         
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/qwen3.8-max.js                         
+                             on                                                 
+[11/05/26 20:36:16] INFO     [Profile Store] Loaded     llm_profile_store.py:309
+                             profile                                            
+                             `trinity-large-thinking`                           
+                             from                                               
+                             /Users/rajiv.shah/.openhan                         
+                             ds/profiles/trinity-large-                         
+                             thinking.json                                      
+------------------------------ Captured log call -------------------------------
+INFO     openhands.sdk.conversation.state:state.py:628 Created new conversation ecfaaa10-698b-460d-ab4d-0a08838412ea
+INFO     openhands.sdk.agent.base:base.py:579 Loaded 0 tools from spec
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `deepseek-chat` from /Users/rajiv.shah/.openhands/profiles/deepseek-chat.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `deepseek-v3.2-reasoner` from /Users/rajiv.shah/.openhands/profiles/deepseek-v3.2-reasoner.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `deepseek-v4-pro` from /Users/rajiv.shah/.openhands/profiles/deepseek-v4-pro.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `deepseek-v4.1-flash` from /Users/rajiv.shah/.openhands/profiles/deepseek-v4.1-flash.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `devstral-2512` from /Users/rajiv.shah/.openhands/profiles/devstral-2512.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `devstral-medium-2512` from /Users/rajiv.shah/.openhands/profiles/devstral-medium-2512.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `glm-5.2` from /Users/rajiv.shah/.openhands/profiles/glm-5.2.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `glm-5.3-flash` from /Users/rajiv.shah/.openhands/profiles/glm-5.3-flash.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `glm-5.3` from /Users/rajiv.shah/.openhands/profiles/glm-5.3.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `kimi-k2.7-code` from /Users/rajiv.shah/.openhands/profiles/kimi-k2.7-code.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `minimax-m2.7` from /Users/rajiv.shah/.openhands/profiles/minimax-m2.7.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `minimax-m3.1-flash` from /Users/rajiv.shah/.openhands/profiles/minimax-m3.1-flash.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `minimax-m3` from /Users/rajiv.shah/.openhands/profiles/minimax-m3.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `nemotron-3-nano` from /Users/rajiv.shah/.openhands/profiles/nemotron-3-nano.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `nemotron-3-super-120b-a12b` from /Users/rajiv.shah/.openhands/profiles/nemotron-3-super-120b-a12b.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `nemotron-3-ultra-550b-a55b` from /Users/rajiv.shah/.openhands/profiles/nemotron-3-ultra-550b-a55b.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `nemotron-3.5-lightning-30b-a3b` from /Users/rajiv.shah/.openhands/profiles/nemotron-3.5-lightning-30b-a3b.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3-coder-480b` from /Users/rajiv.shah/.openhands/profiles/qwen3-coder-480b.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3-coder-flash` from /Users/rajiv.shah/.openhands/profiles/qwen3-coder-flash.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3-coder-next` from /Users/rajiv.shah/.openhands/profiles/qwen3-coder-next.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3-coder-plus` from /Users/rajiv.shah/.openhands/profiles/qwen3-coder-plus.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3.6-plus` from /Users/rajiv.shah/.openhands/profiles/qwen3.6-plus.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3.7-flash` from /Users/rajiv.shah/.openhands/profiles/qwen3.7-flash.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3.7-max` from /Users/rajiv.shah/.openhands/profiles/qwen3.7-max.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3.7-plus` from /Users/rajiv.shah/.openhands/profiles/qwen3.7-plus.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3.8-flash` from /Users/rajiv.shah/.openhands/profiles/qwen3.8-flash.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3.8-max` from /Users/rajiv.shah/.openhands/profiles/qwen3.8-max.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `trinity-large-thinking` from /Users/rajiv.shah/.openhands/profiles/trinity-large-thinking.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `deepseek-chat` from /Users/rajiv.shah/.openhands/profiles/deepseek-chat.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `deepseek-v3.2-reasoner` from /Users/rajiv.shah/.openhands/profiles/deepseek-v3.2-reasoner.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `deepseek-v4-pro` from /Users/rajiv.shah/.openhands/profiles/deepseek-v4-pro.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `deepseek-v4.1-flash` from /Users/rajiv.shah/.openhands/profiles/deepseek-v4.1-flash.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `devstral-2512` from /Users/rajiv.shah/.openhands/profiles/devstral-2512.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `devstral-medium-2512` from /Users/rajiv.shah/.openhands/profiles/devstral-medium-2512.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `glm-5.2` from /Users/rajiv.shah/.openhands/profiles/glm-5.2.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `glm-5.3-flash` from /Users/rajiv.shah/.openhands/profiles/glm-5.3-flash.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `glm-5.3` from /Users/rajiv.shah/.openhands/profiles/glm-5.3.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `kimi-k2.7-code` from /Users/rajiv.shah/.openhands/profiles/kimi-k2.7-code.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `minimax-m2.7` from /Users/rajiv.shah/.openhands/profiles/minimax-m2.7.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `minimax-m3.1-flash` from /Users/rajiv.shah/.openhands/profiles/minimax-m3.1-flash.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `minimax-m3` from /Users/rajiv.shah/.openhands/profiles/minimax-m3.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `nemotron-3-nano` from /Users/rajiv.shah/.openhands/profiles/nemotron-3-nano.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `nemotron-3-super-120b-a12b` from /Users/rajiv.shah/.openhands/profiles/nemotron-3-super-120b-a12b.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `nemotron-3-ultra-550b-a55b` from /Users/rajiv.shah/.openhands/profiles/nemotron-3-ultra-550b-a55b.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `nemotron-3.5-lightning-30b-a3b` from /Users/rajiv.shah/.openhands/profiles/nemotron-3.5-lightning-30b-a3b.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3-coder-480b` from /Users/rajiv.shah/.openhands/profiles/qwen3-coder-480b.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3-coder-flash` from /Users/rajiv.shah/.openhands/profiles/qwen3-coder-flash.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3-coder-next` from /Users/rajiv.shah/.openhands/profiles/qwen3-coder-next.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3-coder-plus` from /Users/rajiv.shah/.openhands/profiles/qwen3-coder-plus.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3.6-plus` from /Users/rajiv.shah/.openhands/profiles/qwen3.6-plus.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3.7-flash` from /Users/rajiv.shah/.openhands/profiles/qwen3.7-flash.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3.7-max` from /Users/rajiv.shah/.openhands/profiles/qwen3.7-max.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3.7-plus` from /Users/rajiv.shah/.openhands/profiles/qwen3.7-plus.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3.8-flash` from /Users/rajiv.shah/.openhands/profiles/qwen3.8-flash.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `qwen3.8-max` from /Users/rajiv.shah/.openhands/profiles/qwen3.8-max.json
+INFO     openhands.sdk.llm.llm_profile_store:llm_profile_store.py:309 [Profile Store] Loaded profile `trinity-large-thinking` from /Users/rajiv.shah/.openhands/profiles/trinity-large-thinking.json
+=============================== warnings summary ===============================
+tests/sdk/llm/test_reported_usage_cost.py::test_reported_usage_cost_reaches_metrics[0.04-False-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost.py::test_reported_usage_cost_reaches_metrics[0.04-True-gpt-luna]
+  /Users/rajiv.shah/Code/install_replicate/investigations/ohe-3895/sdk/.venv/lib/python3.13/site-packages/pydantic/_internal/_generate_schema.py:1480: UserWarning: Item 'summary' on TypedDict class 'ChatCompletionReasoningItem' is using the `ReadOnly` qualifier. Pydantic will not protect items from any mutation on dictionary instances.
+    warnings.warn(
+
+tests/sdk/llm/test_reported_usage_cost.py::test_reported_usage_cost_reaches_metrics[0.04-False-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost.py::test_reported_usage_cost_reaches_metrics[0.04-True-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-False-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-False-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-gpt-luna]
+  /Users/rajiv.shah/Code/install_replicate/investigations/ohe-3895/sdk/openhands-sdk/openhands/sdk/llm/utils/telemetry.py:398: UserWarning: Cost calculation failed: This model isn't mapped yet. model=gpt-luna, custom_llm_provider=openai. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json.
+    warnings.warn(f"Cost calculation failed: {e}")
+
+tests/sdk/llm/test_reported_usage_cost.py::test_reported_usage_cost_reaches_metrics[0.04-False-cost-auto]
+tests/sdk/llm/test_reported_usage_cost.py::test_reported_usage_cost_reaches_metrics[0.04-True-cost-auto]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-False-cost-auto]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-cost-auto]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-False-cost-auto]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-cost-auto]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_survives_conversation_restart
+  /Users/rajiv.shah/Code/install_replicate/investigations/ohe-3895/sdk/openhands-sdk/openhands/sdk/llm/utils/telemetry.py:398: UserWarning: Cost calculation failed: This model isn't mapped yet. model=cost-auto, custom_llm_provider=openai. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json.
+    warnings.warn(f"Cost calculation failed: {e}")
+
+tests/sdk/llm/test_reported_usage_cost.py::test_invalid_header_falls_back_to_reported_usage[]
+tests/sdk/llm/test_reported_usage_cost.py::test_invalid_header_falls_back_to_reported_usage[bad]
+tests/sdk/llm/test_reported_usage_cost.py::test_responses_api_reported_cost[0.04]
+  /Users/rajiv.shah/Code/install_replicate/investigations/ohe-3895/sdk/openhands-sdk/openhands/sdk/llm/utils/telemetry.py:398: UserWarning: Cost calculation failed: litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=cost-auto
+   Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+    warnings.warn(f"Cost calculation failed: {e}")
+
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-cost-auto]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-cost-auto]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-cost-auto]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-cost-auto]
+  /Users/rajiv.shah/Code/install_replicate/investigations/ohe-3895/sdk/.venv/lib/python3.13/site-packages/litellm/litellm_core_utils/model_response_utils.py:18: PydanticDeprecatedSince211: Accessing the 'model_computed_fields' attribute on the instance is deprecated. Instead, you should access this attribute from the model class. Deprecated in Pydantic V2.11 to be removed in V3.0.
+    attribute: Final[_AttributeView] = {"value": getattr(source, name)}
+
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-cost-auto]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-cost-auto]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-gpt-luna]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-cost-auto]
+tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-cost-auto]
+  /Users/rajiv.shah/Code/install_replicate/investigations/ohe-3895/sdk/.venv/lib/python3.13/site-packages/litellm/litellm_core_utils/model_response_utils.py:18: PydanticDeprecatedSince211: Accessing the 'model_fields' attribute on the instance is deprecated. Instead, you should access this attribute from the model class. Deprecated in Pydantic V2.11 to be removed in V3.0.
+    attribute: Final[_AttributeView] = {"value": getattr(source, name)}
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/sdk/llm/test_reported_usage_cost.py::test_reported_usage_cost_reaches_metrics[0.04-False-gpt-luna]
+FAILED tests/sdk/llm/test_reported_usage_cost.py::test_reported_usage_cost_reaches_metrics[0.04-False-cost-auto]
+FAILED tests/sdk/llm/test_reported_usage_cost.py::test_reported_usage_cost_reaches_metrics[0.04-True-gpt-luna]
+FAILED tests/sdk/llm/test_reported_usage_cost.py::test_reported_usage_cost_reaches_metrics[0.04-True-cost-auto]
+FAILED tests/sdk/llm/test_reported_usage_cost.py::test_authoritative_header_precedes_usage_cost[0]
+FAILED tests/sdk/llm/test_reported_usage_cost.py::test_invalid_header_falls_back_to_reported_usage[]
+FAILED tests/sdk/llm/test_reported_usage_cost.py::test_invalid_header_falls_back_to_reported_usage[bad]
+FAILED tests/sdk/llm/test_reported_usage_cost.py::test_invalid_header_falls_back_to_reported_usage[nan]
+FAILED tests/sdk/llm/test_reported_usage_cost.py::test_invalid_header_falls_back_to_reported_usage[inf]
+FAILED tests/sdk/llm/test_reported_usage_cost.py::test_invalid_header_falls_back_to_reported_usage[-0.1]
+FAILED tests/sdk/llm/test_reported_usage_cost.py::test_responses_api_reported_cost[0.04]
+FAILED tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-False-gpt-luna]
+FAILED tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-False-cost-auto]
+FAILED tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-gpt-luna]
+FAILED tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[False-True-cost-auto]
+FAILED tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-False-gpt-luna]
+FAILED tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-False-cost-auto]
+FAILED tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-gpt-luna]
+FAILED tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_through_http[True-True-cost-auto]
+FAILED tests/sdk/llm/test_reported_usage_cost_http.py::test_reported_cost_survives_conversation_restart
+================== 20 failed, 8 passed, 34 warnings in 5.31s ===================

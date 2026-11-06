@@ -1,0 +1,38 @@
+[
+  {
+    "pod": "runtime-eutpzrdewhpuzifl-6768754fdd-sstq4",
+    "created_at": "2026-11-06T02:27:40Z",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "runtime-eutpzrdewhpuzifl",
+        "image": "211125526595.dkr.ecr.us-west-2.amazonaws.com/ohe3895-agent-server:baseline-232d0b05"
+      }
+    ],
+    "running_images": [
+      {
+        "name": "runtime-eutpzrdewhpuzifl",
+        "image_id": "211125526595.dkr.ecr.us-west-2.amazonaws.com/ohe3895-agent-server@sha256:ca34d3086d0fc19432c670eb7aaa36fc02ce3de0b834b529478a82abfc0a0ec1",
+        "ready": true
+      }
+    ]
+  },
+  {
+    "pod": "runtime-fuwzudlykavmvxkx-7f8458b4d5-9bmbj",
+    "created_at": "2026-11-06T02:46:42Z",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "runtime-fuwzudlykavmvxkx",
+        "image": "211125526595.dkr.ecr.us-west-2.amazonaws.com/ohe3895-agent-server:candidate-positive-v2"
+      }
+    ],
+    "running_images": [
+      {
+        "name": "runtime-fuwzudlykavmvxkx",
+        "image_id": "211125526595.dkr.ecr.us-west-2.amazonaws.com/ohe3895-agent-server@sha256:7324ff1c6904405dbe56a4d6da7708db45174f80971441c547e75098f968d6bf",
+        "ready": true
+      }
+    ]
+  }
+]

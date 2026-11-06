@@ -1,0 +1,578 @@
+{
+  "target": "gke",
+  "variant": "candidate",
+  "sdk_version": "1.60.1",
+  "litellm_client_version": "1.105.1",
+  "telemetry_sha256": "f6a65f010af236b9e60940ebdd1cfdf353b73574bff4ba413e1fda8b32970a62",
+  "scope": "SDK Conversation through two real Kubernetes LiteLLM proxies and synthetic provider; not Enterprise chat/automation",
+  "results": [
+    {
+      "case": "fixed_usage_only",
+      "stream_requested": false,
+      "run_id": "sdk-candidate-11fa8cb25cdc4a6c98ab52e2460a2768",
+      "status": "ConversationExecutionStatus.FINISHED",
+      "sdk_cost": 0.04,
+      "conversation_id": "f1f1ec4b-a66a-4f70-b5ec-51f96d393364",
+      "token_callbacks_received": 0,
+      "ledger": [
+        {
+          "id": "fixture-f0269f79efec4a389833f84e66fca208",
+          "case": "fixed_usage_only",
+          "model": "gpt-luna",
+          "run_id": "sdk-candidate-11fa8cb25cdc4a6c98ab52e2460a2768",
+          "stages": [
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.04",
+          "emitted_usage_cost": "0.04",
+          "emitted_header_cost": null,
+          "stream": false,
+          "has_tools": true,
+          "tool_names": [
+            "finish",
+            "invoke_skill",
+            "inspect_image_with_vision"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ]
+    },
+    {
+      "case": "fixed_usage_only",
+      "stream_requested": true,
+      "run_id": "sdk-candidate-07d91eeaf24043c983aaebb222b6466f",
+      "status": "ConversationExecutionStatus.FINISHED",
+      "sdk_cost": 0.04,
+      "conversation_id": "028dc035-7a91-4caa-b93a-589988aa65f5",
+      "token_callbacks_received": 3,
+      "ledger": [
+        {
+          "id": "fixture-1746076e80f04adcb4d8e1d1fe178661",
+          "case": "fixed_usage_only",
+          "model": "gpt-luna",
+          "run_id": "sdk-candidate-07d91eeaf24043c983aaebb222b6466f",
+          "stages": [
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.04",
+          "emitted_usage_cost": "0.04",
+          "emitted_header_cost": null,
+          "stream": true,
+          "has_tools": true,
+          "tool_names": [
+            "finish",
+            "invoke_skill",
+            "inspect_image_with_vision"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ]
+    },
+    {
+      "case": "fixed_zero_header",
+      "stream_requested": false,
+      "run_id": "sdk-candidate-d633982addf64a3498f45b606eef5f5f",
+      "status": "ConversationExecutionStatus.FINISHED",
+      "sdk_cost": 0.0,
+      "conversation_id": "3c7c243f-9217-4bf7-ac53-6fa7d3610700",
+      "token_callbacks_received": 0,
+      "ledger": [
+        {
+          "id": "fixture-60d5b17e5d614dff8b45ea76dab19392",
+          "case": "fixed_zero_header",
+          "model": "gpt-luna",
+          "run_id": "sdk-candidate-d633982addf64a3498f45b606eef5f5f",
+          "stages": [
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.04",
+          "emitted_usage_cost": "0.04",
+          "emitted_header_cost": "0",
+          "stream": false,
+          "has_tools": true,
+          "tool_names": [
+            "finish",
+            "invoke_skill",
+            "inspect_image_with_vision"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ]
+    },
+    {
+      "case": "fixed_zero_header",
+      "stream_requested": true,
+      "run_id": "sdk-candidate-e19c312af21849b7b77464766bb2e146",
+      "status": "ConversationExecutionStatus.FINISHED",
+      "sdk_cost": 0.0,
+      "conversation_id": "288309e8-bd93-432c-a133-4c1c16c4a708",
+      "token_callbacks_received": 3,
+      "ledger": [
+        {
+          "id": "fixture-d76df14a523e46b5b545485b273fb6ae",
+          "case": "fixed_zero_header",
+          "model": "gpt-luna",
+          "run_id": "sdk-candidate-e19c312af21849b7b77464766bb2e146",
+          "stages": [
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.04",
+          "emitted_usage_cost": "0.04",
+          "emitted_header_cost": "0",
+          "stream": true,
+          "has_tools": true,
+          "tool_names": [
+            "finish",
+            "invoke_skill",
+            "inspect_image_with_vision"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ]
+    },
+    {
+      "case": "fixed_matching_header",
+      "stream_requested": false,
+      "run_id": "sdk-candidate-762dc7ac9cb8447fa04429f458422d9c",
+      "status": "ConversationExecutionStatus.FINISHED",
+      "sdk_cost": 0.04,
+      "conversation_id": "b215f41d-6e10-42ce-a21d-04f5606e7e0c",
+      "token_callbacks_received": 0,
+      "ledger": [
+        {
+          "id": "fixture-84cc10f781df41849d6a8ad0c1ca494a",
+          "case": "fixed_matching_header",
+          "model": "gpt-luna",
+          "run_id": "sdk-candidate-762dc7ac9cb8447fa04429f458422d9c",
+          "stages": [
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.04",
+          "emitted_usage_cost": "0.04",
+          "emitted_header_cost": "0.04",
+          "stream": false,
+          "has_tools": true,
+          "tool_names": [
+            "finish",
+            "invoke_skill",
+            "inspect_image_with_vision"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ]
+    },
+    {
+      "case": "fixed_matching_header",
+      "stream_requested": true,
+      "run_id": "sdk-candidate-b52006b946e34716a7ada657ec2e37c7",
+      "status": "ConversationExecutionStatus.FINISHED",
+      "sdk_cost": 0.04,
+      "conversation_id": "6a9ecbbd-2da7-4687-8b58-d2f2bcaaaddf",
+      "token_callbacks_received": 3,
+      "ledger": [
+        {
+          "id": "fixture-3cd3bcb7b4134b7fa1dde867c6fc3e75",
+          "case": "fixed_matching_header",
+          "model": "gpt-luna",
+          "run_id": "sdk-candidate-b52006b946e34716a7ada657ec2e37c7",
+          "stages": [
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.04",
+          "emitted_usage_cost": "0.04",
+          "emitted_header_cost": "0.04",
+          "stream": true,
+          "has_tools": true,
+          "tool_names": [
+            "finish",
+            "invoke_skill",
+            "inspect_image_with_vision"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ]
+    },
+    {
+      "case": "fixed_conflicting_header",
+      "stream_requested": false,
+      "run_id": "sdk-candidate-6d554dc383c042f8bacc0238a022a2c0",
+      "status": "ConversationExecutionStatus.FINISHED",
+      "sdk_cost": 0.03,
+      "conversation_id": "63438656-6e7b-4146-8a36-9fbdd45ebbd6",
+      "token_callbacks_received": 0,
+      "ledger": [
+        {
+          "id": "fixture-3b35eb9f5c494bfdb6fb6edbbab24b7a",
+          "case": "fixed_conflicting_header",
+          "model": "gpt-luna",
+          "run_id": "sdk-candidate-6d554dc383c042f8bacc0238a022a2c0",
+          "stages": [
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.04",
+          "emitted_usage_cost": "0.04",
+          "emitted_header_cost": "0.03",
+          "stream": false,
+          "has_tools": true,
+          "tool_names": [
+            "finish",
+            "invoke_skill",
+            "inspect_image_with_vision"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ]
+    },
+    {
+      "case": "fixed_conflicting_header",
+      "stream_requested": true,
+      "run_id": "sdk-candidate-7b653e768ad94b96b4e273aed67ef219",
+      "status": "ConversationExecutionStatus.FINISHED",
+      "sdk_cost": 0.03,
+      "conversation_id": "9295d73c-4ae8-496c-bc16-6c0f3e4bf3da",
+      "token_callbacks_received": 3,
+      "ledger": [
+        {
+          "id": "fixture-ee1789a5d398423194174fe8d0615b29",
+          "case": "fixed_conflicting_header",
+          "model": "gpt-luna",
+          "run_id": "sdk-candidate-7b653e768ad94b96b4e273aed67ef219",
+          "stages": [
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.04",
+          "emitted_usage_cost": "0.04",
+          "emitted_header_cost": "0.03",
+          "stream": true,
+          "has_tools": true,
+          "tool_names": [
+            "finish",
+            "invoke_skill",
+            "inspect_image_with_vision"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ]
+    },
+    {
+      "case": "router_aggregate_usage",
+      "stream_requested": false,
+      "run_id": "sdk-candidate-94bebd2086df451f8522607dfeb7098d",
+      "status": "ConversationExecutionStatus.FINISHED",
+      "sdk_cost": 0.05,
+      "conversation_id": "a1b56516-1760-4653-830b-a40a59b010ff",
+      "token_callbacks_received": 0,
+      "ledger": [
+        {
+          "id": "fixture-c9fbb0ed8e6e45cea3f88022fdc92c4b",
+          "case": "router_aggregate_usage",
+          "model": "cost-auto",
+          "run_id": "sdk-candidate-94bebd2086df451f8522607dfeb7098d",
+          "stages": [
+            {
+              "stage": "selection",
+              "cost_usd": "0.01"
+            },
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.05",
+          "emitted_usage_cost": "0.05",
+          "emitted_header_cost": null,
+          "stream": false,
+          "has_tools": true,
+          "tool_names": [
+            "finish",
+            "invoke_skill",
+            "inspect_image_with_vision"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ]
+    },
+    {
+      "case": "router_aggregate_usage",
+      "stream_requested": true,
+      "run_id": "sdk-candidate-2d18f1d4e4b54bf7aa2ad7f0b7b3b33a",
+      "status": "ConversationExecutionStatus.FINISHED",
+      "sdk_cost": 0.05,
+      "conversation_id": "bcab5725-f786-48dc-802f-13f402573d56",
+      "token_callbacks_received": 3,
+      "ledger": [
+        {
+          "id": "fixture-b44558abe5d44a2dae5630cf0f696f29",
+          "case": "router_aggregate_usage",
+          "model": "cost-auto",
+          "run_id": "sdk-candidate-2d18f1d4e4b54bf7aa2ad7f0b7b3b33a",
+          "stages": [
+            {
+              "stage": "selection",
+              "cost_usd": "0.01"
+            },
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.05",
+          "emitted_usage_cost": "0.05",
+          "emitted_header_cost": null,
+          "stream": true,
+          "has_tools": true,
+          "tool_names": [
+            "finish",
+            "invoke_skill",
+            "inspect_image_with_vision"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ]
+    },
+    {
+      "case": "router_generation_only",
+      "stream_requested": false,
+      "run_id": "sdk-candidate-ff9a5021a02d455cb453d44ebfc0783d",
+      "status": "ConversationExecutionStatus.FINISHED",
+      "sdk_cost": 0.04,
+      "conversation_id": "990a555c-8d8c-438b-9d76-0c8774c9556d",
+      "token_callbacks_received": 0,
+      "ledger": [
+        {
+          "id": "fixture-55db1a00db6e4d619968940cdf4078a1",
+          "case": "router_generation_only",
+          "model": "cost-auto",
+          "run_id": "sdk-candidate-ff9a5021a02d455cb453d44ebfc0783d",
+          "stages": [
+            {
+              "stage": "selection",
+              "cost_usd": "0.01"
+            },
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.05",
+          "emitted_usage_cost": "0.04",
+          "emitted_header_cost": null,
+          "stream": false,
+          "has_tools": true,
+          "tool_names": [
+            "finish",
+            "invoke_skill",
+            "inspect_image_with_vision"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ]
+    },
+    {
+      "case": "router_generation_only",
+      "stream_requested": true,
+      "run_id": "sdk-candidate-bcaadc151fdf44a1aabb99c9cbd839f8",
+      "status": "ConversationExecutionStatus.FINISHED",
+      "sdk_cost": 0.04,
+      "conversation_id": "d68a5c7c-d4f1-42eb-9ccf-24e448ff45eb",
+      "token_callbacks_received": 3,
+      "ledger": [
+        {
+          "id": "fixture-2cd89cc5db5c417baae037886becaa99",
+          "case": "router_generation_only",
+          "model": "cost-auto",
+          "run_id": "sdk-candidate-bcaadc151fdf44a1aabb99c9cbd839f8",
+          "stages": [
+            {
+              "stage": "selection",
+              "cost_usd": "0.01"
+            },
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.05",
+          "emitted_usage_cost": "0.04",
+          "emitted_header_cost": null,
+          "stream": true,
+          "has_tools": true,
+          "tool_names": [
+            "finish",
+            "invoke_skill",
+            "inspect_image_with_vision"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ]
+    },
+    {
+      "case": "router_header_excludes_selection",
+      "stream_requested": false,
+      "run_id": "sdk-candidate-581567538d7f4a5885b6bb36d1bdd53d",
+      "status": "ConversationExecutionStatus.FINISHED",
+      "sdk_cost": 0.04,
+      "conversation_id": "3a988db3-2706-4c2a-a8b6-99a9d07f8a9b",
+      "token_callbacks_received": 0,
+      "ledger": [
+        {
+          "id": "fixture-4823f171535d4405862c30bc44c8c072",
+          "case": "router_header_excludes_selection",
+          "model": "cost-auto",
+          "run_id": "sdk-candidate-581567538d7f4a5885b6bb36d1bdd53d",
+          "stages": [
+            {
+              "stage": "selection",
+              "cost_usd": "0.01"
+            },
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.05",
+          "emitted_usage_cost": "0.05",
+          "emitted_header_cost": "0.04",
+          "stream": false,
+          "has_tools": true,
+          "tool_names": [
+            "finish",
+            "invoke_skill",
+            "inspect_image_with_vision"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ]
+    },
+    {
+      "case": "router_header_excludes_selection",
+      "stream_requested": true,
+      "run_id": "sdk-candidate-26d4b88c12524a449a5cbcc13c840a0f",
+      "status": "ConversationExecutionStatus.FINISHED",
+      "sdk_cost": 0.04,
+      "conversation_id": "7b8767b6-880a-44b0-b6e8-a532a1bd1eea",
+      "token_callbacks_received": 3,
+      "ledger": [
+        {
+          "id": "fixture-6ef0acea749f4651b1ddf53a7767884e",
+          "case": "router_header_excludes_selection",
+          "model": "cost-auto",
+          "run_id": "sdk-candidate-26d4b88c12524a449a5cbcc13c840a0f",
+          "stages": [
+            {
+              "stage": "selection",
+              "cost_usd": "0.01"
+            },
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.05",
+          "emitted_usage_cost": "0.05",
+          "emitted_header_cost": "0.04",
+          "stream": true,
+          "has_tools": true,
+          "tool_names": [
+            "finish",
+            "invoke_skill",
+            "inspect_image_with_vision"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ]
+    },
+    {
+      "case": "confirmed_free",
+      "stream_requested": false,
+      "run_id": "sdk-candidate-70597d0b15044ccb86170a817df35a59",
+      "status": "ConversationExecutionStatus.FINISHED",
+      "sdk_cost": 0.0,
+      "conversation_id": "69f5a8ad-f1db-4ba7-a8cf-d0bd276297e0",
+      "token_callbacks_received": 0,
+      "ledger": [
+        {
+          "id": "fixture-83c6756741f445a4bab4f869491d82fb",
+          "case": "confirmed_free",
+          "model": "gpt-luna",
+          "run_id": "sdk-candidate-70597d0b15044ccb86170a817df35a59",
+          "stages": [
+            {
+              "stage": "generation",
+              "cost_usd": "0"
+            }
+          ],
+          "ledger_total_usd": "0",
+          "emitted_usage_cost": "0",
+          "emitted_header_cost": "0",
+          "stream": false,
+          "has_tools": true,
+          "tool_names": [
+            "finish",
+            "invoke_skill",
+            "inspect_image_with_vision"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ]
+    },
+    {
+      "case": "confirmed_free",
+      "stream_requested": true,
+      "run_id": "sdk-candidate-75b9723400ad458eb2c3228bf4017ea5",
+      "status": "ConversationExecutionStatus.FINISHED",
+      "sdk_cost": 0.0,
+      "conversation_id": "24f2f278-b150-4952-9e09-448bbcc24a6f",
+      "token_callbacks_received": 3,
+      "ledger": [
+        {
+          "id": "fixture-708ba40034cf4730b9413635a2b20c54",
+          "case": "confirmed_free",
+          "model": "gpt-luna",
+          "run_id": "sdk-candidate-75b9723400ad458eb2c3228bf4017ea5",
+          "stages": [
+            {
+              "stage": "generation",
+              "cost_usd": "0"
+            }
+          ],
+          "ledger_total_usd": "0",
+          "emitted_usage_cost": "0",
+          "emitted_header_cost": "0",
+          "stream": true,
+          "has_tools": true,
+          "tool_names": [
+            "finish",
+            "invoke_skill",
+            "inspect_image_with_vision"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ]
+    }
+  ]
+}
