@@ -170,6 +170,7 @@ def test_acp_agent_settings_export_schema_has_acp_section() -> None:
     section_keys = [section.key for section in schema.sections]
     assert "acp" in section_keys
     assert "llm" not in section_keys
+    assert "verification" not in section_keys
 
     sections = {s.key: s for s in schema.sections}
     acp_fields = {f.key: f for f in sections["acp"].fields}
@@ -2100,7 +2101,7 @@ def test_acp_resolve_command_keeps_npx_when_binary_absent(
         "npx",
         "-y",
         "--prefer-offline",
-        "@agentclientprotocol/codex-acp@1.10.0",
+        "@agentclientprotocol/codex-acp@2.2.2",
     ]
 
 

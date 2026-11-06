@@ -414,7 +414,7 @@ Preconditions:
   generic `Internal Server Error`; the route's message is in `exception`),
   `qa-busy` does not exist afterwards, and the same save succeeds at once
   when the lock is free.
-- **Lock wait blocks the server (`F20.store-busy-responsive`), known bug.**
+- **Lock wait does not block the server (`F20.store-busy-responsive`).**
   Probe `/alive` once with the lock free (positive control), hold the lock
   again, start a save in the background, and probe `/alive` while the save
   waits. The five-second pause only lets the background save reach the
@@ -436,15 +436,13 @@ Preconditions:
   wait "$SAVER"
   wait "$LOCKER"
   control-agent-server api GET /api/profiles/qa-busy --expect 404
-  control-agent-server assert --json "$F20/busy-alive.json" --check elapsed_ms le 3000  # bug: value.status eq 200 && value.elapsed_ms ge 15000
+  control-agent-server assert --json "$F20/busy-alive.json" --check elapsed_ms le 3000
   ```
-  Expected `/alive` to answer within 3 seconds while the save waits, as it
-  does with the lock free. Today it answers 200 only when the save gives up,
-  about 25 seconds later, so the bound marked `# bug` fails: every
-  profile route is an `async def` that calls the synchronous, file-locked
-  `LLMProfileStore` on the event loop (`profiles_router.py`), so a 30-second
-  lock wait freezes the whole server, liveness and readiness probes
-  included. Before the bound is checked, `wait "$SAVER"` proves the
+  `/alive` answers within 3 seconds while the save waits, as it does with
+  the lock free: the profile routes are plain `def` handlers, so FastAPI
+  runs the synchronous, file-locked `LLMProfileStore` in its threadpool
+  and the lock wait never holds the event loop (`profiles_router.py`).
+  Before the bound is checked, `wait "$SAVER"` proves the
   background save really waited and was refused with 503, both background
   processes have ended (so later bullets find the lock free), and `qa-busy`
   was not created.
@@ -1017,10 +1015,10 @@ Preconditions:
   available) carry `detail: "Internal Server Error"`; the route's own message
   is in `exception` (the server's 5xx handler rewrites `detail`). Assert the
   status and `exception`, not `detail`.
-- Profile routes are `async def` handlers that call the synchronous,
-  file-locked store; while the lock is held elsewhere the whole server stops
-  answering for up to 30 seconds (`F20.store-busy-responsive`). Never hold
-  the lock (`flock` on `profiles/.profiles.lock`) longer than a bullet needs.
+- Profile routes wait for the store lock in a worker thread, so a held lock
+  delays only the profile request (up to the 30-second timeout), not the
+  rest of the server (`F20.store-busy-responsive`). Still, never hold the
+  lock (`flock` on `profiles/.profiles.lock`) longer than a bullet needs.
 - A corrupted profile file is skipped by the list without an error (a
   warning in the log), but `GET` and `activate` by name are 400. While
   `settings.json` is unreadable, `GET /api/profiles` reports
