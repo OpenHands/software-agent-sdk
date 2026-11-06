@@ -1239,9 +1239,6 @@ def test_openai_gateway_post_send_timeout_does_not_retry(
 
     monkeypatch.setattr(config_module, "_default_config", None)
     monkeypatch.setattr(service_module, "_conversation_service", None)
-    monkeypatch.setattr(gateway_service, "_GATEWAY_TIMEOUT_SECONDS", 0.03)
-    monkeypatch.setattr(gateway_service, "_POLL_INTERVAL_SECONDS", 0.01)
-    monkeypatch.setattr(event_router_module, "_GATEWAY_RUN_TIMEOUT_SECONDS", 0.03)
     monkeypatch.delenv("OH_WEBHOOKS_0_BASE_URL", raising=False)
 
     profiles_dir = tmp_path / "profiles"
@@ -1285,6 +1282,10 @@ def test_openai_gateway_post_send_timeout_does_not_retry(
             assert seed.status_code == 200, seed.text
             conversation_id = seed.headers["X-OpenHands-ServerConversation-ID"]
             slow_turn["enabled"] = True
+
+        monkeypatch.setattr(gateway_service, "_GATEWAY_TIMEOUT_SECONDS", 0.03)
+        monkeypatch.setattr(gateway_service, "_POLL_INTERVAL_SECONDS", 0.01)
+        monkeypatch.setattr(event_router_module, "_GATEWAY_RUN_TIMEOUT_SECONDS", 0.03)
 
         attempts: list[httpx.Request] = []
         with httpx.Client(
