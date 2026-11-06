@@ -197,6 +197,28 @@ describe('StuckDetector', () => {
     });
   });
 
+  it.each(['different', 'same', 'missing'] as const)(
+    'compares raw arguments for validation failures (%s arguments)',
+    (argumentsMode) => {
+      const detector = new StuckDetector();
+      const events: BaseEvent[] = [createMessageEvent('user', 'Run the command')];
+      for (let i = 0; i < 4; i++) {
+        const action = createActionEvent('terminal', 'unused');
+        action.action = null;
+        if (argumentsMode !== 'missing') {
+          action.tool_call = {
+            id: action.tool_call_id,
+            name: 'terminal',
+            arguments: JSON.stringify({ command: argumentsMode === 'same' ? 0 : i }),
+            origin: 'completion',
+          };
+        }
+        events.push(action, createErrorEvent(action.id, 'terminal', 'Invalid command'));
+      }
+      expect(detector.isStuck(events).isStuck).toBe(argumentsMode === 'same');
+    }
+  );
+
   describe('Agent Monologue Detection', () => {
     it('should NOT be stuck with less than threshold consecutive agent messages', () => {
       const detector = new StuckDetector({ monologue: 4 });
