@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import shutil
 import threading
 import time
 import uuid
@@ -84,6 +85,7 @@ from openhands.sdk.llm import ImageContent, Message, TextContent
 from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.settings.acp_install_catalog import (
+    CODEX_ACP_VERSION,
     ACPInstallSpec,
     ACPPackagePin,
 )
@@ -192,7 +194,19 @@ def test_warns_when_acp_provider_version_differs_from_pin(caplog):
     assert "provider=gemini-cli" in caplog.text
     assert "pinned_version='0.46.0'" in caplog.text
     assert "reported_version='0.38.0'" in caplog.text
-    assert "probably installed at runtime via the npx fallback" in caplog.text
+    assert "probably installed at runtime via the npx fallback" not in caplog.text
+
+
+def test_warns_naming_binary_when_unpinned_path_binary_runs(caplog, monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda cmd: f"/opt/bin/{cmd}")
+    with caplog.at_level("INFO"):
+        _log_acp_provider_version("codex-acp", "0.16.0", command=["codex-acp"])
+
+    assert "provider=codex" in caplog.text
+    assert f"pinned_version={CODEX_ACP_VERSION!r}" in caplog.text
+    assert "reported_version='0.16.0'" in caplog.text
+    assert "/opt/bin/codex-acp" in caplog.text
+    assert "probably installed at runtime via the npx fallback" not in caplog.text
 
 
 def test_npx_packages_skips_prefer_offline():
