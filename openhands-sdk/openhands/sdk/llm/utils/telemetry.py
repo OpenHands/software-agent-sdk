@@ -335,7 +335,7 @@ class Telemetry(BaseModel):
         if span is None:
             return
         try:
-            if cost:
+            if cost is not None:
                 # Authoritative: _compute_cost prefers the proxy's
                 # x-litellm-response-cost header, which is already cache-aware
                 # and priced by the real backend rather than by a name lookup.
@@ -386,13 +386,16 @@ class Telemetry(BaseModel):
 
         try:
             hidden = resp._hidden_params or {}
-            cost = _reported_cost(
-                hidden.get("additional_headers", {}).get(
-                    "llm_provider-x-litellm-response-cost"
+            headers = hidden.get("additional_headers", {})
+            header_name = "llm_provider-x-litellm-response-cost"
+            if header_name in headers:
+                cost = _reported_cost(headers[header_name])
+                if cost is not None:
+                    return cost
+                logger.debug(
+                    "Failed to get cost from LiteLLM headers: "
+                    "invalid response cost value"
                 )
-            )
-            if cost is not None:
-                return cost
         except Exception as e:
             logger.debug(f"Failed to get cost from LiteLLM headers: {e}")
 
@@ -401,10 +404,12 @@ class Telemetry(BaseModel):
         # token rates remain an intentional pricing override when no header exists.
         if "custom_cost_per_token" not in extra_kwargs:
             usage = _response_usage(resp)
+            # Read the typed field directly, without serializing all token details.
             # LiteLLM deletes absent optional Usage attributes after construction.
-            cost = _reported_cost(
-                usage.model_dump().get("cost") if usage is not None else None
-            )
+            try:
+                cost = _reported_cost(usage.cost) if usage is not None else None
+            except AttributeError:
+                cost = None
             # Zero usage can be a gateway's unavailable-price placeholder. Keep
             # existing static pricing in that case; explicit zero headers above
             # remain authoritative. This fallback repairs positive charges only.

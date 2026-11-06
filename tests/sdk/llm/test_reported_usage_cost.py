@@ -1,5 +1,7 @@
 """Provider-reported charges must reach SDK metrics even for unknown aliases."""
 
+import logging
+
 import pytest
 from litellm import stream_chunk_builder
 from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
@@ -8,6 +10,7 @@ from litellm.types.utils import (
     ModelResponse,
     ModelResponseStream,
     StreamingChoices,
+    Usage,
 )
 
 from openhands.sdk.llm.utils.litellm_provider import LLMProvider
@@ -17,8 +20,8 @@ from openhands.sdk.llm.utils.telemetry import Telemetry
 
 @pytest.mark.parametrize("alias", ["gpt-luna", "cost-auto"])
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.parametrize("cost", [0.04])
-def test_reported_usage_cost_reaches_metrics(alias, streaming, cost):
+def test_reported_usage_cost_reaches_metrics(alias, streaming):
+    cost = 0.04
     usage = {
         "prompt_tokens": 100,
         "completion_tokens": 10,
@@ -75,14 +78,16 @@ def test_authoritative_header_precedes_usage_cost(header):
     assert len(metrics.costs) == 1
 
 
-@pytest.mark.parametrize("header", ["", "bad", "nan", "inf", "-0.1"])
-def test_invalid_header_falls_back_to_reported_usage(header):
+@pytest.mark.parametrize("header", ["", "$0.04", "bad", "nan", "inf", "-0.1", None])
+def test_invalid_header_falls_back_to_reported_usage(header, caplog):
     response = ModelResponse(model="cost-auto", choices=[], usage={"cost": 0.04})
     response._hidden_params["additional_headers"] = {
         "llm_provider-x-litellm-response-cost": header
     }
     telemetry = Telemetry(model_name="cost-auto", metrics=Metrics())
-    assert telemetry._compute_cost(response) == 0.04
+    with caplog.at_level(logging.DEBUG, logger="openhands.sdk.llm.utils.telemetry"):
+        assert telemetry._compute_cost(response) == 0.04
+    assert "Failed to get cost from LiteLLM headers:" in caplog.text
 
 
 @pytest.mark.parametrize("cost", [0.0, -0.1, float("nan"), float("inf"), None])
@@ -125,8 +130,8 @@ def test_zero_usage_cost_preserves_known_model_pricing():
     assert telemetry._compute_cost(with_placeholder_zero) == expected
 
 
-@pytest.mark.parametrize("cost", [0.04])
-def test_responses_api_reported_cost(cost):
+def test_responses_api_reported_cost():
+    cost = 0.04
     response = ResponsesAPIResponse(
         id="responses-cost",
         status="completed",
@@ -140,3 +145,40 @@ def test_responses_api_reported_cost(cost):
     metrics = telemetry.on_response(response)
     assert metrics.accumulated_cost == cost
     assert len(metrics.costs) == 1
+
+
+@pytest.mark.parametrize("header", [None, "0", "0.09"])
+def test_missing_or_valid_header_does_not_log_rejection(header, caplog):
+    response = ModelResponse(model="cost-auto", choices=[], usage={"cost": 0.04})
+    if header is not None:
+        response._hidden_params["additional_headers"] = {
+            "llm_provider-x-litellm-response-cost": header
+        }
+    telemetry = Telemetry(model_name="cost-auto", metrics=Metrics())
+    with caplog.at_level(logging.DEBUG, logger="openhands.sdk.llm.utils.telemetry"):
+        assert telemetry._compute_cost(response) == (
+            0.04 if header is None else float(header)
+        )
+    assert "Failed to get cost from LiteLLM headers:" not in caplog.text
+
+
+def test_positive_usage_cost_does_not_serialize_usage(monkeypatch):
+    response = ModelResponse(model="cost-auto", choices=[], usage={"cost": 0.04})
+
+    def unexpected_serialization(*args, **kwargs):
+        raise AssertionError("Reading reported cost must not serialize Usage")
+
+    monkeypatch.setattr(Usage, "model_dump", unexpected_serialization)
+    telemetry = Telemetry(model_name="cost-auto", metrics=Metrics())
+    assert telemetry._compute_cost(response) == 0.04
+
+
+def test_deleted_optional_cost_falls_back_to_model_pricing():
+    usage = Usage(prompt_tokens=100, completion_tokens=10)
+    # LiteLLM deletes optional fields that were not supplied.
+    with pytest.raises(AttributeError):
+        _ = usage.cost
+    response = ModelResponse(model="gpt-4o", choices=[], usage=usage)
+    telemetry = Telemetry(model_name="gpt-4o", metrics=Metrics())
+    cost = telemetry._compute_cost(response)
+    assert cost is not None and cost > 0

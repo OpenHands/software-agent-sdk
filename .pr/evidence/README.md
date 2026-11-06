@@ -25,3 +25,9 @@ uv run pytest tests/sdk/llm/test_reported_usage_cost_http.py -q
 
 The tests cover sync/async and streaming/non-streaming responses, authoritative
 header precedence, and cost persistence across conversation restart.
+
+Zero-header scope: our two-proxy lab exercised configured missing and explicit
+zero headers; zero remained authoritative even with positive usage. These are
+controlled contracts, not proof of what a customer's gateway automatically emits
+for an unpriced alias. That deployed response path is still unverified. This fix
+preserves header precedence; it does not interpret zero as an unknown estimate.
