@@ -245,6 +245,14 @@ class HookConfig(BaseModel):
                     "Extra top-level keys will be ignored."
                 )
             data = data["hooks"]
+            if not isinstance(data, dict):
+                # A wrapper holding a scalar or a list is malformed input, not a
+                # crash: report it as a validation error like any other bad value.
+                raise ValueError(
+                    'HookConfig legacy wrapper must be an object, e.g. '
+                    '{"hooks": {"PreToolUse": [...]}}; '
+                    f"got {type(data).__name__}"
+                )
 
         # Convert PascalCase keys to snake_case field names
         normalized: dict[str, Any] = {}
