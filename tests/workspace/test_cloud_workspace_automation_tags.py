@@ -39,26 +39,26 @@ class TestDefaultConversationTags:
             tags = workspace.default_conversation_tags
             assert tags == {}
 
-    def test_parses_trigger_from_payload(self, workspace):
-        """Should extract automationtrigger from AUTOMATION_EVENT_PAYLOAD."""
-        payload = {"trigger": "cron"}
+    @pytest.mark.parametrize(
+        ("payload_key", "value", "tag"),
+        [
+            pytest.param("trigger", "cron", "automationtrigger", id="trigger"),
+            pytest.param(
+                "automation_id", "auto-123", "automationid", id="automation_id"
+            ),
+            pytest.param(
+                "automation_name",
+                "Daily Report",
+                "automationname",
+                id="automation_name",
+            ),
+        ],
+    )
+    def test_parses_tag_from_payload(self, workspace, payload_key, value, tag):
+        payload = {payload_key: value}
         with patch.dict(os.environ, {"AUTOMATION_EVENT_PAYLOAD": json.dumps(payload)}):
             tags = workspace.default_conversation_tags
-            assert tags["automationtrigger"] == "cron"
-
-    def test_parses_automation_id_from_payload(self, workspace):
-        """Should extract automationid from AUTOMATION_EVENT_PAYLOAD."""
-        payload = {"automation_id": "auto-123"}
-        with patch.dict(os.environ, {"AUTOMATION_EVENT_PAYLOAD": json.dumps(payload)}):
-            tags = workspace.default_conversation_tags
-            assert tags["automationid"] == "auto-123"
-
-    def test_parses_automation_name_from_payload(self, workspace):
-        """Should extract automationname from AUTOMATION_EVENT_PAYLOAD."""
-        payload = {"automation_name": "Daily Report"}
-        with patch.dict(os.environ, {"AUTOMATION_EVENT_PAYLOAD": json.dumps(payload)}):
-            tags = workspace.default_conversation_tags
-            assert tags["automationname"] == "Daily Report"
+            assert tags[tag] == value
 
     def test_parses_run_id_from_env_var(self, workspace):
         """Should extract runid from AUTOMATION_RUN_ID env var."""

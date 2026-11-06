@@ -28,6 +28,9 @@ from openhands.sdk.context.prompts.section import Platform, PromptContext
 from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
+from openhands.sdk.llm.utils.openhands_provider import (
+    OPENHANDS_SYSTEM_IDENTITY,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer
@@ -64,10 +67,7 @@ logger = get_logger(__name__)
 # replaces the default identity in the system prompt.
 
 _SOUL_PATH = get_user_persistence_dir() / "SOUL.md"
-_DEFAULT_SOUL = (
-    "You are OpenHands agent, a helpful AI assistant that can interact"
-    " with a computer to solve tasks."
-)
+_DEFAULT_SOUL = OPENHANDS_SYSTEM_IDENTITY
 
 # Built-in prompt dir. The registry only stands in for built-in prompts here; a
 # subclass with its own prompts/ keeps the Jinja render path.

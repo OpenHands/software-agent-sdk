@@ -436,7 +436,7 @@ def discover_profile_skills() -> list[Skill]:
     """Skill catalog an OpenHands profile launches with (#4017).
 
     Returns the merged user + public skills — the deterministic sources of
-    :func:`load_all_skills`. ``resolve_agent_profile`` keeps all of them except
+    :func:`load_all_skills`. ``openhands.sdk.launch.resolve`` keeps all of them except
     the profile's ``disabled_skills`` deny-list. ``load_all_skills`` already
     absorbs and logs benign per-source failures, so this does not swallow errors:
     an unexpected failure propagates rather than silently resolving the profile

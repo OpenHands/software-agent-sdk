@@ -74,12 +74,26 @@ RUN set -eux; \
     /tmp/vendoring/bin/vendoring sync; \
     python -m pip wheel --no-deps --no-cache-dir --wheel-dir /dist .
 
-FROM debian:trixie-slim AS python-node-runtime
+# The digest is pinned so a Docker Hub rebuild cannot ship packages newer than
+# DEBIAN_SNAPSHOT: apt then refuses to install tools such as apt-utils, whose
+# versions must match the installed apt. Move the digest and the snapshot
+# together, and only to an image no newer than the snapshot.
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS python-node-runtime
 ARG NPM_VERSION
+# Package fetches ride out transient snapshot.debian.org overloads (503
+# TooManyRequests / 504 first byte timeout, seen failing the v1.60.0 release
+# builds): per-file retries with a delay, plus an invocation-level loop in
+# the RUN below. Pipeline-Depth=0 keeps apt's memory footprint low while
+# BuildKit runs stages in parallel on memory-constrained runners.
+ARG APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 -o Acquire::Queue-Mode=access -o Acquire::Pipeline-Depth=0"
 # 20261021 is the oldest snapshot whose ca-certificates (20250419+deb13u1,
 # trixie-security) drops emSign ECC Root CA - G3; 20261019 still ships
 # 20250419, which trusts the compromised root (GHSA-6q48-6c7w-9gw2).
-ARG DEBIAN_SNAPSHOT=20261021T000000Z
+# 20261105 skips the three-day window to pick up apt 3.0.4 (DSA-6607-1,
+# CVE-2026-109518, root code execution through a download-verification
+# bypass), first published in snapshot 20261104T120337Z. debian:trixie-slim
+# already ships apt 3.0.4, so older snapshots fail to install apt-utils.
+ARG DEBIAN_SNAPSHOT=20261105T000000Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
@@ -87,46 +101,70 @@ COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 
 RUN node /usr/local/lib/node_modules/npm/bin/npm-cli.js install --global "npm@${NPM_VERSION}"
 
-RUN set -eux; \
+# apt fetches over HTTPS. debian:trixie-slim has no CA bundle until
+# ca-certificates is installed below, so this step trusts the bundle from
+# pip-revendored, whose ca-certificates (20250419+deb13u1) already drops the
+# compromised emSign ECC Root CA - G3.
+RUN --mount=type=bind,from=pip-revendored,source=/etc/ssl/certs/ca-certificates.crt,target=/tmp/bootstrap-ca.crt \
+    set -eux; \
     ln -sfn ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm; \
     ln -sfn ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx; \
     ln -sfn ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack; \
     printf '%s\n' \
         'Types: deb' \
-        "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/" \
+        "URIs: https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/" \
         'Suites: trixie' \
         'Components: main' \
         'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
         'Check-Valid-Until: no' \
         '' \
         'Types: deb' \
-        "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}/" \
+        "URIs: https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}/" \
         'Suites: trixie-security' \
         'Components: main' \
         'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
         'Check-Valid-Until: no' \
         > /etc/apt/sources.list.d/debian.sources; \
-    apt-get update; \
-    apt-get upgrade -y; \
-    apt-get install -y --no-install-recommends \
-        ca-certificates \
-        libbz2-1.0 \
-        libdb5.3t64 \
-        libffi8 \
-        libgcc-s1 \
-        libgdbm6t64 \
-        liblzma5 \
-        libncursesw6 \
-        libreadline8t64 \
-        libsqlite3-0 \
-        libssl3t64 \
-        libstdc++6 \
-        libtinfo6 \
-        libuuid1 \
-        libzstd1 \
-        netbase \
-        tzdata \
-        zlib1g; \
+    printf '%s\n' \
+        'Acquire::Retries "5";' \
+        'Acquire::http::Timeout "120";' \
+        'Acquire::https::Timeout "120";' \
+        'Acquire::Retry-Delay "10";' \
+        'Acquire::Queue-Mode "access";' \
+        'Acquire::Pipeline-Depth "0";' \
+        > /etc/apt/apt.conf.d/80-snapshot-resilience; \
+    BOOTSTRAP_CA="-o Acquire::https::CaInfo=/tmp/bootstrap-ca.crt"; \
+    for attempt in 1 2 3 4 5; do \
+        if apt-get $BOOTSTRAP_CA ${APT_OPTS} update \
+            && apt-get $BOOTSTRAP_CA upgrade -y \
+            && apt-get $BOOTSTRAP_CA ${APT_OPTS} install -y --no-install-recommends \
+                ca-certificates \
+                libbz2-1.0 \
+                libdb5.3t64 \
+                libffi8 \
+                libgcc-s1 \
+                libgdbm6t64 \
+                liblzma5 \
+                libncursesw6 \
+                libreadline8t64 \
+                libsqlite3-0 \
+                libssl3t64 \
+                libstdc++6 \
+                libtinfo6 \
+                libuuid1 \
+                libzstd1 \
+                netbase \
+                tzdata \
+                zlib1g; then \
+            break; \
+        fi; \
+        if [ "$attempt" = 5 ]; then \
+            echo "apt failed after 5 attempts (snapshot.debian.org unreachable?)" >&2; \
+            exit 1; \
+        fi; \
+        echo "apt attempt $attempt failed; retrying in 30s" >&2; \
+        sleep 30; \
+    done; \
     rm -rf /var/lib/apt/lists/*; \
     python3 --version; \
     node --version; \
@@ -225,6 +263,7 @@ RUN test -x /agent-server/dist/openhands-agent-server
 FROM python:3.13-bookworm AS acp-providers
 ARG INSTALL_ACP_PROVIDERS
 ARG NPM_VERSION
+ARG APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 -o Acquire::Queue-Mode=access -o Acquire::Pipeline-Depth=0"
 # A fresh top-level path, not nested under a directory (e.g. /opt) that base
 # images commonly already populate (SWE-bench images ship /opt/miniconda3):
 # COPY --from=<stage> only produces a byte-identical layer across different
@@ -247,9 +286,18 @@ RUN set -eux; \
       echo "INSTALL_ACP_PROVIDERS is empty; no ACP providers will be installed"; \
       exit 0; \
     fi; \
-    apt-get -o Acquire::Retries=5 update; \
-    apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-        ca-certificates curl xz-utils; \
+    # python:3.13-bookworm ships apt 2.6.1, which is exposed to CVE-2026-109518
+    # over HTTP; it ships a CA bundle, so fetch from deb.debian.org over HTTPS.
+    sed -i 's#http://deb.debian.org/#https://deb.debian.org/#' \
+        /etc/apt/sources.list.d/debian.sources; \
+    for attempt in 1 2 3 4 5; do \
+        apt-get ${APT_OPTS} update \
+            && apt-get ${APT_OPTS} install -y --no-install-recommends \
+                ca-certificates curl xz-utils \
+            && break; \
+        if [ "$attempt" = 5 ]; then echo "apt failed after 5 attempts" >&2; exit 1; fi; \
+        echo "apt attempt $attempt failed; retrying in 30s" >&2; sleep 30; \
+    done; \
     rm -rf /var/lib/apt/lists/*; \
     ARCH=$(uname -m); \
     case "$ARCH" in \
@@ -289,6 +337,7 @@ RUN set -eux; \
 ####################################################################################
 FROM ${BASE_IMAGE} AS base-image-minimal
 ARG USERNAME UID GID PORT ENABLE_VSCODE
+ARG APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 -o Acquire::Queue-Mode=access -o Acquire::Pipeline-Depth=0"
 ENV OH_ENABLE_VSCODE=${ENABLE_VSCODE}
 
 ARG OPENHANDS_BUILD_GIT_SHA=unknown
@@ -305,9 +354,14 @@ RUN set -eux; \
     # Every path must end with a working `tini` on PATH, because the ENTRYPOINT
     # of this image invokes it unconditionally.
     if command -v apt-get >/dev/null 2>&1; then \
-        apt-get -o Acquire::Retries=5 update; \
-        apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-            bash ca-certificates git tini tmux; \
+        for attempt in 1 2 3 4 5; do \
+            apt-get ${APT_OPTS} update \
+                && apt-get ${APT_OPTS} install -y --no-install-recommends \
+                    bash ca-certificates git tini tmux \
+                && break; \
+            if [ "$attempt" = 5 ]; then echo "apt failed after 5 attempts" >&2; exit 1; fi; \
+            echo "apt attempt $attempt failed; retrying in 30s" >&2; sleep 30; \
+        done; \
         rm -rf /var/lib/apt/lists/*; \
     elif command -v apk >/dev/null 2>&1; then \
         apk add --no-cache bash ca-certificates git shadow tini tmux; \
@@ -405,6 +459,7 @@ EXPOSE ${PORT}
 FROM base-image-minimal AS base-image
 ARG USERNAME
 ARG INSTALL_CAPABILITIES
+ARG APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=120 -o Acquire::https::Timeout=120 -o Acquire::Retry-Delay=10 -o Acquire::Queue-Mode=access -o Acquire::Pipeline-Depth=0"
 
 USER root
 
@@ -412,11 +467,16 @@ USER root
 # package/repository helpers, and command-line utilities out of binary-minimal.
 RUN set -eux; \
     if command -v apt-get >/dev/null 2>&1; then \
-        apt-get -o Acquire::Retries=5 update; \
-        apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-            apt-transport-https apt-utils build-essential coreutils curl \
-            findutils gnupg grep jq lsb-release procps sed sudo tar util-linux \
-            wget xz-utils; \
+        for attempt in 1 2 3 4 5; do \
+            apt-get ${APT_OPTS} update \
+                && apt-get ${APT_OPTS} install -y --no-install-recommends \
+                    apt-transport-https apt-utils build-essential coreutils curl \
+                    findutils gnupg grep jq lsb-release procps sed sudo tar util-linux \
+                    wget xz-utils \
+                && break; \
+            if [ "$attempt" = 5 ]; then echo "apt failed after 5 attempts" >&2; exit 1; fi; \
+            echo "apt attempt $attempt failed; retrying in 30s" >&2; sleep 30; \
+        done; \
         rm -rf /var/lib/apt/lists/*; \
     elif command -v apk >/dev/null 2>&1; then \
         apk add --no-cache \
@@ -462,86 +522,46 @@ RUN set -eux; \
     done
 
 # --- VSCode Web ---
-# EDITOR/VISUAL/GIT_EDITOR/OPENVSCODE_SERVER_ROOT are declared unconditionally:
-# nothing execs `code` unless VSCode Web itself is running, so a dangling
-# path when `vscode` is excluded is harmless (same reasoning as CHROME_BIN
-# below, applied to VSCode).
 ENV EDITOR=code \
     VISUAL=code \
     GIT_EDITOR="code --wait" \
-    OPENVSCODE_SERVER_ROOT=/openhands/.openvscode-server
-ARG RELEASE_TAG="openvscode-server-v1.109.5"
-ARG RELEASE_ORG="gitpod-io"
-# The --mount=from=builder on the extensions RUN below is unconditional at
-# the Dockerfile level, so BuildKit still builds the full `builder` stage
-# (the entire SDK venv) even when `vscode` is excluded from
-# INSTALL_CAPABILITIES — the case check inside each RUN only decides what
-# lands in THIS image, not what gets built as a dependency. Excluding vscode
-# shrinks the result, not the build time.
+    CODE_SERVER_ROOT=/openhands/.code-server
+# Published 2026-10-29; digests from coder/code-server GitHub release assets.
+# Update the version and both architecture digests together.
+ARG CODE_SERVER_VERSION="4.144.0"
 RUN set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
       *,vscode,*) ;; \
-      *) echo "INSTALL_CAPABILITIES excludes vscode; skipping OpenVSCode Server"; exit 0;; \
+      *) echo "INSTALL_CAPABILITIES excludes vscode; skipping code-server"; exit 0;; \
     esac; \
-    \
-    # Create necessary directories
-    mkdir -p $(dirname ${OPENVSCODE_SERVER_ROOT}); \
-    \
-    # Determine architecture
-    arch=$(uname -m); \
-    if [ "${arch}" = "x86_64" ]; then \
-        arch="x64"; \
-    elif [ "${arch}" = "aarch64" ]; then \
-        arch="arm64"; \
-    elif [ "${arch}" = "armv7l" ]; then \
-        arch="armhf"; \
-    fi; \
-    \
-    # Download and install VSCode Server
-    wget https://github.com/${RELEASE_ORG}/openvscode-server/releases/download/${RELEASE_TAG}/${RELEASE_TAG}-linux-${arch}.tar.gz; \
-    tar -xzf ${RELEASE_TAG}-linux-${arch}.tar.gz; \
-    if [ -d "${OPENVSCODE_SERVER_ROOT}" ]; then rm -rf "${OPENVSCODE_SERVER_ROOT}"; fi; \
-    mv ${RELEASE_TAG}-linux-${arch} ${OPENVSCODE_SERVER_ROOT}; \
-    cp ${OPENVSCODE_SERVER_ROOT}/bin/remote-cli/openvscode-server ${OPENVSCODE_SERVER_ROOT}/bin/remote-cli/code; \
-    rm -f ${RELEASE_TAG}-linux-${arch}.tar.gz; \
-    \
-    # Replace the bundled Node.js (22.21.1 in v1.109.5) with 22.23.4, which
-    # fixes the Brotli decoder overflow CVE-2026-111497. No OpenVSCode Server
-    # release bundles a fixed Node yet; drop this once one does.
-    case "${arch}" in \
-      x64) NARCH=x64; NODE_SHA256=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce;; \
-      arm64) NARCH=arm64; NODE_SHA256=6287aa46b6c375d816e63ae66d024fbbfd70404825aabdfdf898a970871d2f4b;; \
-      armhf) NARCH=armv7l; NODE_SHA256=c9057c6a3b8fbb9651ed115c1e96d4a7281b7b9c9ca89fa05865c98ed7ffd437;; \
-      *) echo "Unsupported architecture for OpenVSCode Node: '${arch}'" >&2; exit 1;; \
+    case "$(uname -m)" in \
+      x86_64) arch=amd64; sha256=710f749c40a0f3d0ab3be09c0de65314e5c2907cc50646f5fbc0f24c0e8fba2d;; \
+      aarch64) arch=arm64; sha256=4404c784f541bd56a2a8d6e2a9474ed0b4e37bc8502aa3a247898ca933434482;; \
+      *) echo "Unsupported code-server architecture" >&2; exit 1;; \
     esac; \
-    NODE_TARBALL="/tmp/node-v22.23.4-linux-${NARCH}.tar.xz"; \
-    wget -nv -O "$NODE_TARBALL" "https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-${NARCH}.tar.xz"; \
-    echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
-    tar -xJf "$NODE_TARBALL" -O "node-v22.23.4-linux-${NARCH}/bin/node" > ${OPENVSCODE_SERVER_ROOT}/node; \
-    chmod 755 ${OPENVSCODE_SERVER_ROOT}/node; \
-    rm -f "$NODE_TARBALL"; \
-    ${OPENVSCODE_SERVER_ROOT}/node --version; \
-    \
-    # Set proper ownership
-    chown -R ${USERNAME}:${USERNAME} ${OPENVSCODE_SERVER_ROOT}
+    wget -O /tmp/code-server.tar.gz "https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server-${CODE_SERVER_VERSION}-linux-${arch}.tar.gz"; \
+    echo "${sha256}  /tmp/code-server.tar.gz" | sha256sum -c -; \
+    mkdir -p "${CODE_SERVER_ROOT}"; \
+    tar -xzf /tmp/code-server.tar.gz -C "${CODE_SERVER_ROOT}" --strip-components=1; \
+    rm /tmp/code-server.tar.gz; \
+    cp "${CODE_SERVER_ROOT}/lib/vscode/bin/remote-cli/code-server" "${CODE_SERVER_ROOT}/lib/vscode/bin/remote-cli/code"; \
+    # code-server 4.144.0 already bundles Node v24.22.1, which fixes the
+    # Brotli decoder overflow CVE-2026-111497, so the Node replacement
+    # carried forward from #6200 for 4.141.0 is no longer needed. Assert
+    # the bundled version so a future downgrade cannot silently reintroduce
+    # the vulnerable build.
+    test "$("${CODE_SERVER_ROOT}/lib/node" --version)" = "v24.22.1"; \
+    chown -R ${USERNAME}:${USERNAME} "${CODE_SERVER_ROOT}"
 
-# Kept as its own RUN, separate from the tarball download above: extensions
-# are actively-edited local source (unlike the pinned release tarball), so
-# splitting them keeps an extension-only change from invalidating the ~100MB
-# download's cache layer.
+# This bind mount builds the builder stage even when vscode is excluded.
 RUN --mount=type=bind,from=builder,source=/agent-server/openhands-agent-server/openhands/agent_server/vscode_extensions,target=/tmp/vscode_extensions \
     set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
       *,vscode,*) ;; \
       *) exit 0;; \
     esac; \
-    \
-    # Trailing slashes matter: OpenVSCode Server's tarball already ships its
-    # own extensions/ dir, so a bare `cp -r src dst` would nest src under the
-    # existing dst instead of merging into it the way `COPY` does.
-    mkdir -p ${OPENVSCODE_SERVER_ROOT}/extensions; \
-    cp -r /tmp/vscode_extensions/. ${OPENVSCODE_SERVER_ROOT}/extensions/; \
-    chown -R ${USERNAME}:${USERNAME} ${OPENVSCODE_SERVER_ROOT}/extensions
+    cp -r /tmp/vscode_extensions/. "${CODE_SERVER_ROOT}/lib/vscode/extensions/"; \
+    chown -R ${USERNAME}:${USERNAME} "${CODE_SERVER_ROOT}/lib/vscode/extensions"
 
 # --- Docker ---
 RUN set -eux; \
@@ -565,8 +585,13 @@ RUN set -eux; \
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null; \
     fi; \
     # Install Docker Engine, containerd, and Docker Compose
-    apt-get update; \
-    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; \
+    for attempt in 1 2 3 4 5; do \
+        apt-get ${APT_OPTS} update \
+            && apt-get ${APT_OPTS} install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
+            && break; \
+        if [ "$attempt" = 5 ]; then echo "apt failed after 5 attempts" >&2; exit 1; fi; \
+        echo "apt attempt $attempt failed; retrying in 30s" >&2; sleep 30; \
+    done; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*; \
     \
@@ -582,8 +607,13 @@ RUN set -eux; \
     chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list; \
-    apt-get update; \
-    apt-get install -y gh; \
+    for attempt in 1 2 3 4 5; do \
+        apt-get ${APT_OPTS} update \
+            && apt-get ${APT_OPTS} install -y gh \
+            && break; \
+        if [ "$attempt" = 5 ]; then echo "apt failed after 5 attempts" >&2; exit 1; fi; \
+        echo "apt attempt $attempt failed; retrying in 30s" >&2; sleep 30; \
+    done; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
@@ -603,9 +633,14 @@ ENV CHROME_BIN=/usr/bin/chromium \
 RUN set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
       *,browser,*) \
-        apt-get update; \
-        apt-get install -y --no-install-recommends \
-          "$(if grep -q "ubuntu" /etc/os-release; then echo "chromium-browser"; else echo "chromium"; fi)"; \
+        for attempt in 1 2 3 4 5; do \
+          apt-get ${APT_OPTS} update \
+            && apt-get ${APT_OPTS} install -y --no-install-recommends \
+              "$(if grep -q "ubuntu" /etc/os-release; then echo "chromium-browser"; else echo "chromium"; fi)" \
+            && break; \
+          if [ "$attempt" = 5 ]; then echo "apt failed after 5 attempts" >&2; exit 1; fi; \
+          echo "apt attempt $attempt failed; retrying in 30s" >&2; sleep 30; \
+        done; \
         apt-get clean; rm -rf /var/lib/apt/lists/*; \
         ;; \
     esac

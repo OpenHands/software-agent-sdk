@@ -1030,8 +1030,8 @@ printf -- '---\nname: qa-f21-skill\ndescription: QA F21 user skill\n---\nQA_F21_
   starts at 7); only overwrites ignore it. The recipes leave it out of
   creates.
 - `PATCH /api/settings` that switches `agent_kind` and deleting the active
-  profile both rebuild `agent_settings` from a fresh base that keeps
-  `mcp_config` (F18).
+  profile both rebuild `agent_settings` from a fresh base that keeps the
+  server-wide settings (F18).
 - Materialize discovers user and public skills; the public catalog may be
   cloned from GitHub into `OH_PERSISTENCE_DIR/cache/skills` on first use
   (tolerated when offline). The recipes assert only on the run's own
