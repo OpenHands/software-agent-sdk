@@ -527,7 +527,7 @@ ENV EDITOR=code \
     GIT_EDITOR="code --wait" \
     CODE_SERVER_ROOT=/openhands/.code-server
 # code-server release pins are normally refreshed by the scheduled
-# update-code-server-pin workflow. Keep the two per-architecture digests
+# update-version-pins workflow. Keep the two per-architecture digests
 # together with the version, and keep this as the single pinned copy; a CI
 # guard test fails if the version or either digest shape drifts.
 ARG CODE_SERVER_VERSION="4.145.0"

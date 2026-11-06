@@ -60,8 +60,9 @@ another manual Trivy fire drill. This follow-on commit makes the refresh
 persistent and removes the exact-version traps the bumps introduced:
 
 - **Scheduled code-server refresher** (`.github/scripts/update_code_server_pin.py`
-  + `.github/workflows/update-code-server-pin.yml`, weekly, mirroring the
-  npm/Debian-snapshot bots): selects the newest stable, non-draft
+  + the `update-code-server` job of `.github/workflows/update-version-pins.yml`
+  (all three pin refreshers now live in that one file), weekly, mirroring
+  the npm/Debian-snapshot bots): selects the newest stable, non-draft
   code-server release after the same 7-day observation window, then
   updates `CODE_SERVER_VERSION` and **both** arch digests atomically from
   the GitHub release assets (fail-closed if either digest is missing —
