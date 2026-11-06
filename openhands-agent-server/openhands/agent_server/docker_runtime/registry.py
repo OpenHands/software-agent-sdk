@@ -21,6 +21,7 @@ from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
 from openhands.agent_server.docker_runtime.storage import DockerRuntimeStorage
 from openhands.agent_server.launch import container_browser_enabled
+from openhands.agent_server.local_storage import remove_conversation_worktree
 from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
@@ -28,8 +29,6 @@ from openhands.agent_server.models import (
 from openhands.agent_server.persistence.store import _get_persistence_dir
 from openhands.agent_server.storage import Reclaimer
 from openhands.sdk.conversation.request import ConversationContainerOptions
-from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
-from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.command import execute_command, sanitized_env
@@ -523,40 +522,13 @@ class DockerConversationRegistry(ConversationRegistry):
                 stop_event.set()
 
     def cleanup_worktree(self, conversation_id: UUID) -> None:
-        """Unregister a Docker conversation worktree from its host repository."""
-        identity = self.provisioning.load_optional(conversation_id)
-        if identity is None:
+        """Unregister the conversation's worktrees (and its children's) from
+        their host repositories. Branches stay, as for a local conversation."""
+        worktrees_dir = self.provisioning.runtime_dir(conversation_id) / "worktrees"
+        if worktrees_dir.is_symlink() or not worktrees_dir.is_dir():
             return
-
-        repo_root = identity.worktree_repository_path
-        if repo_root is None:
-            try:
-                validate_git_repository(identity.workspace_path)
-                repo_root = Path(
-                    run_git_command(
-                        ["git", "--no-pager", "rev-parse", "--show-toplevel"],
-                        identity.workspace_path,
-                    )
-                ).resolve()
-            except (GitCommandError, GitRepositoryError):
-                return
-
-        worktrees_dir = self.provisioning.direct_child(
-            self.provisioning.runtime_dir(conversation_id), "worktrees"
-        )
-        worktree_root = worktrees_dir / str(conversation_id) / repo_root.name
-        registered_worktrees = run_git_command(
-            ["git", "worktree", "list", "--porcelain", "-z"], repo_root
-        ).split("\0")
-        if f"worktree {worktree_root}" in registered_worktrees:
-            run_git_command(
-                ["git", "worktree", "remove", "--force", str(worktree_root)],
-                repo_root,
-            )
-
-        branch = f"openhands/{conversation_id}"
-        if run_git_command(["git", "branch", "--list", branch], repo_root):
-            run_git_command(["git", "branch", "-D", branch], repo_root)
+        for conversation_dir in worktrees_dir.iterdir():
+            remove_conversation_worktree(conversation_dir)
 
     async def shutdown(self) -> None:
         if self._eviction_task is not None:

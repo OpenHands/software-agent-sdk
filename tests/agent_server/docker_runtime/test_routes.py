@@ -458,7 +458,8 @@ def test_delete_unregisters_host_worktree_before_removing_runtime(
         )
         assert str(worktree_root) not in worktree_state
         assert "prunable" not in worktree_state
-        assert run_git_command(["git", "branch", "--list", branch], repository) == ""
+        # The agent's commits stay reachable, as for a deleted local conversation.
+        assert run_git_command(["git", "branch", "--list", branch], repository)
         assert run_git_command(["git", "branch", "--show-current"], sibling_root) == (
             "sibling"
         )
@@ -495,6 +496,13 @@ def test_cleanup_worktree_is_idempotent(tmp_path, monkeypatch):
         ["git", "worktree", "add", "-b", branch, str(worktree_root), "main"],
         repository,
     )
+    # A child conversation launched with worktree isolation in the container.
+    child_root = worktree_root.parent.parent / str(uuid4()) / repository.name
+    child_root.parent.mkdir(parents=True)
+    run_git_command(
+        ["git", "worktree", "add", "-b", "child", str(child_root), "main"],
+        repository,
+    )
 
     registry.cleanup_worktree(conversation_id)
     registry.cleanup_worktree(conversation_id)
@@ -503,8 +511,9 @@ def test_cleanup_worktree_is_idempotent(tmp_path, monkeypatch):
         ["git", "worktree", "list", "--porcelain"], repository
     )
     assert str(worktree_root) not in worktree_state
+    assert str(child_root) not in worktree_state
     assert "prunable" not in worktree_state
-    assert run_git_command(["git", "branch", "--list", branch], repository) == ""
+    assert run_git_command(["git", "branch", "--list", branch], repository)
 
 
 def test_failed_delete_keeps_docker_ownership_until_state_is_removed(

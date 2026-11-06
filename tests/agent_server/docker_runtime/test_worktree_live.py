@@ -118,6 +118,7 @@ def test_docker_worktrees_remain_host_resolvable_after_runtime_lifecycle(
             print("REPROVISION", response.status_code)
             response = client.delete(f"/api/conversations/{second}")
             assert response.status_code == 200, response.text
+            assert git("branch", "--list", f"openhands/{second}")
             git("status", "--porcelain", cwd=first_root)
             host_view = git("worktree", "list", "--porcelain")
             print("HOST_AFTER_SIBLING_DELETE", host_view)

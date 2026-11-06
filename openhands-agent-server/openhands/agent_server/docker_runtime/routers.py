@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
@@ -384,7 +385,7 @@ async def delete_conversation(conversation_id: UUID, request: Request) -> Respon
         await registry.stop(conversation_id)
         try:
             await asyncio.to_thread(registry.cleanup_worktree, conversation_id)
-        except GitCommandError:
+        except (OSError, subprocess.SubprocessError):
             logger.exception(
                 "Could not clean up conversation worktree %s", conversation_id
             )
