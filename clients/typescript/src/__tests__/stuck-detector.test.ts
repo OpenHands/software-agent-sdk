@@ -197,6 +197,34 @@ describe('StuckDetector', () => {
     });
   });
 
+  it.each(['observation', 'error'] as const)(
+    'detects repeated calls with changing thoughts and identical %s results',
+    (kind) => {
+      const detector = new StuckDetector();
+      const events: BaseEvent[] = [createMessageEvent('user', 'Run the command')];
+      for (let i = 0; i < 4; i++) {
+        const action = createActionEvent('terminal', 'ls', `Attempt ${i}`);
+        events.push(action);
+        events.push(
+          kind === 'observation'
+            ? createObservationEvent(action.id, 'terminal', 'file.txt')
+            : createErrorEvent(action.id, 'terminal', 'Command failed')
+        );
+      }
+      expect(detector.isStuck(events).isStuck).toBe(true);
+    }
+  );
+
+  it('does not flag changing tool output when thoughts vary', () => {
+    const detector = new StuckDetector();
+    const events: BaseEvent[] = [createMessageEvent('user', 'Check progress')];
+    for (let i = 0; i < 4; i++) {
+      const action = createActionEvent('terminal', 'status', `Attempt ${i}`);
+      events.push(action, createObservationEvent(action.id, 'terminal', `Completed ${i}`));
+    }
+    expect(detector.isStuck(events).isStuck).toBe(false);
+  });
+
   describe('Agent Monologue Detection', () => {
     it('should NOT be stuck with less than threshold consecutive agent messages', () => {
       const detector = new StuckDetector({ monologue: 4 });

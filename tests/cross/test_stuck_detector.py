@@ -1,5 +1,7 @@
 import uuid
 
+import pytest
+
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.conversation.stuck_detector import (
@@ -324,7 +326,9 @@ def test_repeating_action_observation_not_stuck_less_than_4_repeats():
     assert stuck_detector.is_stuck() is False
 
 
-def test_repeating_action_observation_stuck():
+@pytest.mark.parametrize("vary_thought", [False, True])
+@pytest.mark.parametrize("vary_observation", [False, True])
+def test_repeating_action_observation_stuck(vary_thought, vary_observation):
     """Test detection of repeating action-observation cycles."""
     llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
     agent = Agent(llm=llm)
@@ -344,7 +348,7 @@ def test_repeating_action_observation_stuck():
     for i in range(4):
         action = ActionEvent(
             source="agent",
-            thought=[TextContent(text="I need to run ls command")],
+            thought=[TextContent(text=f"Attempt {i}" if vary_thought else "Run ls")],
             action=TerminalAction(command="ls"),
             tool_name="terminal",
             tool_call_id=f"call_{i}",
@@ -361,7 +365,7 @@ def test_repeating_action_observation_stuck():
         observation = ObservationEvent(
             source="environment",
             observation=TerminalObservation.from_text(
-                text="file1.txt\nfile2.txt",
+                text=f"file{i}.txt" if vary_observation else "file1.txt\nfile2.txt",
                 command="ls",
                 exit_code=0,
             ),
@@ -371,8 +375,8 @@ def test_repeating_action_observation_stuck():
         )
         state.events.append(observation)
 
-    # Should be stuck with 4 identical action-observation pairs
-    assert stuck_detector.is_stuck() is True
+    # Different tool output remains meaningful progress.
+    assert stuck_detector.is_stuck() is (not vary_observation)
 
 
 def test_repeating_action_error_nudges_before_stuck():
