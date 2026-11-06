@@ -246,8 +246,14 @@ def test_reasoning_only_response_injects_nudge():
     assert "function call" in nudge_text.text
 
 
-def test_content_response_does_not_inject_nudge():
-    """When LLM produces meaningful content, no nudge should be injected."""
+def test_content_response_injects_nudge():
+    """When LLM produces content but no tool call, a corrective nudge is injected.
+
+    Prior behavior treated content-only turns as terminal (set FINISHED), which
+    killed the agent loop on intermediate narration turns. Now the framework
+    nudges the model to either call the finish tool or continue with the next
+    tool call, keeping the loop alive (#5510).
+    """
     agent = _make_agent(with_tool=False)
     conv = Conversation(agent=agent)
 
@@ -266,7 +272,12 @@ def test_content_response_does_not_inject_nudge():
     corrective_nudges = [
         e for e in events if isinstance(e, MessageEvent) and e.source == "environment"
     ]
-    assert len(corrective_nudges) == 0
+    assert len(corrective_nudges) == 1
+    assert corrective_nudges[0].llm_message.role == "user"
+    nudge_text = corrective_nudges[0].llm_message.content[0]
+    assert isinstance(nudge_text, TextContent)
+    assert "no function call" in nudge_text.text
+    assert "finish" in nudge_text.text
 
 
 def test_completely_empty_response_injects_nudge():

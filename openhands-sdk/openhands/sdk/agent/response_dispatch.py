@@ -12,7 +12,6 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.agent.stream_context import StreamContext
-from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.llm import LLMResponse, Message, TextContent
 from openhands.sdk.logger import get_logger
@@ -267,7 +266,14 @@ class ResponseDispatchMixin:
         *,
         mask_secrets: bool = True,
     ) -> None:
-        """Handle LLM response with text content — finishes conversation."""
+        """Handle LLM response with text content but no tool call.
+
+        Content-only turns from the LLM (e.g. narration, intermediate
+        reasoning, task progress updates) must NOT terminate the agent
+        loop. Only an explicit terminal signal — a ``finish`` tool call —
+        should end execution. Sending a corrective nudge keeps the loop
+        alive and tells the model it must produce a tool call next.
+        """
         self._emit_message_event(
             message,
             llm_response,
@@ -277,8 +283,7 @@ class ResponseDispatchMixin:
             mask_secrets=mask_secrets,
         )
         self._maybe_emit_vllm_tokens(llm_response, on_event)
-        logger.debug("LLM produced a message response - awaits user input")
-        state.execution_status = ConversationExecutionStatus.FINISHED
+        self._send_corrective_nudge(on_event, content=True)
 
     def _handle_no_content_response(
         self,
@@ -372,29 +377,43 @@ class ResponseDispatchMixin:
             }
         )
 
-    def _send_corrective_nudge(self, on_event: ConversationCallbackType) -> None:
-        """Inject corrective feedback when no tool call and no content.
+    def _send_corrective_nudge(
+        self, on_event: ConversationCallbackType, *, content: bool = False
+    ) -> None:
+        """Inject corrective feedback when the LLM skips tool calls.
 
         The model still receives this as a user-role message, but the event
         source marks that it came from the framework rather than the human.
+
+        Args:
+            on_event: Event callback.
+            content: True when the LLM did emit text (but no tool call).
+                False for empty / reasoning-only responses.
         """
-        logger.warning(
-            "LLM response contained no tool call and no content"
-            " - sending corrective feedback"
-        )
+        if content:
+            logger.warning(
+                "LLM response contained text but no tool call"
+                " - sending corrective feedback"
+            )
+            nudge_text = (
+                "Your last response contained text but no function call. "
+                "If the task is complete, call the `finish` tool. "
+                "Otherwise, continue with the next tool call."
+            )
+        else:
+            logger.warning(
+                "LLM response contained no tool call and no content"
+                " - sending corrective feedback"
+            )
+            nudge_text = (
+                "Your last response did not include a function call or a "
+                "message. Please use a tool to proceed with the task."
+            )
         nudge = MessageEvent(
             source="environment",
             llm_message=Message(
                 role="user",
-                content=[
-                    TextContent(
-                        text=(
-                            "Your last response did not include a "
-                            "function call or a message. Please "
-                            "use a tool to proceed with the task."
-                        )
-                    )
-                ],
+                content=[TextContent(text=nudge_text)],
             ),
         )
         on_event(nudge)
