@@ -1,3 +1,0 @@
-proxyImage: ghcr.io/berriai/litellm-database@sha256:76ad306ce3927ce5224f6fac0139e08badbfa2b32a178032296c1e867abd4cbe
-fixtureImage: python@sha256:cf50a4f6ac4f026458b08d5222023d700ac806410dff5e9ca8728fa44f2b850f
-existingSecret: ohe3895-proxy-auth

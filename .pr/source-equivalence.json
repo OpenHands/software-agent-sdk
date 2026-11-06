@@ -1,9 +1,0 @@
-{
-  "publication_branch": "codex/ohe-3895-usage-cost-publication",
-  "publication_source_commit": "6650f289c86dd8ad4500e5bcf0f8c59b3aee166a",
-  "original_research_head": "e890d2819a137eda38fa1bce96be679496ddf39a",
-  "original_recorded_build_source_commit": "fc29b402fa20f0a6f17bff053e8f4e7744fbe860",
-  "source_and_tests_byte_identical": true,
-  "verification": "git diff original_research_head publication_source_commit -- . :(exclude).pr is empty",
-  "history_note": "Original research branches remain local and must not be pushed. Historical commit IDs in captured build records are opaque provenance, not published links. Git does not traverse SHA strings in file content. Use publication_source_commit for code inspection."
-}
