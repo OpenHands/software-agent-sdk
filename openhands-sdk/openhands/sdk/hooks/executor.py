@@ -486,6 +486,8 @@ class HookExecutor:
 
         if env:
             hook_env.update(env)
+        if hook.plugin_root is not None:
+            hook_env["PLUGIN_ROOT"] = hook.plugin_root
 
         # Serialize event to JSON for stdin
         event_json = event.model_dump_json()

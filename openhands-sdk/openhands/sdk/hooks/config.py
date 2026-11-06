@@ -50,6 +50,10 @@ class HookDefinition(BaseModel):
 
     type: HookType = HookType.COMMAND
     name: str | None = None
+    plugin_root: str | None = Field(
+        default=None,
+        description="Absolute path to the owning plugin directory, if applicable",
+    )
     # `command` is kept a non-nullable string that is always present in the
     # serialized output and reported as required in the JSON schema (see
     # __get_pydantic_json_schema__). This preserves the published REST response

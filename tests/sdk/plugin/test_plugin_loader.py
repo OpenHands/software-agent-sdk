@@ -139,6 +139,30 @@ class TestHookConfigMerge:
         assert result.pre_tool_use[0].matcher == "terminal"
         assert result.pre_tool_use[1].matcher == "*"
 
+    def test_merge_preserves_plugin_roots(self):
+        config = HookConfig(
+            pre_tool_use=[
+                HookMatcher(
+                    hooks=[HookDefinition(command="cmd1", plugin_root="/plugin-1")]
+                )
+            ]
+        )
+        other = HookConfig(
+            pre_tool_use=[
+                HookMatcher(
+                    hooks=[HookDefinition(command="cmd2", plugin_root="/plugin-2")]
+                )
+            ]
+        )
+
+        result = HookConfig.merge([config, other])
+
+        assert result is not None
+        assert [matcher.hooks[0].plugin_root for matcher in result.pre_tool_use] == [
+            "/plugin-1",
+            "/plugin-2",
+        ]
+
     def test_merge_different_event_types(self):
         """Test merging configs with different event types."""
         config1 = HookConfig(
@@ -333,6 +357,10 @@ class TestLoadPluginsMultiplePlugins:
 
         assert hooks is not None
         assert len(hooks.pre_tool_use) == 2
+        assert [matcher.hooks[0].plugin_root for matcher in hooks.pre_tool_use] == [
+            str(plugin1.resolve()),
+            str(plugin2.resolve()),
+        ]
 
     def test_load_multiple_plugins_different_skills(self, tmp_path: Path, basic_agent):
         """Test that different skills from multiple plugins are combined."""

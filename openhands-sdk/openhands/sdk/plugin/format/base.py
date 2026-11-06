@@ -175,7 +175,8 @@ def _read_hooks_config(root: Path, plugin_dir: Path | None = None) -> HookConfig
     Shared by the concrete strategies: hooks, agents and commands use the same
     on-disk layout in both formats — only the directory they are rooted at
     differs (the plugin root for Claude Code, the client-extension directory for
-    Agent Plugins).
+    Agent Plugins). Hook commands can use the owning plugin directory with
+    ``python3 "${PLUGIN_ROOT}/scripts/check.py"``.
     """
     hooks_json = root / "hooks" / "hooks.json"
     if not hooks_json.exists() or not resolves_within(hooks_json, plugin_dir or root):
@@ -189,6 +190,20 @@ def _read_hooks_config(root: Path, plugin_dir: Path | None = None) -> HookConfig
         if hook_config.is_empty():
             logger.info(f"No hooks configured in {hooks_json}")
             return HookConfig()
+        resolved_plugin_dir = str((plugin_dir or root).resolve())
+        for matchers in (
+            hook_config.pre_tool_use,
+            hook_config.post_tool_use,
+            hook_config.user_prompt_submit,
+            hook_config.session_start,
+            hook_config.session_end,
+            hook_config.stop,
+        ):
+            for matcher in matchers:
+                matcher.hooks = [
+                    hook.model_copy(update={"plugin_root": resolved_plugin_dir})
+                    for hook in matcher.hooks
+                ]
         logger.info(f"Loaded hooks from {hooks_json}")
         return hook_config
     except Exception as e:
