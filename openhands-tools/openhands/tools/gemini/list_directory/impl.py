@@ -115,7 +115,9 @@ class ListDirectoryExecutor(
                         except Exception:
                             continue
 
-                    if len(entries) >= MAX_ENTRIES:
+                    # Stop once a real entry past the cap turns up, so a
+                    # listing that fits exactly is not called truncated.
+                    if len(entries) > MAX_ENTRIES:
                         break
             else:
                 # List only immediate contents
@@ -132,13 +134,13 @@ class ListDirectoryExecutor(
                             )
                         )
 
-                        if len(entries) >= MAX_ENTRIES:
+                        if len(entries) > MAX_ENTRIES:
                             break
                     except Exception:
                         continue
 
             total_count = len(entries)
-            is_truncated = total_count >= MAX_ENTRIES
+            is_truncated = total_count > MAX_ENTRIES
 
             agent_obs = f"Listed directory: {resolved_path} ({total_count} entries"
             if is_truncated:
