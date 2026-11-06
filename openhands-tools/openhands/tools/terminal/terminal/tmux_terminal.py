@@ -3,7 +3,9 @@
 import logging
 import os
 import shlex
+import subprocess
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Iterator, Mapping
@@ -186,6 +188,60 @@ _TMUX_SPECIALS: dict[str, str] = {
 }
 
 
+class TmuxCompletionWaiter:
+    """Out-of-band completion signal for a single command.
+
+    Wraps ``tmux wait-for``: the boundary suffix appended to a command signals
+    the channel (``wait-for -S``) when the command finishes, and this waiter
+    blocks on the same channel from the driver side. Because tmux discards a
+    signal sent while no client is waiting, the waiter process must be started
+    BEFORE the command is sent to the pane.
+
+    The pane-text sentinel regex remains the primary completion signal; this
+    waiter only exists so that a garbled or truncated sentinel echo (observed
+    with very long single-line commands) cannot wedge the session forever.
+    """
+
+    def __init__(self, client_args: list[str], channel: str) -> None:
+        self._client_args = client_args
+        self._channel = channel
+        self.fired = threading.Event()
+        self._proc = subprocess.Popen(
+            ["tmux", *client_args, "wait-for", channel],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self._thread = threading.Thread(target=self._wait, daemon=True)
+        self._thread.start()
+
+    def _wait(self) -> None:
+        try:
+            returncode = self._proc.wait()
+        except OSError:
+            return
+        # Exit 0 means the channel was signaled. A non-zero exit (unavailable
+        # socket, old tmux) degrades to the pane-text detection path.
+        if returncode == 0:
+            self.fired.set()
+
+    def release(self) -> None:
+        """Release the waiter when the pane-text path completed first.
+
+        Signals the channel ourselves so the blocked ``wait-for`` client exits;
+        a signal nobody waits for is simply discarded by tmux.
+        """
+        try:
+            subprocess.run(
+                ["tmux", *self._client_args, "wait-for", "-S", self._channel],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except OSError:
+            pass
+        self._thread.join(timeout=2.0)
+
+
 class TmuxTerminal(TerminalInterface):
     """Tmux-based terminal backend.
 
@@ -339,6 +395,29 @@ class TmuxTerminal(TerminalInterface):
             )
         )
         return content
+
+    def _tmux_client_args(self) -> list[str]:
+        """CLI args for reaching this terminal's tmux server from outside."""
+        if self.server.socket_path is not None:
+            return ["-S", str(self.server.socket_path)]
+        return ["-L", self.server.socket_name]
+
+    def completion_signal_snippet(self, channel: str) -> str:
+        """Shell snippet appended to a command's boundary suffix.
+
+        Signals ``channel`` on this terminal's tmux server when the command
+        finishes, regardless of how its echo renders in the pane.
+        """
+        args = " ".join(self._tmux_client_args())
+        return f"tmux {args} wait-for -S {channel}"
+
+    def start_completion_waiter(self, channel: str) -> TmuxCompletionWaiter:
+        """Start blocking on ``channel`` before the command is sent.
+
+        Must run before the command's send_keys: tmux discards a signal
+        sent while no client is waiting.
+        """
+        return TmuxCompletionWaiter(self._tmux_client_args(), channel)
 
     def clear_screen(self) -> None:
         """Clear the tmux pane screen and history.
