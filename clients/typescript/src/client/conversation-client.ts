@@ -425,6 +425,17 @@ export class ConversationClient {
     });
   }
 
+  /**
+   * Switch the reasoning effort of an ACP conversation. Live for a started
+   * conversation; persisted and applied at session start otherwise. 400 when
+   * the current model doesn't offer `effort`.
+   */
+  async switchAcpEffort(conversationId: string, effort: string): Promise<void> {
+    await this.client.post<Success>(`/api/conversations/${conversationId}/switch_acp_effort`, {
+      effort,
+    });
+  }
+
   async deleteConversation(conversationId: string): Promise<void> {
     await this.client.delete<Success>(`/api/conversations/${conversationId}`);
   }

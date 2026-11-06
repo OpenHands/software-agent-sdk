@@ -737,6 +737,39 @@ async def switch_conversation_acp_model(
     return Success()
 
 
+@conversation_router.post(
+    "/{conversation_id}/switch_acp_effort",
+    responses={
+        400: {"description": "Agent is not ACP, or the model doesn't offer it"},
+        404: {"description": "Conversation not found"},
+        504: {"description": "ACP server did not answer the switch in time"},
+    },
+)
+async def switch_conversation_acp_effort(
+    conversation_id: UUID,
+    effort: str = Body(..., embed=True),
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Switch the reasoning effort of an ACP conversation.
+
+    For a conversation that has already started, sets the session's reasoning
+    effort option so subsequent turns use it without losing context. For one
+    created but not yet run, the value is persisted and applied when the first
+    session starts (returns ``200`` either way). ``effort`` must be one of the
+    conversation's ``available_efforts`` when the session reports them.
+    """
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    try:
+        await event_service.switch_acp_effort(effort)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except TimeoutError as e:
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(e))
+    return Success()
+
+
 @conversation_router.patch(
     "/{conversation_id}", responses={404: {"description": "Item not found"}}
 )

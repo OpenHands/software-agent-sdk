@@ -343,6 +343,13 @@ class ACPAgentProfile(AgentProfileBase):
             "Leave blank to let the server pick its default."
         ),
     )
+    acp_effort: str | None = Field(
+        default=None,
+        description=(
+            "Reasoning effort for the ACP server (e.g. 'high'). Leave blank to "
+            "let the server pick its default."
+        ),
+    )
     acp_session_mode: str | None = Field(
         default=None,
         description=(

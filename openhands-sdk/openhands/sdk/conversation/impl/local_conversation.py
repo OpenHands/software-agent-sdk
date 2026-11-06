@@ -1940,47 +1940,87 @@ class LocalConversation(BaseConversation):
             live = self.agent.has_live_acp_session
             if live:
                 self.agent.set_acp_model(model)
-            # Persist the switched model as the authoritative value. ``acp_model``
-            # is frozen, so we replace the agent with a copy carrying the new
-            # value. This matters on two counts the in-place mutation missed:
-            #   1. A fresh object identity makes the autosave path actually
-            #      write base_state.json (re-assigning the same object is a
-            #      no-op because old == new).
-            #   2. model_post_init / _start_acp_server derive the sentinel model
-            #      and the resumed session model from ``acp_model`` on reload, so
-            #      it must hold the switched value, not the construction-time one.
-            #
-            # model_copy is shallow, so a live copy shares the ACP runtime
-            # (_conn/_executor/_process) with the old agent. Disarm the old
-            # agent's finalizer before dropping it: otherwise ACPAgent.__del__
-            # -> close() on the discarded agent would tear down the session the
-            # copy now owns, leaving the next turn pointing at a dead connection.
-            # Pre-session there is no runtime to hand off, so release_runtime is
-            # unnecessary (the discarded agent's close() is already a no-op).
-            old_agent = self.agent
-            new_agent = old_agent.model_copy(update={"acp_model": model})
+            new_agent = self._replace_acp_agent({"acp_model": model}, live=live)
+            # Keep the persisted hints in sync with the switch. The live agent's
+            # PrivateAttrs already reflect it and win on warm reads, but cold
+            # list reads after a process restart fall back to ``agent_state`` —
+            # which would otherwise still name the pre-switch model until the
+            # next resume. Write unconditionally: a successful switch is
+            # authoritative even for an older/custom server that reported no
+            # ``models`` at init (so the key may not exist yet). A model switch
+            # can also change which efforts the session offers.
+            hints: dict[str, object] = {
+                "acp_current_model_id": new_agent.current_model_id if live else model
+            }
             if live:
-                new_agent._register_atexit_cleanup(replace=True)
-                new_agent._bind_file_credential_masking()
-                old_agent.release_runtime()
-            # ``self.agent`` is the live reference used by subsequent ``step()``
-            # calls; ``self._state.agent`` is what the autosave path serializes
-            # to base_state.json. Update both so the running conversation and the
-            # persisted state agree on the switched model.
-            self.agent = new_agent
-            self._state.agent = new_agent
-            # Keep the persisted model hint in sync with the switch. The live
-            # agent's ``current_model_id`` (a PrivateAttr) already reflects the
-            # new model and wins on warm reads, but cold list reads after a
-            # process restart fall back to ``agent_state`` — which would
-            # otherwise still name the pre-switch model until the next resume.
-            # Write unconditionally: a successful switch is authoritative even
-            # for an older/custom server that reported no ``models`` at init
-            # (so the key may not exist yet).
+                hints["acp_current_effort"] = new_agent.current_effort
+                hints["acp_available_efforts"] = [
+                    option.model_dump() for option in new_agent.available_efforts
+                ]
+            self._state.agent_state = {**self._state.agent_state, **hints}
+
+    def switch_acp_effort(self, effort: str) -> None:
+        """Switch the reasoning effort of an ACP conversation.
+
+        Mirrors :meth:`switch_acp_model`: with a live session the effort applies
+        to subsequent turns of the same session; before the first ``run()`` it
+        is only persisted, and session creation applies it.
+
+        Raises:
+            ValueError: If the conversation's agent is not an :class:`ACPAgent`,
+                if ``effort`` is empty, or (for a live switch) the current model
+                does not offer it or the ACP server rejects it.
+            TimeoutError: If a live switch exceeds ``acp_prompt_timeout`` seconds.
+        """
+        if not isinstance(self.agent, ACPAgent):
+            raise ValueError(
+                "switch_acp_effort is only supported for ACP conversations."
+            )
+        if not effort or not effort.strip():
+            raise ValueError("effort must be a non-empty string")
+        with self._state:
+            live = self.agent.has_live_acp_session
+            if live:
+                self.agent.set_acp_effort(effort)
+            new_agent = self._replace_acp_agent({"acp_effort": effort}, live=live)
             self._state.agent_state = {
                 **self._state.agent_state,
-                "acp_current_model_id": model,
+                "acp_current_effort": new_agent.current_effort if live else effort,
             }
+
+    def _replace_acp_agent(self, update: dict[str, object], *, live: bool) -> ACPAgent:
+        """Persist a switched ACP field by swapping in an agent copy.
+
+        The ACP fields are frozen, so we replace the agent with a copy carrying
+        the new value. This matters on two counts an in-place mutation missed:
+          1. A fresh object identity makes the autosave path actually write
+             base_state.json (re-assigning the same object is a no-op because
+             old == new).
+          2. model_post_init / _start_acp_server derive the sentinel model and
+             the resumed session settings from these fields on reload, so they
+             must hold the switched value, not the construction-time one.
+
+        model_copy is shallow, so a live copy shares the ACP runtime
+        (_conn/_executor/_process) with the old agent. Disarm the old agent's
+        finalizer before dropping it: otherwise ACPAgent.__del__ -> close() on
+        the discarded agent would tear down the session the copy now owns,
+        leaving the next turn pointing at a dead connection. Pre-session there
+        is no runtime to hand off, so release_runtime is unnecessary (the
+        discarded agent's close() is already a no-op).
+        """
+        old_agent = self.agent
+        assert isinstance(old_agent, ACPAgent)
+        new_agent = old_agent.model_copy(update=update)
+        if live:
+            new_agent._register_atexit_cleanup(replace=True)
+            new_agent._bind_file_credential_masking()
+            old_agent.release_runtime()
+        # ``self.agent`` is the live reference used by subsequent ``step()``
+        # calls; ``self._state.agent`` is what the autosave path serializes to
+        # base_state.json. Update both so they agree on the switched value.
+        self.agent = new_agent
+        self._state.agent = new_agent
+        return new_agent
 
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:

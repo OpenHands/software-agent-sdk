@@ -2225,6 +2225,17 @@ class EventService:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
 
+    async def switch_acp_effort(self, effort: str) -> None:
+        """Switch the reasoning effort on an ACP conversation.
+
+        Same lifecycle as :meth:`switch_acp_model`: a live switch runs in a
+        worker thread, a not-yet-run conversation only persists the value.
+        """
+        if self._conversation is None:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._conversation.switch_acp_effort, effort)
+
     async def close(self):
         if self.bash_event_service is not None:
             await self.bash_event_service.close()

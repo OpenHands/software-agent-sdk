@@ -7,6 +7,12 @@ export interface ACPModelInfo {
   description?: string | null;
 }
 
+/** One reasoning-effort level an ACP server offers; mirrors `openhands.sdk.agent.acp_models.ACPEffortOption`. */
+export interface ACPEffortOption {
+  value: string;
+  name?: string | null;
+}
+
 export interface ACPModelDiscoveryError {
   /** `ACPAuthRequired`, `ACPStartupTimeout`, `ACPSpawnError` or `ACPInitError`. */
   code: string;
@@ -20,6 +26,10 @@ export interface ACPModelDiscovery {
   /** The server's own default for the given credentials; may be an alias such as `default`. */
   current_model_id: string | null;
   available_models: ACPModelInfo[];
+  /** Effort the server uses for `current_model_id` by default; `null` when the model offers none. */
+  current_effort?: string | null;
+  /** Effort levels the server offers for `current_model_id`. */
+  available_efforts?: ACPEffortOption[];
   supports_runtime_model_switch: boolean;
   error: ACPModelDiscoveryError | null;
 }

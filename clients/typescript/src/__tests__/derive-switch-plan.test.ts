@@ -146,6 +146,28 @@ describe('deriveSwitchPlan', () => {
       }
     });
 
+    // `acp_effort` joins ACPAgentProfile once the pinned server schema has it.
+    type WithEffort = ACPAgentProfile & { acp_effort?: string | null };
+
+    it('switch-live names every live field that differs', () => {
+      const effortOnly: WithEffort = { ...acpBase, revision: 1, acp_effort: 'high' };
+      const both: WithEffort = { ...effortOnly, acp_model: 'claude-opus-4-8' };
+
+      expect(deriveSwitchPlan(acpBase, effortOnly, claudeProvider)).toEqual({
+        action: 'switch-live',
+        mutableFields: ['acp_effort'],
+      });
+      expect(deriveSwitchPlan(acpBase, both, claudeProvider)).toEqual({
+        action: 'switch-live',
+        mutableFields: ['acp_model', 'acp_effort'],
+      });
+    });
+
+    it('treats a missing acp_effort like null', () => {
+      const target: WithEffort = { ...acpBase, revision: 1, acp_effort: null };
+      expect(deriveSwitchPlan(acpBase, target, claudeProvider).action).toBe('current');
+    });
+
     it('start-new when only acp_model differs but provider does NOT support runtime switch', () => {
       const codexSnapshot: ACPAgentProfile = {
         ...acpBase,

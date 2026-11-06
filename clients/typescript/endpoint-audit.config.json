@@ -37,6 +37,11 @@
       "tracking": "https://github.com/OpenHands/software-agent-sdk/pull/5579"
     },
     {
+      "endpoints": ["POST /api/conversations/{}/switch_acp_effort"],
+      "reason": "Client-ahead API for the ACP reasoning-effort switch, until the pinned Agent Server release includes it.",
+      "owner": "OpenHands SDK maintainers"
+    },
+    {
       "endpoints": ["POST /api/profiles/{}/validate"],
       "reason": "Client-ahead API stacked on the pending Agent Server pre-flight LLM validation endpoint.",
       "owner": "OpenHands TypeScript client maintainers",

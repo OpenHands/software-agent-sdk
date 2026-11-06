@@ -121,6 +121,21 @@ class ACPModelInfo(BaseModel):
         )
 
 
+class ACPEffortOption(BaseModel):
+    """One reasoning-effort level an ACP server offers for the current model."""
+
+    value: str = Field(
+        description=(
+            'Server-assigned effort value (e.g. ``"high"``). Pass it back to '
+            "switch to this effort. May be an alias such as claude-agent-acp's "
+            '``"default"``.'
+        ),
+    )
+    name: str | None = Field(
+        default=None, description='Human-readable label, e.g. ``"High"``.'
+    )
+
+
 class ACPModelDiscoveryError(BaseModel):
     """Why an ACP server could not report its models."""
 
@@ -158,6 +173,20 @@ class ACPModelDiscovery(BaseModel):
         description=(
             "Models the server offers for the given credentials. Empty when the "
             "server does not report any."
+        ),
+    )
+    current_effort: str | None = Field(
+        default=None,
+        description=(
+            "Reasoning effort the server uses for ``current_model_id`` when none "
+            "is requested. ``None`` when the model offers no effort setting."
+        ),
+    )
+    available_efforts: list[ACPEffortOption] = Field(
+        default_factory=list,
+        description=(
+            "Reasoning-effort levels the server offers for ``current_model_id``. "
+            "Empty when the model offers none."
         ),
     )
     supports_runtime_model_switch: bool = Field(

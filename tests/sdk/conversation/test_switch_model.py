@@ -222,6 +222,69 @@ def test_switch_acp_model_refreshes_surfaced_current_model_id(tmp_path):
     assert conv.state.agent_state["acp_current_model_id"] == "model-b"
 
 
+def test_switch_acp_effort_before_session_persists(tmp_path):
+    conv, _ = _make_pre_session_acp_conversation(tmp_path)
+
+    conv.switch_acp_effort("high")
+
+    reloaded = ConversationState.model_validate(
+        json.loads(conv.state._fs.read(BASE_STATE))
+    )
+    assert isinstance(reloaded.agent, ACPAgent)
+    assert reloaded.agent.acp_effort == "high"
+    assert conv.state.agent_state["acp_current_effort"] == "high"
+
+
+def test_switch_acp_effort_live_applies_and_persists(tmp_path):
+    conv, agent = _make_acp_conversation(tmp_path)
+    agent._model_via_config_option = True
+    conn = agent._conn
+    assert conn is not None
+    conn.set_config_option = AsyncMock(
+        return_value={
+            "config_options": [
+                {
+                    "id": "reasoning_effort",
+                    "type": "select",
+                    "category": "thought_level",
+                    "current_value": "low",
+                    "options": [{"value": "low"}, {"value": "high"}],
+                }
+            ]
+        }
+    )
+
+    conv.switch_acp_effort("low")
+
+    conn.set_config_option.assert_awaited_once_with(
+        config_id="reasoning_effort", value="low", session_id="sess-1"
+    )
+    switched = conv.agent
+    assert isinstance(switched, ACPAgent)
+    assert switched.acp_effort == "low"
+    assert switched.current_effort == "low"
+    assert switched._conn is conn
+    assert conv.state.agent_state["acp_current_effort"] == "low"
+
+
+def test_switch_acp_effort_rejected_keeps_persisted_state(tmp_path):
+    conv, agent = _make_acp_conversation(tmp_path)
+
+    with pytest.raises(ValueError, match="non-empty"):
+        conv.switch_acp_effort(" ")
+    with pytest.raises(ValueError, match="no session config options"):
+        conv.switch_acp_effort("high")
+
+    assert conv.agent is agent
+    assert agent.acp_effort is None
+    assert "acp_current_effort" not in conv.state.agent_state
+
+
+def test_switch_acp_effort_rejects_non_acp_agent():
+    with pytest.raises(ValueError, match="only supported for ACP"):
+        _make_conversation().switch_acp_effort("high")
+
+
 def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     """The pre-switch agent must not tear down the shared live session.
 

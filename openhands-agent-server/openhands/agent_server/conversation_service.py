@@ -379,7 +379,16 @@ def _compose_conversation_info(
         or agent_state.get("acp_available_models")
         or []
     )
-    # Static provider capability. Unlike the two fields above it has no
+    # Effort follows the same live → persisted-hint order as the model.
+    current_effort = getattr(agent, "current_effort", None) or agent_state.get(
+        "acp_current_effort"
+    )
+    available_efforts = (
+        getattr(agent, "available_efforts", None)
+        or agent_state.get("acp_available_efforts")
+        or []
+    )
+    # Static provider capability. Unlike the fields above it has no
     # meaningful live-vs-persisted distinction — it's derived from the stable
     # provider identity and written once at session init — so we read the
     # persisted value directly. Defaults False for non-ACP agents and
@@ -399,6 +408,8 @@ def _compose_conversation_info(
         sub_conversation_ids=sub_conversation_ids or [],
         current_model_id=current_model_id,
         available_models=available_models,
+        current_effort=current_effort,
+        available_efforts=available_efforts,
         supports_runtime_model_switch=supports_runtime_model_switch,
         client_tools=stored.client_tools,
         tool_module_qualnames=dict(stored.tool_module_qualnames),

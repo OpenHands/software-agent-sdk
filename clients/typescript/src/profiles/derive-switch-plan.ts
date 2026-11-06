@@ -73,8 +73,8 @@ function changedNonMutableFields(
  * - **current**: `snapshot` content is identical to `targetProfile` content.
  * - **switch-live**: can transition without restarting the conversation:
  *   - OpenHands → OpenHands: only `llm_profile_ref` differs.
- *   - ACP → ACP: same `acp_server`, only `acp_model` differs, and the
- *     provider declares `supports_runtime_model_switch`.
+ *   - ACP → ACP: same `acp_server`, only `acp_model` and/or `acp_effort`
+ *     differ, and the provider declares `supports_runtime_model_switch`.
  * - **start-new**: possible but requires a fresh conversation.
  * - **disabled**: no path forward (e.g. unknown agent kind).
  */
@@ -127,29 +127,31 @@ export function deriveSwitchPlan(
       return { action: 'start-new', reason: 'ACP provider changed' };
     }
 
-    // ACP → ACP (same provider): acp_model is the only field that can switch
-    // live. Any other content change forces a new conversation.
-    const nonMutable = changedNonMutableFields(snapshotRaw, targetRaw, new Set(['acp_model']));
+    // ACP → ACP (same provider): acp_model and acp_effort are the only fields
+    // that can switch live. Any other content change forces a new conversation.
+    const liveFields = ['acp_model', 'acp_effort'] as const;
+    const nonMutable = changedNonMutableFields(snapshotRaw, targetRaw, new Set(liveFields));
     if (nonMutable.length > 0) {
       return { action: 'start-new', reason: `fields changed: ${nonMutable.join(', ')}` };
     }
 
-    // Identical model (and nothing else changed) → already current, regardless
-    // of provider capability. Check this before the runtime-switch gate so an
-    // unchanged profile is never mistaken for a switch.
-    const modelDiffers = snapshotAcp.acp_model !== targetAcp.acp_model;
-    if (!modelDiffers) {
+    // Nothing live differs → already current, regardless of provider
+    // capability. Check this before the runtime-switch gate so an unchanged
+    // profile is never mistaken for a switch.
+    const changed = liveFields.filter(
+      (key) => (snapshotRaw[key] ?? null) !== (targetRaw[key] ?? null)
+    );
+    if (changed.length === 0) {
       return { action: 'current' };
     }
 
-    // Model differs → live switch only if the provider supports it.
     if (!providerInfo?.supports_runtime_model_switch) {
       return {
         action: 'start-new',
         reason: 'provider does not support runtime model switch',
       };
     }
-    return { action: 'switch-live', mutableFields: ['acp_model'] };
+    return { action: 'switch-live', mutableFields: [...changed] };
   }
 
   // Unreachable with a valid AgentProfile union, but guards against future variants.

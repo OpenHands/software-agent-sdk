@@ -73,6 +73,8 @@ def discover_acp_models(
             agent_version=agent.agent_version or None,
             current_model_id=agent.current_model_id,
             available_models=agent.available_models,
+            current_effort=agent.current_effort,
+            available_efforts=agent.available_efforts,
             supports_runtime_model_switch=agent.supports_runtime_model_switch,
         )
     except Exception as exc:
