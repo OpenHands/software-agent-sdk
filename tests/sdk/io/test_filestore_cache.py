@@ -348,3 +348,12 @@ def test_oversize_overwrite_does_not_serve_stale_cache(tmp_path):
     store.write("state.json", new_content)
 
     assert store.read("state.json") == new_content
+
+
+def test_bytes_overwrite_does_not_serve_stale_cache(tmp_path):
+    store = LocalFileStore(str(tmp_path))
+    store.write("state.json", "old")
+
+    store.write("state.json", b"new")
+
+    assert store.read("state.json") == "new"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
@@ -41,11 +42,14 @@ from openhands.agent_server.models import (
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.agent_server.utils import safe_rmtree
 from openhands.sdk.conversation.request import ConversationContainerOptions
+from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
+from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, ResolvedLaunch
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.workspace import LocalWorkspace
 
 
 logger = get_logger(__name__)
@@ -186,11 +190,36 @@ async def start_docker_conversation(
         raise HTTPException(422, str(exc)) from exc
     release = None
     try:
-        payload, launched, options = await _prepare_forward(
+        payload, launched, options, worktree = await _prepare_forward(
             body, registry, existing=existing
         )
         identity = registry.provisioning.create(conversation_id, host_workspace)
         updates: dict[str, Any] = {}
+        if worktree:
+            try:
+                validate_git_repository(identity.workspace_path)
+                repo_root = Path(
+                    run_git_command(
+                        ["git", "--no-pager", "rev-parse", "--show-toplevel"],
+                        identity.workspace_path,
+                    )
+                ).resolve()
+                git_common_dir = Path(
+                    run_git_command(
+                        ["git", "--no-pager", "rev-parse", "--git-common-dir"],
+                        identity.workspace_path,
+                    )
+                )
+                if not git_common_dir.is_absolute():
+                    git_common_dir = identity.workspace_path / git_common_dir
+                git_common_dir = git_common_dir.resolve()
+            except (GitCommandError, GitRepositoryError):
+                pass
+            else:
+                updates.update(
+                    worktree_repository_path=repo_root,
+                    worktree_git_common_dir_path=git_common_dir,
+                )
         if launched is not None and identity.launched_agent_profile is None:
             updates["launched_agent_profile"] = launched
         # Fixed once the container accepted the conversation; until then a
@@ -202,12 +231,17 @@ async def start_docker_conversation(
             registry.provisioning.save(identity)
         container = await registry.get_or_create(conversation_id)
         release = registry.acquire_lease(conversation_id)
+        forwarded = await asyncio.to_thread(payload, identity.cipher)
+        if worktree and identity.worktree_repository_path is not None:
+            forwarded["workspace"] = LocalWorkspace(
+                working_dir=identity.workspace_path
+            ).model_dump(mode="json")
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(
                 f"{container.host}/api/conversations",
                 params={"include_skills": include_skills},
                 headers={"X-Session-API-Key": container.api_key},
-                json=await asyncio.to_thread(payload, identity.cipher),
+                json=forwarded,
             )
     except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as exc:
         raise launch_http_exception(exc) from exc
@@ -242,6 +276,7 @@ async def _prepare_forward(
     Callable[[Cipher], dict[str, Any]],
     LaunchedAgentProfile | None,
     ConversationContainerOptions | None,
+    bool,
 ]:
     """Resolve the start request with this host's stores; the container finalizes.
 
@@ -278,7 +313,7 @@ async def _prepare_forward(
         )
 
     launched = source.profile if isinstance(source, ResolvedLaunch) else None
-    return payload, launched, start.container
+    return payload, launched, start.container, start.worktree
 
 
 @docker_conversation_router.get(
@@ -348,6 +383,12 @@ async def delete_conversation(conversation_id: UUID, request: Request) -> Respon
     # partially deleted state.
     try:
         await registry.stop(conversation_id)
+        try:
+            await asyncio.to_thread(registry.cleanup_worktree, conversation_id)
+        except (OSError, subprocess.SubprocessError):
+            logger.exception(
+                "Could not clean up conversation worktree %s", conversation_id
+            )
         await asyncio.to_thread(
             safe_rmtree, registry.provisioning.runtime_dir(conversation_id)
         )
