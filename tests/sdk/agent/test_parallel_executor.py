@@ -1,7 +1,9 @@
 """Tests for ParallelToolExecutor."""
 
+import asyncio
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -238,3 +240,24 @@ def test_nested_execution_no_deadlock():
     )
 
     assert results == [["inner-a", "inner-b"]]
+
+
+async def test_async_sequential_batch_runs_without_the_default_executor():
+    """arun() holds the state lock across this await; callers waiting on that
+    lock occupy default-executor threads. A tool queued behind them would
+    never start, so the sequential path must not depend on that pool."""
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+    release = threading.Event()
+    blocker = loop.run_in_executor(None, release.wait)
+    action: Any = MagicMock()
+    event = MagicMock()
+    try:
+        results = await asyncio.wait_for(
+            ParallelToolExecutor().aexecute_batch([action], lambda a: [event]),
+            timeout=5,
+        )
+    finally:
+        release.set()
+        await blocker
+    assert results == [[event]]

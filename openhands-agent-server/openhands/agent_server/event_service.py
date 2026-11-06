@@ -1,14 +1,14 @@
 import asyncio
 import time
 import traceback
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -271,6 +271,11 @@ class EventService:
     _lease_task: asyncio.Task | None = field(default=None, init=False)
     _external_lease_renewal: bool = field(default=False, init=False)
     _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
+    # Runs calls that may block on this conversation's state lock, which a run
+    # holds across whole tool steps. On the shared default executor those
+    # waiters starve lock-free work server-wide (other conversations' event
+    # reads); here they only queue behind their own conversation.
+    _state_executor: ThreadPoolExecutor | None = field(default=None, init=False)
     _run_semaphore: asyncio.Semaphore | None = field(default=None, init=False)
     # Permit for this conversation's current admission session. Held for the
     # whole chain of runs (initial run, any re-arm for stranded input, ACP
@@ -296,6 +301,11 @@ class EventService:
     @property
     def conversation_dir(self):
         return self.conversations_dir / self.stored.id.hex
+
+    async def _run_state_op[R](self, fn: Callable[..., R], *args: Any) -> R:
+        """Run ``fn`` off-loop on this conversation's state-lock executor."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._state_executor, fn, *args)
 
     async def load_meta(self):
         meta_file = self.conversation_dir / "meta.json"
@@ -788,8 +798,7 @@ class EventService:
             return state.execution_status
 
     async def _get_execution_status(self) -> ConversationExecutionStatus:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._get_execution_status_sync)
+        return await self._run_state_op(self._get_execution_status_sync)
 
     def _mark_error_status_sync(self) -> None:
         """Force the conversation into ERROR status (idempotent backstop).
@@ -836,8 +845,7 @@ class EventService:
             return ConversationStateUpdateEvent.from_conversation_state(state)
 
     async def _create_state_update_event(self) -> ConversationStateUpdateEvent:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._create_state_update_event_sync)
+        return await self._run_state_op(self._create_state_update_event_sync)
 
     def _event_matches_body(self, event: Event, body: str) -> bool:
         """Check if event's message content matches body filter (case-insensitive)."""
@@ -903,8 +911,7 @@ class EventService:
         if not _from_goal_loop:
             await self.stop_goal_loop()
         explicit_interrupt_generation = self._explicit_interrupt_generation
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._conversation.send_message, message)
+        await self._run_state_op(self._conversation.send_message, message)
         if run:
             if self._explicit_interrupt_generation != explicit_interrupt_generation:
                 return
@@ -1008,10 +1015,7 @@ class EventService:
             return (True, False)
 
     async def _mark_running_acp_prompt_superseded(self) -> tuple[bool, bool]:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None, self._mark_running_acp_prompt_superseded_sync
-        )
+        return await self._run_state_op(self._mark_running_acp_prompt_superseded_sync)
 
     async def subscribe_to_events(self, subscriber: Subscriber[Event]) -> UUID:
         subscriber_id = self._pub_sub.subscribe(subscriber)
@@ -1089,7 +1093,7 @@ class EventService:
             # needs a done-callback: otherwise it is collected with an unread
             # exception, so a dropped stats or LLM-log event leaves no signal
             # beyond a GC-time warning.
-            future = main_loop.run_in_executor(None, locked_on_event)
+            future = main_loop.run_in_executor(self._state_executor, locked_on_event)
             # Attach from the loop thread. This helper is called from foreign
             # threads, and `add_done_callback` on an already-done future uses
             # plain `call_soon`, which neither is thread-safe nor wakes an idle
@@ -1240,6 +1244,11 @@ class EventService:
     async def start(self):
         # Store the main event loop for cross-thread communication
         self._main_loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+        # Created here, not lazily: _emit_event_from_thread submits to it from
+        # foreign threads.
+        self._state_executor = ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="conversation-state"
+        )
 
         # self.stored contains an Agent configuration we can instantiate
         self.conversation_dir.mkdir(parents=True, exist_ok=True)
@@ -1675,10 +1684,8 @@ class EventService:
                     # ConversationRunError means run()/arun() already emitted its
                     # own event, so skip it there to avoid duplicating the error.
                     if not isinstance(exc, ConversationRunError):
-                        await loop.run_in_executor(
-                            None, self._publish_error_event_sync, exc
-                        )
-                    await loop.run_in_executor(None, self._mark_error_status_sync)
+                        await self._run_state_op(self._publish_error_event_sync, exc)
+                    await self._run_state_op(self._mark_error_status_sync)
                 finally:
                     settle()
                     # Wait for all pending events to be published via
@@ -2101,18 +2108,14 @@ class EventService:
         """Reject all pending actions and publish updated state."""
         if not self._conversation:
             raise ValueError("inactive_service")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None, self._conversation.reject_pending_actions, reason
-        )
+        await self._run_state_op(self._conversation.reject_pending_actions, reason)
 
     async def pause(self):
         if self._conversation:
             self._explicit_interrupt_generation += 1
             self._rerun_requested = False
             self._acp_internal_rerun_requested = False
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._conversation.pause)
+            await self._run_state_op(self._conversation.pause)
             # Publish state update after pause to ensure stats are updated
             await self._publish_state_update()
 
@@ -2158,17 +2161,13 @@ class EventService:
         if CODEX_AUTH_SECRET_NAME in self.credential_bindings:
             secrets = dict(secrets)
             secrets.pop(CODEX_AUTH_SECRET_NAME, None)
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._conversation.update_secrets, secrets)
+        await self._run_state_op(self._conversation.update_secrets, secrets)
 
     async def set_confirmation_policy(self, policy: ConfirmationPolicyBase):
         """Set the confirmation policy for the conversation."""
         if not self._conversation:
             raise ValueError("inactive_service")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None, self._conversation.set_confirmation_policy, policy
-        )
+        await self._run_state_op(self._conversation.set_confirmation_policy, policy)
 
     async def set_max_budget_per_run(self, max_budget_per_run: float | None) -> None:
         """Set the conversation's cost ceiling, taking effect from its next step.
@@ -2180,9 +2179,8 @@ class EventService:
         conversation = self._conversation
         if conversation is None:
             raise ValueError("inactive_service")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None, setattr, conversation, "max_budget_per_run", max_budget_per_run
+        await self._run_state_op(
+            setattr, conversation, "max_budget_per_run", max_budget_per_run
         )
 
     async def set_security_analyzer(
@@ -2191,17 +2189,15 @@ class EventService:
         """Set the security analyzer for the conversation."""
         if not self._conversation:
             raise ValueError("inactive_service")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None, self._conversation.set_security_analyzer, security_analyzer
+        await self._run_state_op(
+            self._conversation.set_security_analyzer, security_analyzer
         )
 
     async def load_plugin(self, plugin_ref: str) -> None:
         """Load a marketplace plugin into the active conversation."""
         if self._conversation is None:
             raise ValueError("inactive_service")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._conversation.load_plugin, plugin_ref)
+        await self._run_state_op(self._conversation.load_plugin, plugin_ref)
 
     async def switch_acp_model(self, model: str) -> None:
         """Switch the model on an ACP conversation.
@@ -2222,8 +2218,7 @@ class EventService:
             # longer raises for a created-but-not-yet-run conversation, so a
             # pre-first-run switch is a normal 200 deferral, not an error.
             raise ValueError("inactive_service")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
+        await self._run_state_op(self._conversation.switch_acp_model, model)
 
     async def close(self):
         if self.bash_event_service is not None:
@@ -2257,9 +2252,8 @@ class EventService:
         run_task = self._run_task
         if run_task is not None and not run_task.done():
             if self._conversation is not None:
-                loop = asyncio.get_running_loop()
                 try:
-                    await loop.run_in_executor(None, self._conversation.pause)
+                    await self._run_state_op(self._conversation.pause)
                 except Exception:
                     logger.warning(
                         "Failed to pause conversation during close", exc_info=True
@@ -2284,9 +2278,11 @@ class EventService:
         await self._pub_sub.close()
         await self._stream_pub_sub.close()
         if self._conversation:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._conversation.close)
+            await self._run_state_op(self._conversation.close)
             self._conversation = None
+        if self._state_executor is not None:
+            self._state_executor.shutdown(wait=False)
+            self._state_executor = None
         self.credential_bindings = {}
 
         if self._lease is not None and self._lease_generation is not None:
@@ -2328,8 +2324,7 @@ class EventService:
         if not self._conversation:
             raise ValueError("inactive_service")
 
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._conversation.ask_agent, question)
+        return await self._run_state_op(self._conversation.ask_agent, question)
 
     async def condense(self) -> None:
         """Force condensation of the conversation history.
@@ -2353,8 +2348,7 @@ class EventService:
                 f"{type(condenser).__name__} does not handle condensation requests"
             )
 
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._conversation.condense)
+        return await self._run_state_op(self._conversation.condense)
 
     async def navigate_to(self, event_id: str | None) -> None:
         """Move the conversation HEAD to an existing event (in-place re-root).
@@ -2367,10 +2361,7 @@ class EventService:
         if not self._conversation:
             raise ValueError("inactive_service")
 
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None, self._conversation.navigate_to, event_id
-        )
+        return await self._run_state_op(self._conversation.navigate_to, event_id)
 
     def _get_agent_final_response_sync(self) -> str:
         """Extract the agent's final response from the active branch.
