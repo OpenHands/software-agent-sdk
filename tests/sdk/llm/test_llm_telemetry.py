@@ -992,8 +992,9 @@ class TestTelemetryEdgeCases:
             metrics = basic_telemetry.on_response(mock_response)
 
             assert metrics.accumulated_cost == 0.0
-            # Should NOT add zero cost to costs list (0.0 is falsy)
-            assert len(basic_telemetry.metrics.costs) == 0
+            # Keep confirmed zero separate from unavailable pricing.
+            assert len(basic_telemetry.metrics.costs) == 1
+            assert basic_telemetry.metrics.costs[0].cost == 0.0
 
 
 class TestTelemetryCallbacks:
