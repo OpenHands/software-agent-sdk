@@ -1172,7 +1172,9 @@ class EventService:
 
         def callback(event: Event) -> None:
             if isinstance(event, ConversationStateUpdateEvent) and event.key == "agent":
-                register_managed_llm_key_refresh(conversation._state.agent)
+                register_managed_llm_key_refresh(
+                    conversation._state.agent.get_all_llms()
+                )
             conversation._on_event(event)
 
         return callback
@@ -1400,7 +1402,7 @@ class EventService:
 
         # Inert unless the deployment opted in (OH_LLM_API_KEY_REFRESH_URL plus
         # OH_LLM_API_KEY_REFRESH_BASE_URLS); see #5189.
-        register_managed_llm_key_refresh(self._conversation.agent)
+        register_managed_llm_key_refresh(self._conversation.agent.get_all_llms())
 
         if not self._external_lease_renewal:
             self._lease_task = asyncio.create_task(self._renew_lease_loop())
@@ -2314,6 +2316,10 @@ class EventService:
             except KeyError:
                 self._conversation.llm_registry.add(llm)
                 resolved_llm = llm
+
+        if resolved_llm is not None:
+            # Idempotent: a no-op re-hook when this is already an agent LLM.
+            register_managed_llm_key_refresh([resolved_llm])
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
