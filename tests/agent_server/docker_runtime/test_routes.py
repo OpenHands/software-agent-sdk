@@ -15,6 +15,7 @@ from starlette.routing import Match
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.agent_server.docker_runtime import routers
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
 from openhands.agent_server.docker_runtime.registry import (
     ConversationContainer,
@@ -504,6 +505,42 @@ def test_cleanup_worktree_is_idempotent(tmp_path, monkeypatch):
     assert str(worktree_root) not in worktree_state
     assert "prunable" not in worktree_state
     assert run_git_command(["git", "branch", "--list", branch], repository) == ""
+
+
+def test_failed_delete_keeps_docker_ownership_until_state_is_removed(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("outer-key"),
+    )
+    conversation_id = uuid4()
+    registry = DockerConversationRegistry(config)
+    registry.provisioning.create(conversation_id)
+    conversation_dir = registry.conversation_dir(conversation_id)
+    conversation_dir.mkdir(parents=True)
+    (conversation_dir / "meta.json").write_text("{}")
+    registry.stop = AsyncMock()
+    original_rmtree = routers.safe_rmtree
+
+    def fail_conversation_delete(path):
+        if path == conversation_dir:
+            raise OSError("state removal failed")
+        original_rmtree(path)
+
+    monkeypatch.setattr(routers, "safe_rmtree", fail_conversation_delete)
+    app = FastAPI()
+    app.state.conversation_registry = registry
+    app.state.conversation_service = AsyncMock()
+    app.include_router(docker_conversation_router, prefix="/api")
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.delete(f"/api/conversations/{conversation_id}")
+
+    assert response.status_code == 500
+    assert (conversation_dir / "meta.json").is_file()
+    assert registry.provisioning.manifest_path(conversation_id).is_file()
 
 
 @pytest.mark.asyncio

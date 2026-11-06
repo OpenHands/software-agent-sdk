@@ -1020,6 +1020,11 @@ def test_openai_chat_completions_gateway_over_real_server(
                     "role": "assistant",
                     "content": "Hello from patched LLM",
                 }
+                assert reused_response.json()["usage"] == {
+                    "prompt_tokens": 14,
+                    "completion_tokens": 10,
+                    "total_tokens": 24,
+                }
 
                 from openai import BadRequestError, OpenAI
 

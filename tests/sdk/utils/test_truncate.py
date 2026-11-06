@@ -1,5 +1,7 @@
 """Tests for truncate utility functions."""
 
+import pytest
+
 from openhands.sdk.utils import (
     DEFAULT_TEXT_CONTENT_LIMIT,
     DEFAULT_TRUNCATE_NOTICE,
@@ -7,17 +9,19 @@ from openhands.sdk.utils import (
 )
 
 
-def test_maybe_truncate_no_limit():
-    """Test that maybe_truncate returns original content when no limit is set."""
-    content = "This is a test string"
-    result = maybe_truncate(content, truncate_after=None)
-    assert result == content
-
-
-def test_maybe_truncate_under_limit():
-    """Test that maybe_truncate returns original content when under limit."""
-    content = "Short string"
-    result = maybe_truncate(content, truncate_after=100)
+@pytest.mark.parametrize(
+    ("content", "truncate_after"),
+    [
+        pytest.param("This is a test string", None, id="no_limit"),
+        pytest.param("Short string", 100, id="under_limit"),
+        # Zero limit is treated as no limit (same as None).
+        pytest.param("test", 0, id="zero_limit"),
+    ],
+)
+def test_maybe_truncate_returns_original_content(
+    content: str, truncate_after: int | None
+):
+    result = maybe_truncate(content, truncate_after=truncate_after)
     assert result == content
 
 
@@ -79,14 +83,6 @@ def test_maybe_truncate_empty_string():
     """Test that maybe_truncate handles empty strings correctly."""
     result = maybe_truncate("", truncate_after=100)
     assert result == ""
-
-
-def test_maybe_truncate_zero_limit():
-    """Test that maybe_truncate handles zero limit correctly."""
-    content = "test"
-    result = maybe_truncate(content, truncate_after=0)
-    # Zero limit is treated as no limit (same as None)
-    assert result == content
 
 
 def test_maybe_truncate_head_and_tail():

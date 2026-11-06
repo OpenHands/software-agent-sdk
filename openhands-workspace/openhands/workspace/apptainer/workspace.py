@@ -200,21 +200,27 @@ class ApptainerWorkspace(RemoteWorkspace):
 
         # Run container
         self._instance_name = f"agent-server-{uuid.uuid4()}"
-        self._start_container()
+        try:
+            self._start_container()
 
-        # Set host for RemoteWorkspace to use
-        object.__setattr__(self, "host", f"http://localhost:{self.host_port}")
-        # Apptainer inherits SESSION_API_KEY from environment by default
-        # We need to match it if present
-        session_api_key = os.environ.get("SESSION_API_KEY")
-        object.__setattr__(self, "api_key", session_api_key)
+            # Set host for RemoteWorkspace to use
+            object.__setattr__(self, "host", f"http://localhost:{self.host_port}")
+            # Apptainer inherits SESSION_API_KEY from environment by default
+            # We need to match it if present
+            session_api_key = os.environ.get("SESSION_API_KEY")
+            object.__setattr__(self, "api_key", session_api_key)
 
-        # Wait for container to be healthy
-        self._wait_for_health(timeout=self.health_check_timeout)
-        logger.info("Apptainer workspace is ready at %s", self.host)
+            # Wait for container to be healthy
+            self._wait_for_health(timeout=self.health_check_timeout)
+            logger.info("Apptainer workspace is ready at %s", self.host)
 
-        # Now initialize the parent RemoteWorkspace with the container URL
-        super().model_post_init(context)
+            # Now initialize the parent RemoteWorkspace with the container URL
+            super().model_post_init(context)
+        except BaseException:
+            # A failed startup never returns a workspace to clean up, so stop
+            # the `apptainer run` process that may already be running.
+            self.cleanup()
+            raise
 
     def _prepare_sif_image(self) -> str:
         """Prepare the SIF image file from server_image."""
