@@ -245,13 +245,13 @@ class TmuxPanePool:
         with self._lock:
             if self._available:
                 terminal = self._available.popleft()
-                logger.debug(f"Checked out existing pane: {terminal.pane}")
+                logger.debug("Checked out existing pane: %s", terminal.pane)
                 return terminal
 
             # Create a new pane (still under max_panes thanks to semaphore)
             terminal = self._create_pane()
             self._all_panes.append(terminal)
-            logger.debug(f"Checked out new pane: {terminal.pane}")
+            logger.debug("Checked out new pane: %s", terminal.pane)
             return terminal
 
     def checkin(self, terminal: PooledTmuxTerminal) -> None:
@@ -264,7 +264,7 @@ class TmuxPanePool:
                 self._available.append(terminal)
 
         self._semaphore.release()
-        logger.debug(f"Checked in pane: {terminal.pane}")
+        logger.debug("Checked in pane: %s", terminal.pane)
 
     def replace(self, old_terminal: PooledTmuxTerminal) -> PooledTmuxTerminal:
         """Replace a checked-out pane with a fresh one.
