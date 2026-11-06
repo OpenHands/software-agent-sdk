@@ -25,7 +25,13 @@ jobs:
             - uses: actions/checkout@v7.0.1
               with:
                   token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
+            # Deliberate policy: npm majors are only guaranteed to carry the
+            # bundled-dependency fixes (undici/brace-expansion) per major, so
+            # this workflow explicitly opts in to crossing majors after the
+            # observation window. The script itself defaults to same-major.
             - name: Select the newest observed stable release
+              env:
+                  ALLOW_MAJOR_UPGRADE: 'true'
               run: python .github/scripts/update_npm_pin.py --dockerfile "$DOCKERFILE"
             - name: Open update PR
               env:
@@ -70,7 +76,10 @@ jobs:
                   AGENT:
 
                   ## Why
-                  Keep the agent-server npm bundle current without unreviewed major upgrades.
+                  Keep the agent-server npm bundle current. Crossing a major is
+                  an explicit policy of this workflow (bundled-dependency fixes
+                  are only guaranteed per major), and the result still lands as
+                  a reviewed draft PR rather than landing unreviewed.
 
                   ## Summary
                   Update npm to $VERSION after its seven-day observation period.

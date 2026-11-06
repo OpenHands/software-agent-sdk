@@ -526,17 +526,33 @@ ENV EDITOR=code \
     VISUAL=code \
     GIT_EDITOR="code --wait" \
     CODE_SERVER_ROOT=/openhands/.code-server
-# Published 2026-11-04; digests from coder/code-server GitHub release assets.
-# Update the version and both architecture digests together.
+# code-server release pins are normally refreshed by the scheduled
+# update-code-server-pin workflow. Keep the two per-architecture digests
+# together with the version, and keep this as the single pinned copy; a CI
+# guard test fails if the version or either digest shape drifts.
 ARG CODE_SERVER_VERSION="4.145.0"
+ARG CODE_SERVER_AMD64_SHA256=771bf6038658034d7caf509fcc44af50f0b8bdac5e738177b6cf9c4181dd3382
+ARG CODE_SERVER_ARM64_SHA256=425d3bc5167c85dc070427d2aa93760083b02aec852ea9ce75c2906c99138f45
+# code-server's bundled Node must stay at or above the version that fixed
+# the Brotli decoder overflow (CVE-2026-111497). This is a floor, not an
+# exact pin, so upstream patch bumps do not churn the image build.
+ARG CODE_SERVER_NODE_MIN_VERSION=24.22.1
+# Minimum undici the editor may ship with (7.29.1 in 4.145.0 is vulnerable
+# to CVE-2026-109383, CVE-2026-109829, CVE-2026-109869, CVE-2026-87018).
+# If the bundled copy is below this floor it is replaced with exactly this
+# version from the npm registry; once code-server ships at or above it,
+# the replacement is skipped and only the floor check remains.
+ARG CODE_SERVER_UNDICI_MIN_VERSION=7.30.1
+ARG CODE_SERVER_UNDICI_SHA256=c98bd3881137c11341e8be8d2ec509ebf973b6f8b36d0a4c6d2afcda15e0d712
 RUN set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
       *,vscode,*) ;; \
       *) echo "INSTALL_CAPABILITIES excludes vscode; skipping code-server"; exit 0;; \
     esac; \
+    CODE_SERVER_NODE="${CODE_SERVER_ROOT}/lib/node"; \
     case "$(uname -m)" in \
-      x86_64) arch=amd64; sha256=771bf6038658034d7caf509fcc44af50f0b8bdac5e738177b6cf9c4181dd3382;; \
-      aarch64) arch=arm64; sha256=425d3bc5167c85dc070427d2aa93760083b02aec852ea9ce75c2906c99138f45;; \
+      x86_64) arch=amd64; sha256="${CODE_SERVER_AMD64_SHA256}";; \
+      aarch64) arch=arm64; sha256="${CODE_SERVER_ARM64_SHA256}";; \
       *) echo "Unsupported code-server architecture" >&2; exit 1;; \
     esac; \
     wget -O /tmp/code-server.tar.gz "https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server-${CODE_SERVER_VERSION}-linux-${arch}.tar.gz"; \
@@ -545,27 +561,31 @@ RUN set -eux; \
     tar -xzf /tmp/code-server.tar.gz -C "${CODE_SERVER_ROOT}" --strip-components=1; \
     rm /tmp/code-server.tar.gz; \
     cp "${CODE_SERVER_ROOT}/lib/vscode/bin/remote-cli/code-server" "${CODE_SERVER_ROOT}/lib/vscode/bin/remote-cli/code"; \
-    # code-server bundles Node v24.22.1, which fixes the Brotli decoder
-    # overflow CVE-2026-111497, so the Node replacement carried forward
-    # from #6200 for 4.141.0 is no longer needed. Assert the bundled
-    # version so a future downgrade cannot silently reintroduce the
-    # vulnerable build.
-    test "$("${CODE_SERVER_ROOT}/lib/node" --version)" = "v24.22.1"; \
-    # code-server 4.145.0 bundles undici 7.29.1 (CVE-2026-109383,
-    # CVE-2026-109829, CVE-2026-109869, CVE-2026-87018; fixed in 7.30.1,
-    # which no code-server release ships yet). Swap in the fixed undici
-    # from the npm registry; drop this once code-server ships >= 7.30.1.
-    UNDICI_TMP=$(mktemp -d); \
-    wget -qO "${UNDICI_TMP}/undici.tgz" "https://registry.npmjs.org/undici/-/undici-7.30.1.tgz"; \
-    echo "c98bd3881137c11341e8be8d2ec509ebf973b6f8b36d0a4c6d2afcda15e0d712  ${UNDICI_TMP}/undici.tgz" | sha256sum -c -; \
-    tar -xzf "${UNDICI_TMP}/undici.tgz" -C "${UNDICI_TMP}"; \
-    test "$("${CODE_SERVER_ROOT}/lib/node" -p "require('${UNDICI_TMP}/package/package.json').version")" = "7.30.1"; \
-    rm -rf "${CODE_SERVER_ROOT}/lib/vscode/node_modules/undici"; \
-    mkdir -p "${CODE_SERVER_ROOT}/lib/vscode/node_modules/undici"; \
-    tar -cf - -C "${UNDICI_TMP}/package" . | tar -xf - -C "${CODE_SERVER_ROOT}/lib/vscode/node_modules/undici"; \
-    rm -rf "${UNDICI_TMP}"; \
-    UNDICI_INSTALLED=$("${CODE_SERVER_ROOT}/lib/node" -p "require('${CODE_SERVER_ROOT}/lib/vscode/node_modules/undici/package.json').version"); \
-    test "${UNDICI_INSTALLED}" = "7.30.1"; \
+    BUNDLED_NODE_VERSION=$("${CODE_SERVER_NODE}" --version | sed 's/^v//'); \
+    if [ "$(printf '%s\n%s\n' "${CODE_SERVER_NODE_MIN_VERSION}" "${BUNDLED_NODE_VERSION}" | sort -V | head -n1)" != "${CODE_SERVER_NODE_MIN_VERSION}" ]; then \
+        echo "code-server bundled Node ${BUNDLED_NODE_VERSION} is below required floor ${CODE_SERVER_NODE_MIN_VERSION}" >&2; \
+        exit 1; \
+    fi; \
+    # Self-retiring undici floor: replace the bundled copy only while it
+    # is below CODE_SERVER_UNDICI_MIN_VERSION. The refresh workflow that
+    # bumps CODE_SERVER_VERSION does not need to know this block exists.
+    UNDICI_BUNDLED=$("${CODE_SERVER_NODE}" -p "try{require('${CODE_SERVER_ROOT}/lib/vscode/node_modules/undici/package.json').version}catch(e){''}"); \
+    if [ "$(printf '%s\n%s\n' "${CODE_SERVER_UNDICI_MIN_VERSION}" "${UNDICI_BUNDLED}" | sort -V | head -n1)" != "${CODE_SERVER_UNDICI_MIN_VERSION}" ]; then \
+        UNDICI_TMP=$(mktemp -d); \
+        wget -qO "${UNDICI_TMP}/undici.tgz" "https://registry.npmjs.org/undici/-/undici-${CODE_SERVER_UNDICI_MIN_VERSION}.tgz"; \
+        echo "${CODE_SERVER_UNDICI_SHA256}  ${UNDICI_TMP}/undici.tgz" | sha256sum -c -; \
+        tar -xzf "${UNDICI_TMP}/undici.tgz" -C "${UNDICI_TMP}"; \
+        test "$("${CODE_SERVER_NODE}" -p "require('${UNDICI_TMP}/package/package.json').version")" = "${CODE_SERVER_UNDICI_MIN_VERSION}"; \
+        rm -rf "${CODE_SERVER_ROOT}/lib/vscode/node_modules/undici"; \
+        mkdir -p "${CODE_SERVER_ROOT}/lib/vscode/node_modules/undici"; \
+        tar -cf - -C "${UNDICI_TMP}/package" . | tar -xf - -C "${CODE_SERVER_ROOT}/lib/vscode/node_modules/undici"; \
+        rm -rf "${UNDICI_TMP}"; \
+    fi; \
+    UNDICI_INSTALLED=$("${CODE_SERVER_NODE}" -p "require('${CODE_SERVER_ROOT}/lib/vscode/node_modules/undici/package.json').version"); \
+    if [ "$(printf '%s\n%s\n' "${CODE_SERVER_UNDICI_MIN_VERSION}" "${UNDICI_INSTALLED}" | sort -V | head -n1)" != "${CODE_SERVER_UNDICI_MIN_VERSION}" ]; then \
+        echo "code-server undici ${UNDICI_INSTALLED} is below required floor ${CODE_SERVER_UNDICI_MIN_VERSION}" >&2; \
+        exit 1; \
+    fi; \
     chown -R ${USERNAME}:${USERNAME} "${CODE_SERVER_ROOT}"
 
 # This bind mount builds the builder stage even when vscode is excluded.
