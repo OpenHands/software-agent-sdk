@@ -46,6 +46,7 @@ from openhands.agent_server.mcp_oauth_store import (
 from openhands.agent_server.persistence import get_secrets_store
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.mcp._compat import compat_attr
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
     MCPAuthCredential,
@@ -530,7 +531,9 @@ def _run_tool_call(
         for block in result.content
         if isinstance(block, mcp.types.TextContent)
     )
-    return MCPToolCallResult(is_error=bool(result.isError), text=text)
+    return MCPToolCallResult(
+        is_error=bool(compat_attr(result, "is_error", "isError")), text=text
+    )
 
 
 # What a masked value reads as, as in a conversation's masked output.
