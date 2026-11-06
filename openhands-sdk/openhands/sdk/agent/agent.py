@@ -81,6 +81,7 @@ from openhands.sdk.observability.laminar import (
     should_enable_observability,
 )
 from openhands.sdk.observability.utils import extract_action_name
+from openhands.sdk.utils.redact import redact_api_key_literals
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -816,7 +817,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         logger.debug(
             "Sending messages to LLM: "
-            f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
+            + redact_api_key_literals(json.dumps([m.model_dump() for m in _messages[1:]], indent=2))
         )
 
         try:
@@ -1024,7 +1025,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         logger.debug(
             "Sending messages to LLM: "
-            f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
+            + redact_api_key_literals(json.dumps([m.model_dump() for m in _messages[1:]], indent=2))
         )
 
         try:
