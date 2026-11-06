@@ -44,6 +44,11 @@ class MCPClient(AsyncMCPClient):
     _tools_reconciled_callback: ToolsReconciledCallback | None
 
     def __init__(self, *args, **kwargs):
+        # FastMCP 4 defaults to "auto", which negotiates the sessionless
+        # 2026 protocol with modern servers and drops per-session server
+        # state between tool calls. "legacy" keeps the initialize handshake
+        # and the session semantics MCP servers relied on before.
+        kwargs.setdefault("mode", "legacy")
         super().__init__(*args, **kwargs)
         self._executor = AsyncExecutor()
         self._closed = False
