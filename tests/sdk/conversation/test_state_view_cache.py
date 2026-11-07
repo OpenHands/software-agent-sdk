@@ -117,10 +117,10 @@ def test_hot_path_does_not_call_enforce_properties(state):
     call_count = 0
     original = View.enforce_properties
 
-    def counting_enforce(self, all_events):
+    def counting_enforce(self, all_events, **kwargs):
         nonlocal call_count
         call_count += 1
-        return original(self, all_events)
+        return original(self, all_events, **kwargs)
 
     with patch.object(View, "enforce_properties", counting_enforce):
         for i in range(10):
@@ -136,10 +136,10 @@ def test_rebuild_view_runs_enforce_properties(state):
     call_count = 0
     original = View.enforce_properties
 
-    def counting_enforce(self, all_events):
+    def counting_enforce(self, all_events, **kwargs):
         nonlocal call_count
         call_count += 1
-        return original(self, all_events)
+        return original(self, all_events, **kwargs)
 
     with patch.object(View, "enforce_properties", counting_enforce):
         state.rebuild_view()
