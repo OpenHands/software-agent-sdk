@@ -550,6 +550,19 @@ def test_str_replace_with_empty_new_str(editor):
     assert test_file.read_text() == "Line 1\nLine 3"
 
 
+def test_str_replace_without_new_str_removes_the_match(editor):
+    """The schema documents that leaving `new_str` out removes the match."""
+    editor, test_file = editor
+    test_file.write_text("Line 1\nLine to remove\nLine 3")
+    result = editor(
+        command="str_replace",
+        path=str(test_file),
+        old_str="Line to remove\n",
+    )
+    assert isinstance(result, FileEditorObservation)
+    assert test_file.read_text() == "Line 1\nLine 3"
+
+
 def test_str_replace_with_empty_old_str(editor):
     editor, test_file = editor
     test_file.write_text("Line 1\nLine 2\nLine 3")

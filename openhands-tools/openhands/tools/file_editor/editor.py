@@ -134,9 +134,9 @@ class FileEditor:
         elif command == "str_replace":
             if old_str is None:
                 raise EditorToolParameterMissingError(command, "old_str")
-            if new_str is None:
-                raise EditorToolParameterMissingError(command, "new_str")
-            if new_str == old_str:
+            # `new_str` is optional: the action schema documents that leaving it out
+            # removes the match, and `str_replace` already reads a missing value as "".
+            if new_str is not None and new_str == old_str:
                 raise EditorToolParameterInvalidError(
                     "new_str",
                     new_str,
