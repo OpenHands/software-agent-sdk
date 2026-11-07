@@ -85,9 +85,12 @@ def find_reaction_target(
 ) -> Event:
     """The message a reaction from ``source`` is about.
 
-    Without ``target_event_id``, the latest message from the other side: the
-    person's latest message for the agent, and for the person the agent's
-    latest message or ``finish``.
+    ``events`` is the conversation's active branch (``state.active_branch()``),
+    so a message on a branch the conversation navigated away from is never a
+    target. Without ``target_event_id``, the latest message from the other
+    side: the latest user message for the agent (the person's, or a
+    coordinator's), and for the person the agent's latest message or
+    ``finish``.
 
     Raises:
         ValueError: There is no such message.
@@ -108,13 +111,7 @@ def find_reaction_target(
 
 
 def _find_event(events: Sequence[Event], event_id: EventID) -> Event | None:
-    get_index = getattr(events, "get_index", None)  # an EventLog's id index
-    if get_index is not None:
-        try:
-            return events[get_index(event_id)]
-        except KeyError:
-            return None
-    return next((e for e in events if e.id == event_id), None)
+    return next((e for e in reversed(events) if e.id == event_id), None)
 
 
 def check_reaction_emoji(emoji: str) -> ReactionEmoji:

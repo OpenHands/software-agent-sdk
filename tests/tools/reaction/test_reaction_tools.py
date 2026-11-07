@@ -225,7 +225,7 @@ def test_person_reacts_to_the_agents_latest_message(conversation):
     with pytest.raises(ValueError, match="no agent message"):
         conversation.react("+1")
 
-    conversation.state.events.append(_message("agent", "Fixed it."))
+    conversation.state.append_event(_message("agent", "Fixed it."))
     event = conversation.react("+1")
     removal = conversation.react("+1", event.target_event_id, removed=True)
 
@@ -238,3 +238,25 @@ def test_person_reacts_to_the_agents_latest_message(conversation):
 def test_person_cannot_use_an_unknown_emoji(conversation):
     with pytest.raises(ValueError, match="Unknown emoji"):
         conversation.react("rocket")
+
+
+def test_messages_off_the_active_branch_are_not_targets(conversation):
+    question = _user_message(conversation)
+    answer = _message("agent", "Old answer.")
+    conversation.state.append_event(answer)
+
+    conversation.navigate_to(question.id)
+
+    with pytest.raises(ValueError, match="no agent message"):
+        conversation.react("+1")
+    with pytest.raises(ValueError, match="No message"):
+        conversation.react("+1", answer.id)
+
+
+def test_execute_tool_records_the_reaction(conversation):
+    observation = conversation.execute_tool("react", ReactAction(emoji="tada"))
+
+    assert not observation.is_error
+    (saved,) = [e for e in conversation.state.events if isinstance(e, ReactionEvent)]
+    assert saved.source == "agent" and saved.emoji == "tada"
+    assert saved.target_event_id == _user_message(conversation).id
