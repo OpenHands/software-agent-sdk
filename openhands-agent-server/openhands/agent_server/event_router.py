@@ -19,22 +19,26 @@ from fastapi import (
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from openhands.agent_server._secrets_exposure import get_config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import (
     get_conversation_service,
     get_event_service,
 )
 from openhands.agent_server.event_service import EventService
+from openhands.agent_server.features import is_enabled
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
     EventSortOrder,
+    ReactionRequest,
     SendMessageRequest,
     Success,
 )
 from openhands.agent_server.openai.usage import token_usage_delta
+from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.sdk import Message
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import Event
+from openhands.sdk.event import Event, ReactionEvent
 
 
 event_read_router = APIRouter(
@@ -351,6 +355,50 @@ async def respond_to_confirmation(
     return Success()
 
 
+reaction_router = APIRouter(
+    prefix="/conversations/{conversation_id}/reactions", tags=["Events"]
+)
+
+
+@reaction_router.post(
+    "",
+    responses={
+        400: {"description": "There is no such message to react to"},
+        404: {"description": "Item not found"},
+        409: {"description": "Conversation reactions are turned off"},
+    },
+)
+async def react_to_message(
+    request: ReactionRequest,
+    http_request: Request,
+    event_service: EventService = Depends(get_event_service),
+) -> ReactionEvent:
+    """Add or remove the person's emoji reaction on a message.
+
+    The reaction is saved as a `ReactionEvent` and streamed like other events;
+    it does not run the agent. Without `target_event_id` it goes on the
+    agent's latest message. Needs the `conversation_reactions` feature on.
+    """
+    settings = await asyncio.to_thread(
+        lambda: get_settings_store(get_config(http_request)).load()
+        or PersistedSettings()
+    )
+    if not is_enabled(settings.features, "conversation_reactions"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Conversation reactions are turned off",
+        )
+    try:
+        return await event_service.react(
+            request.emoji, request.target_event_id, removed=request.removed
+        )
+    except ValueError as exc:
+        if str(exc) == "inactive_service":
+            raise
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
 event_router = APIRouter()
 event_router.include_router(event_read_router)
 event_router.include_router(event_write_router)
+event_router.include_router(reaction_router)

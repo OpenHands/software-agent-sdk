@@ -48,10 +48,15 @@ from openhands.sdk.event import (
     MessageEvent,
     ObservationEvent,
     PauseEvent,
+    ReactionEvent,
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
+from openhands.sdk.event.reaction import (
+    check_reaction_emoji,
+    find_reaction_target,
+)
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
@@ -2062,6 +2067,33 @@ class LocalConversation(BaseConversation):
             )
             self._on_event(user_msg_event)
 
+    def react(
+        self,
+        emoji: str,
+        target_event_id: EventID | None = None,
+        *,
+        removed: bool = False,
+    ) -> ReactionEvent:
+        """Record the person's emoji reaction on a message, or remove it.
+
+        Without ``target_event_id`` it reacts to the agent's latest message.
+        The agent reacts through the ``react``/``unreact`` tools instead.
+        A reaction does not wake the agent.
+
+        Raises:
+            ValueError: The emoji is not allowed, or there is no such message.
+        """
+        checked = check_reaction_emoji(emoji)
+        with self._state:
+            target = find_reaction_target(
+                self._state.active_branch(), target_event_id, source="user"
+            )
+            event = ReactionEvent(
+                source="user", target_event_id=target.id, emoji=checked, removed=removed
+            )
+            self._on_event(event)
+        return event
+
     def _on_event_with_state_lock(self, event: Event) -> None:
         """Emit an event while holding the conversation state lock."""
         with self._state:
@@ -3315,6 +3347,8 @@ class LocalConversation(BaseConversation):
                         action_id=event.id,
                     )
                     rerun_log.append(obs_event)
+                    for follow_up in observation.follow_up_events():
+                        rerun_log.append(follow_up)
             except Exception as e:
                 logger.error(
                     f"Action {action_count} ({tool_name}) failed during rerun: {e}"
@@ -3345,6 +3379,10 @@ class LocalConversation(BaseConversation):
             tool_name: The name of the tool to execute (e.g., "sleeptime_compute")
             action: The action to pass to the tool executor
 
+        The observation is returned, not recorded; events the observation
+        asks to record (``Observation.follow_up_events``, such as a reaction)
+        are added to the conversation.
+
         Returns:
             The observation returned by the tool execution
 
@@ -3366,7 +3404,13 @@ class LocalConversation(BaseConversation):
         # Execute the tool
         if not tool.executor:
             raise NotImplementedError(f"Tool '{tool_name}' has no executor")
-        return tool(action, self)
+        observation = tool(action, self)
+        follow_ups = observation.follow_up_events()
+        if follow_ups:
+            with self._state:
+                for event in follow_ups:
+                    self._on_event(event)
+        return observation
 
     def __del__(self) -> None:
         """Ensure cleanup happens when conversation is destroyed."""
