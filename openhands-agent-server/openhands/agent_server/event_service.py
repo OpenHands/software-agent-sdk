@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import time
 import traceback
 from collections.abc import Mapping
@@ -908,8 +909,12 @@ class EventService:
         *,
         run_slot: RunSlot | None = None,
         refuse_pending_confirmation: bool = False,
+        sender: str | None = None,
     ) -> SendMessageRunOutcome | None:
         """Append a message and, with ``run``, start a run to handle it.
+
+        ``sender`` is recorded on the saved event; see
+        :data:`openhands.sdk.conversation.types.CONVERSATION_SENDER_PREFIX`.
 
         With ``refuse_pending_confirmation`` a conversation waiting for
         confirmation keeps the message but is not run, and this raises
@@ -930,7 +935,10 @@ class EventService:
             await self.stop_goal_loop()
         explicit_interrupt_generation = self._explicit_interrupt_generation
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._conversation.send_message, message)
+        send = self._conversation.send_message
+        if sender is not None:
+            send = functools.partial(send, sender=sender)
+        await loop.run_in_executor(None, send, message)
         outcome: SendMessageRunOutcome | None = None
         if run:
             outcome = "not_run"

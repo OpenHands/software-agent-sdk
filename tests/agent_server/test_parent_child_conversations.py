@@ -28,6 +28,7 @@ from openhands.agent_server.models import (
     StartChildConversationResponse,
     StartConversationRequest,
 )
+from openhands.agent_server.project_prompts import WORKER_GUIDANCE_MARKER
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import (
@@ -311,14 +312,26 @@ class _ChildLaunch:
 
 
 async def _launch_child(
-    tmp_path: Path, workspace_dir: Path, request: StartChildConversationRequest
+    tmp_path: Path,
+    workspace_dir: Path,
+    request: StartChildConversationRequest,
+    *,
+    parent_tags: dict[str, str] | None = None,
+    grandchild: bool = False,
 ) -> _ChildLaunch:
-    """Start a parent in *workspace_dir*, then launch a child from it."""
+    """Start a parent in *workspace_dir*, then launch a child from it.
+
+    With ``grandchild``, the launched child is in turn the parent of the child
+    reported as ``result``/``child``.
+    """
     services: dict[UUID, Any] = {}
     worktree_root = tmp_path / "conversation-worktrees"
     parent_request = _start_request(workspace_dir).model_copy(
         # The parent's own resolved/turn state must not carry over.
-        update={"tags": {"source": "test", "resolved": "user", "turn": "asked"}}
+        update={
+            "tags": parent_tags
+            or {"source": "test", "resolved": "user", "turn": "asked"},
+        }
     )
     with patch(
         "openhands.agent_server.conversation_service.EventService",
@@ -329,7 +342,15 @@ async def _launch_child(
             conversation_worktree_root=worktree_root,
         ) as service:
             parent_info, _ = await service.start_conversation(parent_request)
+            parent_service = services[parent_info.id]
+            parent_service.stored = parent_service.stored.model_copy(
+                update={"title": "Coordinator"}
+            )
             result = await service.start_child_conversation(parent_info.id, request)
+            if grandchild and result is not None:
+                result = await service.start_child_conversation(
+                    result.conversation_id, request
+                )
             parent = await service.get_conversation(parent_info.id)
             child = (
                 await service.get_conversation(result.conversation_id)
@@ -371,12 +392,60 @@ async def test_start_child_conversation_delivers_task_as_first_message(
     assert launch.result is not None
     child_service = launch.services[launch.result.conversation_id]
     child_service.send_message.assert_awaited_once_with(
-        Message(role="user", content=[TextContent(text="Write the docs")]), False
+        Message(role="user", content=[TextContent(text="Write the docs")]),
+        False,
+        sender=f"conversation:{launch.parent_id.hex}",
     )
     # The run is admitted with the slot acquired before the child was persisted.
     child_service.run.assert_awaited_once()
     assert child_service.run.await_args is not None
     assert isinstance(child_service.run.await_args.kwargs["run_slot"], RunSlot)
+
+
+def _system_suffix(launch: _ChildLaunch) -> str:
+    assert launch.result is not None
+    agent = launch.services[launch.result.conversation_id].get_conversation().agent
+    context = agent.agent_context
+    return (context.system_message_suffix if context else None) or ""
+
+
+@pytest.mark.asyncio
+async def test_project_child_is_told_who_started_it(tmp_path, workspace_dir):
+    request = StartChildConversationRequest(task="Write the docs")
+
+    launch = await _launch_child(
+        tmp_path, workspace_dir, request, parent_tags={"project": "p1"}
+    )
+
+    suffix = _system_suffix(launch)
+    assert suffix.count(WORKER_GUIDANCE_MARKER) == 1
+    assert f'"Coordinator" (conversation {launch.parent_id.hex})' in suffix
+
+
+@pytest.mark.asyncio
+async def test_a_workers_child_keeps_one_copy_of_the_guidance(tmp_path, workspace_dir):
+    request = StartChildConversationRequest(task="Write the docs")
+
+    launch = await _launch_child(
+        tmp_path,
+        workspace_dir,
+        request,
+        parent_tags={"project": "p1"},
+        grandchild=True,
+    )
+
+    suffix = _system_suffix(launch)
+    assert suffix.count(WORKER_GUIDANCE_MARKER) == 1
+    assert launch.parent_id.hex in suffix
+
+
+@pytest.mark.asyncio
+async def test_child_outside_projects_gets_no_project_guidance(tmp_path, workspace_dir):
+    request = StartChildConversationRequest(task="Write the docs")
+
+    launch = await _launch_child(tmp_path, workspace_dir, request)
+
+    assert WORKER_GUIDANCE_MARKER not in _system_suffix(launch)
 
 
 @pytest.mark.asyncio

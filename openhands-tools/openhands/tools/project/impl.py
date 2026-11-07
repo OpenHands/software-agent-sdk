@@ -247,7 +247,12 @@ class MessageProjectConversationExecutor(
             path = f"/api/projects/{project_id}/conversations/{target_id}/messages"
             try:
                 response = self._client.request(
-                    "POST", path, json={"text": action.message}
+                    "POST",
+                    path,
+                    json={
+                        "text": action.message,
+                        "sender_conversation_id": self._client.conv_state.id.hex,
+                    },
                 )
             except ProjectToolError as exc:
                 cause = exc.__cause__

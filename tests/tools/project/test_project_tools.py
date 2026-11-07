@@ -197,8 +197,9 @@ def test_list_reports_server_errors(tmp_path):
 def test_message_posts_to_member_conversation(tmp_path, status, attention):
     conversation = _conversation(status, attention)
     server = _Server([conversation])
+    state = _conv_state(tmp_path)
     executor = MessageProjectConversationExecutor(
-        _conv_state(tmp_path), transport=httpx.MockTransport(server)
+        state, transport=httpx.MockTransport(server)
     )
     hyphenated = str(UUID(conversation["conversation_id"]))
 
@@ -213,7 +214,10 @@ def test_message_posts_to_member_conversation(tmp_path, status, attention):
     assert post.url.path == (
         f"/api/projects/{PROJECT_ID}/conversations/{conversation['conversation_id']}/messages"
     )
-    assert json.loads(post.content) == {"text": "Also add docs"}
+    assert json.loads(post.content) == {
+        "text": "Also add docs",
+        "sender_conversation_id": state.id.hex,
+    }
     assert observation.conversation_id == conversation["conversation_id"]
     assert observation.previous_status == status
     assert observation.run == "started"

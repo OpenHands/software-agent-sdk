@@ -56,6 +56,7 @@ from openhands.agent_server.project_artifacts import (
     valid_artifact_name,
 )
 from openhands.agent_server.project_board import ResolvedBy, TurnOutcome
+from openhands.agent_server.project_prompts import sender_header
 from openhands.agent_server.utils import utc_now
 from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -63,6 +64,7 @@ from openhands.sdk.conversation.types import (
     PROJECT_TAG_KEY,
     RESOLVED_TAG_KEY,
     TURN_TAG_KEY,
+    conversation_sender,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.datetime import OpenHandsUUID
@@ -190,6 +192,16 @@ class DeleteResponse(BaseModel):
 
 class ProjectConversationMessageRequest(BaseModel):
     text: str = Field(..., min_length=1, description="The message to send.")
+    sender_conversation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "The project conversation sending the message, such as the "
+            "coordinator. The saved message then records it as its `sender` "
+            "(`conversation:<id hex>`) and starts with a line telling the "
+            "receiving agent who sent it. Leave it out for the person's own "
+            "messages."
+        ),
+    )
 
 
 ProjectConversationRunOutcome = Literal[
@@ -650,6 +662,7 @@ async def remove_project_conversation(
     responses={
         404: {"description": "Project not found, or conversation not a member"},
         409: {"description": "The conversation is waiting for confirmation"},
+        422: {"description": "The sender is not another conversation of the project"},
         429: {"description": "Message saved, but the server run limit is full"},
     },
 )
@@ -669,8 +682,14 @@ async def message_project_conversation(
     the message is being delivered keeps the message and is not run
     (``run: "waiting_for_confirmation"``); the refusal is decided under the
     conversation's run lock.
+
+    With ``sender_conversation_id`` (the coordinator, or another member), the
+    saved message records ``sender: "conversation:<id hex>"`` and opens with a
+    line telling the receiving agent who sent it and that it approves nothing
+    on the person's behalf. UIs can show such messages as instructions rather
+    than the person's words.
     """
-    _find(await _load(_store(request)), project_id)
+    project = _find(await _load(_store(request)), project_id)
     event_service = await service.get_event_service(conversation_id)
     if (
         event_service is None
@@ -678,6 +697,32 @@ async def message_project_conversation(
     ):
         raise HTTPException(status_code=404, detail="Conversation not in project")
 
+    content = [TextContent(text=payload.text)]
+    sender: str | None = None
+    if payload.sender_conversation_id is not None:
+        sender_id = payload.sender_conversation_id
+        sender_info = await service.get_conversation(sender_id)
+        if sender_info is None or sender_info.tags.get(PROJECT_TAG) != project_id.hex:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Sender is not a conversation of this project",
+            )
+        if sender_id == conversation_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="A conversation cannot message itself",
+            )
+        sender = conversation_sender(sender_id)
+        content.insert(
+            0,
+            TextContent(
+                text=sender_header(
+                    sender_info.title,
+                    sender_id,
+                    coordinator=project.coordinator_conversation_id == sender_id,
+                )
+            ),
+        )
     # An unlocked read: it only spares the person an unrelated message in a
     # conversation that is already waiting. The guarded run below is the safeguard.
     previous_status = (await event_service.get_state()).execution_status
@@ -686,12 +731,12 @@ async def message_project_conversation(
             status_code=status.HTTP_409_CONFLICT,
             detail="Conversation is waiting for confirmation",
         )
-    message = Message(role="user", content=[TextContent(text=payload.text)])
+    message = Message(role="user", content=list(content))
     outcome: ProjectConversationRunOutcome
     try:
         outcome = (
             await event_service.send_message(
-                message, run=True, refuse_pending_confirmation=True
+                message, run=True, refuse_pending_confirmation=True, sender=sender
             )
             or "not_run"
         )

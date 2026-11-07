@@ -38,6 +38,17 @@ removes it."""
 BOARD_TAG_KEYS = frozenset({RESOLVED_TAG_KEY, TURN_TAG_KEY})
 """Tags that describe one conversation's state, so children do not copy them."""
 
+CONVERSATION_SENDER_PREFIX = "conversation:"
+"""Prefix of a user message's ``sender`` when another conversation sent it: a
+parent delivering a child's task, or a project coordinator steering a member.
+The rest is the sending conversation's id (hex). A ``sender`` of ``None`` means
+the person wrote the message."""
+
+
+def conversation_sender(conversation_id: uuid.UUID) -> str:
+    """The ``sender`` recorded on a message another conversation sent."""
+    return f"{CONVERSATION_SENDER_PREFIX}{conversation_id.hex}"
+
 
 def _validate_tags(v: dict[str, str] | None) -> dict[str, str]:
     if v is None:

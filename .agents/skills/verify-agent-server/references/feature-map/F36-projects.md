@@ -50,7 +50,7 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.attention`: conversations are grouped `needs_you` (waiting for confirmation), then `working`, `finished`, `idle`, newest-updated first within a group; non-members are left out.
 - `F36.remove-conversation`: `DELETE .../conversations/{conversation_id}` clears only the `project` tag; a second delete, or a delete through another project, is 404.
 - `F36.remove-coordinator`: removing the coordinator from the project is 409; clearing it with `PATCH {"coordinator_conversation_id": null}` keeps it a member, now listed with the other conversations.
-- `F36.message-rest`: `POST .../messages` to a member saves the message, starts a run and answers `run: started` with the previous status; a non-member is 404.
+- `F36.message-rest`: `POST .../messages` to a member saves the message, starts a run and answers `run: started` with the previous status; a non-member is 404. Without `sender_conversation_id` the message has no `sender`; a sender outside the project is 422.
 - `F36.message-refused`: `POST .../messages` to a conversation waiting for confirmation is 409, saves nothing, and the conversation keeps waiting.
 - `F36.turn`: when a member's run finishes, its `turn` tag says whether the agent's last message asked something (`asked`, attention `needs_input`) or not (`answered`); a new user message clears it.
 - `F36.resolved`: a `resolved` tag (`user` or `auto`) puts a member in the `resolved` group, reported as `resolved`; a new user message clears it. Children do not copy `resolved` or `turn`.
@@ -59,8 +59,8 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.persist-restart`: projects and membership survive a server restart.
 - `F36.delete`: `DELETE /api/projects/{id}` removes the record, then the conversations endpoint is 404, and member conversations keep their tags.
 - `F36.corrupted-file`: an unparsable or future-schema `projects.json` makes reads and writes 409 and is never rewritten.
-- `F36.tool-start-and-list`: a coordinator with `start_child_conversation` and `list_project_conversations` starts a child that joins the project, and its list call reports that child with its attention group.
-- `F36.tool-message`: `message_project_conversation` delivers a follow-up to a finished conversation and requests a run: the conversation gets a second user message and runs again.
+- `F36.tool-start-and-list`: a coordinator with `start_child_conversation` and `list_project_conversations` starts a child that joins the project, and its list call reports that child with its attention group. The child's system prompt names the coordinator, and its first message has `sender: "conversation:<coordinator id hex>"`.
+- `F36.tool-message`: `message_project_conversation` delivers a follow-up to a finished conversation and requests a run: the conversation gets a second user message, sent by the coordinator (`sender` and a header line saying it is not the person), and runs again.
 - `F36.tool-message-refuses-confirmation`: `message_project_conversation` refuses a conversation waiting for confirmation with an error observation; the conversation stays waiting and gets no new message.
 
 ## How to get to it (agent POV)
@@ -284,6 +284,8 @@ Preconditions:
   control-agent-server conversation events "$W2" --kinds MessageEvent --contains '"source": "user"' --expect-count 1
   control-agent-server api POST "/api/projects/$P2/conversations/$W1/messages" --json '{"text": "hi"}' --expect 404 \
     --check detail eq 'Conversation not in project'
+  control-agent-server conversation events "$W2" --kinds MessageEvent --contains '"sender": "conversation:' --expect-count 0
+  control-agent-server api POST "/api/projects/$P2/conversations/$W2/messages" --json "{\"text\": \"hi\", \"sender_conversation_id\": \"$W1\"}" --expect 422
   ```
   The member runs and finishes; `W1` (removed earlier) is refused.
 - **How a turn ended (`F36.turn`).**
@@ -384,9 +386,12 @@ Preconditions:
   control-agent-server conversation wait "$CHILD" --until finished --timeout 180
   control-agent-server api GET "/api/conversations/$CHILD" --check tags.project eq "$P2" \
     --check parent_conversation_id eq "$(control-agent-server api GET "/api/conversations/$CAT" --field id)"
+  control-agent-server conversation events "$CHILD" --kinds SystemPromptEvent --contains 'You are working on a project with a coordinator.' --expect-count 1
+  control-agent-server conversation events "$CHILD" --kinds MessageEvent --contains '"sender": "conversation:' --expect-count 1
   ```
   The child copies the coordinator's tags, so it is a project conversation; the
-  list tool's observation names it.
+  list tool's observation names it. Its system prompt says who started it, and
+  its task message records the coordinator as sender.
 - **Model-backed: message a conversation (`F36.tool-message`).**
   Requires: `F36.tool-start-and-list`
   Needs: `llm`
@@ -395,9 +400,12 @@ Preconditions:
   control-agent-server conversation events "$CAT" --kinds ObservationEvent --contains 'Message saved to conversation' --expect-min 1 --save F36.tool-message/events
   control-agent-server conversation wait "$CHILD" --until finished --timeout 180
   control-agent-server conversation events "$CHILD" --kinds MessageEvent --contains '"source": "user"' --expect-count 2
+  control-agent-server conversation events "$CHILD" --kinds MessageEvent --contains 'the coordinator of your project, not by the person' --expect-count 1
+  control-agent-server conversation events "$CHILD" --kinds MessageEvent --contains '"sender": "conversation:' --expect-count 2
   control-agent-server conversation events "$CHILD" --kinds ActionEvent --contains FinishAction --expect-min 2
   ```
-  The child receives a second user message and finishes a second run.
+  The child receives a second user message, marked as the coordinator's, and
+  finishes a second run.
 - **Model-backed: no approval by message (`F36.tool-message-refuses-confirmation`).**
   Requires: `F36.attention`, `F36.tool-start-and-list`
   Needs: `llm`, `tmux`

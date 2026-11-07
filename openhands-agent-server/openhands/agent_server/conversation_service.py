@@ -49,6 +49,10 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.persistence import FileSecretsStore
 from openhands.agent_server.project_board import ConversationOutcomeSubscriber
+from openhands.agent_server.project_prompts import (
+    WORKER_GUIDANCE_MARKER,
+    worker_guidance,
+)
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.telemetry import (
@@ -75,7 +79,11 @@ from openhands.sdk.conversation.title_utils import (
     extract_message_text,
     generate_title_from_message,
 )
-from openhands.sdk.conversation.types import BOARD_TAG_KEYS
+from openhands.sdk.conversation.types import (
+    BOARD_TAG_KEYS,
+    PROJECT_TAG_KEY,
+    conversation_sender,
+)
 from openhands.sdk.credential import (
     CredentialAuthorizationRejected,
     CredentialBindingError,
@@ -1758,6 +1766,7 @@ class ConversationService:
         *,
         run_slot: RunSlot,
         initial_message: Message | None,
+        initial_sender: str | None = None,
         reuse_request: StartConversationRequest | None = None,
         max_budget_per_run: float | None = None,
     ) -> tuple[ConversationInfo, bool]:
@@ -1795,7 +1804,9 @@ class ConversationService:
                 max_budget_per_run=max_budget_per_run,
             )
         if initial_message is not None:
-            await event_service.send_message(initial_message, False)
+            await event_service.send_message(
+                initial_message, False, sender=initial_sender
+            )
             await event_service.run(run_slot=run_slot)
 
         state = await event_service.get_state()
@@ -2259,13 +2270,23 @@ class ConversationService:
                 if request.isolation == "worktree"
                 else None
             )
+            suffixes = [worktree.guidance] if worktree else []
+            if PROJECT_TAG_KEY in parent_stored.tags:
+                parent_context = parent_agent.agent_context
+                parent_suffix = (
+                    parent_context.system_message_suffix if parent_context else None
+                ) or ""
+                # A worker's own children keep the guidance naming the
+                # coordinator, which they inherit with the parent's agent.
+                if WORKER_GUIDANCE_MARKER not in parent_suffix:
+                    suffixes.append(worker_guidance(parent_stored.title, parent_id))
             launched = await asyncio.to_thread(
                 lambda: finalize(
                     parent_agent,
                     live_launch_runtime(
                         self.acp_skill_sourcing, enable_browser=self.enable_browser
                     ),
-                    extra_suffixes=[worktree.guidance] if worktree else (),
+                    extra_suffixes=suffixes,
                 )
             )
             workspace = (
@@ -2303,6 +2324,7 @@ class ConversationService:
                 initial_message=Message(
                     role="user", content=[TextContent(text=request.task)]
                 ),
+                initial_sender=conversation_sender(parent_id),
             )
 
         return StartChildConversationResponse(

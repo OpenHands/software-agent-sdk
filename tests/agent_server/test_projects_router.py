@@ -558,8 +558,86 @@ async def test_message_runs_member_with_guard(client, service, tmp_path, monkeyp
         "run": "started",
     }
     assert calls == [
-        {"text": "Also add docs", "run": True, "refuse_pending_confirmation": True}
+        {
+            "text": "Also add docs",
+            "run": True,
+            "refuse_pending_confirmation": True,
+            "sender": None,
+        }
     ]
+
+
+def _save_without_running(monkeypatch) -> None:
+    original = EventService.send_message
+
+    async def save_only(self, message, run=False, **kwargs):
+        kwargs.pop("refuse_pending_confirmation", None)
+        await original(self, message, False, **kwargs)
+        return "started"
+
+    monkeypatch.setattr(EventService, "send_message", save_only)
+
+
+async def _last_user_message(
+    service: ConversationService, conversation_id: UUID
+) -> MessageEvent:
+    event_service = await service.get_event_service(conversation_id)
+    assert event_service is not None
+    state = await event_service.get_state()
+    return [
+        e for e in state.events if isinstance(e, MessageEvent) and e.source == "user"
+    ][-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("from_coordinator", [True, False])
+async def test_message_records_its_sender(
+    client, service, tmp_path, monkeypatch, from_coordinator
+):
+    cat = await _start(service, tmp_path)
+    worker = await _start(service, tmp_path)
+    project = (
+        await client.post(
+            "/api/projects",
+            json={
+                "name": "P",
+                "coordinator_conversation_id": cat.hex if from_coordinator else None,
+            },
+        )
+    ).json()
+    for member in (cat, worker):
+        await client.put(f"/api/projects/{project['id']}/conversations/{member.hex}")
+    _save_without_running(monkeypatch)
+
+    response = await client.post(
+        f"/api/projects/{project['id']}/conversations/{worker.hex}/messages",
+        json={"text": "Also add docs", "sender_conversation_id": cat.hex},
+    )
+
+    assert response.status_code == 200
+    event = await _last_user_message(service, worker)
+    assert event.sender == f"conversation:{cat.hex}"
+    header, text = (c.text for c in event.llm_message.content)  # type: ignore[union-attr]
+    assert text == "Also add docs"
+    assert cat.hex in header and "not by the person" in header
+    role = "the coordinator of your project"
+    assert (role in header) is from_coordinator
+
+
+@pytest.mark.asyncio
+async def test_message_refuses_a_sender_outside_the_project(client, service, tmp_path):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    worker = await _start(service, tmp_path)
+    outsider = await _start(service, tmp_path)
+    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+
+    for sender in (outsider.hex, uuid4().hex, worker.hex):
+        response = await client.post(
+            f"/api/projects/{project['id']}/conversations/{worker.hex}/messages",
+            json={"text": "hi", "sender_conversation_id": sender},
+        )
+        assert response.status_code == 422
+    assert await _user_messages(service, worker) == 0
 
 
 @pytest.mark.asyncio
