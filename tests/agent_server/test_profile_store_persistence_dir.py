@@ -63,7 +63,7 @@ def test_llm_profile_store_is_bound_to_each_callers_cipher(
     decrypted = get_llm_profile_store(cipher).load("enc").api_key
     assert isinstance(decrypted, SecretStr)
     assert decrypted.get_secret_value() == "sk-enc"
-    assert get_llm_profile_store(None).cipher is None
+    assert get_llm_profile_store(None)._cipher is None
     assert get_llm_profile_store(Cipher("other-key")).load("enc").api_key is None
 
 

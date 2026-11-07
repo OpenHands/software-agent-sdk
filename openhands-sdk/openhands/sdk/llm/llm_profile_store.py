@@ -174,11 +174,6 @@ class LLMProfileStore:
         else:
             self._provider_store = provider_store
 
-    @property
-    def cipher(self) -> Cipher | None:
-        """The cipher this store reads and writes secrets with."""
-        return self._cipher
-
     def with_cipher(self, cipher: Cipher | None) -> LLMProfileStore:
         """Return this store bound to ``cipher``.
 

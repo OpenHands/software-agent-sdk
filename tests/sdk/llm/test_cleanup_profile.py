@@ -118,7 +118,7 @@ def test_cipher_is_bound_to_the_profile_store(
     seen: dict[str, Any] = {}
 
     def load_profile(self: LLMProfileStore, name: str, *, cipher: Any = None) -> LLM:
-        seen["cipher"] = self.cipher
+        seen["cipher"] = self._cipher
         return cleanup_llm
 
     monkeypatch.setattr(LLMProfileStore, "load", load_profile)

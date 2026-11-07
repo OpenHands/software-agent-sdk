@@ -868,8 +868,8 @@ def test_with_cipher_is_a_bound_view_of_the_same_store(tmp_path: Path):
     llm = LLM(usage_id="view", model="openai/gpt-4o", api_key=SecretStr("sk-v"))
     bound.save("view", llm, include_secrets=True)
 
-    assert bound.cipher is cipher
-    assert unbound.cipher is None
+    assert bound._cipher is cipher
+    assert unbound._cipher is None
     assert bound.base_dir == unbound.base_dir
     assert unbound.with_cipher(None) is unbound
     assert unbound.list() == ["view.json"]
