@@ -10,10 +10,10 @@ from urllib.request import urlopen
 
 import httpx
 import tenacity
-from pydantic import Field, PrivateAttr, SecretStr
+from pydantic import Field, PrivateAttr, SecretStr, ValidationError
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import MCPServer, MCPTransport
+from openhands.sdk.mcp.config import MCPServer, MCPTransport, coerce_mcp_config
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
 from openhands.sdk.workspace.repo import CloneResult, RepoMapping, RepoSource
 
@@ -41,6 +41,37 @@ def _mcp_api_key_headers(api_key: object) -> dict[str, SecretStr] | None:
     if not api_key:
         return None
     return {"Authorization": SecretStr(f"Bearer {api_key}")}
+
+
+def _mcp_config_from_named_servers(
+    cloud_mcp_config: Mapping[str, Any],
+) -> dict[str, MCPServer]:
+    servers = cloud_mcp_config.get("mcpServers", cloud_mcp_config)
+    if not isinstance(servers, Mapping):
+        return {}
+    mcp_config: dict[str, MCPServer] = {}
+    for name, server in servers.items():
+        # Read servers one at a time so one this SDK version cannot read does
+        # not drop the others; the validation error would echo secret values.
+        try:
+            mcp_server = coerce_mcp_config({name: server})[name]
+        except ValidationError:
+            logger.warning(
+                "Skipping MCP server %r: this SDK version cannot read its settings",
+                name,
+            )
+            continue
+        # A token refreshed from here could not be saved back, and a rotated
+        # refresh token would break the user's other conversations.
+        if mcp_server.oauth_auth is not None:
+            logger.warning(
+                "Skipping MCP server %r: it signs in with OAuth, which only "
+                "conversations started by the app server support",
+                name,
+            )
+            continue
+        mcp_config[name] = mcp_server
+    return mcp_config
 
 
 def _is_retryable_error(error: BaseException) -> bool:
@@ -680,6 +711,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
                 url=f"{self._settings_base_url}/secrets/{name}",
                 headers={"X-Session-API-Key": self._session_api_key or ""},
                 description=item.get("description"),
+                scope=item.get("scope"),
+                scope_description=item.get("scope_description"),
             )
 
         return result
@@ -693,12 +726,17 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     def get_mcp_config(self) -> dict[str, MCPServer]:
         """Fetch MCP servers from the user's SaaS account.
 
-        Calls ``GET /api/v1/users/me`` to retrieve the user's MCP configuration
-        and transforms it into the native server map expected by the SDK Agent.
+        Calls ``GET /api/v1/users/me?expose_secrets=true`` to retrieve the
+        user's MCP configuration, either the ``{name: server}`` map or the
+        legacy ``sse_servers`` / ``shttp_servers`` / ``stdio_servers`` lists,
+        and returns the native server map expected by the SDK Agent.
+
+        Servers that sign in with OAuth, and servers this SDK version cannot
+        read, are left out with a warning naming them.
 
         Returns:
             A dictionary mapping server names to server configurations, or an
-            empty dict if no MCP servers are configured.
+            empty dict if no usable MCP servers are configured.
 
         Raises:
             httpx.HTTPStatusError: If the API request fails.
@@ -716,6 +754,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         resp = self._send_api_request(
             "GET",
             f"{self.cloud_api_url}/api/v1/users/me",
+            params={"expose_secrets": "true"},
             headers={"X-Session-API-Key": self._session_api_key or ""},
         )
         data = resp.json()
@@ -731,6 +770,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             ("shttp_servers", "shttp", "streamable-http"),
             ("stdio_servers", None, None),
         )
+        if not any(source in cloud_mcp_config for source, _, _ in server_sources):
+            return _mcp_config_from_named_servers(cloud_mcp_config)
         for source, name_prefix, transport in server_sources:
             for index, server in enumerate(cloud_mcp_config.get(source) or []):
                 if transport is None:
@@ -870,7 +911,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         Retries up to 3 times on transient failures.
 
         Args:
-            name: Name of the secret to fetch (e.g., "github_token", "gitlab_token")
+            name: Name of the secret to fetch (e.g., "GITHUB_TOKEN", "GITLAB_TOKEN")
 
         Returns:
             The secret value as a string, or None if not found or an error occurred.
