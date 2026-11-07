@@ -668,6 +668,12 @@ class FileEditor:
                 str(path),
                 f"The path {path} does not exist. Please provide a valid path.",
             )
+        # Checked here because some commands read the file (e.g. to detect its
+        # encoding) before they reach validate_file.
+        if path.is_file() and not os.access(path, os.R_OK):
+            raise FileValidationError(
+                path=str(path), reason="File is not readable (permission denied)."
+            )
         if command != "view":
             if path.is_dir():
                 raise EditorToolParameterInvalidError(
