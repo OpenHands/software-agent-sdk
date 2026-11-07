@@ -657,10 +657,10 @@ def _probe_mcp_server(
         logger.info("MCP test timed out for server %r: %s", request.name, message)
         return MCPTestFailure(error=message, error_kind="timeout")
     except MCPError as exc:
-        # ``MCPError("MCP Connection Failure")`` is what client.connect()
+        # ``MCPError("MCP Connection Failure: ...")`` is what client.connect()
         # raises when the underlying fastmcp client fails to start. Surface
         # the root-cause message (e.g. "sh: 1: mcp-server-github: Permission
-        # denied") because the wrapper alone isn't useful.
+        # denied") without the wrapper's prefix.
         cause = exc.__cause__ or exc.__context__
         detail = scrub(
             str(cause) if cause else str(exc) or "Failed to connect to MCP server"

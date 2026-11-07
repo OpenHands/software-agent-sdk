@@ -86,7 +86,9 @@ class MCPClient(AsyncMCPClient):
         try:
             await self.__aenter__()
         except RuntimeError as exc:
-            raise MCPError("MCP Connection Failure") from exc
+            # Keep the reason in the message: callers that log ``str(exc)``,
+            # such as the conversation's MCP startup warning, show only this.
+            raise MCPError(f"MCP Connection Failure: {exc}") from exc
 
     def call_async_from_sync(
         self,
