@@ -256,6 +256,29 @@ async def test_ignored_dir_holding_a_clone_is_kept(tmp_path, monkeypatch, usage)
     assert (clone / "main.py").is_file()
 
 
+@pytest.mark.asyncio
+async def test_ignored_dir_holding_a_deeply_nested_clone_is_kept(
+    tmp_path, monkeypatch, usage
+):
+    """A vendored checkout at vendor/<host>/<owner>/<repo> is not build output.
+
+    Three levels deep is the common ``go mod vendor`` / ``vendor/github.com/...``
+    layout, and it is past the two-level probe a shallow check would use.
+    """
+    runtime = registry(tmp_path, monkeypatch)
+    _, workspace = provision(runtime, age=1)
+    shed, _ = make_repo(workspace)
+    (workspace / ".gitignore").write_text("node_modules/\n.venv/\nvendor/\n")
+    clone = workspace / "vendor" / "github.com" / "acme" / "widget"
+    make_repo(clone)
+    usage.append(0.95)
+
+    await runtime.reclaimer.run_pass()
+
+    assert not any(path.exists() for path in shed)
+    assert (clone / "main.py").is_file()
+
+
 def test_storage_budget_is_read_from_nested_env(monkeypatch):
     from openhands.agent_server.config import load_config
 
