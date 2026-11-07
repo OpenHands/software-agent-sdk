@@ -69,8 +69,11 @@ class CmdOutputMetadata(BaseModel):
         for match in CMD_OUTPUT_METADATA_PS1_REGEX.finditer(string):
             content = match.group(1).strip()
             try:
-                json.loads(content)
-                matches.append(match)
+                metadata = json.loads(content)
+                if isinstance(metadata, dict):
+                    matches.append(match)
+                else:
+                    matches.clear()
             except json.JSONDecodeError:
                 logger.debug(
                     f"Failed to parse PS1 metadata - Skipping: [{content[:200]}"
