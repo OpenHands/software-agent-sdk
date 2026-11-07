@@ -387,3 +387,19 @@ def test_failed_health_check_stops_container(monkeypatch):
     del excinfo
     gc.collect()  # let __del__ run while execute_command is still faked
     assert stopped_during_startup
+
+
+def test_no_free_port_raises_runtime_error(monkeypatch):
+    """find_available_tcp_port() returns -1 when no port in range is free."""
+    monkeypatch.setattr(
+        "openhands.workspace.docker.workspace.find_available_tcp_port", lambda: -1
+    )
+    execute_command = MagicMock()
+    monkeypatch.setattr(
+        "openhands.workspace.docker.workspace.execute_command", execute_command
+    )
+
+    with pytest.raises(RuntimeError, match="Port -1 is not available"):
+        DockerWorkspace(server_image="test:latest")
+
+    execute_command.assert_not_called()

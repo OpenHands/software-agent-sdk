@@ -27,7 +27,7 @@ def check_port_available(port: int) -> bool:
     try:
         sock.bind(("0.0.0.0", port))
         return True
-    except OSError:
+    except (OSError, OverflowError):  # OverflowError: port outside 0-65535
         time.sleep(0.1)
         return False
     finally:
