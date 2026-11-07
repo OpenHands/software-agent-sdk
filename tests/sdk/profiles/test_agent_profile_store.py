@@ -356,6 +356,17 @@ def test_rename_same_name_missing_raises(agent_store: AgentProfileStore) -> None
         agent_store.rename("ghost", "ghost")
 
 
+def test_rename_case_only_change(
+    agent_store: AgentProfileStore, openhands_profile: OpenHandsAgentProfile
+) -> None:
+    agent_store.save(openhands_profile)
+
+    agent_store.rename("oh", "OH")
+
+    assert agent_store.list() == ["OH.json"]
+    assert agent_store.load("OH").name == "OH"
+
+
 def test_rename_invalid_name_raises(
     agent_store: AgentProfileStore, openhands_profile: OpenHandsAgentProfile
 ) -> None:

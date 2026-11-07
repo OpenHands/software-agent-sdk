@@ -27,7 +27,7 @@ def check_port_available(port: int) -> bool:
     try:
         sock.bind(("0.0.0.0", port))
         return True
-    except OSError:
+    except (OSError, OverflowError):  # OverflowError: port outside 0-65535
         time.sleep(0.1)
         return False
     finally:
@@ -377,7 +377,12 @@ class DockerWorkspace(RemoteWorkspace):
         if self._container_id:
             # Stop logs streaming
             self._stop_logs.set()
-            if self._logs_thread and self._logs_thread.is_alive():
+            # __del__ can run on the logs thread itself, which cannot join itself.
+            if (
+                self._logs_thread
+                and self._logs_thread.is_alive()
+                and self._logs_thread is not threading.current_thread()
+            ):
                 self._logs_thread.join(timeout=2)
 
             # Stop and remove the container
