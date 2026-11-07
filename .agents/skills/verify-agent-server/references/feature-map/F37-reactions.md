@@ -32,7 +32,7 @@ Routes: `POST /api/conversations/{conversation_id}/reactions`, `GET /api/setting
 - `F37.flag-gates`: with the flag off, `POST .../reactions` is 409 and a new conversation has no `react`/`unreact`; with it on, a new conversation started without naming them has both tools.
 - `F37.rest`: `POST .../reactions` with `{emoji, target_event_id}` saves a user `ReactionEvent` on that message and returns it; `removed: true` saves the removal; the conversation stays `idle`.
 - `F37.rest-validation`: an emoji outside the set is 422, an unknown target is 400, and leaving out the target with no agent message yet is 400; nothing is saved.
-- `F37.tool`: an agent with `react` reacts to the person's latest message: the log has the tool's `ObservationEvent` followed by an agent `ReactionEvent` whose target is that message.
+- `F37.tool`: an agent with `react` reacts to the person's latest message when asked to react first, and leaves the reaction on after it answers: the log has the tool's `ObservationEvent` followed by one agent `ReactionEvent` whose target is that message, and no removal.
 - `F37.rest-default`: after the agent has answered, a reaction without `target_event_id` goes on its answer: the latest agent message or `finish`.
 
 ## How to get to it (agent POV)
@@ -105,14 +105,16 @@ Preconditions:
   Needs: `llm`
   ```sh
   AC=$(control-agent-server conversation start --no-autotitle --tools none --print-id)
-  control-agent-server conversation send "$AC" --wait --timeout 300 --text 'QA_F37_TOOL First call the react tool with the emoji eyes. Then reply with the single word ok and finish.'
+  control-agent-server conversation send "$AC" --wait --timeout 300 --text 'QA_F37_TOOL Please react to this message with the eyes emoji first, then reply with the single word ok.'
   AM=$(control-agent-server api GET "/api/conversations/$AC/events/search" --query body=QA_F37_TOOL --field items.0.id)
   control-agent-server api GET "/api/conversations/$AC/events/search" --query kind=ReactionEvent \
-    --check items.0.source eq agent --check items.0.emoji eq eyes --check items.0.target_event_id eq "$AM" \
-    --save F37.tool/reactions
+    --check items len-eq 1 --check items.0.source eq agent --check items.0.emoji eq eyes \
+    --check items.0.target_event_id eq "$AM" --check items.0.removed eq false --save F37.tool/reactions
   control-agent-server conversation events "$AC" --kinds ObservationEvent --contains 'Reacted :eyes:' --expect-min 1
   ```
-  The agent reacted to the person's message before answering.
+  The agent reacted to the person's message before answering and left the
+  reaction on: a reaction stays until it no longer fits, so an answer does not
+  take it off.
 - **Default target is the agent's answer (`F37.rest-default`).**
   Requires: `F37.tool`
   ```sh
