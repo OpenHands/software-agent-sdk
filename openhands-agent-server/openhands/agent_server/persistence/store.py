@@ -24,6 +24,7 @@ from pydantic import SecretStr
 
 from openhands.agent_server.persistence.models import (
     CustomSecret,
+    PersistedProjects,
     PersistedSettings,
     PersistedWorkspaces,
     Secrets,
@@ -886,12 +887,89 @@ class FileWorkspacesStore(WorkspacesStore):
             return updated
 
 
+class FileProjectsStore:
+    """File-based storage for projects.
+
+    Persists a single JSON document at ``<persistence_dir>/projects.json``
+    using the same atomic-write + file-lock primitives as
+    ``FileWorkspacesStore``. Projects hold no secrets, so no cipher is used.
+    """
+
+    def __init__(
+        self,
+        persistence_dir: Path | str,
+        filename: str = "projects.json",
+    ):
+        _validate_filename(filename)
+        self.persistence_dir = Path(persistence_dir)
+        self.filename = filename
+        self._path = self.persistence_dir / filename
+        self._lock_path = self.persistence_dir / ".projects.lock"
+
+    def exists(self) -> bool:
+        return self._path.exists()
+
+    def load(self) -> PersistedProjects | None:
+        """Load projects; ``None`` when the file is missing or unreadable.
+
+        Raises ``OSError`` when the file exists but cannot be accessed.
+        """
+        if not self._path.exists():
+            return None
+        try:
+            with self._path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            return PersistedProjects.from_persisted(data)
+        except (PermissionError, OSError) as e:
+            logger.error(f"Cannot access projects file: {e}")
+            raise
+        except json.JSONDecodeError as e:
+            logger.error(f"Projects file is corrupted: {e}")
+            return None
+        except Exception:
+            logger.error("Failed to load projects", exc_info=True)
+            return None
+
+    def save(self, projects: PersistedProjects) -> None:
+        _ensure_secure_directory(self.persistence_dir)
+        _atomic_write_json(self._path, projects.model_dump(mode="json"))
+        logger.debug(f"Projects saved to {self._path}")
+
+    def update(
+        self,
+        update_fn: Callable[[PersistedProjects], PersistedProjects],
+    ) -> PersistedProjects:
+        """Read, change and write projects under the file lock.
+
+        ``update_fn`` returns its input unchanged to skip the write.
+
+        Raises:
+            RuntimeError: If the file exists but cannot be parsed; it is never
+                overwritten with defaults.
+        """
+        with _file_lock(self._lock_path):
+            projects = self.load()
+            if projects is None:
+                if self._path.exists():
+                    raise RuntimeError(
+                        f"Cannot load projects from {self._path}. "
+                        "File may be corrupted. "
+                        "Refusing to overwrite with defaults to prevent data loss."
+                    )
+                projects = PersistedProjects()
+            updated = update_fn(projects)
+            if updated is not projects:
+                self.save(updated)
+            return updated
+
+
 # ── Global Store Access ──────────────────────────────────────────────────
 
 _settings_store: FileSettingsStore | None = None
 _secrets_store: FileSecretsStore | None = None
 _provider_connections_store: ProviderConnectionStore | None = None
 _workspaces_store: FileWorkspacesStore | None = None
+_projects_store: FileProjectsStore | None = None
 _llm_profile_store: LLMProfileStore | None = None
 _agent_profile_store: AgentProfileStore | None = None
 _store_lock = threading.Lock()
@@ -1051,6 +1129,25 @@ def get_workspaces_store(config: Config | None = None) -> FileWorkspacesStore:
         return _workspaces_store
 
 
+def get_projects_store(config: Config | None = None) -> FileProjectsStore:
+    """Get the global projects store instance (thread-safe).
+
+    Note:
+        The config parameter is only used on first initialization.
+        Subsequent calls return the existing instance regardless of config.
+    """
+    global _projects_store
+    if _projects_store is not None:
+        return _projects_store
+
+    with _store_lock:
+        if _projects_store is None:
+            _projects_store = FileProjectsStore(
+                persistence_dir=_get_persistence_dir(config),
+            )
+        return _projects_store
+
+
 def get_llm_profile_store() -> LLMProfileStore:
     """Get the global ``LLMProfileStore`` instance (thread-safe).
 
@@ -1099,11 +1196,13 @@ def get_agent_profile_store() -> AgentProfileStore:
 def reset_stores() -> None:
     """Reset global store instances (for testing)."""
     global _settings_store, _secrets_store, _provider_connections_store
-    global _workspaces_store, _llm_profile_store, _agent_profile_store
+    global _workspaces_store, _projects_store
+    global _llm_profile_store, _agent_profile_store
     with _store_lock:
         _settings_store = None
         _secrets_store = None
         _provider_connections_store = None
         _workspaces_store = None
+        _projects_store = None
         _llm_profile_store = None
         _agent_profile_store = None

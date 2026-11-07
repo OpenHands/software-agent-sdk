@@ -21,6 +21,10 @@ ConversationID = uuid.UUID
 TAG_KEY_PATTERN = re.compile(r"^[a-z0-9]+$")
 TAG_VALUE_MAX_LENGTH = 256
 
+PROJECT_TAG_KEY = "project"
+"""Tag whose value is the id (hex) of the agent-server project a conversation
+belongs to. Child conversations copy their parent's tags, so they join it too."""
+
 
 def _validate_tags(v: dict[str, str] | None) -> dict[str, str]:
     if v is None:

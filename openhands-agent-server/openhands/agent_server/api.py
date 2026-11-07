@@ -82,6 +82,7 @@ from openhands.agent_server.openai.router import (
 from openhands.agent_server.persistence import reencrypt_stale_stores
 from openhands.agent_server.plugins_router import plugins_router
 from openhands.agent_server.profiles_router import profiles_router
+from openhands.agent_server.projects_router import projects_router
 from openhands.agent_server.provider_connections_router import (
     provider_connections_router,
 )
@@ -628,6 +629,7 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(mcp_router)
     api_router.include_router(settings_router)
     api_router.include_router(workspaces_router)
+    api_router.include_router(projects_router)
     api_router.include_router(profiles_router)
     api_router.include_router(agent_profiles_router)
     api_router.include_router(meta_profiles_router)

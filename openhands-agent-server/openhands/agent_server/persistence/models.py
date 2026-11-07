@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any, TypedDict
+from uuid import uuid4
 
 from pydantic import (
     BaseModel,
@@ -31,6 +33,7 @@ from openhands.sdk.settings import (
     default_agent_settings,
     validate_agent_settings,
 )
+from openhands.sdk.utils.datetime import OpenHandsUUID, utc_now
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
@@ -657,6 +660,52 @@ class PersistedWorkspaces(BaseModel):
             )
         payload["schema_version"] = WORKSPACES_SCHEMA_VERSION
         return cls.model_validate(payload)
+
+
+# ── Projects ─────────────────────────────────────────────────────────────
+
+PROJECTS_SCHEMA_VERSION = 1
+
+
+class ProjectItem(BaseModel):
+    """A project: a named group of conversations led by a coordinator.
+
+    Membership is not stored here. A conversation belongs to a project when
+    its ``project`` tag holds the project's id, so child conversations a
+    coordinator starts inherit the membership with the rest of its tags.
+    """
+
+    id: OpenHandsUUID = Field(default_factory=uuid4)
+    name: str = Field(..., min_length=1, max_length=256)
+    description: str = Field(default="", max_length=4096)
+    coordinator_conversation_id: OpenHandsUUID | None = Field(
+        default=None,
+        description=(
+            "The conversation the person mainly talks to about this project. "
+            "It is also a member of the project."
+        ),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class PersistedProjects(BaseModel):
+    schema_version: int = Field(default=PROJECTS_SCHEMA_VERSION)
+    projects: list[ProjectItem] = Field(default_factory=list)
+
+    @classmethod
+    def from_persisted(cls, data: Any) -> PersistedProjects:
+        if not isinstance(data, dict):
+            return cls.model_validate(data)
+        version = data.get("schema_version", PROJECTS_SCHEMA_VERSION)
+        if not isinstance(version, int):
+            raise ValueError("PersistedProjects schema_version must be an integer")
+        if version > PROJECTS_SCHEMA_VERSION:
+            raise ValueError(
+                f"PersistedProjects schema_version {version} is newer than "
+                f"supported {PROJECTS_SCHEMA_VERSION}"
+            )
+        return cls.model_validate({**data, "schema_version": PROJECTS_SCHEMA_VERSION})
 
 
 # ── Helper Functions ─────────────────────────────────────────────────────

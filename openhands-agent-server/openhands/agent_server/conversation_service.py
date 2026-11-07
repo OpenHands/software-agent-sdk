@@ -583,6 +583,8 @@ class ConversationService:
     _conversation_locks: WeakValueDictionary[UUID, asyncio.Lock] = field(
         default_factory=WeakValueDictionary, init=False
     )
+    # Serializes read-merge-write tag changes made through ``set_conversation_tag``.
+    _tag_update_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
     )
@@ -1963,6 +1965,78 @@ class ConversationService:
             ", ".join(updated_fields),
         )
         return True
+
+    async def list_tagged_conversations(
+        self, key: str, value: str
+    ) -> list[tuple[StoredConversation, ConversationExecutionStatus]]:
+        """Return conversations whose tag ``key`` equals ``value``.
+
+        Reads the in-memory catalog with refreshed execution statuses, as the
+        status-filtered search does, so no full ``ConversationState`` is
+        loaded. Results are newest-updated first; deleting conversations are
+        left out.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        await self._reconcile_active_records()
+        await self._refresh_execution_statuses()
+        matches = [
+            (record.stored, record.execution_status)
+            for record in self._conversation_records.values()
+            if record.stored.tags.get(key) == value
+            and record.execution_status != ConversationExecutionStatus.DELETING
+        ]
+        matches.sort(key=lambda item: item[0].updated_at, reverse=True)
+        return matches
+
+    async def set_conversation_tag(
+        self,
+        conversation_id: UUID,
+        key: str,
+        value: str | None,
+        *,
+        expected: str | None = None,
+    ) -> dict[str, str] | None:
+        """Set or remove one tag, keeping the conversation's other tags.
+
+        ``UpdateConversationRequest.tags`` replaces the whole set, so callers
+        that change a single tag would otherwise race each other. Changes made
+        here are serialized; a concurrent ``PATCH`` of the full set still
+        replaces it.
+
+        Args:
+            conversation_id: The conversation to change.
+            key: The tag key.
+            value: The new value, or ``None`` to remove the tag.
+            expected: When given, change the tag only if it currently holds
+                this value.
+
+        Returns:
+            The conversation's tags after the change, or ``None`` when the
+            conversation does not exist.
+
+        Raises:
+            ValueError: If ``expected`` is given and does not match.
+        """
+        async with self._tag_update_lock:
+            event_service = await self._get_or_load_event_service(conversation_id)
+            if event_service is None:
+                return None
+            tags = dict(event_service.stored.tags)
+            if expected is not None and tags.get(key) != expected:
+                raise ValueError(f"Tag '{key}' does not hold the expected value")
+            if value is None:
+                if key not in tags:
+                    return tags
+                del tags[key]
+            else:
+                if tags.get(key) == value:
+                    return tags
+                tags[key] = value
+            await self.update_conversation(
+                conversation_id, UpdateConversationRequest(tags=tags)
+            )
+            return dict(event_service.stored.tags)
 
     async def get_event_service(self, conversation_id: UUID) -> EventService | None:
         return await self._get_or_load_event_service(conversation_id)
