@@ -1478,6 +1478,37 @@ def test_openai_gateway_key_survives_session_key_rotation(
         assert len(patched_llm) == 1
 
 
+def test_openai_gateway_replays_keyed_chat_stream(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patched_llm: list[list[Message]],
+    gateway_smoke_profile: None,
+) -> None:
+    body = {
+        "model": "openhands_smoke",
+        "messages": [{"role": "user", "content": "Run."}],
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    with (
+        live_server_env(tmp_path, monkeypatch) as env,
+        httpx.Client(trust_env=False) as client,
+    ):
+        url = f"{env['host']}/v1/chat/completions"
+        headers = {"Idempotency-Key": "stream-replay"}
+        first = client.post(url, json=body, headers=headers, timeout=10)
+        replay = client.post(url, json=body, headers=headers, timeout=10)
+        assert first.status_code == 200, first.text
+        assert replay.status_code == 200, replay.text
+        assert first.headers["content-type"].startswith("text/event-stream")
+        assert replay.text == first.text
+        assert (
+            replay.headers["X-OpenHands-ServerConversation-ID"]
+            == first.headers["X-OpenHands-ServerConversation-ID"]
+        )
+        assert len(patched_llm) == 1
+
+
 def test_openai_gateway_completion_store_failure_preserves_conversation_id(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
