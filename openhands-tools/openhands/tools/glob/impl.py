@@ -3,7 +3,6 @@
 # Use absolute import to avoid conflict with our local glob module
 import glob as glob_module
 import os
-import re
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,13 +22,29 @@ from openhands.tools.utils import (
 
 def _expand_braces(pattern: str) -> list[str]:
     """Expand ``{a,b}`` groups, which ripgrep's -g supports and glob does not."""
-    match = re.search(r"\{([^{}]*)\}", pattern)
-    if match is None:
+    start = pattern.find("{")
+    if start == -1:
         return [pattern]
-    head, tail = pattern[: match.start()], pattern[match.end() :]
+    # Split the first group on its top-level commas; nested groups are
+    # expanded by the recursion.
+    depth, options, option_start = 0, [], start + 1
+    for end in range(start, len(pattern)):
+        if pattern[end] == "{":
+            depth += 1
+        elif pattern[end] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        elif pattern[end] == "," and depth == 1:
+            options.append(pattern[option_start:end])
+            option_start = end + 1
+    else:
+        return [pattern]  # unbalanced: leave it to glob as-is
+    options.append(pattern[option_start:end])
+    head, tail = pattern[:start], pattern[end + 1 :]
     return [
         expanded
-        for option in match.group(1).split(",")
+        for option in options
         for expanded in _expand_braces(head + option + tail)
     ]
 

@@ -9,7 +9,7 @@ from subprocess import CompletedProcess
 import pytest
 
 from openhands.tools.glob import GlobAction
-from openhands.tools.glob.impl import GlobExecutor
+from openhands.tools.glob.impl import GlobExecutor, _expand_braces
 
 
 def test_glob_executor_initialization():
@@ -439,3 +439,18 @@ def test_python_fallback_expands_brace_patterns(tmp_path):
     files, _ = executor._execute_with_glob("**/*.{json,yaml}", tmp_path)
 
     assert {Path(f).name for f in files} == {"a.json", "b.yaml"}
+
+
+@pytest.mark.parametrize(
+    "pattern, expected",
+    [
+        ("*.py", ["*.py"]),
+        ("*.{json,yaml}", ["*.json", "*.yaml"]),
+        ("{a,b}/{c,d}", ["a/c", "a/d", "b/c", "b/d"]),
+        ("{a,b{c,d}}", ["a", "bc", "bd"]),
+        ("{{a,b},{c,d}}", ["a", "b", "c", "d"]),
+        ("{a,b", ["{a,b"]),
+    ],
+)
+def test_expand_braces(pattern, expected):
+    assert _expand_braces(pattern) == expected
