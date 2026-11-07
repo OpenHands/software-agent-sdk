@@ -4704,7 +4704,23 @@ class ACPAgent(AgentBase):
             # Server-internal failures (JSON-RPC -32603) are not the caller's
             # fault, and the prompt path already treats them as retriable. Let
             # them propagate (-> 5xx) instead of mislabeling them as a 400.
+            # Exception: some servers (claude-agent-acp) answer a model id they
+            # do not offer with -32603; when the session's available_models
+            # shows the id is not offered, that is the caller's error.
             if e.code in _RETRIABLE_SERVER_ERROR_CODES:
+                offered = {m.model_id for m in self._available_models or []}
+                requested_model = (
+                    dict(_model_config_options(self._agent_name, model))[
+                        _MODEL_CONFIG_OPTION_ID
+                    ]
+                    if self._model_via_config_option
+                    else model
+                )
+                if offered and requested_model not in offered:
+                    raise ValueError(
+                        f"Model {model!r} is not offered by this ACP session "
+                        f"(available: {', '.join(sorted(offered))}): {e}"
+                    ) from e
                 raise
             # acp.exceptions.RequestError derives from Exception (not
             # RuntimeError); surface a true client/protocol rejection (invalid
