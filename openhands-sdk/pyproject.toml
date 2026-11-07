@@ -8,7 +8,7 @@ dependencies = [
     "agent-client-protocol>=0.12.1,<0.13.0",  # 0.11.0 reordered prompt() args, broke the client (#4830)
     "certifi>=2026.10.19",  # eMudhra CA distrust: GHSA-6q48-6c7w-9gw2
     "deprecation>=2.1.0",
-    "fakeredis[lua]>=2.32.1",  # Explicit dependency for docket/fastmcp background tasks
+    "fakeredis[lua]>=2.40.0",  # Explicit dependency for docket/fastmcp background tasks
     # 4.x requires mcp>=2; browser-use 0.11.x runs on it through the decorator
     # shim in openhands-tools browser_use/logging_fix.py (#5152)
     "fastmcp>=4.0.3,<5",
