@@ -24,7 +24,7 @@ jobs:
             version: ${{ steps.extract_version.outputs.version }}
         steps:
             - name: Check out release tag
-              uses: actions/checkout@v7.0.1
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   ref: v${{ inputs.version }}
 
@@ -99,3 +99,4 @@ jobs:
                     -f "version=${VERSION}"
 
                   echo "🚀 Dispatched version-bump-prs.yml for v${VERSION}"
+

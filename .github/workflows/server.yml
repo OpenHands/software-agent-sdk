@@ -41,7 +41,7 @@ jobs:
             matrix:
                 os: [ubuntu-latest, macos-latest, windows-latest]
         steps:
-            - uses: actions/checkout@v7.0.1
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
             - name: Install uv
               uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
@@ -262,7 +262,7 @@ jobs:
                   echo "✓ All --extra-python-path tests passed"
 
             - name: Upload binary artifact
-              uses: actions/upload-artifact@v7
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
               with:
                   name: openhands-server-${{ matrix.os }}
                   path: |
@@ -275,7 +275,7 @@ jobs:
 
         steps:
             - name: Checkout PR branch
-              uses: actions/checkout@v7.0.1
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   fetch-depth: 0
 
@@ -286,7 +286,7 @@ jobs:
                   python-version: '3.13'
 
             - name: Install Node.js (for npx)
-              uses: actions/setup-node@v7
+              uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
               with:
                   node-version: '24'
 
@@ -451,7 +451,7 @@ jobs:
 
         steps:
             - name: Checkout
-              uses: actions/checkout@v7.0.1
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
             - name: Install uv
               uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
@@ -592,7 +592,7 @@ jobs:
                     }' > "build-info/${{ matrix.variant }}-${{ matrix.arch }}.json"
 
             - name: Upload build info artifact
-              uses: actions/upload-artifact@v7
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
               with:
                   name: build-info-${{ matrix.variant }}-${{ matrix.arch }}
                   path: build-info/${{ matrix.variant }}-${{ matrix.arch }}.json
@@ -615,7 +615,7 @@ jobs:
 
         steps:
             - name: Download build info to extract SHORT_SHA
-              uses: actions/download-artifact@v8
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
               with:
                   pattern: build-info-${{ matrix.variant }}-*
                   merge-multiple: true
@@ -710,7 +710,7 @@ jobs:
                     }' > "manifest-info/${VARIANT}.json"
 
             - name: Upload manifest info artifact
-              uses: actions/upload-artifact@v7
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
               with:
                   name: manifest-info-${{ matrix.variant }}
                   path: manifest-info/${{ matrix.variant }}.json
@@ -727,14 +727,14 @@ jobs:
             build_summary: ${{ steps.consolidate.outputs.build_summary }}
         steps:
             - name: Download build info artifacts
-              uses: actions/download-artifact@v8
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
               with:
                   pattern: build-info-*
                   merge-multiple: true
                   path: build-info
 
             - name: Download manifest info artifacts
-              uses: actions/download-artifact@v8
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
               with:
                   pattern: manifest-info-*
                   merge-multiple: true
@@ -992,3 +992,4 @@ jobs:
                   regex: <!-- AGENT_SERVER_IMAGES_START -->.*?<!-- AGENT_SERVER_IMAGES_END -->
                   regexFlags: s
                   token: ${{ secrets.GITHUB_TOKEN }}
+

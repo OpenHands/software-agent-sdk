@@ -15,7 +15,7 @@ jobs:
             pull-requests: write
         steps:
             - name: Post or update PR comment
-              uses: actions/github-script@v9
+              uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
               with:
                   script: |
                       const marker = '<!-- pr-artifacts-notice -->';
@@ -82,3 +82,4 @@ jobs:
                           body: body,
                         });
                       }
+

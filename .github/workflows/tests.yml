@@ -17,7 +17,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - name: Checkout
-              uses: actions/checkout@v7.0.1
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
             - name: Verify test directories
               run: |
@@ -70,7 +70,7 @@ jobs:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         steps:
             - name: Checkout
-              uses: actions/checkout@v7.0.1
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with: {fetch-depth: 0}
 
             - name: Detect sdk changes
@@ -129,7 +129,7 @@ jobs:
 
             - name: Upload sdk coverage
               if: steps.changed.outputs.any_changed == 'true' && always()
-              uses: actions/upload-artifact@v7
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
               with:
                   name: coverage-sdk
                   path: coverage-sdk.dat
@@ -147,7 +147,7 @@ jobs:
         timeout-minutes: 15
         steps:
             - name: Checkout
-              uses: actions/checkout@v7.0.1
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with: {fetch-depth: 0}
 
             - name: Detect ACP registry/catalog changes
@@ -169,7 +169,7 @@ jobs:
             # ACP_INSTALL_CATALOG, otherwise those providers only skip.
             - name: Use Node.js 24
               if: steps.changed.outputs.any_changed == 'true'
-              uses: actions/setup-node@v7
+              uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
               with:
                   node-version: '24'
 
@@ -197,7 +197,7 @@ jobs:
         timeout-minutes: 15
         steps:
             - name: Checkout
-              uses: actions/checkout@v7.0.1
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with: {fetch-depth: 0}
 
             - name: Detect tools changes
@@ -246,7 +246,7 @@ jobs:
 
             - name: Upload tools coverage
               if: steps.changed.outputs.any_changed == 'true' && always()
-              uses: actions/upload-artifact@v7
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
               with:
                   name: coverage-tools
                   path: coverage-tools.dat
@@ -259,7 +259,7 @@ jobs:
             PYTHONUTF8: '1'
         steps:
             - name: Checkout
-              uses: actions/checkout@v7.0.1
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with: {fetch-depth: 0}
 
             - name: Detect Windows-relevant changes
@@ -320,7 +320,7 @@ jobs:
 
             - name: Upload Windows coverage
               if: steps.changed.outputs.any_changed == 'true' && always()
-              uses: actions/upload-artifact@v7
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
               with:
                   name: coverage-windows
                   path: coverage-windows.dat
@@ -331,7 +331,7 @@ jobs:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         steps:
             - name: Checkout
-              uses: actions/checkout@v7.0.1
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with: {fetch-depth: 0}
 
             - name: Detect Agent Server changes
@@ -381,7 +381,7 @@ jobs:
 
             - name: Upload Agent Server coverage
               if: steps.changed.outputs.any_changed == 'true' && always()
-              uses: actions/upload-artifact@v7
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
               with:
                   name: coverage-agent-server
                   path: coverage-agent-server.dat
@@ -392,12 +392,12 @@ jobs:
         timeout-minutes: 10
         steps:
             - name: Checkout
-              uses: actions/checkout@v7.0.1
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with: {fetch-depth: 0}
 
             - name: Detect Agent Server changes
               id: changed
-              uses: tj-actions/changed-files@v47
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
               with:
                   files: |
                       openhands-agent-server/**
@@ -408,7 +408,7 @@ jobs:
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -433,7 +433,7 @@ jobs:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         steps:
             - name: Checkout
-              uses: actions/checkout@v7.0.1
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with: {fetch-depth: 0}
 
             - name: Detect workspace changes
@@ -482,7 +482,7 @@ jobs:
 
             - name: Upload workspace coverage
               if: steps.changed.outputs.any_changed == 'true' && always()
-              uses: actions/upload-artifact@v7
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
               with:
                   name: coverage-workspace
                   path: coverage-workspace.dat
@@ -492,7 +492,7 @@ jobs:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         steps:
             - name: Checkout
-              uses: actions/checkout@v7.0.1
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with: {fetch-depth: 0}
 
             - name: Detect cross changes
@@ -542,7 +542,7 @@ jobs:
 
             - name: Upload cross coverage
               if: steps.changed.outputs.any_changed == 'true' && always()
-              uses: actions/upload-artifact@v7
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
               with:
                   name: coverage-cross
                   path: coverage-cross.dat
@@ -554,7 +554,7 @@ jobs:
         if: always() && github.event_name == 'pull_request'
         steps:
             - name: Checkout
-              uses: actions/checkout@v7.0.1
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
             - name: Install uv
               uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
@@ -566,7 +566,7 @@ jobs:
               run: uv sync --frozen --group dev
 
             - name: Download coverage artifacts
-              uses: actions/download-artifact@v8
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
               with:
                   path: ./cov
               continue-on-error: true
@@ -617,3 +617,5 @@ jobs:
                   report-only-changed-files: true
                   remove-links-to-files: true
                   remove-links-to-lines: true
+
+

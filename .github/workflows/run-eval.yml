@@ -85,7 +85,7 @@ jobs:
 
         steps:
             - name: Checkout SDK code
-              uses: actions/checkout@v7.0.1
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref || github.ref }}
                   fetch-depth: 0
@@ -250,3 +250,4 @@ jobs:
                     -H "Authorization: Bearer $GITHUB_TOKEN" \
                     "https://api.github.com/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
                     -d "$(jq -n --arg body "$COMMENT_BODY" '{body: $body}')"
+

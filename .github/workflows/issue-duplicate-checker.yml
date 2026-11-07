@@ -37,7 +37,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v7.0.1
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
             - name: Clone software-agent-sdk
               run: |
@@ -89,3 +89,4 @@ jobs:
                   repository: ${{ github.repository }}
                   close-after-days: ${{ inputs.close_after_days || '3' }}
                   github-token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC || github.token }}
+

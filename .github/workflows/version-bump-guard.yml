@@ -13,7 +13,7 @@ jobs:
             contents: read
         steps:
             - name: Checkout
-              uses: actions/checkout@v7.0.1
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   fetch-depth: 0
 
@@ -41,3 +41,4 @@ jobs:
                   ACP_VERSION_CHECK_BASE_REF: ${{ github.base_ref }}
                   ACP_VERSION_CHECK_SKIP: ${{ contains(github.event.pull_request.body || '', 'skip-acp-check') }}
               run: uv run python .github/scripts/check_sdk_api_breakage.py
+

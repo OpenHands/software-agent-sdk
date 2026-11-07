@@ -31,7 +31,7 @@ jobs:
                   repositories: automation,OpenHands,enterprise
 
             - name: Checkout
-              uses: actions/checkout@v7.0.1
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
             - name: Get version from release or input
               id: get_version
@@ -700,7 +700,7 @@ jobs:
                   repositories: software-agent-sdk
 
             - name: Checkout SDK release tooling
-              uses: actions/checkout@v7.0.1
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               env:
                   GH_TOKEN: ${{ steps.app-token.outputs.token }}
               with:
@@ -708,7 +708,7 @@ jobs:
                   token: ${{ steps.app-token.outputs.token }}
 
             - name: Install Node.js
-              uses: actions/setup-node@v7
+              uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
               with:
                   node-version: '24'
                   cache: npm
@@ -976,3 +976,4 @@ jobs:
                   URL: ${{ steps.cpr.outputs.pull-request-url }}
               run: |
                   echo "Cloud chart bump (agent-server → ${IMAGE_TAG}): ${URL}" >> "$GITHUB_STEP_SUMMARY"
+
