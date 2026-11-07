@@ -85,6 +85,7 @@ from openhands.sdk.tool import (
     Action,
     Observation,
 )
+from openhands.sdk.utils.redact import redact_api_key_literals
 
 
 if TYPE_CHECKING:
@@ -816,7 +817,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         logger.debug(
             "Sending messages to LLM: "
-            f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
+            + redact_api_key_literals(
+                json.dumps([m.model_dump() for m in _messages[1:]], indent=2)
+            )
         )
 
         try:
@@ -1024,7 +1027,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         logger.debug(
             "Sending messages to LLM: "
-            f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
+            + redact_api_key_literals(
+                json.dumps([m.model_dump() for m in _messages[1:]], indent=2)
+            )
         )
 
         try:
