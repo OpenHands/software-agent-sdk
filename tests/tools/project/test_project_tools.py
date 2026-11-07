@@ -14,6 +14,9 @@ from openhands.tools.project import (
     MessageProjectConversationAction,
     MessageProjectConversationExecutor,
     MessageProjectConversationTool,
+    ReadProjectConversationAction,
+    ReadProjectConversationExecutor,
+    ReadProjectConversationTool,
 )
 
 
@@ -71,7 +74,7 @@ class _Server:
                     "conversations": self.conversations,
                 },
             )
-        if request.method == "POST" and path.endswith("/messages"):
+        if request.method == "POST" and path.endswith("/events"):
             if isinstance(self.message_response, Exception):
                 raise self.message_response
             if self.message_response is not None:
@@ -84,11 +87,7 @@ class _Server:
             )
             return httpx.Response(
                 200,
-                json={
-                    "conversation_id": target,
-                    "previous_status": status,
-                    "run": "started",
-                },
+                json={"success": True, "previous_status": status, "run": "started"},
             )
         return httpx.Response(404, json={"detail": "Project not found"})
 
@@ -212,10 +211,13 @@ def test_message_posts_to_member_conversation(tmp_path, status, attention):
     assert not observation.is_error, observation.text
     (post,) = server.posts()
     assert post.url.path == (
-        f"/api/projects/{PROJECT_ID}/conversations/{conversation['conversation_id']}/messages"
+        f"/api/conversations/{conversation['conversation_id']}/events"
     )
     assert json.loads(post.content) == {
-        "text": "Also add docs",
+        "role": "user",
+        "content": [{"type": "text", "text": "Also add docs"}],
+        "run": True,
+        "refuse_pending_confirmation": True,
         "sender_conversation_id": state.id.hex,
     }
     assert observation.conversation_id == conversation["conversation_id"]
@@ -417,3 +419,80 @@ def test_save_artifact_needs_a_project(tmp_path):
 
     assert observation.is_error
     assert "not part of a project" in observation.text
+
+
+def test_read_reports_the_latest_messages(tmp_path):
+    target = uuid4()
+    seen: list[httpx.Request] = []
+
+    def server(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "conversation_id": target.hex,
+                "messages": [
+                    {
+                        "id": "m1",
+                        "source": "user",
+                        "sender": f"conversation:{'c' * 32}",
+                        "text": "Fix the bug",
+                        "finish": False,
+                        "timestamp": "t",
+                    },
+                    {
+                        "id": "m2",
+                        "source": "user",
+                        "sender": None,
+                        "text": "Also add a test",
+                        "finish": False,
+                        "timestamp": "t",
+                    },
+                    {
+                        "id": "m3",
+                        "source": "agent",
+                        "sender": None,
+                        "text": "Done, with a test.",
+                        "finish": True,
+                        "timestamp": "t",
+                    },
+                ],
+            },
+        )
+
+    executor = ReadProjectConversationExecutor(
+        _conv_state(tmp_path), transport=httpx.MockTransport(server)
+    )
+
+    observation = executor(
+        ReadProjectConversationAction(conversation_id=str(target), limit=5)
+    )
+
+    assert not observation.is_error, observation.text
+    (request,) = seen
+    assert request.url.path == (
+        f"/api/projects/{PROJECT_ID}/conversations/{target.hex}/messages"
+    )
+    assert request.url.params["limit"] == "5"
+    assert "[user, from conversation:" in observation.text
+    assert "[the person] Also add a test" in observation.text
+    assert "[agent (finish)] Done, with a test." in observation.text
+
+
+def test_read_outside_a_project_is_an_error(tmp_path):
+    executor = ReadProjectConversationExecutor(
+        _conv_state(tmp_path, tags={}),
+        transport=httpx.MockTransport(lambda r: httpx.Response(500)),
+    )
+
+    observation = executor(ReadProjectConversationAction(conversation_id=uuid4().hex))
+
+    assert observation.is_error
+    assert "not part of a project" in observation.text
+
+
+def test_list_description_asks_coordinators_to_delegate(tmp_path):
+    (tool,) = ListProjectConversationsTool.create(_conv_state(tmp_path))
+
+    assert "delegate by default" in tool.description
+    assert ReadProjectConversationTool.name == "read_project_conversation"

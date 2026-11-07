@@ -73,10 +73,23 @@ class ListProjectConversationsObservation(Observation):
         return content
 
 
+COORDINATOR_GUIDANCE = (
+    "If you coordinate the project, delegate by default: start a new project "
+    "conversation (start_child_conversation) for each new piece of work, and "
+    "send a follow-up (message_project_conversation) to the conversation that "
+    "already owns a task when the person adds to it, instead of doing the work "
+    "yourself. When a conversation finishes a turn you asked for, you receive "
+    "its final message as an update; tell the person what they need from it, "
+    "and read more with read_project_conversation only when you need it. "
+    "Turns the person starts in a conversation are theirs to follow."
+)
+
 _LIST_DESCRIPTION = (
     "List the conversations of the project this conversation coordinates or belongs "
     "to: every other conversation tagged with the same project, including the "
     "ones you started with start_child_conversation.\n\n"
+    + COORDINATOR_GUIDANCE
+    + "\n\n"
     "Conversations come grouped by `attention`: `needs_you` (waiting for "
     "confirmation, paused, error or stuck), `needs_input` (finished with a "
     "question for the person), `working` (running), `finished`, `idle` and "
@@ -354,6 +367,84 @@ class SaveProjectArtifactTool(
         ]
 
 
+# read_project_conversation
+
+
+class ReadProjectConversationAction(Action):
+    """Read the latest messages of one conversation of this project."""
+
+    conversation_id: str = Field(
+        description=(
+            "Id of the conversation to read, as list_project_conversations returned it."
+        )
+    )
+    limit: int = Field(
+        default=20, ge=1, le=100, description="How many recent messages to read."
+    )
+
+    @property
+    def visualize(self) -> Text:
+        return Text(
+            f"Read project conversation {self.conversation_id}", style="bold cyan"
+        )
+
+
+class ReadProjectConversationObservation(Observation):
+    conversation_id: UnmaskedID | None = None
+
+    @property
+    def visualize(self) -> Text:
+        return Text(self.text, style="red" if self.is_error else "")
+
+
+_READ_DESCRIPTION = (
+    "Read the latest messages of one conversation of your project: what the "
+    "person, the agent and other conversations said, and the agent's finish "
+    "message, oldest first, without its tool calls. Use it to catch up on a "
+    "conversation before you report on it or send it a follow-up; the updates "
+    "you receive only carry each turn's final message."
+)
+
+
+class ReadProjectConversationTool(
+    ToolDefinition[ReadProjectConversationAction, ReadProjectConversationObservation]
+):
+    """Tool that reads the recent messages of a project conversation."""
+
+    user_selectable: ClassVar[bool] = False
+
+    @classmethod
+    def create(
+        cls,
+        conv_state: "ConversationState",
+        server_url: str | None = None,
+        **params,
+    ) -> Sequence[Self]:
+        """Create the tool bound to the current conversation."""
+        if params:
+            raise ValueError(
+                "ReadProjectConversationTool does not accept parameters: "
+                f"{sorted(params)}"
+            )
+        from openhands.tools.project.impl import ReadProjectConversationExecutor
+
+        return [
+            cls(
+                description=_READ_DESCRIPTION,
+                action_type=ReadProjectConversationAction,
+                observation_type=ReadProjectConversationObservation,
+                executor=ReadProjectConversationExecutor(conv_state, server_url),
+                annotations=ToolAnnotations(
+                    readOnlyHint=True,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=False,
+                ),
+            )
+        ]
+
+
 register_tool(ListProjectConversationsTool.name, ListProjectConversationsTool)
+register_tool(ReadProjectConversationTool.name, ReadProjectConversationTool)
 register_tool(SaveProjectArtifactTool.name, SaveProjectArtifactTool)
 register_tool(MessageProjectConversationTool.name, MessageProjectConversationTool)

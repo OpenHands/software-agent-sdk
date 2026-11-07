@@ -60,8 +60,10 @@ Routes: `GET /api/conversations/{conversation_id}/events/search`,
 
 - REST: `POST /api/conversations/{conversation_id}/events` with a
   `SendMessageRequest` body `{"role": "user", "content": [{"type": "text",
-  "text": "..."}], "run": false}` returns `{"success": true}`; `run` defaults
-  to `false`, and a content item is either `{"type": "text", "text": ...}`
+  "text": "..."}], "run": false}` returns `{"success": true}` (with `run: true`
+  it also reports `run`: `started`, `queued` or `not_run`); `run` defaults
+  to `false`. Two optional fields belong to projects (F36):
+  `sender_conversation_id` and `refuse_pending_confirmation`. Also, and a content item is either `{"type": "text", "text": ...}`
   or `{"type": "image", "image_urls": [...]}` (http or `data:` URLs). The Python SDK `RemoteConversation.send_message()` and the
   TypeScript `RemoteConversation.sendMessage()` always send `run: false` and
   then call `POST /run` separately; `ConversationClient.sendEvent()` posts the

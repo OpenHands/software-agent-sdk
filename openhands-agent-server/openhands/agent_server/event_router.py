@@ -28,13 +28,17 @@ from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
     EventSortOrder,
+    MessageRunOutcome,
     ReactionRequest,
     SendMessageRequest,
+    SendMessageResponse,
     Success,
 )
 from openhands.agent_server.openai.usage import token_usage_delta
-from openhands.sdk import Message
+from openhands.agent_server.project_wake import SenderError, sender_message_header
+from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.types import conversation_sender
 from openhands.sdk.event import Event, ReactionEvent
 
 
@@ -224,20 +228,87 @@ async def batch_get_conversation_events(
 
 @event_write_router.post(
     "",
-    responses={429: {"description": "Message saved but server run capacity is full"}},
+    response_model_exclude_none=True,
+    responses={
+        409: {
+            "description": (
+                "With refuse_pending_confirmation: the conversation is waiting "
+                "for confirmation; nothing was saved"
+            )
+        },
+        422: {"description": "The sender conversation cannot send this message"},
+        429: {"description": "Message saved but server run capacity is full"},
+    },
 )
 async def send_message(
+    conversation_id: UUID,
     request: SendMessageRequest,
+    http_request: Request,
     event_service: EventService = Depends(get_event_service),
-) -> Success:
+) -> SendMessageResponse:
     """Send a message to a conversation.
 
     If starting the run returns 429, the message is already saved. Retry the
     conversation's /run endpoint instead of resending the message.
+
+    With ``run``, a conversation waiting for confirmation is normally run, which
+    approves its pending actions. ``refuse_pending_confirmation`` prevents that:
+    a conversation already waiting answers 409 and nothing is saved, and one
+    that reaches a confirmation while the message is delivered keeps the
+    message and is not run (``run: "waiting_for_confirmation"``). The refusal
+    is decided under the conversation's run lock.
+
+    With ``sender_conversation_id``, the saved message records
+    ``sender: "conversation:<id hex>"`` and opens with a line telling the
+    receiving agent which conversation sent it and that it approves nothing on
+    the person's behalf, so UIs can show it as instructions rather than the
+    person's words. A sender in a project may only message its own project's
+    conversations (422 otherwise).
     """
-    message = Message(role=request.role, content=request.content)
-    await event_service.send_message(message, request.run)
-    return Success()
+    content = list(request.content)
+    sender: str | None = None
+    if request.sender_conversation_id is not None:
+        try:
+            header = await sender_message_header(
+                get_conversation_service(http_request),
+                request.sender_conversation_id,
+                conversation_id,
+                event_service.stored.tags,
+            )
+        except SenderError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)
+            )
+        content.insert(0, TextContent(text=header))
+        sender = conversation_sender(request.sender_conversation_id)
+    message = Message(role=request.role, content=content)
+
+    guarded = request.run and request.refuse_pending_confirmation
+    previous_status: ConversationExecutionStatus | None = None
+    if guarded:
+        # An unlocked read: it only spares the person an unrelated message in
+        # a conversation already waiting. The guarded run is the safeguard.
+        previous_status = (await event_service.get_state()).execution_status
+        if previous_status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Conversation is waiting for confirmation",
+            )
+    outcome: MessageRunOutcome | None
+    try:
+        outcome = await event_service.send_message(
+            message,
+            request.run,
+            refuse_pending_confirmation=guarded,
+            sender=sender,
+        )
+    except ValueError as e:
+        if not guarded or str(e) != "waiting_for_confirmation":
+            raise
+        outcome = "waiting_for_confirmation"
+    if request.run and outcome is None:
+        outcome = "not_run"
+    return SendMessageResponse(run=outcome, previous_status=previous_status)
 
 
 async def _gateway_context(

@@ -13,9 +13,11 @@ what they need from the person (`attention`: `needs_you`, `working`,
 `finished`, `idle`, derived from `execution_status`). Two server-executed
 tools, `list_project_conversations` and `message_project_conversation`, give a
 coordinator agent typed access to the same list and a way to steer a conversation.
-Messages go through `POST .../conversations/{conversation_id}/messages`, which never
-runs a conversation that is waiting for confirmation, because that run would approve
-the pending action: the check is made under the conversation's run lock. Deleting a project never
+Messages go through the generic `POST /api/conversations/{conversation_id}/events`.
+With `refuse_pending_confirmation` it never runs a conversation that is waiting for
+confirmation, because that run would approve the pending action: the check is made
+under the conversation's run lock. With `sender_conversation_id` the message records
+the sending conversation, which must be in the same project when it is in one. Deleting a project never
 changes or deletes conversations. A file the server cannot parse, or one
 written by a newer schema, is never overwritten: every route answers 409.
 
@@ -33,7 +35,8 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 `DELETE /api/projects/{project_id}`, `GET /api/projects/{project_id}/conversations`,
 `PUT /api/projects/{project_id}/conversations/{conversation_id}`,
 `DELETE /api/projects/{project_id}/conversations/{conversation_id}`,
-`POST /api/projects/{project_id}/conversations/{conversation_id}/messages`
+`GET /api/projects/{project_id}/conversations/{conversation_id}/messages`,
+`POST /api/conversations/{conversation_id}/events`
 
 ## Sub-features
 
@@ -50,8 +53,8 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.attention`: conversations are grouped `needs_you` (waiting for confirmation), then `working`, `finished`, `idle`, newest-updated first within a group; non-members are left out.
 - `F36.remove-conversation`: `DELETE .../conversations/{conversation_id}` clears only the `project` tag; a second delete, or a delete through another project, is 404.
 - `F36.remove-coordinator`: removing the coordinator from the project is 409; clearing it with `PATCH {"coordinator_conversation_id": null}` keeps it a member, now listed with the other conversations.
-- `F36.message-rest`: `POST .../messages` to a member saves the message, starts a run and answers `run: started` with the previous status; a non-member is 404. Without `sender_conversation_id` the message has no `sender`; a sender outside the project is 422.
-- `F36.message-refused`: `POST .../messages` to a conversation waiting for confirmation is 409, saves nothing, and the conversation keeps waiting.
+- `F36.message-rest`: `POST /api/conversations/{id}/events` with `refuse_pending_confirmation` saves the message, starts a run and answers `run: started` with the previous status. Without `sender_conversation_id` the message has no `sender`; a member sending to a conversation outside its project is 422.
+- `F36.message-refused`: `refuse_pending_confirmation` on a conversation waiting for confirmation is 409, saves nothing, and the conversation keeps waiting.
 - `F36.turn`: when a member's run finishes, its `turn` tag says whether the agent's last message asked something (`asked`, attention `needs_input`) or not (`answered`); a new user message clears it.
 - `F36.resolved`: a `resolved` tag (`user` or `auto`) puts a member in the `resolved` group, reported as `resolved`; a new user message clears it. Children do not copy `resolved` or `turn`.
 - `F36.artifacts-rest`: a project's artifacts can be uploaded (multipart), listed with `source: user`, downloaded byte for byte and deleted; unsafe names are 400.
@@ -60,6 +63,8 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.delete`: `DELETE /api/projects/{id}` removes the record, then the conversations endpoint is 404, and member conversations keep their tags.
 - `F36.corrupted-file`: an unparsable or future-schema `projects.json` makes reads and writes 409 and is never rewritten.
 - `F36.tool-start-and-list`: a coordinator with `start_child_conversation` and `list_project_conversations` starts a child that joins the project, and its list call reports that child with its attention group. The child's system prompt names the coordinator, and its first message has `sender: "conversation:<coordinator id hex>"`.
+- `F36.wake`: when a member finishes a run the coordinator started (its task or follow-up message), the coordinator gets one user message with the member's final message, `sender: "conversation:<member id hex>"` and an "Update from" header, and runs on it. Turns the person starts in a member (`F36.turn`, `F36.resolved`) do not wake it.
+- `F36.read`: `GET .../conversations/{conversation_id}/messages` lists a member's latest messages (with senders) and `finish`, oldest first; the `read_project_conversation` tool reads it.
 - `F36.tool-message`: `message_project_conversation` delivers a follow-up to a finished conversation and requests a run: the conversation gets a second user message, sent by the coordinator (`sender` and a header line saying it is not the person), and runs again.
 - `F36.tool-message-refuses-confirmation`: `message_project_conversation` refuses a conversation waiting for confirmation with an error observation; the conversation stays waiting and gets no new message.
 
@@ -95,11 +100,15 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
   or clearing the conversation's `project` tag; other tags are kept.
   `PATCH /api/conversations/{id}` with `tags` reaches the same membership but
   replaces the whole tag set (F04).
-- REST: `POST /api/projects/{project_id}/conversations/{conversation_id}/messages`
-  with `{"text"}` answers `{conversation_id, previous_status, run}`, where `run` is
-  `started`, `queued`, `waiting_for_confirmation` or `not_run`;
-  409 when the conversation is waiting for confirmation. It is the confirmation-safe
-  counterpart of `POST /api/conversations/{id}/events` with `run: true`.
+- REST: `POST /api/conversations/{conversation_id}/events` (F04) takes two
+  optional fields. `refuse_pending_confirmation` (with `run: true`) answers 409
+  when the conversation is waiting for confirmation, and otherwise
+  `{success, previous_status, run}`, where `run` is `started`, `queued`,
+  `waiting_for_confirmation` or `not_run`. `sender_conversation_id` records
+  `sender: "conversation:<id hex>"` and adds a "Sent by" first line naming the
+  coordinator, another conversation in the project, or another conversation;
+  422 when the sender is unknown, is the target, or is in a project the
+  target is not in.
 - Agent tools (registered by the agent-server, not part of the default
   preset): `list_project_conversations`, `message_project_conversation` and
   `save_project_artifact` from
@@ -186,7 +195,7 @@ Preconditions:
 - **Coordinator (`F36.coordinator`).**
   ```sh
   CAT=$(control-agent-server conversation start --no-run --title qa-f36-cat --tag insidercat=self \
-    --tools start_child_conversation,list_project_conversations,message_project_conversation --print-id)
+    --tools start_child_conversation,list_project_conversations,message_project_conversation,read_project_conversation --print-id)
   P2=$(control-agent-server api POST /api/projects --json "{\"name\": \"qa-f36-two\", \"coordinator_conversation_id\": \"$CAT\"}" \
     --expect 201 --field id)
   control-agent-server api GET "/api/projects/$P2" --check coordinator_conversation_id eq "$(echo "$CAT" | tr -d -)" --save F36.coordinator/get
@@ -278,26 +287,27 @@ Preconditions:
   ```sh
   W2=$(control-agent-server conversation start --no-run --title qa-f36-w2 --print-id)
   control-agent-server api PUT "/api/projects/$P2/conversations/$W2" --expect 204
-  control-agent-server api POST "/api/projects/$P2/conversations/$W2/messages" --json '{"text": "Reply with the single word ok and finish."}' \
+  control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Reply with the single word ok and finish."}], "run": true, "refuse_pending_confirmation": true}' \
     --expect 200 --check run eq started --check previous_status eq idle --save F36.message-rest/post
   control-agent-server conversation wait "$W2" --until finished --timeout 180
   control-agent-server conversation events "$W2" --kinds MessageEvent --contains '"source": "user"' --expect-count 1
-  control-agent-server api POST "/api/projects/$P2/conversations/$W1/messages" --json '{"text": "hi"}' --expect 404 \
-    --check detail eq 'Conversation not in project'
   control-agent-server conversation events "$W2" --kinds MessageEvent --contains '"sender": "conversation:' --expect-count 0
-  control-agent-server api POST "/api/projects/$P2/conversations/$W2/messages" --json "{\"text\": \"hi\", \"sender_conversation_id\": \"$W1\"}" --expect 422
+  control-agent-server api POST "/api/conversations/$W1/events" --json "{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"hi\"}], \"sender_conversation_id\": \"$W2\"}" --expect 422 \
+    --check detail eq 'Sender is not a conversation of this project'
+  control-agent-server conversation events "$W1" --kinds MessageEvent --contains 'not by the person' --expect-count 0
   ```
-  The member runs and finishes; `W1` (removed earlier) is refused.
+  The member runs and finishes; a member cannot message `W1`, which left the
+  project earlier.
 - **How a turn ended (`F36.turn`).**
   Requires: `F36.message-rest`
   Needs: `llm`
   ```sh
-  control-agent-server api POST "/api/projects/$P2/conversations/$W2/messages" --json '{"text": "Ask me which colour I prefer, as one short question, then finish. Do not use tools."}' \
+  control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Ask me which colour I prefer, as one short question, then finish. Do not use tools."}], "run": true, "refuse_pending_confirmation": true}' \
     --expect 200 --check run eq started
   control-agent-server conversation wait "$W2" --until finished --timeout 180
   control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq asked --until-ok 10 --save F36.turn/asked
   control-agent-server api GET "/api/projects/$P2/conversations" --check conversations contains '"attention": "needs_input"' --save F36.turn/conversations
-  control-agent-server api POST "/api/projects/$P2/conversations/$W2/messages" --json '{"text": "Blue. Reply with the single word noted and finish."}' \
+  control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Blue. Reply with the single word noted and finish."}], "run": true, "refuse_pending_confirmation": true}' \
     --expect 200 --check run eq started
   control-agent-server conversation wait "$W2" --until finished --timeout 180
   control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq answered --until-ok 10 --save F36.turn/answered
@@ -311,10 +321,11 @@ Preconditions:
   control-agent-server api PATCH "/api/conversations/$W2" --json "{\"tags\": {\"project\": \"$P2\", \"turn\": \"answered\", \"resolved\": \"user\"}}" --expect 200
   control-agent-server api GET "/api/projects/$P2/conversations" --check conversations contains '"resolved": "user"' \
     --check conversations contains '"attention": "resolved"' --save F36.resolved/conversations
-  control-agent-server api POST "/api/projects/$P2/conversations/$W2/messages" --json '{"text": "Reply with the single word reopened and finish."}' --expect 200
+  control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Reply with the single word reopened and finish."}], "run": true, "refuse_pending_confirmation": true}' --expect 200
   control-agent-server conversation wait "$W2" --until finished --timeout 180
   control-agent-server api GET "/api/conversations/$W2" --check tags not-contains resolved --check tags.turn eq answered --until-ok 10 \
     --save F36.resolved/reopened
+  control-agent-server conversation events "$W2" --kinds MessageEvent --contains '"sender": "conversation:' --expect-count 0
   ```
   The person's resolve shows as `resolved: "user"`; a new message reopens the
   conversation. (`resolved=auto` needs a critic; the unit tests cover it.)
@@ -349,7 +360,7 @@ Preconditions:
 - **No approval over REST (`F36.message-refused`).**
   Requires: `F36.attention`
   ```sh
-  control-agent-server api POST "/api/projects/$P2/conversations/$ASKS/messages" --json '{"text": "go ahead"}' --expect 409 \
+  control-agent-server api POST "/api/conversations/$ASKS/events" --json '{"role": "user", "content": [{"type": "text", "text": "go ahead"}], "run": true, "refuse_pending_confirmation": true}' --expect 409 \
     --check detail eq 'Conversation is waiting for confirmation' --save F36.message-refused/post
   control-agent-server api GET "/api/conversations/$ASKS" --check execution_status eq waiting_for_confirmation
   control-agent-server conversation events "$ASKS" --kinds MessageEvent --contains '"source": "user"' --expect-count 1
@@ -392,6 +403,32 @@ Preconditions:
   The child copies the coordinator's tags, so it is a project conversation; the
   list tool's observation names it. Its system prompt says who started it, and
   its task message records the coordinator as sender.
+- **Model-backed: the coordinator hears back (`F36.wake`).**
+  Requires: `F36.tool-start-and-list`
+  Needs: `llm`
+  ```sh
+  for _ in $(seq 60); do
+    control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation $(printf %s "$CHILD" | tr -d -))" --expect-min 1 >/dev/null 2>&1 && break
+    sleep 2
+  done
+  CHILD_HEX=$(printf %s "$CHILD" | tr -d -)
+  control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation $CHILD_HEX), a conversation in your project" \
+    --expect-count 1 --save F36.wake/update
+  control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "\"sender\": \"conversation:$CHILD_HEX\"" --expect-count 1
+  control-agent-server conversation wait "$CAT" --until finished --timeout 300
+  ```
+  When the child finished, its final message reached the coordinator as one
+  update (sender: the child), and the coordinator ran on it.
+- **Model-backed: read a conversation (`F36.read`).**
+  Requires: `F36.wake`
+  Needs: `llm`
+  ```sh
+  control-agent-server api GET "/api/projects/$P2/conversations/$CHILD/messages" --expect 200 \
+    --check messages.0.source eq user --check messages.0.sender matches '^conversation:' --save F36.read/rest
+  control-agent-server conversation send "$CAT" --wait --timeout 300 --text 'Use read_project_conversation on the qa-f36-child conversation and tell me its last message. Do nothing else.'
+  control-agent-server conversation events "$CAT" --kinds ObservationEvent --contains 'oldest first' --expect-min 1 --save F36.read/events
+  ```
+  The transcript lists the coordinator's task message first; the tool reads it.
 - **Model-backed: message a conversation (`F36.tool-message`).**
   Requires: `F36.tool-start-and-list`
   Needs: `llm`
@@ -402,7 +439,7 @@ Preconditions:
   control-agent-server conversation events "$CHILD" --kinds MessageEvent --contains '"source": "user"' --expect-count 2
   control-agent-server conversation events "$CHILD" --kinds MessageEvent --contains 'the coordinator of your project, not by the person' --expect-count 1
   control-agent-server conversation events "$CHILD" --kinds MessageEvent --contains '"sender": "conversation:' --expect-count 2
-  control-agent-server conversation events "$CHILD" --kinds ActionEvent --contains FinishAction --expect-min 2
+  control-agent-server conversation events "$CHILD" --kinds ActionEvent,MessageEvent --contains '"source": "agent"' --expect-min 2
   ```
   The child receives a second user message, marked as the coordinator's, and
   finishes a second run.
@@ -457,7 +494,7 @@ Preconditions:
   it starts them with the project's `project` tag.
 - Artifacts are copies: saving the same name again replaces the file.
   Deleting a project deletes its artifacts.
-- The messages route refuses with 409 only when the conversation is already
+- `refuse_pending_confirmation` answers 409 only when the conversation is already
   waiting. If it reaches a confirmation while the message is being
   delivered, the message is kept and `run` is `waiting_for_confirmation`;
   a run that was already active answers `queued`. A `paused`

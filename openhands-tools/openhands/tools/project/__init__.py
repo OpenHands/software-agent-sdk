@@ -1,9 +1,10 @@
 """Project coordinator tool package.
 
-Provides ``list_project_conversations``, ``message_project_conversation`` and
-``save_project_artifact``: server-executed tools that let a conversation see
-the conversations of its agent-server project, send one of them a follow-up, and
-save a file it made to the project's artifacts. Together with
+Provides ``list_project_conversations``, ``message_project_conversation``,
+``read_project_conversation`` and ``save_project_artifact``: server-executed
+tools that let a conversation see the conversations of its agent-server
+project, send one of them a follow-up, read one's latest messages, and save a
+file it made to the project's artifacts. Together with
 ``start_child_conversation`` (a child copies its parent's ``project`` tag) they
 give a project coordinator typed actions to start, follow and steer its
 conversations.
@@ -35,6 +36,9 @@ from openhands.tools.project.definition import (
     MessageProjectConversationObservation,
     MessageProjectConversationTool,
     ProjectConversationSummary,
+    ReadProjectConversationAction,
+    ReadProjectConversationObservation,
+    ReadProjectConversationTool,
     SaveProjectArtifactAction,
     SaveProjectArtifactObservation,
     SaveProjectArtifactTool,
@@ -42,6 +46,7 @@ from openhands.tools.project.definition import (
 from openhands.tools.project.impl import (
     ListProjectConversationsExecutor,
     MessageProjectConversationExecutor,
+    ReadProjectConversationExecutor,
     SaveProjectArtifactExecutor,
 )
 
@@ -56,6 +61,10 @@ __all__ = [
     "MessageProjectConversationObservation",
     "MessageProjectConversationTool",
     "ProjectConversationSummary",
+    "ReadProjectConversationAction",
+    "ReadProjectConversationExecutor",
+    "ReadProjectConversationObservation",
+    "ReadProjectConversationTool",
     "SaveProjectArtifactAction",
     "SaveProjectArtifactExecutor",
     "SaveProjectArtifactObservation",

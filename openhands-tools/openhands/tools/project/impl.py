@@ -27,6 +27,8 @@ from openhands.tools.project.definition import (
     MessageProjectConversationAction,
     MessageProjectConversationObservation,
     ProjectConversationSummary,
+    ReadProjectConversationAction,
+    ReadProjectConversationObservation,
     SaveProjectArtifactAction,
     SaveProjectArtifactObservation,
 )
@@ -173,6 +175,75 @@ class ListProjectConversationsExecutor(
         )
 
 
+class ReadProjectConversationExecutor(
+    ToolExecutor[ReadProjectConversationAction, ReadProjectConversationObservation]
+):
+    """GET a project conversation's recent messages and report them."""
+
+    def __init__(
+        self,
+        conv_state: "ConversationState",
+        server_url: str | None = None,
+        timeout: float = PROJECT_TOOL_TIMEOUT_SECONDS,
+        transport: httpx.BaseTransport | None = None,
+    ):
+        self._client = _ProjectClient(conv_state, server_url, timeout, transport)
+
+    def __call__(
+        self,
+        action: ReadProjectConversationAction,
+        conversation: "LocalConversation | None" = None,  # noqa: ARG002
+    ) -> ReadProjectConversationObservation:
+        try:
+            try:
+                target_id = UUID(action.conversation_id.strip()).hex
+            except ValueError:
+                raise ProjectToolError(
+                    f"{action.conversation_id!r} is not a conversation id."
+                )
+            project_id = self._client.project_id()
+            response = self._client.request(
+                "GET",
+                f"/api/projects/{project_id}/conversations/{target_id}/messages",
+                params={"limit": action.limit},
+            )
+            try:
+                messages = response.json()["messages"]
+                lines = [_transcript_line(m) for m in messages]
+            except (ValueError, KeyError, TypeError) as exc:
+                raise ProjectToolError(
+                    f"Unexpected conversation messages response: {exc}"
+                ) from exc
+        except ProjectToolError as exc:
+            return ReadProjectConversationObservation.from_text(
+                text=str(exc), is_error=True
+            )
+        if not lines:
+            text = f"Conversation {target_id} has no messages yet."
+        else:
+            text = (
+                f"Latest {len(lines)} messages of conversation {target_id}, "
+                "oldest first:\n\n" + "\n\n".join(lines)
+            )
+        return ReadProjectConversationObservation.from_text(
+            text=text, conversation_id=target_id
+        )
+
+
+def _transcript_line(message: dict[str, Any]) -> str:
+    source = str(message["source"])
+    sender = message.get("sender")
+    if sender:
+        who = f"{source}, from {sender}"
+    elif source == "user":
+        who = "the person"
+    elif message.get("finish"):
+        who = "agent (finish)"
+    else:
+        who = source
+    return f"[{who}] {message['text']}"
+
+
 _RUN_OUTCOMES = {
     "started": "It was {status}; a run was started for it.",
     "queued": (
@@ -205,8 +276,9 @@ class MessageProjectConversationExecutor(
     """Send a message to a conversation of the caller's project.
 
     The conversation must be listed by the project's conversations endpoint.
-    Delivery goes through
-    ``POST /api/projects/{id}/conversations/{conversation_id}/messages``, which
+    Delivery goes through ``POST /api/conversations/{conversation_id}/events``
+    with ``sender_conversation_id`` (the server checks the sender is in the
+    same project and records it) and ``refuse_pending_confirmation``, so it
     never runs a conversation that is waiting for confirmation (that run would
     approve the pending action); the server decides it under the conversation's
     run lock. A conversation already waiting is refused before anything is sent.
@@ -233,7 +305,7 @@ class MessageProjectConversationExecutor(
                 raise ProjectToolError(
                     f"{action.conversation_id!r} is not a conversation id."
                 )
-            project_id, conversations = self._client.conversations()
+            _, conversations = self._client.conversations()
             target = next(
                 (t for t in conversations if t.conversation_id == target_id), None
             )
@@ -244,13 +316,17 @@ class MessageProjectConversationExecutor(
                 )
             if target.execution_status == "waiting_for_confirmation":
                 raise ProjectToolError(_WAITING_REFUSAL.format(id=target_id))
-            path = f"/api/projects/{project_id}/conversations/{target_id}/messages"
             try:
+                # The generic send route; the server checks the sender is in
+                # the same project and refuses to approve a pending confirmation.
                 response = self._client.request(
                     "POST",
-                    path,
+                    f"/api/conversations/{target_id}/events",
                     json={
-                        "text": action.message,
+                        "role": "user",
+                        "content": [{"type": "text", "text": action.message}],
+                        "run": True,
+                        "refuse_pending_confirmation": True,
                         "sender_conversation_id": self._client.conv_state.id.hex,
                     },
                 )

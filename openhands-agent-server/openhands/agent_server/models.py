@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -465,6 +465,34 @@ class ConfirmationResponseRequest(BaseModel):
 
 class Success(BaseModel):
     success: bool = True
+
+
+MessageRunOutcome = Literal["started", "queued", "waiting_for_confirmation", "not_run"]
+
+
+class SendMessageResponse(Success):
+    """What became of a message sent with ``run``."""
+
+    run: MessageRunOutcome | None = Field(
+        default=None,
+        description=(
+            "Set when the request asked to run. `started`: a run was started "
+            "for the message. `queued`: a run was already active; it takes the "
+            "message, or the conversation runs again when it ends. "
+            "`waiting_for_confirmation` (only with "
+            "`refuse_pending_confirmation`): the conversation reached a "
+            "confirmation while the message was delivered, so it was not run "
+            "and the message waits for the person's decision. `not_run`: a "
+            "stop arrived meanwhile and the conversation was left as it is."
+        ),
+    )
+    previous_status: ConversationExecutionStatus | None = Field(
+        default=None,
+        description=(
+            "The conversation's execution status just before the message; "
+            "set with `refuse_pending_confirmation`."
+        ),
+    )
 
 
 class FileUploadResult(Success):

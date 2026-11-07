@@ -19,12 +19,14 @@ from fastapi import FastAPI
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.event_router import event_router
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     StartConversationRequest,
     UpdateConversationRequest,
 )
 from openhands.agent_server.persistence import reset_stores
+from openhands.agent_server.project_wake import notify_coordinator
 from openhands.agent_server.projects_router import projects_router
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -55,7 +57,9 @@ async def client(service, persistence_dir) -> AsyncIterator[httpx.AsyncClient]:
     app.state.config = Config(
         static_files_path=None, session_api_keys=[], secret_key=None
     )
+    app.state.conversation_service = service
     app.include_router(projects_router, prefix="/api")
+    app.include_router(event_router, prefix="/api")
     app.dependency_overrides[get_conversation_service] = lambda: service
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
@@ -482,6 +486,20 @@ async def test_membership_survives_service_restart(persistence_dir, tmp_path):
 # Messages
 
 
+def _send(text: str, sender: UUID | str | None = None, **extra) -> dict:
+    """The body the coordinator's message tool sends to the generic route."""
+    body = {
+        "role": "user",
+        "content": [{"type": "text", "text": text}],
+        "run": True,
+        "refuse_pending_confirmation": True,
+        **extra,
+    }
+    if sender is not None:
+        body["sender_conversation_id"] = str(sender)
+    return body
+
+
 async def _user_messages(service: ConversationService, conversation_id: UUID) -> int:
     event_service = await service.get_event_service(conversation_id)
     assert event_service is not None
@@ -505,8 +523,8 @@ async def test_message_refuses_conversation_waiting_for_confirmation(
     )
 
     response = await client.post(
-        f"/api/projects/{project['id']}/conversations/{worker.hex}/messages",
-        json={"text": "go ahead"},
+        f"/api/conversations/{worker.hex}/events",
+        json=_send("go ahead"),
     )
 
     assert response.status_code == 409
@@ -520,17 +538,41 @@ async def test_message_refuses_conversation_waiting_for_confirmation(
 
 
 @pytest.mark.asyncio
-async def test_message_to_non_member_is_404(client, service, tmp_path):
+async def test_project_sender_only_reaches_its_project(client, service, tmp_path):
     project = (await client.post("/api/projects", json={"name": "P"})).json()
+    cat = await _start(service, tmp_path)
     outsider = await _start(service, tmp_path)
+    await client.put(f"/api/projects/{project['id']}/conversations/{cat.hex}")
 
-    for target in (outsider.hex, uuid4().hex):
-        response = await client.post(
-            f"/api/projects/{project['id']}/conversations/{target}/messages",
-            json={"text": "hi"},
-        )
-        assert response.status_code == 404
+    refused = await client.post(
+        f"/api/conversations/{outsider.hex}/events", json=_send("hi", cat.hex)
+    )
+    missing = await client.post(
+        f"/api/conversations/{uuid4().hex}/events", json=_send("hi", cat.hex)
+    )
+
+    assert refused.status_code == 422
+    assert missing.status_code == 404
     assert await _user_messages(service, outsider) == 0
+
+
+@pytest.mark.asyncio
+async def test_sender_outside_any_project_is_named_as_a_conversation(
+    client, service, tmp_path, monkeypatch
+):
+    sender = await _start(service, tmp_path)
+    target = await _start(service, tmp_path)
+    _save_without_running(monkeypatch)
+
+    response = await client.post(
+        f"/api/conversations/{target.hex}/events", json=_send("hi", sender.hex)
+    )
+
+    assert response.status_code == 200
+    event = await _last_user_message(service, target)
+    assert event.sender == f"conversation:{sender.hex}"
+    header = event.llm_message.content[0].text  # type: ignore[union-attr]
+    assert "another conversation, not by the person" in header
 
 
 @pytest.mark.asyncio
@@ -547,13 +589,13 @@ async def test_message_runs_member_with_guard(client, service, tmp_path, monkeyp
     monkeypatch.setattr(EventService, "send_message", fake_send)
 
     response = await client.post(
-        f"/api/projects/{project['id']}/conversations/{worker.hex}/messages",
-        json={"text": "Also add docs"},
+        f"/api/conversations/{worker.hex}/events",
+        json=_send("Also add docs"),
     )
 
     assert response.status_code == 200
     assert response.json() == {
-        "conversation_id": worker.hex,
+        "success": True,
         "previous_status": "idle",
         "run": "started",
     }
@@ -610,8 +652,8 @@ async def test_message_records_its_sender(
     _save_without_running(monkeypatch)
 
     response = await client.post(
-        f"/api/projects/{project['id']}/conversations/{worker.hex}/messages",
-        json={"text": "Also add docs", "sender_conversation_id": cat.hex},
+        f"/api/conversations/{worker.hex}/events",
+        json=_send("Also add docs", cat.hex),
     )
 
     assert response.status_code == 200
@@ -627,14 +669,16 @@ async def test_message_records_its_sender(
 @pytest.mark.asyncio
 async def test_message_refuses_a_sender_outside_the_project(client, service, tmp_path):
     project = (await client.post("/api/projects", json={"name": "P"})).json()
+    other = (await client.post("/api/projects", json={"name": "Q"})).json()
     worker = await _start(service, tmp_path)
     outsider = await _start(service, tmp_path)
     await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    await client.put(f"/api/projects/{other['id']}/conversations/{outsider.hex}")
 
     for sender in (outsider.hex, uuid4().hex, worker.hex):
         response = await client.post(
-            f"/api/projects/{project['id']}/conversations/{worker.hex}/messages",
-            json={"text": "hi", "sender_conversation_id": sender},
+            f"/api/conversations/{worker.hex}/events",
+            json=_send("hi", sender),
         )
         assert response.status_code == 422
     assert await _user_messages(service, worker) == 0
@@ -969,3 +1013,132 @@ async def test_new_tags_are_read_before_the_state_is_saved(
     )
 
     assert await _tags(service, cid) == {"project": "p1", "resolved": "user"}
+
+
+# Coordinator updates and transcripts
+
+
+@pytest.mark.asyncio
+async def test_a_finished_member_wakes_its_coordinator(
+    client, service, tmp_path, monkeypatch
+):
+    cat = await _start(service, tmp_path)
+    worker = await _start(service, tmp_path)
+    project = (
+        await client.post(
+            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
+        )
+    ).json()
+    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    _save_without_running(monkeypatch)
+
+    sent = await notify_coordinator(
+        service,
+        worker,
+        project["id"],
+        "asked",
+        "Which database should I use?",
+        f"conversation:{cat.hex}",
+    )
+
+    assert sent
+    event = await _last_user_message(service, cat)
+    assert event.sender == f"conversation:{worker.hex}"
+    header, text = (c.text for c in event.llm_message.content)  # type: ignore[union-attr]
+    assert "with a question for the person" in header and worker.hex in header
+    assert text == "Which database should I use?"
+
+
+@pytest.mark.asyncio
+async def test_no_update_without_a_coordinator_or_to_itself(
+    client, service, tmp_path, monkeypatch
+):
+    cat = await _start(service, tmp_path)
+    project = (
+        await client.post(
+            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
+        )
+    ).json()
+    bare = (await client.post("/api/projects", json={"name": "Q"})).json()
+    _save_without_running(monkeypatch)
+
+    by_cat = f"conversation:{cat.hex}"
+    assert not await notify_coordinator(
+        service, cat, project["id"], "answered", "x", by_cat
+    )
+    assert not await notify_coordinator(
+        service, cat, bare["id"], "answered", "x", by_cat
+    )
+    assert await _user_messages(service, cat) == 0
+
+
+@pytest.mark.asyncio
+async def test_only_turns_the_coordinator_started_wake_it(
+    client, service, tmp_path, monkeypatch
+):
+    """The person's own turns are theirs to follow, and a turn another member
+    started (or an update the coordinator answered) must not start a round."""
+    cat = await _start(service, tmp_path)
+    worker = await _start(service, tmp_path)
+    peer = await _start(service, tmp_path)
+    project = (
+        await client.post(
+            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
+        )
+    ).json()
+    for member in (worker, peer):
+        await client.put(f"/api/projects/{project['id']}/conversations/{member.hex}")
+    _save_without_running(monkeypatch)
+
+    for sender in (None, f"conversation:{peer.hex}", "someone"):
+        assert not await notify_coordinator(
+            service, worker, project["id"], "answered", "x", sender
+        )
+    assert await _user_messages(service, cat) == 0
+
+
+@pytest.mark.asyncio
+async def test_transcript_lists_messages_with_their_senders(
+    client, service, tmp_path, monkeypatch
+):
+    cat = await _start(service, tmp_path)
+    worker = await _start(service, tmp_path)
+    outsider = await _start(service, tmp_path)
+    project = (
+        await client.post(
+            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
+        )
+    ).json()
+    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    _save_without_running(monkeypatch)
+    await client.post(
+        f"/api/conversations/{worker.hex}/events",
+        json=_send("Fix the bug", cat.hex),
+    )
+    await client.post(
+        f"/api/conversations/{worker.hex}/events",
+        json=_send("And add a test"),
+    )
+
+    body = (
+        await client.get(
+            f"/api/projects/{project['id']}/conversations/{worker.hex}/messages",
+            params={"limit": 1},
+        )
+    ).json()
+    full = (
+        await client.get(
+            f"/api/projects/{project['id']}/conversations/{worker.hex}/messages"
+        )
+    ).json()
+    missing = await client.get(
+        f"/api/projects/{project['id']}/conversations/{outsider.hex}/messages"
+    )
+
+    assert [m["text"] for m in body["messages"]] == ["And add a test"]
+    assert [(m["sender"], m["source"]) for m in full["messages"]] == [
+        (f"conversation:{cat.hex}", "user"),
+        (None, "user"),
+    ]
+    assert full["messages"][0]["text"].endswith("Fix the bug")
+    assert missing.status_code == 404

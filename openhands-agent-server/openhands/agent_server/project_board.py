@@ -60,6 +60,11 @@ _CODE_BLOCK = re.compile(r"```.*?(?:```|$)", re.DOTALL)
 SetTag = Callable[..., Awaitable[Any]]
 """``ConversationService.set_conversation_tag``-shaped callable."""
 
+OnFinished = Callable[[str, TurnOutcome, str | None, str | None], Awaitable[object]]
+"""Called after a project member's outcome is recorded, with the project id
+(hex), the turn outcome, the agent's final message and the ``sender`` of the
+user message that started the turn (None when the person sent it)."""
+
 
 def classify_turn(text: str | None) -> TurnOutcome:
     """Say whether an agent's final message asks the person something.
@@ -109,6 +114,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     conversation_id: UUID
     tags: Callable[[], dict[str, str]]
     set_tag: SetTag
+    on_finished: OnFinished | None = None
     _last_text: str | None = field(default=None, init=False)
     _last_score: float | None = field(default=None, init=False)
     _seen_agent_output: bool = field(default=False, init=False)
@@ -117,7 +123,11 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     # ``finish`` whose text may not repeat the question; the person still
     # owes an answer.
     _asked_since_user: bool = field(default=False, init=False)
+    # ``sender`` of the latest user message: who started the current turn and
+    # so who waits for its final message (None for the person).
+    _turn_sender: str | None = field(default=None, init=False)
     _tail: asyncio.Task | None = field(default=None, init=False)
+    _notifications: set[asyncio.Task] = field(default_factory=set, init=False)
 
     async def __call__(self, event: Event) -> None:
         try:
@@ -134,6 +144,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             if event.source == "user":
                 self._reset()
                 self._asked_since_user = False
+                self._turn_sender = event.sender
                 # Reopen any conversation the person resolved, in a project
                 # or not; recording outcomes is limited to project members.
                 # An outcome still being written is not visible in the tags
@@ -162,9 +173,12 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
                 turn = "asked"
             self._asked_since_user = turn == "asked"
             score = self._last_score
+            text = self._last_text
+            sender = self._turn_sender
             self._reset()
-            if PROJECT_TAG_KEY in self.tags():
-                self._enqueue(lambda: self._record(turn, score))
+            project = self.tags().get(PROJECT_TAG_KEY)
+            if project:
+                self._enqueue(lambda: self._record(project, turn, score, text, sender))
 
     def _note_agent_output(
         self, text: str | None, event: MessageEvent | ActionEvent
@@ -203,7 +217,14 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             if key in self.tags():
                 await self.set_tag(self.conversation_id, key, None)
 
-    async def _record(self, turn: TurnOutcome, score: float | None) -> None:
+    async def _record(
+        self,
+        project: str,
+        turn: TurnOutcome,
+        score: float | None,
+        text: str | None,
+        sender: str | None,
+    ) -> None:
         await self.set_tag(self.conversation_id, TURN_TAG_KEY, turn)
         if score is not None and score >= AUTO_RESOLVE_THRESHOLD:
             # Never overwrite the person's own resolve.
@@ -213,8 +234,29 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
                 "auto",
                 only_if_absent=True,
             )
+        if self.on_finished is not None:
+            # Delivering to the coordinator can wait for its whole agent step;
+            # keep it off the tag-write chain.
+            task = asyncio.create_task(self._notify(project, turn, text, sender))
+            self._notifications.add(task)
+            task.add_done_callback(self._notifications.discard)
+
+    async def _notify(
+        self, project: str, turn: TurnOutcome, text: str | None, sender: str | None
+    ) -> None:
+        assert self.on_finished is not None
+        try:
+            await self.on_finished(project, turn, text, sender)
+        except Exception:
+            logger.warning(
+                "Notifying the coordinator about conversation %s failed",
+                self.conversation_id,
+                exc_info=True,
+            )
 
     async def drain(self) -> None:
-        """Wait for queued tag updates (used by tests and shutdown)."""
+        """Wait for queued tag updates and notifications (tests, shutdown)."""
         if self._tail is not None:
             await asyncio.gather(self._tail, return_exceptions=True)
+        if self._notifications:
+            await asyncio.gather(*self._notifications, return_exceptions=True)

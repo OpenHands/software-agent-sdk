@@ -81,10 +81,13 @@ def _subscriber(store: _Tags) -> ConversationOutcomeSubscriber:
     )
 
 
-def _message(source: str, text: str, score: float | None = None) -> MessageEvent:
+def _message(
+    source: str, text: str, score: float | None = None, sender: str | None = None
+) -> MessageEvent:
     role = "user" if source == "user" else "assistant"
     return MessageEvent(
         source=source,  # type: ignore[arg-type]
+        sender=sender,
         llm_message=Message(role=role, content=[TextContent(text=text)]),
         critic_result=None
         if score is None
@@ -408,3 +411,77 @@ async def test_a_user_message_before_the_outcome_is_saved_still_reopens():
     await subscriber.drain()
 
     assert store.tags == {"project": "p1"}
+
+
+@pytest.mark.asyncio
+async def test_a_finished_member_reports_its_final_message():
+    store = _Tags({"project": "p1"})
+    reports: list[tuple[str, str, str | None, str | None]] = []
+
+    async def on_finished(project, turn, text, sender):
+        reports.append((project, turn, text, sender))
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        on_finished=on_finished,
+    )
+
+    await _feed(
+        subscriber,
+        _message("user", "Pick a database", sender="conversation:cat"),
+        _finish("Which database?"),
+        _status("finished"),
+        _message("user", "Postgres"),
+        _finish("Done."),
+        _status("finished"),
+    )
+
+    assert reports == [
+        ("p1", "asked", "Which database?", "conversation:cat"),
+        ("p1", "answered", "Done.", None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_slow_report_does_not_hold_up_the_board():
+    store = _Tags({"project": "p1"})
+    gate = asyncio.Event()
+
+    async def on_finished(*_args):
+        await gate.wait()
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        on_finished=on_finished,
+    )
+    await subscriber(_finish("Done."))
+    await subscriber(_status("finished"))
+    await subscriber(_message("user", "Thanks, one more thing"))
+    assert subscriber._tail is not None
+    await subscriber._tail
+
+    assert store.tags == {"project": "p1"}
+    gate.set()
+    await subscriber.drain()
+
+
+@pytest.mark.asyncio
+async def test_conversations_outside_projects_report_nothing():
+    reports: list = []
+
+    async def on_finished(*args):
+        reports.append(args)
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: {},
+        set_tag=_Tags({}).set_tag,
+        on_finished=on_finished,
+    )
+    await _feed(subscriber, _finish("Done."), _status("finished"))
+
+    assert reports == []

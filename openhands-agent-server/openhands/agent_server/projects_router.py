@@ -18,7 +18,7 @@ from collections.abc import Callable
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Any, BinaryIO, Literal
+from typing import Annotated, Any, BinaryIO
 from uuid import UUID, uuid4
 
 from fastapi import (
@@ -27,6 +27,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     Request,
     Response,
     UploadFile,
@@ -56,17 +57,17 @@ from openhands.agent_server.project_artifacts import (
     valid_artifact_name,
 )
 from openhands.agent_server.project_board import ResolvedBy, TurnOutcome
-from openhands.agent_server.project_prompts import sender_header
 from openhands.agent_server.utils import utc_now
-from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.title_utils import extract_message_text
 from openhands.sdk.conversation.types import (
     PROJECT_TAG_KEY,
     RESOLVED_TAG_KEY,
     TURN_TAG_KEY,
-    conversation_sender,
 )
+from openhands.sdk.event import ActionEvent, Event, MessageEvent
 from openhands.sdk.logger import get_logger
+from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.utils.datetime import OpenHandsUUID
 
 
@@ -188,44 +189,6 @@ class ProjectConversationsResponse(BaseModel):
 
 class DeleteResponse(BaseModel):
     deleted: bool = True
-
-
-class ProjectConversationMessageRequest(BaseModel):
-    text: str = Field(..., min_length=1, description="The message to send.")
-    sender_conversation_id: UUID | None = Field(
-        default=None,
-        description=(
-            "The project conversation sending the message, such as the "
-            "coordinator. The saved message then records it as its `sender` "
-            "(`conversation:<id hex>`) and starts with a line telling the "
-            "receiving agent who sent it. Leave it out for the person's own "
-            "messages."
-        ),
-    )
-
-
-ProjectConversationRunOutcome = Literal[
-    "started", "queued", "waiting_for_confirmation", "not_run"
-]
-
-
-class ProjectConversationMessageResponse(BaseModel):
-    conversation_id: OpenHandsUUID
-    previous_status: ConversationExecutionStatus = Field(
-        description="The conversation's execution status just before the message."
-    )
-    run: ProjectConversationRunOutcome = Field(
-        description=(
-            "What happened about running the conversation. `started`: a run was "
-            "started for the message. `queued`: a run was already active; it "
-            "takes the message, or the conversation runs again when it ends, unless "
-            "that run stops at a confirmation first. "
-            "`waiting_for_confirmation`: the conversation reached a confirmation "
-            "while the message was being delivered, so it was not run and the "
-            "message waits for the person's decision. `not_run`: a stop "
-            "arrived meanwhile and the conversation was left as it is."
-        )
-    )
 
 
 # Helpers
@@ -656,98 +619,91 @@ async def remove_project_conversation(
     return DeleteResponse()
 
 
-@projects_router.post(
+class ProjectTranscriptMessage(BaseModel):
+    id: str
+    source: str = Field(description="`user`, `agent` or `environment`.")
+    sender: str | None = Field(
+        default=None,
+        description="`conversation:<id hex>` when another conversation sent it.",
+    )
+    text: str = Field(description="The message text, cut at 4000 characters.")
+    finish: bool = Field(
+        default=False, description="True for the agent's `finish` message."
+    )
+    timestamp: str
+
+
+class ProjectTranscriptResponse(BaseModel):
+    conversation_id: OpenHandsUUID
+    messages: list[ProjectTranscriptMessage] = Field(
+        default_factory=list, description="Oldest first."
+    )
+
+
+_TRANSCRIPT_TEXT_MAX = 4000
+
+
+def _transcript(events: list[Event], limit: int) -> list[ProjectTranscriptMessage]:
+    messages: list[ProjectTranscriptMessage] = []
+    for event in reversed(events):
+        if len(messages) >= limit:
+            break
+        if isinstance(event, MessageEvent):
+            text, finish, sender = extract_message_text(event), False, event.sender
+        elif (
+            isinstance(event, ActionEvent)
+            and event.source == "agent"
+            and isinstance(event.action, FinishAction)
+        ):
+            text, finish, sender = event.action.message, True, None
+        else:
+            continue
+        text = (text or "").strip()
+        if len(text) > _TRANSCRIPT_TEXT_MAX:
+            text = text[:_TRANSCRIPT_TEXT_MAX].rstrip() + " [... cut]"
+        messages.append(
+            ProjectTranscriptMessage(
+                id=event.id,
+                source=event.source,
+                sender=sender,
+                text=text,
+                finish=finish,
+                timestamp=str(event.timestamp),
+            )
+        )
+    messages.reverse()
+    return messages
+
+
+@projects_router.get(
     "/{project_id}/conversations/{conversation_id}/messages",
-    response_model=ProjectConversationMessageResponse,
-    responses={
-        404: {"description": "Project not found, or conversation not a member"},
-        409: {"description": "The conversation is waiting for confirmation"},
-        422: {"description": "The sender is not another conversation of the project"},
-        429: {"description": "Message saved, but the server run limit is full"},
-    },
+    responses={404: {"description": "Project or conversation not found"}},
 )
-async def message_project_conversation(
+async def read_project_conversation(
     project_id: UUID,
     conversation_id: UUID,
     request: Request,
-    payload: ProjectConversationMessageRequest,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
     service: ConversationService = Depends(get_conversation_service),
-) -> ProjectConversationMessageResponse:
-    """Send a message to a project member and run it, without approving anything.
+) -> ProjectTranscriptResponse:
+    """The latest messages of a project member, without its tool calls.
 
-    Unlike ``POST /api/conversations/{id}/events`` with ``run``, this never
-    runs a conversation that is waiting for confirmation, because that run
-    would approve its pending actions. A conversation already waiting is refused
-    with 409 and nothing is saved. A conversation that reaches a confirmation while
-    the message is being delivered keeps the message and is not run
-    (``run: "waiting_for_confirmation"``); the refusal is decided under the
-    conversation's run lock.
-
-    With ``sender_conversation_id`` (the coordinator, or another member), the
-    saved message records ``sender: "conversation:<id hex>"`` and opens with a
-    line telling the receiving agent who sent it and that it approves nothing
-    on the person's behalf. UIs can show such messages as instructions rather
-    than the person's words.
+    Lists the person's, the agent's and other conversations' messages and the
+    agent's `finish` on the active branch, oldest first, so a coordinator can
+    catch up on a conversation without reading every event.
     """
-    project = _find(await _load(_store(request)), project_id)
+    _find(await _load(_store(request)), project_id)
     event_service = await service.get_event_service(conversation_id)
     if (
         event_service is None
         or event_service.stored.tags.get(PROJECT_TAG) != project_id.hex
     ):
         raise HTTPException(status_code=404, detail="Conversation not in project")
-
-    content = [TextContent(text=payload.text)]
-    sender: str | None = None
-    if payload.sender_conversation_id is not None:
-        sender_id = payload.sender_conversation_id
-        sender_info = await service.get_conversation(sender_id)
-        if sender_info is None or sender_info.tags.get(PROJECT_TAG) != project_id.hex:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Sender is not a conversation of this project",
-            )
-        if sender_id == conversation_id:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="A conversation cannot message itself",
-            )
-        sender = conversation_sender(sender_id)
-        content.insert(
-            0,
-            TextContent(
-                text=sender_header(
-                    sender_info.title,
-                    sender_id,
-                    coordinator=project.coordinator_conversation_id == sender_id,
-                )
-            ),
-        )
-    # An unlocked read: it only spares the person an unrelated message in a
-    # conversation that is already waiting. The guarded run below is the safeguard.
-    previous_status = (await event_service.get_state()).execution_status
-    if previous_status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Conversation is waiting for confirmation",
-        )
-    message = Message(role="user", content=list(content))
-    outcome: ProjectConversationRunOutcome
-    try:
-        outcome = (
-            await event_service.send_message(
-                message, run=True, refuse_pending_confirmation=True, sender=sender
-            )
-            or "not_run"
-        )
-    except ValueError as e:
-        if str(e) != "waiting_for_confirmation":
-            raise
-        outcome = "waiting_for_confirmation"
-    return ProjectConversationMessageResponse(
-        conversation_id=conversation_id,
-        previous_status=previous_status,
-        run=outcome,
+    conversation = event_service.get_conversation()
+    # Event log reads are safe without the state lock: events are append-only.
+    events = await asyncio.to_thread(conversation.state.active_branch)
+    return ProjectTranscriptResponse(
+        conversation_id=conversation_id, messages=_transcript(events, limit)
     )
 
 
