@@ -114,6 +114,26 @@ def test_grep_tool_include_filter():
         assert observation.matches[0].endswith(".py")
 
 
+def test_grep_tool_include_brace_glob():
+    """Test the documented `*.{ts,tsx}` include example."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / "app.ts").write_text("print('hello')")
+        (Path(temp_dir) / "app.tsx").write_text("print('hello')")
+        (Path(temp_dir) / "app.js").write_text("print('hello')")
+
+        conv_state = _create_test_conv_state(temp_dir)
+        tools = GrepTool.create(conv_state)
+        tool = tools[0]
+
+        action = GrepAction(pattern="print", include="*.{ts,tsx}")
+        assert tool.executor is not None
+        observation = tool.executor(action)
+
+        assert observation.is_error is False
+        assert len(observation.matches) == 2
+        assert all(match.endswith((".ts", ".tsx")) for match in observation.matches)
+
+
 def test_grep_tool_specific_directory():
     """Test searching in specific directory."""
     with tempfile.TemporaryDirectory() as temp_dir:
