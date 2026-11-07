@@ -84,6 +84,9 @@ PLEASE follow the format strictly! PLEASE EMIT ONE AND ONLY ONE FUNCTION CALL PE
 # Note: newline after function name is optional for compatibility with various models
 FN_REGEX_PATTERN = r"<function=([^>]+)>\n?(.*?)</function>"
 FN_PARAM_REGEX_PATTERN = r"<parameter=([^>]+)>(.*?)</parameter>"
+_TOOL_CALL_WRAPPER_PATTERN = re.compile(
+    r"<tool_call>\s*([A-Za-z_][\w.-]*)\s*\n(?=\s*<parameter=)"
+)
 
 # Add new regex pattern for tool execution results
 TOOL_RESULT_REGEX_PATTERN = r"EXECUTION RESULT of \[(.*?)\]:\n(.*)"
@@ -597,6 +600,16 @@ def _preprocess_model_output(content: str) -> str:
     content = re.sub(r"<tool_call>\s*(?=<function=)", "", content)
     # Strip </tool_call> when it appears right after </function>
     content = re.sub(r"(?<=</function>)\s*</tool_call>", "", content)
+
+    # Some models omit the <function=...> opener and put the tool name
+    # directly after <tool_call>. Only rewrite this unambiguous parameterized
+    # shape, and leave prose containing <tool_call> untouched.
+    if "<function=" not in content:
+        content, match_count = _TOOL_CALL_WRAPPER_PATTERN.subn(
+            r"<function=\1>\n", content
+        )
+        if match_count:
+            content = re.sub(r"\s*</tool_call>", "\n</function>", content, count=1)
     return content
 
 

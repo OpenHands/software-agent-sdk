@@ -1072,3 +1072,75 @@ def test_convert_non_fncall_keeps_command_prefix_alias_name(alias):
     name, normalized = normalize_tool_call(tool_call["name"], arguments, {"terminal"})
     assert name == "terminal"
     assert normalized["command"] == f"{alias} status"
+
+
+def test_convert_non_fncall_parses_bare_tool_call_wrapper():
+    """Bare model wrappers should become structured tool calls."""
+    messages = [
+        {"role": "user", "content": "run ls"},
+        {
+            "role": "assistant",
+            "content": (
+                "<tool_call>terminal\n<parameter=command>ls</parameter>\n</tool_call>"
+            ),
+        },
+    ]
+
+    tool_call = _single_tool_call(
+        convert_non_fncall_messages_to_fncall_messages(messages, FNCALL_TOOLS)
+    )
+
+    assert tool_call["name"] == "terminal"
+    assert json.loads(tool_call["arguments"]) == {"command": "ls"}
+
+
+def test_convert_non_fncall_parses_bare_tool_call_without_closing_wrapper():
+    """The existing stopword repair should close a rewritten bare wrapper."""
+    messages = [
+        {"role": "user", "content": "run ls"},
+        {
+            "role": "assistant",
+            "content": "<tool_call>terminal\n<parameter=command>ls</parameter>",
+        },
+    ]
+
+    tool_call = _single_tool_call(
+        convert_non_fncall_messages_to_fncall_messages(messages, FNCALL_TOOLS)
+    )
+
+    assert tool_call["name"] == "terminal"
+    assert json.loads(tool_call["arguments"]) == {"command": "ls"}
+
+
+def test_convert_non_fncall_keeps_plain_tool_call_markup_as_text():
+    messages = [
+        {"role": "user", "content": "Explain the format"},
+        {
+            "role": "assistant",
+            "content": "The literal <tool_call> marker is part of the format.",
+        },
+    ]
+
+    result = convert_non_fncall_messages_to_fncall_messages(messages, FNCALL_TOOLS)
+
+    assert result[-1] == messages[-1]
+
+
+def test_convert_non_fncall_preserves_tool_call_markup_in_parameter_value():
+    messages = [
+        {"role": "user", "content": "run a command"},
+        {
+            "role": "assistant",
+            "content": (
+                "<tool_call><function=terminal>\n"
+                "<parameter=command>printf '<tool_call>'</parameter>\n"
+                "</function></tool_call>"
+            ),
+        },
+    ]
+
+    tool_call = _single_tool_call(
+        convert_non_fncall_messages_to_fncall_messages(messages, FNCALL_TOOLS)
+    )
+
+    assert json.loads(tool_call["arguments"]) == {"command": "printf '<tool_call>'"}
