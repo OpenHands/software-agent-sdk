@@ -13,6 +13,9 @@ markdown.  These tests verify:
   - Integration with the Skill model (load + render)
 """
 
+import os
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -57,6 +60,28 @@ from tests.command_utils import python_command
 )
 def test_execute_inline_command(command, timeout, check_fn):
     assert check_fn(_execute_inline_command(command, timeout=timeout))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+def test_execute_inline_command_timeout_kills_shell_children(tmp_path: Path):
+    pid_file = tmp_path / "pid"
+    start = time.monotonic()
+    result = _execute_inline_command(
+        f"sleep 30 & echo $! > {pid_file}; wait", timeout=1
+    )
+    assert "timed out" in result
+    assert time.monotonic() - start < 10
+
+    pid = int(pid_file.read_text())
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.1)
+    os.kill(pid, 9)
+    pytest.fail(f"child process {pid} outlived the timeout")
 
 
 def test_execute_inline_command_respects_working_dir(tmp_path: Path):
