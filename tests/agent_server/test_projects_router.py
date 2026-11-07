@@ -26,7 +26,10 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
 )
 from openhands.agent_server.persistence import reset_stores
-from openhands.agent_server.project_wake import notify_coordinator
+from openhands.agent_server.project_wake import (
+    notify_coordinator,
+    relay_person_message,
+)
 from openhands.agent_server.projects_router import projects_router
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -1081,13 +1084,14 @@ async def test_no_update_without_a_coordinator_or_to_itself(
 
 
 @pytest.mark.asyncio
-async def test_only_turns_the_coordinator_started_wake_it(
+async def test_only_the_coordinators_turns_wake_it(
     client, service, tmp_path, monkeypatch
 ):
-    """The person's own turns are theirs to follow, and a turn another member
-    started (or an update the coordinator answered) must not start a round."""
+    """The coordinator runs on replies to its own messages. A turn the person
+    started is passed on without a run, and a turn another member started (or
+    an update the coordinator answered) is not passed on at all."""
     cat = await _start(service, tmp_path)
-    worker = await _start(service, tmp_path)
+    worker = await _start(service, tmp_path, title="worker")
     peer = await _start(service, tmp_path)
     project = (
         await client.post(
@@ -1096,13 +1100,64 @@ async def test_only_turns_the_coordinator_started_wake_it(
     ).json()
     for member in (worker, peer):
         await client.put(f"/api/projects/{project['id']}/conversations/{member.hex}")
-    _save_without_running(monkeypatch)
+    runs = _record_runs(monkeypatch)
 
-    for sender in (None, f"conversation:{peer.hex}", "someone"):
+    for sender in (f"conversation:{peer.hex}", "someone"):
         assert not await notify_coordinator(
             service, worker, project["id"], "answered", "x", sender
         )
     assert await _user_messages(service, cat) == 0
+
+    assert await notify_coordinator(
+        service, worker, project["id"], "asked", "Which colour?", None
+    )
+    event = await _last_user_message(service, cat)
+    header, text = (c.text for c in event.llm_message.content)  # type: ignore[union-attr]
+    assert header.startswith("[Reply in ") and "awareness" in header
+    assert text == "Which colour?"
+    assert event.sender == f"conversation:{worker.hex}"
+    assert runs == [False]
+
+
+def _record_runs(monkeypatch) -> list[bool]:
+    """Save messages without running, recording whether a run was asked for."""
+    original = EventService.send_message
+    runs: list[bool] = []
+
+    async def save_only(self, message, run=False, **kwargs):
+        runs.append(run)
+        kwargs.pop("refuse_pending_confirmation", None)
+        await original(self, message, False, **kwargs)
+        return "started" if run else None
+
+    monkeypatch.setattr(EventService, "send_message", save_only)
+    return runs
+
+
+@pytest.mark.asyncio
+async def test_the_persons_message_in_a_member_reaches_the_coordinator(
+    client, service, tmp_path, monkeypatch
+):
+    cat = await _start(service, tmp_path)
+    worker = await _start(service, tmp_path, title="worker")
+    project = (
+        await client.post(
+            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
+        )
+    ).json()
+    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    runs = _record_runs(monkeypatch)
+
+    assert await relay_person_message(service, worker, project["id"], "Use Postgres")
+    assert not await relay_person_message(service, cat, project["id"], "Hi Cat")
+
+    event = await _last_user_message(service, cat)
+    header, text = (c.text for c in event.llm_message.content)  # type: ignore[union-attr]
+    assert header.startswith("[Message from the person in ")
+    assert worker.hex in header and "do not forward or repeat it" in header
+    assert text == "Use Postgres"
+    assert event.sender == f"conversation:{worker.hex}"
+    assert runs == [False]
 
 
 @pytest.mark.asyncio

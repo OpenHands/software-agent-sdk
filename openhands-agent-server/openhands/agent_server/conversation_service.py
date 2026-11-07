@@ -56,7 +56,10 @@ from openhands.agent_server.project_prompts import (
     without_worker_guidance,
     worker_guidance,
 )
-from openhands.agent_server.project_wake import notify_coordinator
+from openhands.agent_server.project_wake import (
+    notify_coordinator,
+    relay_person_message,
+)
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.telemetry import (
@@ -2668,6 +2671,9 @@ class ConversationService:
                     tags=lambda: event_service.stored.tags,
                     set_tag=self.set_conversation_tag,
                     on_finished=functools.partial(notify_coordinator, self, stored.id),
+                    on_person_message=functools.partial(
+                        relay_person_message, self, stored.id
+                    ),
                 )
             )
             if stored.autotitle and stored.title is None:

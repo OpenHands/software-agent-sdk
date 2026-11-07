@@ -82,7 +82,10 @@ COORDINATOR_GUIDANCE = (
     "yourself. When a conversation finishes a turn you asked for, you receive "
     "its final message as an update; tell the person what they need from it, "
     "and read more with read_project_conversation only when you need it. "
-    "Turns the person starts in a conversation are theirs to follow."
+    "You also get copies of what the person writes in the project's "
+    "conversations and of the replies, without being run: they are for your "
+    "awareness, already handled where they were written, so do not forward or "
+    "repeat them."
 )
 
 _LIST_DESCRIPTION = (

@@ -116,6 +116,34 @@ def update_header(title: str | None, conversation_id: UUID, *, asked: bool) -> s
     )
 
 
+PERSON_MESSAGE_PREFIX = "[Message from the person in "
+PERSON_TURN_PREFIX = "[Reply in "
+AWARENESS_PREFIXES = (PERSON_MESSAGE_PREFIX, PERSON_TURN_PREFIX)
+"""How the copies a coordinator gets for its awareness begin. They are saved
+without a run and do not start a turn: the board ignores them."""
+
+
+def person_message_header(title: str | None, conversation_id: UUID) -> str:
+    """First line of the copy a coordinator gets of the person's message to a member."""
+    return (
+        f"{PERSON_MESSAGE_PREFIX}{_name(title, conversation_id)}, a "
+        "conversation in your project. For your awareness: that conversation "
+        "already has it and works on it, so do not forward or repeat it. The "
+        "person's words follow.]"
+    )
+
+
+def person_turn_header(title: str | None, conversation_id: UUID, *, asked: bool) -> str:
+    """First line of a member's final message on a turn the person started."""
+    outcome = "with a question for the person" if asked else "of a turn"
+    return (
+        f"{PERSON_TURN_PREFIX}{_name(title, conversation_id)}, a conversation in your "
+        f"project, to the person, who talks to it directly: its final message "
+        f"{outcome} follows. For your awareness; the person has already seen "
+        "it.]"
+    )
+
+
 def update_text(text: str | None) -> str:
     """The member's final message, cut to :data:`UPDATE_TEXT_MAX`."""
     text = (text or "").strip()

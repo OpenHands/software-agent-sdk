@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 from uuid import UUID
 
+from openhands.agent_server.project_prompts import AWARENESS_PREFIXES
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk.conversation.impl.local_conversation import (
     ACP_STOP_HOOK_FEEDBACK_PREFIX as STOP_HOOK_FEEDBACK_PREFIX,
@@ -30,6 +31,7 @@ from openhands.sdk.conversation.types import (
     ASK_MAX_LENGTH,
     ASK_TAG_KEY,
     BOARD_TAG_KEYS,
+    CONVERSATION_SENDER_PREFIX,
     PROJECT_TAG_KEY,
     RESOLVED_TAG_KEY,
     TURN_TAG_KEY,
@@ -41,6 +43,7 @@ from openhands.sdk.event import (
     MessageEvent,
 )
 from openhands.sdk.event.conversation_state import FULL_STATE_KEY
+from openhands.sdk.llm.message import TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.builtins.finish import FinishAction
 
@@ -67,6 +70,11 @@ OnFinished = Callable[[str, TurnOutcome, str | None, str | None], Awaitable[obje
 """Called after a project member's outcome is recorded, with the project id
 (hex), the turn outcome, the agent's final message and the ``sender`` of the
 user message that started the turn (None when the person sent it)."""
+
+
+OnPersonMessage = Callable[[str, str], Awaitable[object]]
+"""Called when the person writes in a project member, with the project id
+(hex) and the message text."""
 
 
 def classify_turn(text: str | None) -> TurnOutcome:
@@ -122,6 +130,14 @@ def extract_ask(text: str | None) -> str | None:
     return ask
 
 
+def _is_awareness_note(event: MessageEvent) -> bool:
+    if event.sender is None or not event.sender.startswith(CONVERSATION_SENDER_PREFIX):
+        return False
+    content = event.llm_message.content
+    first = content[0] if content else None
+    return isinstance(first, TextContent) and first.text.startswith(AWARENESS_PREFIXES)
+
+
 def _is_stop_hook_feedback(event: MessageEvent) -> bool:
     if event.source != "environment":
         return False
@@ -155,6 +171,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     tags: Callable[[], dict[str, str]]
     set_tag: SetTag
     on_finished: OnFinished | None = None
+    on_person_message: OnPersonMessage | None = None
     _last_text: str | None = field(default=None, init=False)
     _last_score: float | None = field(default=None, init=False)
     _seen_agent_output: bool = field(default=False, init=False)
@@ -169,7 +186,9 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     # so who waits for its final message (None for the person).
     _turn_sender: str | None = field(default=None, init=False)
     _tail: asyncio.Task | None = field(default=None, init=False)
-    _notifications: set[asyncio.Task] = field(default_factory=set, init=False)
+    # Messages to the coordinator, delivered one after another in event order
+    # and apart from the tag writes.
+    _notify_tail: asyncio.Task | None = field(default=None, init=False)
 
     async def __call__(self, event: Event) -> None:
         try:
@@ -183,11 +202,21 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
 
     def _handle(self, event: Event) -> None:
         if isinstance(event, MessageEvent):
+            if event.source == "user" and _is_awareness_note(event):
+                # A copy for the coordinator's awareness, saved without a run:
+                # it neither answers the coordinator nor starts a turn.
+                return
             if event.source == "user":
                 self._reset()
                 self._asked_since_user = False
                 self._ask = None
                 self._turn_sender = event.sender
+                if event.sender is None and self.on_person_message is not None:
+                    project = self.tags().get(PROJECT_TAG_KEY)
+                    text = extract_message_text(event)
+                    if project and text:
+                        callback = self.on_person_message
+                        self._notify_later(lambda: callback(project, text))
                 # Reopen any conversation the person resolved, in a project
                 # or not; recording outcomes is limited to project members.
                 # An outcome still being written is not visible in the tags
@@ -289,26 +318,29 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         if self.on_finished is not None:
             # Delivering to the coordinator can wait for its whole agent step;
             # keep it off the tag-write chain.
-            task = asyncio.create_task(self._notify(project, turn, text, sender))
-            self._notifications.add(task)
-            task.add_done_callback(self._notifications.discard)
+            callback = self.on_finished
+            self._notify_later(lambda: callback(project, turn, text, sender))
 
-    async def _notify(
-        self, project: str, turn: TurnOutcome, text: str | None, sender: str | None
-    ) -> None:
-        assert self.on_finished is not None
-        try:
-            await self.on_finished(project, turn, text, sender)
-        except Exception:
-            logger.warning(
-                "Notifying the coordinator about conversation %s failed",
-                self.conversation_id,
-                exc_info=True,
-            )
+    def _notify_later(self, step: Callable[[], Awaitable[object]]) -> None:
+        previous = self._notify_tail
+
+        async def run() -> None:
+            if previous is not None:
+                await asyncio.gather(previous, return_exceptions=True)
+            try:
+                await step()
+            except Exception:
+                logger.warning(
+                    "Notifying the coordinator about conversation %s failed",
+                    self.conversation_id,
+                    exc_info=True,
+                )
+
+        self._notify_tail = asyncio.create_task(run())
 
     async def drain(self) -> None:
         """Wait for queued tag updates and notifications (tests, shutdown)."""
         if self._tail is not None:
             await asyncio.gather(self._tail, return_exceptions=True)
-        if self._notifications:
-            await asyncio.gather(*self._notifications, return_exceptions=True)
+        if self._notify_tail is not None:
+            await asyncio.gather(self._notify_tail, return_exceptions=True)

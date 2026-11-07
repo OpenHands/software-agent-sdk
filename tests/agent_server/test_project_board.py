@@ -525,3 +525,58 @@ async def test_an_answered_turn_drops_a_stale_ask():
     await _feed(_subscriber(store), _finish("All done."), _status("finished"))
 
     assert store.tags == {"project": "p1", "turn": "answered"}
+
+
+@pytest.mark.asyncio
+async def test_the_persons_messages_are_passed_on_in_order():
+    store = _Tags({"project": "p1"})
+    calls: list[tuple] = []
+
+    async def on_person_message(project, text):
+        calls.append(("person", project, text))
+
+    async def on_finished(project, turn, text, sender):
+        calls.append(("finished", project, text, sender))
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        on_finished=on_finished,
+        on_person_message=on_person_message,
+    )
+
+    await _feed(
+        subscriber,
+        _message("user", "Use Postgres"),
+        _finish("Done."),
+        _status("finished"),
+        _message("user", "From the Cat", sender="conversation:cat"),
+    )
+
+    assert calls == [
+        ("person", "p1", "Use Postgres"),
+        ("finished", "p1", "Done.", None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_awareness_copy_neither_reopens_nor_starts_a_turn():
+    store = _Tags({"project": "p1", "turn": "asked", "ask": "Ship it?"})
+    finished: list = []
+
+    async def on_finished(*args):
+        finished.append(args)
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        on_finished=on_finished,
+    )
+    note = _message("user", "[Message from the person in x]", sender="conversation:abc")
+
+    await _feed(subscriber, note)
+
+    assert store.tags == {"project": "p1", "turn": "asked", "ask": "Ship it?"}
+    assert finished == []

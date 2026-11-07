@@ -67,7 +67,7 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.delete`: `DELETE /api/projects/{id}` removes the record, then the conversations endpoint is 404, and member conversations keep their tags.
 - `F36.corrupted-file`: an unparsable or future-schema `projects.json` makes reads and writes 409 and is never rewritten.
 - `F36.tool-start-and-list`: a coordinator with `start_child_conversation` and `list_project_conversations` starts a child that joins the project, and its list call reports that child with its attention group. The child's system prompt names the coordinator, and its first message has `sender: "conversation:<coordinator id hex>"`.
-- `F36.wake`: when a member finishes a run the coordinator started (its task or follow-up message), the coordinator gets one user message with the member's final message, `sender: "conversation:<member id hex>"` and an "Update from" header, and runs on it. Turns the person starts in a member (`F36.turn`, `F36.resolved`) do not wake it.
+- `F36.wake`: when a member finishes a run the coordinator started (its task or follow-up message), the coordinator gets one user message with the member's final message, `sender: "conversation:<member id hex>"` and an "Update from" header, and runs on it. Each message the person writes in a member, and the member's final reply to it, reaches the coordinator as a copy for its awareness (`[Message from the person in ...`, `[Reply in ...`, sender the member) without running it (`F36.turn`).
 - `F36.read`: `GET .../conversations/{conversation_id}/messages` lists a member's latest messages (with senders) and `finish`, oldest first; the `read_project_conversation` tool reads it.
 - `F36.tool-message`: `message_project_conversation` delivers a follow-up to a finished conversation and requests a run: the conversation gets a second user message, sent by the coordinator (`sender` and a header line saying it is not the person), and runs again.
 - `F36.tool-message-refuses-confirmation`: `message_project_conversation` refuses a conversation waiting for confirmation with an error observation; the conversation stays waiting and gets no new message.
@@ -316,10 +316,20 @@ Preconditions:
     --expect 200 --check run eq started
   control-agent-server conversation wait "$W2" --until finished --timeout 180
   control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq answered --check tags not-contains ask --until-ok 10 --save F36.turn/answered
+  W2_HEX=$(printf %s "$W2" | tr -d -)
+  for _ in $(seq 30); do
+    control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation $W2_HEX), a conversation in your project, to the person" --expect-min 2 >/dev/null 2>&1 && break
+    sleep 2
+  done
+  control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation $W2_HEX), a conversation in your project. For your awareness" --expect-min 2 \
+    --save F36.turn/coordinator-copies
+  control-agent-server conversation events "$CAT" --kinds MessageEvent --contains "conversation $W2_HEX), a conversation in your project, to the person" --expect-min 2
+  control-agent-server api GET "/api/conversations/$CAT" --check execution_status eq idle
   ```
   A question finishes as `asked` with the question as `ask` and lists as
   `needs_input`; the answer reopens the conversation and the next run
-  finishes as `answered`, without an `ask`.
+  finishes as `answered`, without an `ask`. The coordinator gets a copy of
+  each of the person's messages and of each reply, and is not run.
 - **Resolved (`F36.resolved`).**
   Requires: `F36.turn`
   Needs: `llm`
