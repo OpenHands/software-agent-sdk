@@ -18,7 +18,10 @@ from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.event_store import ROOT_PARENT_ID, EventLog
-from openhands.sdk.conversation.exceptions import ConversationRunError
+from openhands.sdk.conversation.exceptions import (
+    ConversationRunError,
+    ConversationRunInProgressError,
+)
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -1012,6 +1015,10 @@ class LocalConversation(BaseConversation):
                 conversation.
         """
         with self._state:
+            if self._arun_task is not None and not self._arun_task.done():
+                raise ConversationRunInProgressError(
+                    "Cannot navigate while the conversation is running"
+                )
             if event_id is not None and event_id not in self._state.events:
                 raise ValueError(f"Unknown event_id: {event_id}")
             self._state.leaf_event_id = event_id  # autosaves base_state.json
