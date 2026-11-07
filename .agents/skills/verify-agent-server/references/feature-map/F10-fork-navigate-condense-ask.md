@@ -252,30 +252,28 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   stored separately. `ConversationService.fork_conversation` and
   `LocalConversation.fork` both use the requested tags, defaulting to an
   empty set when none were supplied (#4814).
-- **The fork keeps the model keys (`F10.fork-keeps-credentials`), known bug.**
+- **The fork keeps the model keys (`F10.fork-keeps-credentials`).**
   Fork `S`, whose placeholder agent has a model key, and compare the stored
   agents.
   ```sh
   KF=$(control-agent-server api POST "/api/conversations/$S/fork" --expect 201 --field id)
   control-agent-server state cat base_state.json --conversation "$S" --max-chars 200 --check agent.llm.api_key exists --check agent.condenser.llm.api_key exists
-  control-agent-server state cat base_state.json --conversation "$KF" --max-chars 200 --check agent.llm.api_key exists --check agent.condenser.llm.api_key exists  # bug: content.agent.llm.model exists && checks.0.actual eq null && checks.1.actual eq null
+  control-agent-server state cat base_state.json --conversation "$KF" --max-chars 200 --check agent.llm.api_key exists --check agent.condenser.llm.api_key exists
   ```
   Expected: both files hold the keys (encrypted with the server's cipher;
-  `state cat` shows `<redacted:encrypted>`). Today the source's do and the
-  fork's have no `api_key` at all (the check reports `null`):
-  `LocalConversation.fork` builds the fork's
-  `LocalConversation` without the source's `cipher`, so its state is
-  serialized with secrets dropped, and the server then loads the fork's
-  agent from that file (`ConversationService.fork_conversation` starts the
-  fork's `EventService` with no agent of its own).
-- **A fork runs with the source's memory (`F10.fork-run-memory`), known bug.**
+  `state cat` shows `<redacted:encrypted>`). `LocalConversation.fork` builds
+  the fork with the source's `cipher`, and the server loads the fork's agent
+  from that file (`ConversationService.fork_conversation` starts the fork's
+  `EventService` with no agent of its own), so a fork written without the
+  cipher would lose the keys and fail its first model call.
+- **A fork runs with the source's memory (`F10.fork-run-memory`).**
   Fork the finished DeepSeek conversation `A` and ask the fork what only the
   source was told.
   ```sh
   N_A_MSG=$(control-agent-server api GET "/api/conversations/$A/events/count" --query kind=$MSG --field .)
   AF=$(control-agent-server api POST "/api/conversations/$A/fork" --json '{"title": "QA F10 memory fork"}' --expect 201 --field id)
   control-agent-server conversation send "$AF" --text 'What is the project codename I told you? Answer with the codename only.' --wait --until finished,error --timeout 180
-  control-agent-server conversation events "$AF" --kinds ConversationErrorEvent --contains LLMAuthenticationError --expect-count 0 --save F10.fork-run-memory/auth-errors  # bug: matching ge 1
+  control-agent-server conversation events "$AF" --kinds ConversationErrorEvent --contains LLMAuthenticationError --expect-count 0 --save F10.fork-run-memory/auth-errors
   control-agent-server api GET "/api/conversations/$AF" --quiet --check execution_status eq finished --save F10.fork-run-memory/status
   control-agent-server api GET "/api/conversations/$AF/agent_final_response" --check response matches '(?i)pelican' --save F10.fork-run-memory/final
   control-agent-server api GET "/api/conversations/$A/events/count" --query kind=$MSG --check . eq "$N_A_MSG"
@@ -285,13 +283,10 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   to `finished`, its answer names the codename from the copied history (a
   fact only the source was told, not wording; `agent_final_response` reads a
   reply given as a message or through `finish`), and `A` gains no message
-  from the fork's run. Today the fork's run ends in `error` within seconds
-  with a `ConversationErrorEvent` `LLMAuthenticationError` ("Your LLM API key
-  appears to be invalid or has expired."), because the fork lost the model
-  key (`F10.fork-keeps-credentials`); the marked check fails on that event.
-  Any other failure (a provider outage, a wrong answer) fails a later,
-  unmarked check and reports `fail`, not `xfail`. Any fork of a conversation
-  whose model needs a key cannot run.
+  from the fork's run. A fork that lost the model key
+  (`F10.fork-keeps-credentials`) instead ends in `error` within seconds with
+  a `ConversationErrorEvent` `LLMAuthenticationError` ("Your LLM API key
+  appears to be invalid or has expired.").
 - **Navigate to an earlier event (`F10.navigate-event`).** Move `S`'s HEAD
   back to its first message.
   ```sh
@@ -558,9 +553,10 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   and adds no tag (#4814). Other stored configuration (secrets, plugins,
   `parent_conversation_id`, client tools) is copied from the source. The
   fork's `last_user_message_id` starts `null`.
-- The fork's `base_state.json` is written without the server's cipher, so
-  the model keys in the fork's agent are dropped from it
-  (`F10.fork-keeps-credentials`) and a fork cannot call its model
+- The fork's `base_state.json` is written with the source's cipher (the
+  server's), so the fork's agent keeps its model keys
+  (`F10.fork-keeps-credentials`) and its conversation secrets; the fork is
+  resumed from that file, so without them it could not call its model
   (`F10.fork-run-memory`).
 - `navigate` with `{}` silently selects the empty tree (the agent loses all
   context on its next run), because `event_id` defaults to `null`; a request
