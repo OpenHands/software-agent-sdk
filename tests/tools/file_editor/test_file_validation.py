@@ -164,12 +164,21 @@ def test_view_image_file_returns_image_content(tmp_path):
     os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
     reason="needs POSIX permissions and a non-root user",
 )
-def test_view_unreadable_file_returns_error_observation(tmp_path):
+@pytest.mark.parametrize(
+    "command, args",
+    [
+        ("view", {}),
+        ("str_replace", {"old_str": "secret", "new_str": "public"}),
+        ("insert", {"insert_line": 0, "new_str": "public"}),
+        ("undo_edit", {}),
+    ],
+)
+def test_unreadable_file_returns_error_observation(tmp_path, command, args):
     path = tmp_path / "secret.txt"
     path.write_text("secret\n")
     os.chmod(path, 0)
     try:
-        result = file_editor(command="view", path=str(path))
+        result = file_editor(command=command, path=str(path), **args)
     finally:
         os.chmod(path, 0o644)
 
