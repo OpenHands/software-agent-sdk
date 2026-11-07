@@ -1,7 +1,6 @@
 import base64
 import mimetypes
 import os
-import re
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -51,6 +50,21 @@ def _is_encodable(text: str, encoding: str) -> bool:
     except UnicodeEncodeError:
         return False
     return True
+
+
+def _occurrence_starts(text: str, needle: str) -> list[int]:
+    """Every start offset where ``needle`` occurs in ``text``, overlaps included.
+
+    ``str.find`` keeps the engine on its fast literal search; a regex
+    lookahead would report the same offsets but only by attempting a match at
+    every position.
+    """
+    starts: list[int] = []
+    index = text.find(needle)
+    while index != -1:
+        starts.append(index)
+        index = text.find(needle, index + 1)
+    return starts
 
 
 class FileEditor:
@@ -199,19 +213,16 @@ class FileEditor:
         # replacements
         file_content = self.read_file(path)
 
-        # Find all occurrences using regex
-        # Escape special regex characters in old_str to match it literally.
-        # The lookahead reports every start position, including overlapping
-        # matches ("aa" occurs twice in "aaa"), so an ambiguous old_str is
-        # refused instead of silently replacing its first match.
-        pattern = re.escape(old_str)
+        # Find every occurrence, including overlapping ones ("aa" occurs twice
+        # in "aaa"), so an ambiguous old_str is refused instead of silently
+        # replacing its first match.
         occurrences = [
             (
-                file_content.count("\n", 0, match.start()) + 1,  # line number
+                file_content.count("\n", 0, start) + 1,  # line number
                 old_str,  # matched text
-                match.start(),  # start position
+                start,  # start position
             )
-            for match in re.finditer(f"(?={pattern})", file_content)
+            for start in _occurrence_starts(file_content, old_str)
         ]
 
         if not occurrences:
@@ -222,14 +233,13 @@ class FileEditor:
             # meaningful leading/trailing whitespace (e.g. a Markdown hard line
             # break or intentional indentation) the caller asked to write.
             old_str = old_str.strip()
-            pattern = re.escape(old_str)
             occurrences = [
                 (
-                    file_content.count("\n", 0, match.start()) + 1,  # line number
+                    file_content.count("\n", 0, start) + 1,  # line number
                     old_str,  # matched text
-                    match.start(),  # start position
+                    start,  # start position
                 )
-                for match in re.finditer(f"(?={pattern})", file_content)
+                for start in _occurrence_starts(file_content, old_str)
             ]
             if not occurrences:
                 raise ToolError(
