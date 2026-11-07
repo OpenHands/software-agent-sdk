@@ -429,7 +429,7 @@ def test_mcp_tool_supports_response_schema():
     mcp_tool = mcp.types.Tool(
         name="response_schema_mcp_test",
         description="Fetch a URL",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {"url": {"type": "string"}},
             "required": ["url"],

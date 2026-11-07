@@ -57,6 +57,11 @@ interface AgentProfileBase {
    * list its own provider credential to receive it.
    */
   secret_refs?: string[] | null;
+  /**
+   * Which of the user's connected built-in integrations to expose. `null` = all;
+   * `[]` = none; a non-null list = filter to the named integrations.
+   */
+  integration_refs?: string[] | null;
 }
 
 /** `agent_kind="openhands"` variant — references an LLM profile by name. */
@@ -70,6 +75,8 @@ export interface OpenHandsAgentProfile extends AgentProfileBase {
    * catalog). `[]` = all discovered skills; an unknown name is a no-op.
    */
   disabled_skills?: string[];
+  /** Public-catalog skills to load; `null` = all, `[]` = none. User/project skills are unaffected. */
+  public_skills?: string[] | null;
   /** Replaces the built-in persona, keeping capability guidance; needs `profile_persona_v1`. */
   persona?: string | null;
   system_message_suffix: string | null;
@@ -147,6 +154,8 @@ export interface AgentProfileDiagnostics {
 
   /** Secret scope; `null` = unrestricted. */
   secret_refs?: string[] | null;
+  /** Built-in integration scope; `null` = unrestricted. */
+  integration_refs?: string[] | null;
 
   // OpenHands LLM reference.
   llm_profile_ref: string | null;
@@ -159,7 +168,8 @@ export interface AgentProfileDiagnostics {
   resolved_mcp_config_keys?: string[];
   dangling_mcp_server_refs: string[];
 
-  // Skill selection (OpenHands only): the deny-list and what reaches the agent.
+  // Skill selection (OpenHands only): public allow-list, deny-list, and resolved skills.
+  public_skills?: string[] | null;
   disabled_skills?: string[];
   resolved_skills?: string[];
 
@@ -188,6 +198,8 @@ export interface LaunchedAgentProfile {
   revision: number;
   /** Launch-time secret allow-list, also enforced on resume. */
   secret_refs?: string[] | null;
+  /** Launch-time built-in integration allow-list; `null` = unrestricted. */
+  integration_refs?: string[] | null;
 }
 
 /**

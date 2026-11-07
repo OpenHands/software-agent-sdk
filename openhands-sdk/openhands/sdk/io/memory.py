@@ -46,11 +46,14 @@ class InMemoryFileStore(FileStore):
         return self.files[path]
 
     def list(self, path: str) -> list[str]:
+        # A sibling whose name merely starts with `path` ("ab/c" for "a") is
+        # not inside it, so the prefix must end at a separator.
+        prefix = f"{path.rstrip('/')}/" if path.rstrip("/") else ""
         files = []
         for file in self.files:
-            if not file.startswith(path):
+            if not file.startswith(prefix):
                 continue
-            suffix = file.removeprefix(path)
+            suffix = file.removeprefix(prefix)
             parts = suffix.split("/")
             if parts[0] == "":
                 parts.pop(0)
@@ -66,7 +69,12 @@ class InMemoryFileStore(FileStore):
 
     def delete(self, path: str) -> None:
         try:
-            keys_to_delete = [key for key in self.files.keys() if key.startswith(path)]
+            prefix = f"{path.rstrip('/')}/" if path.rstrip("/") else ""
+            keys_to_delete = [
+                key
+                for key in self.files.keys()
+                if key == path or key.startswith(prefix)
+            ]
             for key in keys_to_delete:
                 del self.files[key]
             logger.debug(f"Cleared in-memory file store: {path}")
