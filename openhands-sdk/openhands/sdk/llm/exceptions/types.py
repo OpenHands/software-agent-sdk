@@ -9,6 +9,17 @@ class LLMError(Exception):
         return self.message
 
 
+class LLMProviderError(LLMError):
+    def __init__(
+        self,
+        message: str = (
+            "The model provider returned an unexpected error. "
+            "Retry the request or check your provider configuration."
+        ),
+    ) -> None:
+        super().__init__(message)
+
+
 # General response parsing/validation errors
 class LLMMalformedActionError(LLMError):
     def __init__(self, message: str = "Malformed response") -> None:
@@ -128,6 +139,17 @@ class LLMServiceUnavailableError(LLMError):
 
 class LLMBadRequestError(LLMError):
     def __init__(self, message: str = "Bad request to LLM provider") -> None:
+        super().__init__(message)
+
+
+class LLMNotFoundError(LLMBadRequestError):
+    def __init__(
+        self,
+        message: str = (
+            "The requested model or resource was not found. "
+            "Check the model name and provider configuration."
+        ),
+    ) -> None:
         super().__init__(message)
 
 
