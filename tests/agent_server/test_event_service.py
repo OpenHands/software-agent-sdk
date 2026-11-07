@@ -7,6 +7,7 @@ import shutil
 import threading
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -2794,6 +2795,42 @@ class TestEventServiceConcurrentSubscriptions:
 
         conversation._state = state
         return conversation
+
+    @pytest.mark.asyncio
+    async def test_state_lock_waiters_leave_default_executor_free(
+        self, event_service, mock_conversation_with_real_lock
+    ):
+        """A run holds the state lock across whole tool steps. Requests waiting
+        on it must not park default-executor threads: lock-free work (event
+        reads of every conversation, tool calls) needs that pool."""
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        event_service._conversation = mock_conversation_with_real_lock
+        event_service._state_executor = ThreadPoolExecutor(max_workers=2)
+        lock = mock_conversation_with_real_lock._state._lock
+        held, release = threading.Event(), threading.Event()
+
+        def hold_lock():
+            with lock:
+                held.set()
+                release.wait()
+
+        holder = threading.Thread(target=hold_lock)
+        holder.start()
+        held.wait()
+        waiter = asyncio.create_task(event_service._get_execution_status())
+        try:
+            await asyncio.sleep(0.05)
+            free = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: "free"), timeout=2
+            )
+            assert free == "free"
+        finally:
+            release.set()
+            holder.join()
+        status = await asyncio.wait_for(waiter, timeout=2)
+        assert status == ConversationExecutionStatus.IDLE
+        event_service._state_executor.shutdown()
 
     @pytest.mark.asyncio
     async def test_concurrent_subscriptions_no_deadlock(
