@@ -1,9 +1,38 @@
+from __future__ import annotations
+
+from typing import Protocol, runtime_checkable
+
+
+@runtime_checkable
+class SupportsMaxRetries(Protocol):
+    """Protocol for exceptions and errors declaring a max_retries limit."""
+
+    max_retries: int | None
+
+
+@runtime_checkable
+class SupportsRetryMetadata(SupportsMaxRetries, Protocol):
+    """Protocol for exceptions and errors that declare retry metadata."""
+
+    retry_attempt: int | None
+    max_retries: int | None
+
+
 class LLMError(Exception):
     message: str
+    retry_attempt: int | None
+    max_retries: int | None
 
-    def __init__(self, message: str) -> None:
+    def __init__(
+        self,
+        message: str,
+        retry_attempt: int | None = None,
+        max_retries: int | None = None,
+    ) -> None:
         super().__init__(message)
         self.message = message
+        self.retry_attempt = retry_attempt
+        self.max_retries = max_retries
 
     def __str__(self) -> str:
         return self.message
