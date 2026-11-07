@@ -1723,6 +1723,8 @@ class LocalConversation(BaseConversation):
         skip_lock = self._step_holds_state_lock and not self._state.owned()
         lock = contextlib.nullcontext() if skip_lock else self._state
         with lock:
+            if registered is not None and new_llm is not registered:
+                self._state.stats.usage_to_metrics[usage_id] = new_llm.metrics
             update: dict[str, object] = {"llm": new_llm}
             update["condenser"] = self._condenser_for_switched_llm(
                 self.agent.llm,
