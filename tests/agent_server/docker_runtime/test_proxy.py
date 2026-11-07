@@ -2,6 +2,7 @@ import asyncio
 from uuid import uuid4
 
 import pytest
+import websockets
 from starlette.websockets import WebSocket
 
 from openhands.agent_server.docker_runtime.proxy import _bridge_websocket_loop
@@ -39,6 +40,37 @@ async def client_socket():
     client = WebSocket({"type": "websocket"}, incoming.get, send)
     await client.accept()
     return client, sent
+
+
+@pytest.mark.asyncio
+async def test_websocket_bridge_forwards_frame_over_default_max_size():
+    payload = "x" * (2**20 + 1)
+
+    async def upstream_socket(websocket):
+        await websocket.send(payload)
+
+    from openhands.agent_server.docker_runtime import proxy
+    from openhands.agent_server.docker_runtime.registry import ConversationContainer
+
+    async with websockets.serve(upstream_socket, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        client, sent = await client_socket()
+        target = ConversationContainer(
+            f"http://127.0.0.1:{port}", "inner-key", "test-container"
+        )
+        await asyncio.wait_for(
+            proxy.bridge_websocket(
+                client, target, upstream_path="/sockets/session/test"
+            ),
+            timeout=5,
+        )
+
+    forwarded = [
+        message["text"]
+        for message in sent
+        if message["type"] == "websocket.send" and "text" in message
+    ]
+    assert forwarded == [payload]
 
 
 @pytest.mark.asyncio
