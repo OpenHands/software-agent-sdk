@@ -126,8 +126,15 @@ def test_openrouter_reasoning_effort_follows_supported_params(model):
     supported_params = get_supported_openai_params(model=model) or []
     expected = "reasoning_effort" in supported_params
 
-    assert get_features(model).supports_reasoning_effort == expected
-    assert get_features(f"litellm_proxy/{model}").supports_reasoning_effort == expected
+    # Follows LiteLLM on purpose since #5703; whether OpenRouter Kimi and DeepSeek
+    # should still get reasoning_effort is an open question.
+    assert (
+        get_features(model).supports_reasoning_effort == expected
+    )  # shared-oracle: see above
+    assert (
+        get_features(f"litellm_proxy/{model}").supports_reasoning_effort
+        == expected  # shared-oracle: see above
+    )
 
 
 @pytest.mark.parametrize(
