@@ -21,6 +21,41 @@ ConversationID = uuid.UUID
 TAG_KEY_PATTERN = re.compile(r"^[a-z0-9]+$")
 TAG_VALUE_MAX_LENGTH = 256
 
+PROJECT_TAG_KEY = "project"
+"""Tag whose value is the id (hex) of the agent-server project a conversation
+belongs to. Child conversations copy their parent's tags, so they join it too."""
+
+RESOLVED_TAG_KEY = "resolved"
+"""Tag marking a conversation's work as done: ``user`` when the person resolved
+it, ``auto`` when the server did from a confident critic score. A new user
+message removes it."""
+
+TURN_TAG_KEY = "turn"
+"""Tag recording how the agent's last turn ended: ``asked`` when its final
+message asked the person something, ``answered`` otherwise. A new user message
+removes it."""
+
+ASK_TAG_KEY = "ask"
+"""Tag holding the question a conversation's agent stopped on, in one short
+line, while ``turn`` is ``asked``. A new user message removes it."""
+
+ASK_MAX_LENGTH = 200
+"""Longest ``ask``; a longer question is cut and ends with an ellipsis."""
+
+BOARD_TAG_KEYS = frozenset({RESOLVED_TAG_KEY, TURN_TAG_KEY, ASK_TAG_KEY})
+"""Tags that describe one conversation's state, so children do not copy them."""
+
+CONVERSATION_SENDER_PREFIX = "conversation:"
+"""Prefix of a user message's ``sender`` when another conversation sent it: a
+parent delivering a child's task, or a project coordinator steering a member.
+The rest is the sending conversation's id (hex). A ``sender`` of ``None`` means
+the person wrote the message."""
+
+
+def conversation_sender(conversation_id: uuid.UUID) -> str:
+    """The ``sender`` recorded on a message another conversation sent."""
+    return f"{CONVERSATION_SENDER_PREFIX}{conversation_id.hex}"
+
 
 def _validate_tags(v: dict[str, str] | None) -> dict[str, str]:
     if v is None:

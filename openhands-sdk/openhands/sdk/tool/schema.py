@@ -18,6 +18,8 @@ from openhands.sdk.utils.visualize import display_json
 if TYPE_CHECKING:
     from typing import Self
 
+    from openhands.sdk.event.base import Event
+
 logger = get_logger(__name__)
 
 S = TypeVar("S", bound="Schema")
@@ -386,6 +388,15 @@ class Observation(Schema, ABC):
     is_error: bool = Field(
         default=False, description="Whether the observation indicates an error"
     )
+
+    def follow_up_events(self) -> "Sequence[Event]":
+        """Events to record right after this observation, in order.
+
+        The agent emits them on its own thread after the tool returns, so a
+        tool can add a non-LLM event (such as a reaction) to the conversation
+        without touching the conversation from a worker thread.
+        """
+        return ()
 
     @classmethod
     def from_text(

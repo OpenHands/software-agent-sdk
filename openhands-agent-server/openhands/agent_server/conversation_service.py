@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import importlib
 import json
 import logging
@@ -47,7 +48,15 @@ from openhands.agent_server.models import (
     StoredConversation,
     UpdateConversationRequest,
 )
-from openhands.agent_server.persistence import FileSecretsStore
+from openhands.agent_server.persistence import FileSecretsStore, get_projects_store
+from openhands.agent_server.project_board import ConversationOutcomeSubscriber
+from openhands.agent_server.project_memory import MEMORY_INDEX, ProjectMemoryStore
+from openhands.agent_server.project_prompts import (
+    memory_note,
+    without_worker_guidance,
+    worker_guidance,
+)
+from openhands.agent_server.project_wake import notify_coordinator
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.telemetry import (
@@ -73,6 +82,11 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.conversation.title_utils import (
     extract_message_text,
     generate_title_from_message,
+)
+from openhands.sdk.conversation.types import (
+    BOARD_TAG_KEYS,
+    PROJECT_TAG_KEY,
+    conversation_sender,
 )
 from openhands.sdk.credential import (
     CredentialAuthorizationRejected,
@@ -387,8 +401,14 @@ def _compose_conversation_info(
     supports_runtime_model_switch = bool(
         agent_state.get("acp_supports_runtime_model_switch", False)
     )
+    state_fields = state.model_dump(mode="json")
+    # ``meta.json`` gets new tags at once; ``base_state.json`` only on the
+    # state's next save, which a run that holds the state lock (e.g. while an
+    # LLM call retries) can delay. Read tags from the metadata so a PATCH is
+    # visible right away.
+    state_fields["tags"] = dict(stored.tags)
     return ConversationInfo(
-        **state.model_dump(mode="json"),
+        **state_fields,
         title=stored.title,
         metrics=stored.metrics,
         created_at=stored.created_at,
@@ -546,6 +566,23 @@ class _ConversationRecord:
     stored_signature: int | None = None
 
 
+async def _project_memory_content(tags: dict[str, str]) -> list[TextContent]:
+    """``MEMORY.md`` of the project in ``tags``, for a child's first message."""
+    project_hex = tags.get(PROJECT_TAG_KEY)
+    if not project_hex:
+        return []
+    try:
+        project_id = UUID(hex=project_hex)
+        store = ProjectMemoryStore(get_projects_store().persistence_dir)
+        memory = await asyncio.to_thread(store.get, project_id, MEMORY_INDEX)
+    except (ValueError, OSError):
+        logger.warning("Project memory unreadable for project %s", project_hex)
+        return []
+    if memory is None or not memory.content.strip():
+        return []
+    return [TextContent(text=memory_note(memory.content, memory.revision))]
+
+
 @dataclass
 class ConversationService:
     """Manage persisted conversations and their live runtimes.
@@ -581,6 +618,10 @@ class ConversationService:
     _active_lifecycle_operations: int = field(default=0, init=False)
     _exclusive_lifecycle_pending: bool = field(default=False, init=False)
     _conversation_locks: WeakValueDictionary[UUID, asyncio.Lock] = field(
+        default_factory=WeakValueDictionary, init=False
+    )
+    # Per conversation: serializes ``set_conversation_tag``'s read-merge-write.
+    _tag_locks: WeakValueDictionary[UUID, asyncio.Lock] = field(
         default_factory=WeakValueDictionary, init=False
     )
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
@@ -1746,6 +1787,7 @@ class ConversationService:
         *,
         run_slot: RunSlot,
         initial_message: Message | None,
+        initial_sender: str | None = None,
         reuse_request: StartConversationRequest | None = None,
         max_budget_per_run: float | None = None,
     ) -> tuple[ConversationInfo, bool]:
@@ -1783,7 +1825,9 @@ class ConversationService:
                 max_budget_per_run=max_budget_per_run,
             )
         if initial_message is not None:
-            await event_service.send_message(initial_message, False)
+            await event_service.send_message(
+                initial_message, False, sender=initial_sender
+            )
             await event_service.run(run_slot=run_slot)
 
         state = await event_service.get_state()
@@ -1963,6 +2007,86 @@ class ConversationService:
             ", ".join(updated_fields),
         )
         return True
+
+    async def list_tagged_conversations(
+        self, key: str, value: str
+    ) -> list[tuple[StoredConversation, ConversationExecutionStatus]]:
+        """Return conversations whose tag ``key`` equals ``value``.
+
+        Reads the in-memory catalog with refreshed execution statuses, as the
+        status-filtered search does, so no full ``ConversationState`` is
+        loaded. Results are newest-updated first; deleting conversations are
+        left out.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        await self._reconcile_active_records()
+        await self._refresh_execution_statuses()
+        matches = [
+            (record.stored, record.execution_status)
+            for record in self._conversation_records.values()
+            if record.stored.tags.get(key) == value
+            and record.execution_status != ConversationExecutionStatus.DELETING
+        ]
+        matches.sort(key=lambda item: item[0].updated_at, reverse=True)
+        return matches
+
+    async def set_conversation_tag(
+        self,
+        conversation_id: UUID,
+        key: str,
+        value: str | None,
+        *,
+        expected: str | None = None,
+        only_if_absent: bool = False,
+    ) -> dict[str, str] | None:
+        """Set or remove one tag, keeping the conversation's other tags.
+
+        ``UpdateConversationRequest.tags`` replaces the whole set, so callers
+        that change a single tag would otherwise race each other. Changes made
+        here are serialized; a concurrent ``PATCH`` of the full set still
+        replaces it.
+
+        Args:
+            conversation_id: The conversation to change.
+            key: The tag key.
+            value: The new value, or ``None`` to remove the tag.
+            expected: When given, change the tag only if it currently holds
+                this value.
+            only_if_absent: Change nothing when the tag is already set.
+
+        Returns:
+            The conversation's tags after the change, or ``None`` when the
+            conversation does not exist.
+
+        Raises:
+            ValueError: If ``expected`` is given and does not match.
+        """
+        lock = self._tag_locks.get(conversation_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._tag_locks[conversation_id] = lock
+        async with lock:
+            event_service = await self._get_or_load_event_service(conversation_id)
+            if event_service is None:
+                return None
+            tags = dict(event_service.stored.tags)
+            if expected is not None and tags.get(key) != expected:
+                raise ValueError(f"Tag '{key}' does not hold the expected value")
+            if only_if_absent and key in tags:
+                return tags
+            if value is None:
+                if key not in tags:
+                    return tags
+                del tags[key]
+            else:
+                if tags.get(key) == value:
+                    return tags
+                tags[key] = value
+            await self.update_conversation(
+                conversation_id, UpdateConversationRequest(tags=tags)
+            )
+            return dict(event_service.stored.tags)
 
     async def get_event_service(self, conversation_id: UUID) -> EventService | None:
         return await self._get_or_load_event_service(conversation_id)
@@ -2167,13 +2291,20 @@ class ConversationService:
                 if request.isolation == "worktree"
                 else None
             )
+            suffixes = [worktree.guidance] if worktree else []
+            # The child inherits the parent's agent, and with it any guidance
+            # naming the conversation that started the parent; it gets its
+            # own instead, naming its parent, while that parent is in a project.
+            child_agent = without_worker_guidance(parent_agent)
+            if PROJECT_TAG_KEY in parent_stored.tags:
+                suffixes.append(worker_guidance(parent_stored.title, parent_id))
             launched = await asyncio.to_thread(
                 lambda: finalize(
-                    parent_agent,
+                    child_agent,
                     live_launch_runtime(
                         self.acp_skill_sourcing, enable_browser=self.enable_browser
                     ),
-                    extra_suffixes=[worktree.guidance] if worktree else (),
+                    extra_suffixes=suffixes,
                 )
             )
             workspace = (
@@ -2194,6 +2325,13 @@ class ConversationService:
                     "parent_conversation_id": parent_id,
                     "forked_from_conversation_id": None,
                     "forked_from_event_id": None,
+                    # Project membership carries over; the parent's own
+                    # resolved/turn state does not.
+                    "tags": {
+                        key: value
+                        for key, value in parent_stored.tags.items()
+                        if key not in BOARD_TAG_KEYS
+                    },
                 }
             )
             info, _ = await self._launch_prepared_conversation(
@@ -2202,8 +2340,13 @@ class ConversationService:
                 run_slot=run_slot,
                 max_budget_per_run=max_budget_per_run,
                 initial_message=Message(
-                    role="user", content=[TextContent(text=request.task)]
+                    role="user",
+                    content=[
+                        TextContent(text=request.task),
+                        *await _project_memory_content(parent_stored.tags),
+                    ],
                 ),
+                initial_sender=conversation_sender(parent_id),
             )
 
         return StartChildConversationResponse(
@@ -2518,6 +2661,14 @@ class ConversationService:
             # the caller instead of being silently logged on a later publish.
             await event_service.subscribe_to_events(
                 _EventSubscriber(service=event_service)
+            )
+            await event_service.subscribe_to_events(
+                ConversationOutcomeSubscriber(
+                    conversation_id=stored.id,
+                    tags=lambda: event_service.stored.tags,
+                    set_tag=self.set_conversation_tag,
+                    on_finished=functools.partial(notify_coordinator, self, stored.id),
+                )
             )
             if stored.autotitle and stored.title is None:
                 await event_service.subscribe_to_events(

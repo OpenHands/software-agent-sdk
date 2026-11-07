@@ -37,10 +37,16 @@ SESSION_API_KEY_HEADER = "X-Session-API-Key"
 CHILD_LAUNCH_TIMEOUT_SECONDS = 300.0
 
 
+def internal_server_url() -> str:
+    """Base URL of the agent-server running this tool, without a trailing slash."""
+    return os.getenv(INTERNAL_SERVER_URL_ENV, DEFAULT_INTERNAL_SERVER_URL).rstrip("/")
+
+
 def default_launch_url(parent_conversation_id: UUID) -> str:
     """Child-launch endpoint of the agent-server running this tool."""
-    base = os.getenv(INTERNAL_SERVER_URL_ENV, DEFAULT_INTERNAL_SERVER_URL).rstrip("/")
-    return f"{base}/api/conversations/{parent_conversation_id}/children"
+    return (
+        f"{internal_server_url()}/api/conversations/{parent_conversation_id}/children"
+    )
 
 
 def session_api_key_headers() -> dict[str, str]:
@@ -59,7 +65,7 @@ def session_api_key_headers() -> dict[str, str]:
     return {}
 
 
-def _response_detail(response: httpx.Response) -> str:
+def response_detail(response: httpx.Response) -> str:
     try:
         detail = response.json().get("detail")
     except (ValueError, AttributeError):
@@ -120,7 +126,7 @@ class StartChildConversationExecutor(
         except httpx.HTTPStatusError as exc:
             return self._error(
                 "Child conversation launch failed "
-                f"({exc.response.status_code}): {_response_detail(exc.response)}"
+                f"({exc.response.status_code}): {response_detail(exc.response)}"
             )
         except httpx.TimeoutException:
             return self._error(

@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -23,6 +23,8 @@ from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import ConversationTags
 from openhands.sdk.event.base import Event
+from openhands.sdk.event.reaction import ReactionEmoji
+from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm.message import (  # re-export
     ImageContent as ImageContent,
@@ -443,6 +445,17 @@ def trim_conversation_response_skills(info: ConversationInfo) -> ConversationInf
     return info.model_copy(update={"agent": trimmed_agent})
 
 
+class ReactionRequest(BaseModel):
+    """Payload to add or remove the person's emoji reaction on a message."""
+
+    emoji: ReactionEmoji = Field(description="The emoji, as a shortcode.")
+    target_event_id: EventID | None = Field(
+        default=None,
+        description="The message to react to; the agent's latest when left out.",
+    )
+    removed: bool = Field(default=False, description="True to remove the reaction.")
+
+
 class ConfirmationResponseRequest(BaseModel):
     """Payload to accept or reject a pending action."""
 
@@ -452,6 +465,34 @@ class ConfirmationResponseRequest(BaseModel):
 
 class Success(BaseModel):
     success: bool = True
+
+
+MessageRunOutcome = Literal["started", "queued", "waiting_for_confirmation", "not_run"]
+
+
+class SendMessageResponse(Success):
+    """What became of a message sent with ``run``."""
+
+    run: MessageRunOutcome | None = Field(
+        default=None,
+        description=(
+            "Set when the request asked to run. `started`: a run was started "
+            "for the message. `queued`: a run was already active; it takes the "
+            "message, or the conversation runs again when it ends. "
+            "`waiting_for_confirmation` (only with "
+            "`refuse_pending_confirmation`): the conversation reached a "
+            "confirmation while the message was delivered, so it was not run "
+            "and the message waits for the person's decision. `not_run`: a "
+            "stop arrived meanwhile and the conversation was left as it is."
+        ),
+    )
+    previous_status: ConversationExecutionStatus | None = Field(
+        default=None,
+        description=(
+            "The conversation's execution status just before the message; "
+            "set with `refuse_pending_confirmation`."
+        ),
+    )
 
 
 class FileUploadResult(Success):
