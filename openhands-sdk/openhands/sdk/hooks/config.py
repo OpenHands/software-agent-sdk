@@ -50,10 +50,6 @@ class HookDefinition(BaseModel):
 
     type: HookType = HookType.COMMAND
     name: str | None = None
-    plugin_root: str | None = Field(
-        default=None,
-        description="Absolute path to the owning plugin directory, if applicable",
-    )
     # `command` is kept a non-nullable string that is always present in the
     # serialized output and reported as required in the JSON schema (see
     # __get_pydantic_json_schema__). This preserves the published REST response
@@ -67,6 +63,15 @@ class HookDefinition(BaseModel):
     timeout: int = 60
     max_iterations: int = 3
     async_: bool = Field(default=False, alias="async")  # 'async' is a reserved keyword
+    plugin_root: str | None = Field(
+        default=None,
+        description=(
+            "Resolved root directory of the plugin that supplied this hook. Set by "
+            "the plugin loader rather than in hooks.json, and exported to command "
+            "hooks as the PLUGIN_ROOT environment variable. None for hooks that do "
+            "not come from a plugin."
+        ),
+    )
 
     model_config = {
         "populate_by_name": True,  # Allow both 'async' and 'async_' in input

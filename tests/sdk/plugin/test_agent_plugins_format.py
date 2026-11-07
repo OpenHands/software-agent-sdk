@@ -529,6 +529,18 @@ class TestClientExtension:
         assert [a.name for a in fmt.load_agents(tmp_path)] == ["helper"]
         assert [c.name for c in fmt.load_commands(tmp_path)] == ["now"]
 
+    def test_hooks_bind_the_package_root_as_plugin_root(self, tmp_path: Path):
+        """Hooks under ``dev.openhands/`` get the package root as ``PLUGIN_ROOT``."""
+        write_manifest(tmp_path, EXAMPLE_MANIFEST)
+        write_extension_components(tmp_path / EXTENSION_NAMESPACE)
+
+        plugin = Plugin.load(tmp_path)
+
+        assert plugin.hooks is not None
+        assert [h.plugin_root for h in plugin.hooks.pre_tool_use[0].hooks] == [
+            str(tmp_path.resolve())
+        ]
+
     @pytest.mark.parametrize(
         "location",
         [

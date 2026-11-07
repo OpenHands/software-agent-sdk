@@ -300,6 +300,26 @@ Body.
             plugin_dir.resolve()
         )
 
+    def test_load_plugin_binds_plugin_root_to_hooks(self, tmp_path: Path):
+        """Every hook records the resolved plugin directory as its plugin root."""
+        plugin_dir = tmp_path / "hook-plugin"
+        hooks_dir = plugin_dir / "hooks"
+        hooks_dir.mkdir(parents=True)
+        (hooks_dir / "hooks.json").write_text(
+            """{
+            "hooks": {
+                "PreToolUse": [{"hooks": [{"command": "echo pre"}]}],
+                "Stop": [{"hooks": [{"command": "echo stop"}]}]
+            }
+        }"""
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert plugin.hooks is not None
+        hooks = [*plugin.hooks.pre_tool_use[0].hooks, *plugin.hooks.stop[0].hooks]
+        assert [h.plugin_root for h in hooks] == [str(plugin_dir.resolve())] * 2
+
     def test_load_plugin_with_agents(self, tmp_path: Path):
         """Test loading a plugin with agent definitions."""
         plugin_dir = tmp_path / "agent-plugin"

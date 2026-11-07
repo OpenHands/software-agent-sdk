@@ -483,7 +483,6 @@ class HookExecutor:
         hook_env["OPENHANDS_EVENT_TYPE"] = event.event_type
         if event.tool_name:
             hook_env["OPENHANDS_TOOL_NAME"] = event.tool_name
-
         if env:
             hook_env.update(env)
         if hook.plugin_root is not None:
