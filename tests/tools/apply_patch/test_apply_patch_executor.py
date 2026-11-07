@@ -299,3 +299,20 @@ def test_invalid_move_to_path_returns_differror(tmp_ws: Path):
     obs = run_exec(tmp_ws, patch)
     assert obs.is_error
     assert "Invalid move path" in obs.text
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["sub", "a.txt/new.txt", ".", ".."],
+)
+def test_add_file_filesystem_error_returns_observation(tmp_ws: Path, target: str):
+    (tmp_ws / "sub").mkdir()
+    (tmp_ws / "a.txt").write_text("existing file\n")
+
+    patch = f"*** Begin Patch\n*** Add File: {target}\n+new content\n*** End Patch"
+
+    obs = run_exec(tmp_ws, patch)
+
+    assert obs.is_error
+    if target != "..":
+        assert target.split("/")[0] in obs.text
