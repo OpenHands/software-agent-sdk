@@ -1,9 +1,11 @@
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import threading
 from collections.abc import Mapping
+from contextlib import suppress
 from typing import Final
 
 from openhands.sdk.logger import get_logger
@@ -79,6 +81,15 @@ def sanitized_env(
     return base_env
 
 
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    """Kill ``proc`` and, on POSIX, every process in its session."""
+    if os.name == "nt":
+        proc.kill()
+        return
+    with suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGKILL)
+
+
 def execute_command(
     cmd: list[str] | str,
     env: dict[str, str] | None = None,
@@ -108,6 +119,9 @@ def execute_command(
         text=True,
         bufsize=1,
         shell=use_shell,
+        # A shell's children inherit the output pipes; killing only the shell
+        # on timeout would leave them running and block the reader threads.
+        start_new_session=os.name != "nt",
     )
     if proc is None:
         raise RuntimeError("Failed to start process")
@@ -142,7 +156,7 @@ def execute_command(
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        _kill_process_tree(proc)
         stdout_thread.join()
         stderr_thread.join()
         return subprocess.CompletedProcess(
@@ -151,6 +165,10 @@ def execute_command(
             "".join(stdout_lines),
             "".join(stderr_lines),
         )
+    except BaseException:
+        # The new session no longer receives the terminal's Ctrl+C.
+        _kill_process_tree(proc)
+        raise
 
     stdout_thread.join(timeout=timeout)
     stderr_thread.join(timeout=timeout)
