@@ -561,7 +561,7 @@ Preconditions:
   that evidence while it is valid (device codes are a phishing target).
 - Honor `interval_seconds` between polls. Fast polls work today, but any
   OpenAI answer other than success, 403 or 404 (a 429, a 5xx), and any
-  transport error, becomes a 500 from `poll` while the token stays pending
+  transport error, becomes a 502 from `poll` (504 for a timeout) while the token stays pending
   (`F24.device-poll-outage` shows it for a dropped network). A poll that
   arrives while another poll of the same token is in flight answers
   `connected: false` instead of 404.
