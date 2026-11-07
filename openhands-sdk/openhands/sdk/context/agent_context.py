@@ -17,7 +17,7 @@ from pydantic import (
 
 from openhands.sdk.context.prompts import render_template
 from openhands.sdk.context.prompts.presets import create_registry
-from openhands.sdk.context.prompts.section import PromptContext
+from openhands.sdk.context.prompts.section import PromptContext, SecretInfo
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
@@ -297,21 +297,33 @@ class AgentContext(BaseModel):
         return self
 
     def get_secret_infos(self) -> list[dict[str, str | None]]:
-        """Get secret information (name and description) from the secrets field.
+        """Get secret information (name, description, scope) from the secrets field.
 
         Returns:
-            List of dictionaries with 'name' and 'description' keys.
-            Returns an empty list if no secrets are configured.
-            Description will be None if not available.
+            List of dictionaries with 'name', 'description', 'scope', and
+            'scope_description' keys. Returns an empty list if no secrets are
+            configured. Values default to None when not available on a source
+            (e.g. plain-string secrets carry no scope or description).
         """
         if not self.secrets:
             return []
         secret_infos: list[dict[str, str | None]] = []
         for name, secret_value in self.secrets.items():
             description = None
+            scope = None
+            scope_description = None
             if isinstance(secret_value, SecretSource):
                 description = secret_value.description
-            secret_infos.append({"name": name, "description": description})
+                scope = secret_value.scope
+                scope_description = secret_value.scope_description
+            secret_infos.append(
+                {
+                    "name": name,
+                    "description": description,
+                    "scope": scope,
+                    "scope_description": scope_description,
+                }
+            )
         return secret_infos
 
     def get_formatted_datetime(self) -> str | None:
@@ -396,7 +408,13 @@ class AgentContext(BaseModel):
             custom_suffix=self.system_message_suffix or None,
             memory_context=self.memory_context or None,
             secret_infos=tuple(
-                (info["name"] or "", info["description"]) for info in data.secret_infos
+                SecretInfo(
+                    name=info["name"] or "",
+                    description=info.get("description"),
+                    scope=info.get("scope"),
+                    scope_description=info.get("scope_description"),
+                )
+                for info in data.secret_infos
             ),
         )
         return create_registry().build(ctx).dynamic
