@@ -19,7 +19,7 @@ from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.sdk import Message, TextContent
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import MessageEvent
+from openhands.sdk.event import MessageEvent, StreamingDeltaEvent
 from openhands.sdk.llm import LLM
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -175,10 +175,7 @@ async def test_legacy_replay_with_queued_publish_is_exactly_once_in_order(svc):
     assert _texts(ws.sent) == ["E0", "E1"]
 
 
-@pytest.mark.asyncio
-async def test_legacy_event_during_replay_follows_history_once(svc, monkeypatch):
-    for i in range(3):
-        await _emit(svc, _msg(f"E{i}"))
+async def _held_legacy_replay(svc, monkeypatch, ws):
     gate, in_replay = asyncio.Event(), asyncio.Event()
     search_events = svc.search_events
 
@@ -188,9 +185,17 @@ async def test_legacy_event_during_replay_follows_history_once(svc, monkeypatch)
         return await search_events(*args, **kwargs)
 
     monkeypatch.setattr(svc, "search_events", held_search)
-    ws = _FakeWS()
     task = asyncio.create_task(_legacy(ws, svc, resend_mode="all"))
     await in_replay.wait()
+    return gate, task
+
+
+@pytest.mark.asyncio
+async def test_legacy_event_during_replay_follows_history_once(svc, monkeypatch):
+    for i in range(3):
+        await _emit(svc, _msg(f"E{i}"))
+    ws = _FakeWS()
+    gate, task = await _held_legacy_replay(svc, monkeypatch, ws)
     await _emit(svc, _msg("E3"))
     gate.set()
     await _wait_until(lambda: "E3" in _texts(ws.sent))
@@ -203,18 +208,8 @@ async def test_legacy_event_during_replay_follows_history_once(svc, monkeypatch)
 async def test_legacy_snapshot_during_replay_does_not_override_newer_state(
     svc, monkeypatch
 ):
-    gate, in_replay = asyncio.Event(), asyncio.Event()
-    search_events = svc.search_events
-
-    async def held_search(*args, **kwargs):
-        in_replay.set()
-        await gate.wait()
-        return await search_events(*args, **kwargs)
-
-    monkeypatch.setattr(svc, "search_events", held_search)
     ws = _FakeWS()
-    task = asyncio.create_task(_legacy(ws, svc, resend_mode="all"))
-    await in_replay.wait()
+    gate, task = await _held_legacy_replay(svc, monkeypatch, ws)
     await asyncio.to_thread(_set_status, svc, ConversationExecutionStatus.RUNNING)
     await svc._publish_state_update()
     await asyncio.to_thread(_set_status, svc, ConversationExecutionStatus.IDLE)
@@ -222,6 +217,21 @@ async def test_legacy_snapshot_during_replay_does_not_override_newer_state(
     gate.set()
     await _finish(ws, task)
     assert _client_status(ws.sent) == "idle"
+
+
+@pytest.mark.asyncio
+async def test_legacy_delta_during_replay_precedes_its_message(svc, monkeypatch):
+    ws = _FakeWS()
+    gate, task = await _held_legacy_replay(svc, monkeypatch, ws)
+    await svc._pub_sub(StreamingDeltaEvent(content="done"))
+    await _emit(svc, _msg("done"))
+    gate.set()
+    await _finish(ws, task)
+    kinds = [f["kind"] for f in ws.sent]
+    assert [k for k in kinds if k in ("StreamingDeltaEvent", "MessageEvent")] == [
+        "StreamingDeltaEvent",
+        "MessageEvent",
+    ]
 
 
 @pytest.mark.asyncio
@@ -279,9 +289,7 @@ async def test_pubsub_close_survives_a_failing_subscriber():
     assert ok.closed and not pub_sub.subscriber_ids()
 
 
-@pytest.mark.asyncio
-async def test_session_snapshot_never_follows_newer_state(svc, monkeypatch):
-    await _emit(svc, _msg("E0"))
+async def _held_session_snapshot(svc, monkeypatch, ws):
     loop = asyncio.get_running_loop()
     snapped, resume = asyncio.Event(), asyncio.Event()
     create_initial_state = svc._create_initial_state_sync
@@ -293,14 +301,41 @@ async def test_session_snapshot_never_follows_newer_state(svc, monkeypatch):
         return result
 
     monkeypatch.setattr(svc, "_create_initial_state_sync", snap_then_hold)
-    ws = _FakeWS()
     task = asyncio.create_task(_session(ws, svc, after_seq=-1))
     await snapped.wait()
+    return resume, task
 
+
+@pytest.mark.asyncio
+async def test_session_snapshot_never_follows_newer_state(svc, monkeypatch):
+    await _emit(svc, _msg("E0"))
+    ws = _FakeWS()
+    resume, task = await _held_session_snapshot(svc, monkeypatch, ws)
     await asyncio.to_thread(_set_status, svc, ConversationExecutionStatus.RUNNING)
     await _settle(svc)
     resume.set()
     await _wait_until(lambda: any(f.get("type") == "transient" for f in ws.sent))
     await _finish(ws, task)
-
     assert _client_status(ws.sent, session=True) == "running"
+
+
+@pytest.mark.asyncio
+async def test_session_newer_snapshot_follows_connect_snapshot(svc, monkeypatch):
+    ws = _FakeWS()
+    resume, task = await _held_session_snapshot(svc, monkeypatch, ws)
+
+    def activate_skill():
+        with svc.get_conversation()._state as state:
+            state.activated_knowledge_skills.append("python_tips")
+
+    await asyncio.to_thread(activate_skill)
+    await svc._publish_state_update()
+    resume.set()
+    await _wait_until(lambda: sum(f.get("type") == "transient" for f in ws.sent) >= 2)
+    await _finish(ws, task)
+    snapshots = [
+        f["event"]["value"]
+        for f in ws.sent
+        if f.get("type") == "transient" and f["event"].get("key") == "full_state"
+    ]
+    assert snapshots[-1]["activated_knowledge_skills"] == ["python_tips"]

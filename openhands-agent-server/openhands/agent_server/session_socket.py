@@ -255,7 +255,12 @@ class _SessionSubscriber(Subscriber[Event]):
         newer: list[Event] = []
         for event in buffered[:pos]:
             idx = self._index_of(event)
-            (newer if idx is not None and idx >= limit else older).append(event)
+            is_newer = (
+                event.timestamp > buffered[pos].timestamp
+                if idx is None
+                else idx >= limit
+            )
+            (newer if is_newer else older).append(event)
         return [*older, buffered[pos], *newer, *buffered[pos + 1 :]]
 
     def go_live(self, through_seq: int | None) -> None:

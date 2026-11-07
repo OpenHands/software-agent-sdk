@@ -48,6 +48,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import MaxSubscribersError, Subscriber
 from openhands.sdk import Event, Message
+from openhands.sdk.event import StreamingDeltaEvent
 from openhands.sdk.event.conversation_state import (
     FULL_STATE_KEY,
     ConversationStateUpdateEvent,
@@ -557,8 +558,11 @@ class _WebSocketSubscriber(Subscriber):
 
     async def __call__(self, event: Event):
         if self.buffering and not (
-            isinstance(event, ConversationStateUpdateEvent)
-            and event.key == FULL_STATE_KEY
+            isinstance(event, StreamingDeltaEvent)
+            or (
+                isinstance(event, ConversationStateUpdateEvent)
+                and event.key == FULL_STATE_KEY
+            )
         ):
             self._buffer.append(event)
             return
