@@ -50,7 +50,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.persistence import FileSecretsStore
 from openhands.agent_server.project_board import ConversationOutcomeSubscriber
 from openhands.agent_server.project_prompts import (
-    WORKER_GUIDANCE_MARKER,
+    without_worker_guidance,
     worker_guidance,
 )
 from openhands.agent_server.pub_sub import Subscriber
@@ -2271,18 +2271,15 @@ class ConversationService:
                 else None
             )
             suffixes = [worktree.guidance] if worktree else []
+            # The child inherits the parent's agent, and with it any guidance
+            # naming the conversation that started the parent; it gets its
+            # own instead, naming its parent, while that parent is in a project.
+            child_agent = without_worker_guidance(parent_agent)
             if PROJECT_TAG_KEY in parent_stored.tags:
-                parent_context = parent_agent.agent_context
-                parent_suffix = (
-                    parent_context.system_message_suffix if parent_context else None
-                ) or ""
-                # A worker's own children keep the guidance naming the
-                # coordinator, which they inherit with the parent's agent.
-                if WORKER_GUIDANCE_MARKER not in parent_suffix:
-                    suffixes.append(worker_guidance(parent_stored.title, parent_id))
+                suffixes.append(worker_guidance(parent_stored.title, parent_id))
             launched = await asyncio.to_thread(
                 lambda: finalize(
-                    parent_agent,
+                    child_agent,
                     live_launch_runtime(
                         self.acp_skill_sourcing, enable_browser=self.enable_browser
                     ),

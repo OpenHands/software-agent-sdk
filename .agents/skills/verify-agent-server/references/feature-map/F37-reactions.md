@@ -105,3 +105,10 @@ Preconditions:
 - The agent's `react` call is an ordinary tool call, so the `ActionEvent` and
   its short `ObservationEvent` stay in the log next to the `ReactionEvent`;
   clients that show reactions as chips can hide that pair.
+- A person's reaction is saved under the conversation's state lock, which a
+  running agent holds for a whole step: during a run, `POST .../reactions`
+  answers once the current step ends.
+- Targets come from the active branch: after navigating back, messages on the
+  abandoned branch cannot be reacted to.
+- A client older than this event kind cannot parse a conversation's events
+  once it holds a reaction, as with any new event kind.

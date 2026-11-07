@@ -383,3 +383,28 @@ async def test_a_user_message_reopens_a_resolved_conversation_outside_projects()
     await _feed(_subscriber(store), _message("user", "One more thing"))
 
     assert store.tags == {"other": "x"}
+
+
+@pytest.mark.asyncio
+async def test_a_user_message_before_the_outcome_is_saved_still_reopens():
+    """The outcome of a finished run is written in the background; a message
+    that arrives before that write lands must still win."""
+    store = _Tags({"project": "p1"})
+    gate = asyncio.Event()
+
+    async def slow_set_tag(*args, **kwargs):
+        await gate.wait()
+        return await store.set_tag(*args, **kwargs)
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(), tags=lambda: store.tags, set_tag=slow_set_tag
+    )
+
+    await subscriber(_finish("All done.", score=0.95))
+    await subscriber(_status("finished"))
+    # The outcome write is still pending, so no board tag is visible yet.
+    await subscriber(_message("user", "Wait, one more thing"))
+    gate.set()
+    await subscriber.drain()
+
+    assert store.tags == {"project": "p1"}

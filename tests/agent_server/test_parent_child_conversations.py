@@ -423,7 +423,7 @@ async def test_project_child_is_told_who_started_it(tmp_path, workspace_dir):
 
 
 @pytest.mark.asyncio
-async def test_a_workers_child_keeps_one_copy_of_the_guidance(tmp_path, workspace_dir):
+async def test_a_workers_child_is_told_the_worker_started_it(tmp_path, workspace_dir):
     request = StartChildConversationRequest(task="Write the docs")
 
     launch = await _launch_child(
@@ -434,9 +434,11 @@ async def test_a_workers_child_keeps_one_copy_of_the_guidance(tmp_path, workspac
         grandchild=True,
     )
 
+    assert launch.result is not None
     suffix = _system_suffix(launch)
     assert suffix.count(WORKER_GUIDANCE_MARKER) == 1
-    assert launch.parent_id.hex in suffix
+    assert launch.result.parent_conversation_id.hex in suffix
+    assert launch.parent_id.hex not in suffix
 
 
 @pytest.mark.asyncio

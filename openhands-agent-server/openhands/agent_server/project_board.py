@@ -136,7 +136,10 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
                 self._asked_since_user = False
                 # Reopen any conversation the person resolved, in a project
                 # or not; recording outcomes is limited to project members.
-                if any(key in self.tags() for key in BOARD_TAG_KEYS):
+                # An outcome still being written is not visible in the tags
+                # yet, so queue the reopen behind it as well.
+                pending = self._tail is not None and not self._tail.done()
+                if pending or any(key in self.tags() for key in BOARD_TAG_KEYS):
                     self._enqueue(self._reopen)
             elif event.source == "agent":
                 self._note_agent_output(extract_message_text(event), event)

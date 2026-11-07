@@ -14,18 +14,42 @@ Two texts carry that:
   without the guidance.
 """
 
+import re
 from uuid import UUID
+
+from openhands.sdk.agent.base import AgentBase
 
 
 WORKER_GUIDANCE_MARKER = "You are working on a project with a coordinator."
-"""First line of :func:`worker_guidance`; a child whose parent's system prompt
-already has it inherits that guidance and gets no second copy."""
+"""First line of :func:`worker_guidance`. Its other lines are bullets, so
+:func:`without_worker_guidance` can remove an inherited copy."""
+
+_GUIDANCE_BLOCK = re.compile(re.escape(WORKER_GUIDANCE_MARKER) + r"(?:\n- [^\n]*)*")
+_TITLE_MAX = 80
 
 
 def _name(title: str | None, conversation_id: UUID) -> str:
-    title = (title or "").strip()
+    # The title is the person's or an agent's text: one line, no quotes or
+    # brackets, so it cannot end the header or the guidance early.
+    title = re.sub(r"[\s\"\[\]]+", " ", title or "").strip()[:_TITLE_MAX].strip()
     who = f'"{title}"' if title else "an untitled conversation"
     return f"{who} (conversation {conversation_id.hex})"
+
+
+def without_worker_guidance[AgentT: AgentBase](agent: AgentT) -> AgentT:
+    """``agent`` without the :func:`worker_guidance` its system prompt carries."""
+    context = agent.agent_context
+    suffix = context.system_message_suffix if context else None
+    if context is None or not suffix or WORKER_GUIDANCE_MARKER not in suffix:
+        return agent
+    remaining = re.sub(r"\n{3,}", "\n\n", _GUIDANCE_BLOCK.sub("", suffix)).strip()
+    return agent.model_copy(
+        update={
+            "agent_context": context.model_copy(
+                update={"system_message_suffix": remaining or None}
+            )
+        }
+    )
 
 
 def worker_guidance(title: str | None, conversation_id: UUID) -> str:
