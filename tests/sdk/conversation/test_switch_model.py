@@ -362,6 +362,46 @@ def test_switch_reuses_registry_entry(profile_store):
     assert llm_first is llm_second
 
 
+@pytest.mark.parametrize("switch_before_init", [False, True])
+def test_switch_profile_installs_edited_profile(profile_store, switch_before_init):
+    """Re-switching to an edited profile installs the edited config, not the
+    copy registered at the first switch, and keeps the profile's usage."""
+    conv = _make_conversation()
+    if not switch_before_init:
+        conv.send_message("hello")
+    conv.switch_profile("fast")
+    if switch_before_init:
+        conv.send_message("hello")
+    first = conv.llm_registry.get("profile:fast")
+    first.metrics.add_cost(1.5)
+
+    conv.switch_profile("slow")
+    profile_store.save("fast", _make_llm("fast-model-v2", "fast"))
+    conv.switch_profile("fast")
+
+    assert conv.agent.llm.model == "fast-model-v2"
+    assert conv.state.agent.llm.model == "fast-model-v2"
+    installed = conv.llm_registry.get("profile:fast")
+    assert installed is not first
+    assert installed.metrics is first.metrics
+    assert installed.metrics.accumulated_cost == 1.5
+    stats = conv.conversation_stats
+    assert stats.get_metrics_for_usage("profile:fast") is installed.metrics
+    installed.metrics.add_cost(0.5)
+    assert stats.get_combined_metrics().accumulated_cost == 2.0
+
+
+def test_switch_profile_installs_edited_profile_while_active(profile_store):
+    """Editing the active profile and switching to it again applies the edit."""
+    conv = _make_conversation()
+    conv.switch_profile("fast")
+    profile_store.save("fast", _make_llm("fast-model-v2", "fast"))
+
+    conv.switch_profile("fast")
+
+    assert conv.agent.llm.model == "fast-model-v2"
+
+
 def test_switch_nonexistent_raises(profile_store):
     """Switching to a nonexistent profile raises FileNotFoundError."""
     conv = _make_conversation()
