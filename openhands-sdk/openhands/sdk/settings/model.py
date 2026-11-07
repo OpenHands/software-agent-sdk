@@ -1871,13 +1871,33 @@ class ACPAgentSettings(AgentSettingsBase):
             "for configOptions-based servers (codex, claude), else "
             "set_session_model. Codex and Claude also accept "
             "``'<model>/<effort>'`` (e.g. ``'gpt-5.5/high'`` or "
-            "``'opus[1m]/high'``) to set reasoning effort. Leave blank to let "
-            "the server pick its default."
+            "``'opus[1m]/high'``); prefer ``acp_effort``, which wins over the "
+            "suffix. Leave blank to let the server pick its default."
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="ACP model",
                 prominence=SettingProminence.CRITICAL,
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="acp",
+                label="ACP (Agent Client Protocol)",
+                variant="acp",
+            ).model_dump(),
+        },
+    )
+    acp_effort: str | None = Field(
+        default=None,
+        description=(
+            "Reasoning effort for the ACP server to use (e.g. ``'high'``), "
+            "applied after the model through the session's reasoning-effort "
+            "option. Ignored when the model offers no effort setting. Leave "
+            "blank to let the server pick its default."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="ACP reasoning effort",
+                prominence=SettingProminence.MAJOR,
             ).model_dump(),
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="acp",
@@ -2168,6 +2188,7 @@ class ACPAgentSettings(AgentSettingsBase):
             acp_server=self.acp_server,
             acp_args=list(self.acp_args),
             acp_model=self.acp_model,
+            acp_effort=self.acp_effort,
             acp_session_mode=self.acp_session_mode,
             acp_prompt_timeout=self.acp_prompt_timeout,
             acp_startup_timeout=self.acp_startup_timeout,

@@ -90,6 +90,8 @@ from pydantic import (
 
 from openhands.sdk.agent.acp_contracts import (
     ACPLegacySessionModels,
+    ACPSessionEffortState,
+    extract_session_effort,
     extract_session_models,
     is_model_dumpable,
     normalize_acp_error,
@@ -107,7 +109,7 @@ from openhands.sdk.agent.acp_file_credentials import (
     file_credential_looks_usable,
     write_secret_file,
 )
-from openhands.sdk.agent.acp_models import ACPModelInfo
+from openhands.sdk.agent.acp_models import ACPEffortOption, ACPModelInfo
 from openhands.sdk.agent.acp_skills import render_skill_catalog, write_skill_files
 from openhands.sdk.agent.acp_tracing import ACPTurnTrace
 from openhands.sdk.agent.base import AgentBase
@@ -583,25 +585,87 @@ def _with_codex_base_url(
 _MODEL_CONFIG_OPTION_ID = "model"
 
 
-def _model_config_options(
-    agent_name: str | None,
-    model: str,
-) -> tuple[tuple[str, str], ...]:
-    """Map a model id to ``set_config_option`` calls.
+def _effort_state_hints(state: ACPSessionEffortState | None) -> dict[str, Any]:
+    """``agent_state`` hints that let cold reads surface the session's effort."""
+    return {
+        "acp_current_effort": state.current if state else None,
+        "acp_available_efforts": (
+            [option.model_dump() for option in state.available] if state else []
+        ),
+    }
 
-    A combined ``<model>/<effort>`` id is split into the ``model`` selection
-    plus the provider's effort config option (see
-    :meth:`ACPProviderInfo.split_model_effort`).
-    """
+
+def _split_effort_suffix(agent_name: str | None, model: str) -> tuple[str, str | None]:
+    """Split a legacy ``<model>/<effort>`` id (see ``split_model_effort``)."""
     provider = detect_acp_provider_by_agent_name(agent_name or "")
-    if provider is not None and provider.effort_config_id is not None:
-        base_model, effort = provider.split_model_effort(model)
-        if effort is not None:
-            return (
-                (_MODEL_CONFIG_OPTION_ID, base_model),
-                (provider.effort_config_id, effort),
+    if provider is None:
+        return model, None
+    return provider.split_model_effort(model)
+
+
+async def _apply_acp_effort(
+    conn: ClientSideConnection,
+    session_id: str,
+    effort: str,
+    *,
+    agent_name: str | None,
+    effort_state: ACPSessionEffortState | None,
+    on_config_options: Callable[[Any], None] | None = None,
+) -> bool:
+    """Set reasoning effort through the session's ``thought_level`` option.
+
+    ``effort_state`` is the latest effort option the session advertised; when
+    unknown the provider's ``effort_config_id`` is tried. Returns ``False``
+    without failing when the current model offers no such effort or the server
+    rejects it, so the model already applied stays in place.
+    """
+    if effort_state is not None:
+        if effort_state.config_id is None:
+            logger.warning(
+                "ACP server %s offers no reasoning effort for the current model; "
+                "ignoring effort=%r",
+                agent_name,
+                effort,
             )
-    return ((_MODEL_CONFIG_OPTION_ID, model),)
+            return False
+        values = [option.value for option in effort_state.available]
+        if values and effort not in values:
+            logger.warning(
+                "ACP server %s offers effort %s for the current model, not %r; "
+                "keeping %r",
+                agent_name,
+                values,
+                effort,
+                effort_state.current,
+            )
+            return False
+        config_id = effort_state.config_id
+    else:
+        provider = detect_acp_provider_by_agent_name(agent_name or "")
+        if provider is None or provider.effort_config_id is None:
+            logger.warning(
+                "ACP server %s exposes no reasoning effort option; ignoring effort=%r",
+                agent_name,
+                effort,
+            )
+            return False
+        config_id = provider.effort_config_id
+    try:
+        response = await conn.set_config_option(
+            config_id=config_id, value=effort, session_id=session_id
+        )
+    except ACPRequestError as e:
+        logger.warning(
+            "ACP server %s rejected %s=%r (%s); the session keeps its current effort",
+            agent_name,
+            config_id,
+            effort,
+            e,
+        )
+        return False
+    if on_config_options is not None:
+        on_config_options(response)
+    return True
 
 
 async def _apply_acp_model(
@@ -611,48 +675,43 @@ async def _apply_acp_model(
     *,
     agent_name: str | None = None,
     via_config_option: bool,
+    effort: str | None = None,
+    on_config_options: Callable[[Any], None] | None = None,
 ) -> str:
-    """Apply ``model`` to a live ACP session via the mechanism the session
-    advertised: ``set_config_option(configId="model")`` for configOptions-based
-    servers (codex-acp, claude-agent-acp 0.44+), else ``set_session_model``.
+    """Apply ``model`` (then ``effort``) to a live ACP session.
 
-    The model id is normally the bare preset id listed by the server. Callers
-    may still pass a combined id such as ``gpt-5.5/high`` or ``opus[1m]/high``;
-    providers that declare an ``effort_config_id`` expose effort as a separate
-    config option, so split it only on the config-options mechanism. Effort is
-    applied after the model and best-effort: a server may reject it for a model
-    without effort support (claude-agent-acp drops the option for Haiku), and
-    that must not undo the model switch that already succeeded.
+    Uses the mechanism the session advertised: ``set_config_option(model)`` for
+    configOptions-based servers (codex-acp, claude-agent-acp 0.44+), else
+    ``set_session_model``. A legacy ``<model>/<effort>`` id still sets both on
+    the config-options mechanism; an explicit ``effort`` wins over its suffix.
+    Effort is best-effort (see :func:`_apply_acp_effort`). Each
+    ``set_config_option`` response is passed to ``on_config_options``.
 
-    Returns the model id the session now runs: ``model``, or its base id when
-    the server rejected the effort.
+    Returns the model id the session now runs.
 
     agent-client-protocol 0.12.1 removed ``ClientSideConnection.set_session_model``;
     :class:`_ACPClientConnection` restores it, and a connection without it
     no-ops rather than raising ``AttributeError``.
     """
     if via_config_option:
-        (model_option, *effort_options) = _model_config_options(agent_name, model)
-        await conn.set_config_option(
-            config_id=model_option[0], value=model_option[1], session_id=session_id
+        base_model, suffix_effort = _split_effort_suffix(agent_name, model)
+        response = await conn.set_config_option(
+            config_id=_MODEL_CONFIG_OPTION_ID, value=base_model, session_id=session_id
         )
-        for config_id, value in effort_options:
-            try:
-                await conn.set_config_option(
-                    config_id=config_id, value=value, session_id=session_id
-                )
-            except ACPRequestError as e:
-                logger.warning(
-                    "ACP server %s rejected %s=%r for model %r (%s); "
-                    "the session keeps its current effort",
-                    agent_name,
-                    config_id,
-                    value,
-                    model_option[1],
-                    e,
-                )
-                return model_option[1]
-    elif supports_legacy_model_switch(conn):
+        if on_config_options is not None:
+            on_config_options(response)
+        requested_effort = effort or suffix_effort
+        if requested_effort:
+            await _apply_acp_effort(
+                conn,
+                session_id,
+                requested_effort,
+                agent_name=agent_name,
+                effort_state=extract_session_effort(response),
+                on_config_options=on_config_options,
+            )
+        return base_model
+    if supports_legacy_model_switch(conn):
         await conn.set_session_model(model_id=model, session_id=session_id)  # type: ignore[attr-defined]
     return model
 
@@ -855,6 +914,8 @@ async def _maybe_set_session_model(
     acp_model: str | None,
     *,
     via_config_option: bool,
+    effort: str | None = None,
+    on_config_options: Callable[[Any], None] | None = None,
 ) -> str | None:
     """Apply the *initial* session model right after session creation.
 
@@ -892,6 +953,8 @@ async def _maybe_set_session_model(
             acp_model,
             agent_name=agent_name,
             via_config_option=via_config_option,
+            effort=effort,
+            on_config_options=on_config_options,
         )
     except ACPRequestError as e:
         logger.warning(
@@ -911,6 +974,8 @@ async def _reapply_session_model_on_resume(
     acp_model: str | None,
     *,
     via_config_option: bool,
+    effort: str | None = None,
+    on_config_options: Callable[[Any], None] | None = None,
 ) -> str | None:
     """Reapply the persisted model to a *resumed* session.
 
@@ -945,6 +1010,8 @@ async def _reapply_session_model_on_resume(
             acp_model,
             agent_name=agent_name,
             via_config_option=via_config_option,
+            effort=effort,
+            on_config_options=on_config_options,
         )
     except ACPRequestError as e:
         logger.warning(
@@ -1904,8 +1971,17 @@ class ACPAgent(AgentBase):
             "Applied via the protocol — set_config_option(model) for "
             "configOptions-based servers (codex, claude), else "
             "set_session_model. Codex and Claude also accept "
-            "'<model>/<effort>' (e.g. 'gpt-5.5/high' or 'opus[1m]/high') "
-            "to set reasoning effort. If None, the server picks its default."
+            "'<model>/<effort>' (e.g. 'gpt-5.5/high'); prefer acp_effort, "
+            "which wins over the suffix. If None, the server picks its default."
+        ),
+    )
+    acp_effort: str | None = Field(
+        default=None,
+        description=(
+            "Reasoning effort for the ACP server to use (e.g. 'high'), applied "
+            "after the model through the session's ``thought_level`` config "
+            "option. Ignored when the model offers no effort setting. If None, "
+            "the server keeps its own."
         ),
     )
     acp_resume_session_id: str | None = Field(
@@ -2072,6 +2148,8 @@ class ACPAgent(AgentBase):
     # in ``init_state`` uses that distinction to preserve vs clear the stored
     # list on resume. The public ``available_models`` property coerces to ``[]``.
     _available_models: list[ACPModelInfo] | None = PrivateAttr(default=None)
+    # Latest ``thought_level`` option the session advertised; ``None`` = unknown.
+    _effort_state: ACPSessionEffortState | None = PrivateAttr(default=None)
     # Whether the caller's ``acp_model`` was actually pushed to the server in
     # the most recent session init (via session ``_meta`` or ``set_session_model``).
     # ``False`` when there's no override, the provider can't apply it (unknown
@@ -2303,6 +2381,26 @@ class ACPAgent(AgentBase):
         honored even when the model's self-description disagrees.
         """
         return self._current_model_id
+
+    @property
+    def current_effort(self) -> str | None:
+        """Reasoning effort the live session reports for its current model."""
+        return self._effort_state.current if self._effort_state else None
+
+    @property
+    def available_efforts(self) -> list[ACPEffortOption]:
+        """Reasoning-effort levels the live session offers for its current model."""
+        return list(self._effort_state.available) if self._effort_state else []
+
+    @property
+    def reports_effort(self) -> bool:
+        """Whether the live session advertises config options, where effort lives."""
+        return self._effort_state is not None
+
+    def _observe_config_options(self, response: Any) -> None:
+        state = extract_session_effort(response)
+        if state is not None:
+            self._effort_state = state
 
     @property
     def available_models(self) -> list[ACPModelInfo]:
@@ -2538,6 +2636,8 @@ class ACPAgent(AgentBase):
             ]
         elif not truly_resumed:
             new_agent_state.pop("acp_available_models", None)
+        if self._effort_state is not None or not truly_resumed:
+            new_agent_state.update(_effort_state_hints(self._effort_state))
         state.agent_state = new_agent_state
 
         if self._installed_suffix:
@@ -3196,7 +3296,13 @@ class ACPAgent(AgentBase):
             prior_session_id = None
 
         async def _init() -> tuple[
-            str, str, str, str | None, list[ACPModelInfo] | None, bool
+            str,
+            str,
+            str,
+            str | None,
+            list[ACPModelInfo] | None,
+            bool,
+            ACPSessionEffortState | None,
         ]:
             # Spawn the subprocess directly so we can install a
             # filtering reader that skips non-JSON-RPC lines some
@@ -3368,6 +3474,14 @@ class ACPAgent(AgentBase):
             session_id: str | None = None
             reported_model_id: str | None = None
             available_models: list[ACPModelInfo] | None = None
+            effort_state: ACPSessionEffortState | None = None
+
+            def _observe_effort(response: Any) -> None:
+                nonlocal effort_state
+                observed = extract_session_effort(response)
+                if observed is not None:
+                    effort_state = observed
+
             if prior_session_id is not None:
                 try:
                     load_response = await conn.load_session(
@@ -3377,6 +3491,7 @@ class ACPAgent(AgentBase):
                         mcp_servers=acp_mcp_servers,
                     )
                     session_id = prior_session_id
+                    effort_state = extract_session_effort(load_response)
                     # load_session often omits the model block; fall back to the
                     # mechanism detected at session creation (persisted alongside
                     # the session id) so a config-option session still reapplies
@@ -3416,7 +3531,9 @@ class ACPAgent(AgentBase):
                 # model selection). Extra kwargs to new_session() become the
                 # _meta dict in the JSON-RPC request — do NOT wrap in _meta=
                 # (that double-nests).
-                session_meta = build_session_model_meta(agent_name, self.acp_model)
+                session_meta = build_session_model_meta(
+                    agent_name, self.acp_model, self.acp_effort
+                )
                 response = await conn.new_session(
                     cwd=working_dir,
                     additional_directories=self._skill_directories(),
@@ -3424,6 +3541,7 @@ class ACPAgent(AgentBase):
                     **session_meta,
                 )
                 session_id = response.session_id
+                effort_state = extract_session_effort(response)
                 # Detect the model-selection protocol the server advertised (in
                 # the same scan) so init and later runtime switches use the right
                 # call.
@@ -3444,6 +3562,8 @@ class ACPAgent(AgentBase):
                     session_id,
                     self.acp_model,
                     via_config_option=self._model_via_config_option,
+                    effort=self.acp_effort,
+                    on_config_options=_observe_effort,
                 )
                 # set_session_model is the authoritative signal that acp_model
                 # reached the server. _meta is a no-op on the pinned claude CLI,
@@ -3463,6 +3583,22 @@ class ACPAgent(AgentBase):
                     session_id,
                     self.acp_model,
                     via_config_option=self._model_via_config_option,
+                    effort=self.acp_effort,
+                    on_config_options=_observe_effort,
+                )
+            # With no model applied, the effort still targets the server's model.
+            if (
+                self.acp_effort
+                and applied_model is None
+                and self._model_via_config_option
+            ):
+                await _apply_acp_effort(
+                    conn,
+                    session_id,
+                    self.acp_effort,
+                    agent_name=agent_name,
+                    effort_state=effort_state,
+                    on_config_options=_observe_effort,
                 )
 
             override_applied = applied_model is not None
@@ -3486,6 +3622,7 @@ class ACPAgent(AgentBase):
                 current_model_id,
                 available_models,
                 override_applied,
+                effort_state,
             )
 
         # _conn / _process / _filtered_reader are assigned to the instance inside
@@ -3499,6 +3636,7 @@ class ACPAgent(AgentBase):
                 self._current_model_id,
                 self._available_models,
                 self._model_override_applied,
+                self._effort_state,
             ) = self._executor.run_async(_init, timeout=self.acp_startup_timeout)
         except TimeoutError:
             # run_async's own TimeoutError carries no message (anyio.fail_after);
@@ -4697,6 +4835,8 @@ class ACPAgent(AgentBase):
                     model,
                     agent_name=self._agent_name,
                     via_config_option=self._model_via_config_option,
+                    effort=self.acp_effort,
+                    on_config_options=self._observe_config_options,
                 ),
                 timeout=self.acp_prompt_timeout,
             )
@@ -4741,6 +4881,80 @@ class ACPAgent(AgentBase):
             "Switched ACP session model to %s (provider=%s, session=%s)",
             model,
             provider.key if provider else "unknown",
+            _fingerprint_session_id(self._session_id),
+        )
+
+    def set_acp_effort(self, effort: str) -> None:
+        """Switch the reasoning effort on the running ACP session.
+
+        Low-level primitive; :meth:`LocalConversation.switch_acp_effort` also
+        holds the state lock and persists the value as ``acp_effort``. The
+        effort must be one the session offers for its current model.
+
+        Raises:
+            ValueError: If ``effort`` is empty, the session has no config
+                options, the current model offers no such effort, or the
+                server rejects it.
+            RuntimeError: If the ACP session has not been initialized yet.
+            TimeoutError: If the server does not answer within
+                ``acp_prompt_timeout`` seconds.
+        """
+        if not effort or not effort.strip():
+            raise ValueError("effort must be a non-empty string")
+        if not self.has_live_acp_session:
+            raise RuntimeError(
+                "ACP session is not initialized; the effort can only be switched "
+                "after the conversation has started (first run())."
+            )
+        if not self._model_via_config_option:
+            raise ValueError(
+                "This ACP server has no session config options, so its reasoning "
+                "effort can't be switched."
+            )
+        effort_state = self._effort_state
+        if effort_state is not None:
+            if effort_state.config_id is None:
+                raise ValueError(
+                    "The current model offers no reasoning effort setting."
+                )
+            offered = [option.value for option in effort_state.available]
+            if offered and effort not in offered:
+                raise ValueError(
+                    f"Reasoning effort {effort!r} is not offered for the current "
+                    f"model; choose one of: {', '.join(offered)}."
+                )
+        assert self._conn is not None
+        assert self._session_id is not None
+        applied = self._executor.run_async(
+            _apply_acp_effort(
+                self._conn,
+                self._session_id,
+                effort,
+                agent_name=self._agent_name,
+                effort_state=effort_state,
+                on_config_options=self._observe_config_options,
+            ),
+            timeout=self.acp_prompt_timeout,
+        )
+        if not applied:
+            raise ValueError(f"ACP server rejected reasoning effort {effort!r}.")
+        if self._effort_state is effort_state:
+            # The reply carried no config options; record what was applied.
+            provider = detect_acp_provider_by_agent_name(self._agent_name or "")
+            self._effort_state = ACPSessionEffortState(
+                config_id=(
+                    effort_state.config_id
+                    if effort_state
+                    else provider.effort_config_id
+                    if provider
+                    else None
+                ),
+                current=effort,
+                available=effort_state.available if effort_state else [],
+            )
+        logger.info(
+            "Switched ACP session reasoning effort to %s (session=%s)",
+            effort,
             _fingerprint_session_id(self._session_id),
         )
 
