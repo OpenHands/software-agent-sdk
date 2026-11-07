@@ -25,6 +25,7 @@ from openhands.agent_server.event_service import (
     EventService,
     RunSlot,
 )
+from openhands.agent_server.features import feature_tools
 from openhands.agent_server.launch import (
     is_codex_source,
     launch_source,
@@ -1635,6 +1636,7 @@ class ConversationService:
                 additions=request.agent_launch_additions,
                 extra_suffixes=[worktree.guidance] if worktree else (),
                 client_tools=client_tools,
+                feature_tools=feature_tools(settings.features),
                 load_memory=load_memory,
                 managed_secrets=(
                     [CODEX_AUTH_SECRET_NAME] if managed_codex_credential else ()

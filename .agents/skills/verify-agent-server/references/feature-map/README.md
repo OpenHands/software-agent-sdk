@@ -10,7 +10,7 @@ recipe.
 
 Maintenance baseline: main@8ba966d1d3af49f08e04349c055009e1614b48d6 (2026-10-07). The first pass; the next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **956 sub-features**.
+The map has **958 sub-features**.
 
 ## Baseline preconditions
 
@@ -99,7 +99,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | F32 | [Event webhooks and product telemetry](F32-webhooks-and-telemetry.md) | event webhooks (event batches, conversation updates, headers, buffering, flush, limits, retries) and product telemetry (off by default, exporter lifecycle, sanitized payloads, consent) | behavior only: `webhooks` / `OH_WEBHOOKS_*`, `OH_TELEMETRY_*` | llm; launch `--webhook-sink` | 30 |
 | F33 | [Python SDK remote client (RemoteConversation, RemoteWorkspace)](F33-sdk-remote-client.md) | the Python SDK in this checkout against the server: RemoteWorkspace commands, files, git and settings readers; RemoteConversation create, run, callbacks, streaming, reattach, fork, confirmation, pause, interrupt, stop hooks, client tools, completion logs | behavior only: `Workspace(host=...)`, `RemoteWorkspace`, `RemoteConversation` | llm, tmux, git | 43 |
 | F34 | [TypeScript client (@openhands/typescript-client)](F34-typescript-client.md) | the TypeScript client against this checkout: server and version gate, workspace, bash, conversation, state, events and socket clients, hooks and MCP clients, endpoint audit and drift | behavior only: `@openhands/typescript-client` (`clients/typescript`) | llm, node, uvx, git, tmux, network | 32 |
-| F37 | [Emoji reactions](F37-reactions.md) | the person's reactions over REST, validation, the agent's `react`/`unreact` tools, default targets | `POST /api/conversations/{id}/reactions` | llm | 4 |
+| F37 | [Emoji reactions and feature flags](F37-reactions.md) | the `conversation_reactions` feature flag, the person's reactions over REST, validation, the agent's `react`/`unreact` tools, default targets | `GET /api/settings/features`, `PATCH /api/settings/features/{key}`, `POST /api/conversations/{id}/reactions` | llm | 6 |
 
 ## Not mapped
 

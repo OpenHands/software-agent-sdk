@@ -197,6 +197,15 @@ class PersistedSettings(BaseModel):
         description="Name of the currently active meta-profile used for "
         "intelligent model routing.",
     )
+    features: dict[str, bool] = Field(
+        default_factory=dict,
+        description=(
+            "Feature flags the user turned on or off, by feature key. A key "
+            "that is absent uses the feature's default. Changed through "
+            "PATCH /api/settings/features/{key}; see "
+            "openhands.agent_server.features for the known features."
+        ),
+    )
     misc_settings: dict[str, Any] = Field(
         default_factory=dict,
         description=(

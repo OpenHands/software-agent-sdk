@@ -12,6 +12,7 @@ from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_router import event_router
 from openhands.agent_server.models import StartConversationRequest
+from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.event import MessageEvent, ReactionEvent
 from openhands.sdk.workspace import LocalWorkspace
@@ -23,6 +24,19 @@ async def service(tmp_path) -> AsyncIterator[ConversationService]:
         conversations_dir=tmp_path / "conversations"
     ) as service:
         yield service
+
+
+def _set_reactions(enabled: bool) -> None:
+    def apply(settings: PersistedSettings) -> PersistedSettings:
+        settings.features = {"conversation_reactions": enabled}
+        return settings
+
+    get_settings_store().update(apply)
+
+
+@pytest.fixture(autouse=True)
+def reactions_on():
+    _set_reactions(True)
 
 
 @pytest.fixture
@@ -101,4 +115,19 @@ async def test_bad_reactions_are_refused(client, service, tmp_path):
 
     assert unknown_emoji.status_code == 422
     assert unknown_message.status_code == 400
+    assert await _reactions(service, cid) == []
+
+
+@pytest.mark.asyncio
+async def test_reactions_are_refused_while_the_feature_is_off(
+    client, service, tmp_path
+):
+    cid, _ = await _conversation_with_answer(service, tmp_path)
+    _set_reactions(False)
+
+    response = await client.post(
+        f"/api/conversations/{cid}/reactions", json={"emoji": "+1"}
+    )
+
+    assert response.status_code == 409
     assert await _reactions(service, cid) == []
