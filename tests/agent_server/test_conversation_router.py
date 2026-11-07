@@ -3213,3 +3213,30 @@ def test_condense_conversation_without_condenser_returns_409(
         )
     finally:
         client.app.dependency_overrides.clear()
+
+
+def test_navigate_conversation_returns_409_when_run_in_progress(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """An active run must surface as 409 instead of silently re-rooting HEAD."""
+    from openhands.sdk.conversation.exceptions import (
+        ConversationRunInProgressError,
+    )
+
+    mock_conversation_service.navigate_conversation.side_effect = (
+        ConversationRunInProgressError(
+            "Cannot navigate while the conversation is running"
+        )
+    )
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/navigate",
+            json={"event_id": "evt-42"},
+        )
+        assert response.status_code == 409
+        assert "running" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
