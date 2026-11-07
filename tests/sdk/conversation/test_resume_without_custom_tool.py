@@ -108,7 +108,8 @@ def test_path_to_root_still_raises_on_corrupt_json():
         EventLog(fs).path_to_root(B)
 
 
-def test_resume_without_custom_tool_module(tmp_path, monkeypatch):
+@pytest.mark.parametrize("legacy", [False, True])
+def test_resume_without_custom_tool_module(tmp_path, monkeypatch, legacy):
     registry.register_tool(TOOL_NAME, _GoneTool)
     agent = Agent(
         llm=LLM(model="test-model", usage_id="test-llm"), tools=[Tool(name=TOOL_NAME)]
@@ -131,7 +132,17 @@ def test_resume_without_custom_tool_module(tmp_path, monkeypatch):
     # class it defined is an unknown kind.
     monkeypatch.delitem(registry._REG, TOOL_NAME)
     events_dir = next((tmp_path / "conv").rglob("events"))
-    _rename_kind(next(events_dir.glob(f"*{B}.json")), "MessageEvent", "Gone")
+    if legacy:
+        base_state = events_dir.parent / "base_state.json"
+        state = json.loads(base_state.read_text())
+        state.pop("leaf_event_id", None)
+        base_state.write_text(json.dumps(state))
+        for event_path in events_dir.glob("*.json"):
+            event = json.loads(event_path.read_text())
+            event.pop("parent_id", None)
+            event_path.write_text(json.dumps(event))
+    gone, expected_leaf = (C, B) if legacy else (B, C)
+    _rename_kind(next(events_dir.glob(f"*{gone}.json")), "MessageEvent", "Gone")
     system_file = next(events_dir.glob("event-00000-*.json"))
     _rename_kind(system_file, "_GoneTool", "GoneTool")
 
@@ -143,8 +154,8 @@ def test_resume_without_custom_tool_module(tmp_path, monkeypatch):
         visualizer=None,
     )
     branch = [e.id for e in resumed.state.active_branch()]
-    assert B not in branch
-    assert branch[-1] == C
+    assert gone not in branch
+    assert branch[-1] == expected_leaf
     system = resumed.state.events[0]
     assert isinstance(system, SystemPromptEvent)
     assert TOOL_NAME not in {t.name for t in system.tools}
@@ -153,7 +164,7 @@ def test_resume_without_custom_tool_module(tmp_path, monkeypatch):
     assert TOOL_NAME not in resumed.agent.tools_map
     last = resumed.state.events[-1]
     assert isinstance(last, MessageEvent)
-    assert json.loads(last.model_dump_json())["parent_id"] == C
+    assert json.loads(last.model_dump_json())["parent_id"] == expected_leaf
     resumed.close()
 
 

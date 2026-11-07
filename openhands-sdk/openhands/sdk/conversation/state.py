@@ -310,7 +310,8 @@ class ConversationState(OpenHandsModel):
 
         artifacts = (ConversationStateUpdateEvent, ConversationErrorEvent)
         for i in range(len(self._events) - 1, -1, -1):
-            if not isinstance(self._events[i], artifacts):
+            event, _ = self._events._read_branch_node(i)
+            if event is not None and not isinstance(event, artifacts):
                 return self._events.get_id(i)
         return None
 
