@@ -39,6 +39,25 @@ def test_legacy_micro_agent_load(tmp_path):
     assert skill.content == CONTENT.rstrip("\n")
 
 
+@pytest.mark.parametrize("filename", ["deploy.md", "deploy/SKILL.md"])
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_skill_load_utf8_bom_frontmatter(
+    tmp_path: Path, filename: str, encoding: str
+) -> None:
+    path = tmp_path / filename
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(
+        "---\nname: deploy\ndescription: Deployment guide\n"
+        "triggers: [deploy]\n---\nBody\n",
+        encoding=encoding,
+    )
+
+    skill = Skill.load(path, tmp_path)
+
+    assert skill.match_trigger("deploy") == "deploy"
+    assert skill.content == "Body"
+
+
 @pytest.fixture
 def temp_skills_dir():
     """Create a temporary directory with test skills."""

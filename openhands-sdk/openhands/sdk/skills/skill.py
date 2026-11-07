@@ -379,7 +379,7 @@ class Skill(BaseModel):
         """
         path = Path(path) if isinstance(path, str) else path
 
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             file_content = f.read()
 
         if path.name.lower() == "skill.md":
