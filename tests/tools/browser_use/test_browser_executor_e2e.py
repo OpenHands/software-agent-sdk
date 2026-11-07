@@ -107,6 +107,13 @@ PAGE2_HTML = """<!DOCTYPE html>
 </body>
 </html>"""
 
+# Long page for browser_get_content pagination testing
+LONG_HTML = (
+    "<!DOCTYPE html><html><head><title>Long Page</title></head><body>"
+    + "".join(f"<p>Paragraph {i} {'lorem ipsum ' * 20}</p>" for i in range(200))
+    + "<p>End of long page</p></body></html>"
+)
+
 
 def _has_chromium_for_e2e() -> bool:
     executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
@@ -153,6 +160,9 @@ def test_server() -> Generator[str]:
 
         with open(os.path.join(temp_dir, "page2.html"), "w", encoding="utf-8") as f:
             f.write(PAGE2_HTML)
+
+        with open(os.path.join(temp_dir, "long.html"), "w", encoding="utf-8") as f:
+            f.write(LONG_HTML)
 
         # Start HTTP server
         port = _get_free_port()
@@ -885,3 +895,130 @@ class TestBrowserExecutorE2E:
                 except Exception as e:
                     # Ignore errors during cleanup but log for debugging purposes
                     print(f"Warning: failed to close BrowserToolExecutor cleanly: {e}")
+
+
+def _element_index(state_text: str, tag: str, text: str = "") -> int:
+    elements = json.loads(state_text)["interactive_elements"]
+    return next(e["index"] for e in elements if e["tag"] == tag and text in e["text"])
+
+
+def _run_js(executor: BrowserToolExecutor, expression: str) -> None:
+    async def evaluate():
+        session = executor._server.browser_session
+        assert session is not None
+        cdp = await session.get_or_create_cdp_session()
+        await cdp.cdp_client.send.Runtime.evaluate(
+            params={"expression": expression}, session_id=cdp.session_id
+        )
+
+    executor._async_executor.run_async(evaluate, timeout=10)
+
+
+@pytest.mark.e2e
+class TestBrowserGetContentFreshness:
+    """browser_get_content must read the live page, not the last get_state."""
+
+    def test_content_reflects_click(
+        self, browser_executor: BrowserToolExecutor, test_server: str
+    ):
+        browser_executor(BrowserNavigateAction(url=test_server))
+        state = browser_executor(BrowserGetStateAction()).text
+        browser_executor(BrowserGetContentAction())
+
+        button = _element_index(state, "button", "Click Me")
+        assert not browser_executor(BrowserClickAction(index=button)).is_error
+
+        content = browser_executor(BrowserGetContentAction()).text
+        assert "Button clicked successfully!" in content
+
+    def test_content_reflects_page_script_update(
+        self, browser_executor: BrowserToolExecutor, test_server: str
+    ):
+        browser_executor(BrowserNavigateAction(url=test_server))
+        browser_executor(BrowserGetStateAction())
+        browser_executor(BrowserGetContentAction())
+
+        _run_js(
+            browser_executor,
+            "document.getElementById('result').textContent = 'Updated by page'",
+        )
+
+        content = browser_executor(BrowserGetContentAction()).text
+        assert "Updated by page" in content
+
+    def test_content_follows_back_navigation(
+        self, browser_executor: BrowserToolExecutor, test_server: str
+    ):
+        browser_executor(BrowserNavigateAction(url=test_server))
+        browser_executor(BrowserNavigateAction(url=f"{test_server}/page2.html"))
+        assert (
+            "second page for navigation"
+            in browser_executor(BrowserGetContentAction()).text
+        )
+
+        browser_executor(BrowserGoBackAction())
+        content = browser_executor(BrowserGetContentAction()).text
+        assert "Browser Test Page" in content
+        assert "second page for navigation" not in content
+
+    def test_content_follows_tab_switch(
+        self, browser_executor: BrowserToolExecutor, test_server: str
+    ):
+        browser_executor(BrowserNavigateAction(url=test_server))
+        browser_executor(
+            BrowserNavigateAction(url=f"{test_server}/page2.html", new_tab=True)
+        )
+        assert (
+            "second page for navigation"
+            in browser_executor(BrowserGetContentAction()).text
+        )
+
+        tabs = json.loads(browser_executor(BrowserListTabsAction()).text)
+        first = next(t["tab_id"] for t in tabs if "page2" not in t["url"])
+        browser_executor(BrowserSwitchTabAction(tab_id=first))
+        content = browser_executor(BrowserGetContentAction()).text
+        assert "Browser Test Page" in content
+        assert "second page for navigation" not in content
+
+    def test_content_keeps_state_indices(
+        self, browser_executor: BrowserToolExecutor, test_server: str
+    ):
+        browser_executor(BrowserNavigateAction(url=test_server))
+        state = browser_executor(BrowserGetStateAction()).text
+        session = browser_executor._server.browser_session
+        assert session is not None and session._dom_watchdog is not None
+        selector_map = session._dom_watchdog.selector_map
+
+        browser_executor(BrowserGetContentAction())
+
+        assert session._dom_watchdog.selector_map is selector_map
+        button = _element_index(state, "button", "Click Me")
+        assert not browser_executor(BrowserClickAction(index=button)).is_error
+        assert (
+            "Button clicked successfully!"
+            in browser_executor(BrowserGetContentAction()).text
+        )
+
+    def test_content_pagination_and_links(
+        self, browser_executor: BrowserToolExecutor, test_server: str
+    ):
+        browser_executor(BrowserNavigateAction(url=f"{test_server}/long.html"))
+        first = browser_executor(BrowserGetContentAction()).text
+        assert first.startswith(f"<url>\n{test_server}/long.html\n</url>")
+        assert "End of long page" not in first
+        next_start = int(first.split("use start_from_char=")[1].split(" ")[0])
+
+        second = browser_executor(
+            BrowserGetContentAction(start_from_char=next_start)
+        ).text
+        assert f"started from char {next_start:,}" in second
+        assert "End of long page" in second
+
+        past_end = browser_executor(
+            BrowserGetContentAction(start_from_char=10_000_000)
+        ).text
+        assert "exceeds content length" in past_end
+
+        browser_executor(BrowserNavigateAction(url=test_server))
+        links = browser_executor(BrowserGetContentAction(extract_links=True)).text
+        assert "](page2.html)" in links

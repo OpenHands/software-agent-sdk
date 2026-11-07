@@ -4,19 +4,21 @@ An OpenAI-shaped front door so OpenAI clients (the official SDKs, or anything
 else that takes a `base_url`) can talk to the agent server. It is not an LLM
 proxy. Every chat or responses call starts a full, persisted OpenHands agent
 conversation (or continues one), built from the active Agent Profile with
-the LLM of the named LLM profile and the saved conversation settings. The agent runs in the server's workspace with its own
-tools, the gateway waits for the run to finish, and it returns the agent's
+the LLM of the named LLM profile and the saved conversation settings. In a
+local runtime, the agent runs in the server workspace. In a Docker runtime,
+the agent runs in its conversation container. The gateway waits for the run
+to finish and returns the agent's
 final answer as an OpenAI object. Model ids are `openhands_<llm-profile-name>`,
 one per saved profile. The session key works as `X-Session-API-Key` or as
 `Authorization: Bearer`. The `X-OpenHands-ServerConversation-ID` response
 header names the conversation behind each answer, and sending it back on a
 chat completion continues that conversation.
 
-Source: `openhands-agent-server/openhands/agent_server/openai/`, `openhands-agent-server/openhands/agent_server/api.py`, `openhands-agent-server/openhands/agent_server/agent_profiles_router.py`, `openhands-agent-server/openhands/agent_server/dependencies.py`, `openhands-sdk/openhands/sdk/llm/llm_profile_store.py`, `openhands-sdk/openhands/sdk/conversation/response_utils.py`, `examples/02_remote_agent_server/15_openai_compatible_gateway.py`
+Source: `openhands-agent-server/openhands/agent_server/openai/`, `openhands-agent-server/openhands/agent_server/event_router.py`, `openhands-agent-server/openhands/agent_server/docker_runtime/routers.py`, `openhands-agent-server/openhands/agent_server/api.py`, `openhands-agent-server/openhands/agent_server/agent_profiles_router.py`, `openhands-agent-server/openhands/agent_server/dependencies.py`, `openhands-sdk/openhands/sdk/llm/llm_profile_store.py`, `openhands-sdk/openhands/sdk/conversation/response_utils.py`, `examples/02_remote_agent_server/15_openai_compatible_gateway.py`
 
 Needs: `llm`, `tmux`
 
-Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`
+Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`, `POST /api/conversations/{conversation_id}/events/_gateway/run`. The last route is mounted on local, hybrid, and inner Docker servers. Docker outer servers proxy it to the conversation container. It requires the `/api` session key when keys are configured.
 
 ## Sub-features
 
@@ -24,6 +26,7 @@ Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`
 - `F30.auth-bearer-or-header`: with session keys configured, all three routes accept the key as `Authorization: Bearer` or as `X-Session-API-Key`, and answer 401 `Unauthorized` to a missing or wrong key before the body is validated, while `/api/*` still refuses Bearer.
 - `F30.auth-open-without-keys`: a server with no session keys serves `/v1` without any credential and with any Bearer value.
 - `F30.chat-basic`: `POST /v1/chat/completions` on a real model returns a `chat.completion` whose single choice carries the agent's final answer with `finish_reason` `stop`, echoes the model, reports usage, and names a new finished conversation in `X-OpenHands-ServerConversation-ID`.
+- `F30.inner-gateway-run`: the inner gateway route runs a new user turn on an existing conversation and returns its final text and token use.
 - `F30.active-agent-profile`: new gateway conversations keep the active Agent Profile's identity, tools and system suffix, override its LLM only for the launch, append gateway instructions without changing the stored profile, reject oversized instructions with 400, and fall back to default after active-profile deletion.
 - `F30.chat-system-suffix`: `system` and `developer` messages become the new conversation's `agent_context.system_message_suffix` (in the system prompt) and never appear as user messages.
 - `F30.chat-latest-user-only`: a new conversation receives only the last user message of `messages[]`; earlier user and assistant turns are dropped and stored nowhere.
@@ -214,6 +217,19 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   untitled (gateway conversations never autotitle), runs the profile's model
   and works in the server's workspace (`OH_WORKSPACE_PATH`). The answer is
   exactly the conversation's `agent_final_response`; never assert its words.
+- **Inner gateway run (`F30.inner-gateway-run`).** Send a new turn to the
+  route that the outer gateway uses for a Docker conversation.
+
+  Requires: `F30.chat-basic`
+  ```sh
+  control-agent-server api POST "/api/conversations/$CID/events/_gateway/run" --timeout 180 \
+    --json '{"role":"user","content":[{"type":"text","text":"QA_F30_INNER: reply with one short word and use no tools."}],"run":true}' \
+    --expect 200 --check status eq finished --check final_response len-ge 1 \
+    --check usage.prompt_tokens gt 0 --save F30.inner-gateway-run/turn
+  control-agent-server api GET "/api/conversations/$CID/events/search" \
+    --query source=user --query body=QA_F30_INNER --check items len-eq 1 --quiet
+  ```
+  The response comes from the new turn. The route adds one user message.
 - **Active Agent Profile (`F30.active-agent-profile`).** Select a profile
   with no tools and its own system suffix, while the gateway request selects
   a different LLM profile. The named model overrides only the LLM for this
@@ -934,10 +950,10 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
 
 - Every call runs the full agent from the active Agent Profile (tools, MCP
   servers, condenser and system context), with saved conversation settings
-  (confirmation policy, security analyzer and iteration limit), in
-  the one shared `workspace_path`, so concurrent gateway calls see each
-  other's files. A vague prompt can make the agent run many tools for
-  minutes; the client sees nothing until the run ends.
+  (confirmation policy, security analyzer and iteration limit). Local runtime
+  calls use the shared `workspace_path`. Docker runtime calls use the
+  conversation container and its `/workspace`. A vague prompt can make the
+  agent run many tools for minutes; the client sees nothing until the run ends.
 - Model ids are `openhands_` plus an LLM profile name, case-sensitive. The
   active LLM profile is not a gateway default and there is no model alias. Profiles and
   settings come from `OH_PERSISTENCE_DIR` (the run's `home/.openhands`), not
@@ -954,15 +970,18 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   observability headers are validated (an unknown model is still 404) but not
   applied; the response's `model` echoes the request, not the LLM that ran.
   `/v1/responses` never reads the conversation header.
-- Do not overlap requests on one conversation. A message sent while the
-  conversation runs is queued for a rerun, and the waiting request returns
-  whatever the conversation's final answer is when its 2 s poll sees a
-  terminal state, which can be the later request's answer (see
-  `F30.chat-reuse-concurrent`).
+- Do not overlap requests on one local-runtime conversation. A message sent
+  while the conversation runs is queued for a rerun. A local gateway request
+  can then return another turn's answer (see `F30.chat-reuse-concurrent`).
+  Docker gateway turns for one conversation wait in order inside the container.
+  A turn that cannot start before its deadline returns 504 without saving its
+  message. A new turn waits for a prior run that remains active after a 504.
 - `usage` is the request's own usage summed over every model call the agent
   made while serving it; on a continued conversation earlier turns are not
-  included (see `F30.chat-usage-per-request`). Overlapping requests on one
-  conversation still mix their usage (see `F30.chat-reuse-concurrent`).
+  included (see `F30.chat-usage-per-request`). Overlapping local-runtime
+  requests on one conversation still mix their usage (see
+  `F30.chat-reuse-concurrent`). Docker runtime reports the request's token
+  use from the inner gateway route.
 - Streaming is simulated: the router runs the whole agent first
   (`stream` is forced off for the run), then sends three or four frames and
   `[DONE]` at once. Errors are plain JSON with a status code, never SSE error

@@ -7,12 +7,19 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
+import httpx
 from fastapi import HTTPException, status
 from pydantic import ValidationError
 
 from openhands.agent_server.agent_profiles_router import active_agent_profile
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.docker_runtime.hybrid import HybridConversationRegistry
+from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
+from openhands.agent_server.docker_runtime.routers import (
+    _container,
+    start_docker_conversation,
+)
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.launch import launch_http_exception
 from openhands.agent_server.openai.models import (
@@ -49,11 +56,11 @@ from openhands.sdk.conversation.request import (
 )
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
-    ConversationState,
 )
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
-from openhands.sdk.llm import Metrics, TokenUsage
+from openhands.sdk.llm import Metrics
 from openhands.sdk.llm.message import ImageContent, TextContent
+from openhands.sdk.llm.utils.metrics import TokenUsage
 from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.workspace import LocalWorkspace
@@ -83,9 +90,7 @@ class OpenAIResponseResult:
 class OpenAIAgentRunResult:
     conversation_id: UUID
     final_response: str
-    state: ConversationState
-    # Combined metrics before this request's turn; empty for a new conversation.
-    usage_baseline: Metrics
+    usage: TokenUsage | None
 
 
 def _profile_name_from_model(model: str) -> str:
@@ -405,13 +410,7 @@ def _raise_for_terminal_error(status_value: ConversationExecutionStatus) -> None
         )
 
 
-def _request_token_usage(result: OpenAIAgentRunResult) -> TokenUsage | None:
-    metrics = result.state.stats.get_combined_metrics()
-    return metrics.diff(result.usage_baseline).accumulated_token_usage
-
-
-def _openai_usage_from_result(result: OpenAIAgentRunResult) -> OpenAIUsage:
-    token_usage = _request_token_usage(result)
+def _openai_usage_from_tokens(token_usage: TokenUsage | None) -> OpenAIUsage:
     if token_usage is None:
         return OpenAIUsage(
             prompt_tokens=0,
@@ -428,10 +427,9 @@ def _openai_usage_from_result(result: OpenAIAgentRunResult) -> OpenAIUsage:
     )
 
 
-def _openai_response_usage_from_result(
-    result: OpenAIAgentRunResult,
+def _openai_response_usage_from_tokens(
+    token_usage: TokenUsage | None,
 ) -> OpenAIResponseUsage:
-    token_usage = _request_token_usage(result)
     if token_usage is None:
         prompt_tokens = 0
         completion_tokens = 0
@@ -532,7 +530,7 @@ def iter_openai_chat_completion_sse(
 
 async def list_openai_models() -> OpenAIModelListResponse:
     try:
-        profiles = get_llm_profile_store().list_summaries()
+        profiles = await asyncio.to_thread(get_llm_profile_store().list_summaries)
     except TimeoutError:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -558,7 +556,36 @@ async def _run_agent(
     user_content: list[TextContent | ImageContent],
     conversation_service: ConversationService,
     reusable_conversation_id: UUID | None,
+    config: Config,
+    registry: DockerConversationRegistry | None,
 ) -> OpenAIAgentRunResult:
+    docker_owned = (
+        registry is not None
+        and reusable_conversation_id is not None
+        and registry.provisioning.manifest_path(reusable_conversation_id).is_file()
+    )
+    local_owned = (
+        isinstance(registry, HybridConversationRegistry)
+        and reusable_conversation_id is not None
+        and not docker_owned
+        and registry.conversation_dir(reusable_conversation_id)
+        .joinpath("meta.json")
+        .is_file()
+    )
+    if (
+        registry is not None
+        and not local_owned
+        and (config.conversation_runtime == "docker" or docker_owned)
+    ):
+        return await _run_docker_agent(
+            start_request=start_request,
+            user_content=user_content,
+            conversation_service=conversation_service,
+            reusable_conversation_id=reusable_conversation_id,
+            registry=registry,
+        )
+    if config.conversation_runtime == "docker" and registry is None:
+        raise HTTPException(503, "Docker conversation runtime is unavailable")
     event_service = None
     conversation_id = reusable_conversation_id
     min_event_count: int | None = None
@@ -622,13 +649,98 @@ async def _run_agent(
     _raise_for_terminal_error(status_value)
     state = await event_service.get_state()
     final_response = await event_service.get_agent_final_response()
+    metrics = state.stats.get_combined_metrics()
+    usage = metrics.diff(usage_baseline).accumulated_token_usage
     assert conversation_id is not None
     return OpenAIAgentRunResult(
         conversation_id=conversation_id,
         final_response=final_response,
-        state=state,
-        usage_baseline=usage_baseline,
+        usage=usage,
     )
+
+
+async def _run_docker_agent(
+    *,
+    start_request: StartConversationRequest,
+    user_content: list[TextContent | ImageContent],
+    conversation_service: ConversationService,
+    reusable_conversation_id: UUID | None,
+    registry: DockerConversationRegistry,
+) -> OpenAIAgentRunResult:
+    docker_owned = (
+        reusable_conversation_id is not None
+        and registry.provisioning.manifest_path(reusable_conversation_id).is_file()
+    )
+    if not docker_owned:
+        if (
+            reusable_conversation_id is not None
+            and registry.conversation_dir(reusable_conversation_id)
+            .joinpath("meta.json")
+            .is_file()
+        ):
+            raise HTTPException(404, "Conversation not found")
+        docker_request = start_request.model_copy(
+            update={
+                "workspace": LocalWorkspace(working_dir="/workspace"),
+                "initial_message": None,
+            }
+        )
+        status_code, _, conversation_id = await start_docker_conversation(
+            docker_request.model_dump(mode="json", context={"expose_secrets": True}),
+            registry,
+        )
+        if status_code >= 400:
+            raise HTTPException(
+                status_code, "Conversation runtime rejected the request"
+            )
+        await conversation_service.refresh_persisted_conversation(conversation_id)
+    else:
+        assert reusable_conversation_id is not None
+        conversation_id = reusable_conversation_id
+
+    container = await _container(registry, conversation_id)
+    registry.attach_session(conversation_id)
+    try:
+        async with httpx.AsyncClient(timeout=130.0, trust_env=False) as client:
+            response = await client.post(
+                f"{container.host}/api/conversations/{conversation_id}/events/_gateway/run",
+                headers={"X-Session-API-Key": container.api_key},
+                json=SendMessageRequest(
+                    role="user", content=user_content, run=True
+                ).model_dump(mode="json"),
+            )
+        if response.is_error:
+            if response.status_code == 404:
+                try:
+                    detail = response.json().get("detail")
+                except (ValueError, AttributeError):
+                    detail = None
+                if detail == f"Conversation not found: {conversation_id}":
+                    raise HTTPException(404, detail)
+                raise HTTPException(
+                    502, "Conversation container does not provide the gateway route"
+                )
+            raise HTTPException(
+                response.status_code, "Conversation runtime rejected the gateway run"
+            )
+        result = response.json()
+        _raise_for_terminal_error(ConversationExecutionStatus(result["status"]))
+        await conversation_service.refresh_persisted_conversation(conversation_id)
+        return OpenAIAgentRunResult(
+            conversation_id=conversation_id,
+            final_response=result["final_response"],
+            usage=(
+                TokenUsage.model_validate(result["usage"])
+                if result["usage"] is not None
+                else None
+            ),
+        )
+    except httpx.TimeoutException as exc:
+        raise HTTPException(504, "Conversation runtime timed out") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Conversation container unreachable") from exc
+    finally:
+        registry.detach_session(conversation_id)
 
 
 async def run_chat_completion(
@@ -638,6 +750,7 @@ async def run_chat_completion(
     conversation_service: ConversationService,
     reusable_conversation_id: UUID | None,
     observability_overrides: dict[str, object] | None = None,
+    registry: DockerConversationRegistry | None = None,
 ) -> OpenAIChatCompletionResult:
     if request.stream:
         # SSE streaming needs incremental agent-event forwarding; add it separately.
@@ -659,6 +772,8 @@ async def run_chat_completion(
         user_content=_content_to_sdk_parts(user_message),
         conversation_service=conversation_service,
         reusable_conversation_id=reusable_conversation_id,
+        config=config,
+        registry=registry,
     )
     # EventService.get_agent_final_response() returns final text from the SDK's
     # get_agent_final_response(), so the gateway emits assistant text only.
@@ -677,7 +792,7 @@ async def run_chat_completion(
                 ),
             )
         ],
-        usage=_openai_usage_from_result(agent_result),
+        usage=_openai_usage_from_tokens(agent_result.usage),
     )
     return OpenAIChatCompletionResult(
         response=response,
@@ -691,6 +806,7 @@ async def run_response(
     config: Config,
     conversation_service: ConversationService,
     observability_overrides: dict[str, object] | None = None,
+    registry: DockerConversationRegistry | None = None,
 ) -> OpenAIResponseResult:
     if request.stream:
         raise HTTPException(
@@ -726,6 +842,8 @@ async def run_response(
         user_content=user_content,
         conversation_service=conversation_service,
         reusable_conversation_id=None,
+        config=config,
+        registry=registry,
     )
     completed_at = time.time()
     response = OpenAIResponse(
@@ -756,7 +874,7 @@ async def run_response(
         status="completed",
         tool_choice="none",
         tools=[],
-        usage=_openai_response_usage_from_result(agent_result),
+        usage=_openai_response_usage_from_tokens(agent_result.usage),
     )
     return OpenAIResponseResult(
         response=response,

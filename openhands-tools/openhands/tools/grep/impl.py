@@ -231,6 +231,8 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             "rg",
             "-l",
             "-i",
+            # -e keeps a pattern that starts with "-" from being read as a flag.
+            "-e",
             action.pattern,
             str(search_path),
             "--sortr=modified",

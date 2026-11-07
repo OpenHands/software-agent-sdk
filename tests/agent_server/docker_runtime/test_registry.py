@@ -251,6 +251,229 @@ async def test_running_idle_runtime_is_retained(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [
+        ConversationExecutionStatus.ERROR,
+        ConversationExecutionStatus.STUCK,
+    ],
+)
+async def test_other_terminal_idle_runtimes_are_stopped(tmp_path, monkeypatch, status):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    runtime._containers[conversation_id] = container(conversation_id)
+    runtime._last_access[conversation_id] = 0
+    set_execution_status(runtime, status)
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer,
+        "stop",
+        lambda self: stopped.append(self.container_id),
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
+    )
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is None
+    assert stopped == [f"container-{conversation_id}"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [
+        ConversationExecutionStatus.IDLE,
+        ConversationExecutionStatus.PAUSED,
+        ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
+    ],
+)
+async def test_non_terminal_idle_runtime_is_retained(tmp_path, monkeypatch, status):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+    runtime._last_access[conversation_id] = 0
+    set_execution_status(runtime, status)
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
+    )
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is active
+
+
+@pytest.mark.asyncio
+async def test_active_lease_prevents_idle_eviction(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+    runtime._last_access[conversation_id] = 0
+    set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
+    release = runtime.acquire_lease(conversation_id)
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer,
+        "stop",
+        lambda self: stopped.append(self.container_id),
+    )
+    now = 20.0
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: now
+    )
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is active
+    assert stopped == []
+
+    release()
+    now = 40.0
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is None
+    assert stopped == [active.container_id]
+
+
+@pytest.mark.asyncio
+async def test_lease_during_status_read_prevents_eviction(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+    runtime._last_access[conversation_id] = 0
+    service = AsyncMock(spec=ConversationService)
+
+    async def get_conversation(_conversation_id):
+        release = runtime.acquire_lease(_conversation_id)
+        release()
+        return SimpleNamespace(execution_status=ConversationExecutionStatus.FINISHED)
+
+    service.get_conversation.side_effect = get_conversation
+    runtime.configure_service(cast(ConversationService, service))
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer,
+        "stop",
+        lambda self: stopped.append(self.container_id),
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
+    )
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is active
+    assert stopped == []
+
+
+@pytest.mark.asyncio
+async def test_eviction_skips_a_deleting_container(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+    runtime._last_access[conversation_id] = 0
+    runtime._deleting.add(conversation_id)
+    set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer,
+        "stop",
+        lambda self: stopped.append(self.container_id),
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
+    )
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is active
+    assert stopped == []
+
+
+@pytest.mark.asyncio
+async def test_eviction_keeps_a_container_when_stop_fails(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    failed_id = uuid4()
+    stopped_id = uuid4()
+    failed = container(failed_id)
+    runtime._containers[failed_id] = failed
+    runtime._containers[stopped_id] = container(stopped_id)
+    runtime._last_access[failed_id] = 0
+    runtime._last_access[stopped_id] = 0
+    set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
+    )
+
+    def stop(self):
+        if self.container_id == failed.container_id:
+            raise RuntimeError("docker stop failed")
+
+    monkeypatch.setattr(ConversationContainer, "stop", stop)
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(failed_id) is failed
+    assert runtime.get(stopped_id) is None
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_reuses_container_after_failed_stop(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+
+    def fail_stop(_self):
+        raise RuntimeError("transient docker stop failure")
+
+    monkeypatch.setattr(ConversationContainer, "stop", fail_stop)
+    monkeypatch.setattr(ConversationContainer, "is_running", lambda _self: True)
+
+    with pytest.raises(RuntimeError, match="transient docker stop failure"):
+        await runtime.stop_if_idle(conversation_id, 0)
+
+    built = False
+
+    def build(conversation_id):
+        nonlocal built
+        built = True
+        return container(conversation_id)
+
+    runtime._build_container = build
+
+    assert await runtime.get_or_create(conversation_id) is active
+    assert not built
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_waits_while_container_is_stopping(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    stop_event = asyncio.Event()
+    runtime._stopping[conversation_id] = stop_event
+    resumed = container(conversation_id)
+    resumed.container_id = "rebuilt-after-stop"
+    runtime._build_container = lambda conversation_id: resumed
+
+    task = asyncio.create_task(runtime.get_or_create(conversation_id))
+    await asyncio.sleep(0.01)
+    assert not task.done()
+
+    runtime._stopping.pop(conversation_id, None)
+    stop_event.set()
+
+    result = await task
+    assert result is resumed
+    assert result.container_id == "rebuilt-after-stop"
+
+
+@pytest.mark.asyncio
 async def test_attached_session_prevents_idle_eviction(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id = uuid4()
@@ -373,7 +596,10 @@ async def test_shutdown_cancels_eviction_and_stops_containers(tmp_path, monkeypa
 
 
 def _build_container(runtime, monkeypatch, conversation_id):
-    runtime.provisioning.create(conversation_id)
+    """Run ``_build_container`` with docker mocked out; return the result and
+    the recorded ``docker run`` command with its environment."""
+    if runtime.provisioning.load_optional(conversation_id) is None:
+        runtime.provisioning.create(conversation_id)
     commands = []
 
     def run(command, **kwargs):
@@ -403,7 +629,6 @@ def _build_container(runtime, monkeypatch, conversation_id):
 def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id = uuid4()
-
     result, command, env = _build_container(runtime, monkeypatch, conversation_id)
     assert result.host == "http://127.0.0.1:32123"
     assert ["--cap-drop", "ALL"] == command[
@@ -413,7 +638,7 @@ def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monke
     assert "host.docker.internal:host-gateway" in command
     assert "127.0.0.1::8000" in command
     mounts = [command[index + 1] for index, item in enumerate(command) if item == "-v"]
-    assert len(mounts) == 3
+    assert len(mounts) == 4
     assert all(
         conversation_id.hex in mount or mount.endswith(":/workspace")
         for mount in mounts
@@ -423,6 +648,87 @@ def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monke
         command.index("HOME") - 1 : command.index("HOME") + 1
     ]
     assert env["OH_SECRET_KEY"] != "outer-key"
+
+
+def test_worktree_root_resolves_identically_on_host_and_in_container(
+    tmp_path, monkeypatch
+):
+    """Regression test for #5307: git worktrees link the repository and the
+    worktree with absolute paths, so the conversation worktree root must be a
+    host directory mounted into the container at its own host path — otherwise
+    the host repository sees the live worktree as prunable."""
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    identity = runtime.provisioning.create(
+        conversation_id, workspace_path=repository
+    ).model_copy(update={"worktree_repository_path": repository})
+    runtime.provisioning.save(identity)
+
+    _, command, env = _build_container(runtime, monkeypatch, conversation_id)
+
+    worktree_root = env["OH_CONVERSATION_WORKTREE_ROOT"]
+    runtime_dir = runtime.provisioning.runtime_dir(conversation_id)
+    assert Path(worktree_root) == runtime_dir / "worktrees"
+    assert Path(worktree_root).is_dir()
+    assert ["-e", "OH_CONVERSATION_WORKTREE_ROOT"] == command[
+        command.index("OH_CONVERSATION_WORKTREE_ROOT") - 1 : command.index(
+            "OH_CONVERSATION_WORKTREE_ROOT"
+        )
+        + 1
+    ]
+    mounts = [command[index + 1] for index, item in enumerate(command) if item == "-v"]
+    assert f"{repository}:/workspace" in mounts
+    assert f"{repository}:{repository}" in mounts
+    assert f"{worktree_root}:{worktree_root}" in mounts
+
+
+def test_nested_worktree_workspace_mounts_repository_at_its_host_path(
+    tmp_path, monkeypatch
+):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    repository = tmp_path / "repository"
+    workspace = repository / "src" / "package"
+    workspace.mkdir(parents=True)
+    identity = runtime.provisioning.create(
+        conversation_id, workspace_path=workspace
+    ).model_copy(update={"worktree_repository_path": repository})
+    runtime.provisioning.save(identity)
+
+    _, command, _ = _build_container(runtime, monkeypatch, conversation_id)
+
+    mounts = [command[index + 1] for index, item in enumerate(command) if item == "-v"]
+    assert f"{workspace}:/workspace" in mounts
+    assert f"{repository}:{repository}" in mounts
+    assert f"{workspace}:{workspace}" not in mounts
+
+
+def test_linked_source_worktree_mounts_its_external_git_common_dir(
+    tmp_path, monkeypatch
+):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    repository = tmp_path / "source-worktree"
+    repository.mkdir()
+    git_common_dir = tmp_path / "primary" / ".git"
+    git_common_dir.mkdir(parents=True)
+    identity = runtime.provisioning.create(
+        conversation_id, workspace_path=repository
+    ).model_copy(
+        update={
+            "worktree_repository_path": repository,
+            "worktree_git_common_dir_path": git_common_dir,
+        }
+    )
+    runtime.provisioning.save(identity)
+
+    _, command, _ = _build_container(runtime, monkeypatch, conversation_id)
+
+    mounts = [command[index + 1] for index, item in enumerate(command) if item == "-v"]
+    assert f"{repository}:{repository}" in mounts
+    assert f"{git_common_dir}:{git_common_dir}" in mounts
 
 
 def test_container_command_does_not_forward_unset_observability_vars(
