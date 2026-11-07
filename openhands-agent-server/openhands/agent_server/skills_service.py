@@ -744,15 +744,19 @@ def _fetch_catalog_entries(marketplace_path: str) -> list[_CatalogEntry]:
         logger.warning("Failed to access public skills repository")
         return []
 
-    marketplace_file = repo_path / marketplace_path
-    if not marketplace_file.exists():
-        logger.warning(f"Marketplace file not found: {marketplace_file}")
-        return []
-
+    # Manifest discovery (``.plugin/marketplace.json``, the current
+    # OpenHands/extensions layout) comes first; the explicit
+    # ``marketplace_path`` file is only a fallback, as in the plugin catalog.
     try:
         marketplace = Marketplace.load(repo_path)
     except (FileNotFoundError, ValueError) as e:
-        # Fallback to loading from specific path
+        marketplace_file = repo_path / marketplace_path
+        if not marketplace_file.exists():
+            logger.warning(
+                f"Failed to load marketplace via manifest discovery ({e}); "
+                f"fallback file not found: {marketplace_file}"
+            )
+            return []
         try:
             with open(marketplace_file, encoding="utf-8") as f:
                 data = json.load(f)

@@ -1165,6 +1165,48 @@ class TestLocalConversationPlugins:
 
         conversation.close()
 
+    def test_load_plugin_binds_plugin_root_to_its_hooks(self, tmp_path: Path, mock_llm):
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {
+                    "name": "hook-plugin",
+                    "hooks": {
+                        "hooks": {
+                            "UserPromptSubmit": [
+                                {"hooks": [{"command": "echo plugin-hook"}]}
+                            ]
+                        }
+                    },
+                }
+            ],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(name="manual", source=str(marketplace_dir))
+                ]
+            ),
+        )
+        conversation = LocalConversation(
+            agent=agent, workspace=workspace, visualizer=None
+        )
+
+        conversation.load_plugin("hook-plugin")
+
+        assert conversation.state.hook_config is not None
+        plugin_dir = marketplace_dir / "plugins" / "hook-plugin"
+        assert [
+            hook.plugin_root
+            for matcher in conversation.state.hook_config.user_prompt_submit
+            for hook in matcher.hooks
+        ] == [str(plugin_dir.resolve())]
+        conversation.close()
+
     def test_load_plugin_requires_registered_marketplaces(
         self, tmp_path: Path, basic_agent
     ):
@@ -1262,6 +1304,39 @@ class TestLocalConversationPlugins:
         assert conversation._hook_processor is not None
         # We can verify hooks were processed by checking the hook_config passed
         # (The actual hook_processor is internal, but we trust the merging works)
+        conversation.close()
+
+    def test_plugin_hooks_carry_their_own_plugin_root(
+        self, tmp_path: Path, basic_agent
+    ):
+        """Each plugin's hooks keep that plugin's root; explicit hooks have none."""
+        hooks = {"hooks": {"PreToolUse": [{"hooks": [{"command": "echo plugin"}]}]}}
+        plugin_a = create_test_plugin(tmp_path / "plugin-a", name="a", hooks=hooks)
+        plugin_b = create_test_plugin(tmp_path / "plugin-b", name="b", hooks=hooks)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        explicit_hooks = HookConfig(
+            pre_tool_use=[HookMatcher(hooks=[HookDefinition(command="echo explicit")])]
+        )
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            plugins=[
+                PluginSource(source=str(plugin_a)),
+                PluginSource(source=str(plugin_b)),
+            ],
+            hook_config=explicit_hooks,
+            visualizer=None,
+        )
+
+        conversation._ensure_plugins_loaded()
+
+        assert conversation.state.hook_config is not None
+        assert [
+            hook.plugin_root
+            for matcher in conversation.state.hook_config.pre_tool_use
+            for hook in matcher.hooks
+        ] == [None, str(plugin_a.resolve()), str(plugin_b.resolve())]
         conversation.close()
 
     def test_hook_sub_conversations_receive_persistence_base_dir(

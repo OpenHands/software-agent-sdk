@@ -15,6 +15,14 @@
     ],
     "default_session_mode": "bypassPermissions",
     "display_name": "Claude Code",
+    "effort_config_id": "effort",
+    "effort_levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
     "env_conflicts": [
       {
         "dominant": "CLAUDE_CODE_OAUTH_TOKEN",
@@ -46,6 +54,15 @@
     ],
     "default_session_mode": "agent-full-access",
     "display_name": "Codex",
+    "effort_config_id": "reasoning_effort",
+    "effort_levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra"
+    ],
     "env_conflicts": [],
     "file_secrets": [
       {
@@ -79,6 +96,8 @@
     ],
     "default_session_mode": "default",
     "display_name": "Gemini CLI",
+    "effort_config_id": null,
+    "effort_levels": [],
     "env_conflicts": [],
     "file_secrets": [
       {
@@ -115,6 +134,8 @@
     ],
     "default_session_mode": "yolo",
     "display_name": "Kimi Code",
+    "effort_config_id": null,
+    "effort_levels": [],
     "env_conflicts": [],
     "file_secrets": [
       {
@@ -148,6 +169,8 @@
     ],
     "default_session_mode": "build",
     "display_name": "OpenCode",
+    "effort_config_id": null,
+    "effort_levels": [],
     "env_conflicts": [],
     "file_secrets": [],
     "key": "opencode",
@@ -173,6 +196,8 @@
     ],
     "default_session_mode": null,
     "display_name": "Pi",
+    "effort_config_id": null,
+    "effort_levels": [],
     "env_conflicts": [],
     "file_secrets": [
       {
