@@ -1,0 +1,28 @@
+{
+  "name": "demo-page",
+  "version": "0.1.0",
+  "description": "A dependency-free fixture for the Canvas Extension page ABI.",
+  "enabled": true,
+  "source": "<TASK>/agent-canvas/src/fixtures/canvas-extensions/demo-page",
+  "resolved_ref": null,
+  "repo_path": null,
+  "installed_at": "2026-10-05T14:39:56.854391+00:00",
+  "install_path": "<TASK>/e2e-state/canvas-extensions/installed/demo-page",
+  "manifest": {
+    "schema_version": 1,
+    "name": "demo-page",
+    "display_name": "Demo page",
+    "version": "0.1.0",
+    "description": "A dependency-free fixture for the Canvas Extension page ABI.",
+    "entrypoint": "extension.js",
+    "contributes": {
+      "pages": [
+        {
+          "id": "hello",
+          "title": "Hello from an extension",
+          "path": "/hello"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/canvas-extensions/installed/qa-nav-label",
+    "query": [],
+    "auth": "header",
+    "body": null,
+    "files": []
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-length": "906",
+      "content-type": "application/json"
+    },
+    "body": {
+      "name": "qa-nav-label",
+      "version": "0.1.0",
+      "description": "QA fixture Canvas app",
+      "enabled": true,
+      "source": "<VERIFY_RUN>/fixtures/canvas/qa-nav-label",
+      "requested_ref": null,
+      "resolved_ref": null,
+      "repo_path": null,
+      "installed_at": "2026-10-18T14:18:50.571529+00:00",
+      "install_path": "<VERIFY_RUN>/home/.openhands/canvas-extensions/installed/qa-nav-label",
+      "manifest": {
+        "schema_version": 1,
+        "name": "qa-nav-label",
+        "display_name": "QA qa-nav-label",
+        "version": "0.1.0",
+        "description": "QA fixture Canvas app",
+        "entrypoint": "dist/index.js",
+        "contributes": {
+          "pages": [
+            {
+              "id": "hello",
+              "title": "Hello from an extension",
+              "path": "/hello",
+              "nav_label": "Extension demo"
+            },
+            {
+              "id": "legacy",
+              "title": "Legacy page",
+              "path": "/legacy"
+            }
+          ]
+        },
+        "icon": "assets/icon.svg"
+      }
+    },
+    "truncated": false
+  },
+  "elapsed_ms": 27
+}

@@ -1,0 +1,137 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.13, pytest-9.0.3, pluggy-1.6.0
+rootdir: <BASELINE>
+configfile: pyproject.toml
+plugins: libtmux-0.53.0, xdist-3.8.0, timeout-2.4.0, anyio-4.14.2, asyncio-1.3.0, forked-1.6.0, cov-7.0.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 35 items / 31 deselected / 4 selected
+
+tests/agent_server/canvas_extensions/test_canvas_extension_backend.py FF [ 50%]
+FF                                                                       [100%]
+
+=================================== FAILURES ===================================
+__________________ test_revision_bound_store_secret_lifecycle __________________
+tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:957: in test_revision_bound_store_secret_lifecycle
+    with pytest.raises(ValueError, match="grant"):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE <class 'ValueError'>
+----------------------------- Captured stderr call -----------------------------
+[10/31/26 10:39:16] INFO     Fetching extension from              manager.py:111
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-109/test_revision_bound_st
+                             ore_secr0/source/my-extension
+[10/31/26 10:39:16] INFO     Installing extension 'my-extension'  manager.py:134
+                             to
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-109/test_revision_bound_st
+                             ore_secr0/installed/my-extension
+[10/31/26 10:39:16] INFO     Successfully installed extension     manager.py:153
+                             'my-extension' v1.0.0
+[10/31/26 10:39:16] INFO     Successfully disabled extension      manager.py:265
+                             'my-extension'
+------------------------------ Captured log call -------------------------------
+INFO     openhands.sdk.extensions.installation.manager:manager.py:111 Fetching extension from <TMP>/pytest-of-rishabh/pytest-109/test_revision_bound_store_secr0/source/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:134 Installing extension 'my-extension' to <TMP>/pytest-of-rishabh/pytest-109/test_revision_bound_store_secr0/installed/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:153 Successfully installed extension 'my-extension' v1.0.0
+INFO     openhands.sdk.extensions.installation.manager:manager.py:265 Successfully disabled extension 'my-extension'
+____________ test_secret_grant_api_requires_exact_names_and_revokes ____________
+tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:1049: in test_secret_grant_api_requires_exact_names_and_revokes
+    assert (
+E   AssertionError: assert 200 == 409
+E    +  where 200 = <Response [200 OK]>.status_code
+E    +    where <Response [200 OK]> = post(('/api/canvas-extensions/installed/my-extension/backend' + '/start'), json={'revision': 'sha256:4e6617f906418f2591c1ae8270553732b9bc0217d0f7e71188c3f3baabde5f81'})
+E    +      where post = <starlette.testclient.TestClient object at 0x11d072120>.post
+----------------------------- Captured stderr call -----------------------------
+[10/31/26 10:39:16] INFO     Fetching extension from              manager.py:111
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-109/test_secret_grant_api_
+                             requires0/source/my-extension
+[10/31/26 10:39:16] INFO     Installing extension 'my-extension'  manager.py:134
+                             to
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-109/test_secret_grant_api_
+                             requires0/installed/my-extension
+[10/31/26 10:39:16] INFO     Successfully installed extension     manager.py:153
+                             'my-extension' v1.0.0
+[10/31/26 10:39:16] INFO     Successfully disabled extension      manager.py:265
+                             'my-extension'
+------------------------------ Captured log call -------------------------------
+INFO     openhands.sdk.extensions.installation.manager:manager.py:111 Fetching extension from <TMP>/pytest-of-rishabh/pytest-109/test_secret_grant_api_requires0/source/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:134 Installing extension 'my-extension' to <TMP>/pytest-of-rishabh/pytest-109/test_secret_grant_api_requires0/installed/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:153 Successfully installed extension 'my-extension' v1.0.0
+INFO     openhands.sdk.extensions.installation.manager:manager.py:265 Successfully disabled extension 'my-extension'
+_____ test_enable_orchestrates_backend_and_retains_revision_consent[False] _____
+tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:1154: in test_enable_orchestrates_backend_and_retains_revision_consent
+    assert (await manager.status("my-extension")).state == "stopped"
+E   AssertionError: assert 'unsupported' == 'stopped'
+E
+E     - stopped
+E     + unsupported
+----------------------------- Captured stderr call -----------------------------
+[10/31/26 10:39:16] INFO     Fetching extension from              manager.py:111
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-109/test_enable_orchestrat
+                             es_backe0/source/my-extension
+[10/31/26 10:39:16] INFO     Installing extension 'my-extension'  manager.py:134
+                             to
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-109/test_enable_orchestrat
+                             es_backe0/installed/my-extension
+[10/31/26 10:39:16] INFO     Successfully installed extension     manager.py:153
+                             'my-extension' v1.0.0
+[10/31/26 10:39:16] INFO     Successfully disabled extension      manager.py:265
+                             'my-extension'
+[10/31/26 10:39:16] INFO     Successfully enabled extension       manager.py:265
+                             'my-extension'
+------------------------------ Captured log call -------------------------------
+INFO     openhands.sdk.extensions.installation.manager:manager.py:111 Fetching extension from <TMP>/pytest-of-rishabh/pytest-109/test_enable_orchestrates_backe0/source/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:134 Installing extension 'my-extension' to <TMP>/pytest-of-rishabh/pytest-109/test_enable_orchestrates_backe0/installed/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:153 Successfully installed extension 'my-extension' v1.0.0
+INFO     openhands.sdk.extensions.installation.manager:manager.py:265 Successfully disabled extension 'my-extension'
+INFO     openhands.sdk.extensions.installation.manager:manager.py:265 Successfully enabled extension 'my-extension'
+_____ test_enable_orchestrates_backend_and_retains_revision_consent[True] ______
+tests/agent_server/canvas_extensions/test_canvas_extension_backend.py:1154: in test_enable_orchestrates_backend_and_retains_revision_consent
+    assert (await manager.status("my-extension")).state == "stopped"
+E   AssertionError: assert 'unsupported' == 'stopped'
+E
+E     - stopped
+E     + unsupported
+----------------------------- Captured stderr call -----------------------------
+[10/31/26 10:39:16] INFO     Fetching extension from              manager.py:111
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-109/test_enable_orchestrat
+                             es_backe1/source/my-extension
+[10/31/26 10:39:16] INFO     Installing extension 'my-extension'  manager.py:134
+                             to
+                             /private/var/folders/ch/25hs30cn2t51
+                             06cfrcl8mkyw0000gn/T/pytest-of-risha
+                             bh/pytest-109/test_enable_orchestrat
+                             es_backe1/installed/my-extension
+[10/31/26 10:39:16] INFO     Successfully installed extension     manager.py:153
+                             'my-extension' v1.0.0
+[10/31/26 10:39:16] INFO     Successfully disabled extension      manager.py:265
+                             'my-extension'
+------------------------------ Captured log call -------------------------------
+INFO     openhands.sdk.extensions.installation.manager:manager.py:111 Fetching extension from <TMP>/pytest-of-rishabh/pytest-109/test_enable_orchestrates_backe1/source/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:134 Installing extension 'my-extension' to <TMP>/pytest-of-rishabh/pytest-109/test_enable_orchestrates_backe1/installed/my-extension
+INFO     openhands.sdk.extensions.installation.manager:manager.py:153 Successfully installed extension 'my-extension' v1.0.0
+INFO     openhands.sdk.extensions.installation.manager:manager.py:265 Successfully disabled extension 'my-extension'
+=============================== warnings summary ===============================
+../../..<VENV>/lib/python3.13/site-packages/fastapi/testclient.py:1
+  <VENV>/lib/python3.13/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/agent_server/canvas_extensions/test_canvas_extension_backend.py::test_revision_bound_store_secret_lifecycle
+FAILED tests/agent_server/canvas_extensions/test_canvas_extension_backend.py::test_secret_grant_api_requires_exact_names_and_revokes
+FAILED tests/agent_server/canvas_extensions/test_canvas_extension_backend.py::test_enable_orchestrates_backend_and_retains_revision_consent[False]
+FAILED tests/agent_server/canvas_extensions/test_canvas_extension_backend.py::test_enable_orchestrates_backend_and_retains_revision_consent[True]
+================= 4 failed, 31 deselected, 1 warning in 0.52s ==================
