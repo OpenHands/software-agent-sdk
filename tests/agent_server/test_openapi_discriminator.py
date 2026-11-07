@@ -188,3 +188,16 @@ def test_conversation_contracts_use_unified_acp_capable_endpoint(client):
     assert "/api/conversations" in openapi_schema["paths"]
     # The deprecated /api/acp/conversations routes were removed in v1.27.0.
     assert "/api/acp/conversations" not in openapi_schema["paths"]
+
+
+@pytest.mark.parametrize("name", ["DelegateAction", "DelegateObservation"])
+def test_legacy_delegate_schemas_are_deprecated_but_still_available(client, name):
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+    schemas = response.json()["components"]["schemas"]
+    variants = [schema for schema in schemas.values() if schema.get("title") == name]
+    assert variants
+    for schema in variants:
+        assert schema["deprecated"] is True
+        assert "1.60.0" in schema["description"]
+        assert schema["properties"]["kind"]["const"] == name

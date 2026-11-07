@@ -4,6 +4,7 @@ import os
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 
 
 def test_api_timeout_is_used_in_client():
@@ -327,3 +328,15 @@ def test_api_remote_workspace_exit_sends_callback(monkeypatch):
         mock_client.post.assert_called_once()
         payload = mock_client.post.call_args.kwargs["json"]
         assert payload["status"] == "COMPLETED"
+
+
+def test_null_pod_status_is_retried():
+    """A JSON null pod_status is an unknown status, retried like the others."""
+    ws = _make_workspace()
+    resp = MagicMock()
+    resp.json.return_value = {"pod_status": None}
+
+    with patch.object(ws, "_send_api_request", return_value=resp):
+        # RuntimeError is what _wait_until_runtime_alive retries on.
+        with pytest.raises(RuntimeError, match="Unknown pod status"):
+            ws._wait_until_runtime_alive_once()
