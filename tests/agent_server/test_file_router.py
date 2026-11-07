@@ -331,10 +331,13 @@ def test_upload_large_file_chunked(client, tmp_path):
     assert target_path.read_bytes() == large_content
 
 
-def test_upload_overwrites_existing_file(client, tmp_path):
+@pytest.mark.parametrize("has_chown", [True, False])
+def test_upload_overwrites_existing_file(client, tmp_path, monkeypatch, has_chown):
     """Test that uploading to existing path overwrites the file."""
     target_path = tmp_path / "existing.txt"
     target_path.write_text("original content")
+    if not has_chown:
+        monkeypatch.delattr(os, "chown", raising=False)
 
     new_content = b"new content"
     response = client.post(
@@ -346,6 +349,27 @@ def test_upload_overwrites_existing_file(client, tmp_path):
     assert response.status_code == 200
     assert response.json()["file_size"] == len(new_content)
     assert target_path.read_bytes() == new_content
+
+
+async def test_private_upload_stays_private_during_write(tmp_path, monkeypatch):
+    target_path = tmp_path / "private.txt"
+    target_path.write_bytes(b"original")
+    target_path.chmod(0o600)
+    upload = UploadFile(file=io.BytesIO(b"private content"), filename="private.txt")
+    original_read = upload.read
+
+    async def inspect_read(size: int = -1) -> bytes:
+        temporary = list(tmp_path.glob(".private.txt.*.tmp"))
+        assert len(temporary) == 1
+        assert stat.S_IMODE(temporary[0].stat().st_mode) == 0o600
+        return await original_read(size)
+
+    monkeypatch.setattr(upload, "read", inspect_read)
+    result = await _upload_file(str(target_path), upload)
+
+    assert result.file_size == len(b"private content")
+    assert target_path.read_bytes() == b"private content"
+    assert stat.S_IMODE(target_path.stat().st_mode) == 0o600
 
 
 class _FailingUpload:

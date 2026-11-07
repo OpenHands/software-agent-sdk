@@ -106,11 +106,13 @@ def _atomic_write(target_path: Path) -> Iterator[IO[bytes]]:
         raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(dest))
     tmp_path = dest.with_name(f".{dest.name}.{uuid4().hex}.tmp")
     try:
-        with open(tmp_path, "wb") as f:
+        mode = 0o600 if previous else 0o666
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        with os.fdopen(fd, "wb") as f:
             yield f
         if previous:
             os.chmod(tmp_path, stat.S_IMODE(previous.st_mode))
-            with contextlib.suppress(OSError):
+            with contextlib.suppress(AttributeError, OSError):
                 os.chown(tmp_path, previous.st_uid, previous.st_gid)
         os.replace(tmp_path, dest)
     except BaseException:
