@@ -1051,18 +1051,24 @@ def get_workspaces_store(config: Config | None = None) -> FileWorkspacesStore:
         return _workspaces_store
 
 
-def get_llm_profile_store() -> LLMProfileStore:
-    """Get the global ``LLMProfileStore`` instance (thread-safe).
+def get_llm_profile_store(cipher: Cipher | None) -> LLMProfileStore:
+    """Get the global ``LLMProfileStore``, bound to ``cipher`` (thread-safe).
 
     Stored at ``<dir>/profiles`` where ``<dir>`` is ``OH_PERSISTENCE_DIR``
     when set, else ``~/.openhands``. This honors isolated agent-server
     instances while keeping bare local profile secrets in the user's
     config directory (never workspace-relative). See
     :func:`_get_profile_persistence_dir`.
+
+    ``cipher`` is required so every caller states it: profiles are encrypted
+    at rest under the server key, and a store without it would hand the
+    ciphertext to the provider as the API key (#4558). The singleton itself
+    holds no cipher; each caller gets a cheap view bound to its own, so a
+    config replaced by ``/api/init`` is never shadowed by the first caller's.
     """
     global _llm_profile_store
     if _llm_profile_store is not None:
-        return _llm_profile_store
+        return _llm_profile_store.with_cipher(cipher)
 
     # Resolve the provider store first: it takes ``_store_lock`` itself, and
     # ``_store_lock`` is non-reentrant, so calling it while already holding the
@@ -1073,8 +1079,9 @@ def get_llm_profile_store() -> LLMProfileStore:
             _llm_profile_store = LLMProfileStore(
                 base_dir=_get_profile_persistence_dir() / "profiles",
                 provider_store=provider_store,
+                cipher=None,
             )
-        return _llm_profile_store
+        return _llm_profile_store.with_cipher(cipher)
 
 
 def get_agent_profile_store() -> AgentProfileStore:

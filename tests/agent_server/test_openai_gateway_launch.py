@@ -23,8 +23,8 @@ def config(tmp_path, monkeypatch) -> Config:
     monkeypatch.setattr(
         "openhands.agent_server.launch.discover_profile_skills", lambda: []
     )
-    get_llm_profile_store().save("fast", LLM(model="fast-model"))
-    get_llm_profile_store().save("slow", LLM(model="slow-model"))
+    get_llm_profile_store(None).save("fast", LLM(model="fast-model"))
+    get_llm_profile_store(None).save("slow", LLM(model="slow-model"))
     return Config(
         conversations_path=tmp_path / "conversations",
         workspace_path=tmp_path / "workspace",

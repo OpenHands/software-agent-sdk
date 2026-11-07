@@ -108,17 +108,17 @@ def test_returns_cleaned_text_from_cleanup_profile(
     assert original in _message_text(cleanup_llm.last_messages[1])
 
 
-def test_cipher_is_forwarded_to_profile_load(
+def test_cipher_is_bound_to_the_profile_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The cipher argument must reach LLMProfileStore.load so the encrypted-secret
-    # path works when a caller passes one.
+    # The cipher argument must reach the LLMProfileStore that loads the profile
+    # so the encrypted-secret path works when a caller passes one.
     cleanup_llm = _capturing_llm("clean")
     sentinel = object()
     seen: dict[str, Any] = {}
 
     def load_profile(self: LLMProfileStore, name: str, *, cipher: Any = None) -> LLM:
-        seen["cipher"] = cipher
+        seen["cipher"] = self.cipher
         return cleanup_llm
 
     monkeypatch.setattr(LLMProfileStore, "load", load_profile)

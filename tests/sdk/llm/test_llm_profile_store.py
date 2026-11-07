@@ -841,3 +841,63 @@ def test_save_over_undecryptable_profile_refused(profile_store: LLMProfileStore)
     profile_store.save("other", keyless, include_secrets=True, cipher=cipher_b)
     profile_store.delete("rotate")
     assert not (profile_store.base_dir / "rotate.json").exists()
+
+
+# ── Cipher bound to the store (#4558) ───────────────────────────────────────
+
+
+def test_bound_cipher_encrypts_on_save_and_decrypts_on_load(tmp_path: Path):
+    from openhands.sdk.utils.cipher import Cipher
+
+    store = LLMProfileStore(base_dir=tmp_path, cipher=Cipher("bound-key"))
+    llm = LLM(usage_id="bound", model="openai/gpt-4o", api_key=SecretStr("sk-b"))
+    store.save("bound", llm, include_secrets=True)
+
+    assert "sk-b" not in (tmp_path / "bound.json").read_text()
+    loaded = store.load("bound")
+    assert isinstance(loaded.api_key, SecretStr)
+    assert loaded.api_key.get_secret_value() == "sk-b"
+
+
+def test_with_cipher_is_a_bound_view_of_the_same_store(tmp_path: Path):
+    from openhands.sdk.utils.cipher import Cipher
+
+    cipher = Cipher("bound-key")
+    unbound = LLMProfileStore(base_dir=tmp_path)
+    bound = unbound.with_cipher(cipher)
+    llm = LLM(usage_id="view", model="openai/gpt-4o", api_key=SecretStr("sk-v"))
+    bound.save("view", llm, include_secrets=True)
+
+    assert bound.cipher is cipher
+    assert unbound.cipher is None
+    assert bound.base_dir == unbound.base_dir
+    assert unbound.with_cipher(None) is unbound
+    assert unbound.list() == ["view.json"]
+    loaded = bound.load("view")
+    assert isinstance(loaded.api_key, SecretStr)
+    assert loaded.api_key.get_secret_value() == "sk-v"
+    ciphertext = unbound.load("view").api_key
+    assert isinstance(ciphertext, SecretStr)
+    assert ciphertext.get_secret_value() != "sk-v"
+
+
+def test_per_call_cipher_still_overrides_the_bound_one(tmp_path: Path):
+    from openhands.sdk.utils.cipher import Cipher
+
+    store = LLMProfileStore(base_dir=tmp_path, cipher=Cipher("bound-key"))
+    _save_under_key_a(store, "rotate")
+    llm = store.load("rotate", cipher=Cipher("qa-key-a"))
+    assert isinstance(llm.api_key, SecretStr)
+    assert llm.api_key.get_secret_value() == "sk-a"
+
+
+def test_per_call_cipher_is_deprecated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from openhands.sdk.utils import deprecation
+    from openhands.sdk.utils.cipher import Cipher
+
+    monkeypatch.setattr(deprecation, "_current_version", lambda: "1.61.0")
+    store = LLMProfileStore(base_dir=tmp_path)
+    store.save("plain", LLM(usage_id="plain", model="openai/gpt-4o"))
+
+    with pytest.warns(deprecation.DeprecatedWarning, match=r"load\(cipher="):
+        store.load("plain", cipher=Cipher("key"))

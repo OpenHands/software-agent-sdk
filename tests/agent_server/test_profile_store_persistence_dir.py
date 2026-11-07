@@ -38,9 +38,33 @@ def isolated_persistence_dir() -> Iterator[Path]:
 
 
 def test_llm_profile_store_uses_persistence_dir(isolated_persistence_dir: Path) -> None:
-    store = get_llm_profile_store()
+    store = get_llm_profile_store(None)
     assert store.base_dir == isolated_persistence_dir / "profiles"
     assert store.list() == []
+
+
+def test_llm_profile_store_is_bound_to_each_callers_cipher(
+    isolated_persistence_dir: Path,
+) -> None:
+    """Each caller's view decrypts with its own cipher; the singleton holds none."""
+    from pydantic import SecretStr
+
+    from openhands.sdk.llm import LLM
+    from openhands.sdk.utils.cipher import Cipher
+
+    cipher = Cipher("server-key")
+    get_llm_profile_store(cipher).save(
+        "enc",
+        LLM(usage_id="enc", model="openai/gpt-4o", api_key=SecretStr("sk-enc")),
+        include_secrets=True,
+    )
+
+    assert "sk-enc" not in (isolated_persistence_dir / "profiles/enc.json").read_text()
+    decrypted = get_llm_profile_store(cipher).load("enc").api_key
+    assert isinstance(decrypted, SecretStr)
+    assert decrypted.get_secret_value() == "sk-enc"
+    assert get_llm_profile_store(None).cipher is None
+    assert get_llm_profile_store(Cipher("other-key")).load("enc").api_key is None
 
 
 def test_agent_profile_store_uses_persistence_dir(
@@ -70,7 +94,7 @@ def home_without_persistence_env(
 def test_llm_profile_store_falls_back_to_home(
     home_without_persistence_env: Path,
 ) -> None:
-    store = get_llm_profile_store()
+    store = get_llm_profile_store(None)
     assert store.base_dir == home_without_persistence_env / ".openhands" / "profiles"
 
 
@@ -111,7 +135,7 @@ def test_profile_stores_do_not_read_home_directory(
     isolated_persistence_dir: Path,
 ) -> None:
     """The host user's ``~/.openhands/profiles/*.json`` must not appear."""
-    llm = get_llm_profile_store()
+    llm = get_llm_profile_store(None)
     agent = get_agent_profile_store()
 
     # Both stores must materialize their own directory *inside* the

@@ -95,7 +95,9 @@ class VisionInspectObservation(Observation):
 def _candidate_vision_profiles() -> list[str]:
     """Return saved profile names that appear to support vision."""
     profiles: list[str] = []
-    store = LLMProfileStore()
+    # Only the model's capabilities are read here, never its key; the tool
+    # loads the chosen profile through the conversation's cipher-bound store.
+    store = LLMProfileStore(cipher=None)
     for summary in store.list_summaries():
         name = summary.get("name")
         model = summary.get("model")

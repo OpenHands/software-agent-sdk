@@ -3847,10 +3847,8 @@ class TestAutoTitle:
             await subscriber(self._user_message_event())
             await self._drain_title_task(lambda: service.stored.title is not None)
 
-            MockStore.assert_called_once_with()
-            mock_store_instance.load.assert_called_once_with(
-                "cheap-model", cipher=service.cipher
-            )
+            MockStore.assert_called_once_with(service.cipher)
+            mock_store_instance.load.assert_called_once_with("cheap-model")
             # Profile-loaded LLM wins over agent.llm
             assert mock_generate_title.called
             assert mock_generate_title.call_args.args[1] is mock_llm

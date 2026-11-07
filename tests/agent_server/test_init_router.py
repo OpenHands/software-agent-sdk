@@ -627,7 +627,7 @@ class TestEndToEndOverLifespan:
 
         monkeypatch.setattr(
             "openhands.agent_server.openai.service.get_llm_profile_store",
-            EmptyProfileStore,
+            lambda _cipher: EmptyProfileStore(),
         )
         _reset_conversation_singleton()
         cfg = Config(
@@ -755,7 +755,7 @@ class TestEndToEndOverLifespan:
 
         monkeypatch.setattr(
             "openhands.agent_server.openai.service.get_llm_profile_store",
-            EmptyProfileStore,
+            lambda _cipher: EmptyProfileStore(),
         )
         _reset_conversation_singleton()
         cfg = Config(

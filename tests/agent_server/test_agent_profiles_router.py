@@ -27,6 +27,7 @@ from openhands.sdk.profiles import (
     AgentProfileStore,
     OpenHandsAgentProfile,
 )
+from openhands.sdk.utils.cipher import Cipher
 
 
 @pytest.fixture
@@ -68,7 +69,7 @@ def store(temp_agent_profiles_dir):
 @pytest.fixture
 def default_llm_profile_store(temp_settings_dir):
     """The real (unpatched) LLM profile store the ``client`` fixture's
-    ``get_llm_profile_store()`` resolves to, given ``OH_PERSISTENCE_DIR`` —
+    ``get_llm_profile_store(None)`` resolves to, given ``OH_PERSISTENCE_DIR`` —
     see ``_get_profile_persistence_dir`` (``<dir>/profiles``)."""
     return LLMProfileStore(base_dir=temp_settings_dir / "profiles")
 
@@ -1180,8 +1181,8 @@ def client_with_llm_store(
     def agent_profiles() -> AgentProfileStore:
         return AgentProfileStore(base_dir=temp_agent_profiles_dir)
 
-    def llm_profiles() -> LLMProfileStore:
-        return LLMProfileStore(base_dir=temp_llm_profiles_dir)
+    def llm_profiles(cipher: Cipher | None) -> LLMProfileStore:
+        return LLMProfileStore(base_dir=temp_llm_profiles_dir, cipher=cipher)
 
     with (
         patch(

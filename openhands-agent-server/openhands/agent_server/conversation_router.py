@@ -656,7 +656,7 @@ async def switch_conversation_llm(
     # is replaced. Inline-key configs without a provider_connection_id are
     # byte-identical to the old path.
     with store_errors():
-        llm = get_llm_profile_store().resolve_provider_connection(llm, cipher=cipher)
+        llm = get_llm_profile_store(cipher).resolve_provider_connection(llm)
     try:
         conversation.switch_llm(llm)
     except ValueError as e:

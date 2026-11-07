@@ -1,12 +1,16 @@
 from collections.abc import Callable
 from types import MappingProxyType
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.logger import get_logger
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.utils.cipher import Cipher
 
 
 logger = get_logger(__name__)
@@ -38,14 +42,19 @@ class LLMRegistry:
     def __init__(
         self,
         retry_listener: Callable[[int, int], None] | None = None,
+        *,
+        cipher: "Cipher | None" = None,
     ):
         """Initialize the LLM registry.
 
         Args:
             retry_listener: Optional callback for retry events.
+            cipher: The conversation's cipher. Every registered LLM's fallback
+                strategy loads its profiles with it.
         """
         self.registry_id = str(uuid4())
         self.retry_listener = retry_listener
+        self._cipher = cipher
         self._usage_to_llm: dict[str, LLM] = {}
         # Track metrics object IDs to detect shared metrics
         self._metrics_ids: set[int] = set()
@@ -130,6 +139,8 @@ class LLMRegistry:
 
         # Ensure this LLM has independent metrics before registering
         self._ensure_independent_metrics(llm)
+        if llm.fallback_strategy is not None:
+            llm.fallback_strategy.bind_cipher(self._cipher)
 
         self._usage_to_llm[usage_id] = llm
         self.notify(RegistryEvent(llm=llm))

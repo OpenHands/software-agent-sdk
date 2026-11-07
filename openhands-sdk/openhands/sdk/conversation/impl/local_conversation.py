@@ -548,8 +548,8 @@ class LocalConversation(BaseConversation):
 
         # Agent initialization is deferred to _ensure_agent_ready() for lazy loading
         # This ensures plugins are loaded before agent initialization
-        self.llm_registry = LLMRegistry()
-        self._profile_store = LLMProfileStore(profile_store_dir)
+        self.llm_registry = LLMRegistry(cipher=cipher)
+        self._profile_store = LLMProfileStore(profile_store_dir, cipher=cipher)
         self._cipher = cipher
 
         # Seed agent_context.secrets into the registry for every agent (regular
@@ -1888,7 +1888,7 @@ class LocalConversation(BaseConversation):
         try:
             cached = self.llm_registry.get(usage_id)
         except KeyError:
-            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
+            loaded = self._profile_store.load(profile_name)
             cached = loaded.model_copy(update={"usage_id": usage_id})
         self.switch_llm(cached)
 
@@ -1903,7 +1903,7 @@ class LocalConversation(BaseConversation):
         try:
             return self.llm_registry.get(usage_id)
         except KeyError:
-            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
+            loaded = self._profile_store.load(profile_name)
             llm = loaded.model_copy(update={"usage_id": usage_id})
             llm = create_subscription_llm_from_config(llm)
             self.llm_registry.add(llm)

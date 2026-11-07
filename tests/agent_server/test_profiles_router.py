@@ -75,9 +75,9 @@ def client(temp_profiles_dir, temp_agent_profiles_dir, temp_settings_dir, monkey
         base_dir=temp_profiles_dir.parent / "provider-connections"
     )
 
-    def make_llm_store():
+    def make_llm_store(cipher):
         return LLMProfileStore(
-            base_dir=temp_profiles_dir, provider_store=provider_store
+            base_dir=temp_profiles_dir, provider_store=provider_store, cipher=cipher
         )
 
     with (
@@ -1159,7 +1159,7 @@ def client_with_cipher(
     with (
         patch(
             "openhands.agent_server.profiles_router.get_llm_profile_store",
-            lambda: LLMProfileStore(base_dir=temp_profiles_dir),
+            lambda cipher: LLMProfileStore(base_dir=temp_profiles_dir, cipher=cipher),
         ),
         patch(
             "openhands.agent_server.profiles_router.get_agent_profile_store",

@@ -341,9 +341,7 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
             try:
                 loaded = self._meta_profile_llms.get(meta.classifier_model)
                 if loaded is None:
-                    loaded = conversation._profile_store.load(
-                        meta.classifier_model, cipher=conversation._cipher
-                    )
+                    loaded = conversation._profile_store.load(meta.classifier_model)
             except (FileNotFoundError, ValueError) as exc:
                 return ClassifyAndSwitchLLMObservation.from_text(
                     text=(

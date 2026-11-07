@@ -1018,8 +1018,8 @@ def test_openai_chat_completions_gateway_over_real_server(
         include_secrets=True,
     )
 
-    def llm_profiles() -> LLMProfileStore:
-        return LLMProfileStore(base_dir=profiles_dir)
+    def llm_profiles(cipher: Cipher | None) -> LLMProfileStore:
+        return LLMProfileStore(base_dir=profiles_dir, cipher=cipher)
 
     with (
         patch(
@@ -1360,7 +1360,7 @@ def test_openai_gateway_replays_frozen_llm_fixtures(
 
     with patch(
         "openhands.agent_server.openai.service.get_llm_profile_store",
-        lambda: LLMProfileStore(base_dir=profiles_dir),
+        lambda cipher: LLMProfileStore(base_dir=profiles_dir, cipher=cipher),
     ):
         with live_server_env(tmp_path, monkeypatch) as env:
             for fixture in fixtures:

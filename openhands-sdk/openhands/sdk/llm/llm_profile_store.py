@@ -2,6 +2,7 @@
 # so annotations like ``list[dict[str, Any]]`` would fail without deferral.
 from __future__ import annotations
 
+import copy
 import json
 import re
 import tempfile
@@ -17,6 +18,7 @@ from openhands.sdk.llm.utils.openhands_provider import (
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.pydantic_secrets import (
     REDACTED_SECRET_VALUE,
@@ -97,9 +99,11 @@ class LLMProfileLoader(Protocol):
     The resolver reads an LLM profile by name via ``load`` only, so an alternate
     backend — e.g. a cloud adapter over the ``org.llm_profiles`` column — need
     implement just this, not the full file-backed :class:`LLMProfileStore`.
+    Decrypting stored secrets is the loader's job: a file-backed store is bound
+    to its cipher at construction, so ``load`` takes no cipher.
     """
 
-    def load(self, name: str, *, cipher: Cipher | None = ...) -> LLM: ...
+    def load(self, name: str) -> LLM: ...
 
 
 @runtime_checkable
@@ -125,6 +129,7 @@ class LLMProfileStore:
         base_dir: Path | str | None = None,
         *,
         provider_store: ProviderConnectionStore | None = None,
+        cipher: Cipher | None = None,
     ) -> None:
         """Initialize the profile store.
 
@@ -141,7 +146,12 @@ class LLMProfileStore:
                 connections from the same location it reads profiles from. Pass
                 an explicit store to use an unrelated directory (e.g. the
                 agent-server's config-scoped directory) or a test double.
+            cipher: Cipher for secrets stored at rest. ``load`` decrypts with
+                it and ``save(include_secrets=True)`` encrypts with it. Every
+                read and write of this store uses the same cipher, so no call
+                site can drop it. ``None`` stores secrets in plain text.
         """
+        self._cipher = cipher
         self.base_dir = Path(base_dir) if base_dir is not None else _DEFAULT_PROFILE_DIR
         # ensure directory existence
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -163,6 +173,37 @@ class LLMProfileStore:
             )
         else:
             self._provider_store = provider_store
+
+    @property
+    def cipher(self) -> Cipher | None:
+        """The cipher this store reads and writes secrets with."""
+        return self._cipher
+
+    def with_cipher(self, cipher: Cipher | None) -> LLMProfileStore:
+        """Return this store bound to ``cipher``.
+
+        The returned store shares the directory, file lock and provider
+        connection store, so it is cheap to make per request.
+        """
+        if cipher is self._cipher:
+            return self
+        bound = copy.copy(self)
+        bound._cipher = cipher
+        return bound
+
+    def _call_cipher(self, method: str, cipher: Cipher | None) -> Cipher | None:
+        """The cipher a call uses: the deprecated per-call one, else the store's."""
+        if cipher is None:
+            return self._cipher
+        warn_deprecated(
+            f"LLMProfileStore.{method}(cipher=...)",
+            deprecated_in="1.61.0",
+            removed_in="1.66.0",
+            details="Bind the cipher once with LLMProfileStore(cipher=...) "
+            "or LLMProfileStore.with_cipher(cipher).",
+            stacklevel=4,
+        )
+        return cipher
 
     @contextmanager
     def _acquire_lock(self, timeout: float = _LOCK_TIMEOUT_SECONDS) -> Iterator[None]:
@@ -230,17 +271,18 @@ class LLMProfileStore:
             name: Name of the profile to save.
             llm: LLM instance to save
             include_secrets: Whether to include the profile secrets. Defaults to False.
-            cipher: Optional cipher for at-rest encryption of secrets.
-                When provided, secrets are encrypted before writing to disk.
+            cipher: Deprecated; bind the cipher on the store instead. When
+                given, it overrides the store's cipher for this call.
             max_profiles: Optional cap on the number of profiles.
 
         Raises:
             ProfileLimitExceeded: If ``max_profiles`` would be exceeded.
-            SecretDecryptionError: If ``cipher`` is given and the existing
+            SecretDecryptionError: If the store has a cipher and the existing
                 profile holds a secret it cannot decrypt (a key change), so
                 overwriting it would lose that secret.
             TimeoutError: If the lock cannot be acquired.
         """
+        cipher = self._call_cipher("save", cipher)
         profile_path = self._get_profile_path(name)
 
         with self._acquire_lock():
@@ -305,14 +347,14 @@ class LLMProfileStore:
 
         Args:
             name: Name of the profile to load.
-            cipher: Optional cipher for decrypting secrets stored at rest.
-                When provided, encrypted secrets are decrypted during load.
+            cipher: Deprecated; bind the cipher on the store instead. When
+                given, it overrides the store's cipher for this call.
             resolve_provider: When True (default) and the profile references a
                 provider connection, its shared ``api_key`` / ``base_url`` are
                 applied to the returned LLM (read-at-use). Set False to inspect
                 the profile as stored without touching the provider store — used
                 by display paths so a dangling reference never fails a read.
-            strict: A secret ``cipher`` cannot decrypt loads as ``None`` by
+            strict: A secret the cipher cannot decrypt loads as ``None`` by
                 default. With ``strict=True`` (paths that write the loaded LLM
                 elsewhere) the load raises ``SecretDecryptionError`` instead.
 
@@ -324,11 +366,12 @@ class LLMProfileStore:
             FileNotFoundError: If the profile name does not exist.
             ValueError: If the profile file is corrupted or invalid.
             SecretDecryptionError: With ``strict``, if a stored secret cannot
-                be decrypted with ``cipher``.
+                be decrypted with the cipher.
             ProviderConnectionNotFound: If the profile references a provider
                 connection that no longer exists and carries no inline key.
             TimeoutError: If the lock cannot be acquired.
         """
+        cipher = self._call_cipher("load", cipher)
         profile_path = self._get_profile_path(name)
 
         with self._acquire_lock():
@@ -374,10 +417,12 @@ class LLMProfileStore:
         forwarded by the frontend) use this so a profile linked to a provider
         connection runs with the connection's ``api_key`` / ``base_url`` instead
         of a keyless config. ``profile_name`` is unknown here, so error messages
-        reference the connection id directly.
+        reference the connection id directly. The connection's key is
+        decrypted with the store's cipher; a per-call ``cipher`` is deprecated.
 
         See :meth:`_resolve_provider_connection` for the resolution rules.
         """
+        cipher = self._call_cipher("resolve_provider_connection", cipher)
         return self._resolve_provider_connection(None, llm, cipher=cipher)
 
     def _resolve_provider_connection(

@@ -16,10 +16,13 @@ from litellm.types.utils import (
 )
 from pydantic import SecretStr
 
+from openhands.sdk.agent import Agent
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.llm import (
     LLM,
     FallbackStrategy,
     LLMCallContext,
+    LLMRegistry,
     Message,
     TextContent,
 )
@@ -28,6 +31,8 @@ from openhands.sdk.llm.exceptions import (
     LLMRateLimitError,
     LLMServiceUnavailableError,
 )
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.utils.cipher import Cipher
 
 
 def _get_mock_response(content: str = "ok", model: str = "gpt-4o") -> ModelResponse:
@@ -479,6 +484,88 @@ def test_fallback_profiles_resolved_via_store(mock_comp, tmp_path):
     content = resp.message.content[0]
     assert isinstance(content, TextContent)
     assert content.text == "from store"
+
+
+_FALLBACK_KEY = "sk-fallback-plaintext"
+
+
+def _encrypted_fallback_strategy(profile_dir, cipher: Cipher) -> FallbackStrategy:
+    LLMProfileStore(base_dir=profile_dir, cipher=cipher).save(
+        "encrypted-fallback",
+        _get_llm("claude-sonnet-4-20250514").model_copy(
+            update={"api_key": SecretStr(_FALLBACK_KEY)}
+        ),
+        include_secrets=True,
+    )
+    stored = (profile_dir / "encrypted-fallback.json").read_text()
+    assert _FALLBACK_KEY not in stored
+    return FallbackStrategy(
+        fallback_llms=["encrypted-fallback"], profile_store_dir=profile_dir
+    )
+
+
+def _primary_down_fallback_key(mock_comp) -> list[str]:
+    """Fail the primary model and record the API key each fallback call sent."""
+    keys: list[str] = []
+
+    def side_effect(**kwargs):
+        if kwargs.get("model") == "gpt-4o":
+            raise APIConnectionError(
+                message="down", llm_provider="openai", model="gpt-4o"
+            )
+        keys.append(kwargs["api_key"])
+        return _get_mock_response("from fallback", model="claude-sonnet-4-20250514")
+
+    mock_comp.side_effect = side_effect
+    return keys
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_registry_cipher_decrypts_encrypted_fallback_profile(mock_comp, tmp_path):
+    """#4558: a registered LLM's fallback gets the plaintext key, not ciphertext."""
+    cipher = Cipher("server-secret-key")
+    strategy = _encrypted_fallback_strategy(tmp_path, cipher)
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    keys = _primary_down_fallback_key(mock_comp)
+
+    LLMRegistry(cipher=cipher).add(primary)
+    primary.completion(_MSGS)
+
+    assert keys == [_FALLBACK_KEY]
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_conversation_cipher_reaches_fallback_profiles(mock_comp, tmp_path):
+    """The conversation's cipher decrypts its agent LLM's fallback profiles."""
+    cipher = Cipher("server-secret-key")
+    strategy = _encrypted_fallback_strategy(tmp_path / "profiles", cipher)
+    keys = _primary_down_fallback_key(mock_comp)
+    conversation = LocalConversation(
+        agent=Agent(llm=_get_llm("gpt-4o", fallback_strategy=strategy), tools=[]),
+        workspace=tmp_path / "workspace",
+        cipher=cipher,
+    )
+    try:
+        conversation.send_message("hi")
+        conversation.agent.llm.completion(_MSGS)
+    finally:
+        conversation.close()
+
+    assert keys == [_FALLBACK_KEY]
+
+
+def test_rebinding_the_cipher_drops_fallbacks_loaded_with_the_old_one(tmp_path):
+    cipher = Cipher("server-secret-key")
+    strategy = _encrypted_fallback_strategy(tmp_path, cipher)
+
+    unbound = next(strategy._iter_fallbacks())
+    assert unbound.api_key is not None
+    assert unbound.api_key.get_secret_value() != _FALLBACK_KEY
+
+    strategy.bind_cipher(cipher)
+    bound = next(strategy._iter_fallbacks())
+    assert bound.api_key is not None
+    assert bound.api_key.get_secret_value() == _FALLBACK_KEY
 
 
 # =========================================================================
