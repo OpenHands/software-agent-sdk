@@ -2345,7 +2345,9 @@ describe('Auxiliary API clients', () => {
     expect(isReactionEvent(event)).toBe(true);
     expect(isReactionEvent({ ...saved, kind: 'MessageEvent' })).toBe(false);
     const fetchMock = global.fetch as Mock;
-    expect(fetchMock.mock.calls[0][0]).toBe('http://example.com/api/conversations/conv-1/reactions');
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'http://example.com/api/conversations/conv-1/reactions'
+    );
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
       emoji: 'heart',
       target_event_id: 'm1',
