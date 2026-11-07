@@ -21,6 +21,15 @@ class Subscriber[T](ABC):
     async def __call__(self, event: T):
         """Invoke this subscriber"""
 
+    async def on_initial_state(self, event: T, log_length: int | None) -> None:  # noqa: ARG002
+        """Receive the state snapshot pushed on subscribe.
+
+        ``log_length`` is the event-log length the snapshot reflects (read
+        under the same state lock), or None if unknown. By default the
+        snapshot is delivered like any other event.
+        """
+        await self(event)
+
     async def close(self):
         """Clean up this subscriber"""
 
@@ -108,7 +117,19 @@ class PubSub[T]:
         await asyncio.gather(*[_notify(sid, sub) for sid, sub in subscribers])
 
     async def close(self):
-        await asyncio.gather(
-            *[subscriber.close() for subscriber in self._subscribers.values()]
-        )
-        self._subscribers.clear()
+        # Repeat until empty: a subscriber registered while an earlier close()
+        # was awaited must be closed too, not just dropped. One failing
+        # close() must not stop the others or leave the registry populated.
+        while self._subscribers:
+            subscribers = list(self._subscribers.items())
+            self._subscribers.clear()
+            results = await asyncio.gather(
+                *[subscriber.close() for _, subscriber in subscribers],
+                return_exceptions=True,
+            )
+            for (subscriber_id, _), result in zip(subscribers, results):
+                if isinstance(result, BaseException):
+                    logger.error(
+                        f"Error closing subscriber {subscriber_id}: {result}",
+                        exc_info=result,
+                    )
