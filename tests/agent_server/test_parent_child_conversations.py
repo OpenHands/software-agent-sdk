@@ -284,7 +284,9 @@ def _event_service_factory(services: dict[UUID, Any]):
         agent = cast(AgentBase, kwargs.get("agent"))
         event_service = AsyncMock(spec=EventService)
         event_service.stored = stored
-        event_service.get_conversation.return_value = SimpleNamespace(agent=agent)
+        event_service.get_conversation.return_value = SimpleNamespace(
+            agent=agent, max_budget_per_run=kwargs.get("initial_max_budget_per_run")
+        )
         event_service.get_state.return_value = ConversationState(
             id=stored.id,
             agent=agent,

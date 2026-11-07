@@ -62,6 +62,7 @@ export class ACPConversationNamespace {
     options: {
       initialMessage?: string;
       maxIterations?: number;
+      maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
       workingDir?: string;
     } = {}
@@ -207,6 +208,7 @@ export class ConversationManager {
     options: {
       initialMessage?: string;
       maxIterations?: number;
+      maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
       workingDir?: string;
       userId?: string;
@@ -220,6 +222,7 @@ export class ConversationManager {
 
     const conversation = new RemoteConversation(agent, workspace, {
       maxIterations: options.maxIterations,
+      maxBudgetPerRun: options.maxBudgetPerRun,
       stuckDetection: options.stuckDetection,
       userId: options.userId,
     });
@@ -227,6 +230,7 @@ export class ConversationManager {
     await conversation.start({
       initialMessage: options.initialMessage,
       maxIterations: options.maxIterations,
+      maxBudgetPerRun: options.maxBudgetPerRun,
       stuckDetection: options.stuckDetection,
       userId: options.userId,
     });
@@ -338,6 +342,7 @@ export class ConversationManager {
     options: {
       initialMessage?: string;
       maxIterations?: number;
+      maxBudgetPerRun?: number | null;
       stuckDetection?: boolean;
       workingDir?: string;
       userId?: string;
@@ -355,6 +360,7 @@ export class ConversationManager {
       agent,
       initial_message: initialMessage,
       max_iterations: options.maxIterations || 500,
+      max_budget_per_run: options.maxBudgetPerRun,
       stuck_detection: options.stuckDetection ?? true,
       workspace: { type: 'local', working_dir: options.workingDir || '/tmp' },
       user_id: options.userId ?? null,

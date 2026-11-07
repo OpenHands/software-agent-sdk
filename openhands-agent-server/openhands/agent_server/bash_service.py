@@ -8,6 +8,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
+from pydantic import SecretStr
+
 from openhands.agent_server.models import (
     BashCommand,
     BashEventBase,
@@ -19,6 +21,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import sanitized_env, utc_now
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 
 
 logger = get_logger(__name__)
@@ -32,6 +35,12 @@ class BashEventService:
 
     bash_events_dir: Path = field()
     default_cwd: str | None = None
+    # Encrypts each event file at rest. The files hold the app server's setup
+    # commands and the terminal's output verbatim, on the sandbox volume,
+    # where an agent can publish them on the app ports (OHE-3812); the key
+    # lives in the server's environment, never on the volume. None writes
+    # plaintext, as before. Files written before encryption still read.
+    cipher: Cipher | None = None
     _tasks: set[asyncio.Task] = field(default_factory=set, init=False)
     _closed: bool = field(default=False, init=False)
     # Processes of currently running commands, keyed by command id. A None
@@ -88,20 +97,41 @@ class BashEventService:
         return "_".join(result)
 
     def _save_event_to_file(self, event: BashEventBase) -> None:
-        """Save an event to a file."""
+        """Save an event to a file, encrypted when a cipher is configured."""
         self._ensure_bash_events_dir()
         filename = self._get_event_filename(event)
         filepath = self.bash_events_dir / filename
 
+        # Use model_dump with mode='json' to handle UUID serialization
+        data = json.dumps(event.model_dump(mode="json"), indent=2)
+        if self.cipher is not None:
+            # encrypt() is None only for a None secret.
+            encrypted = self.cipher.encrypt(SecretStr(data))
+            data = data if encrypted is None else encrypted
         with open(filepath, "w") as f:
-            # Use model_dump with mode='json' to handle UUID serialization
-            data = event.model_dump(mode="json")
-            f.write(json.dumps(data, indent=2))
+            f.write(data)
 
     def _load_event_from_file(self, filepath: Path) -> BashEventBase | None:
-        """Load an event from a file."""
+        """Load an event from a file.
+
+        An encrypted file (a Fernet token) is decrypted with the cipher, which
+        tries its previous keys too, so files from before a key rotation still
+        read; a plaintext file from before encryption is parsed as it is.
+        """
         try:
             json_data = filepath.read_text()
+            if json_data.startswith(FERNET_TOKEN_PREFIX):
+                if self.cipher is None:
+                    logger.error(
+                        f"Event file {filepath} is encrypted but no cipher "
+                        "is configured"
+                    )
+                    return None
+                decrypted = self.cipher.try_decrypt_str(json_data)
+                if decrypted is None:
+                    logger.error(f"Event file {filepath} does not decrypt with any key")
+                    return None
+                json_data = decrypted
             return BashEventBase.model_validate_json(json_data)
         except Exception as e:
             logger.error(f"Error loading event from {filepath}: {e}")
@@ -611,5 +641,7 @@ def get_default_bash_event_service() -> BashEventService:
     from openhands.agent_server.config import get_default_config
 
     config = get_default_config()
-    _bash_event_service = BashEventService(bash_events_dir=config.bash_events_dir)
+    _bash_event_service = BashEventService(
+        bash_events_dir=config.bash_events_dir, cipher=config.cipher
+    )
     return _bash_event_service

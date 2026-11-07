@@ -137,6 +137,23 @@ def test_non_reasoning_model_preserves_temp_and_top_p():
     assert out.get("top_p") == 0.7
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "openai/gpt-4o",
+        "openai/ft:gpt-4o-2024-08-06:acme::AbC123",
+        "openai/Qwen/Qwen3-Coder-30B-A3B-Instruct",
+    ],
+)
+def test_non_reasoning_openai_models_omit_reasoning_effort(model):
+    llm = DummyLLM(model=model, temperature=0.6, top_p=0.7, reasoning_effort="high")
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    assert "reasoning_effort" not in out
+    assert out.get("temperature") == 0.6
+    assert out.get("top_p") == 0.7
+
+
 def test_azure_renames_max_completion_tokens_to_max_tokens():
     llm = DummyLLM(model="azure/gpt-4o")
     out = select_chat_options(llm, user_kwargs={}, has_tools=True)
@@ -273,8 +290,10 @@ def test_litellm_translates_claude_5_reasoning_to_adaptive_thinking(
         reasoning_effort="high",
     )
 
-    assert params["thinking"] == {"type": "adaptive"}
-    assert "budget_tokens" not in params["thinking"]
+    thinking = params["thinking"]
+    assert isinstance(thinking, dict)
+    assert thinking == {"type": "adaptive", "display": "summarized"}
+    assert "budget_tokens" not in thinking
 
 
 def test_bedrock_opus_4_8_strips_temp_top_p_without_thinking_block():
@@ -363,7 +382,8 @@ def test_chat_options_omits_prompt_cache_key_when_unset():
     )
 
 
-def test_chat_options_omits_prompt_cache_key_for_unsupported_provider():
+@pytest.mark.parametrize("model", ["claude-opus-4-5-20251101", "gemini/gemini-2.5-pro"])
+def test_chat_options_omits_prompt_cache_key_for_unsupported_provider(model: str):
     """Anthropic/Gemini reject `prompt_cache_key` with 400; must not be sent.
 
     Regression test for the UnsupportedParamsError reported on Anthropic models
@@ -371,11 +391,10 @@ def test_chat_options_omits_prompt_cache_key_for_unsupported_provider():
     is OpenAI-specific and must be gated on provider support, unlike
     `supports_prompt_cache` which gates Anthropic `cache_control` breakpoints.
     """
-    for model in ("claude-opus-4-5-20251101", "gemini/gemini-2.5-pro"):
-        llm = DummyLLM(model=model)
-        with llm_call_context_scope(LLMCallContext(prompt_cache_key="conv-abc123")):
-            out = select_chat_options(llm, user_kwargs={}, has_tools=True)
-        assert "prompt_cache_key" not in out, model
+    llm = DummyLLM(model=model)
+    with llm_call_context_scope(LLMCallContext(prompt_cache_key="conv-abc123")):
+        out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+    assert "prompt_cache_key" not in out
 
 
 def test_chat_options_forwards_prompt_cache_key_when_override_enabled():
@@ -498,19 +517,19 @@ def test_chat_options_explicit_session_id_wins_over_conversation_id():
     assert out["extra_body"]["session_id"] == "caller-chosen"
 
 
-def test_chat_options_omits_openrouter_session_id_for_other_providers():
+@pytest.mark.parametrize(
+    "model", ["gpt-4o", "claude-opus-4-5-20251101", "gemini/gemini-2.5-pro"]
+)
+def test_chat_options_omits_openrouter_session_id_for_other_providers(model: str):
     """Non-OpenRouter providers must not receive an OpenRouter-only field."""
-    for model in ("gpt-4o", "claude-opus-4-5-20251101", "gemini/gemini-2.5-pro"):
-        llm = DummyLLM(model=model)
-        out = select_chat_options(
-            llm,
-            user_kwargs={},
-            has_tools=True,
-            call_context=LLMCallContext(session_id="conv-abc123"),
-        )
-        assert "extra_body" not in out or "session_id" not in out.get(
-            "extra_body", {}
-        ), model
+    llm = DummyLLM(model=model)
+    out = select_chat_options(
+        llm,
+        user_kwargs={},
+        has_tools=True,
+        call_context=LLMCallContext(session_id="conv-abc123"),
+    )
+    assert "extra_body" not in out or "session_id" not in out.get("extra_body", {})
 
 
 def test_chat_options_omits_openrouter_session_id_when_no_session():
