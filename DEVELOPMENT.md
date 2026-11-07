@@ -57,11 +57,16 @@ For questions, join our [Slack community](https://openhands.dev/joinslack).
 the first `user` message.**
 
 The canonical enforcement lives in `Agent.init_state()`
-(`openhands-sdk/openhands/sdk/agent/agent.py`): it guarantees the `SystemPromptEvent`
-sits at the head of the event stream (index 0/1) and raises `AssertionError` if a user
-`MessageEvent` appears before it. `LLMConvertibleEvent.events_to_messages()`
-(`openhands-sdk/openhands/sdk/event/base.py`) projects the event stream to messages in
-order, preserving the system lead-in on the main agent loop.
+(`openhands-sdk/openhands/sdk/agent/agent.py`): it treats the first
+LLM-convertible event as the system-prompt check, so non-LLM preamble events
+(state updates, hook executions) cannot hide an existing `SystemPromptEvent`.
+It raises `AssertionError` if that first event is a user `MessageEvent`.
+`prepare_llm_messages()` / `aprepare_llm_messages()` then keep a single
+`system` message at index 0, dropping any later one.
+`LLMConvertibleEvent.events_to_messages()`
+(`openhands-sdk/openhands/sdk/event/base.py`) projects the event stream to
+messages in order; the prepare step restores the lead-in when a resumed log
+already contains a duplicate `SystemPromptEvent`.
 
 This applies to **all** standalone LLM calls, not just the agent loop: condensers, goal
 judges, agent-server profile pre-flight pings, security analyzers, title generation,

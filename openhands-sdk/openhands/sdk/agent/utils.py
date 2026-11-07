@@ -645,6 +645,7 @@ def prepare_llm_messages(
     if additional_messages:
         messages.extend(additional_messages)
 
+    messages = _with_single_leading_system_message(messages)
     _ensure_trailing_user_message(messages)
     return messages
 
@@ -681,5 +682,24 @@ async def aprepare_llm_messages(
     if additional_messages:
         messages.extend(additional_messages)
 
+    messages = _with_single_leading_system_message(messages)
     _ensure_trailing_user_message(messages)
     return messages
+
+
+def _with_single_leading_system_message(messages: list[Message]) -> list[Message]:
+    """Keep one system message at index 0.
+
+    Chat templates reject a system message anywhere else. A healthy history
+    already has that shape and is returned unchanged. Later system messages
+    are dropped; a system message that is not first is moved to index 0.
+    """
+    system_indexes = [
+        index for index, message in enumerate(messages) if message.role == "system"
+    ]
+    if not system_indexes or system_indexes == [0]:
+        return messages
+    leading = messages[system_indexes[0]]
+    skipped = set(system_indexes)
+    rest = [message for index, message in enumerate(messages) if index not in skipped]
+    return [leading, *rest]

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -40,6 +40,7 @@ from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
     Event,
+    LLMConvertibleEvent,
     MessageEvent,
     ObservationEvent,
     SystemPromptEvent,
@@ -119,9 +120,20 @@ def _tool_has_summary_param(tool: ToolDefinition) -> bool:
     return False
 
 
-# Maximum number of events to scan during init_state defensive checks.
-# SystemPromptEvent must appear within this prefix (at index 0 or 1).
-INIT_STATE_PREFIX_SCAN_WINDOW = 3
+def _first_llm_convertible_event(
+    events: Sequence[Event],
+) -> LLMConvertibleEvent | None:
+    """Return the first event the model would see.
+
+    State updates and hook executions are not model-visible, so they can sit
+    in front of the system prompt. Reading stops at the first LLM-convertible
+    event; the rest of the log stays on disk.
+    """
+    for index in range(len(events)):
+        event = events[index]
+        if isinstance(event, LLMConvertibleEvent):
+            return event
+    return None
 
 
 def _latest_user_message_contains_image(messages: list[Message]) -> bool:
@@ -505,10 +517,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         """Initialize conversation state.
 
         Invariants enforced by this method:
-        - If a SystemPromptEvent is already present, it must be within the first 3
-          events (index 0 or 1 in practice; index 2 is included in the scan window
-          to detect a user message appearing before the system prompt).
-        - A user MessageEvent should not appear before the SystemPromptEvent.
+        - An existing SystemPromptEvent is recognized when it is the first
+          LLM-convertible event, even if non-LLM preamble events precede it.
+        - A user MessageEvent must not be that first LLM-convertible event.
 
         These invariants keep event ordering predictable for downstream components
         (condenser, UI, etc.) and also prevent accidentally materializing the full
@@ -523,28 +534,13 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # NOTE: len() is O(1) for EventLog (file-backed implementation).
         event_count = len(state.events)
 
-        # NOTE: state.events is intentionally an EventsListBase (Sequence-like), not
-        # a plain list. Avoid materializing the full history via list(state.events)
-        # here (conversations can reach 30k+ events).
-        #
-        # Invariant: when init_state is called, SystemPromptEvent (if present) must be
-        # at index 0 or 1.
-        #
-        # Rationale:
-        # - Local conversations start empty and init_state is responsible for adding
-        #   the SystemPromptEvent as the first event.
-        # - Remote conversations may receive an initial ConversationStateUpdateEvent
-        #   from the agent-server immediately after subscription. In a typical remote
-        #   session prefix you may see:
-        #     [ConversationStateUpdateEvent, SystemPromptEvent, MessageEvent, ...]
-        #
-        # We intentionally only inspect the first few events (cheap for both local and
-        # remote) to enforce this invariant.
-        prefix_events = state.events[:INIT_STATE_PREFIX_SCAN_WINDOW]
-
-        has_system_prompt = any(isinstance(e, SystemPromptEvent) for e in prefix_events)
-        has_user_message = any(
-            isinstance(e, MessageEvent) and e.source == "user" for e in prefix_events
+        # Index one event at a time. list(state.events) would read the whole
+        # log off disk; conversations can reach 30k+ events.
+        first_llm_event = _first_llm_convertible_event(state.events)
+        has_system_prompt = isinstance(first_llm_event, SystemPromptEvent)
+        has_user_message = (
+            isinstance(first_llm_event, MessageEvent)
+            and first_llm_event.source == "user"
         )
         # Log state for debugging initialization order issues
         logger.debug(
@@ -568,7 +564,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # earlier resume re-created under the same id.
         restored_prompt_id: EventID | None = None
         if has_user_message:
-            parent_id = state.events[0].parent_id
+            assert isinstance(first_llm_event, MessageEvent)
+            parent_id = first_llm_event.parent_id
             if parent_id is not None and parent_id in state.events:
                 parent = state.events[state.events.get_index(parent_id)]
                 if isinstance(parent, SystemPromptEvent):
@@ -576,21 +573,19 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             elif parent_id not in (None, ROOT_PARENT_ID):
                 restored_prompt_id = parent_id
 
-        # Assert: A user message should never appear before the system prompt.
-        #
-        # NOTE: This is a best-effort check based on the first few events only.
-        # Remote conversations can include a ConversationStateUpdateEvent near the
-        # start, so we scan a small prefix window.
+        # A user message must not be the first model-visible event. Appending
+        # a system prompt after it would place that prompt mid-history.
         if has_user_message and restored_prompt_id is None:
-            event_types = [type(e).__name__ for e in prefix_events]
+            assert isinstance(first_llm_event, MessageEvent)
+            event_type = type(first_llm_event).__name__
             logger.error(
-                f"init_state: User message found in prefix before SystemPromptEvent! "
-                f"conversation_id={state.id}, prefix_events={event_types}"
+                f"init_state: User message found before SystemPromptEvent! "
+                f"conversation_id={state.id}, first_llm_event={event_type}"
             )
             raise AssertionError(
                 "Unexpected state: user message exists before SystemPromptEvent. "
                 f"conversation_id={state.id}, event_count={event_count}, "
-                f"prefix_event_types={event_types}."
+                f"first_llm_event={event_type}."
             )
 
         # Prepare system message with separate static and dynamic content.
