@@ -48,7 +48,7 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
 )
 from openhands.agent_server.persistence import FileSecretsStore
-from openhands.agent_server.project_board import ThreadOutcomeSubscriber
+from openhands.agent_server.project_board import ConversationOutcomeSubscriber
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.telemetry import (
@@ -75,7 +75,7 @@ from openhands.sdk.conversation.title_utils import (
     extract_message_text,
     generate_title_from_message,
 )
-from openhands.sdk.conversation.types import THREAD_STATE_TAG_KEYS
+from openhands.sdk.conversation.types import BOARD_TAG_KEYS
 from openhands.sdk.credential import (
     CredentialAuthorizationRejected,
     CredentialBindingError,
@@ -2291,7 +2291,7 @@ class ConversationService:
                     "tags": {
                         key: value
                         for key, value in parent_stored.tags.items()
-                        if key not in THREAD_STATE_TAG_KEYS
+                        if key not in BOARD_TAG_KEYS
                     },
                 }
             )
@@ -2619,7 +2619,7 @@ class ConversationService:
                 _EventSubscriber(service=event_service)
             )
             await event_service.subscribe_to_events(
-                ThreadOutcomeSubscriber(
+                ConversationOutcomeSubscriber(
                     conversation_id=stored.id,
                     tags=lambda: event_service.stored.tags,
                     set_tag=self.set_conversation_tag,

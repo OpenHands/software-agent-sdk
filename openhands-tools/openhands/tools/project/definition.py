@@ -1,8 +1,8 @@
 """Action, observation, and tool definitions for a project's coordinator.
 
-A project coordinator starts threads with ``start_child_conversation`` (a child
+A project coordinator starts conversations with ``start_child_conversation`` (a child
 copies the coordinator's ``project`` tag, so it joins the project). These two
-tools cover the rest of the loop: see every thread of the project and what it
+tools cover the rest of the loop: see every conversation of the project and what it
 needs, and send one of them a follow-up.
 """
 
@@ -26,8 +26,8 @@ if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
 
 
-class ProjectThreadSummary(BaseModel):
-    """One conversation of the project, as the threads endpoint reports it."""
+class ProjectConversationSummary(BaseModel):
+    """One conversation of the project, as the conversations endpoint reports it."""
 
     conversation_id: UnmaskedID
     title: str | None = None
@@ -40,55 +40,57 @@ class ProjectThreadSummary(BaseModel):
     updated_at: str | None = None
 
 
-# list_project_threads
+# list_project_conversations
 
 
-class ListProjectThreadsAction(Action):
-    """List the threads of this conversation's project."""
+class ListProjectConversationsAction(Action):
+    """List the other conversations in this conversation's project."""
 
     @property
     def visualize(self) -> Text:
-        return Text("List project threads", style="bold cyan")
+        return Text("List project conversations", style="bold cyan")
 
 
-class ListProjectThreadsObservation(Observation):
+class ListProjectConversationsObservation(Observation):
     project_id: UnmaskedID | None = None
-    threads: list[ProjectThreadSummary] = Field(default_factory=list)
+    conversations: list[ProjectConversationSummary] = Field(default_factory=list)
 
     @property
     def visualize(self) -> Text:
         content = Text()
         if self.is_error:
-            content.append("Listing project threads failed", style="bold red")
+            content.append("Listing project conversations failed", style="bold red")
             content.append("\n")
             content.append(self.text)
             return content
-        content.append(f"{len(self.threads)} project threads", style="bold green")
-        for thread in self.threads:
-            content.append(f"\n[{thread.attention}] ")
-            content.append(thread.title or thread.conversation_id)
-            content.append(f" ({thread.execution_status})", style="dim")
+        content.append(
+            f"{len(self.conversations)} project conversations", style="bold green"
+        )
+        for conversation in self.conversations:
+            content.append(f"\n[{conversation.attention}] ")
+            content.append(conversation.title or conversation.conversation_id)
+            content.append(f" ({conversation.execution_status})", style="dim")
         return content
 
 
 _LIST_DESCRIPTION = (
-    "List the threads of the project this conversation coordinates or belongs "
+    "List the conversations of the project this conversation coordinates or belongs "
     "to: every other conversation tagged with the same project, including the "
     "ones you started with start_child_conversation.\n\n"
-    "Threads come grouped by `attention`: `needs_you` (waiting for "
+    "Conversations come grouped by `attention`: `needs_you` (waiting for "
     "confirmation, paused, error or stuck), `needs_input` (finished with a "
     "question for the person), `working` (running), `finished`, `idle` and "
     "`resolved` (the person or a confident critic marked it done). "
     "`finished` means the run ended; it does not say the task succeeded, so "
-    "read the thread before reporting an outcome. Call this again to refresh; "
+    "read the conversation before reporting an outcome. Call this again to refresh; "
     "a previous result is not the current state."
 )
 
 
-class ListProjectThreadsTool(
-    ToolDefinition[ListProjectThreadsAction, ListProjectThreadsObservation]
+class ListProjectConversationsTool(
+    ToolDefinition[ListProjectConversationsAction, ListProjectConversationsObservation]
 ):
-    """Tool that lists the threads of the caller's project."""
+    """Tool that lists the conversations of the caller's project."""
 
     # Attached by the host that runs the projects API, not picked from the
     # catalog.
@@ -111,16 +113,17 @@ class ListProjectThreadsTool(
         """
         if params:
             raise ValueError(
-                f"ListProjectThreadsTool does not accept parameters: {sorted(params)}"
+                "ListProjectConversationsTool does not accept parameters: "
+                f"{sorted(params)}"
             )
-        from openhands.tools.project.impl import ListProjectThreadsExecutor
+        from openhands.tools.project.impl import ListProjectConversationsExecutor
 
         return [
             cls(
                 description=_LIST_DESCRIPTION,
-                action_type=ListProjectThreadsAction,
-                observation_type=ListProjectThreadsObservation,
-                executor=ListProjectThreadsExecutor(conv_state, server_url),
+                action_type=ListProjectConversationsAction,
+                observation_type=ListProjectConversationsObservation,
+                executor=ListProjectConversationsExecutor(conv_state, server_url),
                 annotations=ToolAnnotations(
                     readOnlyHint=True,
                     destructiveHint=False,
@@ -131,22 +134,22 @@ class ListProjectThreadsTool(
         ]
 
 
-# message_project_thread
+# message_project_conversation
 
 
-class MessageProjectThreadAction(Action):
-    """Send a follow-up message to one thread of this conversation's project."""
+class MessageProjectConversationAction(Action):
+    """Send a follow-up message to another conversation in this project."""
 
     conversation_id: str = Field(
         description=(
-            "Id of the thread to message, exactly as list_project_threads or "
-            "start_child_conversation returned it."
+            "Id of the conversation to message, exactly as "
+            "list_project_conversations or start_child_conversation returned it."
         )
     )
     message: str = Field(
         min_length=1,
         description=(
-            "Self-contained message for the thread. It cannot see this "
+            "Self-contained message for the conversation. It cannot see this "
             "conversation, so include the context it needs."
         ),
     )
@@ -154,13 +157,13 @@ class MessageProjectThreadAction(Action):
     @property
     def visualize(self) -> Text:
         content = Text()
-        content.append("Message project thread", style="bold cyan")
+        content.append("Message project conversation", style="bold cyan")
         content.append(f" {self.conversation_id}\n")
         content.append(self.message)
         return content
 
 
-class MessageProjectThreadObservation(Observation):
+class MessageProjectConversationObservation(Observation):
     conversation_id: UnmaskedID | None = None
     previous_status: str | None = None
     run: str | None = Field(
@@ -175,7 +178,7 @@ class MessageProjectThreadObservation(Observation):
     def visualize(self) -> Text:
         content = Text()
         if self.is_error:
-            content.append("Message to project thread failed", style="bold red")
+            content.append("Message to project conversation failed", style="bold red")
             content.append("\n")
             content.append(self.text)
             return content
@@ -186,25 +189,28 @@ class MessageProjectThreadObservation(Observation):
 
 
 _MESSAGE_DESCRIPTION = (
-    "Send a follow-up message to a thread of this conversation's project and "
-    "ask it to run: to correct, resume or extend its task. Only threads that "
-    "list_project_threads reports can be messaged; start a new thread with "
+    "Send a follow-up message to another conversation in your project and "
+    "ask it to run: to correct, resume or extend its task. Only conversations that "
+    "list_project_conversations reports can be messaged; start a new conversation with "
     "start_child_conversation for a distinct task.\n\n"
-    "A running thread receives the message in its current run; a paused, "
-    "finished or idle thread is run to handle it. A thread waiting for the "
+    "A running conversation receives the message in its current run; a paused, "
+    "finished or idle conversation is run to handle it. A conversation waiting for the "
     "person to approve an action is never run by this tool, since that would "
     "approve the action: it is refused, and you should tell the person what "
     "it waits on. A successful result means the message was saved and a run "
-    "was requested, not that the thread acted on it; check "
-    "list_project_threads or read the thread before reporting progress. After "
-    "an error that says the message may still be delivered, do not resend it."
+    "was requested, not that the conversation acted on it; check "
+    "list_project_conversations or read the conversation before reporting "
+    "progress. After an error that says the message may still be delivered, "
+    "do not resend it."
 )
 
 
-class MessageProjectThreadTool(
-    ToolDefinition[MessageProjectThreadAction, MessageProjectThreadObservation]
+class MessageProjectConversationTool(
+    ToolDefinition[
+        MessageProjectConversationAction, MessageProjectConversationObservation
+    ]
 ):
-    """Tool that sends a follow-up message to a thread of the caller's project."""
+    """Tool that sends a follow-up message to a conversation of the caller's project."""
 
     user_selectable: ClassVar[bool] = False
 
@@ -219,22 +225,23 @@ class MessageProjectThreadTool(
 
         Args:
             conv_state: State of the calling conversation; its ``project``
-                tag names the project whose threads it may message.
+                tag names the project whose conversations it may message.
             server_url: Optional agent-server base URL. Defaults to the
                 agent-server running this tool.
         """
         if params:
             raise ValueError(
-                f"MessageProjectThreadTool does not accept parameters: {sorted(params)}"
+                "MessageProjectConversationTool does not accept parameters: "
+                f"{sorted(params)}"
             )
-        from openhands.tools.project.impl import MessageProjectThreadExecutor
+        from openhands.tools.project.impl import MessageProjectConversationExecutor
 
         return [
             cls(
                 description=_MESSAGE_DESCRIPTION,
-                action_type=MessageProjectThreadAction,
-                observation_type=MessageProjectThreadObservation,
-                executor=MessageProjectThreadExecutor(conv_state, server_url),
+                action_type=MessageProjectConversationAction,
+                observation_type=MessageProjectConversationObservation,
+                executor=MessageProjectConversationExecutor(conv_state, server_url),
                 annotations=ToolAnnotations(
                     readOnlyHint=False,
                     destructiveHint=False,
@@ -347,6 +354,6 @@ class SaveProjectArtifactTool(
         ]
 
 
-register_tool(ListProjectThreadsTool.name, ListProjectThreadsTool)
+register_tool(ListProjectConversationsTool.name, ListProjectConversationsTool)
 register_tool(SaveProjectArtifactTool.name, SaveProjectArtifactTool)
-register_tool(MessageProjectThreadTool.name, MessageProjectThreadTool)
+register_tool(MessageProjectConversationTool.name, MessageProjectConversationTool)

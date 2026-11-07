@@ -1,4 +1,4 @@
-"""Tests for the thread-outcome tags a project board groups by."""
+"""Tests for the conversation-outcome tags a project board groups by."""
 
 import asyncio
 import json
@@ -11,11 +11,11 @@ import pytest
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.models import StartConversationRequest
 from openhands.agent_server.project_board import (
-    ThreadOutcomeSubscriber,
+    ConversationOutcomeSubscriber,
     classify_turn,
 )
 from openhands.sdk import LLM, Agent
-from openhands.sdk.conversation.types import THREAD_STATE_TAG_KEYS
+from openhands.sdk.conversation.types import BOARD_TAG_KEYS
 from openhands.sdk.critic.result import CriticResult
 from openhands.sdk.event import (
     ActionEvent,
@@ -49,7 +49,7 @@ def test_classify_turn(text, expected):
     assert classify_turn(text) == expected
 
 
-# ThreadOutcomeSubscriber, with a recording set_tag
+# ConversationOutcomeSubscriber, with a recording set_tag
 
 
 class _Tags:
@@ -75,8 +75,8 @@ class _Tags:
         return self.tags
 
 
-def _subscriber(store: _Tags) -> ThreadOutcomeSubscriber:
-    return ThreadOutcomeSubscriber(
+def _subscriber(store: _Tags) -> ConversationOutcomeSubscriber:
+    return ConversationOutcomeSubscriber(
         conversation_id=uuid4(), tags=lambda: store.tags, set_tag=store.set_tag
     )
 
@@ -120,7 +120,7 @@ def _status(value: str, *, full: bool = False) -> ConversationStateUpdateEvent:
     return ConversationStateUpdateEvent(key="execution_status", value=value)
 
 
-async def _feed(subscriber: ThreadOutcomeSubscriber, *events) -> None:
+async def _feed(subscriber: ConversationOutcomeSubscriber, *events) -> None:
     for event in events:
         await subscriber(event)
     await subscriber.drain()
@@ -168,7 +168,7 @@ async def test_unsure_critic_does_not_resolve():
 
 
 @pytest.mark.asyncio
-async def test_new_user_message_reopens_the_thread():
+async def test_new_user_message_reopens_the_conversation():
     store = _Tags({"project": "p1", "turn": "asked", "resolved": "user"})
 
     await _feed(_subscriber(store), _message("user", "Yes, please add it"))
@@ -177,7 +177,7 @@ async def test_new_user_message_reopens_the_thread():
 
 
 @pytest.mark.asyncio
-async def test_initial_state_push_of_a_finished_thread_changes_nothing():
+async def test_initial_state_push_of_a_finished_conversation_changes_nothing():
     store = _Tags({"project": "p1"})
 
     await _feed(_subscriber(store), _status("finished", full=True))
@@ -217,7 +217,7 @@ async def test_a_failing_tag_write_does_not_break_publishing():
     async def broken(*_args, **_kwargs):
         raise RuntimeError("disk full")
 
-    subscriber = ThreadOutcomeSubscriber(
+    subscriber = ConversationOutcomeSubscriber(
         conversation_id=uuid4(), tags=lambda: {"project": "p1"}, set_tag=broken
     )
 
@@ -270,7 +270,7 @@ async def test_finished_run_tags_a_live_conversation(service, tmp_path):
     cid = await _start(service, tmp_path, {"project": "p1"})
     event_service = await service.get_event_service(cid)
     assert event_service is not None
-    subscriber = ThreadOutcomeSubscriber(
+    subscriber = ConversationOutcomeSubscriber(
         conversation_id=cid,
         tags=lambda: event_service.stored.tags,
         set_tag=service.set_conversation_tag,
@@ -283,8 +283,8 @@ async def test_finished_run_tags_a_live_conversation(service, tmp_path):
     assert info.tags == {"project": "p1", "turn": "asked"}
 
 
-def test_thread_state_tags_are_the_board_tags():
-    assert THREAD_STATE_TAG_KEYS == {"resolved", "turn"}
+def test_board_tag_keys():
+    assert BOARD_TAG_KEYS == {"resolved", "turn"}
 
 
 @pytest.mark.asyncio
@@ -296,7 +296,7 @@ async def test_service_registers_the_subscriber_for_every_conversation(
     assert event_service is not None
 
     # A user message published through the conversation's own pub/sub reaches
-    # the registered subscriber, which reopens the thread.
+    # the registered subscriber, which reopens the conversation.
     await event_service._pub_sub(_message("user", "One more thing"))
 
     async def turn_cleared() -> bool:

@@ -1596,8 +1596,9 @@ class EventService:
             refuse_pending_confirmation: Refuse to run a conversation that is
                 waiting for confirmation. Running it would approve its pending
                 actions, so callers acting for someone other than the person
-                (a coordinator steering a thread) set this. The check is made
-                under the run lock, where no other run can change the status.
+                (a coordinator steering another conversation) set this. The
+                check is made under the run lock, where no other run can
+                change the status.
 
         Raises:
             ValueError: If the service is inactive, the conversation is already

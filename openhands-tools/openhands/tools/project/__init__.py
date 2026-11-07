@@ -1,25 +1,25 @@
 """Project coordinator tool package.
 
-Provides ``list_project_threads``, ``message_project_thread`` and
+Provides ``list_project_conversations``, ``message_project_conversation`` and
 ``save_project_artifact``: server-executed tools that let a conversation see
-the threads of its agent-server project, send one of them a follow-up, and
+the conversations of its agent-server project, send one of them a follow-up, and
 save a file it made to the project's artifacts. Together with
 ``start_child_conversation`` (a child copies its parent's ``project`` tag) they
 give a project coordinator typed actions to start, follow and steer its
-threads.
+conversations.
 
 Usage:
     from openhands.tools.project import (
-        ListProjectThreadsTool,
-        MessageProjectThreadTool,
+        ListProjectConversationsTool,
+        MessageProjectConversationTool,
     )
 
     agent = Agent(
         llm=llm,
         tools=[
             Tool(name=StartChildConversationTool.name),
-            Tool(name=ListProjectThreadsTool.name),
-            Tool(name=MessageProjectThreadTool.name),
+            Tool(name=ListProjectConversationsTool.name),
+            Tool(name=MessageProjectConversationTool.name),
         ],
     )
 
@@ -28,34 +28,34 @@ preset: they need the agent-server's projects API.
 """
 
 from openhands.tools.project.definition import (
-    ListProjectThreadsAction,
-    ListProjectThreadsObservation,
-    ListProjectThreadsTool,
-    MessageProjectThreadAction,
-    MessageProjectThreadObservation,
-    MessageProjectThreadTool,
-    ProjectThreadSummary,
+    ListProjectConversationsAction,
+    ListProjectConversationsObservation,
+    ListProjectConversationsTool,
+    MessageProjectConversationAction,
+    MessageProjectConversationObservation,
+    MessageProjectConversationTool,
+    ProjectConversationSummary,
     SaveProjectArtifactAction,
     SaveProjectArtifactObservation,
     SaveProjectArtifactTool,
 )
 from openhands.tools.project.impl import (
-    ListProjectThreadsExecutor,
-    MessageProjectThreadExecutor,
+    ListProjectConversationsExecutor,
+    MessageProjectConversationExecutor,
     SaveProjectArtifactExecutor,
 )
 
 
 __all__ = [
-    "ListProjectThreadsAction",
-    "ListProjectThreadsExecutor",
-    "ListProjectThreadsObservation",
-    "ListProjectThreadsTool",
-    "MessageProjectThreadAction",
-    "MessageProjectThreadExecutor",
-    "MessageProjectThreadObservation",
-    "MessageProjectThreadTool",
-    "ProjectThreadSummary",
+    "ListProjectConversationsAction",
+    "ListProjectConversationsExecutor",
+    "ListProjectConversationsObservation",
+    "ListProjectConversationsTool",
+    "MessageProjectConversationAction",
+    "MessageProjectConversationExecutor",
+    "MessageProjectConversationObservation",
+    "MessageProjectConversationTool",
+    "ProjectConversationSummary",
     "SaveProjectArtifactAction",
     "SaveProjectArtifactExecutor",
     "SaveProjectArtifactObservation",

@@ -8,12 +8,12 @@ from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.project import (
-    ListProjectThreadsAction,
-    ListProjectThreadsExecutor,
-    ListProjectThreadsTool,
-    MessageProjectThreadAction,
-    MessageProjectThreadExecutor,
-    MessageProjectThreadTool,
+    ListProjectConversationsAction,
+    ListProjectConversationsExecutor,
+    ListProjectConversationsTool,
+    MessageProjectConversationAction,
+    MessageProjectConversationExecutor,
+    MessageProjectConversationTool,
 )
 
 
@@ -30,7 +30,7 @@ def _conv_state(tmp_path, tags: dict[str, str] | None = None) -> ConversationSta
     return state
 
 
-def _thread(status: str, attention: str, title: str = "worker") -> dict:
+def _conversation(status: str, attention: str, title: str = "worker") -> dict:
     return {
         "conversation_id": uuid4().hex,
         "title": title,
@@ -47,11 +47,11 @@ class _Server:
 
     def __init__(
         self,
-        threads: list[dict],
+        conversations: list[dict],
         coordinator: dict | None = None,
         message_response: httpx.Response | Exception | None = None,
     ):
-        self.threads = threads
+        self.conversations = conversations
         self.coordinator = coordinator
         self.message_response = message_response
         self.requests: list[httpx.Request] = []
@@ -59,13 +59,16 @@ class _Server:
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         path = request.url.path
-        if request.method == "GET" and path == f"/api/projects/{PROJECT_ID}/threads":
+        if (
+            request.method == "GET"
+            and path == f"/api/projects/{PROJECT_ID}/conversations"
+        ):
             return httpx.Response(
                 200,
                 json={
                     "project_id": PROJECT_ID,
                     "coordinator": self.coordinator,
-                    "threads": self.threads,
+                    "conversations": self.conversations,
                 },
             )
         if request.method == "POST" and path.endswith("/messages"):
@@ -76,7 +79,7 @@ class _Server:
             target = path.split("/")[-2]
             status = next(
                 t["execution_status"]
-                for t in self.threads
+                for t in self.conversations
                 if t["conversation_id"] == target
             )
             return httpx.Response(
@@ -100,67 +103,69 @@ def _server_env(monkeypatch):
 
 
 def test_tool_names():
-    assert ListProjectThreadsTool.name == "list_project_threads"
-    assert MessageProjectThreadTool.name == "message_project_thread"
+    assert ListProjectConversationsTool.name == "list_project_conversations"
+    assert MessageProjectConversationTool.name == "message_project_conversation"
 
 
 def test_tools_bind_to_conversation_and_reject_parameters(tmp_path):
     state = _conv_state(tmp_path)
 
-    (list_tool,) = ListProjectThreadsTool.create(state)
-    (message_tool,) = MessageProjectThreadTool.create(state, server_url="http://x")
+    (list_tool,) = ListProjectConversationsTool.create(state)
+    (message_tool,) = MessageProjectConversationTool.create(
+        state, server_url="http://x"
+    )
 
-    assert isinstance(list_tool.executor, ListProjectThreadsExecutor)
-    assert isinstance(message_tool.executor, MessageProjectThreadExecutor)
+    assert isinstance(list_tool.executor, ListProjectConversationsExecutor)
+    assert isinstance(message_tool.executor, MessageProjectConversationExecutor)
     assert list_tool.annotations is not None and list_tool.annotations.readOnlyHint
     with pytest.raises(ValueError, match="does not accept parameters"):
-        ListProjectThreadsTool.create(state, project="x")
+        ListProjectConversationsTool.create(state, project="x")
 
 
 def test_list_reads_project_from_tags_with_session_key(tmp_path):
-    threads = [
-        _thread("waiting_for_confirmation", "needs_you", "asks"),
-        _thread("running", "working", "busy"),
+    conversations = [
+        _conversation("waiting_for_confirmation", "needs_you", "asks"),
+        _conversation("running", "working", "busy"),
     ]
-    server = _Server(threads)
-    executor = ListProjectThreadsExecutor(
+    server = _Server(conversations)
+    executor = ListProjectConversationsExecutor(
         _conv_state(tmp_path), transport=httpx.MockTransport(server)
     )
 
-    observation = executor(ListProjectThreadsAction())
+    observation = executor(ListProjectConversationsAction())
 
     assert not observation.is_error
     (request,) = server.requests
     assert str(request.url) == (
-        f"http://agent-server:9000/api/projects/{PROJECT_ID}/threads"
+        f"http://agent-server:9000/api/projects/{PROJECT_ID}/conversations"
     )
     assert request.headers["X-Session-API-Key"] == "session-key"
     assert observation.project_id == PROJECT_ID
-    assert [t.title for t in observation.threads] == ["asks", "busy"]
+    assert [t.title for t in observation.conversations] == ["asks", "busy"]
     assert "[needs_you] asks" in observation.text
     assert "[working] busy" in observation.text
 
 
 def test_list_leaves_out_the_caller(tmp_path):
     state = _conv_state(tmp_path)
-    me = _thread("running", "working", "me") | {"conversation_id": state.id.hex}
-    other = _thread("idle", "idle", "other")
-    executor = ListProjectThreadsExecutor(
+    me = _conversation("running", "working", "me") | {"conversation_id": state.id.hex}
+    other = _conversation("idle", "idle", "other")
+    executor = ListProjectConversationsExecutor(
         state, transport=httpx.MockTransport(_Server([me, other]))
     )
 
-    observation = executor(ListProjectThreadsAction())
+    observation = executor(ListProjectConversationsAction())
 
-    assert [t.title for t in observation.threads] == ["other"]
+    assert [t.title for t in observation.conversations] == ["other"]
 
 
 def test_list_without_project_tag_makes_no_request(tmp_path):
     server = _Server([])
-    executor = ListProjectThreadsExecutor(
+    executor = ListProjectConversationsExecutor(
         _conv_state(tmp_path, tags={}), transport=httpx.MockTransport(server)
     )
 
-    observation = executor(ListProjectThreadsAction())
+    observation = executor(ListProjectConversationsAction())
 
     assert observation.is_error
     assert "not part of a project" in observation.text
@@ -168,12 +173,12 @@ def test_list_without_project_tag_makes_no_request(tmp_path):
 
 
 def test_list_reports_server_errors(tmp_path):
-    executor = ListProjectThreadsExecutor(
+    executor = ListProjectConversationsExecutor(
         _conv_state(tmp_path, tags={"project": uuid4().hex}),
         transport=httpx.MockTransport(_Server([])),
     )
 
-    observation = executor(ListProjectThreadsAction())
+    observation = executor(ListProjectConversationsAction())
 
     assert observation.is_error
     assert "(404): Project not found" in observation.text
@@ -189,49 +194,51 @@ def test_list_reports_server_errors(tmp_path):
         ("running", "working"),
     ],
 )
-def test_message_posts_to_member_thread(tmp_path, status, attention):
-    thread = _thread(status, attention)
-    server = _Server([thread])
-    executor = MessageProjectThreadExecutor(
+def test_message_posts_to_member_conversation(tmp_path, status, attention):
+    conversation = _conversation(status, attention)
+    server = _Server([conversation])
+    executor = MessageProjectConversationExecutor(
         _conv_state(tmp_path), transport=httpx.MockTransport(server)
     )
-    hyphenated = str(UUID(thread["conversation_id"]))
+    hyphenated = str(UUID(conversation["conversation_id"]))
 
     observation = executor(
-        MessageProjectThreadAction(conversation_id=hyphenated, message="Also add docs")
+        MessageProjectConversationAction(
+            conversation_id=hyphenated, message="Also add docs"
+        )
     )
 
     assert not observation.is_error, observation.text
     (post,) = server.posts()
     assert post.url.path == (
-        f"/api/projects/{PROJECT_ID}/threads/{thread['conversation_id']}/messages"
+        f"/api/projects/{PROJECT_ID}/conversations/{conversation['conversation_id']}/messages"
     )
     assert json.loads(post.content) == {"text": "Also add docs"}
-    assert observation.conversation_id == thread["conversation_id"]
+    assert observation.conversation_id == conversation["conversation_id"]
     assert observation.previous_status == status
     assert observation.run == "started"
 
 
 def test_message_reports_confirmation_reached_during_delivery(tmp_path):
-    thread = _thread("running", "working")
+    conversation = _conversation("running", "working")
     server = _Server(
-        [thread],
+        [conversation],
         message_response=httpx.Response(
             200,
             json={
-                "conversation_id": thread["conversation_id"],
+                "conversation_id": conversation["conversation_id"],
                 "previous_status": "running",
                 "run": "waiting_for_confirmation",
             },
         ),
     )
-    executor = MessageProjectThreadExecutor(
+    executor = MessageProjectConversationExecutor(
         _conv_state(tmp_path), transport=httpx.MockTransport(server)
     )
 
     observation = executor(
-        MessageProjectThreadAction(
-            conversation_id=thread["conversation_id"], message="x"
+        MessageProjectConversationAction(
+            conversation_id=conversation["conversation_id"], message="x"
         )
     )
 
@@ -241,20 +248,20 @@ def test_message_reports_confirmation_reached_during_delivery(tmp_path):
 
 
 def test_message_maps_server_409_to_refusal(tmp_path):
-    thread = _thread("idle", "idle")
+    conversation = _conversation("idle", "idle")
     server = _Server(
-        [thread],
+        [conversation],
         message_response=httpx.Response(
             409, json={"detail": "Conversation is waiting for confirmation"}
         ),
     )
-    executor = MessageProjectThreadExecutor(
+    executor = MessageProjectConversationExecutor(
         _conv_state(tmp_path), transport=httpx.MockTransport(server)
     )
 
     observation = executor(
-        MessageProjectThreadAction(
-            conversation_id=thread["conversation_id"], message="x"
+        MessageProjectConversationAction(
+            conversation_id=conversation["conversation_id"], message="x"
         )
     )
 
@@ -263,15 +270,15 @@ def test_message_maps_server_409_to_refusal(tmp_path):
 
 
 def test_message_timeout_says_not_to_resend(tmp_path):
-    thread = _thread("running", "working")
-    server = _Server([thread], message_response=httpx.ReadTimeout("slow"))
-    executor = MessageProjectThreadExecutor(
+    conversation = _conversation("running", "working")
+    server = _Server([conversation], message_response=httpx.ReadTimeout("slow"))
+    executor = MessageProjectConversationExecutor(
         _conv_state(tmp_path), timeout=1, transport=httpx.MockTransport(server)
     )
 
     observation = executor(
-        MessageProjectThreadAction(
-            conversation_id=thread["conversation_id"], message="x"
+        MessageProjectConversationAction(
+            conversation_id=conversation["conversation_id"], message="x"
         )
     )
 
@@ -280,16 +287,16 @@ def test_message_timeout_says_not_to_resend(tmp_path):
     assert "Do not send it again" in observation.text
 
 
-def test_message_refuses_thread_waiting_for_confirmation(tmp_path):
-    thread = _thread("waiting_for_confirmation", "needs_you")
-    server = _Server([thread])
-    executor = MessageProjectThreadExecutor(
+def test_message_refuses_conversation_waiting_for_confirmation(tmp_path):
+    conversation = _conversation("waiting_for_confirmation", "needs_you")
+    server = _Server([conversation])
+    executor = MessageProjectConversationExecutor(
         _conv_state(tmp_path), transport=httpx.MockTransport(server)
     )
 
     observation = executor(
-        MessageProjectThreadAction(
-            conversation_id=thread["conversation_id"], message="go ahead"
+        MessageProjectConversationAction(
+            conversation_id=conversation["conversation_id"], message="go ahead"
         )
     )
 
@@ -299,29 +306,31 @@ def test_message_refuses_thread_waiting_for_confirmation(tmp_path):
 
 
 def test_message_refuses_conversation_outside_project(tmp_path):
-    coordinator = _thread("idle", "idle", "coordinator")
-    server = _Server([_thread("idle", "idle")], coordinator=coordinator)
-    executor = MessageProjectThreadExecutor(
+    coordinator = _conversation("idle", "idle", "coordinator")
+    server = _Server([_conversation("idle", "idle")], coordinator=coordinator)
+    executor = MessageProjectConversationExecutor(
         _conv_state(tmp_path), transport=httpx.MockTransport(server)
     )
 
     for target in (uuid4().hex, coordinator["conversation_id"]):
         observation = executor(
-            MessageProjectThreadAction(conversation_id=target, message="hi")
+            MessageProjectConversationAction(conversation_id=target, message="hi")
         )
         assert observation.is_error
-        assert "is not a thread of this project" in observation.text
+        assert "is not a conversation of this project" in observation.text
     assert server.posts() == []
 
 
 def test_message_rejects_malformed_id_without_requests(tmp_path):
     server = _Server([])
-    executor = MessageProjectThreadExecutor(
+    executor = MessageProjectConversationExecutor(
         _conv_state(tmp_path), transport=httpx.MockTransport(server)
     )
 
     observation = executor(
-        MessageProjectThreadAction(conversation_id="Docs thread", message="hi")
+        MessageProjectConversationAction(
+            conversation_id="Docs conversation", message="hi"
+        )
     )
 
     assert observation.is_error
@@ -331,13 +340,13 @@ def test_message_rejects_malformed_id_without_requests(tmp_path):
 
 def test_message_reads_project_at_call_time(tmp_path):
     state = _conv_state(tmp_path, tags={})
-    thread = _thread("idle", "idle")
-    server = _Server([thread])
-    executor = MessageProjectThreadExecutor(
+    conversation = _conversation("idle", "idle")
+    server = _Server([conversation])
+    executor = MessageProjectConversationExecutor(
         state, transport=httpx.MockTransport(server)
     )
-    action = MessageProjectThreadAction(
-        conversation_id=thread["conversation_id"], message="hi"
+    action = MessageProjectConversationAction(
+        conversation_id=conversation["conversation_id"], message="hi"
     )
 
     before = executor(action)

@@ -3,7 +3,7 @@
 Both executors talk to the agent-server that runs them, through the same
 internal URL and session key as ``start_child_conversation``. The project is
 read from the calling conversation's ``project`` tag at call time, so a
-conversation can only see and message threads of its own project.
+conversation can only see and message conversations of its own project.
 """
 
 import json
@@ -22,11 +22,11 @@ from openhands.tools.child_conversation.impl import (
     session_api_key_headers,
 )
 from openhands.tools.project.definition import (
-    ListProjectThreadsAction,
-    ListProjectThreadsObservation,
-    MessageProjectThreadAction,
-    MessageProjectThreadObservation,
-    ProjectThreadSummary,
+    ListProjectConversationsAction,
+    ListProjectConversationsObservation,
+    MessageProjectConversationAction,
+    MessageProjectConversationObservation,
+    ProjectConversationSummary,
     SaveProjectArtifactAction,
     SaveProjectArtifactObservation,
 )
@@ -40,8 +40,8 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 PROJECT_TOOL_TIMEOUT_SECONDS = 30.0
-# Delivering a message waits for the thread's state lock, which a running
-# thread holds for a whole tool call; mirror the child-launch timeout.
+# Delivering a message waits for the conversation's state lock, which a running
+# conversation holds for a whole tool call; mirror the child-launch timeout.
 PROJECT_MESSAGE_TIMEOUT_SECONDS = 300.0
 
 _NOT_IN_PROJECT = (
@@ -105,29 +105,29 @@ class _ProjectClient:
                 f"{method} {path} failed: {type(exc).__name__}: {exc}"
             ) from exc
 
-    def threads(self) -> tuple[str, list[ProjectThreadSummary]]:
+    def conversations(self) -> tuple[str, list[ProjectConversationSummary]]:
         project_id = self.project_id()
-        response = self.request("GET", f"/api/projects/{project_id}/threads")
+        response = self.request("GET", f"/api/projects/{project_id}/conversations")
         try:
             body = response.json()
-            threads = [
-                ProjectThreadSummary.model_validate(item)
-                for item in body.get("threads", [])
+            conversations = [
+                ProjectConversationSummary.model_validate(item)
+                for item in body.get("conversations", [])
             ]
         except (ValueError, AttributeError, ValidationError) as exc:
             raise ProjectToolError(
-                f"Unexpected project threads response: {exc}"
+                f"Unexpected project conversations response: {exc}"
             ) from exc
-        # The caller is never its own thread; leave it out when the caller is a
-        # thread rather than the coordinator.
+        # The caller is never its own conversation; leave it out when the caller is a
+        # conversation rather than the coordinator.
         own_id = self.conv_state.id.hex
-        return project_id, [t for t in threads if t.conversation_id != own_id]
+        return project_id, [t for t in conversations if t.conversation_id != own_id]
 
 
-class ListProjectThreadsExecutor(
-    ToolExecutor[ListProjectThreadsAction, ListProjectThreadsObservation]
+class ListProjectConversationsExecutor(
+    ToolExecutor[ListProjectConversationsAction, ListProjectConversationsObservation]
 ):
-    """GET the caller's project threads and report them."""
+    """GET the caller's project conversations and report them."""
 
     def __init__(
         self,
@@ -140,15 +140,17 @@ class ListProjectThreadsExecutor(
 
     def __call__(
         self,
-        action: ListProjectThreadsAction,  # noqa: ARG002
+        action: ListProjectConversationsAction,  # noqa: ARG002
         conversation: "LocalConversation | None" = None,  # noqa: ARG002
-    ) -> ListProjectThreadsObservation:
+    ) -> ListProjectConversationsObservation:
         try:
-            project_id, threads = self._client.threads()
+            project_id, conversations = self._client.conversations()
         except ProjectToolError as exc:
-            return ListProjectThreadsObservation.from_text(text=str(exc), is_error=True)
+            return ListProjectConversationsObservation.from_text(
+                text=str(exc), is_error=True
+            )
 
-        if threads:
+        if conversations:
             lines = [
                 f"- [{t.attention}] {t.title or '(untitled)'} "
                 f"(id: {t.conversation_id}, status: {t.execution_status}"
@@ -158,22 +160,23 @@ class ListProjectThreadsExecutor(
                     else ""
                 )
                 + ")"
-                for t in threads
+                for t in conversations
             ]
-            text = f"Project {project_id} has {len(threads)} threads:\n" + "\n".join(
-                lines
+            text = (
+                f"Project {project_id} has {len(conversations)} conversations:\n"
+                + "\n".join(lines)
             )
         else:
-            text = f"Project {project_id} has no threads yet."
-        return ListProjectThreadsObservation.from_text(
-            text=text, project_id=project_id, threads=threads
+            text = f"Project {project_id} has no conversations yet."
+        return ListProjectConversationsObservation.from_text(
+            text=text, project_id=project_id, conversations=conversations
         )
 
 
 _RUN_OUTCOMES = {
     "started": "It was {status}; a run was started for it.",
     "queued": (
-        "A run was already active: it takes the message, or the thread runs "
+        "A run was already active: it takes the message, or the conversation runs "
         "again when it ends, unless that run stops at a confirmation first."
     ),
     "waiting_for_confirmation": (
@@ -188,22 +191,25 @@ _RUN_OUTCOMES = {
 }
 
 _WAITING_REFUSAL = (
-    "Thread {id} is waiting for the person to approve or reject an action. "
+    "Conversation {id} is waiting for the person to approve or reject an action. "
     "Running it now would approve that action, so nothing was sent. Tell the "
     "person what it is waiting on."
 )
 
 
-class MessageProjectThreadExecutor(
-    ToolExecutor[MessageProjectThreadAction, MessageProjectThreadObservation]
+class MessageProjectConversationExecutor(
+    ToolExecutor[
+        MessageProjectConversationAction, MessageProjectConversationObservation
+    ]
 ):
-    """Send a message to a thread of the caller's project.
+    """Send a message to a conversation of the caller's project.
 
-    The thread must be listed by the project's threads endpoint. Delivery goes
-    through ``POST /api/projects/{id}/threads/{conversation_id}/messages``,
-    which never runs a thread that is waiting for confirmation (that run would
-    approve the pending action); the server decides it under the thread's run
-    lock. A thread already waiting is refused before anything is sent.
+    The conversation must be listed by the project's conversations endpoint.
+    Delivery goes through
+    ``POST /api/projects/{id}/conversations/{conversation_id}/messages``, which
+    never runs a conversation that is waiting for confirmation (that run would
+    approve the pending action); the server decides it under the conversation's
+    run lock. A conversation already waiting is refused before anything is sent.
     """
 
     def __init__(
@@ -217,9 +223,9 @@ class MessageProjectThreadExecutor(
 
     def __call__(
         self,
-        action: MessageProjectThreadAction,
+        action: MessageProjectConversationAction,
         conversation: "LocalConversation | None" = None,  # noqa: ARG002
-    ) -> MessageProjectThreadObservation:
+    ) -> MessageProjectConversationObservation:
         try:
             try:
                 target_id = UUID(action.conversation_id.strip()).hex
@@ -227,16 +233,18 @@ class MessageProjectThreadExecutor(
                 raise ProjectToolError(
                     f"{action.conversation_id!r} is not a conversation id."
                 )
-            project_id, threads = self._client.threads()
-            target = next((t for t in threads if t.conversation_id == target_id), None)
+            project_id, conversations = self._client.conversations()
+            target = next(
+                (t for t in conversations if t.conversation_id == target_id), None
+            )
             if target is None:
                 raise ProjectToolError(
-                    f"{action.conversation_id} is not a thread of this project. "
-                    "Use list_project_threads to find the right id."
+                    f"{action.conversation_id} is not a conversation of this project. "
+                    "Use list_project_conversations to find the right id."
                 )
             if target.execution_status == "waiting_for_confirmation":
                 raise ProjectToolError(_WAITING_REFUSAL.format(id=target_id))
-            path = f"/api/projects/{project_id}/threads/{target_id}/messages"
+            path = f"/api/projects/{project_id}/conversations/{target_id}/messages"
             try:
                 response = self._client.request(
                     "POST", path, json={"text": action.message}
@@ -244,14 +252,15 @@ class MessageProjectThreadExecutor(
             except ProjectToolError as exc:
                 cause = exc.__cause__
                 if isinstance(cause, httpx.TimeoutException):
-                    # A thread in the middle of a long tool call holds its
+                    # A conversation in the middle of a long tool call holds its
                     # state lock, so the server may still save the message
                     # after we stop waiting.
                     raise ProjectToolError(
-                        f"No answer from thread {target_id} after "
+                        f"No answer from conversation {target_id} after "
                         f"{self._client.timeout:.0f} seconds. The message may "
                         "still be delivered. Do not send it again; check the "
-                        "thread with list_project_threads or tell the person."
+                        "conversation with list_project_conversations or tell "
+                        "the person."
                     ) from exc
                 if (
                     isinstance(cause, httpx.HTTPStatusError)
@@ -271,7 +280,7 @@ class MessageProjectThreadExecutor(
                     "been delivered; check before sending it again."
                 ) from exc
         except ProjectToolError as exc:
-            return MessageProjectThreadObservation.from_text(
+            return MessageProjectConversationObservation.from_text(
                 text=str(exc), is_error=True
             )
 
@@ -279,8 +288,8 @@ class MessageProjectThreadExecutor(
             run, f"The server reported run outcome {run!r}."
         ).format(status=previous_status)
         text = (
-            f"Message saved to thread {target_id}. {outcome} "
-            "Check list_project_threads before reporting what it did.\n"
+            f"Message saved to conversation {target_id}. {outcome} "
+            "Check list_project_conversations before reporting what it did.\n"
             + json.dumps(
                 {
                     "conversation_id": target_id,
@@ -289,7 +298,7 @@ class MessageProjectThreadExecutor(
                 }
             )
         )
-        return MessageProjectThreadObservation.from_text(
+        return MessageProjectConversationObservation.from_text(
             text=text,
             conversation_id=target_id,
             previous_status=previous_status,

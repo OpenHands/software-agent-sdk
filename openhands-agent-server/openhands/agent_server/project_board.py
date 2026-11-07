@@ -1,6 +1,6 @@
-"""Record how a project thread's turn ended, for the project board.
+"""Record how a project conversation's turn ended, for the project board.
 
-When a conversation in a project finishes a run, :class:`ThreadOutcomeSubscriber`
+When a conversation in a project finishes a run, :class:`ConversationOutcomeSubscriber`
 tags it with how the agent's last message ended (``turn=asked`` or
 ``turn=answered``) and, when the critic is confident the task succeeded, marks
 it resolved (``resolved=auto``). A new user message removes both tags, since
@@ -26,9 +26,9 @@ from openhands.sdk.conversation.impl.local_conversation import (
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.title_utils import extract_message_text
 from openhands.sdk.conversation.types import (
+    BOARD_TAG_KEYS,
     PROJECT_TAG_KEY,
     RESOLVED_TAG_KEY,
-    THREAD_STATE_TAG_KEYS,
     TURN_TAG_KEY,
 )
 from openhands.sdk.event import (
@@ -45,7 +45,7 @@ from openhands.sdk.tool.builtins.finish import FinishAction
 logger = get_logger(__name__)
 
 AUTO_RESOLVE_THRESHOLD: Final[float] = 0.9
-"""Critic score at or above which a finished thread is marked resolved."""
+"""Critic score at or above which a finished conversation is marked resolved."""
 
 TurnOutcome = Literal["asked", "answered"]
 ResolvedBy = Literal["user", "auto"]
@@ -66,7 +66,7 @@ def classify_turn(text: str | None) -> TurnOutcome:
 
     Looks at the last paragraph outside code blocks: it asks when a sentence
     there ends with a question mark. This is a heuristic; it errs towards
-    ``answered``, which keeps a thread out of the "needs input" group.
+    ``answered``, which keeps a conversation out of the "needs input" group.
     """
     if not text:
         return "answered"
@@ -97,7 +97,7 @@ def _finished(event: ConversationStateUpdateEvent) -> bool:
 
 
 @dataclass
-class ThreadOutcomeSubscriber(Subscriber[Event]):
+class ConversationOutcomeSubscriber(Subscriber[Event]):
     """Tag a project conversation with how its runs end.
 
     ``tags`` returns the conversation's current tags; only conversations with a
@@ -136,7 +136,7 @@ class ThreadOutcomeSubscriber(Subscriber[Event]):
                 self._asked_since_user = False
                 # Reopen any conversation the person resolved, in a project
                 # or not; recording outcomes is limited to project members.
-                if any(key in self.tags() for key in THREAD_STATE_TAG_KEYS):
+                if any(key in self.tags() for key in BOARD_TAG_KEYS):
                     self._enqueue(self._reopen)
             elif event.source == "agent":
                 self._note_agent_output(extract_message_text(event), event)

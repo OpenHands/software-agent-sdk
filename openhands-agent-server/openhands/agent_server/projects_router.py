@@ -1,13 +1,14 @@
 """HTTP endpoints for projects.
 
 A project groups the conversations that work toward one goal. The person
-mainly talks to one of them, the coordinator; the others are its threads.
+mainly talks to one of them, the coordinator, which starts and steers the
+others.
 Projects are persisted on the agent-server (file-backed JSON) so that every
 client connected to the same server sees the same list.
 
 Membership lives on the conversations, not in the project record: a
 conversation belongs to a project when its ``project`` tag holds the project's
-id. Child conversations copy their parent's tags, so the threads a coordinator
+id. Child conversations copy their parent's tags, so the conversations a coordinator
 starts with ``start_child_conversation`` join its project without another call.
 """
 
@@ -77,11 +78,11 @@ AUTOMATION_ID_TAG_KEY = "automationid"
 
 
 class ProjectAttention(str, Enum):
-    """What a thread needs from the person.
+    """What a conversation needs from the person.
 
-    Derived from the execution status, then refined by the thread's tags: a
-    finished thread whose last message asked something needs input, and a
-    resolved thread is resolved unless it is blocked on the person.
+    Derived from the execution status, then refined by the conversation's tags: a
+    finished conversation whose last message asked something needs input, and a
+    resolved conversation is resolved unless it is blocked on the person.
     """
 
     NEEDS_YOU = "needs_you"
@@ -135,7 +136,7 @@ class ProjectsListResponse(BaseModel):
     projects: list[ProjectItem] = Field(default_factory=list)
 
 
-class ProjectThread(BaseModel):
+class ProjectConversation(BaseModel):
     """A conversation in a project, with what it needs from the person."""
 
     conversation_id: OpenHandsUUID
@@ -145,7 +146,7 @@ class ProjectThread(BaseModel):
     resolved: ResolvedBy | None = Field(
         default=None,
         description=(
-            "`user` when the person resolved the thread, `auto` when the "
+            "`user` when the person resolved the conversation, `auto` when the "
             "server did because the critic scored the finished task at least "
             "0.9. Backed by the `resolved` tag; a new user message clears it."
         ),
@@ -160,20 +161,20 @@ class ProjectThread(BaseModel):
     )
     automation_id: str | None = Field(
         default=None,
-        description="The automation that started this thread, if any.",
+        description="The automation that started this conversation, if any.",
     )
     parent_conversation_id: OpenHandsUUID | None = None
     created_at: datetime
     updated_at: datetime
 
 
-class ProjectThreadsResponse(BaseModel):
+class ProjectConversationsResponse(BaseModel):
     project_id: OpenHandsUUID
-    coordinator: ProjectThread | None = Field(
+    coordinator: ProjectConversation | None = Field(
         default=None,
         description="The coordinator conversation, when it is set and exists.",
     )
-    threads: list[ProjectThread] = Field(
+    conversations: list[ProjectConversation] = Field(
         default_factory=list,
         description=(
             "Every other member conversation, grouped by attention "
@@ -187,30 +188,30 @@ class DeleteResponse(BaseModel):
     deleted: bool = True
 
 
-class ProjectThreadMessageRequest(BaseModel):
+class ProjectConversationMessageRequest(BaseModel):
     text: str = Field(..., min_length=1, description="The message to send.")
 
 
-ProjectThreadRunOutcome = Literal[
+ProjectConversationRunOutcome = Literal[
     "started", "queued", "waiting_for_confirmation", "not_run"
 ]
 
 
-class ProjectThreadMessageResponse(BaseModel):
+class ProjectConversationMessageResponse(BaseModel):
     conversation_id: OpenHandsUUID
     previous_status: ConversationExecutionStatus = Field(
-        description="The thread's execution status just before the message."
+        description="The conversation's execution status just before the message."
     )
-    run: ProjectThreadRunOutcome = Field(
+    run: ProjectConversationRunOutcome = Field(
         description=(
-            "What happened about running the thread. `started`: a run was "
+            "What happened about running the conversation. `started`: a run was "
             "started for the message. `queued`: a run was already active; it "
-            "takes the message, or the thread runs again when it ends, unless "
+            "takes the message, or the conversation runs again when it ends, unless "
             "that run stops at a confirmation first. "
-            "`waiting_for_confirmation`: the thread reached a confirmation "
+            "`waiting_for_confirmation`: the conversation reached a confirmation "
             "while the message was being delivered, so it was not run and the "
             "message waits for the person's decision. `not_run`: a stop "
-            "arrived meanwhile and the thread was left as it is."
+            "arrived meanwhile and the conversation was left as it is."
         )
     )
 
@@ -356,7 +357,7 @@ def _attention(
     turn: str | None,
 ) -> ProjectAttention:
     attention = _ATTENTION_BY_STATUS.get(execution_status, ProjectAttention.IDLE)
-    # A running thread is working even if a resolve has not been cleared yet:
+    # A running conversation is working even if a resolve has not been cleared yet:
     # the tag is removed just after the new user message.
     if attention in (ProjectAttention.NEEDS_YOU, ProjectAttention.WORKING):
         return attention
@@ -367,12 +368,12 @@ def _attention(
     return attention
 
 
-def _thread(
+def _conversation(
     stored: StoredConversation, execution_status: ConversationExecutionStatus
-) -> ProjectThread:
+) -> ProjectConversation:
     resolved = _tag_value(stored.tags, RESOLVED_TAG_KEY, ("user", "auto"))
     turn = _tag_value(stored.tags, TURN_TAG_KEY, ("asked", "answered"))
-    return ProjectThread(
+    return ProjectConversation(
         conversation_id=stored.id,
         title=stored.title,
         execution_status=execution_status,
@@ -525,7 +526,7 @@ async def delete_project(project_id: UUID, request: Request) -> DeleteResponse:
     """Delete a project.
 
     Conversations are left as they are, including their ``project`` tag; the
-    project's threads endpoint answers 404 afterwards. The project's artifacts
+    project's conversations endpoint answers 404 afterwards. The project's artifacts
     are deleted.
     """
     removed = False
@@ -544,15 +545,15 @@ async def delete_project(project_id: UUID, request: Request) -> DeleteResponse:
 
 
 @projects_router.get(
-    "/{project_id}/threads",
-    response_model=ProjectThreadsResponse,
+    "/{project_id}/conversations",
+    response_model=ProjectConversationsResponse,
     responses={404: {"description": "Project not found"}},
 )
-async def list_project_threads(
+async def list_project_conversations(
     project_id: UUID,
     request: Request,
     service: ConversationService = Depends(get_conversation_service),
-) -> ProjectThreadsResponse:
+) -> ProjectConversationsResponse:
     """List a project's conversations, grouped by what they need from the person.
 
     ``attention`` is derived from ``execution_status``: waiting for
@@ -562,30 +563,32 @@ async def list_project_threads(
     project = _find(await _load(_store(request)), project_id)
     members = await service.list_tagged_conversations(PROJECT_TAG, project_id.hex)
 
-    coordinator: ProjectThread | None = None
-    threads: list[ProjectThread] = []
+    coordinator: ProjectConversation | None = None
+    conversations: list[ProjectConversation] = []
     for stored, execution_status in members:
-        thread = _thread(stored, execution_status)
+        conversation = _conversation(stored, execution_status)
         if stored.id == project.coordinator_conversation_id:
-            coordinator = thread
+            coordinator = conversation
         else:
-            threads.append(thread)
+            conversations.append(conversation)
     # ``members`` is newest-updated first and ``sort`` is stable.
-    threads.sort(key=lambda thread: _ATTENTION_ORDER[thread.attention])
-    return ProjectThreadsResponse(
-        project_id=project.id, coordinator=coordinator, threads=threads
+    conversations.sort(
+        key=lambda conversation: _ATTENTION_ORDER[conversation.attention]
+    )
+    return ProjectConversationsResponse(
+        project_id=project.id, coordinator=coordinator, conversations=conversations
     )
 
 
 @projects_router.put(
-    "/{project_id}/threads/{conversation_id}",
+    "/{project_id}/conversations/{conversation_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     responses={
         404: {"description": "Project or conversation not found"},
         409: {"description": "Conversation is the coordinator of another project"},
     },
 )
-async def add_project_thread(
+async def add_project_conversation(
     project_id: UUID,
     conversation_id: UUID,
     request: Request,
@@ -606,14 +609,14 @@ async def add_project_thread(
 
 
 @projects_router.delete(
-    "/{project_id}/threads/{conversation_id}",
+    "/{project_id}/conversations/{conversation_id}",
     response_model=DeleteResponse,
     responses={
         404: {"description": "Project not found, or conversation not a member"},
         409: {"description": "Conversation is the project's coordinator"},
     },
 )
-async def remove_project_thread(
+async def remove_project_conversation(
     project_id: UUID,
     conversation_id: UUID,
     request: Request,
@@ -642,27 +645,27 @@ async def remove_project_thread(
 
 
 @projects_router.post(
-    "/{project_id}/threads/{conversation_id}/messages",
-    response_model=ProjectThreadMessageResponse,
+    "/{project_id}/conversations/{conversation_id}/messages",
+    response_model=ProjectConversationMessageResponse,
     responses={
         404: {"description": "Project not found, or conversation not a member"},
-        409: {"description": "The thread is waiting for confirmation"},
+        409: {"description": "The conversation is waiting for confirmation"},
         429: {"description": "Message saved, but the server run limit is full"},
     },
 )
-async def message_project_thread(
+async def message_project_conversation(
     project_id: UUID,
     conversation_id: UUID,
     request: Request,
-    payload: ProjectThreadMessageRequest,
+    payload: ProjectConversationMessageRequest,
     service: ConversationService = Depends(get_conversation_service),
-) -> ProjectThreadMessageResponse:
+) -> ProjectConversationMessageResponse:
     """Send a message to a project member and run it, without approving anything.
 
     Unlike ``POST /api/conversations/{id}/events`` with ``run``, this never
     runs a conversation that is waiting for confirmation, because that run
-    would approve its pending actions. A thread already waiting is refused
-    with 409 and nothing is saved. A thread that reaches a confirmation while
+    would approve its pending actions. A conversation already waiting is refused
+    with 409 and nothing is saved. A conversation that reaches a confirmation while
     the message is being delivered keeps the message and is not run
     (``run: "waiting_for_confirmation"``); the refusal is decided under the
     conversation's run lock.
@@ -676,7 +679,7 @@ async def message_project_thread(
         raise HTTPException(status_code=404, detail="Conversation not in project")
 
     # An unlocked read: it only spares the person an unrelated message in a
-    # thread that is already waiting. The guarded run below is the safeguard.
+    # conversation that is already waiting. The guarded run below is the safeguard.
     previous_status = (await event_service.get_state()).execution_status
     if previous_status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION:
         raise HTTPException(
@@ -684,7 +687,7 @@ async def message_project_thread(
             detail="Conversation is waiting for confirmation",
         )
     message = Message(role="user", content=[TextContent(text=payload.text)])
-    outcome: ProjectThreadRunOutcome
+    outcome: ProjectConversationRunOutcome
     try:
         outcome = (
             await event_service.send_message(
@@ -696,7 +699,7 @@ async def message_project_thread(
         if str(e) != "waiting_for_confirmation":
             raise
         outcome = "waiting_for_confirmation"
-    return ProjectThreadMessageResponse(
+    return ProjectConversationMessageResponse(
         conversation_id=conversation_id,
         previous_status=previous_status,
         run=outcome,

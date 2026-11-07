@@ -35,7 +35,7 @@ TURN_TAG_KEY = "turn"
 message asked the person something, ``answered`` otherwise. A new user message
 removes it."""
 
-THREAD_STATE_TAG_KEYS = frozenset({RESOLVED_TAG_KEY, TURN_TAG_KEY})
+BOARD_TAG_KEYS = frozenset({RESOLVED_TAG_KEY, TURN_TAG_KEY})
 """Tags that describe one conversation's state, so children do not copy them."""
 
 
