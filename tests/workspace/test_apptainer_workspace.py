@@ -116,6 +116,22 @@ def test_apptainer_workspace_extra_bind_mounts(mock_apptainer_workspace, monkeyp
     workspace._instance_name = None
 
 
+def test_undrained_logs_do_not_block_server(mock_apptainer_workspace):
+    """With detach_logs=False nothing reads the server's output, so no pipe."""
+    workspace, _ = mock_apptainer_workspace()  # detach_logs=False
+
+    with patch(
+        "openhands.workspace.apptainer.workspace.subprocess.Popen",
+        return_value=Mock(stdout=None),
+    ) as mock_popen:
+        workspace._start_container()
+
+    assert mock_popen.call_args.kwargs["stdout"] is subprocess.DEVNULL
+
+    workspace._process = None
+    workspace._instance_name = None
+
+
 def test_failed_health_check_terminates_server_process(monkeypatch, tmp_path):
     from openhands.workspace import ApptainerWorkspace
 
