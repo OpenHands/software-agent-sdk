@@ -1488,12 +1488,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # logging is disabled.
         telemetry = self.telemetry
         telemetry_ctx: dict[str, Any] = {
-            "context_window": self.effective_max_input_tokens or 0
+            "context_window": self.effective_max_input_tokens or 0,
+            "messages": formatted_messages[:],  # already simple dicts
         }
         if telemetry.log_enabled:
             telemetry_ctx.update(
                 {
-                    "messages": formatted_messages[:],  # already simple dicts
                     "tools": tools,
                     "kwargs": {k: v for k, v in call_kwargs.items()},
                 }
@@ -1624,14 +1624,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # logging is disabled.
         telemetry = self.telemetry
         telemetry_ctx: dict[str, Any] = {
-            "context_window": self.effective_max_input_tokens or 0
+            "context_window": self.effective_max_input_tokens or 0,
+            "instructions": instructions,
+            "input": input_items[:],
         }
         if telemetry.log_enabled:
             telemetry_ctx.update(
                 {
                     "llm_path": "responses",
-                    "instructions": instructions,
-                    "input": input_items[:],
                     "tools": tools,
                     "kwargs": {k: v for k, v in call_kwargs.items()},
                 }
