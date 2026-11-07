@@ -13,6 +13,7 @@ from openhands.agent_server.models import StartConversationRequest
 from openhands.agent_server.project_board import (
     ConversationOutcomeSubscriber,
     classify_turn,
+    extract_ask,
 )
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.types import BOARD_TAG_KEYS
@@ -142,7 +143,11 @@ async def test_finished_run_records_a_question():
         _status("finished"),
     )
 
-    assert store.tags == {"project": "p1", "turn": "asked"}
+    assert store.tags == {
+        "project": "p1",
+        "turn": "asked",
+        "ask": "Should I also add a test?",
+    }
 
 
 @pytest.mark.asyncio
@@ -172,7 +177,9 @@ async def test_unsure_critic_does_not_resolve():
 
 @pytest.mark.asyncio
 async def test_new_user_message_reopens_the_conversation():
-    store = _Tags({"project": "p1", "turn": "asked", "resolved": "user"})
+    store = _Tags(
+        {"project": "p1", "turn": "asked", "ask": "Add a test?", "resolved": "user"}
+    )
 
     await _feed(_subscriber(store), _message("user", "Yes, please add it"))
 
@@ -283,11 +290,11 @@ async def test_finished_run_tags_a_live_conversation(service, tmp_path):
 
     info = await service.get_conversation(cid)
     assert info is not None
-    assert info.tags == {"project": "p1", "turn": "asked"}
+    assert info.tags == {"project": "p1", "turn": "asked", "ask": "Shall I merge it?"}
 
 
 def test_board_tag_keys():
-    assert BOARD_TAG_KEYS == {"resolved", "turn"}
+    assert BOARD_TAG_KEYS == {"resolved", "turn", "ask"}
 
 
 @pytest.mark.asyncio
@@ -337,6 +344,7 @@ async def test_a_question_bounced_by_a_stop_hook_stays_asked():
     )
 
     assert store.tags["turn"] == "asked"
+    assert store.tags["ask"] == "Which database should I use?"
 
 
 @pytest.mark.asyncio
@@ -485,3 +493,35 @@ async def test_conversations_outside_projects_report_nothing():
     await _feed(subscriber, _finish("Done."), _status("finished"))
 
     assert reports == []
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("Done. Which colour do you prefer?", "Which colour do you prefer?"),
+        (
+            "Fixed.\n\nShould I also:\n- **update the docs?**",
+            "Should I also: update the docs?",
+        ),
+        ("All done.", None),
+        ("See https://example.com/?q=1 for details.", None),
+        ("Ok?\n\n```py\nprint('x?')\n```", "Ok?"),
+        (None, None),
+    ],
+)
+def test_extract_ask(text, expected):
+    assert extract_ask(text) == expected
+
+
+def test_a_long_ask_is_cut():
+    ask = extract_ask("Should I " + "really " * 60 + "do it?")
+    assert ask is not None and len(ask) == 200 and ask.endswith("…")
+
+
+@pytest.mark.asyncio
+async def test_an_answered_turn_drops_a_stale_ask():
+    store = _Tags({"project": "p1", "ask": "Old question?"})
+
+    await _feed(_subscriber(store), _finish("All done."), _status("finished"))
+
+    assert store.tags == {"project": "p1", "turn": "answered"}

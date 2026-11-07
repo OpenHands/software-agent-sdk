@@ -35,7 +35,14 @@ TURN_TAG_KEY = "turn"
 message asked the person something, ``answered`` otherwise. A new user message
 removes it."""
 
-BOARD_TAG_KEYS = frozenset({RESOLVED_TAG_KEY, TURN_TAG_KEY})
+ASK_TAG_KEY = "ask"
+"""Tag holding the question a conversation's agent stopped on, in one short
+line, while ``turn`` is ``asked``. A new user message removes it."""
+
+ASK_MAX_LENGTH = 200
+"""Longest ``ask``; a longer question is cut and ends with an ellipsis."""
+
+BOARD_TAG_KEYS = frozenset({RESOLVED_TAG_KEY, TURN_TAG_KEY, ASK_TAG_KEY})
 """Tags that describe one conversation's state, so children do not copy them."""
 
 CONVERSATION_SENDER_PREFIX = "conversation:"

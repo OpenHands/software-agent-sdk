@@ -30,6 +30,8 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 `POST /api/projects/{project_id}/artifacts/from-conversation`,
 `GET /api/projects/{project_id}/artifacts/{name}`,
 `DELETE /api/projects/{project_id}/artifacts/{name}`,
+`GET /api/projects/{project_id}/memory`,
+`GET`/`PUT`/`DELETE /api/projects/{project_id}/memory/{name}`,
 `GET /api/projects`, `POST /api/projects`,
 `GET /api/projects/{project_id}`, `PATCH /api/projects/{project_id}`,
 `DELETE /api/projects/{project_id}`, `GET /api/projects/{project_id}/conversations`,
@@ -55,10 +57,12 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
 - `F36.remove-coordinator`: removing the coordinator from the project is 409; clearing it with `PATCH {"coordinator_conversation_id": null}` keeps it a member, now listed with the other conversations.
 - `F36.message-rest`: `POST /api/conversations/{id}/events` with `refuse_pending_confirmation` saves the message, starts a run and answers `run: started` with the previous status. Without `sender_conversation_id` the message has no `sender`; a member sending to a conversation outside its project is 422.
 - `F36.message-refused`: `refuse_pending_confirmation` on a conversation waiting for confirmation is 409, saves nothing, and the conversation keeps waiting.
-- `F36.turn`: when a member's run finishes, its `turn` tag says whether the agent's last message asked something (`asked`, attention `needs_input`) or not (`answered`); a new user message clears it.
+- `F36.turn`: when a member's run finishes, its `turn` tag says whether the agent's last message asked something (`asked`, attention `needs_input`) or not (`answered`), and an `asked` turn saves the question, in one line of at most 200 characters, as the `ask` tag (reported as `ask`); a new user message clears both.
 - `F36.resolved`: a `resolved` tag (`user` or `auto`) puts a member in the `resolved` group, reported as `resolved`; a new user message clears it. Children do not copy `resolved` or `turn`.
 - `F36.artifacts-rest`: a project's artifacts can be uploaded (multipart), listed with `source: user`, downloaded byte for byte and deleted; unsafe names are 400.
 - `F36.artifacts-tool`: a member with `save_project_artifact` saves a file from its workspace; the list shows it with `source: agent` and the conversation's id, and a path outside the workspace is refused.
+- `F36.memory-rest`: `PUT/GET/DELETE /api/projects/{id}/memory/{name}` keep `MEMORY.md` and lowercase `.md` topic files under `projects/<id>/memory/`; `GET .../memory` lists them, index first. A write or delete with a stale `base_revision` (or a create over an existing file) is 409 with the current file; other names are 400.
+- `F36.memory-tool`: an agent with `read_project_memory` and `update_project_memory` reads `MEMORY.md` and adds a line to it with the revision it read; a child a project member starts gets `MEMORY.md` in its first message, marked as data.
 - `F36.persist-restart`: projects and membership survive a server restart.
 - `F36.delete`: `DELETE /api/projects/{id}` removes the record, then the conversations endpoint is 404, and member conversations keep their tags.
 - `F36.corrupted-file`: an unparsable or future-schema `projects.json` makes reads and writes 409 and is never rewritten.
@@ -305,15 +309,17 @@ Preconditions:
   control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Ask me which colour I prefer, as one short question, then finish. Do not use tools."}], "run": true, "refuse_pending_confirmation": true}' \
     --expect 200 --check run eq started
   control-agent-server conversation wait "$W2" --until finished --timeout 180
-  control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq asked --until-ok 10 --save F36.turn/asked
-  control-agent-server api GET "/api/projects/$P2/conversations" --check conversations contains '"attention": "needs_input"' --save F36.turn/conversations
+  control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq asked --check tags.ask matches '(?i)colou?r.*\?$' --until-ok 10 --save F36.turn/asked
+  control-agent-server api GET "/api/projects/$P2/conversations" --check conversations contains '"attention": "needs_input"' \
+    --check conversations contains '"ask": "' --save F36.turn/conversations
   control-agent-server api POST "/api/conversations/$W2/events" --json '{"role": "user", "content": [{"type": "text", "text": "Blue. Reply with the single word noted and finish."}], "run": true, "refuse_pending_confirmation": true}' \
     --expect 200 --check run eq started
   control-agent-server conversation wait "$W2" --until finished --timeout 180
-  control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq answered --until-ok 10 --save F36.turn/answered
+  control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq answered --check tags not-contains ask --until-ok 10 --save F36.turn/answered
   ```
-  A question finishes as `asked` and lists as `needs_input`; the answer
-  reopens the conversation and the next run finishes as `answered`.
+  A question finishes as `asked` with the question as `ask` and lists as
+  `needs_input`; the answer reopens the conversation and the next run
+  finishes as `answered`, without an `ask`.
 - **Resolved (`F36.resolved`).**
   Requires: `F36.turn`
   Needs: `llm`
@@ -357,6 +363,38 @@ Preconditions:
   ```
   The file is copied in as an agent artifact; the path outside the workspace
   is refused.
+- **Project memory over REST (`F36.memory-rest`).**
+  Requires: `F36.coordinator`
+  ```sh
+  control-agent-server api GET "/api/projects/$P2/memory" --expect 200 --check files len-eq 0
+  REV=$(control-agent-server api PUT "/api/projects/$P2/memory/MEMORY.md" --json '{"content": "- The person prefers short answers.\n"}' \
+    --expect 200 --check revision matches '^[0-9a-f]{16}$' --field revision)
+  control-agent-server api PUT "/api/projects/$P2/memory/MEMORY.md" --json '{"content": "clobber"}' --expect 409 \
+    --check detail.current.revision eq "$REV" --save F36.memory-rest/stale-create
+  control-agent-server api PUT "/api/projects/$P2/memory/deploy.md" --json '{"content": "Deploy from main."}' --expect 200
+  control-agent-server api GET "/api/projects/$P2/memory" --check files.0.name eq MEMORY.md --check files.1.name eq deploy.md --save F36.memory-rest/list
+  control-agent-server api PUT "/api/projects/$P2/memory/Notes.md" --json '{"content": "x"}' --expect 400
+  control-agent-server api DELETE "/api/projects/$P2/memory/deploy.md" --query base_revision=0000000000000000 --expect 409
+  control-agent-server api DELETE "/api/projects/$P2/memory/deploy.md" --expect 200 --check deleted eq true
+  control-agent-server api GET "/api/projects/$P2/memory/MEMORY.md" --check revision eq "$REV" --check content contains 'short answers'
+  ```
+  The index is created, a blind overwrite is refused with the current file,
+  and a topic file is added, listed after the index and deleted.
+- **Model-backed: an agent keeps project memory (`F36.memory-tool`).**
+  Requires: `F36.memory-rest`
+  Needs: `llm`
+  ```sh
+  MEM=$(control-agent-server conversation start --no-run --title qa-f36-mem --tag "project=$P2" \
+    --tools read_project_memory,update_project_memory,start_child_conversation --print-id)
+  control-agent-server conversation send "$MEM" --wait --timeout 300 --text 'Read the project memory with read_project_memory, then add the line "- Deploys go through staging." to MEMORY.md with update_project_memory, keeping the existing line. Then start a child conversation titled qa-f36-mem-child with the task: Reply with the single word ok and finish. Then finish.'
+  control-agent-server api GET "/api/projects/$P2/memory/MEMORY.md" --check content contains 'short answers' --check content contains 'staging' \
+    --save F36.memory-tool/memory
+  MEMCHILD=$(control-agent-server api GET "/api/conversations/$MEM" --field sub_conversation_ids.0)
+  control-agent-server conversation events "$MEMCHILD" --kinds MessageEvent --contains 'Project memory: MEMORY.md at revision' --expect-count 1 \
+    --save F36.memory-tool/child
+  ```
+  The agent merges its line into the index it read, and the child it starts
+  sees the index in its first message.
 - **No approval over REST (`F36.message-refused`).**
   Requires: `F36.attention`
   ```sh

@@ -48,9 +48,11 @@ from openhands.agent_server.models import (
     StoredConversation,
     UpdateConversationRequest,
 )
-from openhands.agent_server.persistence import FileSecretsStore
+from openhands.agent_server.persistence import FileSecretsStore, get_projects_store
 from openhands.agent_server.project_board import ConversationOutcomeSubscriber
+from openhands.agent_server.project_memory import MEMORY_INDEX, ProjectMemoryStore
 from openhands.agent_server.project_prompts import (
+    memory_note,
     without_worker_guidance,
     worker_guidance,
 )
@@ -562,6 +564,23 @@ class _ConversationRecord:
     # metadata-only updates (``meta.json``, e.g. auto-title) must also
     # invalidate it.
     stored_signature: int | None = None
+
+
+async def _project_memory_content(tags: dict[str, str]) -> list[TextContent]:
+    """``MEMORY.md`` of the project in ``tags``, for a child's first message."""
+    project_hex = tags.get(PROJECT_TAG_KEY)
+    if not project_hex:
+        return []
+    try:
+        project_id = UUID(hex=project_hex)
+        store = ProjectMemoryStore(get_projects_store().persistence_dir)
+        memory = await asyncio.to_thread(store.get, project_id, MEMORY_INDEX)
+    except (ValueError, OSError):
+        logger.warning("Project memory unreadable for project %s", project_hex)
+        return []
+    if memory is None or not memory.content.strip():
+        return []
+    return [TextContent(text=memory_note(memory.content, memory.revision))]
 
 
 @dataclass
@@ -2321,7 +2340,11 @@ class ConversationService:
                 run_slot=run_slot,
                 max_budget_per_run=max_budget_per_run,
                 initial_message=Message(
-                    role="user", content=[TextContent(text=request.task)]
+                    role="user",
+                    content=[
+                        TextContent(text=request.task),
+                        *await _project_memory_content(parent_stored.tags),
+                    ],
                 ),
                 initial_sender=conversation_sender(parent_id),
             )

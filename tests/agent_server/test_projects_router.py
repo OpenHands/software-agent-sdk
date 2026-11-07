@@ -777,8 +777,14 @@ async def test_resolved_and_turn_tags_refine_attention(client, service, tmp_path
     project = (await client.post("/api/projects", json={"name": "P"})).json()
     cases = {
         # title: (status, tags)
-        "question": (ConversationExecutionStatus.FINISHED, {"turn": "asked"}),
-        "answer": (ConversationExecutionStatus.FINISHED, {"turn": "answered"}),
+        "question": (
+            ConversationExecutionStatus.FINISHED,
+            {"turn": "asked", "ask": "Which database?"},
+        ),
+        "answer": (
+            ConversationExecutionStatus.FINISHED,
+            {"turn": "answered", "ask": "Stale?"},
+        ),
         "done": (
             ConversationExecutionStatus.FINISHED,
             {"turn": "answered", "resolved": "auto"},
@@ -814,6 +820,8 @@ async def test_resolved_and_turn_tags_refine_attention(client, service, tmp_path
     }
     assert by_title["done"]["resolved"] == "auto"
     assert by_title["question"]["turn"] == "asked"
+    assert by_title["question"]["ask"] == "Which database?"
+    assert by_title["answer"]["ask"] is None  # only while asked
     assert by_title["nightly"]["turn"] is None  # unknown values are ignored
     assert by_title["nightly"]["automation_id"] == "auto-7"
     assert [t["attention"] for t in conversations] == sorted(
@@ -1142,3 +1150,101 @@ async def test_transcript_lists_messages_with_their_senders(
     ]
     assert full["messages"][0]["text"].endswith("Fix the bug")
     assert missing.status_code == 404
+
+
+# Memory
+
+
+@pytest.mark.asyncio
+async def test_memory_write_read_list_and_delete(client, persistence_dir):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    base = f"/api/projects/{project['id']}/memory"
+
+    assert (await client.get(base)).json() == {"files": []}
+    assert (await client.get(f"{base}/MEMORY.md")).status_code == 404
+
+    index = await client.put(
+        f"{base}/MEMORY.md", json={"content": "- Engel prefers squash merges.\n"}
+    )
+    topic = await client.put(f"{base}/deploy.md", json={"content": "Use staging."})
+    assert index.status_code == topic.status_code == 200
+
+    read = (await client.get(f"{base}/MEMORY.md")).json()
+    assert read["content"] == "- Engel prefers squash merges.\n"
+    assert read["revision"] == index.json()["revision"]
+    assert [f["name"] for f in (await client.get(base)).json()["files"]] == [
+        "MEMORY.md",
+        "deploy.md",
+    ]
+    assert (
+        persistence_dir / "projects" / project["id"] / "memory" / "deploy.md"
+    ).read_text() == "Use staging."
+
+    updated = await client.put(
+        f"{base}/MEMORY.md",
+        json={"content": "- Squash merges.\n", "base_revision": read["revision"]},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["revision"] != read["revision"]
+
+    deleted = await client.delete(
+        f"{base}/deploy.md", params={"base_revision": topic.json()["revision"]}
+    )
+    assert deleted.json() == {"deleted": True}
+    assert (await client.delete(f"{base}/deploy.md")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_stale_memory_write_is_refused_with_the_current_file(client):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    path = f"/api/projects/{project['id']}/memory/MEMORY.md"
+    first = (await client.put(path, json={"content": "one"})).json()
+    await client.put(path, json={"content": "two", "base_revision": first["revision"]})
+
+    stale = await client.put(
+        path, json={"content": "three", "base_revision": first["revision"]}
+    )
+    recreate = await client.put(path, json={"content": "new"})
+    stale_delete = await client.delete(
+        path, params={"base_revision": first["revision"]}
+    )
+
+    for response in (stale, recreate, stale_delete):
+        assert response.status_code == 409
+        assert response.json()["detail"]["current"]["content"] == "two"
+    assert (await client.get(path)).json()["content"] == "two"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["Notes.md", "notes.txt", "..md", ".hidden.md"])
+async def test_memory_names_are_checked(client, name):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    response = await client.put(
+        f"/api/projects/{project['id']}/memory/{name}", json={"content": "x"}
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_memory_files_are_kept_short(client):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    response = await client.put(
+        f"/api/projects/{project['id']}/memory/MEMORY.md",
+        json={"content": "x" * (64 * 1024 + 1)},
+    )
+    assert response.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_project_deletes_its_memory(client, persistence_dir):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    await client.put(
+        f"/api/projects/{project['id']}/memory/MEMORY.md", json={"content": "x"}
+    )
+
+    await client.delete(f"/api/projects/{project['id']}")
+
+    assert not (persistence_dir / "projects" / project["id"]).exists()
+    assert (
+        await client.get(f"/api/projects/{project['id']}/memory")
+    ).status_code == 404

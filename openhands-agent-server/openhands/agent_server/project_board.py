@@ -3,10 +3,11 @@
 When a conversation in a project finishes a run, :class:`ConversationOutcomeSubscriber`
 tags it with how the agent's last message ended (``turn=asked`` or
 ``turn=answered``) and, when the critic is confident the task succeeded, marks
-it resolved (``resolved=auto``). A new user message removes both tags, since
-the conversation is open again. Once the agent stops on a question, the turn
-stays ``asked`` until the person answers, even if a Stop hook made it go on to
-a ``finish`` that does not repeat the question.
+it resolved (``resolved=auto``). When the agent stopped on a question, the
+question itself is saved, in one short line, as ``ask``. A new user message
+removes these tags, since the conversation is open again. Once the agent stops
+on a question, the turn (and its ``ask``) stays until the person answers, even
+if a Stop hook made it go on to a ``finish`` that does not repeat the question.
 
 The board reads these tags from the conversation catalog, so listing a project
 never loads conversation state or events.
@@ -26,6 +27,8 @@ from openhands.sdk.conversation.impl.local_conversation import (
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.title_utils import extract_message_text
 from openhands.sdk.conversation.types import (
+    ASK_MAX_LENGTH,
+    ASK_TAG_KEY,
     BOARD_TAG_KEYS,
     PROJECT_TAG_KEY,
     RESOLVED_TAG_KEY,
@@ -82,6 +85,43 @@ def classify_turn(text: str | None) -> TurnOutcome:
     return "asked" if _QUESTION_END.search(last_paragraph) else "answered"
 
 
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?:])\s+|\n")
+_MARKUP = re.compile(r"^[\s>*_#`-]+|[*_`]+")
+
+
+def extract_ask(text: str | None) -> str | None:
+    """The question an agent's final message ends on, as one short line.
+
+    Takes the last sentence ending with a question mark in the last paragraph
+    outside code blocks (where :func:`classify_turn` looks), drops simple
+    Markdown, and cuts it to :data:`ASK_MAX_LENGTH` characters. ``None`` when
+    there is no such question.
+    """
+    if not text:
+        return None
+    prose = _CODE_BLOCK.sub("", text).strip()
+    if not prose:
+        return None
+    last_paragraph = re.split(r"\n\s*\n", prose)[-1]
+    parts = [p for p in _SENTENCE_BREAK.split(last_paragraph) if p.strip()]
+    asking = [i for i, part in enumerate(parts) if _QUESTION_END.search(part)]
+    if not asking:
+        return None
+    start = asking[-1]
+    # A list item answers to the line that introduces it ("Should I also:").
+    if start > 0 and parts[start - 1].rstrip().endswith(":"):
+        start -= 1
+    ask = " ".join(
+        " ".join(_MARKUP.sub("", part).split())
+        for part in parts[start : asking[-1] + 1]
+    )
+    if not ask:
+        return None
+    if len(ask) > ASK_MAX_LENGTH:
+        ask = ask[: ASK_MAX_LENGTH - 1].rstrip() + "…"
+    return ask
+
+
 def _is_stop_hook_feedback(event: MessageEvent) -> bool:
     if event.source != "environment":
         return False
@@ -123,6 +163,8 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
     # ``finish`` whose text may not repeat the question; the person still
     # owes an answer.
     _asked_since_user: bool = field(default=False, init=False)
+    # The question that made the turn ``asked``, kept for the same reason.
+    _ask: str | None = field(default=None, init=False)
     # ``sender`` of the latest user message: who started the current turn and
     # so who waits for its final message (None for the person).
     _turn_sender: str | None = field(default=None, init=False)
@@ -144,6 +186,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             if event.source == "user":
                 self._reset()
                 self._asked_since_user = False
+                self._ask = None
                 self._turn_sender = event.sender
                 # Reopen any conversation the person resolved, in a project
                 # or not; recording outcomes is limited to project members.
@@ -158,6 +201,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
                 # The agent tried to stop here; a question counts as asked.
                 if classify_turn(self._last_text) == "asked":
                     self._asked_since_user = True
+                    self._ask = extract_ask(self._last_text) or self._ask
             return
         if isinstance(event, ActionEvent):
             if event.source == "agent" and isinstance(event.action, FinishAction):
@@ -169,16 +213,21 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
             if not self._seen_agent_output:
                 return
             turn = classify_turn(self._last_text)
+            if turn == "asked":
+                self._ask = extract_ask(self._last_text) or self._ask
             if self._asked_since_user:
                 turn = "asked"
             self._asked_since_user = turn == "asked"
+            ask = self._ask if turn == "asked" else None
             score = self._last_score
             text = self._last_text
             sender = self._turn_sender
             self._reset()
             project = self.tags().get(PROJECT_TAG_KEY)
             if project:
-                self._enqueue(lambda: self._record(project, turn, score, text, sender))
+                self._enqueue(
+                    lambda: self._record(project, turn, score, text, sender, ask)
+                )
 
     def _note_agent_output(
         self, text: str | None, event: MessageEvent | ActionEvent
@@ -213,7 +262,7 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
 
     async def _reopen(self) -> None:
         # Most user messages find neither tag; each write is a metadata save.
-        for key in (TURN_TAG_KEY, RESOLVED_TAG_KEY):
+        for key in sorted(BOARD_TAG_KEYS):
             if key in self.tags():
                 await self.set_tag(self.conversation_id, key, None)
 
@@ -224,8 +273,11 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
         score: float | None,
         text: str | None,
         sender: str | None,
+        ask: str | None = None,
     ) -> None:
         await self.set_tag(self.conversation_id, TURN_TAG_KEY, turn)
+        if ask is not None or ASK_TAG_KEY in self.tags():
+            await self.set_tag(self.conversation_id, ASK_TAG_KEY, ask)
         if score is not None and score >= AUTO_RESOLVE_THRESHOLD:
             # Never overwrite the person's own resolve.
             await self.set_tag(

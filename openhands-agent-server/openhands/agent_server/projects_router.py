@@ -57,10 +57,20 @@ from openhands.agent_server.project_artifacts import (
     valid_artifact_name,
 )
 from openhands.agent_server.project_board import ResolvedBy, TurnOutcome
+from openhands.agent_server.project_memory import (
+    MEMORY_INDEX,
+    MemoryConflict,
+    MemoryFile,
+    MemoryFileContent,
+    MemoryTooLarge,
+    ProjectMemoryStore,
+    valid_memory_name,
+)
 from openhands.agent_server.utils import utc_now
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.title_utils import extract_message_text
 from openhands.sdk.conversation.types import (
+    ASK_TAG_KEY,
     PROJECT_TAG_KEY,
     RESOLVED_TAG_KEY,
     TURN_TAG_KEY,
@@ -160,6 +170,14 @@ class ProjectConversation(BaseModel):
             "How the agent's last run ended: `asked` when its final message "
             "asked the person something, `answered` otherwise. Backed by the "
             "`turn` tag; a new user message clears it."
+        ),
+    )
+    ask: str | None = Field(
+        default=None,
+        description=(
+            "While `turn` is `asked`: the question the agent stopped on, in one "
+            "short line (at most 200 characters). Backed by the `ask` tag; a "
+            "new user message clears it."
         ),
     )
     automation_id: str | None = Field(
@@ -355,6 +373,7 @@ def _conversation(
         attention=_attention(execution_status, resolved, turn),
         resolved=resolved,
         turn=turn,
+        ask=(stored.tags.get(ASK_TAG_KEY) or None) if turn == "asked" else None,
         automation_id=stored.tags.get(AUTOMATION_ID_TAG_KEY) or None,
         parent_conversation_id=stored.parent_conversation_id,
         created_at=stored.created_at,
@@ -906,4 +925,141 @@ async def delete_project_artifact(
         _artifacts(request).delete, project_id, _artifact_name(name)
     ):
         raise HTTPException(status_code=404, detail="Artifact not found")
+    return DeleteResponse()
+
+
+# Memory
+
+
+class ProjectMemoryResponse(BaseModel):
+    files: list[MemoryFile] = Field(
+        default_factory=list, description="`MEMORY.md` first, then topic files."
+    )
+
+
+class WriteMemoryRequest(BaseModel):
+    content: str = Field(description="The whole new file.")
+    base_revision: str | None = Field(
+        default=None,
+        description=(
+            "The revision this change is based on, from the last read; leave it "
+            "out (or null) to create a new file. A different current revision "
+            "answers 409 with the current file to merge."
+        ),
+    )
+
+
+def _memory(request: Request) -> ProjectMemoryStore:
+    return ProjectMemoryStore(_store(request).persistence_dir)
+
+
+def _memory_name(name: str) -> str:
+    if not valid_memory_name(name):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Memory files are {MEMORY_INDEX} or lowercase names of "
+                "letters, digits and ._- ending in .md"
+            ),
+        )
+    return name
+
+
+def _memory_conflict(exc: MemoryConflict) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "message": "The memory file changed since that revision",
+            "current": exc.current.model_dump(mode="json") if exc.current else None,
+        },
+    )
+
+
+@projects_router.get(
+    "/{project_id}/memory",
+    response_model=ProjectMemoryResponse,
+    responses={404: {"description": "Project not found"}},
+)
+async def list_project_memory(
+    project_id: UUID, request: Request
+) -> ProjectMemoryResponse:
+    """List the project's memory files."""
+    _find(await _load(_store(request)), project_id)
+    return ProjectMemoryResponse(
+        files=await asyncio.to_thread(_memory(request).list, project_id)
+    )
+
+
+@projects_router.get(
+    "/{project_id}/memory/{name}",
+    response_model=MemoryFileContent,
+    responses={404: {"description": "Project or memory file not found"}},
+)
+async def read_project_memory(
+    project_id: UUID, name: str, request: Request
+) -> MemoryFileContent:
+    """Read one memory file with its revision."""
+    _find(await _load(_store(request)), project_id)
+    found = await asyncio.to_thread(
+        _memory(request).get, project_id, _memory_name(name)
+    )
+    if found is None:
+        raise HTTPException(status_code=404, detail="Memory file not found")
+    return found
+
+
+@projects_router.put(
+    "/{project_id}/memory/{name}",
+    response_model=MemoryFileContent,
+    responses={
+        404: {"description": "Project not found"},
+        409: {"description": "Stale base_revision; the body has the current file"},
+        413: {"description": "The file is too large"},
+    },
+)
+async def write_project_memory(
+    project_id: UUID, name: str, payload: WriteMemoryRequest, request: Request
+) -> MemoryFileContent:
+    """Create or replace a memory file, based on the revision last read."""
+    _find(await _load(_store(request)), project_id)
+    try:
+        return await asyncio.to_thread(
+            _memory(request).write,
+            project_id,
+            _memory_name(name),
+            payload.content,
+            payload.base_revision,
+        )
+    except MemoryConflict as exc:
+        raise _memory_conflict(exc)
+    except MemoryTooLarge as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(exc)
+        )
+
+
+@projects_router.delete(
+    "/{project_id}/memory/{name}",
+    response_model=DeleteResponse,
+    responses={
+        404: {"description": "Project or memory file not found"},
+        409: {"description": "Stale base_revision; the body has the current file"},
+    },
+)
+async def delete_project_memory(
+    project_id: UUID,
+    name: str,
+    request: Request,
+    base_revision: Annotated[str | None, Query()] = None,
+) -> DeleteResponse:
+    """Delete a memory file; with ``base_revision``, only if it is unchanged."""
+    _find(await _load(_store(request)), project_id)
+    try:
+        deleted = await asyncio.to_thread(
+            _memory(request).delete, project_id, _memory_name(name), base_revision
+        )
+    except MemoryConflict as exc:
+        raise _memory_conflict(exc)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Memory file not found")
     return DeleteResponse()
