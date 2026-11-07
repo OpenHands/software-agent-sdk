@@ -82,81 +82,33 @@ class ConversationExecutionStatus(str, Enum):
 
 _Status = ConversationExecutionStatus
 
-# The moves ConversationState.transition() accepts. A move to the current
-# status is always a no-op. ERROR, PAUSED and RUNNING are reachable from every
-# live status: a run can fail, be interrupted or (re)start from anywhere. A
-# pause can also land while a step is in flight (arun() releases the state
-# lock for LLM I/O, ACP steps run without it), so PAUSED may be followed by
-# the step's own outcome. DELETING is final.
+# Moves no code path makes: ConversationState.transition() rejects these and
+# accepts every other move. In practice the lifecycle is almost fully
+# connected:
+# - a run can fail, be paused or (re)start from any status;
+# - a step can run under any status (``condense()``, a direct ``agent.step()``,
+#   or the sync loop retrying after ACPAgent reported a timeout as ERROR), so
+#   FINISHED, WAITING_FOR_CONFIRMATION and STUCK can follow ERROR;
+# - a pause can land mid-step (arun() releases the state lock for LLM I/O, ACP
+#   steps run without it), so PAUSED can be followed by the step's outcome;
+# - DELETING is only ever set on the webhook payload, never on the state, so
+#   it gets no special case. ERROR and PAUSED, the targets of the run loop's
+#   exception handlers, stay reachable from every status, so a handler can
+#   never mask the original error.
+_UNREACHED_MOVES: dict[_Status, frozenset[_Status]] = {
+    # Stuck detection runs under the same lock right after the run loop has
+    # stopped on PAUSED or FINISHED.
+    _Status.PAUSED: frozenset({_Status.STUCK}),
+    _Status.FINISHED: frozenset({_Status.STUCK}),
+    # Only send_message() (from FINISHED/STUCK), reject_pending_actions() (from
+    # WAITING_FOR_CONFIRMATION) and the run loop move to IDLE, and the run loop
+    # stops on ERROR.
+    _Status.ERROR: frozenset({_Status.IDLE}),
+}
+
 _ALLOWED_TRANSITIONS: dict[_Status, frozenset[_Status]] = {
-    _Status.IDLE: frozenset(
-        {
-            _Status.RUNNING,
-            _Status.PAUSED,
-            _Status.WAITING_FOR_CONFIRMATION,
-            _Status.FINISHED,
-            _Status.ERROR,
-            _Status.STUCK,
-            _Status.DELETING,
-        }
-    ),
-    _Status.RUNNING: frozenset(
-        {
-            _Status.IDLE,
-            _Status.PAUSED,
-            _Status.WAITING_FOR_CONFIRMATION,
-            _Status.FINISHED,
-            _Status.ERROR,
-            _Status.STUCK,
-            _Status.DELETING,
-        }
-    ),
-    _Status.PAUSED: frozenset(
-        {
-            _Status.RUNNING,
-            _Status.WAITING_FOR_CONFIRMATION,
-            _Status.FINISHED,
-            _Status.ERROR,
-            _Status.DELETING,
-        }
-    ),
-    _Status.WAITING_FOR_CONFIRMATION: frozenset(
-        {
-            _Status.IDLE,
-            _Status.RUNNING,
-            _Status.PAUSED,
-            _Status.FINISHED,
-            _Status.ERROR,
-            _Status.STUCK,
-            _Status.DELETING,
-        }
-    ),
-    _Status.FINISHED: frozenset(
-        {
-            _Status.IDLE,
-            _Status.RUNNING,
-            _Status.PAUSED,
-            _Status.ERROR,
-            _Status.DELETING,
-        }
-    ),
-    _Status.ERROR: frozenset(
-        {
-            _Status.RUNNING,
-            _Status.PAUSED,
-            _Status.DELETING,
-        }
-    ),
-    _Status.STUCK: frozenset(
-        {
-            _Status.IDLE,
-            _Status.RUNNING,
-            _Status.PAUSED,
-            _Status.ERROR,
-            _Status.DELETING,
-        }
-    ),
-    _Status.DELETING: frozenset(),
+    status: frozenset(_Status) - {status} - _UNREACHED_MOVES.get(status, frozenset())
+    for status in _Status
 }
 
 
@@ -803,8 +755,8 @@ class ConversationState(OpenHandsModel):
         """Move ``execution_status`` to ``to``; the only way SDK code changes it.
 
         The move is checked against the status table, so a status the run
-        loop can never produce (leaving DELETING, FINISHED straight from
-        ERROR, ...) fails loudly instead of being persisted. The assignment
+        loop can never produce (IDLE straight from ERROR, STUCK after FINISHED
+        or PAUSED) fails loudly instead of being persisted. The assignment
         goes through the autosave hook, so it is persisted and published as a
         ``ConversationStateUpdateEvent`` like any other field change. Moving to
         the current status is a no-op.

@@ -61,13 +61,9 @@ def test_transition_to_current_status_is_noop(state):
 @pytest.mark.parametrize(
     ("current", "target"),
     [
-        (Status.ERROR, Status.FINISHED),
         (Status.ERROR, Status.IDLE),
         (Status.FINISHED, Status.STUCK),
-        (Status.FINISHED, Status.WAITING_FOR_CONFIRMATION),
-        (Status.PAUSED, Status.IDLE),
-        (Status.STUCK, Status.FINISHED),
-        (Status.DELETING, Status.RUNNING),
+        (Status.PAUSED, Status.STUCK),
     ],
 )
 def test_rejected_transition_raises_and_keeps_status(state, current, target):
@@ -84,13 +80,42 @@ def test_table_covers_every_status():
     assert set(_ALLOWED_TRANSITIONS) == set(Status)
 
 
-@pytest.mark.parametrize("target", [Status.ERROR, Status.PAUSED, Status.RUNNING])
-def test_failure_pause_and_restart_reachable_from_every_live_status(target):
+@pytest.mark.parametrize(
+    "target",
+    [
+        # The run loop's exception handlers write these; they must never raise.
+        Status.ERROR,
+        Status.PAUSED,
+        Status.RUNNING,
+        # A step can run under any status (condense(), a direct agent.step(),
+        # the sync loop retrying after a turn reported ERROR).
+        Status.FINISHED,
+        Status.WAITING_FOR_CONFIRMATION,
+    ],
+)
+def test_run_and_step_outcomes_reachable_from_every_status(target):
     for current, allowed in _ALLOWED_TRANSITIONS.items():
-        if current in (target, Status.DELETING):
-            continue
-        assert target in allowed, f"{current.value} -> {target.value}"
+        if current is not target:
+            assert target in allowed, f"{current.value} -> {target.value}"
 
 
-def test_deleting_is_final():
-    assert _ALLOWED_TRANSITIONS[Status.DELETING] == frozenset()
+@pytest.mark.parametrize(
+    ("current", "target"),
+    [
+        # Stuck detection after the sync loop retried a turn ACP reported as
+        # a timeout (ERROR).
+        (Status.ERROR, Status.STUCK),
+        # pause() landing between the ACP branch's two lock sections, then a
+        # message arriving on the final iteration.
+        (Status.PAUSED, Status.IDLE),
+        # A foreign writer left DELETING in base_state.json; the error handler
+        # must still record the failure.
+        (Status.DELETING, Status.ERROR),
+    ],
+)
+def test_moves_found_in_review_stay_allowed(state, current, target):
+    state.execution_status = current
+
+    state.transition(target, "test")
+
+    assert state.execution_status == target
