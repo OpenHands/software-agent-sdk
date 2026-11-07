@@ -7,6 +7,7 @@ from openhands.sdk import ImageContent
 from openhands.tools.file_editor.editor import FileEditor
 from openhands.tools.file_editor.exceptions import (
     FileValidationError,
+    ToolError,
 )
 
 
@@ -156,3 +157,56 @@ def test_view_image_file_returns_image_content(tmp_path):
     image_content = [c for c in result.content if isinstance(c, ImageContent)][0]
     assert len(image_content.image_urls) == 1
     assert image_content.image_urls[0].startswith("data:image/png;base64,")
+
+
+EDIT_COMMANDS = pytest.mark.parametrize(
+    "command, old_str, insert_line",
+    [("str_replace", "KEEP", None), ("insert", None, 1)],
+)
+
+
+@EDIT_COMMANDS
+def test_edit_that_makes_file_binary_leaves_it_untouched(
+    tmp_path, command, old_str, insert_line
+):
+    """A control byte added to a cp1251 file makes it look binary, so the
+    edit must fail before writing, leaving no history for undo_edit."""
+    editor = FileEditor()
+    path = tmp_path / "t.py"
+    original = "# -*- coding: cp1251 -*-\n# Тестовый файл\nKEEP = 1\n".encode("cp1251")
+    path.write_bytes(original)
+
+    with pytest.raises(FileValidationError, match="appears to be binary"):
+        editor(
+            command=command,
+            path=str(path),
+            old_str=old_str,
+            new_str="\x08",
+            insert_line=insert_line,
+        )
+
+    assert path.read_bytes() == original
+    assert [p.name for p in tmp_path.iterdir()] == ["t.py"]
+    with pytest.raises(ToolError, match="No edit history"):
+        editor(command="undo_edit", path=str(path))
+
+
+@EDIT_COMMANDS
+def test_edit_that_exceeds_size_limit_leaves_file_untouched(
+    tmp_path, command, old_str, insert_line
+):
+    editor = FileEditor(max_file_size_mb=1)
+    path = tmp_path / "t.txt"
+    original = "KEEP\n" + "x" * (1024 * 1024 - 10) + "\n"
+    path.write_text(original)
+
+    with pytest.raises(FileValidationError, match="too large"):
+        editor(
+            command=command,
+            path=str(path),
+            old_str=old_str,
+            new_str="y" * 100,
+            insert_line=insert_line,
+        )
+
+    assert path.read_text() == original

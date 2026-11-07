@@ -249,7 +249,7 @@ class FileEditor:
         )
 
         # Write the new content to the file
-        self.write_file(path, new_file_content)
+        self.write_file(path, new_file_content, validate_result=True)
 
         # Save the content to history
         self._history_manager.add_history(path, file_content)
@@ -460,7 +460,14 @@ class FileEditor:
         return [self._format_directory_entry(path, entry) for entry in visible_entries]
 
     @with_encoding
-    def write_file(self, path: Path, file_text: str, encoding: str = "utf-8") -> None:
+    def write_file(
+        self,
+        path: Path,
+        file_text: str,
+        encoding: str = "utf-8",
+        *,
+        validate_result: bool = False,
+    ) -> None:
         """
         Write the content of a file to a given path; raise a ToolError if an
         error occurs.
@@ -470,14 +477,25 @@ class FileEditor:
             file_text: Content to write to the file
             encoding: The encoding to use when writing the file (auto-detected by
                 decorator)
+            validate_result: Leave the file untouched and raise if the new
+                content would fail validate_file, so an edit never writes a
+                file it then refuses to read
         """
         self.validate_file(path)
         try:
-            self._atomic_write(path, file_text, encoding)
+            self._atomic_write(path, file_text, encoding, validate_result)
+        except FileValidationError:
+            raise
         except Exception as e:
             raise ToolError(f"Ran into {e} while trying to write to {path}") from None
 
-    def _atomic_write(self, path: Path, file_text: str, encoding: str) -> None:
+    def _atomic_write(
+        self,
+        path: Path,
+        file_text: str,
+        encoding: str,
+        validate_result: bool = False,
+    ) -> None:
         """Write file_text to path atomically, never leaving a truncated file.
 
         The content is written to a temporary file in the same directory which is
@@ -501,10 +519,25 @@ class FileEditor:
             encoding = default
 
         with self._temp_file(path, file_text, encoding) as tmp_path:
+            if validate_result:
+                self._validate_new_content(path, tmp_path)
             # Preserve the original file's permission bits when it already exists.
             if path.exists():
                 os.chmod(tmp_path, os.stat(path).st_mode & 0o7777)
             Path.replace(tmp_path, path)
+
+    def _validate_new_content(self, path: Path, tmp_path: Path) -> None:
+        """Raise for path if the content staged in tmp_path fails validate_file."""
+        try:
+            self.validate_file(tmp_path)
+        except FileValidationError as e:
+            raise FileValidationError(
+                path=str(path),
+                reason=(
+                    "The edit was not applied because the edited file would "
+                    f"fail this check: {e.reason}"
+                ),
+            ) from None
 
     @contextmanager
     def _temp_file(self, path: Path, file_text: str, encoding: str) -> Iterator[Path]:
@@ -593,7 +626,7 @@ class FileEditor:
                 new_lines.append(line)
                 history_lines.append(line)
 
-        self.write_file(path, "".join(new_lines))
+        self.write_file(path, "".join(new_lines), validate_result=True)
 
         # Read just the snippet range
         start_line = max(0, insert_line - SNIPPET_CONTEXT_WINDOW)
