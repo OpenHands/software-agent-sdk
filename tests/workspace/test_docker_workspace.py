@@ -4,6 +4,7 @@ import gc
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
@@ -148,6 +149,27 @@ def test_cleanup_with_image_deletion(mock_docker_workspace):
     assert "rmi" in rmi_call_args
     assert "-f" in rmi_call_args
     assert "test:latest" in rmi_call_args
+
+
+def test_cleanup_from_log_thread_still_stops_container(mock_docker_workspace):
+    """__del__ may run cleanup() on the logs thread when it drops the last ref."""
+    workspace, mock_exec = mock_docker_workspace()
+    workspace._stop_logs = threading.Event()
+    errors: list[Exception] = []
+
+    def run_cleanup():
+        try:
+            workspace.cleanup()
+        except Exception as e:
+            errors.append(e)
+
+    workspace._logs_thread = threading.Thread(target=run_cleanup)
+    workspace._logs_thread.start()
+    workspace._logs_thread.join(timeout=5)
+
+    assert errors == []
+    stop_calls = [c.args[0] for c in mock_exec.call_args_list if "stop" in c.args[0]]
+    assert stop_calls == [["docker", "stop", "container_id_123"]]
 
 
 def test_docker_network(mock_docker_workspace):
