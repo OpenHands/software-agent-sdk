@@ -427,3 +427,15 @@ def test_glob_executor_concurrent_with_ripgrep():
         assert all(len(files) == 5 for files in results_b)
         assert all(all("alpha_" in Path(f).name for f in files) for files in results_a)
         assert all(all("beta_" in Path(f).name for f in files) for files in results_b)
+
+
+def test_python_fallback_expands_brace_patterns(tmp_path):
+    # The tool description advertises "**/*.{json,yaml,yml,toml}".
+    (tmp_path / "a.json").write_text("{}")
+    (tmp_path / "b.yaml").write_text("")
+    (tmp_path / "c.py").write_text("")
+    executor = GlobExecutor(working_dir=str(tmp_path))
+
+    files, _ = executor._execute_with_glob("**/*.{json,yaml}", tmp_path)
+
+    assert {Path(f).name for f in files} == {"a.json", "b.yaml"}

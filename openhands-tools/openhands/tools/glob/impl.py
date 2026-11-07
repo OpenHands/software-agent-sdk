@@ -3,6 +3,7 @@
 # Use absolute import to avoid conflict with our local glob module
 import glob as glob_module
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,6 +19,19 @@ from openhands.tools.utils import (
     _check_ripgrep_available,
     _log_ripgrep_fallback_warning,
 )
+
+
+def _expand_braces(pattern: str) -> list[str]:
+    """Expand ``{a,b}`` groups, which ripgrep's -g supports and glob does not."""
+    match = re.search(r"\{([^{}]*)\}", pattern)
+    if match is None:
+        return [pattern]
+    head, tail = pattern[: match.start()], pattern[match.end() :]
+    return [
+        expanded
+        for option in match.group(1).split(",")
+        for expanded in _expand_braces(head + option + tail)
+    ]
 
 
 class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
@@ -207,7 +221,11 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
                 pattern = f"**/{pattern}"
 
             # Use glob to find matching files
-            matches = glob_module.glob(pattern, recursive=True)
+            matches = {
+                match
+                for expanded in _expand_braces(pattern)
+                for match in glob_module.glob(expanded, recursive=True)
+            }
 
             # Convert to absolute paths without resolving symlinks and sort by
             # modification time.
