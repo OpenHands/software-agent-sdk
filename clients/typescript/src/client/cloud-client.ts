@@ -677,9 +677,14 @@ export class CloudClient extends OpenHandsClient {
       throw new Error('CloudClient proxy options are required for hostOverride requests');
     }
 
+    const isJsonBody = options.body != null && typeof options.body !== 'string';
+    const hasContentType = Object.keys(options.headers ?? {}).some(
+      (header) => header.toLowerCase() === 'content-type'
+    );
     const upstreamHeaders = {
       ...this.buildUpstreamAuthHeaders(options),
       ...(this.orgId ? { 'X-Org-Id': this.orgId } : {}),
+      ...(isJsonBody && !hasContentType ? { 'Content-Type': 'application/json' } : {}),
       ...(options.headers ?? {}),
     };
     const proxyHeaders = {
@@ -697,7 +702,7 @@ export class CloudClient extends OpenHandsClient {
         method: options.method,
         path: appendParams(options.path, options.params),
         headers: upstreamHeaders,
-        body: options.body ?? null,
+        body: isJsonBody ? JSON.stringify(options.body) : (options.body ?? null),
         ...(options.timeoutSeconds ? { timeout_seconds: options.timeoutSeconds } : {}),
       },
       headers: proxyHeaders,
