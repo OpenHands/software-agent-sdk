@@ -161,8 +161,17 @@ def test_serialize_secret_cipher_with_bool_true_returns_plaintext(mock_info, cip
 # ── validate_secret tests ───────────────────────────────────────────────
 
 
-def test_validate_secret_none_returns_none(mock_info):
-    result = validate_secret(None, mock_info({}))
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(None, id="none"),
+        pytest.param("", id="empty_string"),
+        pytest.param("   ", id="whitespace_only"),
+        pytest.param(REDACTED_SECRET_VALUE, id="redacted_value"),
+    ],
+)
+def test_validate_secret_missing_value_returns_none(mock_info, value: str | None):
+    result = validate_secret(value, mock_info({}))
     assert result is None
 
 
@@ -219,21 +228,6 @@ def test_validate_secret_secretstr_passthrough(mock_info):
     result = validate_secret(secret, mock_info({}))
     assert isinstance(result, SecretStr)
     assert result.get_secret_value() == "sk-test-123"
-
-
-def test_validate_secret_empty_string_returns_none(mock_info):
-    result = validate_secret("", mock_info({}))
-    assert result is None
-
-
-def test_validate_secret_whitespace_only_returns_none(mock_info):
-    result = validate_secret("   ", mock_info({}))
-    assert result is None
-
-
-def test_validate_secret_redacted_value_returns_none(mock_info):
-    result = validate_secret(REDACTED_SECRET_VALUE, mock_info({}))
-    assert result is None
 
 
 def test_validate_secret_with_cipher_decrypts(mock_info, cipher):

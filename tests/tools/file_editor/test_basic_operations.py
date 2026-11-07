@@ -524,6 +524,19 @@ def test_str_replace_nonexistent_string(editor):
     )
 
 
+def test_str_replace_through_symlink_edits_target(editor, tmp_path):
+    editor, _ = editor
+    target = tmp_path / "target.txt"
+    target.write_text("hello\n")
+    link = tmp_path / "link.txt"
+    symlink_or_skip(target, link)
+
+    editor(command="str_replace", path=str(link), old_str="hello", new_str="bye")
+
+    assert link.is_symlink()
+    assert target.read_text() == "bye\n"
+
+
 def test_str_replace_with_empty_new_str(editor):
     editor, test_file = editor
     test_file.write_text("Line 1\nLine to remove\nLine 3")
@@ -609,6 +622,17 @@ def test_insert_with_empty_string(editor):
     content = test_file.read_text().splitlines()
     assert "" in content
     assert len(content) == 3  # Original 2 lines plus empty line
+
+
+def test_insert_after_last_line_without_trailing_newline(editor, tmp_path):
+    editor, _ = editor
+    path = tmp_path / "no_eol.txt"
+    path.write_text("a\nb")
+
+    editor(command="insert", path=str(path), insert_line=2, new_str="x")
+
+    lines = path.read_text().splitlines()
+    assert lines == ["a", "b", "x"]
 
 
 def test_insert_chinese_text_into_english_file(editor):
