@@ -860,6 +860,7 @@ class ConversationService:
             conversation_info = await asyncio.to_thread(
                 _compose_conversation_info_sync, event_service.stored, state, children
             )
+            # status-write: index mirror
             record.execution_status = conversation_info.execution_status
             return conversation_info
 
@@ -894,6 +895,7 @@ class ConversationService:
         record.state_signature = signature
         record.stored_signature = stored_signature
         record.cached_info = conversation_info
+        # status-write: index mirror
         record.execution_status = conversation_info.execution_status
         return conversation_info
 
@@ -944,6 +946,7 @@ class ConversationService:
             if event_service is not None and event_service.is_open():
                 # Authoritative: we own it, so disk can only be staler.
                 state = await event_service.get_state()
+                # status-write: index mirror
                 record.execution_status = state.execution_status
                 # Autosave will invalidate any signature and cached info we hold.
                 record.state_signature = None
@@ -973,6 +976,7 @@ class ConversationService:
                 # Went live while we were reading disk; memory wins.
                 continue
             if status is not None:
+                # status-write: index mirror
                 record.execution_status = status
             # A persisted change (or a move to an unreadable state) invalidates
             # any cached ConversationInfo derived from the previous snapshot.
@@ -1856,6 +1860,7 @@ class ConversationService:
                 conversation_info = _compose_webhook_conversation_info(
                     event_service.stored, state
                 )
+                # status-write: webhook payload
                 conversation_info.execution_status = (
                     ConversationExecutionStatus.DELETING
                 )

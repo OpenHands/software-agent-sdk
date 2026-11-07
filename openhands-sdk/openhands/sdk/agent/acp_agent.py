@@ -2456,7 +2456,9 @@ class ACPAgent(AgentBase):
             # exception, which still propagates to preserve the existing
             # cleanup/re-raise contract that run()/arun() rely on.
             try:
-                state.execution_status = ConversationExecutionStatus.ERROR
+                state.transition(
+                    ConversationExecutionStatus.ERROR, "ACP agent failed to start"
+                )
                 on_event(
                     ConversationErrorEvent(
                         source="agent",
@@ -4004,7 +4006,7 @@ class ACPAgent(AgentBase):
                 tool_call_id=tc_id,
             )
         )
-        state.execution_status = ConversationExecutionStatus.FINISHED
+        state.transition(ConversationExecutionStatus.FINISHED, "ACP turn finished")
 
     def _emit_turn_timeout(
         self,
@@ -4038,7 +4040,7 @@ class ACPAgent(AgentBase):
         # Close any tool cards left in flight from the timed-out attempt.
         self._cancel_inflight_tool_calls()
         on_event(MessageEvent(source="agent", llm_message=error_message))
-        state.execution_status = ConversationExecutionStatus.ERROR
+        state.transition(ConversationExecutionStatus.ERROR, "ACP prompt timed out")
 
     def _emit_turn_error(
         self,
@@ -4083,7 +4085,7 @@ class ACPAgent(AgentBase):
                 detail=error_detail,
             )
         )
-        state.execution_status = ConversationExecutionStatus.ERROR
+        state.transition(ConversationExecutionStatus.ERROR, "ACP turn failed")
 
     def _finalize_successful_turn_guarded(
         self,
@@ -4189,7 +4191,9 @@ class ACPAgent(AgentBase):
                     break
         if prompt_blocks is None:
             logger.warning("No user message found; finishing conversation")
-            state.execution_status = ConversationExecutionStatus.FINISHED
+            state.transition(
+                ConversationExecutionStatus.FINISHED, "no user message to prompt"
+            )
             return
 
         self._reset_client_for_turn(
@@ -4367,7 +4371,9 @@ class ACPAgent(AgentBase):
                         break
         if prompt_blocks is None:
             logger.warning("No user message found; finishing conversation")
-            state.execution_status = ConversationExecutionStatus.FINISHED
+            state.transition(
+                ConversationExecutionStatus.FINISHED, "no user message to prompt"
+            )
             return
 
         self._reset_client_for_turn(

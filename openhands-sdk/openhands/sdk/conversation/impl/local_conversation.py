@@ -784,7 +784,7 @@ class LocalConversation(BaseConversation):
     def _emit_run_limit_error(self, code: str, detail: str) -> None:
         """Mark the run failed with a run-limit ConversationErrorEvent."""
         logger.error(detail)
-        self._state.execution_status = ConversationExecutionStatus.ERROR
+        self._state.transition(ConversationExecutionStatus.ERROR, code)
         self._on_event(
             ConversationErrorEvent(source="environment", code=code, detail=detail)
         )
@@ -825,7 +825,9 @@ class LocalConversation(BaseConversation):
 
         if self._stuck_detector.is_stuck():
             logger.warning("Stuck pattern detected.")
-            self._state.execution_status = ConversationExecutionStatus.STUCK
+            self._state.transition(
+                ConversationExecutionStatus.STUCK, "stuck pattern detected"
+            )
             return True
 
         return False
@@ -2027,8 +2029,9 @@ class LocalConversation(BaseConversation):
                 ConversationExecutionStatus.FINISHED,
                 ConversationExecutionStatus.STUCK,
             ):
-                self._state.execution_status = (
-                    ConversationExecutionStatus.IDLE
+                self._state.transition(
+                    ConversationExecutionStatus.IDLE,
+                    "new user message after the run ended",
                 )  # new message resets terminal states
 
             activated_skill_names: list[str] = []
@@ -2129,7 +2132,9 @@ class LocalConversation(BaseConversation):
                 ConversationExecutionStatus.ERROR,
                 ConversationExecutionStatus.STUCK,
             ]:
-                self._state.execution_status = ConversationExecutionStatus.RUNNING
+                self._state.transition(
+                    ConversationExecutionStatus.RUNNING, "run started"
+                )
 
         iteration = 0
         _run_start_event_count = len(self._state.events)
@@ -2169,8 +2174,9 @@ class LocalConversation(BaseConversation):
                                         ),
                                     )
                                     self._on_event(feedback_msg)
-                                self._state.execution_status = (
-                                    ConversationExecutionStatus.RUNNING
+                                self._state.transition(
+                                    ConversationExecutionStatus.RUNNING,
+                                    "stop hook denied stopping",
                                 )
                                 continue
                         # No hooks or hooks allowed stopping
@@ -2185,8 +2191,9 @@ class LocalConversation(BaseConversation):
                         self._state.execution_status
                         == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
                     ):
-                        self._state.execution_status = (
-                            ConversationExecutionStatus.RUNNING
+                        self._state.transition(
+                            ConversationExecutionStatus.RUNNING,
+                            "pending actions confirmed",
                         )
 
                     # Mark the step as holding the state lock so state-mutating
@@ -2237,7 +2244,10 @@ class LocalConversation(BaseConversation):
                             f"({self.max_iteration_per_run})."
                         )
                         logger.error(error_msg)
-                        self._state.execution_status = ConversationExecutionStatus.ERROR
+                        self._state.transition(
+                            ConversationExecutionStatus.ERROR,
+                            "maximum iterations reached",
+                        )
                         self._on_event(
                             ConversationErrorEvent(
                                 source="environment",
@@ -2248,7 +2258,9 @@ class LocalConversation(BaseConversation):
                         break
         except LLMAuthenticationError as e:
             with self._state:
-                self._state.execution_status = ConversationExecutionStatus.ERROR
+                self._state.transition(
+                    ConversationExecutionStatus.ERROR, "LLM authentication failed"
+                )
                 self._on_event(
                     ConversationErrorEvent(
                         source="environment",
@@ -2263,7 +2275,10 @@ class LocalConversation(BaseConversation):
             ) from e
         except Exception as e:
             with self._state:
-                self._state.execution_status = ConversationExecutionStatus.ERROR
+                self._state.transition(
+                    ConversationExecutionStatus.ERROR,
+                    f"run failed with {type(e).__name__}",
+                )
 
                 # Add an error event — unless the agent already surfaced a typed,
                 # detailed one for this failure (e.g. ACPAgent._emit_turn_error),
@@ -2348,7 +2363,9 @@ class LocalConversation(BaseConversation):
                 ConversationExecutionStatus.ERROR,
                 ConversationExecutionStatus.STUCK,
             ]:
-                self._state.execution_status = ConversationExecutionStatus.RUNNING
+                self._state.transition(
+                    ConversationExecutionStatus.RUNNING, "run started"
+                )
             last_acp_prompt_user_message_id = self._state.agent_state.get(
                 ACP_LAST_PROMPT_USER_MESSAGE_ID
             )
@@ -2389,8 +2406,9 @@ class LocalConversation(BaseConversation):
                                         ),
                                     )
                                     self._on_event(feedback_msg)
-                                self._state.execution_status = (
-                                    ConversationExecutionStatus.RUNNING
+                                self._state.transition(
+                                    ConversationExecutionStatus.RUNNING,
+                                    "stop hook denied stopping",
                                 )
                                 continue
                         break
@@ -2402,8 +2420,9 @@ class LocalConversation(BaseConversation):
                         self._state.execution_status
                         == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
                     ):
-                        self._state.execution_status = (
-                            ConversationExecutionStatus.RUNNING
+                        self._state.transition(
+                            ConversationExecutionStatus.RUNNING,
+                            "pending actions confirmed",
                         )
 
                     if isinstance(self.agent, ACPAgent):
@@ -2521,16 +2540,18 @@ class LocalConversation(BaseConversation):
                                     "User message arrived during final iteration; "
                                     "leaving conversation idle for a follow-up run"
                                 )
-                                self._state.execution_status = (
-                                    ConversationExecutionStatus.IDLE
+                                self._state.transition(
+                                    ConversationExecutionStatus.IDLE,
+                                    "user message arrived on the final iteration",
                                 )
                                 break
                             if not step_awaiting_confirmation:
                                 logger.info(
                                     "User message arrived during step; continuing run"
                                 )
-                            self._state.execution_status = (
-                                ConversationExecutionStatus.RUNNING
+                            self._state.transition(
+                                ConversationExecutionStatus.RUNNING,
+                                "user message arrived during the step",
                             )
 
                         if (
@@ -2557,8 +2578,9 @@ class LocalConversation(BaseConversation):
                                 f"({self.max_iteration_per_run})."
                             )
                             logger.error(error_msg)
-                            self._state.execution_status = (
-                                ConversationExecutionStatus.ERROR
+                            self._state.transition(
+                                ConversationExecutionStatus.ERROR,
+                                "maximum iterations reached",
                             )
                             self._on_event(
                                 ConversationErrorEvent(
@@ -2591,19 +2613,22 @@ class LocalConversation(BaseConversation):
                                     "User message arrived before ACP finish; "
                                     "leaving conversation idle for a follow-up run"
                                 )
-                                self._state.execution_status = (
-                                    ConversationExecutionStatus.IDLE
+                                self._state.transition(
+                                    ConversationExecutionStatus.IDLE,
+                                    "user message arrived on the final iteration",
                                 )
                                 break
                             logger.info(
                                 "User message arrived before ACP finish; continuing run"
                             )
-                            self._state.execution_status = (
-                                ConversationExecutionStatus.RUNNING
+                            self._state.transition(
+                                ConversationExecutionStatus.RUNNING,
+                                "user message arrived during the step",
                             )
                             continue
-                        self._state.execution_status = (
-                            ConversationExecutionStatus.FINISHED
+                        self._state.transition(
+                            ConversationExecutionStatus.FINISHED,
+                            "no ACP prompt left to send",
                         )
                     break
 
@@ -2665,8 +2690,9 @@ class LocalConversation(BaseConversation):
                     ):
                         break
                     if pause_requested_during_acp_step:
-                        self._state.execution_status = (
-                            ConversationExecutionStatus.PAUSED
+                        self._state.transition(
+                            ConversationExecutionStatus.PAUSED,
+                            "pause requested during the ACP step",
                         )
                         break
 
@@ -2685,15 +2711,17 @@ class LocalConversation(BaseConversation):
                                 "User message arrived during final ACP iteration; "
                                 "leaving conversation idle for a follow-up run"
                             )
-                            self._state.execution_status = (
-                                ConversationExecutionStatus.IDLE
+                            self._state.transition(
+                                ConversationExecutionStatus.IDLE,
+                                "user message arrived on the final iteration",
                             )
                             break
                         logger.info(
                             "User message arrived during ACP step; continuing run"
                         )
-                        self._state.execution_status = (
-                            ConversationExecutionStatus.RUNNING
+                        self._state.transition(
+                            ConversationExecutionStatus.RUNNING,
+                            "user message arrived during the step",
                         )
 
                     if (
@@ -2721,7 +2749,10 @@ class LocalConversation(BaseConversation):
                             f"({self.max_iteration_per_run})."
                         )
                         logger.error(error_msg)
-                        self._state.execution_status = ConversationExecutionStatus.ERROR
+                        self._state.transition(
+                            ConversationExecutionStatus.ERROR,
+                            "maximum iterations reached",
+                        )
                         self._on_event(
                             ConversationErrorEvent(
                                 source="environment",
@@ -2764,11 +2795,15 @@ class LocalConversation(BaseConversation):
                 # the next completion call.
                 self._emit_orphaned_action_errors()
 
-                self._state.execution_status = ConversationExecutionStatus.PAUSED
+                self._state.transition(
+                    ConversationExecutionStatus.PAUSED, "run interrupted"
+                )
                 self._on_event(InterruptEvent())
         except LLMAuthenticationError as e:
             with self._state:
-                self._state.execution_status = ConversationExecutionStatus.ERROR
+                self._state.transition(
+                    ConversationExecutionStatus.ERROR, "LLM authentication failed"
+                )
                 self._on_event(
                     ConversationErrorEvent(
                         source="environment",
@@ -2787,7 +2822,10 @@ class LocalConversation(BaseConversation):
                 updated_agent_state.pop(ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID, None)
                 updated_agent_state.pop(ACP_SUPERSEDE_INFLIGHT_PROMPT, None)
                 self._state.agent_state = updated_agent_state
-                self._state.execution_status = ConversationExecutionStatus.ERROR
+                self._state.transition(
+                    ConversationExecutionStatus.ERROR,
+                    f"run failed with {type(e).__name__}",
+                )
                 # Skip the generic event if the agent already surfaced a typed,
                 # detailed one for this failure (see _agent_already_surfaced_error).
                 if not _agent_already_surfaced_error(
@@ -2864,7 +2902,9 @@ class LocalConversation(BaseConversation):
                 self._state.execution_status
                 == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
             ):
-                self._state.execution_status = ConversationExecutionStatus.IDLE
+                self._state.transition(
+                    ConversationExecutionStatus.IDLE, "pending actions rejected"
+                )
 
             if not pending_actions:
                 logger.warning("No pending actions to reject")
@@ -2938,7 +2978,9 @@ class LocalConversation(BaseConversation):
                 self._state.execution_status == ConversationExecutionStatus.IDLE
                 or self._state.execution_status == ConversationExecutionStatus.RUNNING
             ):
-                self._state.execution_status = ConversationExecutionStatus.PAUSED
+                self._state.transition(
+                    ConversationExecutionStatus.PAUSED, "pause requested"
+                )
                 pause_event = PauseEvent()
                 self._on_event(pause_event)
                 logger.info("Agent execution pause requested")

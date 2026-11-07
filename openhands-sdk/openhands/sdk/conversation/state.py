@@ -80,6 +80,105 @@ class ConversationExecutionStatus(str, Enum):
         )
 
 
+_Status = ConversationExecutionStatus
+
+# The moves ConversationState.transition() accepts. A move to the current
+# status is always a no-op. ERROR, PAUSED and RUNNING are reachable from every
+# live status: a run can fail, be interrupted or (re)start from anywhere. A
+# pause can also land while a step is in flight (arun() releases the state
+# lock for LLM I/O, ACP steps run without it), so PAUSED may be followed by
+# the step's own outcome. DELETING is final.
+_ALLOWED_TRANSITIONS: dict[_Status, frozenset[_Status]] = {
+    _Status.IDLE: frozenset(
+        {
+            _Status.RUNNING,
+            _Status.PAUSED,
+            _Status.WAITING_FOR_CONFIRMATION,
+            _Status.FINISHED,
+            _Status.ERROR,
+            _Status.STUCK,
+            _Status.DELETING,
+        }
+    ),
+    _Status.RUNNING: frozenset(
+        {
+            _Status.IDLE,
+            _Status.PAUSED,
+            _Status.WAITING_FOR_CONFIRMATION,
+            _Status.FINISHED,
+            _Status.ERROR,
+            _Status.STUCK,
+            _Status.DELETING,
+        }
+    ),
+    _Status.PAUSED: frozenset(
+        {
+            _Status.RUNNING,
+            _Status.WAITING_FOR_CONFIRMATION,
+            _Status.FINISHED,
+            _Status.ERROR,
+            _Status.DELETING,
+        }
+    ),
+    _Status.WAITING_FOR_CONFIRMATION: frozenset(
+        {
+            _Status.IDLE,
+            _Status.RUNNING,
+            _Status.PAUSED,
+            _Status.FINISHED,
+            _Status.ERROR,
+            _Status.STUCK,
+            _Status.DELETING,
+        }
+    ),
+    _Status.FINISHED: frozenset(
+        {
+            _Status.IDLE,
+            _Status.RUNNING,
+            _Status.PAUSED,
+            _Status.ERROR,
+            _Status.DELETING,
+        }
+    ),
+    _Status.ERROR: frozenset(
+        {
+            _Status.RUNNING,
+            _Status.PAUSED,
+            _Status.DELETING,
+        }
+    ),
+    _Status.STUCK: frozenset(
+        {
+            _Status.IDLE,
+            _Status.RUNNING,
+            _Status.PAUSED,
+            _Status.ERROR,
+            _Status.DELETING,
+        }
+    ),
+    _Status.DELETING: frozenset(),
+}
+
+
+class InvalidExecutionStatusTransitionError(ValueError):
+    """Raised when ``ConversationState.transition`` is asked for a move the
+    status table does not allow."""
+
+    def __init__(
+        self,
+        current: ConversationExecutionStatus,
+        target: ConversationExecutionStatus,
+        reason: str,
+    ) -> None:
+        super().__init__(
+            f"execution_status cannot move from {current.value} to "
+            f"{target.value} ({reason})"
+        )
+        self.current = current
+        self.target = target
+        self.reason = reason
+
+
 class ConversationState(OpenHandsModel):
     # ===== Public, validated fields =====
     id: ConversationID = Field(description="Unique conversation ID")
@@ -699,6 +798,38 @@ class ConversationState(OpenHandsModel):
                     logger.exception(
                         f"State change callback failed for field {name}", exc_info=True
                     )
+
+    def transition(self, to: ConversationExecutionStatus, reason: str) -> None:
+        """Move ``execution_status`` to ``to``; the only way SDK code changes it.
+
+        The move is checked against the status table, so a status the run
+        loop can never produce (leaving DELETING, FINISHED straight from
+        ERROR, ...) fails loudly instead of being persisted. The assignment
+        goes through the autosave hook, so it is persisted and published as a
+        ``ConversationStateUpdateEvent`` like any other field change. Moving to
+        the current status is a no-op.
+
+        Args:
+            to: The status to move to.
+            reason: Short description of why, for the debug log and the error.
+
+        Raises:
+            InvalidExecutionStatusTransitionError: If the table does not allow
+                moving from the current status to ``to``.
+        """
+        current = self.execution_status
+        if to == current:
+            return
+        if to not in _ALLOWED_TRANSITIONS[current]:
+            raise InvalidExecutionStatusTransitionError(current, to, reason)
+        logger.debug(
+            "Conversation %s execution_status %s -> %s: %s",
+            self.id,
+            current.value,
+            to.value,
+            reason,
+        )
+        self.execution_status = to  # status-write: the checked write
 
     def block_action(self, action_id: str, reason: str) -> None:
         """Persistently record a hook-blocked action."""

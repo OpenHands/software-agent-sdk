@@ -806,7 +806,9 @@ class EventService:
             return
         with self._conversation._state as state:
             if state.execution_status != ConversationExecutionStatus.ERROR:
-                state.execution_status = ConversationExecutionStatus.ERROR
+                state.transition(
+                    ConversationExecutionStatus.ERROR, "run failed outside the run loop"
+                )
 
     def _publish_error_event_sync(self, exc: BaseException) -> None:
         """Emit a ConversationErrorEvent so the UI sees the failure detail.
@@ -1446,7 +1448,9 @@ class EventService:
         # should be surfaced back to the agent.
         state = self._conversation.state
         if state.execution_status == ConversationExecutionStatus.RUNNING:
-            state.execution_status = ConversationExecutionStatus.ERROR
+            state.transition(
+                ConversationExecutionStatus.ERROR, "stale running status on load"
+            )
             # Crash recovery scans the full log, not the active branch: the
             # process may have died between writing an event file and persisting
             # the advanced HEAD, so the leaf can lag the on-disk events. (Remote
