@@ -844,6 +844,15 @@ class EventService:
         with state:
             return ConversationStateUpdateEvent.from_conversation_state(state)
 
+    def _create_initial_state_sync(
+        self,
+    ) -> tuple[ConversationStateUpdateEvent, int]:
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        state = self._conversation._state
+        with state:
+            return self._create_state_update_event_sync(), len(state.events)
+
     async def _create_state_update_event(self) -> ConversationStateUpdateEvent:
         return await self._run_state_op(self._create_state_update_event_sync)
 
@@ -1019,32 +1028,41 @@ class EventService:
 
     async def subscribe_to_events(self, subscriber: Subscriber[Event]) -> UUID:
         subscriber_id = self._pub_sub.subscribe(subscriber)
-
-        # Send current state to the new subscriber immediately.
-        # The snapshot is created in a worker thread so waiting on the
-        # conversation's synchronous FIFOLock cannot block the server event loop.
-        if self._conversation:
-            state_update_event = await self._create_state_update_event()
-        else:
-            state_update_event = ConversationStateUpdateEvent(
-                key="execution_status",
-                value=ConversationExecutionStatus.IDLE,
-            )
-
         try:
-            await asyncio.wait_for(
-                subscriber(state_update_event),
-                timeout=INITIAL_STATE_PUSH_TIMEOUT_SECONDS,
+            # Send current state to the new subscriber immediately.
+            # The snapshot is created in a worker thread so waiting on the
+            # conversation's synchronous FIFOLock cannot block the server event loop.
+            log_length: int | None = None
+            if self._conversation:
+                loop = asyncio.get_running_loop()
+                state_update_event, log_length = await loop.run_in_executor(
+                    None, self._create_initial_state_sync
+                )
+            else:
+                state_update_event = ConversationStateUpdateEvent(
+                    key="execution_status",
+                    value=ConversationExecutionStatus.IDLE,
+                )
+
+            push = (
+                subscriber.on_initial_state(state_update_event, log_length)
+                if isinstance(subscriber, Subscriber)
+                else subscriber(state_update_event)
             )
-        except TimeoutError:
-            # Subscriber stays registered; only the initial-state push is
-            # dropped. Subsequent publishes go through pub_sub and may
-            # still block there if the subscriber remains wedged.
-            logger.warning(
-                f"Initial state push to subscriber {subscriber_id} timed "
-                f"out after {INITIAL_STATE_PUSH_TIMEOUT_SECONDS}s."
-            )
-        # Non-timeout errors propagate to caller (e.g. webhook failures).
+            try:
+                await asyncio.wait_for(push, timeout=INITIAL_STATE_PUSH_TIMEOUT_SECONDS)
+            except TimeoutError:
+                # Subscriber stays registered; only the initial-state push is
+                # dropped. Subsequent publishes go through pub_sub and may
+                # still block there if the subscriber remains wedged.
+                logger.warning(
+                    f"Initial state push to subscriber {subscriber_id} timed "
+                    f"out after {INITIAL_STATE_PUSH_TIMEOUT_SECONDS}s."
+                )
+            # Non-timeout errors propagate to caller (e.g. webhook failures).
+        except BaseException:
+            self._pub_sub.unsubscribe(subscriber_id)
+            raise
 
         return subscriber_id
 
@@ -1560,6 +1578,7 @@ class EventService:
         """
         if not self._conversation or self._closing:
             raise ValueError("inactive_service")
+        request_generation = self._explicit_interrupt_generation
 
         # Use lock to make check-and-set atomic, preventing race conditions
         async with self._run_lock:
@@ -1602,6 +1621,7 @@ class EventService:
             # of a chain acquires capacity; the permit is returned once the
             # whole chain (plus any pin, e.g. a live /goal loop) is done.
             owner = self._run_session_slot
+            new_owner = owner is None
             if owner is None:
                 owner = (
                     run_slot.share()
@@ -1610,11 +1630,19 @@ class EventService:
                         self._run_semaphore, wait=wait_for_capacity
                     )
                 )
-                self._run_session_slot = owner
             elif run_slot is not None:
                 # A reservation offered on top of an already-held session is
                 # redundant; return it so it is not leaked.
                 run_slot.release()
+            if (
+                self._closing
+                or self._explicit_interrupt_generation != request_generation
+            ):
+                if new_owner:
+                    owner.release()
+                return
+            if new_owner:
+                self._run_session_slot = owner
             slot = owner.share()
 
             worker: asyncio.Future | None = None

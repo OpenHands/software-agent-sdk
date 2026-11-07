@@ -15,7 +15,7 @@ import pytest
 import openhands.tools.grep.impl as grep_impl
 from openhands.tools.grep import GrepAction
 from openhands.tools.grep.impl import GrepExecutor
-from openhands.tools.utils import _check_grep_available
+from openhands.tools.utils import _check_grep_available, _check_ripgrep_available
 
 
 def test_grep_executor_initialization():
@@ -247,6 +247,40 @@ def test_grep_executor_invalid_regex():
 
         assert observation.is_error is True
         assert "Invalid regex pattern" in observation.text
+
+
+@pytest.mark.skipif(not _check_ripgrep_available(), reason="ripgrep not available")
+def test_pattern_starting_with_dash(tmp_path):
+    (tmp_path / "flags.txt").write_text("run with -foo enabled\n")
+    (tmp_path / "other.txt").write_text("nothing here\n")
+
+    observation = GrepExecutor(working_dir=str(tmp_path))(GrepAction(pattern="-foo"))
+
+    assert observation.is_error is False
+    assert [Path(match).name for match in observation.matches] == ["flags.txt"]
+
+
+@pytest.mark.skipif(not _check_ripgrep_available(), reason="ripgrep not available")
+def test_ripgrep_pattern_cannot_inject_flags(tmp_path):
+    (tmp_path / "a.txt").write_text("alpha\n")
+    (tmp_path / "b.txt").write_text("beta\n")
+
+    observation = GrepExecutor(working_dir=str(tmp_path))(GrepAction(pattern="--files"))
+
+    assert observation.matches == []
+
+
+@pytest.mark.skipif(not _check_ripgrep_available(), reason="ripgrep not available")
+def test_ripgrep_regex_error_is_not_reported_as_no_match(tmp_path):
+    # Python's re accepts look-ahead, so the pattern passes validation, but
+    # ripgrep's default engine rejects it and exits with status 2.
+    (tmp_path / "a.txt").write_text("foobar\n")
+
+    observation = GrepExecutor(working_dir=str(tmp_path))(
+        GrepAction(pattern="foo(?=bar)")
+    )
+
+    assert [Path(m).name for m in observation.matches] == ["a.txt"]
 
 
 def test_grep_executor_concurrent():
