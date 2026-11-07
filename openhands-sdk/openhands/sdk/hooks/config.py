@@ -249,7 +249,7 @@ class HookConfig(BaseModel):
                 # A wrapper holding a scalar or a list is malformed input, not a
                 # crash: report it as a validation error like any other bad value.
                 raise ValueError(
-                    'HookConfig legacy wrapper must be an object, e.g. '
+                    "HookConfig legacy wrapper must be an object, e.g. "
                     '{"hooks": {"PreToolUse": [...]}}; '
                     f"got {type(data).__name__}"
                 )
