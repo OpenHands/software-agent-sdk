@@ -140,6 +140,24 @@ def _session(ws, svc, after_seq=None):
     )
 
 
+def _client_status(frames: list[dict], session: bool = False) -> str | None:
+    status = None
+    for frame in frames:
+        event = (frame.get("event") if session else frame) or {}
+        if event.get("kind") != "ConversationStateUpdateEvent":
+            continue
+        if event["key"] == "execution_status":
+            status = event["value"]
+        elif event["key"] == "full_state":
+            status = event["value"]["execution_status"]
+    return status
+
+
+def _set_status(svc: EventService, status: ConversationExecutionStatus) -> None:
+    with svc.get_conversation()._state as state:
+        state.execution_status = status
+
+
 async def _finish(ws, task):
     await asyncio.sleep(0.2)
     ws.disconnect.set()
@@ -179,6 +197,31 @@ async def test_legacy_event_during_replay_follows_history_once(svc, monkeypatch)
     await _finish(ws, task)
     assert _texts(ws.sent) == ["E0", "E1", "E2", "E3"]
     assert ws.sent[0]["kind"] == "ConversationStateUpdateEvent"
+
+
+@pytest.mark.asyncio
+async def test_legacy_snapshot_during_replay_does_not_override_newer_state(
+    svc, monkeypatch
+):
+    gate, in_replay = asyncio.Event(), asyncio.Event()
+    search_events = svc.search_events
+
+    async def held_search(*args, **kwargs):
+        in_replay.set()
+        await gate.wait()
+        return await search_events(*args, **kwargs)
+
+    monkeypatch.setattr(svc, "search_events", held_search)
+    ws = _FakeWS()
+    task = asyncio.create_task(_legacy(ws, svc, resend_mode="all"))
+    await in_replay.wait()
+    await asyncio.to_thread(_set_status, svc, ConversationExecutionStatus.RUNNING)
+    await svc._publish_state_update()
+    await asyncio.to_thread(_set_status, svc, ConversationExecutionStatus.IDLE)
+    await _settle(svc)
+    gate.set()
+    await _finish(ws, task)
+    assert _client_status(ws.sent) == "idle"
 
 
 @pytest.mark.asyncio
@@ -254,23 +297,10 @@ async def test_session_snapshot_never_follows_newer_state(svc, monkeypatch):
     task = asyncio.create_task(_session(ws, svc, after_seq=-1))
     await snapped.wait()
 
-    def set_running():
-        with svc.get_conversation()._state as state:
-            state.execution_status = ConversationExecutionStatus.RUNNING
-
-    await asyncio.to_thread(set_running)
+    await asyncio.to_thread(_set_status, svc, ConversationExecutionStatus.RUNNING)
     await _settle(svc)
     resume.set()
     await _wait_until(lambda: any(f.get("type") == "transient" for f in ws.sent))
     await _finish(ws, task)
 
-    status = None
-    for frame in ws.sent:
-        event = frame.get("event") or {}
-        if event.get("kind") != "ConversationStateUpdateEvent":
-            continue
-        if event["key"] == "execution_status":
-            status = event["value"]
-        elif event["key"] == "full_state":
-            status = event["value"]["execution_status"]
-    assert status == "running"
+    assert _client_status(ws.sent, session=True) == "running"

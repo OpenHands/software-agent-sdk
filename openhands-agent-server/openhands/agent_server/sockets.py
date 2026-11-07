@@ -48,6 +48,10 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import MaxSubscribersError, Subscriber
 from openhands.sdk import Event, Message
+from openhands.sdk.event.conversation_state import (
+    FULL_STATE_KEY,
+    ConversationStateUpdateEvent,
+)
 from openhands.sdk.utils.paging import page_iterator
 
 
@@ -552,7 +556,10 @@ class _WebSocketSubscriber(Subscriber):
     _replayed_ids: set[str] = field(default_factory=set)
 
     async def __call__(self, event: Event):
-        if self.buffering:
+        if self.buffering and not (
+            isinstance(event, ConversationStateUpdateEvent)
+            and event.key == FULL_STATE_KEY
+        ):
             self._buffer.append(event)
             return
         if event.id in self._replayed_ids:
