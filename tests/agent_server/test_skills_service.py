@@ -218,11 +218,14 @@ class TestMergeSkills:
 class TestLoadOrgSkillsFromUrl:
     """Tests for load_org_skills_from_url function."""
 
-    def test_load_org_skills_git_clone_failure(self):
-        """Test handling of git clone failure."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = Exception("Git not found")
+    # The clone path uses ``subprocess.Popen`` (so the whole process group can
+    # be torn down on timeout), not ``subprocess.run``. Patching the Popen seam
+    # is what actually intercepts the call.
+    _POPEN = "openhands.agent_server.skills_service.subprocess.Popen"
 
+    def test_load_org_skills_git_clone_failure(self):
+        """A missing git binary is handled as an empty skill list."""
+        with patch(self._POPEN, side_effect=FileNotFoundError("git not found")):
             result = load_org_skills_from_url(
                 org_repo_url="https://github.com/org/.openhands",
                 org_name="test-org",
@@ -231,15 +234,15 @@ class TestLoadOrgSkillsFromUrl:
             assert result == []
 
     def test_load_org_skills_repo_not_found(self):
-        """Test handling of repository not found."""
-        import subprocess
+        """A non-zero clone exit is handled as an empty skill list."""
 
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.CalledProcessError(
-                returncode=128,
-                cmd=["git", "clone"],
-            )
+        class _Proc:
+            returncode = 128
 
+            def communicate(self, timeout=None):
+                return b"", b""
+
+        with patch(self._POPEN, return_value=_Proc()):
             result = load_org_skills_from_url(
                 org_repo_url="https://github.com/org/.openhands",
                 org_name="test-org",
@@ -248,33 +251,42 @@ class TestLoadOrgSkillsFromUrl:
             assert result == []
 
     def test_load_org_skills_timeout(self):
-        """Test handling of git clone timeout."""
+        """A clone that exceeds its budget is killed and handled."""
         import subprocess
 
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired(
-                cmd=["git", "clone"],
-                timeout=120,
-            )
+        killed: list[bool] = []
 
-            result = load_org_skills_from_url(
-                org_repo_url="https://github.com/org/.openhands",
-                org_name="test-org",
-            )
+        class _Proc:
+            returncode = None
+            pid = 4242
 
-            assert result == []
+            def communicate(self, timeout=None):
+                raise subprocess.TimeoutExpired(cmd=["git", "clone"], timeout=120)
 
-    def test_load_org_skills_custom_working_dir(self):
-        """Test using custom working directory."""
-        import subprocess
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("subprocess.run") as mock_run:
-                mock_run.side_effect = subprocess.CalledProcessError(
-                    returncode=128,
-                    cmd=["git", "clone"],
+        with patch(self._POPEN, return_value=_Proc()):
+            with patch(
+                "openhands.agent_server.skills_service._kill_process_group",
+                side_effect=lambda proc: killed.append(True),
+            ):
+                result = load_org_skills_from_url(
+                    org_repo_url="https://github.com/org/.openhands",
+                    org_name="test-org",
                 )
 
+        assert result == []
+        assert killed == [True], "a timed-out clone must tear down its process group"
+
+    def test_load_org_skills_custom_working_dir(self):
+        """A custom working directory is honoured on the clone path."""
+
+        class _Proc:
+            returncode = 128
+
+            def communicate(self, timeout=None):
+                return b"", b""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch(self._POPEN, return_value=_Proc()):
                 result = load_org_skills_from_url(
                     org_repo_url="https://github.com/org/.openhands",
                     org_name="test-org",
