@@ -1,0 +1,19 @@
+PASS  own conversation                   expected=200 got=200
+PASS  own events search                  expected=200 got=200
+PASS  own git changes                    expected=422 got=422
+PASS  own workspace listing              expected=404 got=404
+PASS  own file download                  expected=422 got=422
+PASS  other conversation                 expected=403 got=403
+PASS  server settings                    expected=403 got=403
+PASS  conversation list                  expected=403 got=403
+PASS  conversation search                expected=403 got=403
+PASS  server bash                        expected=403 got=403
+PASS  own direct shell                   expected=403 got=403
+PASS  own vscode url                     expected=403 got=403
+PASS  other trajectory via own runtime   expected=403 got=403
+PASS  mint workspace cookie              expected=403 got=403
+PASS  unknown signing key                expected=401 got=401
+PASS  session key unchanged              expected=200 got=200
+PASS  socket own conversation            expected=open got=open
+PASS  socket other conversation          expected=4003 got=4003
+PASS  server-wide bash socket            expected=4001 got=4001

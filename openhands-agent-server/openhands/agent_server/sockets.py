@@ -38,6 +38,11 @@ from openhands.agent_server.conversation_service import (
     CredentialBindingActivationRequired,
     get_default_conversation_service,
 )
+from openhands.agent_server.conversation_token import (
+    InvalidConversationTokenError,
+    is_conversation_token,
+    verify_conversation_token,
+)
 from openhands.agent_server.event_router import normalize_datetime_to_server_timezone
 from openhands.agent_server.models import (
     BashError,
@@ -136,9 +141,36 @@ def _resolve_websocket_session_api_key(
 _FIRST_MESSAGE_AUTH_TIMEOUT_SECONDS = 10
 
 
+def _credential_close_code(
+    credential: str,
+    config: Config,
+    conversation_id: UUID | None,
+) -> int | None:
+    if credential and credential in config.session_api_keys:
+        return None
+    if not is_conversation_token(credential):
+        return 4001
+    try:
+        token_conversation_id = verify_conversation_token(
+            credential, config.session_api_keys
+        )
+    except InvalidConversationTokenError:
+        return 4001
+    if conversation_id is None:
+        return 4001
+    if token_conversation_id != conversation_id:
+        return 4003
+    return None
+
+
+def _close_reason(code: int) -> str:
+    return "Forbidden" if code == 4003 else "Authentication failed"
+
+
 async def _accept_authenticated_websocket(
     websocket: WebSocket,
     session_api_key: str | None,
+    conversation_id: UUID | None = None,
 ) -> bool:
     """Authenticate and accept the socket, or close with an auth error.
 
@@ -161,15 +193,20 @@ async def _accept_authenticated_websocket(
 
     # Legacy path: key supplied via query param or header.
     if resolved_key is not None:
-        if resolved_key and resolved_key in config.session_api_keys:
-            logger.warning(
-                "session_api_key passed via query param or header is deprecated. "
-                "Use first-message auth instead."
-            )
+        if session_api_key is not None and is_conversation_token(resolved_key):
+            code: int | None = 4001
+        else:
+            code = _credential_close_code(resolved_key, config, conversation_id)
+        if code is None:
+            if resolved_key in config.session_api_keys:
+                logger.warning(
+                    "session_api_key passed via query param or header is "
+                    "deprecated. Use first-message auth instead."
+                )
             await websocket.accept()
             return True
         logger.warning("WebSocket authentication failed: invalid API key")
-        await websocket.close(code=4001, reason="Authentication failed")
+        await websocket.close(code=code, reason=_close_reason(code))
         return False
 
     # First-message auth: we must accept() before reading frames because the
@@ -219,11 +256,13 @@ async def _accept_authenticated_websocket(
         )
         return False
     presented_key = data.get("session_api_key")
-    if not presented_key or presented_key not in config.session_api_keys:
+    if isinstance(presented_key, str) and presented_key:
+        code = _credential_close_code(presented_key, config, conversation_id)
+    else:
+        code = 4001
+    if code is not None:
         logger.warning("WebSocket first-message auth failed: invalid API key")
-        await _safe_close_websocket(
-            websocket, code=4001, reason="Authentication failed"
-        )
+        await _safe_close_websocket(websocket, code=code, reason=_close_reason(code))
         return False
 
     logger.info("WebSocket authenticated via first-message auth")
@@ -283,7 +322,9 @@ async def events_socket(
             backward compatibility - if True and resend_mode is None, behaves
             as resend_mode='all'.
     """
-    if not await _accept_authenticated_websocket(websocket, session_api_key):
+    if not await _accept_authenticated_websocket(
+        websocket, session_api_key, conversation_id
+    ):
         return
 
     logger.info(f"Event Websocket Connected: {conversation_id}")

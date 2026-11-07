@@ -368,7 +368,9 @@ async def session_socket(
     ] = None,
 ):
     """Session socket: durable events in an envelope, on one ordered channel."""
-    if not await _accept_authenticated_websocket(websocket, session_api_key):
+    if not await _accept_authenticated_websocket(
+        websocket, session_api_key, conversation_id
+    ):
         return
 
     logger.info("session_socket_connected: %s after_seq=%s", conversation_id, after_seq)

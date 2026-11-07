@@ -2,6 +2,7 @@ from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
 from fastapi.security import APIKeyCookie, APIKeyHeader
 from pydantic import TypeAdapter, ValidationError
 
@@ -9,6 +10,11 @@ from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.conversation_token import (
+    InvalidConversationTokenError,
+    is_conversation_token,
+    verify_conversation_token,
+)
 from openhands.agent_server.event_service import EventService
 
 
@@ -35,8 +41,12 @@ def check_session_api_key(
     restarting the server or re-registering routes.
     """
     config: Config = request.app.state.config
-    if config.session_api_keys and session_api_key not in config.session_api_keys:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+    if not config.session_api_keys or session_api_key in config.session_api_keys:
+        return
+    if is_conversation_token(session_api_key):
+        _authorize_conversation_token(request, session_api_key, config)
+        return
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED)
 
 
 def check_workspace_session(
@@ -60,7 +70,65 @@ def check_workspace_session(
     for candidate in (header_key, cookie_key):
         if candidate and candidate in config.session_api_keys:
             return
+    if is_conversation_token(header_key):
+        _authorize_conversation_token(request, header_key, config)
+        return
     raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+
+
+_CONVERSATION_ID_PARAMS = ("conversation_id", "runtime_conversation_id")
+_TOKEN_ROUTE_PREFIXES = tuple(
+    f"/api/conversations/{{{param}}}" for param in _CONVERSATION_ID_PARAMS
+)
+_RUNTIME_ROUTE = "/api/conversations/{runtime_conversation_id}"
+_TOKEN_REFUSED_ROUTES = frozenset(
+    {
+        f"{_RUNTIME_ROUTE}/bash/execute_bash_command",
+        f"{_RUNTIME_ROUTE}/bash/start_bash_command",
+        f"{_RUNTIME_ROUTE}/bash/bash_commands/{{command_id}}/stop",
+    }
+)
+_TOKEN_REFUSED_PREFIXES = (f"{_RUNTIME_ROUTE}/vscode/",)
+
+
+def _route_in_token_scope(route_path: str) -> bool:
+    if not any(
+        route_path == prefix or route_path.startswith(f"{prefix}/")
+        for prefix in _TOKEN_ROUTE_PREFIXES
+    ):
+        return False
+    if route_path in _TOKEN_REFUSED_ROUTES:
+        return False
+    return not route_path.startswith(_TOKEN_REFUSED_PREFIXES)
+
+
+def _path_ids_match(path_params: dict[str, str], conversation_id: UUID) -> bool:
+    values = [
+        path_params[name] for name in _CONVERSATION_ID_PARAMS if name in path_params
+    ]
+    if not values:
+        return False
+    for value in values:
+        try:
+            if UUID(value) != conversation_id:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
+def _authorize_conversation_token(request: Request, token: str, config: Config) -> None:
+    try:
+        conversation_id = verify_conversation_token(token, config.session_api_keys)
+    except InvalidConversationTokenError:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED) from None
+    route = request.scope.get("route")
+    if not (
+        isinstance(route, APIRoute)
+        and _route_in_token_scope(route.path)
+        and _path_ids_match(request.path_params, conversation_id)
+    ):
+        raise HTTPException(status.HTTP_403_FORBIDDEN)
 
 
 def get_conversation_service(request: Request) -> ConversationService:
