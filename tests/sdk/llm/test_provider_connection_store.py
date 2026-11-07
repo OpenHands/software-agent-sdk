@@ -76,6 +76,16 @@ def test_api_key_encrypted_at_rest(tmp_path):
     assert loaded.api_key_value() == "sk-shared"
 
 
+def test_undecodable_file_raises_the_same_value_error(tmp_path):
+    """The caller sees "unreadable", not a raw decode error from the middle of the read."""
+    path = tmp_path / "provider_connections.json"
+    path.write_bytes(b'{"connections": "' + bytes([0xFF]) + b'"}')
+    store = ProviderConnectionStore(base_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="unreadable"):
+        store.list()
+
+
 def test_corrupted_file_raises_not_clobbers(tmp_path):
     path = tmp_path / "provider_connections.json"
     path.write_text("{ not valid json")
