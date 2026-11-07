@@ -1,6 +1,7 @@
 """Tests for emoji reactions: the event, the tools and LocalConversation.react."""
 
 import json
+import threading
 from unittest.mock import patch
 
 import pytest
@@ -260,3 +261,32 @@ def test_execute_tool_records_the_reaction(conversation):
     (saved,) = [e for e in conversation.state.events if isinstance(e, ReactionEvent)]
     assert saved.source == "agent" and saved.emoji == "tada"
     assert saved.target_event_id == _user_message(conversation).id
+
+
+def test_execute_tool_from_a_worker_does_not_wait_for_the_run_loops_lock(
+    conversation,
+):
+    # The run loop holds the state lock across a step while it waits for a
+    # tool on a worker thread; recording the reaction there must not wait for
+    # that lock.
+    _user_message(conversation)
+    result: dict[str, object] = {}
+
+    def worker() -> None:
+        result["observation"] = conversation.execute_tool(
+            "react", ReactAction(emoji="eyes")
+        )
+
+    conversation._step_holds_state_lock = True
+    try:
+        with conversation._state:
+            thread = threading.Thread(target=worker)
+            thread.start()
+            thread.join(timeout=5)
+            assert not thread.is_alive(), "execute_tool waited for the lock"
+    finally:
+        conversation._step_holds_state_lock = False
+
+    assert [
+        e.emoji for e in conversation.state.events if isinstance(e, ReactionEvent)
+    ] == ["eyes"]

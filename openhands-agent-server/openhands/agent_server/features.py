@@ -2,9 +2,11 @@
 
 A feature is a capability the user turns on or off for themselves, such as
 emoji reactions. Each one is a yes/no switch stored in
-``PersistedSettings.features`` and read when a conversation starts, so a change
-applies to conversations started after it. Unknown keys are refused, so the
-list below is the whole set.
+``PersistedSettings.features``. The tools a feature gives the agent are chosen
+when a conversation starts, so they follow the switch for conversations started
+after it; a route that checks the switch (such as the person's reactions)
+follows it at once. Child conversations reuse their parent's agent and tools.
+Unknown keys are refused, so the list below is the whole set.
 
 To add a feature, append a :class:`FeatureDefinition` to ``FEATURES`` and read
 it where it takes effect with :func:`is_enabled`.

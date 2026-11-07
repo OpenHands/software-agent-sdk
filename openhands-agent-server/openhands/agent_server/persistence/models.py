@@ -416,6 +416,11 @@ class PersistedSettings(BaseModel):
           (removed deprecated live input paths; persisted inputs still migrate).
         - **v7** (current): nested ``agent_settings`` advanced to schema v10
           (MCP servers with neither ``command`` nor ``url`` are dropped).
+
+        ``features`` (user feature flags) was added within v7 without a bump:
+        it is additive and defaults to empty. An older server ignores it and
+        drops it on its next save, so after a downgrade the user's flags fall
+        back to their defaults.
         """
         if not isinstance(data, dict):
             return cls.model_validate(data, context=context)

@@ -1,5 +1,7 @@
 """Routes for user-facing feature flags (see :mod:`openhands.agent_server.features`)."""
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Request, status
 
 from openhands.agent_server._secrets_exposure import get_config
@@ -19,7 +21,7 @@ features_router = APIRouter(prefix="/settings/features", tags=["Settings"])
 async def list_features(request: Request) -> list[FeatureFlag]:
     """List the features the user can turn on or off, and whether each is on."""
     store = get_settings_store(get_config(request))
-    settings = store.load() or PersistedSettings()
+    settings = await asyncio.to_thread(lambda: store.load() or PersistedSettings())
     return feature_flags(settings.features)
 
 

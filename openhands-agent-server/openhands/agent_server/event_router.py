@@ -377,12 +377,20 @@ async def react_to_message(
 
     The reaction is saved as a `ReactionEvent` and streamed like other events;
     it does not run the agent. Without `target_event_id` it goes on the
-    agent's latest message. Needs the `conversation_reactions` feature on.
+    agent's latest message. Needs the `conversation_reactions` feature on;
+    unlike the agent's tools, which a conversation gets when it starts, this
+    check follows the switch at once.
     """
-    settings = await asyncio.to_thread(
-        lambda: get_settings_store(get_config(http_request)).load()
-        or PersistedSettings()
-    )
+    try:
+        settings = await asyncio.to_thread(
+            lambda: get_settings_store(get_config(http_request)).load()
+            or PersistedSettings()
+        )
+    except (PermissionError, OSError):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot read the settings file to check the feature flag",
+        )
     if not is_enabled(settings.features, "conversation_reactions"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

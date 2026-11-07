@@ -33,7 +33,7 @@ class ReactAction(Action):
     """Put an emoji reaction on a message."""
 
     emoji: ReactionEmoji = Field(description="The emoji, as a shortcode.")
-    message_id: str | None = _MESSAGE_ID
+    message_id: EventID | None = _MESSAGE_ID
 
     @property
     def visualize(self) -> Text:
@@ -44,7 +44,7 @@ class UnreactAction(Action):
     """Take an emoji reaction off a message."""
 
     emoji: ReactionEmoji = Field(description="The emoji to remove, as a shortcode.")
-    message_id: str | None = _MESSAGE_ID
+    message_id: EventID | None = _MESSAGE_ID
 
     @property
     def visualize(self) -> Text:
@@ -103,7 +103,8 @@ def _annotations() -> ToolAnnotations:
     return ToolAnnotations(
         readOnlyHint=False,
         destructiveHint=False,
-        idempotentHint=True,
+        # Each call records a new ReactionEvent.
+        idempotentHint=False,
         openWorldHint=False,
     )
 

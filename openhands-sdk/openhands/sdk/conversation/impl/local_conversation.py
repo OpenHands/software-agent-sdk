@@ -3407,7 +3407,12 @@ class LocalConversation(BaseConversation):
         observation = tool(action, self)
         follow_ups = observation.follow_up_events()
         if follow_ups:
-            with self._state:
+            # Called from a tool worker thread while run() holds the state
+            # lock for the step, re-acquiring it would deadlock; the run loop
+            # is parked on this tool, as in switch_llm (#3485).
+            skip_lock = self._step_holds_state_lock and not self._state.owned()
+            lock = contextlib.nullcontext() if skip_lock else self._state
+            with lock:
                 for event in follow_ups:
                     self._on_event(event)
         return observation

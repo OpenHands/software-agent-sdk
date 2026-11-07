@@ -5,6 +5,7 @@ import {
   ConversationManager,
   HttpClient,
   HttpError,
+  isReactionEvent,
   RemoteConversation,
   RemoteEventsList,
   RemoteWorkspace,
@@ -2282,6 +2283,75 @@ describe('Auxiliary API clients', () => {
         expect.objectContaining({ method: 'GET' })
       );
     }
+  });
+
+  it('SettingsClient lists and switches feature flags', async () => {
+    const flag = {
+      key: 'conversation_reactions',
+      label: 'Conversation reactions',
+      description: 'Emoji reactions.',
+      default: false,
+      enabled: true,
+    };
+    const responses = [[{ ...flag, enabled: false }], flag];
+    global.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(responses.shift()), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const client = new SettingsClient({ host: 'http://example.com' });
+    await expect(client.listFeatures()).resolves.toEqual([{ ...flag, enabled: false }]);
+    await expect(client.updateFeature('conversation_reactions', true)).resolves.toEqual(flag);
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/settings/features',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/settings/features/conversation_reactions',
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ enabled: true }) })
+    );
+  });
+
+  it('ConversationClient.react sends only the fields it is given', async () => {
+    const saved = {
+      id: 'r1',
+      kind: 'ReactionEvent',
+      source: 'user',
+      timestamp: '2026-11-07T00:00:00Z',
+      target_event_id: 'm1',
+      emoji: 'heart',
+      removed: false,
+    };
+    global.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(saved), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    const event = await client.react('conv-1', 'heart', { targetEventId: 'm1', removed: true });
+    await client.react('conv-1', '+1');
+
+    expect(isReactionEvent(event)).toBe(true);
+    expect(isReactionEvent({ ...saved, kind: 'MessageEvent' })).toBe(false);
+    const fetchMock = global.fetch as Mock;
+    expect(fetchMock.mock.calls[0][0]).toBe('http://example.com/api/conversations/conv-1/reactions');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      emoji: 'heart',
+      target_event_id: 'm1',
+      removed: true,
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ emoji: '+1' });
   });
 
   it('SettingsClient fetches and updates settings and secrets', async () => {

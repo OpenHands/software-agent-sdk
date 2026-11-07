@@ -118,27 +118,31 @@ Preconditions:
 - **Default target is the agent's answer (`F37.rest-default`).**
   Requires: `F37.tool`
   ```sh
-  ANSWER=$(control-agent-server api GET "/api/conversations/$AC/events/search" --query source=agent --query sort_order=TIMESTAMP_DESC \
+  LAST_ACTION=$(control-agent-server api GET "/api/conversations/$AC/events/search" --query source=agent --query sort_order=TIMESTAMP_DESC \
     --query kind=ActionEvent --field items.0.id)
+  LAST_MESSAGE=$(control-agent-server api GET "/api/conversations/$AC/events/search" --query source=agent --query sort_order=TIMESTAMP_DESC \
+    --query kind=MessageEvent --field items.0.id || echo none)
   control-agent-server api POST "/api/conversations/$AC/reactions" --json '{"emoji": "+1"}' --expect 200 \
-    --check source eq user --check target_event_id eq "$ANSWER" --save F37.rest-default/add
+    --check source eq user --check target_event_id matches "^($LAST_ACTION|$LAST_MESSAGE)\$" --save F37.rest-default/add
   ```
-  With no target the person's reaction goes on the agent's answer, here its
-  `finish` (the agent's last action).
+  With no target the person's reaction goes on the agent's answer: its
+  `finish` action when it finished with the tool (then the latest agent
+  action), or its latest `MessageEvent` when it answered in plain text.
 
 ## Gotchas
 
 - The flag is read when a conversation starts: turning it on or off does not
-  change the tools of running conversations, only the REST route.
+  change the tools of running conversations, only the REST route. Child
+  conversations reuse their parent's agent, and so its tools.
 
 - Reactions do not wake the agent. A person's `+1` on a question is not an
   answer yet.
 - The agent's `react` call is an ordinary tool call, so the `ActionEvent` and
   its short `ObservationEvent` stay in the log next to the `ReactionEvent`;
   clients that show reactions as chips can hide that pair.
-- A person's reaction is saved under the conversation's state lock, which a
-  running agent holds for a whole step: during a run, `POST .../reactions`
-  answers once the current step ends.
+- A person's reaction is saved under the conversation's state lock. The
+  server's run loop lets go of it during LLM calls, so during a run
+  `POST .../reactions` waits only while a tool or an event write holds it.
 - Targets come from the active branch: after navigating back, messages on the
   abandoned branch cannot be reacted to.
 - A client older than this event kind cannot parse a conversation's events
