@@ -308,3 +308,69 @@ async def test_service_registers_the_subscriber_for_every_conversation(
             break
         await asyncio.sleep(0.01)
     assert await turn_cleared()
+
+
+def _stop_hook_feedback() -> MessageEvent:
+    return MessageEvent(
+        source="environment",
+        llm_message=Message(
+            role="user",
+            content=[TextContent(text="[Stop hook feedback] Call finish.")],
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_question_bounced_by_a_stop_hook_stays_asked():
+    store = _Tags({"project": "p1"})
+
+    # The hook may refuse the stop before or after a FINISHED is published.
+    await _feed(
+        _subscriber(store),
+        _message("agent", "Which database should I use?"),
+        _stop_hook_feedback(),
+        _finish("Waiting for your choice."),
+        _status("finished"),
+    )
+
+    assert store.tags["turn"] == "asked"
+
+
+@pytest.mark.asyncio
+async def test_a_question_then_a_published_bounce_stays_asked():
+    store = _Tags({"project": "p1"})
+    subscriber = _subscriber(store)
+
+    await _feed(
+        subscriber,
+        _message("agent", "Which database should I use?"),
+        _status("finished"),
+        _stop_hook_feedback(),
+        _status("running"),
+        _finish("Waiting for your choice."),
+        _status("finished"),
+    )
+    assert store.tags["turn"] == "asked"
+
+    await _feed(
+        subscriber,
+        _message("user", "Postgres"),
+        _finish("Done, using Postgres."),
+        _status("finished"),
+    )
+    assert store.tags["turn"] == "answered"
+
+
+@pytest.mark.asyncio
+async def test_a_rhetorical_question_mid_run_does_not_stick():
+    store = _Tags({"project": "p1"})
+
+    await _feed(
+        _subscriber(store),
+        _message("agent", "Why does this fail? Let me check the logs."),
+        _message("agent", "Is it the cache?"),
+        _finish("Fixed: the cache key was wrong."),
+        _status("finished"),
+    )
+
+    assert store.tags["turn"] == "answered"

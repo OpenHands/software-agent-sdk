@@ -436,7 +436,9 @@ Preconditions:
 - `attention` comes from `execution_status`, refined by the `turn` and
   `resolved` tags. `finished` means the run ended, not that the task
   succeeded. `turn` is a heuristic: the last paragraph of the agent's final
-  message, outside code, ends a sentence with `?`. The tags are written just
+  message, outside code, ends a sentence with `?`. Once the agent stops on a
+  question it stays `asked` until a user message, so a Stop hook that makes
+  it call `finish` after a plain message does not hide the question. The tags are written just
   after the run's final state update, so poll (`--until-ok`) rather than read
   once. There is no per-thread "ask" text or task progress yet.
 - A `resolved` thread is listed as `resolved` unless it is running

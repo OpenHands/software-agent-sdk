@@ -4,7 +4,9 @@ When a conversation in a project finishes a run, :class:`ThreadOutcomeSubscriber
 tags it with how the agent's last message ended (``turn=asked`` or
 ``turn=answered``) and, when the critic is confident the task succeeded, marks
 it resolved (``resolved=auto``). A new user message removes both tags, since
-the conversation is open again.
+the conversation is open again. Once the agent stops on a question, the turn
+stays ``asked`` until the person answers, even if a Stop hook made it go on to
+a ``finish`` that does not repeat the question.
 
 The board reads these tags from the conversation catalog, so listing a project
 never loads conversation state or events.
@@ -18,6 +20,9 @@ from typing import Any, Final, Literal
 from uuid import UUID
 
 from openhands.agent_server.pub_sub import Subscriber
+from openhands.sdk.conversation.impl.local_conversation import (
+    ACP_STOP_HOOK_FEEDBACK_PREFIX as STOP_HOOK_FEEDBACK_PREFIX,
+)
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.title_utils import extract_message_text
 from openhands.sdk.conversation.types import (
@@ -71,6 +76,13 @@ def classify_turn(text: str | None) -> TurnOutcome:
     return "asked" if _QUESTION_END.search(last_paragraph) else "answered"
 
 
+def _is_stop_hook_feedback(event: MessageEvent) -> bool:
+    if event.source != "environment":
+        return False
+    text = extract_message_text(event) or ""
+    return text.startswith(STOP_HOOK_FEEDBACK_PREFIX)
+
+
 def _finished(event: ConversationStateUpdateEvent) -> bool:
     key: Any = getattr(event, "key", None)
     value: Any = getattr(event, "value", None)
@@ -99,6 +111,11 @@ class ThreadOutcomeSubscriber(Subscriber[Event]):
     _last_text: str | None = field(default=None, init=False)
     _last_score: float | None = field(default=None, init=False)
     _seen_agent_output: bool = field(default=False, init=False)
+    # The agent stopped on a question since the last user message. A Stop
+    # hook that refuses to let it stop on a plain message pushes it on to a
+    # ``finish`` whose text may not repeat the question; the person still
+    # owes an answer.
+    _asked_since_user: bool = field(default=False, init=False)
     _tail: asyncio.Task | None = field(default=None, init=False)
 
     async def __call__(self, event: Event) -> None:
@@ -115,10 +132,15 @@ class ThreadOutcomeSubscriber(Subscriber[Event]):
         if isinstance(event, MessageEvent):
             if event.source == "user":
                 self._reset()
+                self._asked_since_user = False
                 if PROJECT_TAG_KEY in self.tags():
                     self._enqueue(self._reopen)
             elif event.source == "agent":
                 self._note_agent_output(extract_message_text(event), event)
+            elif _is_stop_hook_feedback(event):
+                # The agent tried to stop here; a question counts as asked.
+                if classify_turn(self._last_text) == "asked":
+                    self._asked_since_user = True
             return
         if isinstance(event, ActionEvent):
             if event.source == "agent" and isinstance(event.action, FinishAction):
@@ -129,10 +151,14 @@ class ThreadOutcomeSubscriber(Subscriber[Event]):
             # also reads as finished; only a run this subscriber saw counts.
             if not self._seen_agent_output:
                 return
-            text, score = self._last_text, self._last_score
+            turn = classify_turn(self._last_text)
+            if self._asked_since_user:
+                turn = "asked"
+            self._asked_since_user = turn == "asked"
+            score = self._last_score
             self._reset()
             if PROJECT_TAG_KEY in self.tags():
-                self._enqueue(lambda: self._record(text, score))
+                self._enqueue(lambda: self._record(turn, score))
 
     def _note_agent_output(
         self, text: str | None, event: MessageEvent | ActionEvent
@@ -171,8 +197,8 @@ class ThreadOutcomeSubscriber(Subscriber[Event]):
             if key in self.tags():
                 await self.set_tag(self.conversation_id, key, None)
 
-    async def _record(self, text: str | None, score: float | None) -> None:
-        await self.set_tag(self.conversation_id, TURN_TAG_KEY, classify_turn(text))
+    async def _record(self, turn: TurnOutcome, score: float | None) -> None:
+        await self.set_tag(self.conversation_id, TURN_TAG_KEY, turn)
         if score is not None and score >= AUTO_RESOLVE_THRESHOLD:
             # Never overwrite the person's own resolve.
             await self.set_tag(
