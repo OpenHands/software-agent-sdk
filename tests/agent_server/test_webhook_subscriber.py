@@ -26,6 +26,7 @@ from openhands.agent_server.models import StoredConversation
 from openhands.agent_server.pub_sub import PubSub
 from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, Event
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import StreamingDeltaEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm.message import Message, TextContent
@@ -35,6 +36,12 @@ from tests.agent_server.stress.scripts import (
     start_conversation_with_test_llm,
     text_message,
 )
+
+
+async def _await_post(subscriber: WebhookSubscriber) -> None:
+    """Wait for the background post a full buffer started, if any."""
+    if subscriber._post_task is not None:
+        await subscriber._post_task
 
 
 @pytest.fixture
@@ -260,6 +267,7 @@ class TestWebhookSubscriberCallMethod:
         # Add events up to buffer size (3)
         for event in sample_events[:3]:
             await subscriber(event)
+        await _await_post(subscriber)
 
         # _post_events should be called once when buffer is full
         mock_post_events.assert_called_once()
@@ -293,9 +301,11 @@ class TestWebhookSubscriberCallMethod:
         # at 3 events and at 6 events)
         for event in sample_events:  # 5 events
             await subscriber(event)
+            await _await_post(subscriber)
 
         # Add one more event to trigger the second post
         await subscriber(sample_event)
+        await _await_post(subscriber)
 
         # _post_events should be called twice (at 3 events and at 6 events)
         assert len(post_events_calls) == 2
@@ -735,6 +745,7 @@ class TestWebhookSubscriberIntegration:
 
         # This should trigger _post_events
         await subscriber(sample_events[2])
+        await _await_post(subscriber)
         assert len(subscriber.queue) == 0  # Queue should be cleared
 
         # Verify HTTP request was made
@@ -779,11 +790,12 @@ class TestWebhookSubscriberIntegration:
         tasks = [subscriber(event) for event in sample_events]
         await asyncio.gather(*tasks)
 
-        # With buffer size 3, we should have posted once and have 2 events remaining
-        assert len(subscriber.queue) == 2
-        mock_client.request.assert_called_once()
+        # The full buffer started one background post; every event queued
+        # before it ran goes out in batches of at most 3.
+        await _await_post(subscriber)
+        assert len(subscriber.queue) == 0
+        assert mock_client.request.call_count == 2
 
-        # Close to post remaining events
         await subscriber.close()
         assert len(subscriber.queue) == 0
         assert mock_client.request.call_count == 2
@@ -862,6 +874,7 @@ async def test_events_published_during_post_are_sent_once_buffer_is_full(
 
     first_request_started = asyncio.Event()
     release_first_request = asyncio.Event()
+    second_request_started = asyncio.Event()
     batches: list[list[dict]] = []
 
     async def request(*args, **kwargs):
@@ -869,6 +882,8 @@ async def test_events_published_during_post_are_sent_once_buffer_is_full(
         if len(batches) == 1:
             first_request_started.set()
             await release_first_request.wait()
+        else:
+            second_request_started.set()
         response = MagicMock()
         response.raise_for_status.return_value = None
         return response
@@ -879,14 +894,14 @@ async def test_events_published_during_post_are_sent_once_buffer_is_full(
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
         await subscriber(sample_event)
-        first_post = asyncio.create_task(subscriber(sample_event))
+        await subscriber(sample_event)
         await asyncio.wait_for(first_request_started.wait(), timeout=1)
 
         # Two more events fill the buffer while the first batch is in flight.
         await subscriber(sample_event)
         await subscriber(sample_event)
         release_first_request.set()
-        await asyncio.wait_for(first_post, timeout=1)
+        await asyncio.wait_for(second_request_started.wait(), timeout=1)
 
         # Without waiting for flush_delay (1 h) or close().
         assert [len(batch) for batch in batches] == [2, 2]
@@ -913,6 +928,7 @@ async def test_failed_follow_up_batch_keeps_a_flush_timer(
     )
     fire_timer = asyncio.Event()
     timer_sleeps = 0
+    retry_timer_started = asyncio.Event()
 
     async def controlled_sleep(delay):
         nonlocal timer_sleeps
@@ -920,6 +936,7 @@ async def test_failed_follow_up_batch_keeps_a_flush_timer(
         if timer_sleeps == 1:
             await fire_timer.wait()
         else:
+            retry_timer_started.set()
             await asyncio.Event().wait()
 
     subscriber._sleep = controlled_sleep
@@ -949,7 +966,7 @@ async def test_failed_follow_up_batch_keeps_a_flush_timer(
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
         await subscriber(sample_event)
-        first_post = asyncio.create_task(subscriber(sample_event))
+        await subscriber(sample_event)
         await asyncio.wait_for(first_request_started.wait(), timeout=1)
 
         # Two events refill the buffer during the first POST: a timer starts.
@@ -967,7 +984,7 @@ async def test_failed_follow_up_batch_keeps_a_flush_timer(
 
         # The follow-up POST fails: its events must not be left without a timer.
         release_second_request.set()
-        await asyncio.wait_for(first_post, timeout=1)
+        await asyncio.wait_for(retry_timer_started.wait(), timeout=1)
 
         assert len(subscriber.queue) == 2
         assert subscriber._flush_timer is not None
@@ -1254,6 +1271,7 @@ class TestWebhookSubscriberFlushDelay:
 
         # Add one more event to fill buffer (should trigger immediate post)
         await subscriber(sample_events[2])
+        await _await_post(subscriber)
 
         # Verify immediate post happened
         mock_client.request.assert_called_once()
@@ -1715,3 +1733,62 @@ async def test_streaming_deltas_never_reach_webhook(
         post.assert_not_called()
 
     subscriber._cancel_flush_timer()
+
+
+@pytest.mark.timeout(30)
+async def test_slow_receiver_does_not_block_next_run(tmp_path, monkeypatch):
+    """A finished run accepts a new run while a webhook POST is in flight.
+
+    With a full buffer the POST used to run inside the event's publish, and the
+    run's wrap-up waits for pending publishes before it clears its task, so
+    POST /run answered 409 "already running" until the receiver answered.
+    """
+    persist = tmp_path / "persist"
+    persist.mkdir()
+    (tmp_path / "ws").mkdir()
+    release = asyncio.Event()
+
+    async def hanging_post_batch(self, event_data):
+        await release.wait()
+        return True
+
+    monkeypatch.setattr(WebhookSubscriber, "_post_batch", hanging_post_batch)
+
+    service = ConversationService(
+        conversations_dir=persist,
+        webhook_specs=[
+            WebhookSpec(
+                base_url="http://unused.test",
+                event_buffer_size=1,
+                flush_delay=600,
+                num_retries=0,
+            )
+        ],
+    )
+    async with service:
+        info = await start_conversation_with_test_llm(
+            service,
+            parent_llm=SlowTestLLM.from_messages(
+                [text_message("done"), text_message("again")], latency_s=0.0
+            ),
+            workspace_dir=str(tmp_path / "ws"),
+            usage_id="webhook-slow-receiver",
+        )
+        event_service = await service.get_event_service(info.id)
+        assert event_service is not None
+        try:
+            await event_service.run()
+            status = await event_service.wait_for_run_completion(timeout=5)
+            assert status == ConversationExecutionStatus.FINISHED
+            # The receiver has still not answered; the next run is accepted.
+            await event_service.run()
+            await event_service.wait_for_run_completion(timeout=5)
+            # A message sent with run=True starts a run instead of being parked.
+            await event_service.send_message(
+                Message(role="user", content=[TextContent(text="again")]), run=True
+            )
+            assert event_service._rerun_requested is False
+            status = await event_service.wait_for_run_completion(timeout=5)
+            assert status == ConversationExecutionStatus.FINISHED
+        finally:
+            release.set()
