@@ -18,14 +18,16 @@ from fastapi import FastAPI
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     StartConversationRequest,
     UpdateConversationRequest,
 )
 from openhands.agent_server.persistence import reset_stores
 from openhands.agent_server.projects_router import projects_router
-from openhands.sdk import LLM, Agent
+from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.event import MessageEvent
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -443,3 +445,111 @@ async def test_membership_survives_service_restart(persistence_dir, tmp_path):
         members = await service.list_tagged_conversations("project", "abc")
 
     assert [stored.id for stored, _ in members] == [worker]
+
+
+# Messages
+
+
+async def _user_messages(service: ConversationService, conversation_id: UUID) -> int:
+    event_service = await service.get_event_service(conversation_id)
+    assert event_service is not None
+    state = await event_service.get_state()
+    return sum(
+        1
+        for event in state.events
+        if isinstance(event, MessageEvent) and event.source == "user"
+    )
+
+
+@pytest.mark.asyncio
+async def test_message_refuses_thread_waiting_for_confirmation(
+    client, service, tmp_path
+):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    worker = await _start(service, tmp_path)
+    await client.put(f"/api/projects/{project['id']}/threads/{worker.hex}")
+    await _set_status(
+        service, worker, ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+
+    response = await client.post(
+        f"/api/projects/{project['id']}/threads/{worker.hex}/messages",
+        json={"text": "go ahead"},
+    )
+
+    assert response.status_code == 409
+    assert await _user_messages(service, worker) == 0
+    event_service = await service.get_event_service(worker)
+    assert event_service is not None
+    state = await event_service.get_state()
+    assert (
+        state.execution_status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+
+
+@pytest.mark.asyncio
+async def test_message_to_non_member_is_404(client, service, tmp_path):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    outsider = await _start(service, tmp_path)
+
+    for target in (outsider.hex, uuid4().hex):
+        response = await client.post(
+            f"/api/projects/{project['id']}/threads/{target}/messages",
+            json={"text": "hi"},
+        )
+        assert response.status_code == 404
+    assert await _user_messages(service, outsider) == 0
+
+
+@pytest.mark.asyncio
+async def test_message_runs_member_with_guard(client, service, tmp_path, monkeypatch):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    worker = await _start(service, tmp_path)
+    await client.put(f"/api/projects/{project['id']}/threads/{worker.hex}")
+    calls: list[dict] = []
+
+    async def fake_send(self, message, run=False, **kwargs):
+        calls.append({"text": message.content[0].text, "run": run, **kwargs})
+
+    monkeypatch.setattr(EventService, "send_message", fake_send)
+
+    response = await client.post(
+        f"/api/projects/{project['id']}/threads/{worker.hex}/messages",
+        json={"text": "Also add docs"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "conversation_id": worker.hex,
+        "previous_status": "idle",
+        "run_requested": True,
+    }
+    assert calls == [
+        {"text": "Also add docs", "run": True, "refuse_pending_confirmation": True}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_guarded_send_keeps_message_and_does_not_approve(service, tmp_path):
+    """The race the endpoint guards against: the thread is already waiting
+    when the guarded send runs (the endpoint's own pre-check saw it idle)."""
+    worker = await _start(service, tmp_path)
+    await _set_status(
+        service, worker, ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+    event_service = await service.get_event_service(worker)
+    assert event_service is not None
+
+    with pytest.raises(ValueError, match="waiting_for_confirmation"):
+        await event_service.send_message(
+            Message(role="user", content=[TextContent(text="go ahead")]),
+            run=True,
+            refuse_pending_confirmation=True,
+        )
+
+    assert await _user_messages(service, worker) == 1
+    state = await event_service.get_state()
+    assert (
+        state.execution_status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+    assert event_service._run_task is None

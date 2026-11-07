@@ -583,8 +583,10 @@ class ConversationService:
     _conversation_locks: WeakValueDictionary[UUID, asyncio.Lock] = field(
         default_factory=WeakValueDictionary, init=False
     )
-    # Serializes read-merge-write tag changes made through ``set_conversation_tag``.
-    _tag_update_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    # Per conversation: serializes ``set_conversation_tag``'s read-merge-write.
+    _tag_locks: WeakValueDictionary[UUID, asyncio.Lock] = field(
+        default_factory=WeakValueDictionary, init=False
+    )
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
     )
@@ -2018,7 +2020,11 @@ class ConversationService:
         Raises:
             ValueError: If ``expected`` is given and does not match.
         """
-        async with self._tag_update_lock:
+        lock = self._tag_locks.get(conversation_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._tag_locks[conversation_id] = lock
+        async with lock:
             event_service = await self._get_or_load_event_service(conversation_id)
             if event_service is None:
                 return None

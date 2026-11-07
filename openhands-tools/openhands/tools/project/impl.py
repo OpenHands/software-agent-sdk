@@ -38,6 +38,9 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 PROJECT_TOOL_TIMEOUT_SECONDS = 30.0
+# Delivering a message waits for the thread's state lock, which a running
+# thread holds for a whole tool call; mirror the child-launch timeout.
+PROJECT_MESSAGE_TIMEOUT_SECONDS = 300.0
 
 _NOT_IN_PROJECT = (
     "This conversation is not part of a project: it has no "
@@ -165,23 +168,30 @@ class ListProjectThreadsExecutor(
         )
 
 
+_WAITING_REFUSAL = (
+    "Thread {id} is waiting for the person to approve or reject an action. "
+    "Running it now would approve that action, so nothing was sent. Tell the "
+    "person what it is waiting on."
+)
+
+
 class MessageProjectThreadExecutor(
     ToolExecutor[MessageProjectThreadAction, MessageProjectThreadObservation]
 ):
     """Send a message to a thread of the caller's project.
 
-    The thread must be listed by the project's threads endpoint. A thread
-    waiting for confirmation is refused: running it would approve the pending
-    action, which is the person's decision. A running thread gets the message
-    without a new run request, so a run that reaches a confirmation in the
-    meantime is never resumed by this tool.
+    The thread must be listed by the project's threads endpoint. Delivery goes
+    through ``POST /api/projects/{id}/threads/{conversation_id}/messages``,
+    which never runs a thread that is waiting for confirmation (that run would
+    approve the pending action); the server decides it under the thread's run
+    lock. A thread already waiting is refused before anything is sent.
     """
 
     def __init__(
         self,
         conv_state: "ConversationState",
         server_url: str | None = None,
-        timeout: float = PROJECT_TOOL_TIMEOUT_SECONDS,
+        timeout: float = PROJECT_MESSAGE_TIMEOUT_SECONDS,
         transport: httpx.BaseTransport | None = None,
     ):
         self._client = _ProjectClient(conv_state, server_url, timeout, transport)
@@ -198,7 +208,7 @@ class MessageProjectThreadExecutor(
                 raise ProjectToolError(
                     f"{action.conversation_id!r} is not a conversation id."
                 )
-            _, threads = self._client.threads()
+            project_id, threads = self._client.threads()
             target = next((t for t in threads if t.conversation_id == target_id), None)
             if target is None:
                 raise ProjectToolError(
@@ -206,51 +216,70 @@ class MessageProjectThreadExecutor(
                     "Use list_project_threads to find the right id."
                 )
             if target.execution_status == "waiting_for_confirmation":
-                raise ProjectToolError(
-                    f"Thread {target.conversation_id} is waiting for the person "
-                    "to approve or reject an action. Sending it a message now "
-                    "would approve that action, so nothing was sent. Tell the "
-                    "person what it is waiting on."
+                raise ProjectToolError(_WAITING_REFUSAL.format(id=target_id))
+            path = f"/api/projects/{project_id}/threads/{target_id}/messages"
+            try:
+                response = self._client.request(
+                    "POST", path, json={"text": action.message}
                 )
-            running = target.execution_status == "running"
-            self._client.request(
-                "POST",
-                f"/api/conversations/{target.conversation_id}/events",
-                json={
-                    "role": "user",
-                    "content": [{"type": "text", "text": action.message}],
-                    "run": not running,
-                },
-            )
+            except ProjectToolError as exc:
+                cause = exc.__cause__
+                if isinstance(cause, httpx.TimeoutException):
+                    # A thread in the middle of a long tool call holds its
+                    # state lock, so the server may still save the message
+                    # after we stop waiting.
+                    raise ProjectToolError(
+                        f"No answer from thread {target_id} after "
+                        f"{self._client.timeout:.0f} seconds. The message may "
+                        "still be delivered. Do not send it again; check the "
+                        "thread with list_project_threads or tell the person."
+                    ) from exc
+                if (
+                    isinstance(cause, httpx.HTTPStatusError)
+                    and cause.response.status_code == 409
+                ):
+                    raise ProjectToolError(
+                        _WAITING_REFUSAL.format(id=target_id)
+                    ) from exc
+                raise
+            try:
+                body = response.json()
+                run_requested = bool(body["run_requested"])
+                previous_status = str(body["previous_status"])
+            except (ValueError, KeyError, TypeError) as exc:
+                raise ProjectToolError(
+                    f"Unexpected message response: {exc}. The message may have "
+                    "been delivered; check before sending it again."
+                ) from exc
         except ProjectToolError as exc:
             return MessageProjectThreadObservation.from_text(
                 text=str(exc), is_error=True
             )
 
-        if running:
+        if not run_requested:
             outcome = (
-                "It was running, so the message joins its current run. If that "
-                "run ended just before the message arrived, the message waits "
-                "for the thread's next run."
+                "It reached a confirmation while the message was being "
+                "delivered, so it was not run: the message waits for the "
+                "person's decision on the pending action."
             )
+        elif previous_status == "running":
+            outcome = "It was running, so the message joins its current run."
         else:
-            outcome = (
-                f"It was {target.execution_status}; a run was requested to "
-                "handle the message."
-            )
+            outcome = f"It was {previous_status}; a run was started for it."
         text = (
-            f"Message saved to thread {target.conversation_id}. {outcome} "
+            f"Message saved to thread {target_id}. {outcome} "
             "Check list_project_threads before reporting what it did.\n"
             + json.dumps(
                 {
-                    "conversation_id": target.conversation_id,
-                    "previous_status": target.execution_status,
-                    "run_requested": not running,
+                    "conversation_id": target_id,
+                    "previous_status": previous_status,
+                    "run_requested": run_requested,
                 }
             )
         )
         return MessageProjectThreadObservation.from_text(
             text=text,
-            conversation_id=target.conversation_id,
-            previous_status=target.execution_status,
+            conversation_id=target_id,
+            previous_status=previous_status,
+            run_requested=run_requested,
         )

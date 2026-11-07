@@ -159,6 +159,7 @@ class MessageProjectThreadAction(Action):
 class MessageProjectThreadObservation(Observation):
     conversation_id: UnmaskedID | None = None
     previous_status: str | None = None
+    run_requested: bool | None = None
 
     @property
     def visualize(self) -> Text:
@@ -179,13 +180,14 @@ _MESSAGE_DESCRIPTION = (
     "ask it to run: to correct, resume or extend its task. Only threads that "
     "list_project_threads reports can be messaged; start a new thread with "
     "start_child_conversation for a distinct task.\n\n"
-    "A running thread receives the message in its current run. A thread "
-    "waiting for confirmation keeps waiting: the message is saved, but the "
-    "person must still approve or reject the pending action. A successful "
-    "result means the message was saved and a run was requested, not that the "
-    "thread acted on it; check list_project_threads or read the thread before "
-    "reporting progress. Do not resend after an error that may have been a "
-    "timeout without checking first."
+    "A running thread receives the message in its current run; a paused, "
+    "finished or idle thread is run to handle it. A thread waiting for the "
+    "person to approve an action is never run by this tool, since that would "
+    "approve the action: it is refused, and you should tell the person what "
+    "it waits on. A successful result means the message was saved and a run "
+    "was requested, not that the thread acted on it; check "
+    "list_project_threads or read the thread before reporting progress. After "
+    "an error that says the message may still be delivered, do not resend it."
 )
 
 

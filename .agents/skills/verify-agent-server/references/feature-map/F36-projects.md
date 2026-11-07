@@ -12,9 +12,10 @@ copied tags. `GET /api/projects/{id}/threads` lists the members grouped by
 what they need from the person (`attention`: `needs_you`, `working`,
 `finished`, `idle`, derived from `execution_status`). Two server-executed
 tools, `list_project_threads` and `message_project_thread`, give a
-coordinator agent typed access to the same list and a way to steer a thread;
-the message tool refuses a thread that is waiting for confirmation, because
-running it would approve the pending action. Deleting a project never
+coordinator agent typed access to the same list and a way to steer a thread.
+Messages go through `POST .../threads/{conversation_id}/messages`, which never
+runs a thread that is waiting for confirmation, because that run would approve
+the pending action: the check is made under the thread's run lock. Deleting a project never
 changes or deletes conversations. A file the server cannot parse, or one
 written by a newer schema, is never overwritten: every route answers 409.
 
@@ -26,7 +27,8 @@ Routes: `GET /api/projects`, `POST /api/projects`,
 `GET /api/projects/{project_id}`, `PATCH /api/projects/{project_id}`,
 `DELETE /api/projects/{project_id}`, `GET /api/projects/{project_id}/threads`,
 `PUT /api/projects/{project_id}/threads/{conversation_id}`,
-`DELETE /api/projects/{project_id}/threads/{conversation_id}`
+`DELETE /api/projects/{project_id}/threads/{conversation_id}`,
+`POST /api/projects/{project_id}/threads/{conversation_id}/messages`
 
 ## Sub-features
 
@@ -43,6 +45,8 @@ Routes: `GET /api/projects`, `POST /api/projects`,
 - `F36.attention`: threads are grouped `needs_you` (waiting for confirmation), then `working`, `finished`, `idle`, newest-updated first within a group; non-members are left out.
 - `F36.remove-thread`: `DELETE .../threads/{conversation_id}` clears only the `project` tag; a second delete, or a delete through another project, is 404.
 - `F36.remove-coordinator`: removing the coordinator as a thread is 409; clearing it with `PATCH {"coordinator_conversation_id": null}` keeps it a member, now listed as a thread.
+- `F36.message-rest`: `POST .../messages` to a member saves the message, starts a run and answers `run_requested: true` with the previous status; a non-member is 404.
+- `F36.message-refused`: `POST .../messages` to a thread waiting for confirmation is 409, saves nothing, and the thread keeps waiting.
 - `F36.persist-restart`: projects and membership survive a server restart.
 - `F36.delete`: `DELETE /api/projects/{id}` removes the record, then the threads endpoint is 404, and member conversations keep their tags.
 - `F36.corrupted-file`: an unparsable or future-schema `projects.json` makes reads and writes 409 and is never rewritten.
@@ -66,6 +70,10 @@ Routes: `GET /api/projects`, `POST /api/projects`,
   or clearing the conversation's `project` tag; other tags are kept.
   `PATCH /api/conversations/{id}` with `tags` reaches the same membership but
   replaces the whole tag set (F04).
+- REST: `POST /api/projects/{project_id}/threads/{conversation_id}/messages`
+  with `{"text"}` answers `{conversation_id, previous_status, run_requested}`;
+  409 when the thread is waiting for confirmation. It is the confirmation-safe
+  counterpart of `POST /api/conversations/{id}/events` with `run: true`.
 - Agent tools (registered by the agent-server, not part of the default
   preset): `list_project_threads` and `message_project_thread` from
   `openhands.tools.project`, alongside `start_child_conversation`. They read
@@ -238,6 +246,28 @@ Preconditions:
   ```
   The coordinator cannot be removed as a thread; once cleared it is listed as
   a thread, and setting it again restores it.
+- **Message a thread over REST (`F36.message-rest`).**
+  Requires: `F36.coordinator`, `F36.unknown-project`
+  ```sh
+  W2=$(control-agent-server conversation start --no-run --title qa-f36-w2 --print-id)
+  control-agent-server api PUT "/api/projects/$P2/threads/$W2" --expect 204
+  control-agent-server api POST "/api/projects/$P2/threads/$W2/messages" --json '{"text": "Reply with the single word ok and finish."}' \
+    --expect 200 --check run_requested eq true --check previous_status eq idle --save F36.message-rest/post
+  control-agent-server conversation wait "$W2" --until finished --timeout 180
+  control-agent-server conversation events "$W2" --kinds MessageEvent --contains '"source": "user"' --expect-count 1
+  control-agent-server api POST "/api/projects/$P2/threads/$W1/messages" --json '{"text": "hi"}' --expect 404 \
+    --check detail eq 'Conversation not in project'
+  ```
+  The member runs and finishes; `W1` (removed earlier) is refused.
+- **No approval over REST (`F36.message-refused`).**
+  Requires: `F36.attention`
+  ```sh
+  control-agent-server api POST "/api/projects/$P2/threads/$ASKS/messages" --json '{"text": "go ahead"}' --expect 409 \
+    --check detail eq 'Conversation is waiting for confirmation' --save F36.message-refused/post
+  control-agent-server api GET "/api/conversations/$ASKS" --check execution_status eq waiting_for_confirmation
+  control-agent-server conversation events "$ASKS" --kinds MessageEvent --contains '"source": "user"' --expect-count 1
+  ```
+  Nothing is saved and the thread keeps waiting for the person.
 - **Restart (`F36.persist-restart`).**
   Requires: `F36.create`, `F36.coordinator`
   ```sh
@@ -321,10 +351,12 @@ Preconditions:
 - `attention` comes only from `execution_status`. `finished` means the run
   ended, not that the task succeeded. There is no per-thread "ask" text or
   task progress yet.
-- `message_project_thread` sends to a `running` thread without requesting a
-  run, so a run that reaches a confirmation in the meantime is never approved
-  by it; if that run ended just before the message arrived, the message waits
-  for the thread's next run. A `paused` thread is resumed.
+- The messages route refuses with 409 only when the thread is already
+  waiting. If it reaches a confirmation while the message is being
+  delivered, the message is kept and `run_requested` is `false`. A `paused`
+  thread is resumed. Delivery to a running thread waits for its state lock,
+  which a long tool call holds, so the tool waits up to 300 seconds and, on a
+  timeout, tells the agent not to resend.
 - The tools read the project from the caller's tags on every call, so adding
   or removing the coordinator from a project takes effect on its next call.
   They are registered only by the agent-server (`tool_router.py`), like

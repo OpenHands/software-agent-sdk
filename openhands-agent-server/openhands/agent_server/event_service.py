@@ -895,7 +895,14 @@ class EventService:
         _from_goal_loop: bool = False,
         *,
         run_slot: RunSlot | None = None,
+        refuse_pending_confirmation: bool = False,
     ):
+        """Append a message and, with ``run``, start a run to handle it.
+
+        With ``refuse_pending_confirmation`` a conversation waiting for
+        confirmation keeps the message but is not run, and this raises
+        ``ValueError("waiting_for_confirmation")`` (see :meth:`run`).
+        """
         if not self._conversation:
             raise ValueError("inactive_service")
         # A normal user message supersedes any active /goal loop in this
@@ -931,9 +938,12 @@ class EventService:
                     await self.run(
                         acp_internal_rerun_generation=explicit_interrupt_generation,
                         run_slot=run_slot,
+                        refuse_pending_confirmation=refuse_pending_confirmation,
                     )
                     self._acp_internal_rerun_requested = False
                 except ValueError as e:
+                    if str(e) == "waiting_for_confirmation":
+                        raise
                     # run() refused. If a run is still wrapping up (its
                     # wait_for_pending tail), the message we just appended won't
                     # be picked up by it, so record explicit run intent for
@@ -955,6 +965,7 @@ class EventService:
                     await self.run(
                         acp_internal_rerun_generation=explicit_interrupt_generation,
                         run_slot=run_slot,
+                        refuse_pending_confirmation=refuse_pending_confirmation,
                     )
                     self._acp_internal_rerun_requested = False
                 except ConversationRunLimitExceeded as exc:
@@ -967,6 +978,8 @@ class EventService:
                         f"{self.stored.id}/run without resending the message."
                     ) from exc
                 except ValueError as e:
+                    if str(e) == "waiting_for_confirmation":
+                        raise
                     if (
                         str(e) == "conversation_already_running"
                         and not active_acp_prompt_has_latest_message
@@ -1530,6 +1543,7 @@ class EventService:
         *,
         run_slot: RunSlot | None = None,
         wait_for_capacity: bool = False,
+        refuse_pending_confirmation: bool = False,
     ):
         """Run the conversation asynchronously in the background.
 
@@ -1541,8 +1555,17 @@ class EventService:
         ``astep()`` override), the synchronous ``run()`` is executed
         in the thread pool as before.
 
+        Args:
+            refuse_pending_confirmation: Refuse to run a conversation that is
+                waiting for confirmation. Running it would approve its pending
+                actions, so callers acting for someone other than the person
+                (a coordinator steering a thread) set this. The check is made
+                under the run lock, where no other run can change the status.
+
         Raises:
-            ValueError: If the service is inactive or conversation is already running.
+            ValueError: If the service is inactive, the conversation is already
+                running, or (with ``refuse_pending_confirmation``) it is waiting
+                for confirmation (``"waiting_for_confirmation"``).
             ConversationRunLimitExceeded: If all server run slots are occupied.
         """
         if not self._conversation or self._closing:
@@ -1561,11 +1584,16 @@ class EventService:
             # _run_task first: a live run holds the state lock across its step
             # (a tool call can last minutes), so reading execution status would
             # block this request behind it instead of answering at once.
-            if (self._run_task is not None and not self._run_task.done()) or (
-                await self._get_execution_status()
-                == ConversationExecutionStatus.RUNNING
-            ):
+            if self._run_task is not None and not self._run_task.done():
                 raise ValueError("conversation_already_running")
+            status = await self._get_execution_status()
+            if status == ConversationExecutionStatus.RUNNING:
+                raise ValueError("conversation_already_running")
+            if (
+                refuse_pending_confirmation
+                and status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+            ):
+                raise ValueError("waiting_for_confirmation")
             if self._closing:
                 raise ValueError("inactive_service")
             # Re-check: the status read above can yield to a late stop too.

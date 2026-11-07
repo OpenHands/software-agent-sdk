@@ -43,11 +43,17 @@ def _thread(status: str, attention: str, title: str = "worker") -> dict:
 
 
 class _Server:
-    """Records requests and answers like the projects and events routes."""
+    """Records requests and answers like the projects routes."""
 
-    def __init__(self, threads: list[dict], coordinator: dict | None = None):
+    def __init__(
+        self,
+        threads: list[dict],
+        coordinator: dict | None = None,
+        message_response: httpx.Response | Exception | None = None,
+    ):
         self.threads = threads
         self.coordinator = coordinator
+        self.message_response = message_response
         self.requests: list[httpx.Request] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -62,8 +68,25 @@ class _Server:
                     "threads": self.threads,
                 },
             )
-        if request.method == "POST" and path.endswith("/events"):
-            return httpx.Response(200, json={"success": True})
+        if request.method == "POST" and path.endswith("/messages"):
+            if isinstance(self.message_response, Exception):
+                raise self.message_response
+            if self.message_response is not None:
+                return self.message_response
+            target = path.split("/")[-2]
+            status = next(
+                t["execution_status"]
+                for t in self.threads
+                if t["conversation_id"] == target
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "conversation_id": target,
+                    "previous_status": status,
+                    "run_requested": True,
+                },
+            )
         return httpx.Response(404, json={"detail": "Project not found"})
 
     def posts(self) -> list[httpx.Request]:
@@ -157,16 +180,16 @@ def test_list_reports_server_errors(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("status", "attention", "run"),
+    ("status", "attention"),
     [
-        ("finished", "finished", True),
-        ("idle", "idle", True),
-        ("paused", "needs_you", True),
-        ("error", "needs_you", True),
-        ("running", "working", False),
+        ("finished", "finished"),
+        ("idle", "idle"),
+        ("paused", "needs_you"),
+        ("error", "needs_you"),
+        ("running", "working"),
     ],
 )
-def test_message_posts_to_member_thread(tmp_path, status, attention, run):
+def test_message_posts_to_member_thread(tmp_path, status, attention):
     thread = _thread(status, attention)
     server = _Server([thread])
     executor = MessageProjectThreadExecutor(
@@ -180,14 +203,81 @@ def test_message_posts_to_member_thread(tmp_path, status, attention, run):
 
     assert not observation.is_error, observation.text
     (post,) = server.posts()
-    assert post.url.path == f"/api/conversations/{thread['conversation_id']}/events"
-    assert json.loads(post.content) == {
-        "role": "user",
-        "content": [{"type": "text", "text": "Also add docs"}],
-        "run": run,
-    }
+    assert post.url.path == (
+        f"/api/projects/{PROJECT_ID}/threads/{thread['conversation_id']}/messages"
+    )
+    assert json.loads(post.content) == {"text": "Also add docs"}
     assert observation.conversation_id == thread["conversation_id"]
     assert observation.previous_status == status
+    assert observation.run_requested is True
+
+
+def test_message_reports_confirmation_reached_during_delivery(tmp_path):
+    thread = _thread("running", "working")
+    server = _Server(
+        [thread],
+        message_response=httpx.Response(
+            200,
+            json={
+                "conversation_id": thread["conversation_id"],
+                "previous_status": "running",
+                "run_requested": False,
+            },
+        ),
+    )
+    executor = MessageProjectThreadExecutor(
+        _conv_state(tmp_path), transport=httpx.MockTransport(server)
+    )
+
+    observation = executor(
+        MessageProjectThreadAction(
+            conversation_id=thread["conversation_id"], message="x"
+        )
+    )
+
+    assert not observation.is_error
+    assert observation.run_requested is False
+    assert "it was not run" in observation.text
+
+
+def test_message_maps_server_409_to_refusal(tmp_path):
+    thread = _thread("idle", "idle")
+    server = _Server(
+        [thread],
+        message_response=httpx.Response(
+            409, json={"detail": "Conversation is waiting for confirmation"}
+        ),
+    )
+    executor = MessageProjectThreadExecutor(
+        _conv_state(tmp_path), transport=httpx.MockTransport(server)
+    )
+
+    observation = executor(
+        MessageProjectThreadAction(
+            conversation_id=thread["conversation_id"], message="x"
+        )
+    )
+
+    assert observation.is_error
+    assert "would approve that action" in observation.text
+
+
+def test_message_timeout_says_not_to_resend(tmp_path):
+    thread = _thread("running", "working")
+    server = _Server([thread], message_response=httpx.ReadTimeout("slow"))
+    executor = MessageProjectThreadExecutor(
+        _conv_state(tmp_path), timeout=1, transport=httpx.MockTransport(server)
+    )
+
+    observation = executor(
+        MessageProjectThreadAction(
+            conversation_id=thread["conversation_id"], message="x"
+        )
+    )
+
+    assert observation.is_error
+    assert "may still be delivered" in observation.text
+    assert "Do not send it again" in observation.text
 
 
 def test_message_refuses_thread_waiting_for_confirmation(tmp_path):

@@ -11,6 +11,8 @@ id. Child conversations copy their parent's tags, so the threads a coordinator
 starts with ``start_child_conversation`` join its project without another call.
 """
 
+import asyncio
+from collections.abc import Callable
 from datetime import datetime
 from enum import Enum
 from uuid import UUID, uuid4
@@ -29,6 +31,7 @@ from openhands.agent_server.persistence import (
     get_projects_store,
 )
 from openhands.agent_server.utils import utc_now
+from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import PROJECT_TAG_KEY
 from openhands.sdk.logger import get_logger
@@ -126,6 +129,24 @@ class DeleteResponse(BaseModel):
     deleted: bool = True
 
 
+class ProjectThreadMessageRequest(BaseModel):
+    text: str = Field(..., min_length=1, description="The message to send.")
+
+
+class ProjectThreadMessageResponse(BaseModel):
+    conversation_id: OpenHandsUUID
+    previous_status: ConversationExecutionStatus = Field(
+        description="The thread's execution status just before the message."
+    )
+    run_requested: bool = Field(
+        description=(
+            "Whether a run was started or queued to handle the message. False "
+            "when the thread reached a confirmation before it could run: the "
+            "message is saved and waits for the person's decision."
+        )
+    )
+
+
 # Helpers
 
 
@@ -133,9 +154,9 @@ def _store(request: Request) -> FileProjectsStore:
     return get_projects_store(get_config(request))
 
 
-def _load(store: FileProjectsStore) -> PersistedProjects:
+async def _load(store: FileProjectsStore) -> PersistedProjects:
     try:
-        persisted = store.load()
+        persisted = await asyncio.to_thread(store.load)
     except OSError:
         logger.error("Projects read failed - file I/O error")
         raise HTTPException(status_code=500, detail="Failed to read projects")
@@ -152,9 +173,17 @@ def _load(store: FileProjectsStore) -> PersistedProjects:
     return persisted
 
 
-def _update(store: FileProjectsStore, apply) -> PersistedProjects:
+async def _update(
+    store: FileProjectsStore,
+    apply: Callable[[PersistedProjects], PersistedProjects],
+) -> PersistedProjects:
+    """Apply ``apply`` under the file lock, off the event loop.
+
+    ``apply`` may raise ``HTTPException`` to refuse the change; nothing is
+    written then.
+    """
     try:
-        return store.update(apply)
+        return await asyncio.to_thread(store.update, apply)
     except RuntimeError as e:
         logger.error(f"Projects update blocked: {e}")
         raise HTTPException(
@@ -164,6 +193,13 @@ def _update(store: FileProjectsStore, apply) -> PersistedProjects:
     except OSError:
         logger.error("Projects update failed - file I/O error")
         raise HTTPException(status_code=500, detail="Failed to save projects")
+
+
+def _without(current: PersistedProjects, project_id: UUID) -> PersistedProjects:
+    remaining = [p for p in current.projects if p.id != project_id]
+    if len(remaining) == len(current.projects):
+        return current
+    return current.model_copy(update={"projects": remaining})
 
 
 def _find(persisted: PersistedProjects, project_id: UUID) -> ProjectItem:
@@ -187,14 +223,36 @@ def _check_not_coordinating_elsewhere(
             )
 
 
+async def _require_conversation(
+    service: ConversationService, conversation_id: UUID
+) -> None:
+    if await service.get_event_service(conversation_id) is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+
 async def _join(
     service: ConversationService, project_id: UUID, conversation_id: UUID
-) -> None:
+) -> bool:
+    """Tag the conversation as a member; ``False`` when it does not exist."""
     tags = await service.set_conversation_tag(
         conversation_id, PROJECT_TAG, project_id.hex
     )
-    if tags is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    return tags is not None
+
+
+def _replace_project(
+    current: PersistedProjects, project_id: UUID, update: dict
+) -> tuple[PersistedProjects, ProjectItem | None]:
+    projects = []
+    updated: ProjectItem | None = None
+    for project in current.projects:
+        if project.id == project_id:
+            project = project.model_copy(update={**update, "updated_at": utc_now()})
+            updated = project
+        projects.append(project)
+    if updated is None:
+        return current, None
+    return current.model_copy(update={"projects": projects}), updated
 
 
 def _thread(
@@ -217,7 +275,7 @@ def _thread(
 @projects_router.get("", response_model=ProjectsListResponse)
 async def list_projects(request: Request) -> ProjectsListResponse:
     """List all projects, oldest first."""
-    return ProjectsListResponse(projects=list(_load(_store(request)).projects))
+    return ProjectsListResponse(projects=list((await _load(_store(request))).projects))
 
 
 @projects_router.post(
@@ -242,16 +300,23 @@ async def create_project(
         description=payload.description,
         coordinator_conversation_id=payload.coordinator_conversation_id,
     )
-    if payload.coordinator_conversation_id is not None:
-        _check_not_coordinating_elsewhere(
-            _load(store), project.id, payload.coordinator_conversation_id
-        )
-        await _join(service, project.id, payload.coordinator_conversation_id)
+    coordinator_id = payload.coordinator_conversation_id
+    if coordinator_id is not None:
+        await _require_conversation(service, coordinator_id)
 
     def apply(current: PersistedProjects) -> PersistedProjects:
+        if coordinator_id is not None:
+            _check_not_coordinating_elsewhere(current, project.id, coordinator_id)
         return current.model_copy(update={"projects": [*current.projects, project]})
 
-    _update(store, apply)
+    await _update(store, apply)
+    # Tag only once the record exists, so a refused write leaves no tag for
+    # a project that was never saved.
+    if coordinator_id is not None and not await _join(
+        service, project.id, coordinator_id
+    ):
+        await _update(store, lambda current: _without(current, project.id))
+        raise HTTPException(status_code=404, detail="Conversation not found")
     return project
 
 
@@ -262,7 +327,7 @@ async def create_project(
 )
 async def get_project(project_id: UUID, request: Request) -> ProjectItem:
     """Get one project."""
-    return _find(_load(_store(request)), project_id)
+    return _find(await _load(_store(request)), project_id)
 
 
 @projects_router.patch(
@@ -281,39 +346,41 @@ async def update_project(
 ) -> ProjectItem:
     """Rename a project, change its description, or set or clear its coordinator."""
     store = _store(request)
-    persisted = _load(store)
-    _find(persisted, project_id)
+    previous = _find(await _load(store), project_id)
 
     update: dict = {}
     if payload.name is not None:
         update["name"] = payload.name
     if payload.description is not None:
         update["description"] = payload.description
+    coordinator_id: UUID | None = None
     if "coordinator_conversation_id" in payload.model_fields_set:
         coordinator_id = payload.coordinator_conversation_id
         if coordinator_id is not None:
-            _check_not_coordinating_elsewhere(persisted, project_id, coordinator_id)
-            await _join(service, project_id, coordinator_id)
+            await _require_conversation(service, coordinator_id)
         update["coordinator_conversation_id"] = coordinator_id
 
     updated: ProjectItem | None = None
 
     def apply(current: PersistedProjects) -> PersistedProjects:
         nonlocal updated
-        projects = []
-        for project in current.projects:
-            if project.id == project_id:
-                project = project.model_copy(update={**update, "updated_at": utc_now()})
-                updated = project
-            projects.append(project)
-        if updated is None:
-            return current
-        return current.model_copy(update={"projects": projects})
+        if coordinator_id is not None:
+            _check_not_coordinating_elsewhere(current, project_id, coordinator_id)
+        changed, updated = _replace_project(current, project_id, update)
+        return changed
 
-    _update(store, apply)
+    await _update(store, apply)
     if updated is None:
         # Deleted between the read above and the locked write.
         raise HTTPException(status_code=404, detail="Project not found")
+    if coordinator_id is not None and not await _join(
+        service, project_id, coordinator_id
+    ):
+        restore = {"coordinator_conversation_id": previous.coordinator_conversation_id}
+        await _update(
+            store, lambda current: _replace_project(current, project_id, restore)[0]
+        )
+        raise HTTPException(status_code=404, detail="Conversation not found")
     return updated
 
 
@@ -332,13 +399,11 @@ async def delete_project(project_id: UUID, request: Request) -> DeleteResponse:
 
     def apply(current: PersistedProjects) -> PersistedProjects:
         nonlocal removed
-        remaining = [p for p in current.projects if p.id != project_id]
-        if len(remaining) == len(current.projects):
-            return current
-        removed = True
-        return current.model_copy(update={"projects": remaining})
+        remaining = _without(current, project_id)
+        removed = remaining is not current
+        return remaining
 
-    _update(_store(request), apply)
+    await _update(_store(request), apply)
     if not removed:
         raise HTTPException(status_code=404, detail="Project not found")
     return DeleteResponse()
@@ -360,7 +425,7 @@ async def list_project_threads(
     confirmation, paused, error and stuck are ``needs_you``; running is
     ``working``; finished is ``finished``; idle is ``idle``.
     """
-    project = _find(_load(_store(request)), project_id)
+    project = _find(await _load(_store(request)), project_id)
     members = await service.list_tagged_conversations(PROJECT_TAG, project_id.hex)
 
     coordinator: ProjectThread | None = None
@@ -398,10 +463,11 @@ async def add_project_thread(
     conversation belongs to at most one project, so this moves it from any
     other project, unless it coordinates that one.
     """
-    persisted = _load(_store(request))
+    persisted = await _load(_store(request))
     _find(persisted, project_id)
     _check_not_coordinating_elsewhere(persisted, project_id, conversation_id)
-    await _join(service, project_id, conversation_id)
+    if not await _join(service, project_id, conversation_id):
+        raise HTTPException(status_code=404, detail="Conversation not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -424,7 +490,7 @@ async def remove_project_thread(
     The conversation itself is not changed otherwise. Child conversations keep
     their own tag. Clear the coordinator before removing it.
     """
-    project = _find(_load(_store(request)), project_id)
+    project = _find(await _load(_store(request)), project_id)
     if project.coordinator_conversation_id == conversation_id:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -439,3 +505,63 @@ async def remove_project_thread(
     if tags is None:
         raise HTTPException(status_code=404, detail="Conversation not in project")
     return DeleteResponse()
+
+
+@projects_router.post(
+    "/{project_id}/threads/{conversation_id}/messages",
+    response_model=ProjectThreadMessageResponse,
+    responses={
+        404: {"description": "Project not found, or conversation not a member"},
+        409: {"description": "The thread is waiting for confirmation"},
+        429: {"description": "Message saved, but the server run limit is full"},
+    },
+)
+async def message_project_thread(
+    project_id: UUID,
+    conversation_id: UUID,
+    request: Request,
+    payload: ProjectThreadMessageRequest,
+    service: ConversationService = Depends(get_conversation_service),
+) -> ProjectThreadMessageResponse:
+    """Send a message to a project member and run it, without approving anything.
+
+    Unlike ``POST /api/conversations/{id}/events`` with ``run``, this never
+    runs a conversation that is waiting for confirmation, because that run
+    would approve its pending actions. A thread already waiting is refused
+    with 409 and nothing is saved. A thread that reaches a confirmation while
+    the message is being delivered keeps the message and is not run
+    (``run_requested: false``); the refusal is decided under the
+    conversation's run lock. A running thread takes the message into its
+    current run.
+    """
+    _find(await _load(_store(request)), project_id)
+    event_service = await service.get_event_service(conversation_id)
+    if (
+        event_service is None
+        or event_service.stored.tags.get(PROJECT_TAG) != project_id.hex
+    ):
+        raise HTTPException(status_code=404, detail="Conversation not in project")
+
+    # An unlocked read: it only spares the person an unrelated message in a
+    # thread that is already waiting. The guarded run below is the safeguard.
+    previous_status = (await event_service.get_state()).execution_status
+    if previous_status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Conversation is waiting for confirmation",
+        )
+    message = Message(role="user", content=[TextContent(text=payload.text)])
+    run_requested = True
+    try:
+        await event_service.send_message(
+            message, run=True, refuse_pending_confirmation=True
+        )
+    except ValueError as e:
+        if str(e) != "waiting_for_confirmation":
+            raise
+        run_requested = False
+    return ProjectThreadMessageResponse(
+        conversation_id=conversation_id,
+        previous_status=previous_status,
+        run_requested=run_requested,
+    )
