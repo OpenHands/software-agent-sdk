@@ -34,6 +34,7 @@ from openhands.agent_server.config import load_config
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.exceptions import WebSocketConnectionError
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -78,6 +79,71 @@ def _assert_secret(value: "str | SecretStr", expected: str) -> None:
         assert value.get_secret_value() == expected
     else:
         assert value == expected
+
+
+@pytest.mark.parametrize("skill_mib", [2, 17])
+def test_attach_receives_large_initial_state(tmp_path: Path, monkeypatch, skill_mib):
+    monkeypatch.setenv("OPENHANDS_REMOTE_WS_READY_TIMEOUT", "5")
+    agent = Agent(
+        llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        tools=[],
+        agent_context=AgentContext(
+            skills=[
+                Skill(name="large-context", content="x" * (skill_mib * 1024 * 1024))
+            ]
+        ),
+    )
+    received = []
+    message_received = threading.Event()
+
+    def on_event(event):
+        received.append(event)
+        if isinstance(event, MessageEvent) and event.source == "user":
+            message_received.set()
+
+    with live_server_env(tmp_path, monkeypatch) as environment:
+        workspace = RemoteWorkspace(
+            host=environment["host"], working_dir=str(tmp_path / "workspace")
+        )
+        response = workspace.client.post(
+            "/api/conversations",
+            json={
+                "agent": agent.model_dump(
+                    mode="json", context={"expose_secrets": True}
+                ),
+                "workspace": {"working_dir": workspace.working_dir},
+            },
+        )
+        response.raise_for_status()
+        conversation_id = UUID(response.json()["id"])
+        try:
+            if skill_mib == 17:
+                with pytest.raises(
+                    WebSocketConnectionError, match="message too big.*1009"
+                ):
+                    RemoteConversation.attach(
+                        workspace, conversation_id, visualizer=None
+                    )
+                return
+            conversation = RemoteConversation.attach(
+                workspace, conversation_id, callbacks=[on_event], visualizer=None
+            )
+            try:
+                snapshots = [
+                    event
+                    for event in received
+                    if isinstance(event, ConversationStateUpdateEvent)
+                ]
+                assert any(
+                    len(event.model_dump_json()) > 1024 * 1024 for event in snapshots
+                )
+                conversation.send_message("Verify event delivery after attaching.")
+                assert message_received.wait(5)
+            finally:
+                conversation.close()
+        finally:
+            workspace.client.delete(f"/api/conversations/{conversation_id}")
+            workspace.client.close()
 
 
 def test_deferred_websocket_initialization_lifecycle(
