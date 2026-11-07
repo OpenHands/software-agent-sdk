@@ -1,0 +1,42 @@
+{
+  "scenario": "condensed",
+  "sdk_version": "1.12.0",
+  "resumed_llm_input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "cache_prompt": false,
+          "type": "text",
+          "text": "Summary: the user greeted twice."
+        }
+      ],
+      "tool_calls": null,
+      "tool_call_id": null
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "cache_prompt": false,
+          "type": "text",
+          "text": "Yes."
+        }
+      ],
+      "tool_calls": null,
+      "tool_call_id": null
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "cache_prompt": false,
+          "type": "text",
+          "text": "Follow-up after the upgrade."
+        }
+      ],
+      "tool_calls": null,
+      "tool_call_id": null
+    }
+  ]
+}

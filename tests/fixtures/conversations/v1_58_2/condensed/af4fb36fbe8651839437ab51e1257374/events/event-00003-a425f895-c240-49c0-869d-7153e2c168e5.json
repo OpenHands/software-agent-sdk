@@ -1,0 +1,1 @@
+{"id":"a425f895-c240-49c0-869d-7153e2c168e5","timestamp":"2026-11-03T16:49:38.476490","source":"user","parent_id":"08eef3e4-6ff7-4c89-abaf-c7a386bf5ff0","llm_message":{"role":"user","content":[{"cache_prompt":false,"type":"text","text":"Hello again."}],"thinking_blocks":[]},"activated_skills":[],"extended_content":[],"kind":"MessageEvent"}
