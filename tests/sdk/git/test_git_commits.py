@@ -227,6 +227,18 @@ def test_get_commit_file_diff_rejects_oversize_blob():
             get_commit_file_diff(Path(temp_dir) / "big.txt", sha)
 
 
+def test_get_commit_file_diff_preserves_edge_whitespace():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        commit_file(temp_dir, "a.py", "    x = 1\n", "base")
+        sha = commit_file(temp_dir, "a.py", "    x = 2\n", "edit")
+
+        diff = get_commit_file_diff(Path(temp_dir) / "a.py", sha)
+
+        assert diff.original == "    x = 1"
+        assert diff.modified == "    x = 2"
+
+
 def test_get_commit_changes_lists_special_names_verbatim():
     """A commit touching names with a space or non-ASCII characters lists
     them under their real names instead of failing to parse."""

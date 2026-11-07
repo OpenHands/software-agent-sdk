@@ -783,6 +783,12 @@ def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
         snapshot_started.set()
         return original_snapshot()
 
+    original_initial_state = event_service._create_initial_state_sync
+
+    def traced_initial_state() -> tuple[ConversationStateUpdateEvent, int]:
+        snapshot_started.set()
+        return original_initial_state()
+
     def traced_compose_info_sync(*args, **kwargs):
         conversation_info_started.set()
         return original_compose_info_sync(*args, **kwargs)
@@ -807,6 +813,7 @@ def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
             attach_error.append(exc)
 
     event_service._create_state_update_event_sync = traced_snapshot
+    event_service._create_initial_state_sync = traced_initial_state
     conversation_service_module._compose_conversation_info_sync = (
         traced_compose_info_sync
     )
@@ -846,6 +853,7 @@ def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
         )
     finally:
         event_service._create_state_update_event_sync = original_snapshot
+        event_service._create_initial_state_sync = original_initial_state
         conversation_service_module._compose_conversation_info_sync = (
             original_compose_info_sync
         )
@@ -1167,10 +1175,12 @@ def test_openai_chat_completions_gateway_over_real_server(
                     "role": "assistant",
                     "content": "Hello from patched LLM",
                 }
+                # A continued turn reports only its own model call, not the
+                # conversation's running total (7/5 per call, two calls so far).
                 assert reused_response.json()["usage"] == {
-                    "prompt_tokens": 14,
-                    "completion_tokens": 10,
-                    "total_tokens": 24,
+                    "prompt_tokens": 7,
+                    "completion_tokens": 5,
+                    "total_tokens": 12,
                 }
 
                 from openai import BadRequestError, OpenAI
@@ -1180,6 +1190,21 @@ def test_openai_chat_completions_gateway_over_real_server(
                     base_url=f"{env['host']}/v1",
                     timeout=10,
                 )
+                reused_stream = openai_client.chat.completions.create(
+                    model="openhands_smoke",
+                    messages=[{"role": "user", "content": "Say hello a third time."}],
+                    stream=True,
+                    stream_options={"include_usage": True},
+                    extra_headers={
+                        "X-OpenHands-ServerConversation-ID": conversation_id
+                    },
+                )
+                reused_usage = [chunk.usage for chunk in reused_stream if chunk.usage]
+                assert len(reused_usage) == 1
+                assert reused_usage[0].prompt_tokens == 7
+                assert reused_usage[0].completion_tokens == 5
+                assert reused_usage[0].total_tokens == 12
+
                 stream = openai_client.chat.completions.create(
                     model="openhands_smoke",
                     messages=[

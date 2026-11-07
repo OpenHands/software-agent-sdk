@@ -19,7 +19,7 @@ DOCKERFILE = (
     Path(__file__).resolve().parents[3]
     / "openhands-agent-server/openhands/agent_server/docker/Dockerfile"
 )
-FIXED_VERSIONS = {"urllib3": "2.8.0", "msgpack": "1.2.1"}
+FIXED_VERSIONS = {"urllib3": "2.8.0", "msgpack": "1.2.3"}
 
 PROBE = """
 import importlib
