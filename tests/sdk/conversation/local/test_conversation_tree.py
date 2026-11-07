@@ -5,6 +5,7 @@ and branch-slice fork through a real LocalConversation (no LLM). (#3747, #3748)
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from litellm import ChatCompletionMessageToolCall
@@ -14,6 +15,7 @@ from pydantic import SecretStr
 from openhands.sdk.agent import Agent
 from openhands.sdk.context.view import View
 from openhands.sdk.conversation import Conversation, LocalConversation
+from openhands.sdk.conversation.exceptions import ConversationRunInProgressError
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.event import ActionEvent
 from openhands.sdk.event.base import Event
@@ -658,3 +660,51 @@ def test_fork_preserves_empty_head():
         fork = conv.fork()
         assert fork.state.head_is_empty is True
         assert _view_ids(fork) == []
+
+
+def test_navigate_rejected_while_run_is_in_progress():
+    """Regression for #6582: re-rooting HEAD during a live run used to attach
+    the in-flight assistant response to the navigated branch. The guard must
+    reject navigation without changing HEAD or the active view.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp)
+        e0 = _emit(conv, _msg("root"))
+        e1 = _emit(conv, _msg("turn-1"))
+        before_leaf = conv.state.leaf_event_id
+        before_view = _view_ids(conv)
+
+        running = Mock()
+        running.done.return_value = False
+        conv._arun_task = running
+        try:
+            with pytest.raises(ConversationRunInProgressError):
+                conv.navigate_to(e0.id)
+
+            assert conv.state.leaf_event_id == before_leaf
+            assert _view_ids(conv) == before_view
+
+            # The response produced while the run is live still chains to the
+            # user turn that triggered it, not to the rejected navigation.
+            e2 = _emit(conv, _msg("assistant reply", "agent"))
+            assert _by_id(conv.state.events, e2.id).parent_id == e1.id
+        finally:
+            conv._arun_task = None
+
+
+def test_navigate_allowed_once_run_finishes():
+    """The guard must not block navigation after the run task has completed."""
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp)
+        e0 = _emit(conv, _msg("root"))
+        _emit(conv, _msg("turn-1"))
+
+        finished = Mock()
+        finished.done.return_value = True
+        conv._arun_task = finished
+        try:
+            conv.navigate_to(e0.id)
+            assert conv.state.leaf_event_id == e0.id
+            assert _view_ids(conv) == [e0.id]
+        finally:
+            conv._arun_task = None
