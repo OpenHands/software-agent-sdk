@@ -1547,6 +1547,10 @@ class EventService:
         """
         if not self._conversation or self._closing:
             raise ValueError("inactive_service")
+        # Every explicit stop (pause, interrupt, close) bumps the generation.
+        # A stop that lands while this request waits (on _run_lock, the status
+        # read, or run capacity) supersedes it.
+        request_generation = self._explicit_interrupt_generation
 
         # Use lock to make check-and-set atomic, preventing race conditions
         async with self._run_lock:
@@ -1589,6 +1593,7 @@ class EventService:
             # of a chain acquires capacity; the permit is returned once the
             # whole chain (plus any pin, e.g. a live /goal loop) is done.
             owner = self._run_session_slot
+            new_owner = owner is None
             if owner is None:
                 owner = (
                     run_slot.share()
@@ -1597,11 +1602,23 @@ class EventService:
                         self._run_semaphore, wait=wait_for_capacity
                     )
                 )
-                self._run_session_slot = owner
             elif run_slot is not None:
                 # A reservation offered on top of an already-held session is
                 # redundant; return it so it is not leaked.
                 run_slot.release()
+            # A re-arm (wait_for_capacity=True) can block here for as long as
+            # the server is at capacity. A pause/interrupt/close that landed
+            # meanwhile must win: starting now would resume a paused
+            # conversation, or run one that close() already tore down.
+            if (
+                self._closing
+                or self._explicit_interrupt_generation != request_generation
+            ):
+                if new_owner:
+                    owner.release()
+                return
+            if new_owner:
+                self._run_session_slot = owner
             slot = owner.share()
 
             worker: asyncio.Future | None = None
