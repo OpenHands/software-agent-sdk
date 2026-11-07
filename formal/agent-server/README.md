@@ -27,6 +27,10 @@ tests replay the same traces against the real code:
   an event appended before the mark but fanned out after `go_live` reaches
   the client twice.
 
+Since 6bab1761a the session socket takes its mark together with the connect
+snapshot, under the state lock. `EventDelivery` lets `mark` happen at any
+point after `subscribe`, so this case is covered.
+
 What the models leave out: the ACP supersede/pin path, `/goal` loops and
 `reserve_run_slot` in run admission; replay from a non-zero cursor and
 transient frames in event delivery; time and TTL expiry in the lease (`dead`
