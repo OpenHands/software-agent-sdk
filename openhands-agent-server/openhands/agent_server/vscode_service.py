@@ -28,9 +28,7 @@ class VSCodeService:
 
         Args:
             port: Port to run VSCode server on (default: 8001)
-            workspace_path: Path to the workspace directory
-            create_workspace: Whether to create the workspace directory if it doesn't
-                exist
+            connection_token: Token that authorizes the websocket connection
             server_base_path: Base path for the server (used in path-based routing)
         """
         self.port: int = port
