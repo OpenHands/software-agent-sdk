@@ -29,6 +29,12 @@ jobs:
             - name: Install dependencies
               run: npm ci
 
+            - name: Install uv and Python 3.13
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
             - name: Test Agent Server contract tooling
               run: npm run test:agent-server-api-tooling
 
@@ -56,6 +62,9 @@ jobs:
 
             - name: Check generated Agent Server contract
               run: npm run check:agent-server-api
+
+            - name: Check generated prompt enhancement contract
+              run: npm run check:prompt-enhancement-api
 
     public-type-budget:
         runs-on: ubuntu-latest

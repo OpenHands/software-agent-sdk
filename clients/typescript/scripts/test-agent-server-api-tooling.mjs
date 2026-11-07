@@ -171,8 +171,68 @@ try {
     throw new Error(cleanResult.stderr || cleanResult.stdout);
   }
 
+  const promptEnhancementSchema = schema({ url: { type: 'string' } });
+  promptEnhancementSchema.paths['/api/prompt-enhancement/enhance'] = {
+    post: {
+      operationId: 'enhance_prompt',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/PromptEnhancementRequest' },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Success',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/PromptEnhancementResponse' },
+            },
+          },
+        },
+      },
+    },
+  };
+  promptEnhancementSchema.components.schemas.PromptEnhancementRequest = {
+    type: 'object',
+    required: ['text'],
+    properties: { text: { type: 'string' } },
+  };
+  promptEnhancementSchema.components.schemas.PromptEnhancementResponse = {
+    type: 'object',
+    required: ['enhanced_text'],
+    properties: { enhanced_text: { type: 'string' } },
+  };
+  const promptOpenapi = join(fixtureRoot, 'prompt-enhancement-openapi.json');
+  const promptGenerated = join(fixtureRoot, 'prompt-enhancement.ts');
+  await writeFile(promptOpenapi, `${JSON.stringify(promptEnhancementSchema)}\n`);
+  const promptEnv = {
+    AGENT_SERVER_OPENAPI_PATH: promptOpenapi,
+    AGENT_SERVER_OPENAPI_PATH_PREFIX: '/api/prompt-enhancement/',
+    AGENT_SERVER_GENERATED_OUTPUT: promptGenerated,
+    AGENT_SERVER_SCHEMA_SOURCE: 'local prompt-enhancement fixture',
+  };
+  const promptGenerateResult = run(generator, [], promptEnv);
+  if (promptGenerateResult.status !== 0) {
+    throw new Error(promptGenerateResult.stderr || promptGenerateResult.stdout);
+  }
+  const promptGeneratedText = await readFile(promptGenerated, 'utf8');
+  if (
+    !promptGeneratedText.includes('PromptEnhancementRequest') ||
+    promptGeneratedText.includes('MCPServer') ||
+    promptGeneratedText.includes('TestMcpServerApiMcpTestPost')
+  ) {
+    throw new Error('Path-filtered generation included unrelated Agent Server contracts');
+  }
+  const promptCheckResult = run(checker, [], promptEnv);
+  if (promptCheckResult.status !== 0) {
+    throw new Error(promptCheckResult.stderr || promptCheckResult.stdout);
+  }
+
   process.stdout.write(
-    'Agent Server API tooling fixtures passed (additive diff and stale-file failure).\n'
+    'Agent Server API tooling fixtures passed (additive diff, stale-file failure, and path filtering).\n'
   );
 } finally {
   await rm(fixtureRoot, { recursive: true, force: true });
