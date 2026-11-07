@@ -687,19 +687,21 @@ def generate_baseline_payloads(
 
         try:
             _uv_run(["uv", "venv", str(venv_dir), "--python", sys.executable])
-            _uv_run(
-                [
-                    "uv",
-                    "pip",
-                    "install",
-                    "--python",
-                    str(python),
-                    "--quiet",
-                    "--exclude-newer",
-                    exclude_newer,
-                    *packages,
-                ]
-            )
+            install_args = [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                str(python),
+                "--quiet",
+                # PyPI JSON can see a release before uv's cached package index does.
+                "--refresh-package",
+                "openhands-sdk",
+            ]
+            if agent_server_version is not None:
+                install_args.extend(["--refresh-package", "openhands-agent-server"])
+            install_args.extend(["--exclude-newer", exclude_newer, *packages])
+            _uv_run(install_args)
             result = _uv_run([str(python), "-c", _BASELINE_PAYLOAD_SCRIPT])
         except subprocess.CalledProcessError as exc:
             output = (exc.stdout or "") + ("\n" + exc.stderr if exc.stderr else "")

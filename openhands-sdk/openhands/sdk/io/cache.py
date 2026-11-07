@@ -62,6 +62,11 @@ class MemoryLRUCache(LRUCache):
                 f"Item too large for cache ({new_size} bytes > "
                 f"{self.max_memory} bytes), skipping cache"
             )
+            # The store now holds this value, so the key's previous entry is
+            # stale: dropping it makes a read fall through to the store
+            # instead of returning what the write replaced.
+            if key in self:
+                del self[key]
             return
 
         # Update memory accounting if key exists

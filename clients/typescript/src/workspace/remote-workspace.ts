@@ -191,6 +191,7 @@ export class RemoteWorkspace implements IWorkspace {
       timeout: 60000,
       // Keep the raw bytes: 'auto' would decode the octet-stream body as UTF-8 text.
       responseType: 'blob',
+      cache: 'no-store',
     });
 
     let content: string | Blob;

@@ -52,6 +52,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import (
     MCPOAuthState,
     MCPServer,
+    drop_mcp_servers_without_endpoint,
 )
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
@@ -500,6 +501,31 @@ class VerificationSettings(BaseModel):
         return serialize_secret(v, info)
 
 
+class ACPVerificationSettings(BaseModel):
+    """The server-wide part of :class:`VerificationSettings`."""
+
+    critic_api_key: str | SecretStr | None = Field(
+        default=None,
+        description=(
+            "API key used to authenticate with the critic service. ACP agents "
+            "run no critic; the key is kept for OpenHands profiles on this server."
+        ),
+    )
+
+    @field_validator("critic_api_key")
+    @classmethod
+    def _validate_critic_api_key(
+        cls, v: str | SecretStr | None, info: ValidationInfo
+    ) -> SecretStr | None:
+        return validate_secret(v, info)
+
+    @field_serializer("critic_api_key", when_used="always")
+    def _serialize_critic_api_key(
+        self, v: SecretStr | None, info: SerializationInfo
+    ) -> Any:
+        return serialize_secret(v, info)
+
+
 def _default_llm_settings() -> LLM:
     model = LLM.model_fields["model"].get_default()
     assert isinstance(model, str)
@@ -509,7 +535,7 @@ def _default_llm_settings() -> LLM:
 _RequestT = TypeVar("_RequestT")
 
 type AgentKind = Literal["openhands", "llm", "acp"]
-AGENT_SETTINGS_SCHEMA_VERSION = 9
+AGENT_SETTINGS_SCHEMA_VERSION = 10
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 _RUNTIME_SECTION_METADATA = SettingsSectionMetadata(
@@ -770,6 +796,21 @@ def _migrate_agent_settings_v8_to_v9(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("agent_kind", "openhands") == "acp":
         migrated.pop("llm", None)
     migrated["schema_version"] = 9
+    return migrated
+
+
+def _migrate_agent_settings_v9_to_v10(payload: dict[str, Any]) -> dict[str, Any]:
+    """Drop stored MCP servers that have neither ``command`` nor ``url``.
+
+    Before v10 the settings API stored such a server (``{"enabled": true}``);
+    ``MCPServer`` now rejects it, so drop it with a warning on load instead of
+    failing to load the whole settings file.
+    """
+    migrated = dict(payload)
+    mcp_config = migrated.get("mcp_config")
+    if isinstance(mcp_config, Mapping):
+        migrated["mcp_config"] = drop_mcp_servers_without_endpoint(mcp_config)
+    migrated["schema_version"] = 10
     return migrated
 
 
@@ -1101,11 +1142,13 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     6: _migrate_agent_settings_v6_to_v7,
     7: _migrate_agent_settings_v7_to_v8,
     8: _migrate_agent_settings_v8_to_v9,
+    9: _migrate_agent_settings_v9_to_v10,
 }
 _REQUEST_AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     **_AGENT_SETTINGS_MIGRATIONS,
     7: lambda payload: {**payload, "schema_version": 8},
     8: lambda payload: {**payload, "schema_version": 9},
+    9: lambda payload: {**payload, "schema_version": 10},
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,
@@ -1844,7 +1887,10 @@ class ACPAgentSettings(AgentSettingsBase):
             "Model identifier for the ACP server to use (e.g. ``'sonnet'`` or "
             "``'gpt-5.5'``). Applied via the protocol — set_config_option(model) "
             "for configOptions-based servers (codex, claude), else "
-            "set_session_model. Leave blank to let the server pick its default."
+            "set_session_model. Codex and Claude also accept "
+            "``'<model>/<effort>'`` (e.g. ``'gpt-5.5/high'`` or "
+            "``'opus[1m]/high'``) to set reasoning effort. Leave blank to let "
+            "the server pick its default."
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
@@ -1979,6 +2025,11 @@ class ACPAgentSettings(AgentSettingsBase):
             "credentials belong here (or in ``request.secrets``) keyed by the "
             "provider's env var name."
         ),
+    )
+
+    verification: ACPVerificationSettings = Field(
+        default_factory=ACPVerificationSettings,
+        description="Verification state shared with OpenHands profiles.",
     )
 
     @model_validator(mode="before")
@@ -2260,6 +2311,16 @@ def _merge_patch(base: dict[str, Any], diff: Mapping[str, Any]) -> dict[str, Any
     return result
 
 
+def _server_wide_settings(dumped: Mapping[str, Any]) -> dict[str, Any]:
+    """Project a settings dump onto the state no single agent variant owns."""
+    carried: dict[str, Any] = {"mcp_config": dumped["mcp_config"]}
+    if (dumped.get("agent_context") or {}).get("load_memory"):
+        carried["agent_context"] = {"load_memory": True}
+    if critic_api_key := dumped["verification"]["critic_api_key"]:
+        carried["verification"] = {"critic_api_key": critic_api_key}
+    return carried
+
+
 def apply_agent_settings_diff(
     base: Any,
     diff: Mapping[str, Any] | None,
@@ -2275,6 +2336,10 @@ def apply_agent_settings_diff(
       validation (ACP's nullable ``agent_context`` is invalid for OpenHands) or
       silently drop the outgoing variant's fields (the variants ignore unknown
       keys), producing a mongrel row.
+    * ``mcp_config``, ``agent_context.load_memory`` and
+      ``verification.critic_api_key`` are server-wide, not variant state: they are
+      preserved across a kind change and the diff patches them as it would within
+      a variant.
     * When ``agent_kind`` is unchanged or omitted, deep-merge the diff within
       the variant (``None`` unsets a key, per :func:`_merge_patch`).
 
@@ -2287,15 +2352,11 @@ def apply_agent_settings_diff(
     base_settings = validate_agent_settings(base, context=context, persisted=True)
     if not diff:
         return base_settings
+    merge_base = base_settings.model_dump(mode="json", context={"expose_secrets": True})
     new_kind = diff.get("agent_kind")
     if new_kind and new_kind != base_settings.agent_kind:
-        merged = _merge_patch({"agent_kind": new_kind}, diff)
-    else:
-        merged = _merge_patch(
-            base_settings.model_dump(mode="json", context={"expose_secrets": True}),
-            diff,
-        )
-    return validate_agent_settings(merged, context=context)
+        merge_base = {"agent_kind": new_kind, **_server_wide_settings(merge_base)}
+    return validate_agent_settings(_merge_patch(merge_base, diff), context=context)
 
 
 def default_agent_settings() -> OpenHandsAgentSettings:
