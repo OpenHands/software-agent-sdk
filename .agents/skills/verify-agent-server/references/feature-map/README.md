@@ -10,7 +10,7 @@ recipe.
 
 Maintenance baseline: main@8ba966d1d3af49f08e04349c055009e1614b48d6 (2026-10-07). The first pass; the next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **951 sub-features**.
+The map has **952 sub-features**.
 
 ## Baseline preconditions
 

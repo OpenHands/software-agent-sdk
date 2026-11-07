@@ -1,9 +1,12 @@
 # state.py
 import bisect
+import json
 import operator
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, nullcontext
 from typing import Final, SupportsIndex, overload
+
+from pydantic import ValidationError
 
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.persistence_const import (
@@ -134,7 +137,9 @@ class EventLog(EventsListBase):
         the same way, so the branch keeps its surviving ancestors (the system
         prompt above all) instead of ending at the hole.
         """
-        parent_id = event.parent_id
+        return self._resolve_parent_id(idx, event.parent_id)
+
+    def _resolve_parent_id(self, idx: int, parent_id: EventID | None) -> EventID | None:
         if parent_id == ROOT_PARENT_ID:
             return None  # explicit root (feature-created root at idx > 0)
         if parent_id is not None:
@@ -155,6 +160,33 @@ class EventLog(EventsListBase):
             event_id,
         )
 
+    def _read_branch_node(self, idx: int) -> tuple[Event | None, EventID | None]:
+        """Read event ``idx`` for a branch walk: ``(event, effective parent id)``.
+
+        An event whose JSON is intact but whose model no longer validates, e.g.
+        the observation of a custom tool whose module is not imported, comes
+        back as ``(None, parent)``: the walk skips it instead of failing the
+        whole branch (#4080). Unparseable JSON still raises.
+        """
+        try:
+            evt = self[idx]
+        except ValidationError as exc:
+            try:
+                raw = json.loads(self._fs.read(self._path(idx)))
+            except (ValueError, TypeError):
+                raise exc from None
+            if not isinstance(raw, dict):
+                raise exc from None
+            errors = exc.errors(include_url=False)
+            logger.warning(
+                "Skipping unreadable event %s at index %d: %s",
+                self.get_id(idx),
+                idx,
+                errors[0]["msg"] if errors else exc,
+            )
+            return None, self._resolve_parent_id(idx, raw.get("parent_id"))
+        return evt, self._effective_parent_id(idx, evt)
+
     def path_to_root(
         self, leaf_id: EventID | None, limit: int | None = None
     ) -> list[Event]:
@@ -162,8 +194,10 @@ class EventLog(EventsListBase):
 
         ``leaf_id=None`` yields ``[]``. ``limit`` keeps only the last ``limit``
         events (walking back from the leaf), so callers wanting a recent window
-        stay O(limit) instead of O(branch). Raises ValueError on a cycle. An
-        ancestor whose file was lost is bridged (see ``_effective_parent_id``);
+        stay O(limit) instead of O(branch). Events that no longer validate (an
+        unknown ``kind``) are logged and left out. Raises ValueError on a cycle,
+        and an ancestor whose file was lost is bridged (see
+        ``_effective_parent_id``);
         a ``leaf_id`` missing from the log yields ``[]``.
         """
         chain: list[Event] = []
@@ -178,8 +212,9 @@ class EventLog(EventsListBase):
                 # Only the leaf can be unknown: ancestors are bridged.
                 self._report_missing(cur_id)
                 break
-            chain.append(evt := self[idx])
-            cur_id = self._effective_parent_id(idx, evt)
+            evt, cur_id = self._read_branch_node(idx)
+            if evt is not None:
+                chain.append(evt)
         return chain[::-1]
 
     @overload
