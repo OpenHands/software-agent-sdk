@@ -11,7 +11,7 @@
       "npx",
       "-y",
       "--prefer-offline",
-      "@agentclientprotocol/claude-agent-acp@0.90.0"
+      "@agentclientprotocol/claude-agent-acp@0.99.1"
     ],
     "default_session_mode": "bypassPermissions",
     "display_name": "Claude Code",
