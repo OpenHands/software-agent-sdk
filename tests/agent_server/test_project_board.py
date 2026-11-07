@@ -374,3 +374,12 @@ async def test_a_rhetorical_question_mid_run_does_not_stick():
     )
 
     assert store.tags["turn"] == "answered"
+
+
+@pytest.mark.asyncio
+async def test_a_user_message_reopens_a_resolved_conversation_outside_projects():
+    store = _Tags({"resolved": "user", "other": "x"})
+
+    await _feed(_subscriber(store), _message("user", "One more thing"))
+
+    assert store.tags == {"other": "x"}

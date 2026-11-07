@@ -28,6 +28,7 @@ from openhands.sdk.conversation.title_utils import extract_message_text
 from openhands.sdk.conversation.types import (
     PROJECT_TAG_KEY,
     RESOLVED_TAG_KEY,
+    THREAD_STATE_TAG_KEYS,
     TURN_TAG_KEY,
 )
 from openhands.sdk.event import (
@@ -133,7 +134,9 @@ class ThreadOutcomeSubscriber(Subscriber[Event]):
             if event.source == "user":
                 self._reset()
                 self._asked_since_user = False
-                if PROJECT_TAG_KEY in self.tags():
+                # Reopen any conversation the person resolved, in a project
+                # or not; recording outcomes is limited to project members.
+                if any(key in self.tags() for key in THREAD_STATE_TAG_KEYS):
                     self._enqueue(self._reopen)
             elif event.source == "agent":
                 self._note_agent_output(extract_message_text(event), event)
