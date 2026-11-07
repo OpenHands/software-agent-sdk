@@ -54,14 +54,52 @@ from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.llm import MessageToolCall, TextContent
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.settings import ACPAgentSettings
+from openhands.sdk.subagent.registry import (
+    _reset_registry_for_tests,
+    get_agent_factory,
+)
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
+
+
+@pytest.mark.parametrize("missing_worktree", ["sibling", "owned"])
+def test_worktree_creation_preserves_unmounted_sibling(tmp_path, missing_worktree):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    workspace = LocalWorkspace(working_dir=repo)
+    root = tmp_path / "worktrees"
+    sibling_id, conversation_id = uuid4(), uuid4()
+    sibling_plan = _plan_conversation_worktree(workspace, sibling_id, root, None)
+    owned_plan = _plan_conversation_worktree(workspace, conversation_id, root, None)
+    assert sibling_plan is not None
+    assert owned_plan is not None
+    sibling = _create_conversation_worktree(sibling_plan)
+    missing_root = Path(sibling.working_dir)
+    if missing_worktree == "owned":
+        owned = _create_conversation_worktree(owned_plan)
+        missing_root = Path(owned.working_dir)
+    hidden_root = tmp_path / "unmounted"
+    missing_root.rename(hidden_root)
+
+    created = _create_conversation_worktree(owned_plan)
+
+    assert created is not None
+    if missing_worktree == "sibling":
+        hidden_root.rename(missing_root)
+    assert run_git_command(
+        ["git", "branch", "--show-current"], sibling.working_dir
+    ) == (f"openhands/{sibling_id}")
+    assert run_git_command(
+        ["git", "branch", "--show-current"], created.working_dir
+    ) == (f"openhands/{conversation_id}")
 
 
 @pytest.fixture
@@ -127,6 +165,67 @@ async def test_meta_json_has_no_agent_and_reload_uses_base_state(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_max_budget_per_run_update_survives_restart_and_fork(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=_sample_agent(),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        max_budget_per_run=3.0,
+    )
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        info, _ = await service.start_conversation(request)
+        assert info.max_budget_per_run == 3.0
+        await service.update_conversation(
+            info.id, UpdateConversationRequest(max_budget_per_run=7.5)
+        )
+        conv_id = info.id
+
+    async with ConversationService(conversations_dir=conversations_dir) as service2:
+        reloaded = await service2.get_conversation(conv_id)
+        assert reloaded is not None
+        assert reloaded.max_budget_per_run == 7.5
+        event_service = await service2.get_event_service(conv_id)
+        assert event_service is not None
+        assert event_service.get_conversation().max_budget_per_run == 7.5
+
+        fork = await service2.fork_conversation(conv_id)
+        assert fork is not None
+        assert fork.max_budget_per_run == 7.5
+
+        await service2.update_conversation(
+            conv_id, UpdateConversationRequest(max_budget_per_run=None)
+        )
+        cleared = await service2.get_conversation(conv_id)
+        assert cleared is not None
+        assert cleared.max_budget_per_run is None
+        assert event_service.get_conversation().max_budget_per_run is None
+
+
+@pytest.mark.asyncio
+async def test_max_budget_per_run_lives_only_in_base_state(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=_sample_agent(),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        max_budget_per_run=3.0,
+    )
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        info, _ = await service.start_conversation(request)
+        await service.update_conversation(
+            info.id, UpdateConversationRequest(max_budget_per_run=4.0)
+        )
+        conversation_dir = conversations_dir / info.id.hex
+        base_state = json.loads((conversation_dir / "base_state.json").read_text())
+        meta = json.loads((conversation_dir / "meta.json").read_text())
+        assert base_state["max_budget_per_run"] == 4.0
+        assert "max_budget_per_run" not in meta
+
+
+@pytest.mark.asyncio
 async def test_server_resolved_tool_modules_are_persisted(tmp_path):
     """A lightweight creator need not import the runtime's tool modules."""
     conversations_dir = tmp_path / "conversations"
@@ -148,6 +247,90 @@ async def test_server_resolved_tool_modules_are_persisted(tmp_path):
     assert meta["tool_module_qualnames"]["terminal"] == (
         "openhands.tools.terminal.definition"
     )
+
+
+def _encrypted_profile_subagent(tmp_path: Path, cipher: Cipher) -> AgentDefinition:
+    """Save profile ``enc`` encrypted at rest and return a sub-agent that uses it."""
+    profiles = tmp_path / "profiles"
+    LLMProfileStore(base_dir=profiles).save(
+        "enc",
+        LLM(model="gpt-4o", api_key=SecretStr("sk-profile-secret"), usage_id="enc"),
+        include_secrets=True,
+        cipher=cipher,
+    )
+    return AgentDefinition(
+        name="profile-subagent", model="enc", profile_store_dir=str(profiles)
+    )
+
+
+@pytest.fixture
+def clean_agent_registry():
+    _reset_registry_for_tests()
+    yield
+    _reset_registry_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_start_conversation_registers_subagents_with_server_cipher(
+    tmp_path, clean_agent_registry
+):
+    """A forwarded sub-agent definition decrypts its profile with the server key."""
+    cipher = Cipher("server-secret-key")
+    agent_def = _encrypted_profile_subagent(tmp_path, cipher)
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+        agent_definitions=[agent_def],
+    )
+
+    async with ConversationService(
+        conversations_dir=tmp_path / "conversations", cipher=cipher
+    ) as service:
+        await service.start_conversation(request)
+        sub_agent = get_agent_factory("profile-subagent").factory_func(
+            LLM(model="gpt-4o", usage_id="parent")
+        )
+
+    assert isinstance(sub_agent.llm.api_key, SecretStr)
+    assert sub_agent.llm.api_key.get_secret_value() == "sk-profile-secret"
+
+
+@pytest.mark.asyncio
+async def test_resumed_conversation_registers_subagents_with_server_cipher(
+    tmp_path, clean_agent_registry
+):
+    """Definitions restored from meta.json decrypt their profile after a restart."""
+    cipher = Cipher("server-secret-key")
+    agent_def = _encrypted_profile_subagent(tmp_path, cipher)
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    conversations_dir = tmp_path / "conversations"
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+        agent_definitions=[agent_def],
+    )
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as service:
+        info, _ = await service.start_conversation(request)
+    # A restarted server starts with an empty in-process registry.
+    _reset_registry_for_tests()
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as restarted:
+        await restarted.get_event_service(info.id)
+        sub_agent = get_agent_factory("profile-subagent").factory_func(
+            LLM(model="gpt-4o", usage_id="parent")
+        )
+
+    assert isinstance(sub_agent.llm.api_key, SecretStr)
+    assert sub_agent.llm.api_key.get_secret_value() == "sk-profile-secret"
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 """Test DockerWorkspace import and basic functionality."""
 
+import gc
 import os
 import subprocess
 import sys
@@ -354,3 +355,35 @@ def test_apptainer_workspace_startup_uses_health_check_timeout():
         mock_exec.return_value = Mock(returncode=0, stdout="", stderr="")
         ApptainerWorkspace(server_image="test:latest", health_check_timeout=45.0)
         mock_wait.assert_called_once_with(timeout=45.0)
+
+
+def test_failed_health_check_stops_container(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_execute_command(cmd, *args, **kwargs):
+        calls.append(cmd)
+        return Mock(returncode=0, stdout="cid-123\n", stderr="")
+
+    monkeypatch.setattr(
+        "openhands.workspace.docker.workspace.execute_command", fake_execute_command
+    )
+    monkeypatch.setattr(
+        "openhands.workspace.docker.workspace.check_port_available", lambda p: True
+    )
+
+    with (
+        patch.object(
+            DockerWorkspace,
+            "_wait_for_health",
+            side_effect=RuntimeError("Container failed to become healthy in time"),
+        ),
+        pytest.raises(RuntimeError, match="healthy") as excinfo,
+    ):
+        DockerWorkspace(server_image="test:latest", host_port=8123, detach_logs=False)
+
+    # excinfo keeps the half-built workspace alive, so __del__ has not run yet
+    # and cannot stand in for a rollback inside the constructor.
+    stopped_during_startup = ["docker", "stop", "cid-123"] in calls
+    del excinfo
+    gc.collect()  # let __del__ run while execute_command is still faked
+    assert stopped_during_startup
