@@ -181,7 +181,10 @@ def test_python_image_uses_canonical_minimal_runtime() -> None:
     dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
     workflow_text = SERVER_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "FROM debian:trixie-slim AS python-node-runtime" in dockerfile_text
+    assert re.search(
+        r"(?m)^FROM debian:trixie-slim@sha256:[0-9a-f]{64} AS python-node-runtime$",
+        dockerfile_text,
+    )
     assert re.search(
         r"(?m)^FROM python:\d+\.\d+\.\d+-slim-trixie AS python-runtime$",
         dockerfile_text,
@@ -193,12 +196,16 @@ def test_python_image_uses_canonical_minimal_runtime() -> None:
     assert "ARG BASE_IMAGE=python-node-runtime" in dockerfile_text
     assert re.search(r"ARG DEBIAN_SNAPSHOT=\d{8}T000000Z", dockerfile_text)
     assert (
-        "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}"
+        "URIs: https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}"
         in dockerfile_text
     )
     assert (
-        "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}"
+        "URIs: https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}"
         in dockerfile_text
+    )
+    assert (
+        "from=pip-revendored,source=/etc/ssl/certs/ca-certificates.crt,"
+        "target=/tmp/bootstrap-ca.crt" in dockerfile_text
     )
     assert (
         dockerfile_text.count(
@@ -207,7 +214,34 @@ def test_python_image_uses_canonical_minimal_runtime() -> None:
         == 2
     )
     assert "Check-Valid-Until: no" in dockerfile_text
-    assert "apt-get update; \\\n    apt-get upgrade -y;" in dockerfile_text
+    # The first apt run has no CA bundle yet, so it trusts the bootstrap bundle
+    # mounted from pip-revendored while still using the resilient APT_OPTS.
+    assert "apt-get $BOOTSTRAP_CA ${APT_OPTS} update" in dockerfile_text
+    assert "apt-get $BOOTSTRAP_CA upgrade -y" in dockerfile_text
+    # Resilient apt for the pinned snapshot archive: APT_OPTS (retries,
+    # timeouts, Retry-Delay, serial queue, Pipeline-Depth=0) is defined once
+    # and used at every apt site; python-node-runtime also persists it to
+    # apt.conf.d (inherited by derived stages when BASE_IMAGE is this image)
+    # and wraps update+install in an invocation-level retry loop, so a
+    # multi-minute snapshot.debian.org 503 outage does not fail the build.
+    assert "ARG APT_OPTS=" in dockerfile_text
+    assert "Acquire::Retries=5" in dockerfile_text
+    assert "Acquire::Retry-Delay=10" in dockerfile_text
+    assert "Acquire::Pipeline-Depth=0" in dockerfile_text
+    assert "80-snapshot-resilience" in dockerfile_text
+    assert "for attempt in 1 2 3 4 5" in dockerfile_text
+    apt_lines = [
+        line.strip()
+        for line in dockerfile_text.splitlines()
+        if "apt-get" in line and (" update" in line or " install" in line)
+    ]
+    assert apt_lines
+    for line in apt_lines:
+        assert "${APT_OPTS}" in line, line
+    acp_stage = dockerfile_text.partition("FROM python:3.13-bookworm AS acp-providers")[
+        2
+    ].partition("####")[0]
+    assert "s#http://deb.debian.org/#https://deb.debian.org/#" in acp_stage
     minimal_stage = "FROM ${BASE_IMAGE} AS base-image-minimal"
     full_stage = "FROM base-image-minimal AS base-image"
     minimal_packages = dockerfile_text.partition(minimal_stage)[2].partition(
@@ -258,6 +292,60 @@ def test_agent_server_dockerfile_has_no_hardcoded_acp_packages() -> None:
                 f"{pkg.pinned!r} in the acp-providers stage; it should come "
                 "from acp_install_catalog.py at build time instead"
             )
+
+
+def test_agent_server_runtime_pins_cannot_drift_between_sites() -> None:
+    """Duplicated hand pins are validated, not assumed to agree.
+
+    npm already has a scheduled refresher, and code-server now has one too;
+    Node and uv are still refreshed by hand, and each lives in more than one
+    Dockerfile site. Fail here when the copies disagree instead of letting
+    one half of the image quietly lag behind the other.
+    """
+    dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
+
+    node_image = re.findall(
+        r"(?m)^FROM node:(\d+\.\d+\.\d+)-trixie-slim", dockerfile_text
+    )
+    node_tarballs = re.findall(r"node-v(\d+\.\d+\.\d+)-linux-", dockerfile_text)
+    assert len(node_image) == 1 and len(node_tarballs) >= 1
+    assert set(node_tarballs) == {node_image[0]}, (
+        f"Node pin drift: image stage has {node_image}, "
+        f"tarball sites have {sorted(set(node_tarballs))}"
+    )
+
+    uv_tags = re.findall(r"ghcr\.io/astral-sh/uv:(\d+\.\d+\.\d+)", dockerfile_text)
+    assert len(uv_tags) >= 2 and len(set(uv_tags)) == 1, (
+        f"uv pin drift across Dockerfile stages: {uv_tags}"
+    )
+
+
+def test_agent_server_code_server_block_uses_floors_not_exact_pins() -> None:
+    """The editor block must stay forward-compatible as upstream moves.
+
+    The bundled Node and bundled undici checks are minimum-version floors:
+    a future code-server release that ships something newer must pass
+    without a Dockerfile edit, while anything older fails the build. The
+    release refresher owns CODE_SERVER_VERSION and both arch digests.
+    """
+    dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
+
+    for pattern in (
+        r'(?m)^ARG CODE_SERVER_VERSION="\d+\.\d+\.\d+"$',
+        r"(?m)^ARG CODE_SERVER_AMD64_SHA256=[0-9a-f]{64}$",
+        r"(?m)^ARG CODE_SERVER_ARM64_SHA256=[0-9a-f]{64}$",
+        r"(?m)^ARG CODE_SERVER_NODE_MIN_VERSION=\d+\.\d+\.\d+$",
+        r"(?m)^ARG CODE_SERVER_UNDICI_MIN_VERSION=\d+\.\d+\.\d+$",
+        r"(?m)^ARG CODE_SERVER_UNDICI_SHA256=[0-9a-f]{64}$",
+    ):
+        assert re.search(pattern, dockerfile_text), pattern
+    assert dockerfile_text.count("ARG CODE_SERVER_VERSION=") == 1
+    # Exact-equality assertions on bundled versions would break on the
+    # next upstream release; the block must compare against the floors.
+    assert 'test "$("${CODE_SERVER_ROOT}/lib/node" --version)"' not in dockerfile_text
+    assert dockerfile_text.count("sort -V") >= 3
+    assert dockerfile_text.count("CODE_SERVER_NODE_MIN_VERSION") >= 3
+    assert dockerfile_text.count("CODE_SERVER_UNDICI_MIN_VERSION") >= 4
 
 
 def test_agent_server_node_pin_clears_every_declared_engine_floor() -> None:

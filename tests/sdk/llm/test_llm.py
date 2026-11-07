@@ -1602,32 +1602,23 @@ def test_token_usage_context_window():
 # Telemetry Tests
 
 
-def test_telemetry_cost_calculation_header_exception():
-    """Test telemetry cost calculation handles header parsing exceptions."""
-    # Create a mock response with headers that will cause an exception
-    mock_response = Mock()
-    mock_response.headers = {"x-litellm-cost": "invalid-float"}
+@pytest.mark.parametrize(
+    "additional_headers",
+    [None, {"llm_provider-x-litellm-response-cost": "invalid-float"}],
+    ids=["malformed-header-container", "invalid-cost-value"],
+)
+def test_telemetry_cost_calculation_invalid_headers(additional_headers):
+    """Malformed provider headers must still fall back to token pricing."""
+    response = create_mock_litellm_response()
+    response._hidden_params = {"additional_headers": additional_headers}
+    telemetry = Telemetry(model_name="gpt-4o", metrics=Metrics())
 
-    metrics = Metrics()
-    telemetry = Telemetry(model_name="test-model", metrics=metrics)
-
-    # Mock the logger to capture debug messages
-    with patch("openhands.sdk.llm.utils.telemetry.logger") as mock_logger:
-        # Mock litellm_completion_cost to return a valid cost
-        with patch(
-            "openhands.sdk.llm.utils.telemetry.litellm_completion_cost",
-            return_value=0.001,
-        ):
-            cost = telemetry._compute_cost(mock_response)
-
-            # Should fall back to litellm cost calculator
-            assert cost == 0.001
-
-            # Should have logged the debug message for header parsing failure (line 139)
-            mock_logger.debug.assert_called_once()
-            assert "Failed to get cost from LiteLLM headers:" in str(
-                mock_logger.debug.call_args
-            )
+    with patch(
+        "openhands.sdk.llm.utils.telemetry.litellm_completion_cost",
+        return_value=0.001,
+    ) as calculate_cost:
+        assert telemetry._compute_cost(response) == 0.001
+        assert calculate_cost.call_args.kwargs["completion_response"] is response
 
 
 def test_enable_encrypted_reasoning_respects_flag_and_defaults_true():

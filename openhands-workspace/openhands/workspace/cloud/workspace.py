@@ -711,6 +711,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
                 url=f"{self._settings_base_url}/secrets/{name}",
                 headers={"X-Session-API-Key": self._session_api_key or ""},
                 description=item.get("description"),
+                scope=item.get("scope"),
+                scope_description=item.get("scope_description"),
             )
 
         return result
@@ -909,7 +911,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         Retries up to 3 times on transient failures.
 
         Args:
-            name: Name of the secret to fetch (e.g., "github_token", "gitlab_token")
+            name: Name of the secret to fetch (e.g., "GITHUB_TOKEN", "GITLAB_TOKEN")
 
         Returns:
             The secret value as a string, or None if not found or an error occurred.

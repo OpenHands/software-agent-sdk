@@ -238,12 +238,11 @@ def test_fork_with_tags():
 
 
 @pytest.mark.parametrize("tags", [{}, {"purpose": "debugging"}, {"title": "user tag"}])
-def test_fork_with_title_is_deprecated(tags: dict[str, str]):
-    """Passing title is accepted for compat but warns and does not pollute tags."""
+def test_fork_with_title_is_ignored(tags: dict[str, str]):
+    """Passing title is accepted for signature compat but does not pollute tags."""
     with tempfile.TemporaryDirectory() as tmpdir:
         src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
-        with pytest.warns(DeprecationWarning, match="title parameter is deprecated"):
-            fork = src.fork(title="My Fork", tags=tags)
+        fork = src.fork(title="My Fork", tags=tags)
 
         assert dict(fork.state.tags) == tags
 
