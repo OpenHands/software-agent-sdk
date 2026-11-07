@@ -8,6 +8,10 @@ from pydantic import BaseModel
 # Registered only in the agent-server: the tool needs a server to create the
 # child on, so it is deliberately absent from get_default_tools().
 import openhands.tools.child_conversation  # noqa: E402, F401
+
+# Reactions work in any conversation; registering them here makes them
+# available to agents this server runs.
+import openhands.tools.reaction  # noqa: E402, F401
 from openhands.agent_server.config import Config
 from openhands.agent_server.launch import (
     can_probe_tools,

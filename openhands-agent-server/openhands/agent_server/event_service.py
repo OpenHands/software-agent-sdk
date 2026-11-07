@@ -72,6 +72,7 @@ from openhands.sdk.credential import (
 from openhands.sdk.event import (
     AgentErrorEvent,
     ObservationBaseEvent,
+    ReactionEvent,
     StreamingDeltaEvent,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
@@ -2124,6 +2125,29 @@ class EventService:
                     raise
         else:
             await self.reject_pending_actions(request.reason)
+
+    async def react(
+        self,
+        emoji: str,
+        target_event_id: str | None = None,
+        *,
+        removed: bool = False,
+    ) -> ReactionEvent:
+        """Record the person's reaction on a message; it does not run the agent.
+
+        Raises:
+            ValueError: The emoji is not allowed or there is no such message.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        conversation = self._conversation
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            functools.partial(
+                conversation.react, emoji, target_event_id, removed=removed
+            ),
+        )
 
     async def reject_pending_actions(self, reason: str):
         """Reject all pending actions and publish updated state."""

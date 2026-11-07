@@ -1605,7 +1605,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             tool_name=tool.name,
             tool_call_id=action_event.tool_call.id,
         )
-        return [obs_event]
+        return [obs_event, *observation.follow_up_events()]
 
     def _maybe_emit_vllm_tokens(
         self, llm_response: LLMResponse, on_event: ConversationCallbackType
