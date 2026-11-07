@@ -289,11 +289,12 @@ class Schema(DiscriminatedUnionMixin):
             desc: str | None = spec.get("description")
             field_name = fname
             field_alias = None
-            if fname in discriminator_fields:
+            if fname in discriminator_fields or fname.startswith("_"):
                 # MCP tool argument names are user-defined JSON object keys. If
                 # one collides with OpenHands' internal discriminator (e.g.
-                # "kind"), keep the external name as an alias and use a safe
-                # internal field name for Pydantic.
+                # "kind"), or is a name Pydantic refuses (a leading underscore
+                # means a private attribute), keep the external name as an
+                # alias and use a safe internal field name for Pydantic.
                 field_alias = fname
                 has_aliased_field = True
                 alias_specs[fname] = copy.deepcopy(spec)

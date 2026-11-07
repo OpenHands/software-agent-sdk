@@ -127,6 +127,36 @@ class TestHookExecutor:
         assert "SESSION=test-session" in result.stdout
         assert "TOOL=BashTool" in result.stdout
 
+    def test_execute_exports_plugin_root_over_inherited_value(
+        self, executor, sample_event, tmp_path, monkeypatch
+    ):
+        """A plugin hook sees its own root even when the parent env has one."""
+        monkeypatch.setenv("PLUGIN_ROOT", "/inherited/root")
+        plugin_root = str(tmp_path / "plugin")
+        hook = HookDefinition(
+            command=python_command("import os; print(os.environ['PLUGIN_ROOT'])"),
+            plugin_root=plugin_root,
+        )
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.success
+        assert result.stdout.strip() == plugin_root
+
+    def test_execute_without_plugin_root_sets_no_plugin_root(
+        self, executor, sample_event, monkeypatch
+    ):
+        """A hook that did not come from a plugin gets no PLUGIN_ROOT."""
+        monkeypatch.delenv("PLUGIN_ROOT", raising=False)
+        hook = HookDefinition(
+            command=python_command("import os; print('PLUGIN_ROOT' in os.environ)")
+        )
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.success
+        assert result.stdout.strip() == "False"
+
     def test_execute_timeout(self, executor, sample_event):
         """Test that timeout is enforced."""
         hook = HookDefinition(

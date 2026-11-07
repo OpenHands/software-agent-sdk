@@ -1,6 +1,9 @@
 """Test ApptainerWorkspace import and GPU passthrough behavior."""
 
-from unittest.mock import Mock, patch
+import gc
+import subprocess
+import sys
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -111,3 +114,76 @@ def test_apptainer_workspace_extra_bind_mounts(mock_apptainer_workspace, monkeyp
 
     workspace._process = None
     workspace._instance_name = None
+
+
+def test_failed_health_check_terminates_server_process(monkeypatch, tmp_path):
+    from openhands.workspace import ApptainerWorkspace
+
+    monkeypatch.setattr(
+        "openhands.workspace.apptainer.workspace.execute_command",
+        Mock(return_value=Mock(returncode=0, stdout="", stderr="")),
+    )
+    monkeypatch.setattr(
+        "openhands.workspace.apptainer.workspace.check_port_available", lambda p: True
+    )
+    monkeypatch.setattr(
+        "openhands.workspace.apptainer.workspace.Path.home", lambda: tmp_path
+    )
+
+    # Run a real long-lived child in place of `apptainer run`.
+    real_popen = subprocess.Popen
+    procs: list[subprocess.Popen] = []
+
+    def fake_popen(cmd, **kwargs):
+        proc = real_popen(
+            [sys.executable, "-I", "-S", "-c", "import time; time.sleep(30)"],
+            **kwargs,
+        )
+        procs.append(proc)
+        return proc
+
+    monkeypatch.setattr(
+        "openhands.workspace.apptainer.workspace.subprocess.Popen", fake_popen
+    )
+    sif = tmp_path / "img.sif"
+    sif.write_text("fake sif")
+
+    try:
+        with (
+            patch.object(
+                ApptainerWorkspace,
+                "_wait_for_health",
+                side_effect=RuntimeError("Container failed to become healthy in time"),
+            ),
+            pytest.raises(RuntimeError, match="healthy") as excinfo,
+        ):
+            ApptainerWorkspace(sif_file=str(sif), host_port=8000, detach_logs=False)
+
+        # excinfo keeps the half-built workspace alive, so __del__ has not run yet.
+        alive_after_failure = procs[0].poll() is None
+        del excinfo
+        gc.collect()
+        assert not alive_after_failure
+    finally:
+        for proc in procs:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            if proc.stdout:
+                proc.stdout.close()
+
+
+def test_exit_sends_completion_callback(mock_apptainer_workspace, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    workspace, _ = mock_apptainer_workspace()
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace.__exit__(None, None, None)
+
+        mock_client.post.assert_called_once()
+        assert mock_client.post.call_args.args[0] == "https://svc.test/complete"

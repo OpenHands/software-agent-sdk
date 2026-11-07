@@ -61,7 +61,7 @@ from openhands.sdk.profiles.agent_profile_store import (
     PROFILE_NAME_PATTERN,
     canonical_profile_name,
 )
-from openhands.sdk.settings.model import OpenHandsAgentSettings
+from openhands.sdk.settings.model import apply_agent_settings_diff
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -455,8 +455,7 @@ def delete_agent_profile(
     reseeded from the settings when it was the one deleted. If
     ``agent_settings`` is itself left on a non-OpenHands variant, it is first
     reset to default OpenHands agent settings so stale ACP configuration does
-    not outlive the profile it came from; the server-wide ``mcp_config`` is
-    carried over.
+    not outlive the profile it came from; server-wide settings are carried over.
     """
     store = get_agent_profile_store()
     deleted_id = _summary_id_for_name(store, name)
@@ -474,15 +473,10 @@ def delete_agent_profile(
                 s: PersistedSettings,
             ) -> PersistedSettings:
                 s.active_agent_profile_id = None
-                # Stale non-OpenHands settings outlive their profile. Reset to
-                # a fresh OpenHands base rather than merging across the variant
-                # boundary (see _apply_agent_settings_diff), except for
-                # ``mcp_config``: it is the server-wide MCP registry every other
-                # profile resolves ``mcp_server_refs`` against, not ACP state.
                 prior_kind = s.agent_settings.agent_kind
                 if prior_kind != "openhands":
-                    s.agent_settings = OpenHandsAgentSettings(
-                        mcp_config=s.agent_settings.mcp_config
+                    s.agent_settings = apply_agent_settings_diff(
+                        s.agent_settings, {"agent_kind": "openhands"}
                     )
                     logger.info(
                         f"Reset agent_settings to default "

@@ -82,9 +82,11 @@ class StreamContext:
         on_token: Callable[[Any], None] | None,
         on_stream: StreamProgressCallbackType | None,
         mask: Callable[[], StreamOutputMask],
+        last_seq: Callable[[], int | None] | None = None,
     ) -> None:
         self.item_id = item_id
         self._anchor_seq = anchor_seq
+        self._last_seq = last_seq
         self._on_token = on_token
         self._on_stream = on_stream
         self._mask = mask
@@ -99,6 +101,7 @@ class StreamContext:
         self._reserved = False
         self._claimed = False
         self._chunk_id: str | None = None
+        self._anchor_pending = False
 
     @classmethod
     def open(
@@ -108,13 +111,18 @@ class StreamContext:
     ) -> StreamContext:
         """Mint an id and read the anchor. Neither touches the event log."""
         state = conversation.state
-        length = len(state.events)
+
+        def last_seq() -> int | None:
+            length = len(state.events)
+            return length - 1 if length else None
+
         return cls(
             item_id=str(uuid.uuid4()),
-            anchor_seq=length - 1 if length else None,
+            anchor_seq=last_seq(),
             on_token=on_token,
             on_stream=conversation.on_stream,
             mask=state.secret_registry.compile_stream_mask,
+            last_seq=last_seq,
         )
 
     @property
@@ -176,6 +184,28 @@ class StreamContext:
         if self._reserved:
             self._claimed = True
 
+    def next_item(self) -> None:
+        """Open a fresh slot for the rest of the step, after a committed item.
+
+        For a step that emits several durable items in turn (an ACP turn's text
+        segments between its tool calls). The new slot anchors on the event log
+        as it stands when its first token arrives, so it streams below every
+        event emitted in between.
+        """
+        self.close("no_durable_event")
+        self.item_id = str(uuid.uuid4())
+        self._anchor_seq = None
+        self._masks.clear()
+        self._attempt = 1
+        self._order = itertools.count()
+        self._started = False
+        self._opened = False
+        self._started_attempt = None
+        self._reserved = False
+        self._claimed = False
+        self._chunk_id = None
+        self._anchor_pending = self._last_seq is not None
+
     def close(self, reason: str) -> None:
         """Emit ``StreamAborted`` unless a durable event committed the id.
 
@@ -211,6 +241,9 @@ class StreamContext:
                 self.new_attempt()
         self._chunk_id = chunk_id
         if not self._started:
+            if self._anchor_pending and self._last_seq is not None:
+                self._anchor_seq = self._last_seq()
+                self._anchor_pending = False
             self._started = self._opened = True
             self._started_attempt = self._attempt
             self._emit(StreamStarted(self.item_id, self._attempt, self._anchor_seq))

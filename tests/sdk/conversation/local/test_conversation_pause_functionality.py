@@ -11,10 +11,10 @@ Key requirements:
 
 import threading
 from collections.abc import Sequence
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
-from pydantic import SecretStr
+from pydantic import PrivateAttr, SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation, LocalConversation
@@ -24,9 +24,12 @@ from openhands.sdk.event import ActionEvent, MessageEvent, ObservationEvent, Pau
 from openhands.sdk.llm import (
     LLM,
     ImageContent,
+    LLMCallContext,
+    LLMResponse,
     Message,
     MessageToolCall,
     TextContent,
+    TokenCallbackType,
 )
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.testing import TestLLM
@@ -127,6 +130,44 @@ class BlockingTestTool(
                 executor=BlockingExecutor(step_entered),
             )
         ]
+
+
+class RepeatingTestLLM(TestLLM):
+    """A ``TestLLM`` that never exhausts: it repeats one scripted response.
+
+    The run loop consumes scripted responses far faster than the test thread can
+    observe them, so a finite script can be drained before ``pause()`` lands.
+    That turns the run into ``ERROR`` (``TestLLMExhaustedError``) instead of
+    ``PAUSED``. Repeating the response mirrors the infinite ``side_effect`` this
+    test used before it was migrated to ``TestLLM``, so the pause assertion stays
+    deterministic regardless of how many actions the loop emits first.
+    """
+
+    _template: Message = PrivateAttr()
+
+    def __init__(self, template: Message, **data: Any) -> None:
+        super().__init__(**data)
+        self._template = template
+
+    def completion(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        add_security_risk_prediction: bool = False,
+        on_token: TokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        if not self._scripted_responses:
+            self._scripted_responses.append(self._template)
+        return super().completion(
+            messages,
+            tools,
+            add_security_risk_prediction,
+            on_token,
+            call_context,
+            **kwargs,
+        )
 
 
 class TestPauseFunctionality:
@@ -335,22 +376,20 @@ class TestPauseFunctionality:
         register_tool("test_tool", blocking_tool)
 
         # LLM keeps emitting actions (no finish). The run pauses during the first
-        # one; extra responses only matter if pause stops working.
+        # one; the response repeats indefinitely so the loop cannot drain the
+        # script and fail with TestLLMExhaustedError before pause() takes effect.
         tool_call = MessageToolCall(
             id="call_loop",
             name="test_tool",
             arguments='{"command": "loop_forever"}',
             origin="completion",
         )
-        llm = TestLLM.from_messages(
-            [
-                Message(
-                    role="assistant",
-                    content=[TextContent(text="I'll execute loop_forever")],
-                    tool_calls=[tool_call],
-                )
-                for _ in range(10)
-            ],
+        llm = RepeatingTestLLM(
+            Message(
+                role="assistant",
+                content=[TextContent(text="I'll execute loop_forever")],
+                tool_calls=[tool_call],
+            ),
             model="gpt-4o-mini",
         )
         agent = Agent(
