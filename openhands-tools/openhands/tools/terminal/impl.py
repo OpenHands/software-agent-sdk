@@ -516,6 +516,12 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 )
                 self._export_envs(cmd_action, conversation, session=session)
                 observation = session.execute(cmd_action)
+                if observation.exit_code == -1 and not handle.terminal.closed:
+                    # The command did not finish and we did not close the
+                    # terminal. If it exited the shell, the pane (or the whole
+                    # tmux server) is gone and refresh() raises a recoverable
+                    # tmux error handled below.
+                    handle.terminal.pane.refresh()
 
                 if reset_text is not None:
                     observation = observation.model_copy(
