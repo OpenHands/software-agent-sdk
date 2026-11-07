@@ -5950,6 +5950,21 @@ class TestSetACPModel:
         assert kwargs["timeout"] == 42.0
 
 
+@pytest.mark.parametrize("model", ["gpt-5.5", "gpt-5.5/high"])
+def test_offered_codex_model_internal_error_stays_server_error(model):
+    agent = TestSetACPModel._wire(_make_agent(), "codex-acp", via_config_option=True)
+    agent._available_models = [ACPModelInfo(model_id="gpt-5.5")]
+    _agent_conn(agent).set_config_option.side_effect = ACPRequestError(
+        code=-32603, message="Internal error"
+    )
+    previous_model = agent.llm.model
+
+    with pytest.raises(ACPRequestError):
+        agent.set_acp_model(model)
+
+    assert agent.llm.model == previous_model
+
+
 # ---------------------------------------------------------------------------
 # acp_session_mode field
 # ---------------------------------------------------------------------------

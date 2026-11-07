@@ -4559,7 +4559,14 @@ class ACPAgent(AgentBase):
             # shows the id is not offered, that is the caller's error.
             if e.code in _RETRIABLE_SERVER_ERROR_CODES:
                 offered = {m.model_id for m in self._available_models or []}
-                if offered and model not in offered:
+                requested_model = (
+                    dict(_model_config_options(self._agent_name, model))[
+                        _MODEL_CONFIG_OPTION_ID
+                    ]
+                    if self._model_via_config_option
+                    else model
+                )
+                if offered and requested_model not in offered:
                     raise ValueError(
                         f"Model {model!r} is not offered by this ACP session "
                         f"(available: {', '.join(sorted(offered))}): {e}"
