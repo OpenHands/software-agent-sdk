@@ -14,7 +14,10 @@ from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import (
+    ConversationRunLimitExceeded,
+    EventService,
+)
 from openhands.agent_server.models import ConversationInfo, StoredConversation
 from openhands.agent_server.persistence import get_secrets_store
 from openhands.sdk import LLM, Agent, Conversation, Message, TextContent
@@ -101,7 +104,12 @@ def _session(request: httpx.Request) -> dict:
 
 @pytest.mark.parametrize(
     "method,suffix",
-    [("GET", ""), ("POST", "/realtime"), ("DELETE", "/realtime/rtc_fixture")],
+    [
+        ("GET", ""),
+        ("POST", "/realtime"),
+        ("POST", "/messages"),
+        ("DELETE", "/realtime/rtc_fixture"),
+    ],
 )
 def test_voice_requires_canvas_auth(voice_client, method, suffix):
     client, state, _, _ = voice_client
@@ -120,6 +128,43 @@ def test_voice_rejects_wrong_controller_and_missing_conversation(voice_client):
     assert client.post(f"{path}/realtime", json={"sdp": "v=0"}).status_code == 409
     service.get_conversation.return_value = None
     assert client.get(path).status_code == 404
+
+
+@pytest.mark.parametrize(
+    "refusal,status",
+    [
+        (ValueError("waiting_for_confirmation"), 409),
+        (ValueError("conversation_already_running"), 409),
+        (ValueError("error"), 409),
+        (ConversationRunLimitExceeded("full"), 429),
+        (ValueError("inactive_service"), 404),
+    ],
+)
+def test_voice_message_uses_idle_only_admission(voice_client, refusal, status):
+    client, state, service, _ = voice_client
+    events = service.get_event_service.return_value
+    path = f"/api/conversations/{state.id}/voice/messages"
+
+    response = client.post(path, json={"text": "Remember coral."})
+    assert response.status_code == 200
+    events.send_message_if_idle.assert_awaited_once()
+    (message,) = events.send_message_if_idle.await_args.args
+    assert message.role == "user"
+    assert message.content == [TextContent(text="Remember coral.")]
+    events.send_message.assert_not_awaited()
+
+    events.send_message_if_idle.side_effect = refusal
+    response = client.post(path, json={"text": "Remember coral."})
+    assert response.status_code == status
+    if status == 409:
+        assert response.json()["detail"] == str(refusal)
+
+    assert client.post(path, json={"text": "", "run": True}).status_code == 422
+    service.get_conversation.return_value = (
+        service.get_conversation.return_value.model_copy(update={"tags": {}})
+    )
+    assert client.post(path, json={"text": "Remember coral."}).status_code == 409
+    events.send_message.assert_not_awaited()
 
 
 def test_voice_missing_key_does_not_start_provider_call(voice_client, upstream):

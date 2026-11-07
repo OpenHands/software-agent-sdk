@@ -22,6 +22,7 @@ from openhands.agent_server.codex_voice import (
 )
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.event_service import ConversationRunLimitExceeded
 from openhands.agent_server.models import ConversationInfo, Success
 from openhands.agent_server.persistence import get_secrets_store
 from openhands.sdk.conversation.state import (
@@ -29,7 +30,7 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.event import ActionEvent, CondensationSummaryEvent, MessageEvent
-from openhands.sdk.llm import TextContent
+from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.tool.builtins.finish import FinishAction
 
 
@@ -80,6 +81,13 @@ class VoiceAvailability(BaseModel):
 class RealtimeOffer(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sdp: str = Field(min_length=1, max_length=200000)
+
+
+class VoiceMessage(BaseModel):
+    """A spoken request for the controller, delegated by the browser."""
+
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=100000)
 
 
 class RealtimeAnswer(BaseModel):
@@ -177,6 +185,44 @@ async def voice_availability(
         execution_status=execution_status,
         reason=None if key else "missing_openai_api_key",
     )
+
+
+@voice_router.post(
+    "/messages",
+    responses={
+        409: {"description": "Not idle (running or needs approval); not saved"},
+        429: {"description": "Server run capacity is full; not saved"},
+    },
+)
+async def send_voice_message(
+    conversation_id: UUID,
+    body: VoiceMessage,
+    service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Save a spoken request and run it, only while the controller is idle.
+
+    Voice never approves: running a conversation that waits for confirmation
+    would approve its pending actions. The idle check, the append and the run
+    start are one step on the server, so typed input that reaches a
+    confirmation after the browser's own check cannot be approved by this
+    request. A refused request is not saved; the 409 detail is
+    ``conversation_already_running``, ``waiting_for_confirmation`` or the
+    execution status.
+    """
+    await _insider(conversation_id, service)
+    event_service = await service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(404, "Conversation not found")
+    message = Message(role="user", content=[TextContent(text=body.text)])
+    try:
+        await event_service.send_message_if_idle(message)
+    except ValueError as exc:
+        if str(exc) == "inactive_service":
+            raise HTTPException(404, "Conversation not found") from exc
+        raise HTTPException(409, str(exc)) from exc
+    except ConversationRunLimitExceeded as exc:
+        raise HTTPException(429, "Server run capacity is full; not saved") from exc
+    return Success()
 
 
 @voice_router.post("/realtime")

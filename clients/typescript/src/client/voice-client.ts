@@ -83,6 +83,21 @@ export class VoiceClient {
     return response.data;
   }
 
+  /**
+   * Delegate a spoken request for a client-delegated (OpenAI) call. The server
+   * saves and runs it only while the controller is idle; otherwise it answers
+   * 409 (`waiting_for_confirmation`, `conversation_already_running`, or the
+   * status) and saves nothing, so Voice can never approve a pending action.
+   */
+  async sendMessage(conversationId: string, text: string, signal?: AbortSignal): Promise<Success> {
+    const response = await this.client.post<Success>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/voice/messages`,
+      { text },
+      { signal }
+    );
+    return response.data;
+  }
+
   /** Poll server-delegated Codex calls; OpenAI call state comes from WebRTC. */
   async getCallStatus(
     conversationId: string,

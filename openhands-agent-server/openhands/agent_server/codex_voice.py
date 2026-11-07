@@ -14,7 +14,10 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, ValidationError
 
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import (
+    ConversationRunLimitExceeded,
+    EventService,
+)
 from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import ActionEvent, MessageEvent
@@ -584,11 +587,32 @@ class CodexRelay:
         if self.closed or self.closing or self.status.status in ("closed", "error"):
             return "Voice call ended. Your request was not sent.", "request_not_sent"
         message = Message(role="user", content=[TextContent(text=request)])
-        submission = asyncio.create_task(self.events.send_message(message, run=True))
+        # Admission is atomic on the server: typed input can still start a run
+        # and stop at a confirmation after the check above, and running then
+        # would approve it. Refused requests are not saved.
+        submission = asyncio.create_task(self.events.send_message_if_idle(message))
         self.submissions.add(submission)
         submission.add_done_callback(self._submission_done)
-        # Ending speech must not split the accepted append-and-run operation.
-        await asyncio.shield(submission)
+        try:
+            # Ending speech must not split the accepted append-and-run operation.
+            await asyncio.shield(submission)
+        except ValueError as exc:
+            if str(exc) == "waiting_for_confirmation":
+                return (
+                    "Insider needs approval in its saved conversation. "
+                    "Your request was not sent.",
+                    "request_not_sent",
+                )
+            return (
+                "Insider is still working. Your new request was not sent.",
+                "request_not_sent",
+            )
+        except ConversationRunLimitExceeded:
+            return (
+                "The server is busy with other conversations. "
+                "Your request was not sent.",
+                "request_not_sent",
+            )
         logger.info("Codex Voice: request saved to Cat")
 
         def submitted_message_id() -> str | None:

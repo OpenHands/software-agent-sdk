@@ -12,6 +12,7 @@ each call; the default OpenAI broker uses the server's API key.
 Source: `openhands-agent-server/openhands/agent_server/voice_router.py`, `openhands-agent-server/openhands/agent_server/codex_voice.py`, `openhands-agent-server/openhands/agent_server/api.py`, `openhands-agent-server/openhands/agent_server/config.py`, `clients/typescript/src/client/voice-client.ts`
 
 Routes: `GET /api/conversations/{conversation_id}/voice`,
+`POST /api/conversations/{conversation_id}/voice/messages`,
 `POST /api/conversations/{conversation_id}/voice/realtime`,
 `GET /api/conversations/{conversation_id}/voice/realtime/{call_id}`,
 `DELETE /api/conversations/{conversation_id}/voice/realtime/{call_id}`
@@ -19,7 +20,7 @@ Routes: `GET /api/conversations/{conversation_id}/voice`,
 ## Sub-features
 
 - `F35.availability`: an idle Insider controller reports provider, delegation owner, model, execution status and run activity without starting a call; without an OpenAI key it reports a specific unavailable reason and `Cache-Control: no-store`.
-- `F35.auth`: all four Voice routes require the Agent Server session key, including call polling and deletion; rejected requests leave the controller's events unchanged.
+- `F35.auth`: all five Voice routes require the Agent Server session key, including call polling and deletion; rejected requests leave the controller's events unchanged.
 - `F35.controller-only`: an ordinary conversation, an Insider worker and a child conversation cannot acquire Voice; a top-level legacy Insider without `insiderrole` remains eligible.
 - `F35.not-found`: an unknown conversation is 404 on availability and creation, malformed conversation IDs are 422, and unknown calls are 404 on polling and deletion.
 - `F35.offer-validation`: an SDP offer must be a nonempty string of at most 200000 characters and have no extra fields; a refused offer appends no controller event.
@@ -31,7 +32,7 @@ Routes: `GET /api/conversations/{conversation_id}/voice`,
 - `F35.saved-context`: reopening Voice on an old or condensed controller uses its active saved history, including its condensation summary and final answers; abandoned branches and old instructions cannot become a new request.
 - `F35.delegation`: every accepted spoken request, including greetings and recall, produces one durable user message and one actual OpenHands run in the bound controller; verified terminal/file/API work precedes its spoken answer, and the full answer stays saved when speech is shortened.
 - `F35.handoff-integrity`: duplicate Codex handoff IDs do not run twice; conflicting, invalid, busy or unaccepted requests are identified as not sent, while accepted failures or uncertain outcomes are not reported as success or retried silently.
-- `F35.approval-boundary`: Voice never approves a pending tool and never treats a waiting, paused, error or timed-out controller as completed; the user can inspect and continue the same saved work through normal conversation controls.
+- `F35.approval-boundary`: Voice never approves a pending tool and never treats a waiting, paused, error or timed-out controller as completed; both brokers admit a request only through one server step that checks idle, saves and starts the run, so typed input that reaches a confirmation after Voice's own check is refused (`POST .../voice/messages` is 409 `waiting_for_confirmation`) with nothing saved; the user can inspect and continue the same saved work through normal conversation controls.
 - `F35.call-ownership-cleanup`: call IDs cannot be read or ended through another conversation; ending, losing polling or shutting down the server cleans up the call process and media, without splitting or cancelling an accepted append-and-run operation.
 
 ## How to get to it (agent POV)
@@ -103,6 +104,7 @@ EVENTS_BEFORE=$(control-agent-server api GET "/api/conversations/$CAT/events/cou
   for AUTH in none bad; do
     control-agent-server api GET "/api/conversations/$CAT/voice" --auth "$AUTH" --expect 401 --save F35.auth/availability
     control-agent-server api POST "/api/conversations/$CAT/voice/realtime" --json '{"sdp":"v=0"}' --auth "$AUTH" --expect 401 --save F35.auth/create
+    control-agent-server api POST "/api/conversations/$CAT/voice/messages" --json '{"text":"qa"}' --auth "$AUTH" --expect 401 --save F35.auth/message
     control-agent-server api GET "/api/conversations/$CAT/voice/realtime/qa-missing" --auth "$AUTH" --expect 401 --save F35.auth/poll
     control-agent-server api DELETE "/api/conversations/$CAT/voice/realtime/qa-missing" --auth "$AUTH" --expect 401 --save F35.auth/end
   done
@@ -263,6 +265,11 @@ EVENTS_BEFORE=$(control-agent-server api GET "/api/conversations/$CAT/events/cou
   exists until explicit approval through that conversation. Speech must not
   claim completion. Repeat with a failed or paused run; inspect its saved
   status and error instead of treating an acknowledgement as an answer.
+  The race itself is covered without audio: while that controller waits for
+  confirmation, `POST .../voice/messages` must return 409
+  `waiting_for_confirmation`, save no user message and leave the pending
+  action unexecuted (`tests/agent_server/test_voice_admission.py` drives the
+  typed-input race for both brokers against a real conversation).
 - **Binding and cleanup (`F35.call-ownership-cleanup`), blocked in API-only replay.**
   Prerequisite: two controllers and a live call. Poll and delete its call ID
   under the other controller: both must return 404 while the original call

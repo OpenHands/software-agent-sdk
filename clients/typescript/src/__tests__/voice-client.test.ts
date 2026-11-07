@@ -86,6 +86,32 @@ it('propagates a rejected call without retrying or switching providers', async (
   }
 });
 
+it('delegates a spoken request once and surfaces an approval refusal', async () => {
+  global.fetch = vi.fn().mockResolvedValue(
+    new Response(JSON.stringify({ detail: 'waiting_for_confirmation' }), {
+      status: 409,
+      headers: { 'content-type': 'application/json' },
+    })
+  );
+  const voice = new VoiceClient({ host: 'https://agent.example.test', apiKey: 'session-fixture' });
+  try {
+    await expect(voice.sendMessage('saved/cat', 'Remember coral.')).rejects.toMatchObject({
+      name: HttpError.name,
+      status: 409,
+      response: { detail: 'waiting_for_confirmation' },
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = vi.mocked(global.fetch).mock.calls[0];
+    expect(String(url)).toBe(
+      'https://agent.example.test/api/conversations/saved%2Fcat/voice/messages'
+    );
+    expect(init?.method).toBe('POST');
+    expect(JSON.parse(String(init?.body))).toEqual({ text: 'Remember coral.' });
+  } finally {
+    voice.close();
+  }
+});
+
 it('lets a caller cancel an outstanding status poll', async () => {
   global.fetch = vi.fn().mockImplementation(
     (_url: string, init: RequestInit) =>
