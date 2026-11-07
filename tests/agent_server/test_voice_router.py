@@ -337,6 +337,8 @@ def test_voice_restores_condensed_context_and_scopes_hangup(voice_client, upstre
     assert session["tools"][0]["name"] == "send_to_insider"
     prompt = session["instructions"]
     assert str(state.id) in prompt
+    # The user hears a short acknowledgement before the request is delegated.
+    assert "Before calling send_to_insider" in prompt and "Let me check." in prompt
     assert "The project is a cat dashboard." in prompt
     assert "The board is ready." in prompt and "Your saved result" in prompt
     assert "outdated private request" not in prompt

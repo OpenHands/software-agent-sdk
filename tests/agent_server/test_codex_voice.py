@@ -284,6 +284,8 @@ async def test_real_stdio_replay_binding_and_context(protocol, relay_events, tmp
             realtime["params"]["initialItems"][-1]["text"]
             == realtime["params"]["prompt"]
         )
+        assert "Before you delegate" in realtime["params"]["prompt"]
+        assert "Let me check." in realtime["params"]["prompt"]
         assert realtime["params"]["clientManagedHandoffs"] is True
         assert (
             len(
