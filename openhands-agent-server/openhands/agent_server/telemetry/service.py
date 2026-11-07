@@ -98,14 +98,23 @@ def _build_exporter(config: Config) -> TelemetryExporter | None:
     return None
 
 
-async def build_telemetry_sink(config: Config) -> TelemetrySink:
-    """Build the sink for ``config``, or a no-op if telemetry cannot run."""
+async def build_telemetry_sink(
+    config: Config, *, deferred_init: bool | None = None
+) -> TelemetrySink:
+    """Build the sink for ``config``, or a no-op if telemetry cannot run.
+
+    ``deferred_init`` overrides the runtime property of the same name, which
+    says whether the pod booted deferred. ``/api/init`` passes ``True``: its
+    merged config clears ``deferred_init`` because the pod is no longer dormant.
+    """
     global _telemetry_sink, _event_factory
 
     spec = config.telemetry
     _event_factory = DiagnosticEventFactory(
         runtime=build_runtime_properties(
-            deferred_init=config.deferred_init,
+            deferred_init=(
+                config.deferred_init if deferred_init is None else deferred_init
+            ),
             deployment_kind=spec.deployment_kind,
         ),
         salt=(

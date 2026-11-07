@@ -134,7 +134,7 @@ async def test_failed_init_emits_no_start_and_retry_emits_exactly_one(
 
 
 def _keep_sink(sink):
-    async def _build(_config):
+    async def _build(_config, **_kwargs):
         service_mod._telemetry_sink = sink
         return sink
 
@@ -143,3 +143,31 @@ def _keep_sink(sink):
 
 async def _noop_async(*_args, **_kwargs):
     return None
+
+
+async def test_initialized_deferred_pod_reports_deferred_init_true(tmp_path):
+    """Events from a pod that booted deferred must say so after /api/init.
+
+    The merged config clears ``deferred_init`` (the server is no longer
+    dormant), but the telemetry runtime property describes how the pod booted.
+    """
+    service_mod.reset_telemetry_sink()
+    _reset_singletons()
+    base = Config(
+        deferred_init=True,
+        conversations_path=tmp_path / "convs",
+        bash_events_dir=tmp_path / "bash",
+    )
+    app = SimpleNamespace(state=SimpleNamespace(config=base))
+    svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+    try:
+        result = await svc.initialize(InitRequest())
+        assert result.state == "ready"
+        assert app.state.config.deferred_init is False
+        factory = service_mod.get_event_factory()
+        assert factory is not None
+        assert factory.runtime.deferred_init is True
+    finally:
+        await svc.teardown()
+        _reset_singletons()
+        service_mod.reset_telemetry_sink()
