@@ -1,7 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import SecretStr
@@ -78,10 +78,11 @@ def _make_acp_conversation(tmp_path) -> tuple[LocalConversation, ACPAgent]:
     """
     agent = ACPAgent(acp_command=["echo", "test"], acp_model="model-a")
     agent._conn = MagicMock()
+    agent._conn.set_session_model = AsyncMock()
     agent._session_id = "sess-1"
     agent._agent_name = "codex-acp"
     executor = MagicMock()
-    executor.run_async = MagicMock()
+    executor.run_async = MagicMock(side_effect=lambda coro, **_: asyncio.run(coro))
     agent._executor = executor
     conv = LocalConversation(
         agent=agent,

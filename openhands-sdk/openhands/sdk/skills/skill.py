@@ -105,6 +105,7 @@ class SkillInfo(BaseModel):
     type: Literal["repo", "knowledge", "agentskills"]
     content: str
     triggers: list[str] = Field(default_factory=list)
+    paths: list[str] = Field(default_factory=list)
     source: str | None = None
     description: str | None = None
     is_agentskills_format: bool = False
@@ -819,6 +820,9 @@ class Skill(BaseModel):
             type=self.get_skill_type(),
             content=self.content,
             triggers=self.get_triggers(),
+            paths=list(self.trigger.paths)
+            if isinstance(self.trigger, PathTrigger)
+            else [],
             source=self.source,
             description=self.description,
             is_agentskills_format=self.is_agentskills_format,

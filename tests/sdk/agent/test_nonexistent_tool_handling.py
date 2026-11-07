@@ -181,9 +181,8 @@ def test_nonexistent_tool_error_includes_available_tools():
     assert "not found" in error_event.error
     assert "Available:" in error_event.error
 
-    # Should include built-in tools like 'finish' and 'think'
+    # Should include the default built-in tool 'finish'.
     assert "finish" in error_event.error
-    assert "think" in error_event.error
 
 
 def test_conversation_continues_after_tool_error():
