@@ -1,0 +1,8 @@
+Base: 9c3571a694547734002518bd94b3cb41a187f9b6
+Independent system grep reproduction, exit 1 (JSON excerpt):
+{"grep_available": true, "rg": null}
+{"case": "extended", "pattern": "^(foo|bar)+[0-9]{2}$", "expected": ["matching.txt"], "actual": [], "is_error": false, "passed": false}
+{"case": "escaped", "pattern": "^foo\\(bar\\)\\+$", "expected": ["matching.txt"], "actual": ["other.txt"], "is_error": false, "passed": false}
+
+Regression tests added before the production fix:
+3 failed, 51 deselected

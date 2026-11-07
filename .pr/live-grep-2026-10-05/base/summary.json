@@ -1,0 +1,68 @@
+{
+  "observed": [
+    {
+      "tool_call_id": "call_00_JufBAhmUXEZ3cGSwpju30002",
+      "observation": {
+        "content": [
+          {
+            "cache_prompt": false,
+            "type": "text",
+            "text": "No files found containing pattern '^(foo|bar)+[0-9]{2}$' in directory '/tmp/openhands-grep-live/fixtures/extended' (filtered by '*.txt')"
+          }
+        ],
+        "is_error": false,
+        "matches": [],
+        "pattern": "^(foo|bar)+[0-9]{2}$",
+        "search_path": "/tmp/openhands-grep-live/fixtures/extended",
+        "include_pattern": "*.txt",
+        "truncated": false,
+        "kind": "GrepObservation"
+      }
+    },
+    {
+      "tool_call_id": "call_01_qYRhNCwjYuF0oZ9PVT9W4063",
+      "observation": {
+        "content": [
+          {
+            "cache_prompt": false,
+            "type": "text",
+            "text": "Found 1 file(s) containing pattern '^foo\\(bar\\)\\+$' in '/tmp/openhands-grep-live/fixtures/escaped' (filtered by '*.txt'):\n/tmp/openhands-grep-live/fixtures/escaped/other.txt"
+          }
+        ],
+        "is_error": false,
+        "matches": [
+          "/tmp/openhands-grep-live/fixtures/escaped/other.txt"
+        ],
+        "pattern": "^foo\\(bar\\)\\+$",
+        "search_path": "/tmp/openhands-grep-live/fixtures/escaped",
+        "include_pattern": "*.txt",
+        "truncated": false,
+        "kind": "GrepObservation"
+      }
+    }
+  ],
+  "expected": {
+    "^(foo|bar)+[0-9]{2}$": [],
+    "^foo\\(bar\\)\\+$": [
+      "other.txt"
+    ]
+  },
+  "tool_calls": [
+    "grep",
+    "grep",
+    "finish"
+  ],
+  "final_status": "finished",
+  "finish_actions": [
+    {
+      "tool_call_id": "call_00_0LFx4HgZTEp4r6dEK7WN3927",
+      "llm_response_id": "c450ecf4-e7b4-44a2-b109-fa04d3617b48",
+      "message": "Both grep calls were run exactly as specified, with absolute paths and the `*.txt` filter.\n\n1) Extended subdirectory\n- Path: /tmp/openhands-grep-live/fixtures/extended\n- Pattern: `^(foo|bar)+[0-9]{2}$`\n- Result: No files found (empty result).\n\n2) Escaped subdirectory\n- Path: /tmp/openhands-grep-live/fixtures/escaped\n- Pattern: `^foo\\(bar\\)\\+$`\n- Result: 1 matching file:\n  - /tmp/openhands-grep-live/fixtures/escaped/other.txt\n\nThese are the literal filenames returned by the tool calls; no results were inferred from filenames."
+    }
+  ],
+  "conversation_errors": [],
+  "grep_fallbacks": [],
+  "validation_errors": [],
+  "matches_expected_revision_behavior": true,
+  "reported_cost_usd": 0.0022034159999999997
+}
