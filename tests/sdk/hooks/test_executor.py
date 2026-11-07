@@ -157,6 +157,22 @@ class TestHookExecutor:
         assert result.success
         assert result.stdout.strip() == "False"
 
+    def test_plugin_root_overrides_explicit_environment(
+        self, executor, sample_event, tmp_path
+    ):
+        plugin_root = tmp_path / "plugin root"
+        hook = HookDefinition(
+            command=python_command("import os; print(os.environ['PLUGIN_ROOT'])"),
+            plugin_root=str(plugin_root),
+        )
+
+        result = executor.execute(
+            hook, sample_event, env={"PLUGIN_ROOT": "inherited-root"}
+        )
+
+        assert result.success
+        assert result.stdout.strip() == str(plugin_root)
+
     def test_execute_timeout(self, executor, sample_event):
         """Test that timeout is enforced."""
         hook = HookDefinition(

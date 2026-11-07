@@ -296,6 +296,9 @@ Body.
         assert plugin.hooks is not None
         assert not plugin.hooks.is_empty()
         assert len(plugin.hooks.pre_tool_use) == 1
+        assert plugin.hooks.pre_tool_use[0].hooks[0].plugin_root == str(
+            plugin_dir.resolve()
+        )
 
     def test_load_plugin_binds_plugin_root_to_hooks(self, tmp_path: Path):
         """Every hook records the resolved plugin directory as its plugin root."""
