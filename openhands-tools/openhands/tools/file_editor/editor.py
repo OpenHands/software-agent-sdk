@@ -714,6 +714,11 @@ class FileEditor:
         if not path.exists() or not path.is_file():
             return
 
+        if not os.access(path, os.R_OK):
+            raise FileValidationError(
+                path=str(path), reason="File is not readable (permission denied)."
+            )
+
         # Check file size
         file_size = os.path.getsize(path)
         max_size = self._max_file_size
