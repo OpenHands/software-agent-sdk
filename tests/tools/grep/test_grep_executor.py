@@ -270,6 +270,19 @@ def test_ripgrep_pattern_cannot_inject_flags(tmp_path):
     assert observation.matches == []
 
 
+@pytest.mark.skipif(not _check_ripgrep_available(), reason="ripgrep not available")
+def test_ripgrep_regex_error_is_not_reported_as_no_match(tmp_path):
+    # Python's re accepts look-ahead, so the pattern passes validation, but
+    # ripgrep's default engine rejects it and exits with status 2.
+    (tmp_path / "a.txt").write_text("foobar\n")
+
+    observation = GrepExecutor(working_dir=str(tmp_path))(
+        GrepAction(pattern="foo(?=bar)")
+    )
+
+    assert [Path(m).name for m in observation.matches] == ["a.txt"]
+
+
 def test_grep_executor_concurrent():
     """Test that concurrent grep calls return correct results.
 

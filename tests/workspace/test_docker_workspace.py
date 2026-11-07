@@ -4,6 +4,7 @@ import gc
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
@@ -148,6 +149,27 @@ def test_cleanup_with_image_deletion(mock_docker_workspace):
     assert "rmi" in rmi_call_args
     assert "-f" in rmi_call_args
     assert "test:latest" in rmi_call_args
+
+
+def test_cleanup_from_log_thread_still_stops_container(mock_docker_workspace):
+    """__del__ may run cleanup() on the logs thread when it drops the last ref."""
+    workspace, mock_exec = mock_docker_workspace()
+    workspace._stop_logs = threading.Event()
+    errors: list[Exception] = []
+
+    def run_cleanup():
+        try:
+            workspace.cleanup()
+        except Exception as e:
+            errors.append(e)
+
+    workspace._logs_thread = threading.Thread(target=run_cleanup)
+    workspace._logs_thread.start()
+    workspace._logs_thread.join(timeout=5)
+
+    assert errors == []
+    stop_calls = [c.args[0] for c in mock_exec.call_args_list if "stop" in c.args[0]]
+    assert stop_calls == [["docker", "stop", "container_id_123"]]
 
 
 def test_docker_network(mock_docker_workspace):
@@ -387,3 +409,19 @@ def test_failed_health_check_stops_container(monkeypatch):
     del excinfo
     gc.collect()  # let __del__ run while execute_command is still faked
     assert stopped_during_startup
+
+
+def test_no_free_port_raises_runtime_error(monkeypatch):
+    """find_available_tcp_port() returns -1 when no port in range is free."""
+    monkeypatch.setattr(
+        "openhands.workspace.docker.workspace.find_available_tcp_port", lambda: -1
+    )
+    execute_command = MagicMock()
+    monkeypatch.setattr(
+        "openhands.workspace.docker.workspace.execute_command", execute_command
+    )
+
+    with pytest.raises(RuntimeError, match="Port -1 is not available"):
+        DockerWorkspace(server_image="test:latest")
+
+    execute_command.assert_not_called()
