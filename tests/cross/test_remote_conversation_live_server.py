@@ -702,6 +702,12 @@ def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
         snapshot_started.set()
         return original_snapshot()
 
+    original_initial_state = event_service._create_initial_state_sync
+
+    def traced_initial_state() -> tuple[ConversationStateUpdateEvent, int]:
+        snapshot_started.set()
+        return original_initial_state()
+
     def traced_compose_info_sync(*args, **kwargs):
         conversation_info_started.set()
         return original_compose_info_sync(*args, **kwargs)
@@ -726,6 +732,7 @@ def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
             attach_error.append(exc)
 
     event_service._create_state_update_event_sync = traced_snapshot
+    event_service._create_initial_state_sync = traced_initial_state
     conversation_service_module._compose_conversation_info_sync = (
         traced_compose_info_sync
     )
@@ -765,6 +772,7 @@ def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
         )
     finally:
         event_service._create_state_update_event_sync = original_snapshot
+        event_service._create_initial_state_sync = original_initial_state
         conversation_service_module._compose_conversation_info_sync = (
             original_compose_info_sync
         )
