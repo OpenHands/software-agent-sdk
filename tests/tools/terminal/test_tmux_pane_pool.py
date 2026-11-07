@@ -377,3 +377,48 @@ def test_first_terminal_shell_gets_fallback_locale(
         session.close()
 
     assert "ctype=C.UTF-8" in obs.text
+
+
+# -- clear_screen on inactive pooled panes ----------------------------------
+
+
+def _history_size(terminal) -> int:
+    output = terminal.pane.cmd("display-message", "-p", "#{history_size}").stdout
+    return int(output[0].strip()) if output and output[0].strip() else 0
+
+
+def _wait_until(predicate, timeout: float = 2.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_clear_screen_of_inactive_pane_does_not_touch_active_pane_scrollback(pool):
+    """Clearing an inactive pane must not erase the active pane's scrollback.
+
+    Each pooled pane lives in its own tmux window, and a chained
+    ``; clear-history`` is a separate tmux command that libtmux does not target.
+    Untargeted, it would run against the session's *active* pane -- so clearing an
+    inactive pane would drop an unrelated pane's scrollback while leaving its own.
+    """
+    active = pool.checkout()
+    inactive = pool.checkout()
+    pool._session.cmd("select-window", "-t", active.window.id)
+    assert _wait_until(lambda: pool._session.active_window.id == active.window.id)
+
+    active.send_keys("for i in $(seq 1 400); do echo ACTIVE_$i; done")
+    inactive.send_keys("for i in $(seq 1 400); do echo INACTIVE_$i; done")
+    assert _wait_until(lambda: _history_size(active) > 0)
+    assert _wait_until(lambda: _history_size(inactive) > 0)
+
+    inactive.clear_screen()
+
+    # The cleared pane lost its own scrollback...
+    assert _wait_until(lambda: _history_size(inactive) == 0)
+    assert "INACTIVE_1" not in inactive.read_screen()
+    # ...and the active pane kept all of its own.
+    assert _history_size(active) > 0
+    assert "ACTIVE_1" in active.read_screen()
