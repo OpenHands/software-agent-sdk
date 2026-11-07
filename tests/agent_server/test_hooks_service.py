@@ -4,7 +4,13 @@ import json
 import tempfile
 from pathlib import Path
 
-from openhands.agent_server.hooks_service import load_hooks
+import pytest
+
+from openhands.agent_server import hooks_service
+from openhands.agent_server.hooks_service import (
+    load_hooks,
+    load_hooks_with_errors,
+)
 
 
 class TestLoadProjectHooks:
@@ -260,3 +266,66 @@ class TestLoadHooks:
 
         assert result is not None
         assert [m.hooks[0].command for m in result.stop] == ["echo user"]
+
+
+class TestLoadHooksWithErrors:
+    """Tests for load_hooks_with_errors and error logging."""
+
+    def test_absent_and_empty_files_report_no_errors(self, tmp_path):
+        config, errors = load_hooks_with_errors(
+            project_dir=str(tmp_path), load_user_hooks=False
+        )
+        assert config is None
+        assert errors == []
+
+        hooks_file = tmp_path / ".openhands" / "hooks.json"
+        hooks_file.parent.mkdir(parents=True)
+        hooks_file.write_text("{}")
+
+        config, errors = load_hooks_with_errors(
+            project_dir=str(tmp_path), load_user_hooks=False
+        )
+        assert config is None
+        assert errors == []
+
+    def test_corrupt_project_file_surfaces_source_error(self, tmp_path, monkeypatch):
+        hooks_file = tmp_path / ".openhands" / "hooks.json"
+        hooks_file.parent.mkdir(parents=True)
+        hooks_file.write_text('{"PreToolUse": [invalid json}')
+
+        logged: list[tuple[str, bool]] = []
+        monkeypatch.setattr(
+            hooks_service.logger,
+            "error",
+            lambda msg, *args, **kwargs: logged.append(
+                (str(msg), bool(kwargs.get("exc_info")))
+            ),
+        )
+
+        config, errors = load_hooks_with_errors(
+            project_dir=str(tmp_path), load_user_hooks=False
+        )
+        assert config is None
+        assert len(errors) == 1
+        assert errors[0].source == "project"
+        assert errors[0].path == str(hooks_file)
+        assert errors[0].message
+        assert len(logged) == 1
+        assert str(hooks_file) in logged[0][0]
+        assert logged[0][1] is True
+
+    def test_corrupt_user_file_with_valid_project_file(self, tmp_path, monkeypatch):
+        user_dir = tmp_path / "user"
+        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(user_dir))
+        project = tmp_path / "project"
+        _write_hooks(project / ".openhands" / "hooks.json", "echo project")
+        user_dir.mkdir()
+        user_hooks = user_dir / "hooks.json"
+        user_hooks.write_text("{not json")
+
+        config, errors = load_hooks_with_errors(project_dir=str(project))
+        assert config is not None
+        assert [m.hooks[0].command for m in config.stop] == ["echo project"]
+        assert len(errors) == 1
+        assert errors[0].source == "user"
+        assert errors[0].path == str(user_hooks)
