@@ -46,6 +46,7 @@ Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`, `PO
 - `F30.chat-run-limit-429`: when `max_concurrent_runs` is full a new gateway conversation is refused with 429 and nothing is created; the same request succeeds once a slot is free.
 - `F30.chat-reuse-run-limit-429`: on a continued conversation a 429 also leaves nothing behind, so a client retry is safe.
 - `F30.chat-timeout-504`: a run longer than the fixed 120 s answers 504 `Agent run timed out`, and the run keeps going server-side.
+- `F30.idempotency-key`: a repeated Chat Completions or Responses request with the same `Idempotency-Key` returns the saved result without a second turn. A changed request or a request with an unknown outcome returns 409. The claim remains after a server restart.
 - `F30.responses-basic`: `POST /v1/responses` on a real model returns a completed `response` with one `output_text` message equal to the agent's final answer, echoes `instructions` and `metadata`, and puts the instructions in the system suffix.
 - `F30.responses-stateless-replay`: every responses call is a new conversation (the conversation header is ignored); replayed items become one user message wrapped in `<message role="...">` markers, and developer items go to the system suffix.
 - `F30.responses-errors`: `stream`, `store: true` and `previous_response_id` are 400 before anything else is checked, bad input is 400 or 422, an unknown model 404, and nothing is created.
@@ -59,8 +60,9 @@ Routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`, `PO
   `openai/router.py`). Request headers: `Authorization: Bearer <key>` or
   `X-Session-API-Key`, `X-OpenHands-ServerConversation-ID` (chat only),
   `X-OpenHands-Observability-Span-Name`, `-Tags`, `-Metadata` and
-  `-Parent-Span-Context`. Response header: `X-OpenHands-ServerConversation-ID`
-  on success only.
+  `-Parent-Span-Context`. Send `Idempotency-Key` to protect a resend.
+  `X-OpenHands-ServerConversation-ID` identifies a successful turn or a keyed
+  request with an unknown outcome.
 - OpenAI SDKs: `OpenAI(base_url=<server>/v1, api_key=<session key>)`, then
   `models.list()`, `chat.completions.create(...)` (and
   `.with_raw_response.create` to read the conversation header,
@@ -793,6 +795,38 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   The 504 arrives after 115 to 140 s with the reason in `exception`. The run
   is not cancelled: right after the 504 the conversation is still `running`
   on its single model call, so the bullet deletes it.
+- **Keyed resend (`F30.idempotency-key`).** Send each request twice with one
+  key. Each pair must return one result and create one conversation.
+
+  Requires: `F30.chat-basic`
+  ```sh
+  KEY=$(python3 -c 'import uuid; print(uuid.uuid4())')
+  CHAT='{"model":"openhands_deepseek-flash","messages":[{"role":"user","content":"QA_F30_KEY: reply with one short word and use no tools."}]}'
+  KCID=$(control-agent-server api POST /v1/chat/completions --auth bearer --timeout 180 \
+    --header "Idempotency-Key: $KEY" --json "$CHAT" --raw-out "$F30/keyed-chat-first.json" \
+    --expect 200 --print-header X-OpenHands-ServerConversation-ID)
+  control-agent-server api POST /v1/chat/completions --auth bearer --timeout 10 \
+    --header "Idempotency-Key: $KEY" --json "$CHAT" --raw-out "$F30/keyed-chat-second.json" --expect 200
+  python3 - "$F30/keyed-chat-first.json" "$F30/keyed-chat-second.json" <<'PY'
+  import json, sys
+  assert json.load(open(sys.argv[1])) == json.load(open(sys.argv[2]))
+  PY
+  control-agent-server api GET "/api/conversations/$KCID/events/search" --query source=user \
+    --query body=QA_F30_KEY --check items len-eq 1 --quiet
+  RKEY=$(python3 -c 'import uuid; print(uuid.uuid4())')
+  RESP='{"model":"openhands_deepseek-flash","input":"QA_F30_RKEY: reply with one short word and use no tools.","store":false}'
+  RCID=$(control-agent-server api POST /v1/responses --auth bearer --timeout 180 \
+    --header "Idempotency-Key: $RKEY" --json "$RESP" --raw-out "$F30/keyed-response-first.json" \
+    --expect 200 --print-header X-OpenHands-ServerConversation-ID)
+  control-agent-server api POST /v1/responses --auth bearer --timeout 10 \
+    --header "Idempotency-Key: $RKEY" --json "$RESP" --raw-out "$F30/keyed-response-second.json" --expect 200
+  python3 - "$F30/keyed-response-first.json" "$F30/keyed-response-second.json" <<'PY'
+  import json, sys
+  assert json.load(open(sys.argv[1])) == json.load(open(sys.argv[2]))
+  PY
+  control-agent-server api GET "/api/conversations/$RCID/events/search" --query source=user \
+    --query body=QA_F30_RKEY --check items len-eq 1 --quiet
+  ```
 - **Responses (`F30.responses-basic`).** One real-model call with
   instructions, metadata and an ignored client tool. `RID` names its
   conversation.

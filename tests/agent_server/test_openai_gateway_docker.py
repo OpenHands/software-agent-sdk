@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -169,6 +169,56 @@ async def test_h7m4_new_gateway_run_uses_isolated_docker_workspace(
         call(conversation_id),
     ]
     assert not registry.has_attached_sessions(conversation_id)
+
+
+@pytest.mark.asyncio
+async def test_docker_gateway_keyed_resend_does_not_repeat_inner_turn(
+    tmp_path, monkeypatch
+):
+    from fastapi import FastAPI
+
+    from openhands.agent_server.dependencies import get_conversation_service
+    from openhands.agent_server.openai.router import openai_router
+
+    config, registry, outer_service, start_request = _setup(tmp_path)
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / ".openhands"))
+    requests = []
+
+    async def start(body, *args, **kwargs):
+        return 200, {}, UUID(body["conversation_id"])
+
+    monkeypatch.setattr(gateway, "start_docker_conversation", start)
+    monkeypatch.setattr(
+        gateway,
+        "_conversation_request",
+        lambda *, request, config, conversation_id: start_request.model_copy(
+            update={"conversation_id": conversation_id}
+        ),
+    )
+    _mock_container(monkeypatch)
+    _inner_client(monkeypatch, requests, status_code=504)
+
+    app = FastAPI()
+    app.state.config = config
+    app.state.conversation_registry = registry
+    app.dependency_overrides[get_conversation_service] = lambda: outer_service
+    app.include_router(openai_router)
+    body = {
+        "model": "openhands_smoke",
+        "messages": [{"role": "user", "content": "Run once."}],
+    }
+    headers = {"Idempotency-Key": "docker-turn"}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        first = await client.post("/v1/chat/completions", headers=headers, json=body)
+        resend = await client.post("/v1/chat/completions", headers=headers, json=body)
+
+    assert first.status_code == 504
+    assert resend.status_code == 409
+    assert resend.headers["x-should-retry"] == "false"
+    UUID(resend.headers["X-OpenHands-ServerConversation-ID"])
+    assert len(requests) == 1
 
 
 @pytest.mark.asyncio
