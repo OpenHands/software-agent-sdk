@@ -92,6 +92,12 @@ class OpenAIAgentRunResult:
     usage: TokenUsage | None
 
 
+@dataclass(frozen=True)
+class PreparedGatewayRequest:
+    start_request: StartConversationRequest
+    user_content: list[TextContent | ImageContent]
+
+
 def _profile_name_from_model(model: str) -> str:
     if model.startswith(_MODEL_PREFIX) and len(model) > len(_MODEL_PREFIX):
         return model[len(_MODEL_PREFIX) :]
@@ -336,6 +342,47 @@ def _response_conversation_request(
         user_content=user_content,
         config=config,
         conversation_id=conversation_id,
+    )
+
+
+def prepare_chat_completion(
+    request: OpenAIChatCompletionRequest,
+    config: Config,
+    conversation_id: UUID | None,
+) -> PreparedGatewayRequest:
+    user_content = _content_to_sdk_parts(_latest_user_message(request.messages))
+    return PreparedGatewayRequest(
+        start_request=_conversation_request(
+            request=request, config=config, conversation_id=conversation_id
+        ),
+        user_content=user_content,
+    )
+
+
+def prepare_response(
+    request: OpenAIResponseRequest,
+    config: Config,
+    conversation_id: UUID | None,
+) -> PreparedGatewayRequest:
+    if request.stream:
+        raise HTTPException(400, "Streaming responses are not supported yet")
+    if request.store:
+        raise HTTPException(
+            400, "Persistent response storage (store=True) is not supported yet"
+        )
+    if request.previous_response_id:
+        raise HTTPException(
+            400, "previous_response_id is not supported; replay input items instead"
+        )
+    user_content = _response_user_content(request)
+    return PreparedGatewayRequest(
+        start_request=_response_conversation_request(
+            request=request,
+            user_content=user_content,
+            config=config,
+            conversation_id=conversation_id,
+        ),
+        user_content=user_content,
     )
 
 
@@ -747,6 +794,7 @@ async def run_chat_completion(
     reusable_conversation_id: UUID | None,
     observability_overrides: dict[str, object] | None = None,
     registry: DockerConversationRegistry | None = None,
+    prepared: PreparedGatewayRequest | None = None,
 ) -> OpenAIChatCompletionResult:
     if request.stream:
         # SSE streaming needs incremental agent-event forwarding; add it separately.
@@ -755,17 +803,15 @@ async def run_chat_completion(
             detail="Streaming chat completions are not supported yet",
         )
 
-    start_request = _conversation_request(
-        request=request,
-        config=config,
-        conversation_id=reusable_conversation_id,
+    prepared = prepared or prepare_chat_completion(
+        request, config, reusable_conversation_id
     )
+    start_request = prepared.start_request
     if observability_overrides:
         start_request = start_request.model_copy(update=observability_overrides)
-    user_message = _latest_user_message(request.messages)
     agent_result = await _run_agent(
         start_request=start_request,
-        user_content=_content_to_sdk_parts(user_message),
+        user_content=prepared.user_content,
         conversation_service=conversation_service,
         reusable_conversation_id=reusable_conversation_id,
         config=config,
@@ -803,41 +849,19 @@ async def run_response(
     conversation_service: ConversationService,
     observability_overrides: dict[str, object] | None = None,
     registry: DockerConversationRegistry | None = None,
+    conversation_id: UUID | None = None,
+    prepared: PreparedGatewayRequest | None = None,
 ) -> OpenAIResponseResult:
-    if request.stream:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Streaming responses are not supported yet",
-        )
-    if request.store:
-        # `store=True` promises server-side persistence retrievable through
-        # GET /v1/responses/{id}, which this gateway does not provide. Rejecting
-        # it is safer than silently returning a response no client can fetch.
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Persistent response storage (store=True) is not supported yet",
-        )
-    if request.previous_response_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="previous_response_id is not supported; replay input items instead",
-        )
-
-    user_content = _response_user_content(request)
-    start_request = _response_conversation_request(
-        request=request,
-        user_content=user_content,
-        config=config,
-        conversation_id=None,
-    )
+    prepared = prepared or prepare_response(request, config, conversation_id)
+    start_request = prepared.start_request
     if observability_overrides:
         start_request = start_request.model_copy(update=observability_overrides)
     created_at = time.time()
     agent_result = await _run_agent(
         start_request=start_request,
-        user_content=user_content,
+        user_content=prepared.user_content,
         conversation_service=conversation_service,
-        reusable_conversation_id=None,
+        reusable_conversation_id=conversation_id,
         config=config,
         registry=registry,
     )

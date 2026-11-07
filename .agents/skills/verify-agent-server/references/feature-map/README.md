@@ -10,7 +10,7 @@ recipe.
 
 Maintenance baseline: main@8ba966d1d3af49f08e04349c055009e1614b48d6 (2026-10-07). The first pass; the next maintenance pass starts from this commit, a pass proposes the next baseline in its PR, and merging that PR accepts it.
 
-The map has **951 sub-features**.
+The map has **953 sub-features**.
 
 ## Baseline preconditions
 
@@ -94,7 +94,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | F27 | [Hooks, sub-agents and tool catalogs](F27-hooks-subagents-tools.md) | hooks and sub-agent catalogs, blocking hooks in a conversation, the tool registry and catalog, client tools, forwarded agent definitions, custom tool modules | `POST /api/hooks`, `POST /api/sub-agents`, `GET /api/tools/`, `/api/tools/catalog` | llm, git, tmux, chromium | 32 |
 | F28 | [Canvas apps: install, catalog and backend lifecycle](F28-canvas-extensions.md) | Canvas app install, catalog, enable, uninstall, bundle and icon; backend approval, prepare, start, stop, logs, data, failure states, restart | `/api/canvas-extensions/install`, `/api/canvas-extensions/installed[/{name}][/backend...]` | git, node; launch `--env TZ=UTC` | 29 |
 | F29 | [Canvas App backend bridge (session, HTTP and WebSocket proxy)](F29-app-backend-bridge.md) | the app-backend bridge: session cookies, origin and host checks, proxied HTTP methods and WebSockets, revocation | `/app-backends/{name}/session`, `/app-backends/{name}[/{path}]`, `WS /app-backends/{name}[/{path}]` | git; launch `--canvas-ingress` | 29 |
-| F30 | [OpenAI-compatible gateway (/v1)](F30-openai-gateway.md) | the OpenAI-compatible gateway: models, chat completions (plain and streaming), responses, conversation reuse, usage, the official OpenAI SDK | `GET /v1/models`, `POST /v1/chat/completions`, `/v1/responses` | llm, tmux | 28 |
+| F30 | [OpenAI-compatible gateway (/v1)](F30-openai-gateway.md) | the OpenAI-compatible gateway: models, chat completions (plain and streaming), responses, conversation reuse, usage, the official OpenAI SDK | `GET /v1/models`, `POST /v1/chat/completions`, `/v1/responses` | llm, tmux | 29 |
 | F31 | [Persistence, restart recovery, leases and limits](F31-persistence-and-limits.md) | state that survives graceful and SIGKILL restarts, crash recovery, conversation ownership leases and takeover between servers, idle eviction, run capacity, config file vs environment precedence | behavior only: `restart`, `restart --hard`, a second server on shared storage | llm, tmux | 23 |
 | F32 | [Event webhooks and product telemetry](F32-webhooks-and-telemetry.md) | event webhooks (event batches, conversation updates, headers, buffering, flush, limits, retries) and product telemetry (off by default, exporter lifecycle, sanitized payloads, consent) | behavior only: `webhooks` / `OH_WEBHOOKS_*`, `OH_TELEMETRY_*` | llm; launch `--webhook-sink` | 30 |
 | F33 | [Python SDK remote client (RemoteConversation, RemoteWorkspace)](F33-sdk-remote-client.md) | the Python SDK in this checkout against the server: RemoteWorkspace commands, files, git and settings readers; RemoteConversation create, run, callbacks, streaming, reattach, fork, confirmation, pause, interrupt, stop hooks, client tools, completion logs | behavior only: `Workspace(host=...)`, `RemoteWorkspace`, `RemoteConversation` | llm, tmux, git | 43 |
