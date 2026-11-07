@@ -53,39 +53,69 @@ class TestRedactUrlParams:
         assert "apikey=" in result
         assert "q=hello" in result
 
-    def test_redacts_api_key_param(self):
-        url = "https://api.example.com/v1/data?api_key=sk-abc123&format=json"
+    @pytest.mark.parametrize(
+        ("url", "secret", "kept"),
+        [
+            pytest.param(
+                "https://api.example.com/v1/data?api_key=sk-abc123&format=json",
+                "sk-abc123",
+                "format=json",
+                id="api_key",
+            ),
+            pytest.param(
+                "https://example.com/callback?token=jwt_xyz&state=abc",
+                "jwt_xyz",
+                "state=abc",
+                id="token",
+            ),
+            pytest.param(
+                "https://example.com?secret=mysecret&other=value",
+                "mysecret",
+                "other=value",
+                id="secret",
+            ),
+            pytest.param(
+                "https://api.tavily.com/search?tavilyApiKey=tvly-abc123&query=test",
+                "tvly-abc123",
+                "query=test",
+                id="tavilyapikey",
+            ),
+            # 'x-api-key' contains 'KEY' so is_secret_key matches.
+            pytest.param(
+                "https://example.com?x-api-key=abc123&limit=10",
+                "abc123",
+                "limit=10",
+                id="x_api_key_via_pattern",
+            ),
+            pytest.param(
+                "https://example.com/page?apikey=secret#section",
+                "secret",
+                "#section",
+                id="url_with_fragment",
+            ),
+            # The non-sensitive value may be re-encoded, so only "hello" is checked.
+            pytest.param(
+                "https://example.com/path?q=hello%20world&apikey=secret%20value",
+                "secret",
+                "hello",
+                id="url_with_encoded_characters",
+            ),
+        ],
+    )
+    def test_redacts_sensitive_param(self, url: str, secret: str, kept: str):
         result = redact_url_params(url)
-        assert "sk-abc123" not in result
-        assert "format=json" in result
-
-    def test_redacts_token_param(self):
-        url = "https://example.com/callback?token=jwt_xyz&state=abc"
-        result = redact_url_params(url)
-        assert "jwt_xyz" not in result
-        assert "state=abc" in result
+        assert secret not in result
+        assert kept in result
 
     def test_redacts_access_token_param(self):
         url = "https://example.com/api?access_token=ghp_xxxx"
         result = redact_url_params(url)
         assert "ghp_xxxx" not in result
 
-    def test_redacts_secret_param(self):
-        url = "https://example.com?secret=mysecret&other=value"
-        result = redact_url_params(url)
-        assert "mysecret" not in result
-        assert "other=value" in result
-
     def test_redacts_key_param(self):
         url = "https://example.com?key=12345"
         result = redact_url_params(url)
         assert "12345" not in result
-
-    def test_redacts_tavilyapikey_param(self):
-        url = "https://api.tavily.com/search?tavilyApiKey=tvly-abc123&query=test"
-        result = redact_url_params(url)
-        assert "tvly-abc123" not in result
-        assert "query=test" in result
 
     # -- case-insensitive matching -----------------------------------------
 
@@ -107,13 +137,6 @@ class TestRedactUrlParams:
         assert "xyz" not in result
         assert "page=1" in result
 
-    def test_redacts_x_api_key_via_pattern(self):
-        """'x-api-key' contains 'KEY' so is_secret_key matches."""
-        url = "https://example.com?x-api-key=abc123&limit=10"
-        result = redact_url_params(url)
-        assert "abc123" not in result
-        assert "limit=10" in result
-
     # -- edge cases --------------------------------------------------------
 
     def test_no_query_params(self):
@@ -133,12 +156,6 @@ class TestRedactUrlParams:
         """Non-URL strings should be returned as-is (no crash)."""
         text = "not a url at all"
         assert redact_url_params(text) == text
-
-    def test_url_with_fragment(self):
-        url = "https://example.com/page?apikey=secret#section"
-        result = redact_url_params(url)
-        assert "secret" not in result
-        assert "#section" in result
 
     def test_url_with_port_and_path(self):
         url = "http://localhost:8080/api/v1?token=abc&debug=true"
@@ -174,13 +191,6 @@ class TestRedactUrlParams:
         assert "SECONDVAL" not in result
         assert "page=1" in result
 
-    def test_url_with_encoded_characters(self):
-        url = "https://example.com/path?q=hello%20world&apikey=secret%20value"
-        result = redact_url_params(url)
-        assert "secret" not in result
-        # The non-sensitive param value should be preserved (possibly re-encoded)
-        assert "hello" in result
-
 
 # ---------------------------------------------------------------------------
 # redact_url_credentials_in_text
@@ -200,17 +210,27 @@ class TestRedactUrlCredentialsInText:
             "fatal: unable to access 'https://****@github.com/o/r.git/': 403"
         )
 
-    def test_redacts_token_only_credential(self):
-        s = "Cloning https://ghp_supersecrettoken@github.com/o/r.git failed"
+    @pytest.mark.parametrize(
+        ("s", "secret", "redacted_url"),
+        [
+            pytest.param(
+                "Cloning https://ghp_supersecrettoken@github.com/o/r.git failed",
+                "ghp_supersecrettoken",
+                "https://****@github.com/o/r.git",
+                id="token_only_credential",
+            ),
+            pytest.param(
+                "warn http://user:pw@internal.example.com/x done",
+                "user:pw",
+                "http://****@internal.example.com/x",
+                id="http_scheme",
+            ),
+        ],
+    )
+    def test_redacts_embedded_credentials(self, s: str, secret: str, redacted_url: str):
         result = redact_url_credentials_in_text(s)
-        assert "ghp_supersecrettoken" not in result
-        assert "https://****@github.com/o/r.git" in result
-
-    def test_redacts_http_scheme(self):
-        s = "warn http://user:pw@internal.example.com/x done"
-        result = redact_url_credentials_in_text(s)
-        assert "user:pw" not in result
-        assert "http://****@internal.example.com/x" in result
+        assert secret not in result
+        assert redacted_url in result
 
     def test_redacts_mixed_case_scheme(self):
         s = "HTTPS://user:token@github.com/o/r.git"
@@ -230,26 +250,25 @@ class TestRedactUrlCredentialsInText:
         assert "p%40ss" not in result
         assert "https://****@github.com/repo.git" in result
 
-    def test_leaves_credential_free_url_untouched(self):
-        s = "Cloning https://github.com/owner/repo.git into ./repo"
+    @pytest.mark.parametrize(
+        "s",
+        [
+            pytest.param(
+                "Cloning https://github.com/owner/repo.git into ./repo",
+                id="credential_free_url",
+            ),
+            # An '@' after a path segment is not userinfo.
+            pytest.param(
+                "see https://github.com/owner/repo/blob/main/x@v1.txt",
+                id="at_sign_in_path",
+            ),
+            pytest.param("remote git@github.com:owner/repo.git fetched", id="ssh_url"),
+            pytest.param("", id="empty_string"),
+            pytest.param("nothing to redact here", id="no_url_string"),
+        ],
+    )
+    def test_leaves_text_untouched(self, s: str):
         assert redact_url_credentials_in_text(s) == s
-
-    def test_does_not_match_at_sign_in_path(self):
-        """An '@' after a path segment is not userinfo and must be left alone."""
-        s = "see https://github.com/owner/repo/blob/main/x@v1.txt"
-        assert redact_url_credentials_in_text(s) == s
-
-    def test_leaves_ssh_url_untouched(self):
-        s = "remote git@github.com:owner/repo.git fetched"
-        assert redact_url_credentials_in_text(s) == s
-
-    def test_empty_string(self):
-        assert redact_url_credentials_in_text("") == ""
-
-    def test_no_url_string(self):
-        assert redact_url_credentials_in_text("nothing to redact here") == (
-            "nothing to redact here"
-        )
 
     def test_matches_whole_url_like_anchored_helper(self):
         """For a bare whole-URL string both helpers agree."""

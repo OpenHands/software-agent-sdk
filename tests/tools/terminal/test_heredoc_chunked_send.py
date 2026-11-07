@@ -42,58 +42,32 @@ EOF
 python3 /tmp/test_script.py"""
 
 
-def test_short_heredoc_works(terminal: SubprocessTerminal):
-    """Test that short heredocs (under threshold) work."""
+@pytest.mark.parametrize(
+    ("num_lines", "timeout", "expected_line"),
+    [
+        pytest.param(5, 10, "Line 4", id="short"),
+        # Over the _MULTILINE_THRESHOLD of 20, so sent in chunks.
+        pytest.param(50, 30, "Line 49", id="long"),
+        # Hangs without the chunked-send fix.
+        pytest.param(100, 60, "Line 99", id="very_long"),
+    ],
+)
+def test_heredoc_works(
+    terminal: SubprocessTerminal, num_lines: int, timeout: int, expected_line: str
+):
     terminal.clear_screen()
     time.sleep(0.1)
 
-    # 5 lines is well under the threshold
-    cmd = create_heredoc_command(5)
+    cmd = create_heredoc_command(num_lines)
     terminal.send_keys(cmd)
 
     # Wait for completion
     start_time = time.time()
-    while terminal.is_running() and time.time() - start_time < 10:
+    while terminal.is_running() and time.time() - start_time < timeout:
         time.sleep(0.1)
 
     output = terminal.read_screen()
-    assert "Line 4" in output
-
-
-def test_long_heredoc_works(terminal: SubprocessTerminal):
-    """Test that long heredocs (over threshold) work with chunked sending."""
-    terminal.clear_screen()
-    time.sleep(0.1)
-
-    # 50 lines is over the _MULTILINE_THRESHOLD of 20
-    cmd = create_heredoc_command(50)
-    terminal.send_keys(cmd)
-
-    # Wait for completion
-    start_time = time.time()
-    while terminal.is_running() and time.time() - start_time < 30:
-        time.sleep(0.1)
-
-    output = terminal.read_screen()
-    assert "Line 49" in output
-
-
-def test_very_long_heredoc_works(terminal: SubprocessTerminal):
-    """Test that very long heredocs work with chunked sending."""
-    terminal.clear_screen()
-    time.sleep(0.1)
-
-    # 100 lines - this would hang without the fix
-    cmd = create_heredoc_command(100)
-    terminal.send_keys(cmd)
-
-    # Wait for completion
-    start_time = time.time()
-    while terminal.is_running() and time.time() - start_time < 60:
-        time.sleep(0.1)
-
-    output = terminal.read_screen()
-    assert "Line 99" in output
+    assert expected_line in output
 
 
 def test_multiline_threshold_boundary(terminal: SubprocessTerminal):
