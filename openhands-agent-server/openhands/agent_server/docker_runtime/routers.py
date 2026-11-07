@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
@@ -41,11 +42,14 @@ from openhands.agent_server.models import (
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.agent_server.utils import safe_rmtree
 from openhands.sdk.conversation.request import ConversationContainerOptions
+from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
+from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, ResolvedLaunch
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.workspace import LocalWorkspace
 
 
 logger = get_logger(__name__)
@@ -95,9 +99,16 @@ async def _proxy_with_session(
     from being evicted while a client is still reading from it.
     """
     registry.attach_session(conversation_id)
+    release = registry.acquire_lease(conversation_id)
+
+    detached = False
 
     async def detach() -> None:
-        registry.detach_session(conversation_id)
+        nonlocal detached
+        if not detached:
+            detached = True
+            release()
+            registry.detach_session(conversation_id)
 
     try:
         return await proxy_http(
@@ -128,6 +139,26 @@ async def start_conversation(
         raise HTTPException(400, "Invalid JSON body") from exc
     if not isinstance(body, dict):
         raise HTTPException(422, "Expected a JSON object")
+    status_code, content, conversation_id = await start_docker_conversation(
+        body,
+        get_registry(request),
+        include_skills=include_skills,
+    )
+    if status_code < 400:
+        await get_conversation_service(request).refresh_persisted_conversation(
+            conversation_id
+        )
+    return JSONResponse(content=content, status_code=status_code)
+
+
+async def start_docker_conversation(
+    body: dict[str, Any],
+    registry: DockerConversationRegistry,
+    *,
+    include_skills: bool = False,
+) -> tuple[int, Any, UUID]:
+    """Start a Docker conversation through the same path as the REST route."""
+    body = body.copy()
     if body.pop("conversation_runtime", None) not in (None, "docker"):
         raise HTTPException(422, "This server only runs docker conversations")
 
@@ -149,7 +180,6 @@ async def start_conversation(
     body["conversation_id"] = str(conversation_id)
     body["workspace"] = {"kind": "LocalWorkspace", "working_dir": "/workspace"}
 
-    registry = get_registry(request)
     # Only a conversation the container already created is left alone on
     # failure; a manifest from a failed earlier start is retried like a new one.
     try:
@@ -158,12 +188,38 @@ async def start_conversation(
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    release = None
     try:
-        payload, launched, options = await _prepare_forward(
+        payload, launched, options, worktree = await _prepare_forward(
             body, registry, existing=existing
         )
         identity = registry.provisioning.create(conversation_id, host_workspace)
         updates: dict[str, Any] = {}
+        if worktree:
+            try:
+                validate_git_repository(identity.workspace_path)
+                repo_root = Path(
+                    run_git_command(
+                        ["git", "--no-pager", "rev-parse", "--show-toplevel"],
+                        identity.workspace_path,
+                    )
+                ).resolve()
+                git_common_dir = Path(
+                    run_git_command(
+                        ["git", "--no-pager", "rev-parse", "--git-common-dir"],
+                        identity.workspace_path,
+                    )
+                )
+                if not git_common_dir.is_absolute():
+                    git_common_dir = identity.workspace_path / git_common_dir
+                git_common_dir = git_common_dir.resolve()
+            except (GitCommandError, GitRepositoryError):
+                pass
+            else:
+                updates.update(
+                    worktree_repository_path=repo_root,
+                    worktree_git_common_dir_path=git_common_dir,
+                )
         if launched is not None and identity.launched_agent_profile is None:
             updates["launched_agent_profile"] = launched
         # Fixed once the container accepted the conversation; until then a
@@ -174,12 +230,18 @@ async def start_conversation(
             identity = identity.model_copy(update=updates)
             registry.provisioning.save(identity)
         container = await registry.get_or_create(conversation_id)
+        release = registry.acquire_lease(conversation_id)
+        forwarded = await asyncio.to_thread(payload, identity.cipher)
+        if worktree and identity.worktree_repository_path is not None:
+            forwarded["workspace"] = LocalWorkspace(
+                working_dir=identity.workspace_path
+            ).model_dump(mode="json")
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(
                 f"{container.host}/api/conversations",
                 params={"include_skills": include_skills},
                 headers={"X-Session-API-Key": container.api_key},
-                json=await asyncio.to_thread(payload, identity.cipher),
+                json=forwarded,
             )
     except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as exc:
         raise launch_http_exception(exc) from exc
@@ -196,17 +258,16 @@ async def start_conversation(
             await registry.stop(conversation_id)
         logger.exception("Could not create conversation container")
         raise HTTPException(502, "Could not create conversation container") from exc
+    finally:
+        if release is not None:
+            release()
 
     content = response.json() if response.content else None
     if response.is_error:
         if not existing:
             await registry.stop(conversation_id)
         content = {"detail": "Conversation runtime rejected the request"}
-    else:
-        await get_conversation_service(request).refresh_persisted_conversation(
-            conversation_id
-        )
-    return JSONResponse(content=content, status_code=response.status_code)
+    return response.status_code, content, conversation_id
 
 
 async def _prepare_forward(
@@ -215,6 +276,7 @@ async def _prepare_forward(
     Callable[[Cipher], dict[str, Any]],
     LaunchedAgentProfile | None,
     ConversationContainerOptions | None,
+    bool,
 ]:
     """Resolve the start request with this host's stores; the container finalizes.
 
@@ -251,7 +313,7 @@ async def _prepare_forward(
         )
 
     launched = source.profile if isinstance(source, ResolvedLaunch) else None
-    return payload, launched, start.container
+    return payload, launched, start.container, start.worktree
 
 
 @docker_conversation_router.get(
@@ -321,12 +383,18 @@ async def delete_conversation(conversation_id: UUID, request: Request) -> Respon
     # partially deleted state.
     try:
         await registry.stop(conversation_id)
-        registry.provisioning.manifest_path(conversation_id).unlink(missing_ok=True)
-        registry.archived_marker(conversation_id).unlink(missing_ok=True)
+        try:
+            await asyncio.to_thread(registry.cleanup_worktree, conversation_id)
+        except (OSError, subprocess.SubprocessError):
+            logger.exception(
+                "Could not clean up conversation worktree %s", conversation_id
+            )
         await asyncio.to_thread(
             safe_rmtree, registry.provisioning.runtime_dir(conversation_id)
         )
         await asyncio.to_thread(safe_rmtree, registry.conversation_dir(conversation_id))
+        registry.provisioning.manifest_path(conversation_id).unlink(missing_ok=True)
+        registry.archived_marker(conversation_id).unlink(missing_ok=True)
         await get_conversation_service(request).refresh_persisted_conversation(
             conversation_id
         )
@@ -452,6 +520,7 @@ async def _proxy_socket(
     except HTTPException as exc:
         await websocket.close(code=1008 if exc.status_code == 404 else 1011)
         return
+    release = registry.acquire_lease(conversation_id)
     query = strip_auth_query("?" + websocket.url.query).lstrip("?")
     path = f"/sockets/{socket_name}/{conversation_id}"
     # Hold the attachment for the whole bridge lifetime so the idle-eviction
@@ -464,6 +533,8 @@ async def _proxy_socket(
             upstream_path=f"{path}?{query}" if query else path,
         )
     finally:
+        if release is not None:
+            release()
         registry.detach_session(conversation_id)
         await websocket.app.state.conversation_service.refresh_persisted_conversation(
             conversation_id

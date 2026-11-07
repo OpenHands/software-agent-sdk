@@ -188,40 +188,64 @@ def test_fuzz_matching_trailing_spaces(tmp_ws: Path):
     assert fp.read_text() == "a\ncontext line   \nEND\n"
 
 
-def test_delete_missing_file_expected_differror(tmp_ws: Path):
-    """Delete of a missing file should surface as a structured DiffError.
-
-    The reference implementation would bubble a FileNotFoundError from
-    load_files/open_fn; our SDK adapts this by converting it into a
-    "Delete File Error: Missing File" DiffError so the tool can return a
-    clean error observation instead of crashing.
-    """
-    patch = "*** Begin Patch\n*** Delete File: missing.txt\n*** End Patch"
+@pytest.mark.parametrize(
+    ("patch", "expected_message"),
+    [
+        # The reference implementation bubbles a FileNotFoundError here; the SDK
+        # converts it into a DiffError so the tool returns an error observation.
+        pytest.param(
+            "*** Begin Patch\n*** Delete File: missing.txt\n*** End Patch",
+            "Missing File",
+            id="delete_missing_file",
+        ),
+        pytest.param(
+            "*** Begin Patch\n"
+            "*** Add File: dup.txt\n"
+            "+one\n"
+            "*** Add File: dup.txt\n"
+            "+two\n"
+            "*** End Patch",
+            "Add File Error: Duplicate Path",
+            id="duplicate_add_file",
+        ),
+        pytest.param(
+            "*** Begin Patch\n*** Add File: ../escape.txt\n+x\n*** End Patch",
+            "Absolute or escaping paths",
+            id="path_escape_with_parent_directory",
+        ),
+    ],
+)
+def test_invalid_patch_returns_error(tmp_ws: Path, patch: str, expected_message: str):
     obs = run_exec(tmp_ws, patch)
-    # Intentionally assert the idealized behavior we *would* like to see.
+    assert obs.is_error
+    assert expected_message in obs.text
+
+
+def test_update_missing_file_error_names_update(tmp_ws: Path):
+    patch = "*** Begin Patch\n*** Update File: missing.txt\n@@\n-a\n+b\n*** End Patch"
+    obs = run_exec(tmp_ws, patch)
+
     assert obs.is_error
     assert "Missing File" in obs.text
+    assert "Delete File" not in obs.text
 
 
-def test_duplicate_add_file_error(tmp_ws: Path):
-    patch = (
-        "*** Begin Patch\n"
-        "*** Add File: dup.txt\n"
-        "+one\n"
-        "*** Add File: dup.txt\n"
-        "+two\n"
-        "*** End Patch"
-    )
+def test_update_non_utf8_file_returns_error_observation(tmp_ws: Path):
+    fp = tmp_ws / "latin1.txt"
+    fp.write_bytes("café\n".encode("latin-1"))
+    patch = "*** Begin Patch\n*** Update File: latin1.txt\n@@\n-caf\n+x\n*** End Patch"
     obs = run_exec(tmp_ws, patch)
+
     assert obs.is_error
-    assert "Add File Error: Duplicate Path" in obs.text
+    assert fp.read_bytes() == "café\n".encode("latin-1")
 
 
-def test_path_escape_with_parent_directory(tmp_ws: Path):
-    patch = "*** Begin Patch\n*** Add File: ../escape.txt\n+x\n*** End Patch"
+def test_update_directory_returns_error_observation(tmp_ws: Path):
+    (tmp_ws / "sub").mkdir()
+    patch = "*** Begin Patch\n*** Update File: sub\n@@\n-a\n+b\n*** End Patch"
     obs = run_exec(tmp_ws, patch)
+
     assert obs.is_error
-    assert "Absolute or escaping paths" in obs.text
 
 
 def test_reject_sibling_prefix_path_escape(tmp_path: Path):

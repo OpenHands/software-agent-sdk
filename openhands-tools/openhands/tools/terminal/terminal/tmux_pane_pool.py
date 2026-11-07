@@ -26,6 +26,7 @@ from openhands.tools.terminal.constants import (
 )
 from openhands.tools.terminal.env import (
     build_terminal_env,
+    ensure_utf8_locale,
     normalize_terminal_env,
 )
 from openhands.tools.terminal.terminal.process_priority import (
@@ -123,6 +124,8 @@ class TmuxPanePool:
         if self._initialized:
             return
 
+        # Before building env, so the shells get the same locale as tmux.
+        ensure_utf8_locale()
         env = build_terminal_env(self.env)
         session_name = f"openhands-pool-{self.username}-{uuid.uuid4()}"
         # Stale handles must not reach another pool after tmux restarts.
