@@ -48,12 +48,7 @@ class MetaProfileLoader(Protocol):
 
 @dataclass(frozen=True, kw_only=True)
 class LaunchStores:
-    """The stores a launch reads, as seen by the process that holds them.
-
-    ``llm_profiles`` decrypts what it loads: a file-backed
-    :class:`~openhands.sdk.llm.llm_profile_store.LLMProfileStore` is bound to
-    its cipher at construction, so no launch can load a profile without it.
-    """
+    """The stores a launch reads, as seen by the process that holds them."""
 
     llm_profiles: LLMProfileLoader
     mcp_config: Mapping[str, MCPServer]

@@ -1060,11 +1060,8 @@ def get_llm_profile_store(cipher: Cipher | None) -> LLMProfileStore:
     config directory (never workspace-relative). See
     :func:`_get_profile_persistence_dir`.
 
-    ``cipher`` is required so every caller states it: profiles are encrypted
-    at rest under the server key, and a store without it would hand the
-    ciphertext to the provider as the API key (#4558). The singleton itself
-    holds no cipher; each caller gets a cheap view bound to its own, so a
-    config replaced by ``/api/init`` is never shadowed by the first caller's.
+    ``cipher`` is required so no caller can forget it (#4558); each call gets
+    a view bound to its own, so ``/api/init`` never sees a stale one.
     """
     global _llm_profile_store
     if _llm_profile_store is not None:
