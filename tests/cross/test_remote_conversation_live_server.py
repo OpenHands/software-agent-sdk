@@ -702,7 +702,6 @@ def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
         snapshot_started.set()
         return original_snapshot()
 
-    # The subscribe path takes the lock here, before the snapshot itself.
     original_initial_state = event_service._create_initial_state_sync
 
     def traced_initial_state() -> tuple[ConversationStateUpdateEvent, int]:

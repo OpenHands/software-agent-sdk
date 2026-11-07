@@ -182,13 +182,7 @@ class _SessionSubscriber(Subscriber[Event]):
     events: EventLog
 
     _buffer: list[Event] | None = field(default_factory=list, init=False)
-    # Highest seq replay sent from disk. Live events at or below it are
-    # duplicates: one persisted before the mark can still be published after
-    # go_live, since the run thread schedules its fan-out after the append.
     _through_seq: int | None = field(default=None, init=False)
-    # Event-log length the connect snapshot reflects (taken under the same
-    # state lock). Replay reads exactly this far, so it never sends state
-    # newer than the snapshot that follows it.
     snapshot_log_length: int | None = field(default=None, init=False)
     _snapshot_id: str | None = field(default=None, init=False)
 
@@ -209,7 +203,7 @@ class _SessionSubscriber(Subscriber[Event]):
             and self._through_seq is not None
             and seq <= self._through_seq
         ):
-            return  # already sent from disk during replay
+            return
         frame: SessionFrameBase = (
             TransientFrame(event=event)
             if seq is None
@@ -239,17 +233,9 @@ class _SessionSubscriber(Subscriber[Event]):
         return self.events.get_seq(idx)
 
     async def on_initial_state(self, event: Event, log_length: int | None) -> None:
-        # Buffered in arrival order like any event; remembered so go_live can
-        # keep events newer than it after it.
         self.snapshot_log_length = log_length
         self._snapshot_id = event.id
         await self(event)
-
-    async def close(self) -> None:
-        # The conversation is closing (delete, eviction, shutdown): end the
-        # connection instead of leaving the client on a socket that will never
-        # carry another event.
-        self.writer._fail("conversation_closed")
 
     def _index_of(self, event: Event) -> int | None:
         try:
@@ -258,12 +244,7 @@ class _SessionSubscriber(Subscriber[Event]):
             return None
 
     def _order_around_snapshot(self, buffered: list[Event]) -> list[Event]:
-        """Move events the snapshot does not reflect to after it.
-
-        An event appended after the snapshot was taken can be published before
-        the snapshot reaches this buffer; sent first, the older snapshot would
-        overwrite the state it carries.
-        """
+        """Move buffered events newer than the connect snapshot to after it."""
         limit = self.snapshot_log_length
         pos = next(
             (i for i, e in enumerate(buffered) if e.id == self._snapshot_id), None
@@ -428,8 +409,8 @@ async def session_socket(
         )
         return
     except Exception:
-        # This lands before the try/finally below, so clean up the writer and
-        # socket here; subscribe_to_events already dropped its registration.
+        # subscribe_to_events registers before it can fail, and this lands
+        # before the try/finally below, so clean up the writer and socket here.
         logger.exception("session_socket_subscribe_failed: %s", conversation_id)
         await writer.aclose()
         await _safe_close_websocket(websocket, code=1011, reason="subscribe_failed")
@@ -446,9 +427,6 @@ async def session_socket(
             # losing progress only costs it the live typing effect.
             logger.warning("session_socket_progress_limit: %s", conversation_id)
 
-        # Replay up to what the connect snapshot reflects; anything later is
-        # in the buffer, after the snapshot. Fall back to the current length
-        # only if the snapshot push timed out.
         length = subscriber.snapshot_log_length
         if length is None:
             length = len(events)
@@ -477,8 +455,6 @@ async def session_socket(
         await writer.aclose()
         if writer.drop_reason in ("slow_consumer", "frame_too_large"):
             await _safe_close_websocket(websocket, code=1013, reason=writer.drop_reason)
-        elif writer.drop_reason == "conversation_closed":
-            await _safe_close_websocket(websocket, code=1001, reason=writer.drop_reason)
         logger.info(
             "session_socket_closed: %s reason=%s", conversation_id, writer.drop_reason
         )

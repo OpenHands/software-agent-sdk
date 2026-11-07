@@ -181,10 +181,6 @@ async def test_replay_and_live_do_not_interleave_or_duplicate():
 
 @pytest.mark.asyncio
 async def test_event_persisted_before_mark_but_published_after_go_live():
-    """The run thread appends an event, then schedules its fan-out. The mark
-    can be read in between, so replay sends the event from disk and its live
-    publish arrives after go_live. It must not be sent twice.
-    """
     ws, log = _FakeWebSocket(), _FakeEventLog()
     history = [_msg(f"h{i}") for i in range(3)]
     for e in history:
@@ -197,7 +193,7 @@ async def test_event_persisted_before_mark_but_published_after_go_live():
     through_seq = len(log) - 1
     assert await _replay(log, 0, through_seq + 1, writer)  # type: ignore[arg-type]
     sub.go_live(through_seq)
-    await sub(history[2])  # late publish of an already-replayed event
+    await sub(history[2])
     live = _msg("live")
     log.add(live)
     await sub(live)
@@ -205,7 +201,7 @@ async def test_event_persisted_before_mark_but_published_after_go_live():
     await writer.aclose()
 
     frames = ws.frames()
-    assert [f["seq"] for f in frames] == [0, 1, 2, 3], "no duplicates"
+    assert [f["seq"] for f in frames] == [0, 1, 2, 3]
 
 
 @pytest.mark.asyncio

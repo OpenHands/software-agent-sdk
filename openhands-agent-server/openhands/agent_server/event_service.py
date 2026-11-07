@@ -838,16 +838,10 @@ class EventService:
     def _create_initial_state_sync(
         self,
     ) -> tuple[ConversationStateUpdateEvent, int]:
-        """A snapshot plus the event-log length it reflects, under one lock hold.
-
-        A replaying socket reads up to this length from disk; events past it
-        reach the subscriber live, after the snapshot. Reading the length
-        separately could replay state newer than the snapshot it then sends.
-        """
         if not self._conversation:
             raise ValueError("inactive_service")
         state = self._conversation._state
-        with state:  # reentrant: the snapshot takes it again
+        with state:
             return self._create_state_update_event_sync(), len(state.events)
 
     async def _create_state_update_event(self) -> ConversationStateUpdateEvent:
@@ -1030,13 +1024,10 @@ class EventService:
 
     async def subscribe_to_events(self, subscriber: Subscriber[Event]) -> UUID:
         subscriber_id = self._pub_sub.subscribe(subscriber)
-        # The caller only learns the id on success, so any failure below must
-        # drop the registration here or it holds a subscriber slot forever.
         try:
             # Send current state to the new subscriber immediately.
             # The snapshot is created in a worker thread so waiting on the
-            # conversation's synchronous FIFOLock cannot block the server
-            # event loop.
+            # conversation's synchronous FIFOLock cannot block the server event loop.
             log_length: int | None = None
             if self._conversation:
                 loop = asyncio.get_running_loop()
@@ -1574,9 +1565,6 @@ class EventService:
         """
         if not self._conversation or self._closing:
             raise ValueError("inactive_service")
-        # Every explicit stop (pause, interrupt, close) bumps the generation.
-        # A stop that lands while this request waits (on _run_lock, the status
-        # read, or run capacity) supersedes it.
         request_generation = self._explicit_interrupt_generation
 
         # Use lock to make check-and-set atomic, preventing race conditions
@@ -1633,10 +1621,6 @@ class EventService:
                 # A reservation offered on top of an already-held session is
                 # redundant; return it so it is not leaked.
                 run_slot.release()
-            # A re-arm (wait_for_capacity=True) can block here for as long as
-            # the server is at capacity. A pause/interrupt/close that landed
-            # meanwhile must win: starting now would resume a paused
-            # conversation, or run one that close() already tore down.
             if (
                 self._closing
                 or self._explicit_interrupt_generation != request_generation

@@ -15,7 +15,6 @@ authentication.  Three auth methods are supported (highest to lowest precedence)
 import asyncio
 import json
 import logging
-from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Annotated, Literal
@@ -297,20 +296,8 @@ async def events_socket(
         await websocket.close(code=4004, reason="Conversation not found")
         return
 
-    # Determine effective resend mode (handle deprecated resend_all)
-    effective_mode = resend_mode
-    if effective_mode is None and resend_all:
-        logger.warning(
-            "resend_all is deprecated, use resend_mode='all' instead: "
-            f"{conversation_id}"
-        )
-        effective_mode = "all"
-
-    # Subscribe before replaying so nothing is missed, but buffer live events
-    # until the replay is done: sent at once they would overtake older history
-    # and arrive a second time from it.
     subscriber = _WebSocketSubscriber(
-        websocket, buffering=effective_mode in ("all", "since")
+        websocket, buffering=resend_mode is not None or resend_all
     )
     try:
         subscriber_id = await event_service.subscribe_to_events(subscriber)
@@ -320,6 +307,15 @@ async def events_socket(
             code=1013, reason="Too many connections for this conversation"
         )
         return
+
+    # Determine effective resend mode (handle deprecated resend_all)
+    effective_mode = resend_mode
+    if effective_mode is None and resend_all:
+        logger.warning(
+            "resend_all is deprecated, use resend_mode='all' instead: "
+            f"{conversation_id}"
+        )
+        effective_mode = "all"
 
     # Normalize timezone-aware datetimes to server timezone
     normalized_after_timestamp = (
@@ -545,20 +541,14 @@ def _is_websocket_connected(websocket: WebSocket) -> bool:
 
 @dataclass
 class _WebSocketSubscriber(Subscriber):
-    """WebSocket subscriber for conversation events.
-
-    With ``buffering`` it holds live events while history is replayed;
-    ``go_live`` flushes them, dropping any the replay already sent.
-    """
+    """WebSocket subscriber for conversation events."""
 
     # The live socket is what token streaming is for.
     receives_streaming_deltas = True
 
     websocket: WebSocket
     buffering: bool = False
-    _buffer: deque[Event] = field(default_factory=deque)
-    # Kept after go_live: an event replayed from disk can still be published
-    # afterwards (its fan-out is scheduled after the append).
+    _buffer: list[Event] = field(default_factory=list)
     _replayed_ids: set[str] = field(default_factory=set)
 
     async def __call__(self, event: Event):
@@ -570,8 +560,6 @@ class _WebSocketSubscriber(Subscriber):
         await _send_event(event, self.websocket)
 
     async def on_initial_state(self, event: Event, log_length: int | None) -> None:  # noqa: ARG002
-        # Clients treat the first state update as "connected", so it goes out
-        # at once, ahead of any replay.
         await _send_event(event, self.websocket)
 
     async def send_replayed(self, event: Event) -> None:
@@ -579,21 +567,11 @@ class _WebSocketSubscriber(Subscriber):
         await _send_event(event, self.websocket)
 
     async def go_live(self) -> None:
-        # Sends await, and events keep arriving meanwhile: drain until empty,
-        # then switch with no await in between.
         while self._buffer:
-            event = self._buffer.popleft()
+            event = self._buffer.pop(0)
             if event.id not in self._replayed_ids:
                 await _send_event(event, self.websocket)
         self.buffering = False
-
-    async def close(self) -> None:
-        # The conversation is closing (delete, eviction, shutdown): end the
-        # connection instead of leaving it open with nothing left to deliver.
-        # The server then wakes the handler's receive_json() with a disconnect.
-        await _safe_close_websocket(
-            self.websocket, code=1001, reason="conversation_closed"
-        )
 
 
 async def _send_bash_event(event: BashEventBase, websocket: WebSocket):
