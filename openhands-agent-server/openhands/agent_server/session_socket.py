@@ -182,6 +182,10 @@ class _SessionSubscriber(Subscriber[Event]):
     events: EventLog
 
     _buffer: list[Event] | None = field(default_factory=list, init=False)
+    # Highest seq replay sent from disk. Live events at or below it are
+    # duplicates: one persisted before the mark can still be published after
+    # go_live, since the run thread schedules its fan-out after the append.
+    _through_seq: int | None = field(default=None, init=False)
 
     async def __call__(self, event: Event) -> None:
         if isinstance(event, StreamingDeltaEvent):
@@ -195,6 +199,12 @@ class _SessionSubscriber(Subscriber[Event]):
 
     def _emit(self, event: Event) -> None:
         seq = self._seq_of(event)
+        if (
+            seq is not None
+            and self._through_seq is not None
+            and seq <= self._through_seq
+        ):
+            return  # already sent from disk during replay
         frame: SessionFrameBase = (
             TransientFrame(event=event)
             if seq is None
@@ -227,10 +237,8 @@ class _SessionSubscriber(Subscriber[Event]):
         """Flush the buffer, dropping anything already replayed from disk."""
         buffered = self._buffer
         self._buffer = None
+        self._through_seq = through_seq
         for event in buffered or ():
-            seq = self._seq_of(event)
-            if seq is not None and through_seq is not None and seq <= through_seq:
-                continue  # already sent from disk during replay
             self._emit(event)
 
 
