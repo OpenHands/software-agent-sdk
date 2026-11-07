@@ -13,7 +13,10 @@ import openhands.sdk.security.analyzer as analyzer
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.critic_mixin import CriticMixin
-from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
+from openhands.sdk.agent.parallel_executor import (
+    ParallelToolExecutor,
+    _ToolBatchCancelled,
+)
 from openhands.sdk.agent.response_dispatch import (
     LLMResponseType,
     ResponseDispatchMixin,
@@ -317,6 +320,8 @@ class _ActionBatch:
         tools: dict[str, ToolDefinition] | None = None,
         cancel_token: CancellationToken | None = None,
         span_owner: object | None = None,
+        *,
+        on_cancel: Callable[[_ActionBatch], None] | None = None,
     ) -> _ActionBatch:
         """Async variant of :meth:`prepare`.
 
@@ -335,13 +340,25 @@ class _ActionBatch:
             else:
                 executable.append(ae)
 
-        executed_results = await executor.aexecute_batch(
-            executable,
-            tool_runner,
-            tools,
-            cancel_token,
-            span_owner=span_owner,
-        )
+        try:
+            executed_results = await executor.aexecute_batch(
+                executable,
+                tool_runner,
+                tools,
+                cancel_token,
+                span_owner=span_owner,
+            )
+        except _ToolBatchCancelled as exc:
+            if on_cancel is not None:
+                on_cancel(
+                    cls(
+                        action_events=action_events,
+                        has_finish=has_finish,
+                        blocked_reasons=blocked_reasons,
+                        results_by_id=exc.results_by_id,
+                    )
+                )
+            raise
         results_by_id = dict(zip([ae.id for ae in executable], executed_results))
 
         return cls(
@@ -377,7 +394,7 @@ class _ActionBatch:
                 )
                 on_event(rejection)
             else:
-                for event in self.results_by_id[ae.id]:
+                for event in self.results_by_id.get(ae.id, []):
                     on_event(event)
 
     def finalize(
@@ -713,6 +730,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             tools=self.tools_map,
             cancel_token=conversation.cancel_token,
             span_owner=conversation,
+            on_cancel=lambda partial: partial.emit(conversation, on_event),
         )
         batch.emit(conversation, on_event)
         batch.finalize(
