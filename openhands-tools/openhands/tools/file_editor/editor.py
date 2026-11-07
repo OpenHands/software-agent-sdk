@@ -53,6 +53,12 @@ def _is_encodable(text: str, encoding: str) -> bool:
     return True
 
 
+def _uses_crlf(path: Path) -> bool:
+    """Return True if the file's first line ends with CRLF."""
+    with open(path, "rb") as f:
+        return f.readline().endswith(b"\r\n")
+
+
 class FileEditor:
     """
     An filesystem editor tool that allows the agent to
@@ -500,14 +506,18 @@ class FileEditor:
             )
             encoding = default
 
-        with self._temp_file(path, file_text, encoding) as tmp_path:
+        # file_text uses "\n", as read_file returns it; keep a CRLF file CRLF.
+        newline = "\r\n" if path.exists() and _uses_crlf(path) else None
+        with self._temp_file(path, file_text, encoding, newline) as tmp_path:
             # Preserve the original file's permission bits when it already exists.
             if path.exists():
                 os.chmod(tmp_path, os.stat(path).st_mode & 0o7777)
             Path.replace(tmp_path, path)
 
     @contextmanager
-    def _temp_file(self, path: Path, file_text: str, encoding: str) -> Iterator[Path]:
+    def _temp_file(
+        self, path: Path, file_text: str, encoding: str, newline: str | None = None
+    ) -> Iterator[Path]:
         """Write file_text to a fresh temp file beside path and yield its Path.
 
         The temp file is removed on any failure (write, chmod or replace), so the
@@ -521,6 +531,7 @@ class FileEditor:
             prefix=f".{path.name}.",
             suffix=".tmp",
             encoding=encoding,
+            newline=newline,
             delete=False,
         )
         tmp_path = Path(tmp.name)
