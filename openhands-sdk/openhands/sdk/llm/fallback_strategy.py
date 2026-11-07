@@ -64,19 +64,22 @@ class FallbackStrategy(BaseModel):
     _cipher: Cipher | None = PrivateAttr(default=None)
     _store: LLMProfileStore | None = PrivateAttr(default=None)
 
-    def bind_cipher(self, cipher: Cipher | None) -> None:
-        """Decrypt fallback profiles with ``cipher``.
+    def with_cipher(self, cipher: Cipher) -> FallbackStrategy:
+        """Return this strategy decrypting its fallback profiles with ``cipher``.
 
         The conversation's :class:`~openhands.sdk.llm.llm_registry.LLMRegistry`
-        binds its cipher when it registers the LLM that owns this strategy, so
-        an encrypted profile resolves to its plaintext key. Rebinding to another
-        cipher drops the fallbacks already loaded with the previous one.
+        installs it on each LLM it registers, so an encrypted profile resolves
+        to its plaintext key. A copy rather than a mutation: ``model_copy`` of
+        an LLM shares its strategy, and a sub-agent's copy must not rebind the
+        parent's.
         """
         if cipher is self._cipher:
-            return
-        self._cipher = cipher
-        self._store = None
-        self._resolved = None
+            return self
+        bound = self.model_copy()
+        bound._cipher = cipher
+        bound._store = None
+        bound._resolved = None
+        return bound
 
     def should_fallback(self, error: Exception) -> bool:
         """Whether this error type is eligible for fallback."""

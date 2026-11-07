@@ -554,18 +554,39 @@ def test_conversation_cipher_reaches_fallback_profiles(mock_comp, tmp_path):
     assert keys == [_FALLBACK_KEY]
 
 
-def test_rebinding_the_cipher_drops_fallbacks_loaded_with_the_old_one(tmp_path):
+def test_with_cipher_returns_a_bound_copy(tmp_path):
     cipher = Cipher("server-secret-key")
     strategy = _encrypted_fallback_strategy(tmp_path, cipher)
-
     unbound = next(strategy._iter_fallbacks())
-    assert unbound.api_key is not None
-    assert unbound.api_key.get_secret_value() != _FALLBACK_KEY
 
-    strategy.bind_cipher(cipher)
-    bound = next(strategy._iter_fallbacks())
-    assert bound.api_key is not None
-    assert bound.api_key.get_secret_value() == _FALLBACK_KEY
+    bound = strategy.with_cipher(cipher)
+
+    assert bound is not strategy
+    assert bound.with_cipher(cipher) is bound
+    loaded = next(bound._iter_fallbacks())
+    assert loaded.api_key is not None
+    assert loaded.api_key.get_secret_value() == _FALLBACK_KEY
+    # The original keeps what it had loaded without the cipher.
+    assert next(strategy._iter_fallbacks()) is unbound
+
+
+def test_a_sub_agent_copy_does_not_unbind_the_parents_fallback(tmp_path):
+    """A sub-agent LLM is a model_copy sharing the parent's strategy; its
+    registry (no cipher) must not undo the parent's binding."""
+    cipher = Cipher("server-secret-key")
+    parent = _get_llm(
+        "gpt-4o", fallback_strategy=_encrypted_fallback_strategy(tmp_path, cipher)
+    )
+    LLMRegistry(cipher=cipher).add(parent)
+    # TaskManager copies the parent's registered LLM for the sub-agent.
+    child = parent.model_copy(update={"usage_id": "sub-agent"})
+    LLMRegistry().add(child)
+
+    for llm in (parent, child):
+        assert llm.fallback_strategy is not None
+        key = next(llm.fallback_strategy._iter_fallbacks()).api_key
+        assert key is not None
+        assert key.get_secret_value() == _FALLBACK_KEY
 
 
 # =========================================================================

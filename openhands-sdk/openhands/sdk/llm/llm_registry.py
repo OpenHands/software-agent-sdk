@@ -50,7 +50,8 @@ class LLMRegistry:
         Args:
             retry_listener: Optional callback for retry events.
             cipher: The conversation's cipher. Every registered LLM's fallback
-                strategy loads its profiles with it.
+                strategy loads its profiles with it; without one, a strategy
+                keeps the cipher it already has.
         """
         self.registry_id = str(uuid4())
         self.retry_listener = retry_listener
@@ -139,8 +140,8 @@ class LLMRegistry:
 
         # Ensure this LLM has independent metrics before registering
         self._ensure_independent_metrics(llm)
-        if llm.fallback_strategy is not None:
-            llm.fallback_strategy.bind_cipher(self._cipher)
+        if self._cipher is not None and llm.fallback_strategy is not None:
+            llm.fallback_strategy = llm.fallback_strategy.with_cipher(self._cipher)
 
         self._usage_to_llm[usage_id] = llm
         self.notify(RegistryEvent(llm=llm))
