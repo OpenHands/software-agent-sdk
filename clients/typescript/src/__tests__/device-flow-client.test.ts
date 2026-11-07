@@ -1,3 +1,4 @@
+import { getEventListeners } from 'node:events';
 import type { MockedFunction } from 'vitest';
 import { CloudClient, pollForToken } from '../clients';
 
@@ -18,7 +19,76 @@ function requestHeadersForCall(callIndex = 0): Headers {
 describe('device flow request metadata', () => {
   afterEach(() => {
     global.fetch = originalFetch;
+    vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it('releases abort listeners after successful polling intervals', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    global.fetch = vi
+      .fn()
+      .mockImplementationOnce(() =>
+        Promise.resolve(new Response('{"error":"authorization_pending"}', { status: 400 }))
+      )
+      .mockImplementationOnce(() =>
+        Promise.resolve(new Response('{"error":"authorization_pending"}', { status: 400 }))
+      )
+      .mockResolvedValue(jsonResponse({ access_token: 'token' })) as typeof fetch;
+
+    const result = pollForToken('https://cloud.example.com', 'device-code', {
+      interval: 1,
+      signal: controller.signal,
+    });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    await expect(result).resolves.toMatchObject({ access_token: 'token' });
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+  });
+
+  it('cancels the active polling interval and releases its timer', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    global.fetch = vi
+      .fn()
+      .mockImplementation(() =>
+        Promise.resolve(new Response('{"error":"authorization_pending"}', { status: 400 }))
+      ) as typeof fetch;
+
+    const result = pollForToken('https://cloud.example.com', 'device-code', {
+      interval: 1,
+      signal: controller.signal,
+    });
+    const cancelled = expect(result).rejects.toMatchObject({ code: 'cancelled' });
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+
+    await cancelled;
+    expect(vi.getTimerCount()).toBe(0);
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases completed interval listeners when polling times out', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    global.fetch = vi
+      .fn()
+      .mockImplementation(() =>
+        Promise.resolve(new Response('{"error":"authorization_pending"}', { status: 400 }))
+      ) as typeof fetch;
+
+    const result = pollForToken('https://cloud.example.com', 'device-code', {
+      interval: 1,
+      timeout: 2000,
+      signal: controller.signal,
+    });
+    const timedOut = expect(result).rejects.toMatchObject({ code: 'timeout' });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    await timedOut;
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('CloudClient forwards additional headers when starting authorization', async () => {
