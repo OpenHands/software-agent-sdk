@@ -368,8 +368,9 @@ class Telemetry(BaseModel):
         if span is None:
             return
         try:
+            serializable = json.loads(json.dumps(messages(), default=_safe_json))
             payload = redact_text_secrets(
-                json.dumps(messages(), default=_safe_json, ensure_ascii=False)
+                json.dumps(_without_reasoning(serializable), ensure_ascii=False)
             )
             span.set_attribute(f"gen_ai.{direction}.messages", payload)
             span.set_attribute(f"lmnr.span.{direction}", payload)
@@ -547,6 +548,25 @@ def _redact_request_credentials(ctx: dict[str, Any]) -> dict[str, Any]:
 _PRIVATE_MESSAGE_FIELDS = frozenset(
     {"reasoning_content", "thinking_blocks", "reasoning_items"}
 )
+_PRIVATE_ITEM_TYPES = frozenset({"reasoning", "thinking", "redacted_thinking"})
+
+
+def _is_private_item(value: Any) -> bool:
+    return isinstance(value, dict) and value.get("type") in _PRIVATE_ITEM_TYPES
+
+
+def _without_reasoning(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_reasoning(item)
+            for key, item in value.items()
+            if key not in _PRIVATE_MESSAGE_FIELDS
+        }
+    if isinstance(value, list):
+        return [
+            _without_reasoning(item) for item in value if not _is_private_item(item)
+        ]
+    return value
 
 
 def _request_messages(ctx: dict[str, Any]) -> list[Any]:
@@ -559,14 +579,9 @@ def _request_messages(ctx: dict[str, Any]) -> list[Any]:
 
 def _response_messages(resp: ModelResponse | ResponsesAPIResponse) -> list[Any]:
     if isinstance(resp, ResponsesAPIResponse):
-        items = [
-            item if isinstance(item, dict) else _safe_json(item) for item in resp.output
-        ]
-        return [item for item in items if item.get("type") != "reasoning"]
+        return list(resp.output)
     return [
-        choice.message.model_dump(
-            mode="json", exclude=set(_PRIVATE_MESSAGE_FIELDS), exclude_none=True
-        )
+        choice.message.model_dump(mode="json", exclude_none=True)
         for choice in resp.choices
         if isinstance(choice, Choices)
     ]

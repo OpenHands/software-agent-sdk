@@ -249,3 +249,111 @@ def test_responses_span_content_without_completion_logging(
     assert "PRIVATE_REASONING" not in attrs["gen_ai.output.messages"]
     assert attrs["gen_ai.usage.input_tokens"] == 11
     assert attrs["gen_ai.usage.output_tokens"] == 3
+
+
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("api", ["chat_reasoning", "chat_thinking", "responses"])
+def test_reasoning_history_stays_in_transport_but_not_spans(
+    monkeypatch, exported_spans, asynchronous, api
+):
+    calls = []
+    reasoning = "SYNTHETIC_PRIVATE_REASONING"
+    signature = "SYNTHETIC_PRIVATE_SIGNATURE"
+    encrypted = "SYNTHETIC_ENCRYPTED_REASONING"
+
+    def transport(**kwargs):
+        calls.append(kwargs)
+        if api == "responses":
+            return ResponsesAPIResponse(
+                id="synthetic-response",
+                model="o3",
+                status="completed",
+                created_at=1,
+                output=[
+                    {
+                        "id": "reasoning",
+                        "type": "reasoning",
+                        "summary": [{"type": "summary_text", "text": reasoning}],
+                        "encrypted_content": encrypted,
+                    },
+                    {
+                        "id": "message",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "VISIBLE_RESPONSE",
+                                "annotations": [],
+                            }
+                        ],
+                    },
+                ],
+            )
+        message: dict[str, object] = {
+            "role": "assistant",
+            "content": "VISIBLE_RESPONSE",
+        }
+        if api == "chat_reasoning":
+            message["reasoning_content"] = reasoning
+        else:
+            message["thinking_blocks"] = [
+                {"type": "thinking", "thinking": reasoning, "signature": signature}
+            ]
+        return ModelResponse(
+            id="synthetic-response",
+            choices=[{"message": message}],
+        )
+
+    async def async_transport(**kwargs):
+        return transport(**kwargs)
+
+    monkeypatch.setattr("openhands.sdk.llm.llm.litellm_completion", transport)
+    monkeypatch.setattr("openhands.sdk.llm.llm.litellm_acompletion", async_transport)
+    monkeypatch.setattr("openhands.sdk.llm.llm.litellm_responses", transport)
+    monkeypatch.setattr("openhands.sdk.llm.llm.litellm_aresponses", async_transport)
+    model = {
+        "chat_reasoning": "openai/gpt-oss-120b",
+        "chat_thinking": "anthropic/claude-sonnet-4-6",
+        "responses": "openai/o3",
+    }[api]
+    llm = LLM(model=model, num_retries=0)
+    messages = [
+        Message(role="system", content=[TextContent(text="SYSTEM_OK")]),
+        Message(role="user", content=[TextContent(text="REQUEST_OK")]),
+    ]
+    for _ in range(2):
+        if api == "responses":
+            result = (
+                asyncio.run(llm.aresponses(messages))
+                if asynchronous
+                else llm.responses(messages)
+            )
+        else:
+            result = (
+                asyncio.run(llm.acompletion(messages))
+                if asynchronous
+                else llm.completion(messages)
+            )
+        messages.extend(
+            [result.message, Message(role="user", content=[TextContent(text="NEXT")])]
+        )
+
+    sent_history = json.dumps(calls[1])
+    assert reasoning in sent_history
+    if api == "chat_thinking":
+        assert signature in sent_history
+    elif api == "responses":
+        assert encrypted in sent_history
+    spans = exported_spans.get_finished_spans()
+    assert len(spans) == 2
+    for span in spans:
+        attrs = dict(span.attributes or {})
+        assert "VISIBLE_RESPONSE" in attrs["gen_ai.output.messages"]
+        for direction in ("input", "output"):
+            content = attrs[f"gen_ai.{direction}.messages"]
+            assert attrs[f"lmnr.span.{direction}"] == content
+            assert reasoning not in content
+            assert signature not in content
+            assert encrypted not in content
