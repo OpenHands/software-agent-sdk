@@ -14,23 +14,6 @@ from openhands.sdk.logger import get_logger
 logger = get_logger(__name__)
 
 
-categories = [
-    {"emoji": "💄", "name": "frontend", "description": "UI and style files"},
-    {"emoji": "👔", "name": "backend", "description": "Business logic"},
-    {"emoji": "✅", "name": "test", "description": "Tests"},
-    {"emoji": "👷", "name": "devops", "description": "CI build system"},
-    {"emoji": "🚀", "name": "deployment", "description": "Deploy stuff"},
-    {"emoji": "📦️", "name": "dependencies", "description": "Packages and dependencies"},
-    {"emoji": "🗃️", "name": "database", "description": "Database changes"},
-    {"emoji": "🔧", "name": "chores", "description": "Configuration and maintenance"},
-    {"emoji": "✨", "name": "features", "description": "New features"},
-    {"emoji": "🐛", "name": "bugfix", "description": "Bug fixes"},
-    {"emoji": "⚡️", "name": "performance", "description": "Performance improvements"},
-    {"emoji": "🔒️", "name": "security", "description": "Security fixes"},
-    {"emoji": "📝", "name": "documentation", "description": "Documentation"},
-    {"emoji": "♻️", "name": "refactor", "description": "Code refactoring"},
-]
-
 CONVERSATION_CONTENT_PLACEHOLDER: Final[str] = "{conversation_content}"
 MAX_LENGTH_PLACEHOLDER: Final[str] = "{max_length}"
 
@@ -106,31 +89,18 @@ def generate_title_with_llm(
     Returns:
         Generated title, or None if LLM fails or returns empty response.
     """
-    # Truncate very long messages to avoid excessive token usage
-    if len(message) > 1000:
-        truncated_message = message[:1000] + "...(truncated)"
-    else:
-        truncated_message = message
-
-    emojis_descriptions = "\n- ".join(
-        f"{c['emoji']} {c['name']}: {c['description']}" for c in categories
-    )
-
     template = (prompt or "").strip()
     if template:
         user_prompt = template.replace(
-            CONVERSATION_CONTENT_PLACEHOLDER, truncated_message
+            CONVERSATION_CONTENT_PLACEHOLDER, message
         ).replace(MAX_LENGTH_PLACEHOLDER, str(max_length))
         if CONVERSATION_CONTENT_PLACEHOLDER not in template:
-            user_prompt = f"{user_prompt}\n\nConversation content:\n{truncated_message}"
+            user_prompt = f"{user_prompt}\n\nConversation content:\n{message}"
     else:
         user_prompt = (
             f"Generate a title (maximum {max_length} characters) "
             f"for a conversation that starts with this message:\n\n"
-            f"{truncated_message}."
-            "Also make sure to include ONE most relevant emoji at "
-            "the start of the title."
-            f" Choose the emoji from this list:{emojis_descriptions} "
+            f"{message}"
         )
 
     try:
@@ -145,8 +115,8 @@ def generate_title_with_llm(
                             "descriptive titles for conversations with OpenHands. "
                             "OpenHands is a helpful AI agent that can interact "
                             "with a computer to solve tasks using bash terminal, "
-                            "file editor, and browser. Given a user message "
-                            "(which may be truncated), generate a concise, "
+                            "file editor, and browser. Given a user message, "
+                            "generate a concise, "
                             "descriptive title for the conversation. Return only "
                             "the title, with no additional text, quotes, or "
                             "explanations."

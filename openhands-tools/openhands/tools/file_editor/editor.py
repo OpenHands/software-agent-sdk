@@ -486,8 +486,12 @@ class FileEditor:
         content, fall back to UTF-8 so an edit may add characters (arrows, emoji,
         CJK, ...) the original single-byte encoding lacks, instead of failing and
         truncating the file. Note that the fallback transcodes the whole file to
-        UTF-8.
+        UTF-8. Editing through a symlink writes to the link's target: a rename
+        onto the link path would replace the link with a regular file.
         """
+        if path.is_symlink():
+            path = path.resolve()
+
         default = self._encoding_manager.default_encoding
         if encoding != default and not _is_encodable(file_text, encoding):
             logger.warning(
@@ -571,6 +575,11 @@ class FileEditor:
                     break
                 new_lines.append(line)
                 history_lines.append(line)
+
+        # A final line without a trailing newline would fuse with the inserted
+        # content; terminate it first so the insert starts on its own line.
+        if new_lines and not new_lines[-1].endswith("\n"):
+            new_lines[-1] += "\n"
 
         # Insert new content
         for line in new_str_lines:

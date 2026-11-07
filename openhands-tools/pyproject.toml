@@ -1,6 +1,6 @@
 [project]
 name = "openhands-tools"
-version = "1.59.0"
+version = "1.60.1"
 description = "OpenHands Tools - Runtime tools for AI agents"
 
 requires-python = ">=3.12"
@@ -12,7 +12,8 @@ dependencies = [
     "binaryornot>=0.6.0",
     "cachetools",
     "filelock>=3.20.1",
-    "libtmux>=0.53.0",
+    "libtmux>=0.62.0",
+    "psutil>=7.2.2",
     "pydantic>=2.13.5",
     "browser-use>=0.8.0",
     "func-timeout>=4.3.5",
@@ -42,3 +43,4 @@ namespaces = true
 [tool.setuptools.package-data]
 "*" = ["py.typed", "**/*.j2"]
 "openhands.tools.preset.subagents" = ["*.md"]
+"openhands.tools.browser_use" = ["js/*.js"]
