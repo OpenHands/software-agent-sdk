@@ -835,6 +835,21 @@ class EventService:
         with state:
             return ConversationStateUpdateEvent.from_conversation_state(state)
 
+    def _create_initial_state_sync(
+        self,
+    ) -> tuple[ConversationStateUpdateEvent, int]:
+        """A snapshot plus the event-log length it reflects, under one lock hold.
+
+        A replaying socket reads up to this length from disk; events past it
+        reach the subscriber live, after the snapshot. Reading the length
+        separately could replay state newer than the snapshot it then sends.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        state = self._conversation._state
+        with state:  # reentrant: the snapshot takes it again
+            return self._create_state_update_event_sync(), len(state.events)
+
     async def _create_state_update_event(self) -> ConversationStateUpdateEvent:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._create_state_update_event_sync)
@@ -1015,32 +1030,44 @@ class EventService:
 
     async def subscribe_to_events(self, subscriber: Subscriber[Event]) -> UUID:
         subscriber_id = self._pub_sub.subscribe(subscriber)
-
-        # Send current state to the new subscriber immediately.
-        # The snapshot is created in a worker thread so waiting on the
-        # conversation's synchronous FIFOLock cannot block the server event loop.
-        if self._conversation:
-            state_update_event = await self._create_state_update_event()
-        else:
-            state_update_event = ConversationStateUpdateEvent(
-                key="execution_status",
-                value=ConversationExecutionStatus.IDLE,
-            )
-
+        # The caller only learns the id on success, so any failure below must
+        # drop the registration here or it holds a subscriber slot forever.
         try:
-            await asyncio.wait_for(
-                subscriber(state_update_event),
-                timeout=INITIAL_STATE_PUSH_TIMEOUT_SECONDS,
+            # Send current state to the new subscriber immediately.
+            # The snapshot is created in a worker thread so waiting on the
+            # conversation's synchronous FIFOLock cannot block the server
+            # event loop.
+            log_length: int | None = None
+            if self._conversation:
+                loop = asyncio.get_running_loop()
+                state_update_event, log_length = await loop.run_in_executor(
+                    None, self._create_initial_state_sync
+                )
+            else:
+                state_update_event = ConversationStateUpdateEvent(
+                    key="execution_status",
+                    value=ConversationExecutionStatus.IDLE,
+                )
+
+            push = (
+                subscriber.on_initial_state(state_update_event, log_length)
+                if isinstance(subscriber, Subscriber)
+                else subscriber(state_update_event)
             )
-        except TimeoutError:
-            # Subscriber stays registered; only the initial-state push is
-            # dropped. Subsequent publishes go through pub_sub and may
-            # still block there if the subscriber remains wedged.
-            logger.warning(
-                f"Initial state push to subscriber {subscriber_id} timed "
-                f"out after {INITIAL_STATE_PUSH_TIMEOUT_SECONDS}s."
-            )
-        # Non-timeout errors propagate to caller (e.g. webhook failures).
+            try:
+                await asyncio.wait_for(push, timeout=INITIAL_STATE_PUSH_TIMEOUT_SECONDS)
+            except TimeoutError:
+                # Subscriber stays registered; only the initial-state push is
+                # dropped. Subsequent publishes go through pub_sub and may
+                # still block there if the subscriber remains wedged.
+                logger.warning(
+                    f"Initial state push to subscriber {subscriber_id} timed "
+                    f"out after {INITIAL_STATE_PUSH_TIMEOUT_SECONDS}s."
+                )
+            # Non-timeout errors propagate to caller (e.g. webhook failures).
+        except BaseException:
+            self._pub_sub.unsubscribe(subscriber_id)
+            raise
 
         return subscriber_id
 

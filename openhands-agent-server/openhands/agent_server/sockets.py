@@ -15,7 +15,8 @@ authentication.  Three auth methods are supported (highest to lowest precedence)
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
@@ -296,17 +297,6 @@ async def events_socket(
         await websocket.close(code=4004, reason="Conversation not found")
         return
 
-    try:
-        subscriber_id = await event_service.subscribe_to_events(
-            _WebSocketSubscriber(websocket)
-        )
-    except MaxSubscribersError:
-        logger.warning(f"Subscriber limit reached for conversation {conversation_id}")
-        await websocket.close(
-            code=1013, reason="Too many connections for this conversation"
-        )
-        return
-
     # Determine effective resend mode (handle deprecated resend_all)
     effective_mode = resend_mode
     if effective_mode is None and resend_all:
@@ -315,6 +305,21 @@ async def events_socket(
             f"{conversation_id}"
         )
         effective_mode = "all"
+
+    # Subscribe before replaying so nothing is missed, but buffer live events
+    # until the replay is done: sent at once they would overtake older history
+    # and arrive a second time from it.
+    subscriber = _WebSocketSubscriber(
+        websocket, buffering=effective_mode in ("all", "since")
+    )
+    try:
+        subscriber_id = await event_service.subscribe_to_events(subscriber)
+    except MaxSubscribersError:
+        logger.warning(f"Subscriber limit reached for conversation {conversation_id}")
+        await websocket.close(
+            code=1013, reason="Too many connections for this conversation"
+        )
+        return
 
     # Normalize timezone-aware datetimes to server timezone
     normalized_after_timestamp = (
@@ -328,7 +333,7 @@ async def events_socket(
         if effective_mode == "all":
             logger.info(f"Resending all events: {conversation_id}")
             async for event in page_iterator(event_service.search_events):
-                await _send_event(event, websocket)
+                await subscriber.send_replayed(event)
         elif effective_mode == "since":
             if not normalized_after_timestamp:
                 logger.warning(
@@ -344,7 +349,8 @@ async def events_socket(
                     event_service.search_events,
                     timestamp__gte=normalized_after_timestamp,
                 ):
-                    await _send_event(event, websocket)
+                    await subscriber.send_replayed(event)
+        await subscriber.go_live()
 
         # Listen for messages over the socket
         while True:
@@ -539,15 +545,55 @@ def _is_websocket_connected(websocket: WebSocket) -> bool:
 
 @dataclass
 class _WebSocketSubscriber(Subscriber):
-    """WebSocket subscriber for conversation events."""
+    """WebSocket subscriber for conversation events.
+
+    With ``buffering`` it holds live events while history is replayed;
+    ``go_live`` flushes them, dropping any the replay already sent.
+    """
 
     # The live socket is what token streaming is for.
     receives_streaming_deltas = True
 
     websocket: WebSocket
+    buffering: bool = False
+    _buffer: deque[Event] = field(default_factory=deque)
+    # Kept after go_live: an event replayed from disk can still be published
+    # afterwards (its fan-out is scheduled after the append).
+    _replayed_ids: set[str] = field(default_factory=set)
 
     async def __call__(self, event: Event):
+        if self.buffering:
+            self._buffer.append(event)
+            return
+        if event.id in self._replayed_ids:
+            return
         await _send_event(event, self.websocket)
+
+    async def on_initial_state(self, event: Event, log_length: int | None) -> None:  # noqa: ARG002
+        # Clients treat the first state update as "connected", so it goes out
+        # at once, ahead of any replay.
+        await _send_event(event, self.websocket)
+
+    async def send_replayed(self, event: Event) -> None:
+        self._replayed_ids.add(event.id)
+        await _send_event(event, self.websocket)
+
+    async def go_live(self) -> None:
+        # Sends await, and events keep arriving meanwhile: drain until empty,
+        # then switch with no await in between.
+        while self._buffer:
+            event = self._buffer.popleft()
+            if event.id not in self._replayed_ids:
+                await _send_event(event, self.websocket)
+        self.buffering = False
+
+    async def close(self) -> None:
+        # The conversation is closing (delete, eviction, shutdown): end the
+        # connection instead of leaving it open with nothing left to deliver.
+        # The server then wakes the handler's receive_json() with a disconnect.
+        await _safe_close_websocket(
+            self.websocket, code=1001, reason="conversation_closed"
+        )
 
 
 async def _send_bash_event(event: BashEventBase, websocket: WebSocket):
