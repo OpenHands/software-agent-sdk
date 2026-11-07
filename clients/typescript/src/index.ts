@@ -220,6 +220,13 @@ export type {
   ConversationType,
 } from './conversation/base';
 
+export type {
+  ACPPermissionChoice,
+  ACPPermissionView,
+  ACPPermissionPage,
+  ACPPermissionDecision,
+} from './models/acp-permissions';
+
 // ACP provider registry (mirrors openhands-sdk; see scripts/validate-acp-providers.mjs)
 export { ACP_PROVIDERS, ACP_SETTINGS_KEYS, getAcpProvider } from './models/acp';
 export type { ACPProviderInfo, ACPProviderKey } from './models/acp';

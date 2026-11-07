@@ -350,6 +350,17 @@ class ACPAgentProfile(AgentProfileBase):
             "auto-detect from the ACP server type."
         ),
     )
+    acp_permission_mode: Literal["legacy-auto-approve", "deny", "callback"] = Field(
+        default="legacy-auto-approve",
+        description=(
+            "ACP permission decision mode for conversations launched from this profile."
+        ),
+    )
+    acp_permission_timeout: float = Field(default=60.0, gt=0, allow_inf_nan=False)
+    acp_env_allowlist: list[str] | None = Field(default=None)
+    acp_allow_model_switch: bool = Field(default=True)
+    acp_resume_policy: Literal["restart", "strict"] = Field(default="restart")
+    acp_secret_allowlist: list[str] | None = Field(default=None)
     acp_prompt_timeout: float = Field(
         default=1800.0,
         gt=0,

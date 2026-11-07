@@ -22,8 +22,13 @@ from openhands.agent_server._secrets_exposure import (
     get_cipher,
     store_errors,
 )
+from openhands.agent_server.acp_permissions import (
+    ACPPermissionDecision,
+    ACPPermissionPage,
+)
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import (
+    ConversationScopeViolation,
     ConversationService,
     InvalidParentConversation,
     UnavailableAgentTool,
@@ -353,7 +358,11 @@ async def start_conversation(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
         ) from e
-    except (InvalidParentConversation, UnavailableAgentTool) as e:
+    except (
+        InvalidParentConversation,
+        UnavailableAgentTool,
+        ConversationScopeViolation,
+    ) as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
         ) from e
@@ -552,6 +561,50 @@ async def update_conversation_secrets(
 
     secrets = cast(dict[str, SecretValue], request.secrets)
     await event_service.update_secrets(secrets)
+    return Success()
+
+
+@conversation_router.get(
+    "/{conversation_id}/acp/permissions",
+    response_model=ACPPermissionPage,
+    responses={404: {"description": "Conversation not found"}},
+)
+async def pending_acp_permissions(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ACPPermissionPage:
+    """List live ACP decisions without waiting for the running conversation lock."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return event_service.pending_acp_permissions()
+
+
+@conversation_router.post(
+    "/{conversation_id}/acp/permissions/{request_id}",
+    responses={
+        404: {"description": "Conversation or live permission request not found"},
+        422: {"description": "Option not offered or incomplete details"},
+    },
+)
+async def decide_acp_permission(
+    conversation_id: UUID,
+    request_id: UUID,
+    request: ACPPermissionDecision,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Answer one live, conversation-scoped ACP request. Stale IDs cannot approve."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    try:
+        decided = await event_service.decide_acp_permission(request_id, request)
+    except ValueError as error:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from None
+    if not decided:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "Permission request is no longer pending"
+        )
     return Success()
 
 

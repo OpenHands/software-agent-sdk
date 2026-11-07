@@ -1,8 +1,10 @@
+import hashlib
 import json
 import logging
 import os
 from pathlib import Path
 from typing import Any, ClassVar, Final, Literal, Self
+from uuid import UUID
 
 from pydantic import (
     BaseModel,
@@ -15,6 +17,7 @@ from pydantic import (
     model_validator,
 )
 
+from openhands.agent_server.api_access import ClientAPIPolicy
 from openhands.agent_server.conversation_lease import DEFAULT_LEASE_TTL_SECONDS
 from openhands.agent_server.env_parser import (
     MISSING,
@@ -237,6 +240,29 @@ class TelemetrySpec(BaseModel):
     )
 
 
+class ConversationScope(BaseModel):
+    """Optional deployment boundary for one admitted conversation and workspace."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    id: UUID
+    workspace_path: Path
+    agent_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+    @staticmethod
+    def agent_digest(agent: BaseModel) -> str:
+        encoded = json.dumps(
+            agent.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+        ).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    @field_validator("workspace_path")
+    @classmethod
+    def absolute_workspace(cls, value: Path) -> Path:
+        if not value.is_absolute():
+            raise ValueError("A conversation scope requires an absolute workspace")
+        return value.resolve()
+
+
 class Config(BaseModel):
     """
     Immutable configuration for a server running in local mode.
@@ -284,6 +310,41 @@ class Config(BaseModel):
             "Default workspace directory for conversations created by the server."
         ),
     )
+    conversation_scope: ConversationScope | None = Field(
+        default=None,
+        description=(
+            "Opt-in single-conversation deployment; rejects other conversation "
+            "IDs, workspace changes and worktree creation."
+        ),
+    )
+    client_api_policy: ClientAPIPolicy | None = Field(
+        default=None,
+        description=(
+            "Opt-in client HTTP/WebSocket allowlist, workspace query-path scope "
+            "and separate operator credential. Session authentication still applies."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_conversation_scope(self) -> Self:
+        if self.client_api_policy and (
+            not self.session_api_keys
+            or self.client_api_policy.operator_api_key.get_secret_value()
+            in self.session_api_keys
+        ):
+            raise ValueError(
+                "Client API scope requires authenticated sessions and a "
+                "different operator credential"
+            )
+        if (
+            self.conversation_scope
+            and self.workspace_path.resolve() != self.conversation_scope.workspace_path
+        ):
+            raise ValueError(
+                "Default workspace must match the admitted conversation scope"
+            )
+        return self
+
     conversation_worktree_root: Path = Field(
         default=Path("/tmp/conversation-worktrees"),
         description=(

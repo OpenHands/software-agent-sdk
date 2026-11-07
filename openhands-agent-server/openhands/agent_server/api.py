@@ -22,6 +22,7 @@ from starlette.types import ASGIApp
 
 from openhands.agent_server.acp_router import acp_router
 from openhands.agent_server.agent_profiles_router import agent_profiles_router
+from openhands.agent_server.api_access import ClientAPIAccessMiddleware
 from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
 from openhands.agent_server.bash_service import get_default_bash_event_service
@@ -921,6 +922,12 @@ def create_app(config: Config | None = None) -> FastAPI:
         )
 
         app.add_middleware(RuntimeDispatchMiddleware)
+    if config.client_api_policy is not None:
+        app.add_middleware(
+            ClientAPIAccessMiddleware,
+            policy=config.client_api_policy,
+            workspace_path=config.workspace_path,
+        )
     # CORS is not added as user middleware here: AgentServerApp wraps the
     # complete stack (including ServerErrorMiddleware) in CORSDispatcher so
     # unhandled 500 responses also carry CORS headers.

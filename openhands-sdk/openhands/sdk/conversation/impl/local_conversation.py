@@ -1928,6 +1928,8 @@ class LocalConversation(BaseConversation):
             raise ValueError(
                 "switch_acp_model is only supported for ACP conversations."
             )
+        if not self.agent.acp_allow_model_switch:
+            raise ValueError("ACP model is fixed for this conversation")
         # Check here, not only in set_acp_model: the pre-run path below skips
         # that call and would persist a blank model unchecked.
         if not model or not model.strip():

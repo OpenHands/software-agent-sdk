@@ -15,7 +15,12 @@ from weakref import WeakValueDictionary
 import httpx
 from pydantic import BaseModel
 
-from openhands.agent_server.config import ACPSkillSourcing, Config, WebhookSpec
+from openhands.agent_server.config import (
+    ACPSkillSourcing,
+    Config,
+    ConversationScope,
+    WebhookSpec,
+)
 from openhands.agent_server.conversation_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
     ConversationLeaseHeldError,
@@ -317,6 +322,10 @@ class InvalidParentConversation(ValueError):
     a different workspace."""
 
 
+class ConversationScopeViolation(ValueError):
+    """A request differs from the deployment's admitted conversation/workspace."""
+
+
 class UnavailableAgentTool(ValueError):
     """The agent names a tool whose ``tool_module_qualnames`` module the server
     cannot import, so the agent could never be built."""
@@ -570,6 +579,7 @@ class ConversationService:
     )
     acp_skill_sourcing: ACPSkillSourcing = "native"
     enable_browser: bool = True
+    conversation_scope: ConversationScope | None = None
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -604,6 +614,11 @@ class ConversationService:
             else self.conversations_dir.iterdir()
         )
         for conversation_dir in directories:
+            if (
+                self.conversation_scope
+                and conversation_dir.name != self.conversation_scope.id.hex
+            ):
+                continue
             meta_file = conversation_dir / "meta.json"
             if not meta_file.exists():
                 continue
@@ -1503,6 +1518,12 @@ class ConversationService:
         if self._event_services is None:
             raise ValueError("inactive_service")
         conversation_id = request.conversation_id or uuid4()
+        self._check_conversation_scope(conversation_id, request.workspace)
+        self._check_scoped_agent(request.agent)
+        if self.conversation_scope and request.worktree:
+            raise ConversationScopeViolation(
+                "Admitted conversations cannot create a different workspace worktree"
+            )
         if self._has_conversation(conversation_id):
             async with self._conversation_lifecycle(conversation_id):
                 return await self._reuse_existing_conversation_locked(
@@ -1518,6 +1539,7 @@ class ConversationService:
         conversation_id: UUID,
         run_slot: RunSlot,
     ) -> tuple[ConversationInfo, bool]:
+        self._check_conversation_scope(conversation_id, request.workspace)
         # The link is immutable after creation, so cycles beyond self-parent are
         # impossible; allowing reparenting would require a real ancestor walk.
         if request.parent_conversation_id is not None:
@@ -2472,7 +2494,32 @@ class ConversationService:
             conversation_worktree_root=config.conversation_worktree_root,
             acp_skill_sourcing=config.acp_skill_sourcing,
             enable_browser=config.enable_browser,
+            conversation_scope=config.conversation_scope,
         )
+
+    def _check_conversation_scope(self, conversation_id: UUID, workspace: Any) -> None:
+        scope = self.conversation_scope
+        if scope is None:
+            return
+        if conversation_id != scope.id:
+            raise ConversationScopeViolation(
+                "This server accepts only its admitted conversation"
+            )
+        if (
+            not isinstance(workspace, LocalWorkspace)
+            or Path(workspace.working_dir).resolve() != scope.workspace_path
+        ):
+            raise ConversationScopeViolation(
+                "Conversation workspace differs from its admitted scope"
+            )
+
+    def _check_scoped_agent(self, agent: AgentBase | None) -> None:
+        scope = self.conversation_scope
+        if scope is not None and scope.agent_sha256 is not None:
+            if agent is None or scope.agent_digest(agent) != scope.agent_sha256:
+                raise ConversationScopeViolation(
+                    "Conversation agent differs from its admitted scope"
+                )
 
     async def _start_event_service(
         self,
@@ -2483,6 +2530,7 @@ class ConversationService:
         persisted_agent: AgentBase | None = None,
         max_budget_per_run: float | None = None,
     ) -> EventService:
+        self._check_conversation_scope(stored.id, stored.workspace)
         event_services = self._event_services
         if event_services is None:
             raise ValueError("inactive_service")
@@ -2491,6 +2539,10 @@ class ConversationService:
         # not carry it). Otherwise the agent is read from base_state.json, and
         # ``persisted_agent`` only spares the credential check that read.
         agent = launched.agent if launched is not None else persisted_agent
+        if self.conversation_scope and self.conversation_scope.agent_sha256:
+            if agent is None:
+                agent = await asyncio.to_thread(self._agent_from_base_state, stored.id)
+            self._check_scoped_agent(agent)
         credential_bindings = await self._resolve_credential_bindings(
             stored, agent=agent
         )
