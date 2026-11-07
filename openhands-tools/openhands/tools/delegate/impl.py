@@ -11,6 +11,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent import get_agent_factory
 from openhands.sdk.subagent.scope import inherit_mcp_config
@@ -129,6 +130,25 @@ class DelegateExecutor(ToolExecutor):
             else:
                 conversation.reject_pending_actions("User rejected the actions")
                 conversation.run()
+
+    @staticmethod
+    def _run_stop_detail(
+        conversation: LocalConversation,
+        status: ConversationExecutionStatus,
+    ) -> str:
+        """Why a sub-agent stopped without finishing, plus any partial output."""
+        errors = [
+            e
+            for e in conversation.state.events
+            if isinstance(e, ConversationErrorEvent)
+        ]
+        reason = (
+            errors[-1].detail
+            if errors
+            else f"Sub-agent stopped without finishing (status: {status.value})."
+        )
+        partial = get_agent_final_response(conversation.state.events)
+        return f"{reason}\nPartial result:\n{partial}" if partial else reason
 
     def _spawn_agents(self, action: "DelegateAction") -> DelegateObservation:
         """Spawn sub-agents with optional agent types."""
@@ -340,14 +360,26 @@ class DelegateExecutor(ToolExecutor):
                     conversation.send_message(task, sender=parent_name)
                     self._run_until_finished(agent_id, conversation)
 
-                    final_response = get_agent_final_response(conversation.state.events)
-                    if final_response:
-                        results[agent_id] = final_response
-                        logger.info(f"Sub-agent {agent_id} completed successfully")
+                    status = conversation.state.execution_status
+                    if status == ConversationExecutionStatus.FINISHED:
+                        final_response = get_agent_final_response(
+                            conversation.state.events
+                        )
+                        if final_response:
+                            results[agent_id] = final_response
+                            logger.info(
+                                f"Sub-agent {agent_id} completed successfully"
+                            )
+                        else:
+                            results[agent_id] = "No response from sub-agent"
+                            logger.warning(
+                                f"Sub-agent {agent_id} completed but no final response"
+                            )
                     else:
-                        results[agent_id] = "No response from sub-agent"
+                        error_detail = self._run_stop_detail(conversation, status)
+                        errors[agent_id] = error_detail
                         logger.warning(
-                            f"Sub-agent {agent_id} completed but no final response"
+                            f"Sub-agent {agent_id} stopped: status '{status.value}'."
                         )
 
                 except Exception as e:
@@ -406,6 +438,7 @@ class DelegateExecutor(ToolExecutor):
             return DelegateObservation.from_text(
                 text=output_text,
                 command=action.command,
+                is_error=bool(errors),
             )
 
         except Exception as e:
