@@ -249,6 +249,27 @@ def test_mcp_startup_failure_does_not_abort_conversation(
     conversation.close()
 
 
+def test_mcp_startup_failure_warning_says_why(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The startup warning carries the server's own error, e.g. a missing command."""
+    conversation = _mcp_conversation(
+        tmp_path, {"broken": {"command": "openhands-missing-mcp-server"}}
+    )
+
+    with caplog.at_level(logging.WARNING):
+        conversation._ensure_agent_ready()
+
+    warnings = [
+        record.message
+        for record in caplog.records
+        if "MCP server startup failed for broken" in record.message
+    ]
+    assert len(warnings) == 1
+    assert "openhands-missing-mcp-server" in warnings[0]
+    conversation.close()
+
+
 def _slow_fetch_server(delay: float) -> dict[str, Any]:
     """The fetch server, started after ``delay`` seconds (a first npx/uvx run)."""
     return {

@@ -683,6 +683,37 @@ def test_create_mcp_tools_connection_to_nonexistent_server():
         pass  # Expected connection errors are acceptable
 
 
+@pytest.mark.parametrize(
+    ("server", "expected"),
+    [
+        (
+            {"command": "openhands-missing-mcp-server", "args": []},
+            "openhands-missing-mcp-server",
+        ),
+        (
+            {"transport": "http", "url": f"http://127.0.0.1:{_find_free_port()}/mcp"},
+            "Client failed to connect",
+        ),
+    ],
+    ids=["stdio-missing-command", "http-unreachable"],
+)
+def test_create_mcp_tools_connection_failure_says_why(
+    server: dict[str, object], expected: str
+):
+    """The connection error names the reason, not only "MCP Connection Failure"."""
+    config = {"mcpServers": {"broken": server}}
+
+    with pytest.raises(MCPError) as exc_info:
+        create_mcp_tools(native_mcp_config(config), timeout=10.0)
+
+    message = str(exc_info.value)
+    assert message.startswith("MCP Connection Failure: ")
+    assert expected in message
+    # The agent-server MCP test endpoint reads the root cause from here.
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert str(exc_info.value.__cause__) in message
+
+
 def test_create_mcp_tools_stdio_server():
     """Test creating MCP tools from a native server map."""
     mcp_config = stdio_fetch_mcp_config()
