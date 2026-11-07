@@ -840,3 +840,21 @@ async def test_resolved_running_thread_is_working(client, service, tmp_path):
 
     assert threads["threads"][0]["attention"] == "working"
     assert threads["threads"][0]["resolved"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_new_tags_are_read_before_the_state_is_saved(
+    service, tmp_path, monkeypatch
+):
+    # A run that holds the state lock (e.g. while an LLM call retries) delays
+    # the state's save; the tags in meta.json must be visible meanwhile.
+    from openhands.agent_server import conversation_service as module
+
+    cid = await _start(service, tmp_path, tags={"project": "p1"})
+    monkeypatch.setattr(module, "_update_state_tags_sync", lambda state, tags: state)
+
+    await service.update_conversation(
+        cid, UpdateConversationRequest(tags={"project": "p1", "resolved": "user"})
+    )
+
+    assert await _tags(service, cid) == {"project": "p1", "resolved": "user"}

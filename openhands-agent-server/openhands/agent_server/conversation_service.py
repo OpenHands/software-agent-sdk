@@ -389,8 +389,14 @@ def _compose_conversation_info(
     supports_runtime_model_switch = bool(
         agent_state.get("acp_supports_runtime_model_switch", False)
     )
+    state_fields = state.model_dump(mode="json")
+    # ``meta.json`` gets new tags at once; ``base_state.json`` only on the
+    # state's next save, which a run that holds the state lock (e.g. while an
+    # LLM call retries) can delay. Read tags from the metadata so a PATCH is
+    # visible right away.
+    state_fields["tags"] = dict(stored.tags)
     return ConversationInfo(
-        **state.model_dump(mode="json"),
+        **state_fields,
         title=stored.title,
         metrics=stored.metrics,
         created_at=stored.created_at,
