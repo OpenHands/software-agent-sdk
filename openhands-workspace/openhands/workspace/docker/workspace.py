@@ -153,7 +153,13 @@ class DockerWorkspace(RemoteWorkspace):
         # Subclasses should call get_image() to get the image to use
         # This allows them to build or prepare the image before container startup
         image = self.get_image()
-        self._start_container(image, context)
+        try:
+            self._start_container(image, context)
+        except BaseException:
+            # A failed startup never returns a workspace to clean up, so stop
+            # the container `docker run` may already have started.
+            self.cleanup()
+            raise
 
     def get_image(self) -> str:
         """Get the Docker image to use for the container.

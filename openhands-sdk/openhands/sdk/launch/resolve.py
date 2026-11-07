@@ -133,6 +133,7 @@ def resolve(
             agent_profile_id=profile.id,
             revision=profile.revision,
             secret_refs=profile.secret_refs,
+            integration_refs=profile.integration_refs,
             llm_profile_ref=llm_profile_ref,
         ),
     )

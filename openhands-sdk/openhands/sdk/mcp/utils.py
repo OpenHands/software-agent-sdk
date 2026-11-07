@@ -4,9 +4,9 @@ import asyncio
 import inspect
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from typing import Protocol
+from typing import Any, Protocol
 
-import httpx
+import httpx2
 import mcp.types
 from fastmcp.client.auth import OAuth
 from fastmcp.client.logging import LogMessage
@@ -15,6 +15,7 @@ from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.protocols import AsyncKeyValue
 from mcp.shared._httpx_utils import create_mcp_http_client
+from pydantic import ValidationError
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient, ToolsReconciledCallback
@@ -138,9 +139,9 @@ class _PackageRemoteMCPServer(RemoteMCPServer):
 
 
 def _origin_bound_client_factory(url: str, header_names: tuple[str, ...]):
-    origin = _origin(httpx.URL(url))
+    origin = _origin(httpx2.URL(url))
 
-    async def drop_headers_off_origin(request: httpx.Request) -> None:
+    async def drop_headers_off_origin(request: httpx2.Request) -> None:
         # Request hooks run on every redirect hop, after httpx has copied the
         # previous request's headers onto the next one.
         if _origin(request.url) != origin:
@@ -149,10 +150,10 @@ def _origin_bound_client_factory(url: str, header_names: tuple[str, ...]):
 
     def factory(
         headers: dict[str, str] | None = None,
-        timeout: httpx.Timeout | None = None,
-        auth: httpx.Auth | None = None,
+        timeout: httpx2.Timeout | None = None,
+        auth: httpx2.Auth | None = None,
         **_: object,
-    ) -> httpx.AsyncClient:
+    ) -> httpx2.AsyncClient:
         client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
         client.event_hooks = {"request": [drop_headers_off_origin], "response": []}
         return client
@@ -160,7 +161,7 @@ def _origin_bound_client_factory(url: str, header_names: tuple[str, ...]):
     return factory
 
 
-def _origin(url: httpx.URL) -> tuple[str, str, int | None]:
+def _origin(url: httpx2.URL) -> tuple[str, str, int | None]:
     default_port = {"http": 80, "https": 443}.get(url.scheme)
     return url.scheme, url.host, url.port or default_port
 
@@ -172,8 +173,27 @@ def _prepare_mcp_config(
     mcp_oauth_factory: MCPOAuthFactory | None = None,
     mcp_oauth_class: type[MCPOAuth] = MCPOAuth,
 ) -> FastMCPConfig:
-    """Validate MCP config and apply explicit OpenHands runtime auth metadata."""
-    prepared = FastMCPConfig.model_validate(to_fastmcp_mcp_config(mcp_config))
+    """Validate MCP config and apply explicit OpenHands runtime auth metadata.
+
+    Servers are validated one by one: a server FastMCP rejects is skipped with
+    a warning naming it, so it cannot cost its siblings their tools.
+    """
+    servers = to_fastmcp_mcp_config(mcp_config)["mcpServers"]
+    valid: dict[str, Any] = {}
+    for server_name, server in servers.items():
+        try:
+            FastMCPConfig.model_validate({"mcpServers": {server_name: server}})
+        except ValidationError as exc:
+            logger.warning(
+                "Skipping invalid MCP server %s; continuing without its tools: %s",
+                server_name,
+                exc,
+            )
+            continue
+        valid[server_name] = server
+    if servers and not valid:
+        raise ValueError(f"No valid MCP servers among: {', '.join(sorted(servers))}")
+    prepared = FastMCPConfig.model_validate({"mcpServers": valid})
 
     for server_name, server_spec in mcp_config.items():
         server = prepared.mcpServers.get(server_name)

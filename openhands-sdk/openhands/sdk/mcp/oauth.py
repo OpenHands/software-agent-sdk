@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
-from typing import Any, Literal
+from typing import Literal
 from urllib.parse import parse_qsl
 
-import httpx
+import httpx2
 from fastmcp.client.auth import OAuth
 from mcp.client.auth.utils import (
     build_oauth_authorization_server_metadata_discovery_urls,
@@ -24,7 +24,7 @@ from openhands.sdk.mcp.exceptions import MCPError
 
 logger = get_logger(__name__)
 
-_DISCOVERY_TIMEOUT = httpx.Timeout(10.0)
+_DISCOVERY_TIMEOUT = httpx2.Timeout(10.0)
 
 _TokenEndpointAuthMethod = Literal["none", "client_secret_post", "client_secret_basic"]
 
@@ -45,7 +45,7 @@ def _preferred_token_endpoint_auth_method(
     return None
 
 
-def _without_client_id_when_basic(request: httpx.Request) -> httpx.Request:
+def _without_client_id_when_basic(request: httpx2.Request) -> httpx2.Request:
     """Drop ``client_id`` from the form body of a Basic-authenticated request.
 
     RFC 6749 section 2.3.1 forbids combining the ``Authorization`` header with
@@ -58,7 +58,7 @@ def _without_client_id_when_basic(request: httpx.Request) -> httpx.Request:
     data.pop("client_id", None)
     headers = request.headers.copy()
     headers.pop("Content-Length", None)
-    return httpx.Request(request.method, request.url, data=data, headers=headers)
+    return httpx2.Request(request.method, request.url, data=data, headers=headers)
 
 
 class MCPOAuth(OAuth):
@@ -79,15 +79,15 @@ class MCPOAuth(OAuth):
 
     Dynamic client registration asks for a token endpoint auth method the
     authorization server advertises, preferring a public client. Upstream
-    sends none, so servers fall back to the RFC 7591 default
-    ``client_secret_basic`` and issue a secret. Token requests that do use
+    always asks for ``none``, which servers that only accept client secrets
+    reject. Token requests that do use
     Basic auth leave ``client_id`` out of the body, which upstream always
     includes and which strict servers reject.
     """
 
     async def async_auth_flow(
-        self, request: httpx.Request
-    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        self, request: httpx2.Request
+    ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
         async with aclosing(super().async_auth_flow(request)) as flow:
             outgoing = await anext(flow)
             while True:
@@ -97,28 +97,31 @@ class MCPOAuth(OAuth):
                 except StopAsyncIteration:
                     return
 
-    def _with_supported_auth_method(self, request: httpx.Request) -> httpx.Request:
+    def _with_supported_auth_method(self, request: httpx2.Request) -> httpx2.Request:
         """Rebuild the registration request around a supported auth method.
 
-        Any other request, an explicitly configured method and a server that
-        advertises no known method all pass through unchanged.
+        Any other request and an explicitly configured method pass through
+        unchanged. FastMCP fills in ``none`` when nothing is configured, so
+        that default is replaced by the server's most preferred supported
+        method, or dropped when the server advertises none we know.
         """
         context = self.context
         if (
             context.client_info is not None
             or context.oauth_metadata is None
-            or context.client_metadata.token_endpoint_auth_method is not None
+            or "token_endpoint_auth_method" in (self._additional_client_metadata or {})
+            or request.url != self._registration_request().url
         ):
             return request
         method = _preferred_token_endpoint_auth_method(
             context.oauth_metadata.token_endpoint_auth_methods_supported
         )
-        if method is None or request.url != self._registration_request().url:
+        if method == context.client_metadata.token_endpoint_auth_method:
             return request
         context.client_metadata.token_endpoint_auth_method = method
         return self._registration_request()
 
-    def _registration_request(self) -> httpx.Request:
+    def _registration_request(self) -> httpx2.Request:
         return create_client_registration_request(
             self.context.oauth_metadata,
             self.context.client_metadata,
@@ -126,18 +129,14 @@ class MCPOAuth(OAuth):
         )
 
     async def _exchange_token_authorization_code(
-        self,
-        auth_code: str,
-        code_verifier: str,
-        *,
-        token_data: dict[str, Any] | None = None,
-    ) -> httpx.Request:
+        self, auth_code: str, code_verifier: str
+    ) -> httpx2.Request:
         request = await super()._exchange_token_authorization_code(
-            auth_code, code_verifier, token_data=token_data
+            auth_code, code_verifier
         )
         return _without_client_id_when_basic(request)
 
-    async def _refresh_token(self) -> httpx.Request:
+    async def _refresh_token(self) -> httpx2.Request:
         if self.context.oauth_metadata is None:
             await self._discover_oauth_metadata()
         return _without_client_id_when_basic(await super()._refresh_token())
@@ -176,7 +175,7 @@ class MCPOAuth(OAuth):
                     if metadata is not None:
                         self.context.oauth_metadata = metadata
                         break
-        except httpx.HTTPError as exc:
+        except httpx2.HTTPError as exc:
             logger.warning(
                 "OAuth metadata discovery failed for %s; refreshing against the "
                 "default token endpoint: %s",
