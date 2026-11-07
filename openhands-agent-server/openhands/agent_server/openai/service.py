@@ -549,6 +549,52 @@ async def list_openai_models() -> OpenAIModelListResponse:
     return OpenAIModelListResponse(data=data)
 
 
+async def _run_reused_local_agent(
+    event_service: EventService,
+    conversation_id: UUID,
+    user_content: list[TextContent | ImageContent],
+) -> OpenAIAgentRunResult:
+    async with event_service._gateway_run_lock:
+        run_task = event_service._run_task
+        if (
+            event_service._active_gateway_runs == 0
+            and run_task is not None
+            and not run_task.done()
+        ):
+            raise HTTPException(409, "Conversation run in progress; message not saved")
+        event_service._active_gateway_runs += 1
+    try:
+        state_before = await event_service.get_state()
+        min_event_count = len(state_before.events) + 1
+        # Claim capacity before saving the message: a 429 must leave nothing
+        # behind so an OpenAI client can retry the same request.
+        run_slot = await event_service.reserve_run_slot()
+        try:
+            await event_service.send_message(
+                Message(role="user", content=user_content),
+                run=True,
+                run_slot=run_slot,
+            )
+        finally:
+            if run_slot is not None:
+                run_slot.release()
+        status_value = await _wait_for_reused_conversation_completion(
+            event_service,
+            min_event_count=min_event_count,
+            timeout_seconds=_GATEWAY_TIMEOUT_SECONDS,
+        )
+        _raise_for_terminal_error(status_value)
+        state = await event_service.get_state()
+        final_response = await event_service.get_agent_final_response()
+        return OpenAIAgentRunResult(
+            conversation_id=conversation_id,
+            final_response=final_response,
+            usage=state.stats.get_combined_metrics().accumulated_token_usage,
+        )
+    finally:
+        event_service._active_gateway_runs -= 1
+
+
 async def _run_agent(
     *,
     start_request: StartConversationRequest,
@@ -587,47 +633,35 @@ async def _run_agent(
         raise HTTPException(503, "Docker conversation runtime is unavailable")
     event_service = None
     conversation_id = reusable_conversation_id
-    min_event_count: int | None = None
-
     if reusable_conversation_id is not None:
         event_service = await conversation_service.get_event_service(
             reusable_conversation_id
         )
         if event_service is not None:
-            state_before = await event_service.get_state()
-            min_event_count = len(state_before.events) + 1
-            # Claim capacity before saving the message: a 429 must leave
-            # nothing behind so an OpenAI client can retry the same request.
-            run_slot = await event_service.reserve_run_slot()
-            try:
-                await event_service.send_message(
-                    Message(role="user", content=user_content),
-                    run=True,
-                    run_slot=run_slot,
-                )
-            finally:
-                if run_slot is not None:
-                    run_slot.release()
-    started_new_conversation = event_service is None
-
-    if event_service is None:
-        try:
-            conversation_info, _ = await conversation_service.start_conversation(
-                start_request
+            return await _run_reused_local_agent(
+                event_service, reusable_conversation_id, user_content
             )
-        except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as exc:
-            raise launch_http_exception(exc) from exc
-        conversation_id = conversation_info.id
-        event_service = await conversation_service.get_event_service(
-            conversation_info.id
+
+    try:
+        conversation_info, created = await conversation_service.start_conversation(
+            start_request, gateway_run=True
         )
-        if event_service is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Conversation did not start",
-            )
+    except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as exc:
+        raise launch_http_exception(exc) from exc
+    conversation_id = conversation_info.id
+    event_service = await conversation_service.get_event_service(conversation_info.id)
+    if event_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Conversation did not start",
+        )
 
-    if started_new_conversation:
+    if not created:
+        return await _run_reused_local_agent(
+            event_service, conversation_info.id, user_content
+        )
+
+    try:
         try:
             status_value = await event_service.wait_for_run_completion(
                 timeout=_GATEWAY_TIMEOUT_SECONDS
@@ -637,22 +671,18 @@ async def _run_agent(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 detail="Agent run timed out",
             ) from None
-    else:
-        assert min_event_count is not None
-        status_value = await _wait_for_reused_conversation_completion(
-            event_service,
-            min_event_count=min_event_count,
+        _raise_for_terminal_error(status_value)
+        state = await event_service.get_state()
+        final_response = await event_service.get_agent_final_response()
+        usage = state.stats.get_combined_metrics().accumulated_token_usage
+        assert conversation_id is not None
+        return OpenAIAgentRunResult(
+            conversation_id=conversation_id,
+            final_response=final_response,
+            usage=usage,
         )
-    _raise_for_terminal_error(status_value)
-    state = await event_service.get_state()
-    final_response = await event_service.get_agent_final_response()
-    usage = state.stats.get_combined_metrics().accumulated_token_usage
-    assert conversation_id is not None
-    return OpenAIAgentRunResult(
-        conversation_id=conversation_id,
-        final_response=final_response,
-        usage=usage,
-    )
+    finally:
+        event_service._active_gateway_runs -= 1
 
 
 async def _run_docker_agent(

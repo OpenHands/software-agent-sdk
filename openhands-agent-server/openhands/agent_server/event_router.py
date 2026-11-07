@@ -223,7 +223,10 @@ async def batch_get_conversation_events(
 
 @event_write_router.post(
     "",
-    responses={429: {"description": "Message saved but server run capacity is full"}},
+    responses={
+        409: {"description": "Gateway run in progress; message not saved"},
+        429: {"description": "Message saved but server run capacity is full"},
+    },
 )
 async def send_message(
     request: SendMessageRequest,
@@ -235,7 +238,10 @@ async def send_message(
     conversation's /run endpoint instead of resending the message.
     """
     message = Message(role=request.role, content=request.content)
-    await event_service.send_message(message, request.run)
+    async with event_service._gateway_run_lock:
+        if event_service._active_gateway_runs:
+            raise HTTPException(409, "Gateway run in progress; message not saved")
+        await event_service.send_message(message, request.run)
     return Success()
 
 
@@ -286,7 +292,7 @@ async def _run_gateway_message(
     request: SendMessageRequest, event_service: EventService, deadline: float
 ) -> dict[str, Any]:
     """Save the message only after run capacity is available."""
-    if event_service._run_task is not None:
+    while event_service._run_task is not None:
         try:
             await event_service.wait_for_run_completion(
                 timeout=max(0, deadline - time.monotonic())
