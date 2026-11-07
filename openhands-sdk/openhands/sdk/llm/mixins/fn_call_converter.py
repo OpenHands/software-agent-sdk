@@ -631,13 +631,26 @@ def _normalize_parameter_tags(fn_body: str) -> str:
     )
 
 
-# Tool name aliases for legacy model compatibility
-TOOL_NAME_ALIASES: dict[str, str] = {
-    "str_replace_editor": "file_editor",
+# Legacy tool names that some models emit, mapped to the registered tool name.
+# This is the single table for both tool-call paths: the non-native converter
+# below and ``openhands.sdk.agent.utils.normalize_tool_call``.
+TOOL_NAME_ALIASES: Final[dict[str, str]] = {
     "bash": "terminal",
+    "command": "terminal",
+    "execute": "terminal",
     "execute_bash": "terminal",
+    "git": "terminal",
+    "reset": "terminal",
     "str_replace": "file_editor",
+    "str_replace_editor": "file_editor",
 }
+
+# Aliases that are themselves executables. Unlike ``bash``, whose ``command``
+# passes through unchanged, these must be prepended to the command argument
+# (``git`` + ``status`` -> ``git status``). Only ``normalize_tool_call``
+# rewrites arguments, so the converter resolves their schema but keeps the
+# emitted name for it.
+TERMINAL_COMMAND_PREFIX_ALIASES: Final[frozenset[str]] = frozenset({"git", "reset"})
 
 
 def _find_tool(
@@ -664,8 +677,10 @@ def _resolve_tool_name(
 
     # Try aliases if tool not found (some models use legacy names)
     if not matching_tool and fn_name in TOOL_NAME_ALIASES:
-        fn_name = TOOL_NAME_ALIASES[fn_name]
-        matching_tool = _find_tool(tools, fn_name)
+        alias_target = TOOL_NAME_ALIASES[fn_name]
+        matching_tool = _find_tool(tools, alias_target)
+        if fn_name not in TERMINAL_COMMAND_PREFIX_ALIASES:
+            fn_name = alias_target
 
     if not matching_tool:
         available_tools = [

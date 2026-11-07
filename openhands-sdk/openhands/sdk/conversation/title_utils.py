@@ -89,24 +89,18 @@ def generate_title_with_llm(
     Returns:
         Generated title, or None if LLM fails or returns empty response.
     """
-    # Truncate very long messages to avoid excessive token usage
-    if len(message) > 1000:
-        truncated_message = message[:1000] + "...(truncated)"
-    else:
-        truncated_message = message
-
     template = (prompt or "").strip()
     if template:
         user_prompt = template.replace(
-            CONVERSATION_CONTENT_PLACEHOLDER, truncated_message
+            CONVERSATION_CONTENT_PLACEHOLDER, message
         ).replace(MAX_LENGTH_PLACEHOLDER, str(max_length))
         if CONVERSATION_CONTENT_PLACEHOLDER not in template:
-            user_prompt = f"{user_prompt}\n\nConversation content:\n{truncated_message}"
+            user_prompt = f"{user_prompt}\n\nConversation content:\n{message}"
     else:
         user_prompt = (
             f"Generate a title (maximum {max_length} characters) "
             f"for a conversation that starts with this message:\n\n"
-            f"{truncated_message}"
+            f"{message}"
         )
 
     try:
@@ -121,8 +115,8 @@ def generate_title_with_llm(
                             "descriptive titles for conversations with OpenHands. "
                             "OpenHands is a helpful AI agent that can interact "
                             "with a computer to solve tasks using bash terminal, "
-                            "file editor, and browser. Given a user message "
-                            "(which may be truncated), generate a concise, "
+                            "file editor, and browser. Given a user message, "
+                            "generate a concise, "
                             "descriptive title for the conversation. Return only "
                             "the title, with no additional text, quotes, or "
                             "explanations."

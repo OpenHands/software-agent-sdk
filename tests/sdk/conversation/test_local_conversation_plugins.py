@@ -13,12 +13,16 @@ from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.event import MessageEvent
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.hooks.config import HookDefinition, HookMatcher
 from openhands.sdk.marketplace import MarketplaceRegistration
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.plugin import (
+    PluginFetchError,
     PluginSource,
     discovery,
     install_plugin,
@@ -535,6 +539,197 @@ class TestLocalConversationPlugins:
         ]
         conversation.close()
 
+    def test_explicit_plugin_that_fails_to_load_stops_the_conversation(
+        self, tmp_path: Path, basic_agent
+    ):
+        """An explicitly attached plugin is not silently dropped."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            plugins=[PluginSource(source=str(tmp_path / "missing-plugin"))],
+            visualizer=None,
+        )
+
+        try:
+            with pytest.raises(PluginFetchError):
+                conversation.send_message("hello")
+        finally:
+            conversation.close()
+
+    @pytest.mark.parametrize(
+        "broken_source, named_in_warning",
+        [
+            pytest.param(
+                "./plugins/does-not-exist", "does-not-exist", id="missing_source"
+            ),
+            pytest.param(None, "broken-plugin", id="invalid_manifest"),
+            pytest.param(
+                {"source": "npm", "package": "broken"},
+                "broken-plugin",
+                id="unsupported_source",
+            ),
+            pytest.param(
+                {"source": "github", "repo": "owner/repo", "path": "../outside"},
+                "broken-plugin",
+                id="unsafe_repo_path",
+            ),
+            pytest.param(
+                {"source": "url", "url": "https://user:s3cr3t-token@127.0.0.1:9/x.git"},
+                "127.0.0.1:9/x.git",
+                id="unreachable_url_with_credentials",
+            ),
+        ],
+    )
+    def test_auto_load_marketplace_skips_plugin_that_fails_to_load(
+        self,
+        tmp_path: Path,
+        mock_llm,
+        caplog: pytest.LogCaptureFixture,
+        broken_source: str | dict | None,
+        named_in_warning: str,
+    ):
+        broken_entry: dict = {"name": "broken-plugin"}
+        if broken_source is not None:
+            broken_entry["source"] = broken_source
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                broken_entry,
+                {
+                    "name": "good-plugin",
+                    "skills": [{"name": "good-skill", "content": "Good skill"}],
+                },
+            ],
+        )
+        manifest = marketplace_dir / "plugins" / "broken-plugin" / ".plugin"
+        (manifest / "plugin.json").write_text("{not json")
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(
+                        name="auto", source=str(marketplace_dir), auto_load=True
+                    )
+                ]
+            ),
+        )
+        conversation = LocalConversation(
+            agent=agent, workspace=workspace, visualizer=None
+        )
+
+        with caplog.at_level(
+            "WARNING", logger="openhands.sdk.conversation.impl.local_conversation"
+        ):
+            conversation.send_message("hello")
+
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any(
+            named_in_warning in message and "continuing without it" in message
+            for message in warnings
+        ), warnings
+        assert "s3cr3t-token" not in caplog.text
+        assert conversation.agent.agent_context is not None
+        assert [skill.name for skill in conversation.agent.agent_context.skills] == [
+            "good-skill"
+        ]
+        assert conversation.resolved_plugins is not None
+        assert [plugin.source for plugin in conversation.resolved_plugins] == [
+            str(marketplace_dir / "plugins" / "good-plugin")
+        ]
+        user_messages = [
+            event
+            for event in conversation.state.events
+            if isinstance(event, MessageEvent) and event.source == "user"
+        ]
+        assert len(user_messages) == 1
+        conversation.close()
+
+    def test_auto_load_marketplace_failure_is_reported_to_the_user(
+        self, tmp_path: Path, mock_llm
+    ):
+        """A marketplace that cannot be cloned (for example a private repository
+        without credentials in the sandbox) is reported as a non-fatal error,
+        so its missing agents and hooks are not a silent surprise."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(
+                        name="private",
+                        source="https://user:s3cr3t-token@127.0.0.1:9/catalog.git",
+                        auto_load=True,
+                    )
+                ]
+            ),
+        )
+        conversation = LocalConversation(
+            agent=agent, workspace=workspace, visualizer=None
+        )
+
+        conversation.send_message("hello")
+
+        errors = [
+            event
+            for event in conversation.state.events
+            if isinstance(event, ConversationErrorEvent)
+        ]
+        assert [error.code for error in errors] == ["MarketplaceLoadError"]
+        assert "'private'" in errors[0].detail
+        assert "****@127.0.0.1:9/catalog.git" in errors[0].detail
+        assert "s3cr3t-token" not in errors[0].detail
+        assert conversation.state.execution_status != ConversationExecutionStatus.ERROR
+        conversation.close()
+
+    def test_auto_load_plugin_failure_is_reported_to_the_user(
+        self, tmp_path: Path, mock_llm
+    ):
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {"name": "broken-plugin", "source": "./plugins/does-not-exist"},
+                {
+                    "name": "good-plugin",
+                    "skills": [{"name": "good-skill", "content": "Good skill"}],
+                },
+            ],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(
+                        name="auto", source=str(marketplace_dir), auto_load=True
+                    )
+                ]
+            ),
+        )
+        conversation = LocalConversation(
+            agent=agent, workspace=workspace, visualizer=None
+        )
+
+        conversation.send_message("hello")
+
+        errors = [
+            event
+            for event in conversation.state.events
+            if isinstance(event, ConversationErrorEvent)
+        ]
+        assert [error.code for error in errors] == ["PluginLoadError"]
+        assert "does-not-exist" in errors[0].detail
+        assert conversation.state.execution_status != ConversationExecutionStatus.ERROR
+        conversation.close()
+
     def test_auto_load_marketplace_duplicate_names_fail(self, tmp_path: Path, mock_llm):
         marketplace_dir = create_test_marketplace(
             tmp_path / "marketplace",
@@ -970,6 +1165,48 @@ class TestLocalConversationPlugins:
 
         conversation.close()
 
+    def test_load_plugin_binds_plugin_root_to_its_hooks(self, tmp_path: Path, mock_llm):
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {
+                    "name": "hook-plugin",
+                    "hooks": {
+                        "hooks": {
+                            "UserPromptSubmit": [
+                                {"hooks": [{"command": "echo plugin-hook"}]}
+                            ]
+                        }
+                    },
+                }
+            ],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(name="manual", source=str(marketplace_dir))
+                ]
+            ),
+        )
+        conversation = LocalConversation(
+            agent=agent, workspace=workspace, visualizer=None
+        )
+
+        conversation.load_plugin("hook-plugin")
+
+        assert conversation.state.hook_config is not None
+        plugin_dir = marketplace_dir / "plugins" / "hook-plugin"
+        assert [
+            hook.plugin_root
+            for matcher in conversation.state.hook_config.user_prompt_submit
+            for hook in matcher.hooks
+        ] == [str(plugin_dir.resolve())]
+        conversation.close()
+
     def test_load_plugin_requires_registered_marketplaces(
         self, tmp_path: Path, basic_agent
     ):
@@ -1067,6 +1304,39 @@ class TestLocalConversationPlugins:
         assert conversation._hook_processor is not None
         # We can verify hooks were processed by checking the hook_config passed
         # (The actual hook_processor is internal, but we trust the merging works)
+        conversation.close()
+
+    def test_plugin_hooks_carry_their_own_plugin_root(
+        self, tmp_path: Path, basic_agent
+    ):
+        """Each plugin's hooks keep that plugin's root; explicit hooks have none."""
+        hooks = {"hooks": {"PreToolUse": [{"hooks": [{"command": "echo plugin"}]}]}}
+        plugin_a = create_test_plugin(tmp_path / "plugin-a", name="a", hooks=hooks)
+        plugin_b = create_test_plugin(tmp_path / "plugin-b", name="b", hooks=hooks)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        explicit_hooks = HookConfig(
+            pre_tool_use=[HookMatcher(hooks=[HookDefinition(command="echo explicit")])]
+        )
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            plugins=[
+                PluginSource(source=str(plugin_a)),
+                PluginSource(source=str(plugin_b)),
+            ],
+            hook_config=explicit_hooks,
+            visualizer=None,
+        )
+
+        conversation._ensure_plugins_loaded()
+
+        assert conversation.state.hook_config is not None
+        assert [
+            hook.plugin_root
+            for matcher in conversation.state.hook_config.pre_tool_use
+            for hook in matcher.hooks
+        ] == [None, str(plugin_a.resolve()), str(plugin_b.resolve())]
         conversation.close()
 
     def test_hook_sub_conversations_receive_persistence_base_dir(
@@ -1628,6 +1898,36 @@ class TestAmbientPluginAutoLoad:
         assert conversation.agent.agent_context is not None
         skill_names = [s.name for s in conversation.agent.agent_context.skills]
         assert "ambient-skill" in skill_names
+        conversation.close()
+
+    def test_installed_plugin_that_fails_to_load_does_not_hide_the_others(
+        self, tmp_path: Path, basic_agent, monkeypatch
+    ):
+        install_store = tmp_path / "installed-store"
+        install_store.mkdir()
+        for name in ("broken-plugin", "good-plugin"):
+            source = create_test_plugin(
+                tmp_path / "src" / name,
+                name=name,
+                skills=[{"name": f"{name}-skill", "content": f"{name} content"}],
+            )
+            install_plugin(str(source), installed_dir=install_store)
+        (install_store / "broken-plugin" / ".plugin" / "plugin.json").write_text(
+            "{not json"
+        )
+        self._isolate(monkeypatch, [tmp_path / "empty-user"], install_store)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        conversation = LocalConversation(
+            agent=basic_agent, workspace=workspace, visualizer=None
+        )
+        conversation.send_message("hello")
+
+        assert conversation.agent.agent_context is not None
+        assert [s.name for s in conversation.agent.agent_context.skills] == [
+            "good-plugin-skill"
+        ]
         conversation.close()
 
     def test_explicitly_attached_plugin_overrides_ambient_plugin(

@@ -27,6 +27,7 @@ from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import (
     ConversationRunError,
+    RemoteConversationValueError,
     WebSocketConnectionError,
 )
 from openhands.sdk.conversation.secret_registry import (
@@ -81,6 +82,7 @@ CONVERSATIONS_PATH = "/api/conversations"
 FATAL_WS_CLOSE_CODES = frozenset({4001, 4004})
 _WEBSOCKET_AUTH_TYPE: Final = "auth"
 _WEBSOCKET_SESSION_API_KEY_FIELD: Final = "session_api_key"
+_WEBSOCKET_MAX_MESSAGE_SIZE: Final = 16 * 1024 * 1024
 
 
 def _agent_kind_mismatch_message(conversation_id: ConversationID) -> str:
@@ -199,10 +201,12 @@ class WebSocketCallbackClient:
         self._thread = None
         self._stop = threading.Event()
         self._ready = threading.Event()
+        self.failure_reason: str | None = None
 
     def start(self) -> None:
         if self._thread:
             return
+        self.failure_reason = None
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -266,7 +270,9 @@ class WebSocketCallbackClient:
         has_connected = False
         while not self._stop.is_set():
             try:
-                async with websockets.connect(ws_url) as ws:
+                async with websockets.connect(
+                    ws_url, max_size=_WEBSOCKET_MAX_MESSAGE_SIZE
+                ) as ws:
                     if self.api_key:
                         await ws.send(
                             json.dumps(
@@ -303,6 +309,18 @@ class WebSocketCallbackClient:
                                 "ws_event_processing_error", stack_info=True
                             )
             except ConnectionClosed as exc:
+                if any(
+                    frame is not None and frame.code == 1009
+                    for frame in (exc.rcvd, exc.sent)
+                ):
+                    self.failure_reason = (
+                        "WebSocket message too big (close code 1009) for conversation "
+                        f"{self.conversation_id}; the SDK receive limit is "
+                        f"{_WEBSOCKET_MAX_MESSAGE_SIZE} bytes."
+                    )
+                    logger.error(self.failure_reason)
+                    self._stop.set()
+                    break
                 if _is_fatal_websocket_close(exc):
                     logger.debug("ws_connection_closed_fatal", exc_info=True)
                     self._stop.set()
@@ -1290,6 +1308,7 @@ class RemoteConversation(BaseConversation):
                     self._id,
                 )
             else:
+                failure_reason = self._ws_client.failure_reason
                 try:
                     self._ws_client.stop()
                 except Exception:
@@ -1299,6 +1318,7 @@ class RemoteConversation(BaseConversation):
                 raise WebSocketConnectionError(
                     conversation_id=self._id,
                     timeout=ws_timeout,
+                    message=failure_reason,
                 )
 
         # Reconcile events after WebSocket is ready to catch any events that
@@ -1408,7 +1428,9 @@ class RemoteConversation(BaseConversation):
                 (only used when blocking=True). Default is 3600 seconds.
 
         Raises:
-            ConversationRunError: If the run fails or times out.
+            ConversationRunError: If the run fails or times out, including when
+                it ends in ``ERROR`` (e.g. the iteration limit) or ``STUCK``.
+                ``LocalConversation.run()`` returns with that status instead.
         """
         # Disarm and drain any stale terminal status events from previous runs
         # before arming for the new one. _run_armed gates full-state WS snapshots
@@ -1814,13 +1836,20 @@ class RemoteConversation(BaseConversation):
         conversation state by adding a condensation event to the history.
 
         Raises:
-            HTTPError: If the server returns an error (e.g., no condenser configured).
+            RemoteConversationValueError: If no condenser is configured. It is
+                both a ``ValueError`` and an ``httpx.HTTPStatusError`` (409).
+            httpx.HTTPStatusError: For other server errors.
         """
-        _send_request(
-            self._client,
-            "POST",
-            f"{CONVERSATIONS_PATH}/{self._id}/condense",
-        )
+        try:
+            _send_request(
+                self._client,
+                "POST",
+                f"{CONVERSATIONS_PATH}/{self._id}/condense",
+            )
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 409:
+                raise RemoteConversationValueError.from_http_error(error) from error
+            raise
 
     def fork(
         self,
@@ -1913,15 +1942,22 @@ class RemoteConversation(BaseConversation):
             event_id: Event to make the new HEAD, or ``None`` for the empty tree.
 
         Raises:
-            httpx.HTTPStatusError: If the server rejects the event id (e.g. 404
-                for an unknown event).
+            RemoteConversationValueError: If the server does not know the event
+                id. It is both a ``ValueError`` and an ``httpx.HTTPStatusError``
+                (404).
+            httpx.HTTPStatusError: For other server errors.
         """
-        _send_request(
-            self._client,
-            "POST",
-            f"{CONVERSATIONS_PATH}/{self._id}/navigate",
-            json={"event_id": event_id},
-        )
+        try:
+            _send_request(
+                self._client,
+                "POST",
+                f"{CONVERSATIONS_PATH}/{self._id}/navigate",
+                json={"event_id": event_id},
+            )
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 404:
+                raise RemoteConversationValueError.from_http_error(error) from error
+            raise
         self._state.refresh_from_server()
 
     def execute_tool(self, tool_name: str, action: "Action") -> "Observation":

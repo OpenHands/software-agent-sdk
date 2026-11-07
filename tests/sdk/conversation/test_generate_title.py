@@ -14,12 +14,14 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
+from openhands.sdk.conversation.request import ConversationConfig
 from openhands.sdk.conversation.title_utils import generate_title_with_llm
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import LLM, LLMResponse, Message, MetricsSnapshot, TextContent
 from openhands.sdk.llm.auth.credentials import CredentialStore, OAuthCredentials
 from openhands.sdk.llm.auth.openai import OpenAISubscriptionAuth
 from openhands.sdk.settings import ACPAgentSettings
+from openhands.sdk.workspace import LocalWorkspace
 
 
 def create_test_agent() -> Agent:
@@ -502,6 +504,53 @@ def test_title_uses_real_http_transport(title_http_server, tmp_path, mode):
     assert bool(body.get("stream")) == (mode == "subscription")
     if mode != "chat":
         assert body["store"] is False
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        None,
+        "Title: {conversation_content}",
+        "Return only a title.",
+        "Keep the title faithful to the request. " * 100 + "{conversation_content}",
+    ],
+)
+def test_title_preserves_full_input_over_http(title_http_server, prompt):
+    base_url, requests = title_http_server
+    message = "Background context. " * 100 + "Investigate the Zephyr login failure."
+    llm = LLM(
+        model="openai/gpt-4o-mini",
+        api_key=SecretStr("local-test-key"),
+        base_url=base_url,
+        num_retries=0,
+    )
+
+    assert generate_title_with_llm(message, llm, prompt=prompt) == "Fix title transport"
+    assert len(requests) == 1
+    body = requests[0][1]
+    assert message in json.dumps(body["messages"], ensure_ascii=False)
+    assert "...(truncated)" not in json.dumps(body["messages"])
+    if prompt is not None:
+        assert prompt.replace("{conversation_content}", message) in json.dumps(
+            body["messages"], ensure_ascii=False
+        )
+
+
+def test_title_prompt_accepts_long_content_and_round_trips(tmp_path):
+    prompt = "Use the complete writing guidance. " * 100
+    config = ConversationConfig(
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        prompt=prompt,
+    )
+
+    assert config.prompt == prompt
+    assert (
+        ConversationConfig.model_validate_json(config.model_dump_json()).prompt
+        == prompt
+    )
+    assert "maxLength" not in json.dumps(
+        ConversationConfig.model_json_schema()["properties"]["prompt"]
+    )
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")
