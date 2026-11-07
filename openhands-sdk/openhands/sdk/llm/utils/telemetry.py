@@ -11,7 +11,7 @@ from typing import Any, ClassVar
 
 from litellm.cost_calculator import completion_cost as litellm_completion_cost
 from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
-from litellm.types.utils import CostPerToken, ModelResponse, Usage
+from litellm.types.utils import Choices, CostPerToken, ModelResponse, Usage
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SecretStr
 
 from openhands.sdk.llm.utils.litellm_provider import LLMProvider
@@ -203,6 +203,7 @@ class Telemetry(BaseModel):
         self._req_start = time.time()
         self._req_ctx = _redact_request_credentials(telemetry_ctx or {})
         self._open_span()
+        self._annotate_span_messages("input", lambda: _request_messages(self._req_ctx))
 
     def on_response(
         self,
@@ -239,6 +240,7 @@ class Telemetry(BaseModel):
             self.log_llm_call(resp, cost, raw_resp=raw_resp)
 
         # 5) authoritative cost + cache buckets onto the span, before it closes
+        self._annotate_span_messages("output", lambda: _response_messages(resp))
         self._annotate_span(cost, usage)
         self._close_span()
 
@@ -340,6 +342,11 @@ class Telemetry(BaseModel):
                 # x-litellm-response-cost header, which is already cache-aware
                 # and priced by the real backend rather than by a name lookup.
                 span.set_attribute("gen_ai.usage.cost", float(cost))
+            if usage is not None and usage.has_tokens:
+                span.set_attribute("gen_ai.usage.input_tokens", usage.prompt_tokens)
+                span.set_attribute(
+                    "gen_ai.usage.output_tokens", usage.completion_tokens
+                )
             if usage is not None:
                 # Emitted unconditionally: lmnr only reports these when
                 # prompt_tokens_details is populated, which not every provider
@@ -353,6 +360,22 @@ class Telemetry(BaseModel):
                 )
         except Exception:
             logger.debug("Failed to annotate LLM span", exc_info=True)
+
+    def _annotate_span_messages(
+        self, direction: str, messages: Callable[[], list[Any]]
+    ) -> None:
+        span = self._span
+        if span is None:
+            return
+        try:
+            serializable = json.loads(json.dumps(messages(), default=_safe_json))
+            payload = redact_text_secrets(
+                json.dumps(_without_reasoning(serializable), ensure_ascii=False)
+            )
+            span.set_attribute(f"gen_ai.{direction}.messages", payload)
+            span.set_attribute(f"lmnr.span.{direction}", payload)
+        except Exception:
+            logger.debug("Failed to annotate LLM span messages", exc_info=True)
 
     def _close_span(self, err: BaseException | None = None) -> None:
         cm, self._span_cm, self._span = self._span_cm, None, None
@@ -520,6 +543,48 @@ def _redact_request_credentials(ctx: dict[str, Any]) -> dict[str, Any]:
         else:
             logged_kwargs[key] = sanitize_dict(value)
     return {**ctx, "kwargs": logged_kwargs}
+
+
+_PRIVATE_MESSAGE_FIELDS = frozenset(
+    {"reasoning_content", "thinking_blocks", "reasoning_items"}
+)
+_PRIVATE_ITEM_TYPES = frozenset({"reasoning", "thinking", "redacted_thinking"})
+
+
+def _is_private_item(value: Any) -> bool:
+    return isinstance(value, dict) and value.get("type") in _PRIVATE_ITEM_TYPES
+
+
+def _without_reasoning(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_reasoning(item)
+            for key, item in value.items()
+            if key not in _PRIVATE_MESSAGE_FIELDS
+        }
+    if isinstance(value, list):
+        return [
+            _without_reasoning(item) for item in value if not _is_private_item(item)
+        ]
+    return value
+
+
+def _request_messages(ctx: dict[str, Any]) -> list[Any]:
+    if "messages" in ctx:
+        return list(ctx["messages"])
+    instructions = ctx.get("instructions")
+    system = [{"role": "system", "content": instructions}] if instructions else []
+    return system + list(ctx.get("input") or [])
+
+
+def _response_messages(resp: ModelResponse | ResponsesAPIResponse) -> list[Any]:
+    if isinstance(resp, ResponsesAPIResponse):
+        return list(resp.output)
+    return [
+        choice.message.model_dump(mode="json", exclude_none=True)
+        for choice in resp.choices
+        if isinstance(choice, Choices)
+    ]
 
 
 def _safe_json(obj: Any) -> Any:
