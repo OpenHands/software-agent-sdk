@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from openhands.sdk import Agent
+from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.conversation.state import (
@@ -51,6 +51,19 @@ ConfirmationHandler = Callable[[str, list["ActionEvent"]], bool]
 logger = get_logger(__name__)
 
 _SUBAGENTS_DIR: Final[str] = "subagents"
+
+
+def _sub_agent_llm_copy(llm: LLM) -> LLM:
+    """Copy ``llm`` for a sub-agent, with streaming disabled where allowed.
+
+    Sub-agents have no ``on_token`` callback, so streaming is turned off.
+    Providers that require streaming (the ChatGPT subscription / Codex
+    transport) reject ``stream=False``; for them streaming stays on and
+    ``responses()`` drains the stream internally.
+    """
+    if llm.requires_streaming:
+        return llm.model_copy()
+    return llm.model_copy(update={"stream": False})
 
 
 class TaskStatus(StrEnum):
@@ -378,8 +391,7 @@ class TaskManager:
         parent = self.parent_conversation
         parent_llm = parent.agent.llm
 
-        llm_updates: dict = {"stream": False}
-        sub_agent_llm = parent_llm.model_copy(update=llm_updates)
+        sub_agent_llm = _sub_agent_llm_copy(parent_llm)
         # Reset metrics such that the sub-agent has its own
         # Metrics object
         sub_agent_llm.reset_metrics()
@@ -398,10 +410,10 @@ class TaskManager:
                 "which this agent does not have."
             )
 
-        # ensuring that the sub-agent LLM has stream deactivated
+        # ensuring that the sub-agent LLM has stream deactivated where allowed
         sub_agent = inherit_mcp_config(parent.agent, sub_agent).model_copy(
             update={
-                "llm": sub_agent.llm.model_copy(update={"stream": False}),
+                "llm": _sub_agent_llm_copy(sub_agent.llm),
                 "tools": scope_delegation_tools(sub_agent.tools, self._sub_agent_scope),
             }
         )
