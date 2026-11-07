@@ -114,6 +114,53 @@ LONG_HTML = (
     + "<p>End of long page</p></body></html>"
 )
 
+MODALS_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Browser Modal Test Page</title>
+    <style>
+        #cookies { position: fixed; inset: 0; background: white; z-index: 10; }
+    </style>
+</head>
+<body>
+    <button onclick="alert('Test alert'); result.textContent = 'Alert resumed'">
+        Open alert
+    </button>
+    <button onclick="result.textContent = 'Confirmed: ' + confirm('Proceed?')">
+        Open confirm
+    </button>
+    <button onclick="result.textContent = 'Prompt: ' + prompt('Name?', 'Guest')">
+        Open prompt
+    </button>
+    <button onclick="document.getElementById('cookies').hidden = false">
+        Open cookies
+    </button>
+    <button onclick="document.getElementById('login').showModal()">
+        Open login
+    </button>
+    <button onclick="result.textContent = 'Page interaction resumed'">
+        Continue on page
+    </button>
+    <p id="result"></p>
+    <div id="cookies" role="dialog" aria-label="Cookie consent" hidden>
+        <p>Allow cookies to continue</p>
+        <button onclick="document.getElementById('cookies').hidden = true;
+                         result.textContent = 'Cookies accepted'">
+            Accept cookies
+        </button>
+    </div>
+    <dialog id="login">
+        <form method="dialog" onsubmit="result.textContent =
+            'Signed in: ' + document.getElementById('username').value">
+            <label for="username">Username</label>
+            <input id="username" name="username" type="text">
+            <button type="submit">Sign in</button>
+        </form>
+    </dialog>
+</body>
+</html>"""
+
 
 def _has_chromium_for_e2e() -> bool:
     executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
@@ -163,6 +210,9 @@ def test_server() -> Generator[str]:
 
         with open(os.path.join(temp_dir, "long.html"), "w", encoding="utf-8") as f:
             f.write(LONG_HTML)
+
+        with open(os.path.join(temp_dir, "modals.html"), "w", encoding="utf-8") as f:
+            f.write(MODALS_HTML)
 
         # Start HTTP server
         port = _get_free_port()
@@ -912,6 +962,75 @@ def _run_js(executor: BrowserToolExecutor, expression: str) -> None:
         )
 
     executor._async_executor.run_async(evaluate, timeout=10)
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize(
+    ("dialog", "expected"),
+    [
+        ("alert", "Alert resumed"),
+        ("confirm", "Confirmed: true"),
+        ("prompt", "Prompt: null"),
+    ],
+)
+def test_javascript_modal_does_not_block_browser_tools(
+    browser_executor: BrowserToolExecutor, test_server: str, dialog: str, expected: str
+):
+    browser_executor(BrowserNavigateAction(url=f"{test_server}/modals.html"))
+    state = browser_executor(BrowserGetStateAction()).text
+    button = _element_index(state, "button", f"Open {dialog}")
+
+    assert not browser_executor(BrowserClickAction(index=button)).is_error
+    assert expected in browser_executor(BrowserGetContentAction()).text
+
+    state = browser_executor(BrowserGetStateAction()).text
+    button = _element_index(state, "button", "Continue on page")
+    assert not browser_executor(BrowserClickAction(index=button)).is_error
+    assert (
+        "Page interaction resumed" in browser_executor(BrowserGetContentAction()).text
+    )
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize(
+    ("dialog", "submit", "expected"),
+    [
+        ("cookies", "Accept cookies", "Cookies accepted"),
+        ("login", "Sign in", "Signed in: Alice"),
+    ],
+)
+def test_dom_modal_can_be_completed_through_browser_tools(
+    browser_executor: BrowserToolExecutor,
+    test_server: str,
+    dialog: str,
+    submit: str,
+    expected: str,
+):
+    browser_executor(BrowserNavigateAction(url=f"{test_server}/modals.html"))
+    state = browser_executor(BrowserGetStateAction()).text
+    button = _element_index(state, "button", f"Open {dialog}")
+    assert not browser_executor(BrowserClickAction(index=button)).is_error
+
+    observation = browser_executor(BrowserGetStateAction(include_screenshot=True))
+    assert not observation.is_error
+    assert observation.screenshot_data
+    if dialog == "login":
+        field = _element_index(observation.text, "input")
+        assert not browser_executor(
+            BrowserTypeAction(index=field, text="Alice")
+        ).is_error
+
+    state = browser_executor(BrowserGetStateAction()).text
+    button = _element_index(state, "button", submit)
+    assert not browser_executor(BrowserClickAction(index=button)).is_error
+    assert expected in browser_executor(BrowserGetContentAction()).text
+
+    state = browser_executor(BrowserGetStateAction()).text
+    button = _element_index(state, "button", "Continue on page")
+    assert not browser_executor(BrowserClickAction(index=button)).is_error
+    assert (
+        "Page interaction resumed" in browser_executor(BrowserGetContentAction()).text
+    )
 
 
 @pytest.mark.e2e
