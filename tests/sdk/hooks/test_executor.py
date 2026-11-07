@@ -111,6 +111,18 @@ class TestHookExecutor:
         assert result.reason == "Not allowed"
         assert result.blocked
 
+    def test_null_reason_is_not_stringified(self, executor, sample_event):
+        hook = HookDefinition(
+            command=python_command(
+                "import json; print(json.dumps({'decision': 'deny', 'reason': None}))"
+            )
+        )
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.blocked
+        assert result.reason is None
+
     def test_execute_environment_variables(self, executor, sample_event, tmp_path):
         """Test that environment variables are set correctly."""
         hook = HookDefinition(
