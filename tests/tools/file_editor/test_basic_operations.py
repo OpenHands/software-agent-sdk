@@ -1,5 +1,6 @@
 """Tests for basic file editor operations."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -995,3 +996,15 @@ def test_str_replace_and_insert_snippet_output_on_a_large_file(editor):
         new_str="Inserted line at 500",
     )
     assert "   500\tInserted line at 500" in result.text
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="text-mode writes emit CRLF natively on Windows"
+)
+def test_str_replace_preserves_crlf_line_endings(tmp_path):
+    path = tmp_path / "crlf.txt"
+    path.write_bytes(b"one\r\ntwo\r\nthree\r\n")
+
+    FileEditor()(command="str_replace", path=str(path), old_str="two", new_str="TWO")
+
+    assert path.read_bytes() == b"one\r\nTWO\r\nthree\r\n"
