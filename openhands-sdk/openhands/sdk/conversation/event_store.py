@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, nullcontext
 from typing import Final, SupportsIndex, overload
 
+from openhands.sdk.conversation._event_sequence import SequenceJournal
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.persistence_const import (
     EVENT_FILE_PATTERN,
@@ -69,6 +70,9 @@ class EventLog(EventsListBase):
         self._event_cache: dict[int, Event] = {}
         self._lock_path = f"{dir_path}/{LOCK_FILE_NAME}"
         self._write_guard = None
+        self._sequences = SequenceJournal(fs, dir_path)
+        self._index_scan_failed = False
+        self._index_synchronized = False
         self._length = self._scan_and_build_index()
 
     def set_write_guard(
@@ -253,11 +257,8 @@ class EventLog(EventsListBase):
 
         try:
             with self._fs.lock(self._lock_path, timeout=LOCK_TIMEOUT_SECONDS):
-                # Sync with disk only if the marker cannot rule out another writer
                 if not self._marker_matches_length():
-                    disk_length = self._count_events_on_disk()
-                    if disk_length > self._length:
-                        self._sync_from_disk(disk_length)
+                    self._sync_from_disk()
 
                 if evt_id in self._id_to_idx:
                     existing_idx = self._id_to_idx[evt_id]
@@ -285,6 +286,7 @@ class EventLog(EventsListBase):
                 # depend on the event ids.
                 disk_idx = max(idx, self._next_disk_idx)
                 with write_guard:
+                    self._sequences.reserve(disk_idx)
                     self._fs.write(self._file_path(disk_idx, evt_id), payload)
                 if disk_idx != idx:
                     self._disk_idx[idx] = disk_idx
@@ -312,7 +314,12 @@ class EventLog(EventsListBase):
         exact count.
         """
         try:
-            return bool(self._fs.exists(self._marker_path(self._length)))
+            return (
+                self._index_synchronized
+                and not self._index_scan_failed
+                and not self._sequences.contains(self._next_disk_idx)
+                and bool(self._fs.exists(self._marker_path(self._length)))
+            )
         except Exception as e:
             logger.warning("Error reading event count marker in %s: %s", self._dir, e)
             return False
@@ -329,46 +336,25 @@ class EventLog(EventsListBase):
         except Exception as e:
             logger.warning("Error updating event count marker in %s: %s", self._dir, e)
 
-    def _count_events_on_disk(self) -> int:
-        """Count event files on disk."""
-        try:
-            paths = self._fs.list(self._dir)
-        except FileNotFoundError:
-            # Directory doesn't exist yet - expected for new event logs
-            return 0
-        except Exception as e:
-            logger.warning("Error listing event directory %s: %s", self._dir, e)
-            return 0
-        return sum(1 for p in paths if EVENT_NAME_RE.match(posix_path_name(p)))
-
-    def _sync_from_disk(self, disk_length: int) -> None:
-        """Sync state for events written by other processes.
-
-        Preserves existing index mappings and only scans new events.
-        """
-        # Preserve existing mappings
+    def _sync_from_disk(self) -> None:
+        """Refresh even when file loss offsets another writer's append."""
         existing = [
             (idx, evt_id, self._disk_idx.get(idx, idx))
             for idx, evt_id in self._idx_to_id.items()
         ]
-
-        # Re-scan to pick up new events
-        scanned_length = self._scan_and_build_index()
-
-        # Restore mappings the scan cannot see (e.g., for non-UUID event IDs).
-        # Only whole pairs, and only when neither side was rescanned: behind a
-        # lost file a rescanned index can belong to a different event.
+        scanned_length = self._scan_and_build_index(strict=True)
         for idx, evt_id, disk_idx in existing:
             if idx in self._idx_to_id or evt_id in self._id_to_idx:
+                continue
+            if not self._fs.exists(self._file_path(disk_idx, evt_id)):
                 continue
             self._idx_to_id[idx] = evt_id
             self._id_to_idx[evt_id] = idx
             if disk_idx != idx:
                 self._disk_idx[idx] = disk_idx
             self._next_disk_idx = max(self._next_disk_idx, disk_idx + 1)
-
-        # Use the higher of scanned length or disk_length
-        self._length = max(scanned_length, disk_length)
+        self._length = max(scanned_length, max(self._idx_to_id, default=-1) + 1)
+        self._index_synchronized = True
 
     def __len__(self) -> int:
         return self._length
@@ -389,12 +375,23 @@ class EventLog(EventsListBase):
         self._event_cache.clear()
         self._next_disk_idx = 0
 
-    def _scan_and_build_index(self) -> int:
+    def _scan_and_build_index(self, *, strict: bool = False) -> int:
+        # Read-side scans do not hold the write lock and can see a reservation
+        # before its payload. Only _sync_from_disk, called under that lock, may
+        # establish the snapshot used by the constant-time append fast path.
+        self._index_synchronized = False
         try:
             paths = self._fs.list(self._dir)
+        except FileNotFoundError:
+            paths = []
         except Exception:
+            self._index_scan_failed = True
+            if strict:
+                raise
             self._reset_index()
             return 0
+        self._index_scan_failed = False
+        reserved_next = self._sequences.next_sequence(paths)
 
         found: list[tuple[int, EventID]] = []
         for p in paths:
@@ -446,4 +443,5 @@ class EventLog(EventsListBase):
                     ", ..." if lost > sum(b - a + 1 for a, b in holes) else "",
                     len(found),
                 )
+        self._next_disk_idx = max(self._next_disk_idx, reserved_next)
         return len(found)

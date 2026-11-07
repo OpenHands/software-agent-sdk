@@ -368,10 +368,11 @@ def test_event_log_custom_directory():
 def test_event_log_large_index_formatting():
     """Test proper formatting of large indices."""
     fs = InMemoryFileStore()
+    fs.write(
+        "events/event-99998-aaaaaaaa-0000.json",
+        create_test_event("aaaaaaaa-0000").model_dump_json(),
+    )
     log = EventLog(fs)
-
-    # Simulate large index by manually setting length
-    log._length = 99999
 
     event = create_test_event("large-index-event", "Content")
     log.append(event)
@@ -381,8 +382,9 @@ def test_event_log_large_index_formatting():
     assert len(files) > 0
     assert any("event-99999-large-index-event" in f for f in files)
 
-    assert log.get_index("large-index-event") == 99999
-    assert log.get_id(99999) == "large-index-event"
+    assert log.get_index("large-index-event") == 1
+    assert log.get_seq(1) == 99999
+    assert log.get_id(1) == "large-index-event"
 
 
 def test_event_log_concurrent_append_thread_safety():

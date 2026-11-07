@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Durable event sequence allocation</title>
+<style>
+body{font:17px/1.6 system-ui,sans-serif;max-width:980px;margin:40px auto;padding:0 24px;color:#17212b;background:#fafbfc}
+h1,h2{line-height:1.2}code,pre{font:14px/1.5 ui-monospace,monospace}pre{padding:20px;background:#eaf0f5;overflow:auto}
+table{border-collapse:collapse;width:100%}td,th{padding:12px;border:1px solid #cbd3dc;text-align:left}section{margin:32px 0}
+</style>
+<h1>Durable event sequence allocation</h1>
+<p>Repair duplicate and reused replay cursors after supported event-file loss.
+Public Python methods, event JSON, REST payloads, and session WebSocket frame shapes stay unchanged.</p>
+<section><h2>Observed failure</h2>
+<p>Writer A stores events at sequences 0, 1, 2. After file 1 disappears, writer B reopens
+and appends at sequence 3. Both logs now have dense length 3. The old length marker lets
+A skip refresh: A rejects B's event as a parent and allocates sequence 3 again.
+A reconnect after sequence 3 skips A's new event. Losing the last file also lets a restart
+reuse its sequence. Native local storage and the real server restart/reconnect path reproduce this.</p>
+<pre>Before: a:0, c:2, d:3, e:3     after_seq=3 → []
+After:  a:0, c:2, d:3, e:4     after_seq=3 → [e]</pre></section>
+<section><h2>Allocation protocol</h2>
+<pre>existing FileStore lock
+  refresh if the snapshot is untrusted, the next reservation exists, or the count differs
+  validate event ID and parent
+  existing write guard / conversation lease
+    publish immutable .eventlog-seq-N.marker
+    publish event-N-ID.json
+  publish in-memory dense index and existing count marker
+release lock</pre>
+<p>A reservation survives failed publication and lost event files. Cold scans allocate after
+both the highest surviving filename and every retained reservation. A stale writer probes
+its expected next reservation with one <code>exists()</code>; old reservations remain, so it
+cannot miss a later writer that has already advanced several times.</p>
+<p>Constructor and read-repair scans are untrusted because they run outside the write lock
+and may observe a reservation before its event. The first append refreshes under the lock;
+later appends keep the constant-time probes until another scan invalidates that snapshot.</p>
+<p>Reservation contents are immutable and empty. No mutable metadata read depends on
+FileStore cache freshness, and no FileStore interface or backend dependency is added.</p></section>
+<section><h2>Compatibility and failure behavior</h2>
+<table><tr><th>Surface</th><th>Behavior</th></tr>
+<tr><td><code>append(event)</code></td><td>Returns the existing dense index, including after holes.</td></tr>
+<tr><td><code>get_seq</code> / <code>after_seq</code></td><td>Continue using durable physical sequence numbers; failed writes may leave gaps.</td></tr>
+<tr><td>Old event files</td><td>Read in place. Existing length markers provide a legacy high-water hint.</td></tr>
+<tr><td>Unreadable directory</td><td>Read construction keeps its existing tolerance; append requires a successful refresh and does not guess an empty writable log.</td></tr>
+<tr><td>Missing directory</td><td>Still permits a new store's first append.</td></tr>
+<tr><td>Navigation and fork</td><td>Branch selection does not lower a conversation's allocation watermark. Forks allocate in their own directory.</td></tr></table></section>
+<section><h2>Costs and limits</h2>
+<p>One empty reservation file is retained per allocated sequence. It is part of the log,
+not disposable cache; deleting it can invalidate stale-writer detection and recovery.
+The steady-state append path still avoids directory scans. Scans remain proportional to
+stored event and reservation filenames.</p>
+<p>This does not recover deleted event payloads, retroactively renumber already-corrupt
+duplicate sequences, or infer an old lost sequence when no legacy metadata records it.
+Mixed writers running older SDK code do not participate in the new allocation protocol.
+NFS coordination retains the FileStore's existing documented limitations.</p></section>
+<section><h2>Verification</h2>
+<p>Tests exercise native local/in-memory stores, warm concurrent writers, process death before
+and after event publication, denied scans, lease guard rejection, legacy markers, real
+conversation resume/navigation/fork, and real REST → restart → WebSocket cursor replay.
+REST messages use <code>run=false</code>; no agent step or paid model call is needed.</p></section>
+</html>
