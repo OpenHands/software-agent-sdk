@@ -62,6 +62,19 @@ MALFORMED_HISTORY_PATTERNS: Final[list[str]] = [
     "failed to parse tool call arguments as json",
 ]
 
+# Tool-call arguments must be valid JSON. Some providers surface a deterministic
+# parse failure as a rate-limit or server error; keep those patterns separate so
+# callers can classify them as client errors instead of retrying forever.
+JSON_PARSE_PATTERNS: Final[list[str]] = [
+    "failed to parse tool call arguments",
+    "json.exception.parse_error",
+    "parse error at line",
+    "invalid string: missing closing quote",
+    "invalid string: control character",
+    "unexpected end of input",
+    "missing closing quote",
+]
+
 # Vertex AI (Gemini) rejects context-caching requests when the cached content
 # is below the provider's minimum token threshold (currently 4096 tokens).
 # Example error: "The cached content is of 1171 tokens. The minimum token
@@ -125,6 +138,17 @@ def looks_like_malformed_conversation_history_error(exception: Exception) -> boo
 
     s = str(exception).lower()
     return any(p in s for p in MALFORMED_HISTORY_PATTERNS)
+
+
+def looks_like_json_parse_error(exception: Exception) -> bool:
+    """Return True for malformed tool-call argument JSON errors.
+
+    This intentionally does not type-check the exception: some providers wrap
+    deterministic JSON parse failures in a rate-limit exception, which would
+    otherwise send the retry loop into a backoff it can never escape.
+    """
+    s = str(exception).lower()
+    return any(p in s for p in JSON_PARSE_PATTERNS)
 
 
 def is_prompt_cache_too_small(exception: Exception) -> bool:

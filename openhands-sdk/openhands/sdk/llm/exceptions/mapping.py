@@ -13,6 +13,7 @@ from .classifier import (
     is_content_policy_violation,
     is_context_window_exceeded,
     looks_like_auth_error,
+    looks_like_json_parse_error,
     looks_like_malformed_conversation_history_error,
 )
 from .types import (
@@ -41,6 +42,12 @@ def map_provider_exception(exception: Exception) -> Exception:
     # though the recovery path still uses condensation.
     if looks_like_malformed_conversation_history_error(exception):
         return LLMMalformedConversationHistoryError(str(exception))
+
+    # Tool-call argument JSON errors are deterministic client errors. Some
+    # providers wrap them in a rate-limit exception, so classify them before the
+    # generic rate-limit branch to avoid retrying a request that cannot succeed.
+    if looks_like_json_parse_error(exception):
+        return LLMBadRequestError(str(exception))
 
     # Auth-like errors often appear as BadRequest/OpenAIError with specific text
     if looks_like_auth_error(exception):

@@ -4,6 +4,7 @@ from .classifier import (
     is_prompt_cache_too_small,
     is_quota_exhaustion_error,
     looks_like_auth_error,
+    looks_like_json_parse_error,
     looks_like_malformed_conversation_history_error,
 )
 from .mapping import map_provider_exception
@@ -57,6 +58,7 @@ __all__ = [
     "is_prompt_cache_too_small",
     "is_quota_exhaustion_error",
     "looks_like_auth_error",
+    "looks_like_json_parse_error",
     "looks_like_malformed_conversation_history_error",
     "map_provider_exception",
 ]

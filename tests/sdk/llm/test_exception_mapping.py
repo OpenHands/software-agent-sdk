@@ -6,6 +6,7 @@ from litellm.exceptions import (
     ContentPolicyViolationError,
     InternalServerError,
     PermissionDeniedError,
+    RateLimitError,
 )
 
 from openhands.sdk import LLM
@@ -15,6 +16,7 @@ from openhands.sdk.llm.exceptions import (
     LLMContentPolicyViolationError,
     LLMContextWindowExceedError,
     LLMMalformedConversationHistoryError,
+    LLMRateLimitError,
     map_provider_exception,
 )
 
@@ -83,6 +85,32 @@ def test_map_openai_tool_argument_parse_internal_server_error():
     )
     mapped = map_provider_exception(e)
     assert isinstance(mapped, LLMMalformedConversationHistoryError)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "failed to parse tool call arguments as json",
+        "OpenAIException - Failed to parse tool call arguments as JSON: "
+        "invalid string: missing closing quote",
+        "OpenAIException - [json.exception.parse_error.101] parse error at line 1",
+        "OpenAIException - invalid string: control character in string",
+        "OpenAIException - unexpected end of input",
+    ],
+)
+def test_map_json_parse_error_wrapped_in_rate_limit(message: str):
+    e = RateLimitError(message=message, llm_provider=PROVIDER, model=MODEL)
+    mapped = map_provider_exception(e)
+    assert isinstance(mapped, LLMBadRequestError)
+    assert not isinstance(mapped, LLMRateLimitError)
+
+
+def test_map_plain_rate_limit_still_maps_to_rate_limit():
+    e = RateLimitError(
+        message="Rate limit exceeded", llm_provider=PROVIDER, model=MODEL
+    )
+    mapped = map_provider_exception(e)
+    assert isinstance(mapped, LLMRateLimitError)
 
 
 def test_map_typed_content_policy_violation():
