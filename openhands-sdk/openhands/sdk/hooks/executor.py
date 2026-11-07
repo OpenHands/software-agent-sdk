@@ -483,6 +483,10 @@ class HookExecutor:
         hook_env["OPENHANDS_EVENT_TYPE"] = event.event_type
         if event.tool_name:
             hook_env["OPENHANDS_TOOL_NAME"] = event.tool_name
+        if hook.plugin_root:
+            # Set after the inherited environment so a parent-process value
+            # cannot shadow the owning plugin's root.
+            hook_env["PLUGIN_ROOT"] = hook.plugin_root
 
         if env:
             hook_env.update(env)

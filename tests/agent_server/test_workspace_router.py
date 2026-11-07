@@ -227,3 +227,27 @@ def test_non_local_workspace_returns_404(tmp_path):
 
     assert resp.status_code == 404
     assert "not local" in resp.json()["detail"].lower()
+
+
+@pytest.mark.parametrize("url_path", ["site/", "site", ""])
+def test_symlinked_index_html_outside_workspace_is_rejected(
+    client_factory, tmp_path, url_path
+):
+    """A directory's ``index.html`` symlinked outside the workspace is not served."""
+    cid = uuid4()
+    outside = tmp_path / "outside.html"
+    outside.write_text("secret data")
+
+    workspace = tmp_path / "ws"
+    index_dir = workspace / "site" if url_path else workspace
+    index_dir.mkdir(parents=True)
+    (index_dir / "index.html").symlink_to(outside)
+
+    client = client_factory(conversation_id=cid, workspace_dir=workspace)
+
+    suffix = f"/{url_path}" if url_path else ""
+    resp = client.get(
+        f"/api/conversations/{cid}/workspace{suffix}", follow_redirects=False
+    )
+    assert resp.status_code == 400
+    assert "secret data" not in resp.text

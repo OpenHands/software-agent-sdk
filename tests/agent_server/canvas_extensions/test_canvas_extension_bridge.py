@@ -24,6 +24,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
+from websockets.typing import Subprotocol
 
 from openhands.agent_server.canvas_extensions.bridge import (
     APP_BACKEND_SESSION_COOKIE_NAME,
@@ -189,6 +190,14 @@ async def _live_bridge(
         except Exception:
             pass
 
+    @backend.websocket("/protocol")
+    async def protocol_endpoint(websocket: WebSocket) -> None:
+        offered = websocket.scope.get("subprotocols") or []
+        selected = "qa.v1" if "qa.v1" in offered else None
+        await websocket.accept(subprotocol=selected)
+        await websocket.send_text(f"offered={','.join(offered)};selected={selected}")
+        await websocket.close()
+
     with _LiveServer(backend) as backend_server:
         certfile, keyfile = _write_tls_certificate(tmp_path)
         bridge_port = _free_port()
@@ -342,6 +351,66 @@ async def test_live_websocket_is_bidirectional_and_revoked(live_bridge) -> None:
             ssl=ssl_context,
         ):
             pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("offered", "expected_protocol", "expected_report"),
+    [
+        (["qa.v1"], "qa.v1", "offered=qa.v1;selected=qa.v1"),
+        (["other.v1", "qa.v1"], "qa.v1", "offered=other.v1,qa.v1;selected=qa.v1"),
+        (["other.v1"], None, "offered=other.v1;selected=None"),
+        (None, None, "offered=;selected=None"),
+    ],
+)
+async def test_live_websocket_negotiates_backend_subprotocol(
+    live_bridge, offered, expected_protocol, expected_report
+) -> None:
+    client: httpx.AsyncClient = live_bridge.client
+    root = f"{live_bridge.public_url}/app-backends/{APP_NAME}"
+    assert (
+        await client.post(f"{root}/session", headers=_bootstrap_headers())
+    ).status_code == 200
+    cookie = client.cookies.get(APP_BACKEND_SESSION_COOKIE_NAME)
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+
+    async with websockets.connect(
+        root.replace("https://", "wss://") + "/protocol",
+        origin=live_bridge.public_url,
+        additional_headers={"Cookie": f"{APP_BACKEND_SESSION_COOKIE_NAME}={cookie}"},
+        subprotocols=offered,
+        ssl=ssl_context,
+    ) as websocket:
+        assert websocket.subprotocol == expected_protocol
+        assert await websocket.recv() == expected_report
+
+
+@pytest.mark.asyncio
+async def test_live_websocket_upstream_refusal_closes_with_1011(live_bridge) -> None:
+    client: httpx.AsyncClient = live_bridge.client
+    root = f"{live_bridge.public_url}/app-backends/{APP_NAME}"
+    assert (
+        await client.post(f"{root}/session", headers=_bootstrap_headers())
+    ).status_code == 200
+    cookie = client.cookies.get(APP_BACKEND_SESSION_COOKIE_NAME)
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+
+    async with websockets.connect(
+        root.replace("https://", "wss://") + "/no-such-socket",
+        origin=live_bridge.public_url,
+        additional_headers={"Cookie": f"{APP_BACKEND_SESSION_COOKIE_NAME}={cookie}"},
+        subprotocols=[Subprotocol("qa.v1")],
+        ssl=ssl_context,
+    ) as websocket:
+        assert websocket.subprotocol is None
+        with pytest.raises(websockets.exceptions.ConnectionClosed) as closed:
+            await websocket.recv()
+    assert closed.value.rcvd is not None
+    assert closed.value.rcvd.code == 1011
 
 
 @pytest.mark.asyncio

@@ -10,7 +10,12 @@ from openhands.sdk.event import ActionEvent, MessageEvent, ObservationEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.tool import Action, Observation
-from openhands.tools.delegate import DelegationVisualizer
+from openhands.tools import DelegationVisualizer as PublicVisualizer
+from openhands.tools.delegate import DelegationVisualizer as LegacyVisualizer
+from openhands.tools.delegate.visualizer import (
+    DelegationVisualizer as LegacyModuleVisualizer,
+)
+from openhands.tools.task import DelegationVisualizer
 
 
 class MockDelegateAction(Action):
@@ -468,3 +473,10 @@ def test_delegation_visualizer_parallel_batch_siblings_fall_back():
     assert "input 2K (total 3K)" in primary
     assert "input (total 3K)" in sibling
     assert "input 2K" not in sibling
+
+
+def test_task_visualizer_keeps_legacy_import_identity():
+    assert DelegationVisualizer is LegacyVisualizer is PublicVisualizer
+    assert LegacyModuleVisualizer is DelegationVisualizer
+    visualizer = DelegationVisualizer(name="Parent")
+    assert isinstance(visualizer.create_sub_visualizer("worker"), DelegationVisualizer)

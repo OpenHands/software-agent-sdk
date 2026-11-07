@@ -298,7 +298,9 @@ class InstallationManager[T: ExtensionProtocol]:
 
         Calls ``list_installed()`` first (which syncs metadata), then loads
         each enabled extension via the installation interface.  Disabled
-        extensions are skipped.
+        extensions are skipped, and so is an extension that fails to load, so
+        that one broken installation does not hide the others. Strict callers
+        receive load failures instead of a partial result.
 
         Returns:
             List of loaded extension objects of type ``T``.
@@ -313,9 +315,20 @@ class InstallationManager[T: ExtensionProtocol]:
                 continue
 
             extension_path = self.installation_dir / info.name
-            if extension_path.exists():
-                extension = self.installation_interface.load_from_dir(extension_path)
-                extensions.append(extension)
+            if not extension_path.exists():
+                continue
+            try:
+                extensions.append(
+                    self.installation_interface.load_from_dir(extension_path)
+                )
+            except Exception:
+                if strict:
+                    raise
+                logger.warning(
+                    "Failed to load installed extension '%s'; skipping it",
+                    info.name,
+                    exc_info=True,
+                )
 
         return extensions
 
