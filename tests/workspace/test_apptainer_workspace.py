@@ -3,7 +3,7 @@
 import gc
 import subprocess
 import sys
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -171,3 +171,19 @@ def test_failed_health_check_terminates_server_process(monkeypatch, tmp_path):
                 proc.wait()
             if proc.stdout:
                 proc.stdout.close()
+
+
+def test_exit_sends_completion_callback(mock_apptainer_workspace, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    workspace, _ = mock_apptainer_workspace()
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace.__exit__(None, None, None)
+
+        mock_client.post.assert_called_once()
+        assert mock_client.post.call_args.args[0] == "https://svc.test/complete"

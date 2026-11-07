@@ -378,8 +378,11 @@ class ApptainerWorkspace(RemoteWorkspace):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[no-untyped-def]
-        """Context manager exit - cleans up the Apptainer container."""
-        self.cleanup()
+        """Send the completion callback, then clean up the Apptainer container."""
+        try:
+            super().__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            self.cleanup()
 
     def __del__(self) -> None:
         """Clean up the Apptainer container when the workspace is destroyed."""
