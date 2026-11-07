@@ -485,6 +485,39 @@ def test_nullable_type_list_keeps_nested_structure():
     assert result["properties"]["tags"]["items"] == {"type": "string"}
 
 
+def test_multiple_non_null_types_are_kept():
+    """Only a single non-null type collapses; a real union keeps both members.
+
+    ``["string", "array"]`` is the common "a string or a list of strings" shape;
+    collapsing it to ``"array"`` would tell the model a plain string is invalid.
+    """
+    node = {
+        "type": "object",
+        "properties": {
+            "value": {
+                "type": ["string", "array"],
+                "items": {"type": "string"},
+            },
+            "payload": {
+                "type": ["object", "array"],
+                "properties": {"field": {"type": "string"}},
+                "items": {"type": "string"},
+            },
+        },
+    }
+
+    result = _process_schema_node(node, {})
+
+    value = result["properties"]["value"]
+    assert value["type"] == ["string", "array"]
+    assert value["items"] == {"type": "string"}
+
+    payload = result["properties"]["payload"]
+    assert payload["type"] == ["object", "array"]
+    assert payload["properties"] == {"field": {"type": "string"}}
+    assert payload["items"] == {"type": "string"}
+
+
 def test_anyof_with_false_does_not_clobber_concrete_type():
     """A ``false`` member in ``anyOf`` must not become the representative type.
 

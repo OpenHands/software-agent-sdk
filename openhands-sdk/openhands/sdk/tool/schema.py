@@ -157,13 +157,19 @@ def _process_schema_node(
         result["description"] = node["description"]
 
     # A type may be a list of alternatives (e.g. ``["object", "null"]``); the
-    # nested structure still belongs to the non-null member.
+    # nested structure still belongs to the non-null member. Collapse the list
+    # to that member only when it is the only non-null type left: a list with
+    # several real types (``["string", "array"]``) tells the model both are
+    # allowed, so it keeps its meaning.
     node_type = node.get("type")
     type_names = node_type if isinstance(node_type, list) else [node_type]
+    non_null_types = [name for name in type_names if name != "null"]
+    collapsed_type = non_null_types[0] if len(non_null_types) == 1 else None
 
     # Handle object properties recursively
     if "object" in type_names and "properties" in node:
-        result["type"] = "object"
+        if collapsed_type == "object":
+            result["type"] = "object"
         result["properties"] = {}
 
         # Process each property
@@ -178,7 +184,8 @@ def _process_schema_node(
 
     # Handle arrays
     if "array" in type_names and "items" in node:
-        result["type"] = "array"
+        if collapsed_type == "array":
+            result["type"] = "array"
         items = node["items"]
         if isinstance(items, list):
             # Draft-07 tuple form: one schema per position.
