@@ -94,7 +94,7 @@ Routes: `GET /api/projects/{project_id}/artifacts`,
   download and delete. Names are flat (letters, digits, spaces, `._()+-`,
   no leading dot, no trailing dot or space, no Windows device names), and a
   name differing from another only in case is 409. Files live in
-  `<persistence dir>/project-artifacts/<project id>/`, up to 100 MiB each.
+  `<persistence dir>/projects/<project id>/artifacts/`, up to 100 MiB each.
 - REST: `PUT /api/projects/{project_id}/conversations/{conversation_id}` (204) and
   `DELETE` on the same path (`{"deleted": true}`) change membership by setting
   or clearing the conversation's `project` tag; other tags are kept.

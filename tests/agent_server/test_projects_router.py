@@ -921,12 +921,12 @@ async def test_deleting_a_project_deletes_its_artifacts(client, persistence_dir)
     await client.post(
         f"/api/projects/{project['id']}/artifacts", files={"file": ("a.txt", b"x")}
     )
-    artifact_dir = persistence_dir / "project-artifacts" / project["id"]
-    assert artifact_dir.is_dir()
+    project_dir = persistence_dir / "projects" / project["id"]
+    assert (project_dir / "artifacts" / "a.txt").read_bytes() == b"x"
 
     assert (await client.delete(f"/api/projects/{project['id']}")).status_code == 200
 
-    assert not artifact_dir.exists()
+    assert not project_dir.exists()
     assert (
         await client.get(f"/api/projects/{project['id']}/artifacts")
     ).status_code == 404

@@ -2,8 +2,11 @@
 
 Artifacts are the files a project produces or is given that do not belong in
 its source repositories: reports, images, exports, uploads. Each project keeps
-them flat under ``<persistence_dir>/project-artifacts/<project id hex>/``, with
-a small JSON record per file in ``.meta/`` saying who added it.
+its own files in one folder, ``<persistence_dir>/projects/<project id hex>/``
+(see :func:`project_files_dir`): artifacts sit flat in its ``artifacts/``, with
+a small JSON record per file in ``artifacts/.meta/`` saying who added it, and
+later project files (such as project memory) go beside them. The project
+records themselves stay in ``projects.json``.
 
 Writes go to a temporary file first and are renamed into place, so a reader
 never sees half a file. All methods are blocking; callers run them in a worker
@@ -81,12 +84,17 @@ def _project_lock(directory: Path) -> threading.Lock:
         return _project_locks.setdefault(str(directory), threading.Lock())
 
 
+def project_files_dir(persistence_dir: Path, project_id: UUID) -> Path:
+    """The folder that holds every file of one project."""
+    return Path(persistence_dir) / "projects" / project_id.hex
+
+
 class ProjectArtifactStore:
     def __init__(self, persistence_dir: Path):
-        self.root = Path(persistence_dir) / "project-artifacts"
+        self.persistence_dir = Path(persistence_dir)
 
     def _dir(self, project_id: UUID) -> Path:
-        return self.root / project_id.hex
+        return project_files_dir(self.persistence_dir, project_id) / "artifacts"
 
     def _paths(self, project_id: UUID, name: str) -> tuple[Path, Path]:
         if not valid_artifact_name(name):
@@ -175,8 +183,12 @@ class ProjectArtifactStore:
         return existed
 
     def delete_project(self, project_id: UUID) -> None:
+        """Delete the project's whole folder: its artifacts and other files."""
         with _project_lock(self._dir(project_id)):
-            shutil.rmtree(self._dir(project_id), ignore_errors=True)
+            shutil.rmtree(
+                project_files_dir(self.persistence_dir, project_id),
+                ignore_errors=True,
+            )
 
     @staticmethod
     def _read_meta(meta: Path) -> ProjectArtifact | None:
