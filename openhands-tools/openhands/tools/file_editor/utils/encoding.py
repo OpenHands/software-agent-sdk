@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import charset_normalizer
 from cachetools import LRUCache
+from charset_normalizer.md import mess_ratio
 
 
 if TYPE_CHECKING:
@@ -26,6 +27,8 @@ BINARY_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0e-\x1f\x7f]")
 # files; the detector's own guess is tried right after UTF-8 when it is one of
 # these.
 TEXT_DECODE_CANDIDATES = ("utf-8", "cp1252", "latin-1", "cp1251")
+
+RECOVERY_SCORE_SAMPLE_CHARS = 64 * 1024
 
 # charset_normalizer reports some codecs under IANA names; map them to the
 # Python codec names used above so their guesses decode correctly.
@@ -133,14 +136,20 @@ class EncodingManager:
             self._best_guess_encoding(path),
             *TEXT_DECODE_CANDIDATES,
         )
+        decoded: dict[str, str] = {}
         for candidate in dict.fromkeys(c for c in candidates if c):
             try:
                 text = path.read_text(encoding=candidate)
             except (OSError, UnicodeDecodeError, LookupError):
                 continue
-            if BINARY_CONTROL_CHARS.search(text) is None:
+            if BINARY_CONTROL_CHARS.search(text) is not None:
+                continue
+            if candidate == self.default_encoding:
                 return candidate
-        return None
+            decoded[candidate] = text[:RECOVERY_SCORE_SAMPLE_CHARS]
+        if not decoded:
+            return None
+        return min(decoded, key=lambda c: mess_ratio(decoded[c], maximum_threshold=1.0))
 
     def resolve_text_encoding(self, path: Path) -> str | None:
         """Return an encoding that decodes ``path`` to clean text, else None."""
