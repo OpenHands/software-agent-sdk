@@ -77,7 +77,7 @@ def test_api_key_encrypted_at_rest(tmp_path):
 
 
 def test_undecodable_file_raises_the_same_value_error(tmp_path):
-    """The caller sees "unreadable", not a raw decode error from the middle of the read."""
+    """The caller sees "unreadable", not a raw decode error from mid-read."""
     path = tmp_path / "provider_connections.json"
     path.write_bytes(b'{"connections": "' + bytes([0xFF]) + b'"}')
     store = ProviderConnectionStore(base_dir=tmp_path)
