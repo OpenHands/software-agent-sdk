@@ -713,8 +713,8 @@ class LocalConversation(BaseConversation):
             / BASE_STATE
         )
         try:
-            data = json.loads(base_path.read_text())
-        except (FileNotFoundError, json.JSONDecodeError):
+            data = json.loads(base_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return []
         raw_tools = (data.get("agent") or {}).get("tools") or []
         tools: list[Tool] = []

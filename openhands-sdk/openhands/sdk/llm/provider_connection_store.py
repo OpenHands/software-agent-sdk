@@ -186,7 +186,7 @@ class ProviderConnectionStore:
             return PersistedProviderConnections()
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as e:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
             raise ValueError(f"Provider connections file is unreadable: {e}") from e
         if not isinstance(raw, dict):
             raise ValueError("Provider connections file must contain a JSON object")

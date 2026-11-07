@@ -449,7 +449,9 @@ class LLMProfileStore:
                     )
                     continue
                 try:
-                    data = json.loads(path.read_text())
+                    # The sibling stores read UTF-8; this one used the locale
+                    # encoding, so a hand-edited profile read back as mojibake.
+                    data = json.loads(path.read_text(encoding="utf-8"))
                 except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
                     logger.warning(
                         f"[Profile Store] Skipping corrupted profile {name!r}: {e}"
