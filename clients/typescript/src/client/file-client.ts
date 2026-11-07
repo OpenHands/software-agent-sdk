@@ -38,6 +38,7 @@ export class FileClient {
         limit: options.limit,
         include_hidden: options.includeHidden || undefined,
       },
+      signal: options.signal,
     });
     return response.data;
   }
@@ -57,6 +58,19 @@ export class FileClient {
       responseType: 'arrayBuffer',
       cache: 'no-store',
     });
+    return response.data;
+  }
+
+  /** Create an absolute directory path, including missing parents; existing directories succeed. */
+  async createDirectory(path: string, options: { signal?: AbortSignal } = {}): Promise<Success> {
+    const response = await this.runtimeClient.post<Success>(
+      '/api/file/create_directory',
+      undefined,
+      {
+        params: { path },
+        signal: options.signal,
+      }
+    );
     return response.data;
   }
 
