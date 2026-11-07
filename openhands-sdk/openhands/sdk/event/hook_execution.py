@@ -6,7 +6,7 @@ from pydantic import Field
 from rich.text import Text
 
 from openhands.sdk.event.base import Event
-from openhands.sdk.event.types import SourceType
+from openhands.sdk.event.types import EventID, SourceType
 
 
 HookEventType = Literal[
@@ -68,11 +68,11 @@ class HookExecutionEvent(Event):
     )
 
     # Context
-    action_id: str | None = Field(
+    action_id: EventID | None = Field(
         default=None,
         description="ID of the action this hook is associated with (PreToolUse/PostToolUse)",  # noqa: E501
     )
-    message_id: str | None = Field(
+    message_id: EventID | None = Field(
         default=None,
         description="ID of the message this hook is associated with (UserPromptSubmit)",
     )

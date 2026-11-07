@@ -836,6 +836,35 @@ templates.",
         # Plain strings have no description
         assert result_dict["PLAIN_STRING"]["description"] is None
 
+    def test_get_secret_infos_carries_scope(self):
+        """scope and scope_description flow through get_secret_infos."""
+        secrets = {
+            "PERSONAL_TOKEN": StaticSecret(
+                value=SecretStr("v"),
+                description="Personal token",
+                scope="personal",
+                scope_description="The user's own credentials.",
+            ),
+            "ORG_TOKEN": StaticSecret(
+                value=SecretStr("v"),
+                description="Org token",
+                scope="organization",
+                scope_description="Shared service-account credentials.",
+            ),
+            "PLAIN_STRING": "plain_string_value",
+        }
+        context = AgentContext(secrets=secrets)
+        result = {info["name"]: info for info in context.get_secret_infos()}
+        assert result["PERSONAL_TOKEN"]["scope"] == "personal"
+        assert (
+            result["PERSONAL_TOKEN"]["scope_description"]
+            == "The user's own credentials."
+        )
+        assert result["ORG_TOKEN"]["scope"] == "organization"
+        # Plain strings carry no scope.
+        assert result["PLAIN_STRING"]["scope"] is None
+        assert result["PLAIN_STRING"]["scope_description"] is None
+
     def test_get_system_message_suffix_with_secrets_only(self):
         """Test system message suffix with secrets but no repo skills or custom suffix.
 
