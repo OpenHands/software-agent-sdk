@@ -255,16 +255,16 @@ class FileEditor:
         self._history_manager.add_history(path, file_content)
 
         # Create a snippet of the edited section
-        start_line = max(0, replacement_line - SNIPPET_CONTEXT_WINDOW)
+        start_line = max(1, replacement_line - SNIPPET_CONTEXT_WINDOW)
         end_line = replacement_line + SNIPPET_CONTEXT_WINDOW + new_str.count("\n")
 
         # Read just the snippet range
-        snippet = self.read_file(path, start_line=start_line + 1, end_line=end_line)
+        snippet = self.read_file(path, start_line=start_line, end_line=end_line)
 
         # Prepare the success message
         success_message = f"The file {path} has been edited. "
         success_message += self._make_output(
-            snippet, f"a snippet of {path}", start_line + 1
+            snippet, f"a snippet of {path}", start_line
         )
 
         success_message += (
