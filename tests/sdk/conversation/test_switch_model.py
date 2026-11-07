@@ -1,7 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import SecretStr
@@ -78,10 +78,11 @@ def _make_acp_conversation(tmp_path) -> tuple[LocalConversation, ACPAgent]:
     """
     agent = ACPAgent(acp_command=["echo", "test"], acp_model="model-a")
     agent._conn = MagicMock()
+    agent._conn.set_session_model = AsyncMock()
     agent._session_id = "sess-1"
     agent._agent_name = "codex-acp"
     executor = MagicMock()
-    executor.run_async = MagicMock()
+    executor.run_async = MagicMock(side_effect=lambda coro, **_: asyncio.run(coro))
     agent._executor = executor
     conv = LocalConversation(
         agent=agent,
@@ -105,6 +106,34 @@ def _make_pre_session_acp_conversation(tmp_path) -> tuple[LocalConversation, ACP
         persistence_dir=str(tmp_path / "persist"),
     )
     return conv, agent
+
+
+def test_switch_llm_rejects_acp_agent(tmp_path):
+    """switch_llm is refused on an ACP conversation (#4158).
+
+    The ACP subprocess owns its model, so swapping OpenHands' LLM would only
+    overwrite the ``acp-managed`` placeholder without changing what runs.
+    """
+    conv, _ = _make_pre_session_acp_conversation(tmp_path)
+    base_before = conv.state._fs.read(BASE_STATE)
+
+    with pytest.raises(ValueError, match="switch_acp_model"):
+        conv.switch_llm(_make_llm("other-model", "other"))
+
+    assert conv.agent.llm.usage_id == "acp-managed"
+    assert conv.state.agent.llm.usage_id == "acp-managed"
+    assert conv.state._fs.read(BASE_STATE) == base_before
+
+
+def test_switch_profile_rejects_acp_agent(tmp_path, profile_store):
+    """switch_profile is refused on an ACP conversation, as switch_llm is."""
+    conv, _ = _make_pre_session_acp_conversation(tmp_path)
+
+    with pytest.raises(ValueError, match="switch_acp_model"):
+        conv.switch_profile("fast")
+
+    assert conv.agent.llm.usage_id == "acp-managed"
+    assert conv.state.agent.llm.usage_id == "acp-managed"
 
 
 def test_switch_acp_model_before_session_defers_and_persists(tmp_path):

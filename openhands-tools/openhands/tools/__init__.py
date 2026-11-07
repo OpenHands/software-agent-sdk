@@ -19,7 +19,11 @@ from ``openhands.tools.browser_use``.
 from importlib.metadata import PackageNotFoundError, version
 
 from openhands.tools.ask_oracle import AskOracleTool
-from openhands.tools.delegate import DelegationVisualizer
+
+# Register legacy event kinds even when callers only import current tools.
+from openhands.tools.delegate import (
+    definition as _legacy_delegate_definition,  # noqa: F401
+)
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.preset.default import (
     get_default_agent,
@@ -27,7 +31,7 @@ from openhands.tools.preset.default import (
     register_builtins_agents,
     register_default_tools,
 )
-from openhands.tools.task import TaskToolSet
+from openhands.tools.task import DelegationVisualizer, TaskToolSet
 from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal import TerminalTool
 from openhands.tools.workflow import WorkflowToolSet
