@@ -159,7 +159,13 @@ class MessageProjectThreadAction(Action):
 class MessageProjectThreadObservation(Observation):
     conversation_id: UnmaskedID | None = None
     previous_status: str | None = None
-    run_requested: bool | None = None
+    run: str | None = Field(
+        default=None,
+        description=(
+            "started, queued, waiting_for_confirmation or not_run, as the "
+            "server reported it."
+        ),
+    )
 
     @property
     def visualize(self) -> Text:

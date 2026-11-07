@@ -6,6 +6,7 @@ each conversation. These tests drive the HTTP surface against a real
 as ``PATCH /api/conversations/{id}``.
 """
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -510,6 +511,7 @@ async def test_message_runs_member_with_guard(client, service, tmp_path, monkeyp
 
     async def fake_send(self, message, run=False, **kwargs):
         calls.append({"text": message.content[0].text, "run": run, **kwargs})
+        return "started"
 
     monkeypatch.setattr(EventService, "send_message", fake_send)
 
@@ -522,7 +524,7 @@ async def test_message_runs_member_with_guard(client, service, tmp_path, monkeyp
     assert response.json() == {
         "conversation_id": worker.hex,
         "previous_status": "idle",
-        "run_requested": True,
+        "run": "started",
     }
     assert calls == [
         {"text": "Also add docs", "run": True, "refuse_pending_confirmation": True}
@@ -553,3 +555,65 @@ async def test_guarded_send_keeps_message_and_does_not_approve(service, tmp_path
         state.execution_status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
     )
     assert event_service._run_task is None
+
+
+@pytest.mark.asyncio
+async def test_send_reports_queued_while_a_run_is_active(service, tmp_path):
+    worker = await _start(service, tmp_path)
+    event_service = await service.get_event_service(worker)
+    assert event_service is not None
+    active = asyncio.get_running_loop().create_future()
+    event_service._run_task = active  # a run that has not ended yet
+    try:
+        outcome = await event_service.send_message(
+            Message(role="user", content=[TextContent(text="also")]),
+            run=True,
+            refuse_pending_confirmation=True,
+        )
+    finally:
+        event_service._run_task = None
+        active.cancel()
+        event_service._rerun_requested = False
+
+    assert outcome == "queued"
+    assert await _user_messages(service, worker) == 1
+
+
+@pytest.mark.asyncio
+async def test_send_without_run_returns_none(service, tmp_path):
+    worker = await _start(service, tmp_path)
+    event_service = await service.get_event_service(worker)
+    assert event_service is not None
+
+    outcome = await event_service.send_message(
+        Message(role="user", content=[TextContent(text="note")]), run=False
+    )
+
+    assert outcome is None
+
+
+@pytest.mark.asyncio
+async def test_failed_coordinator_tag_undoes_the_whole_patch(
+    client, service, tmp_path, monkeypatch
+):
+    old = await _start(service, tmp_path)
+    new = await _start(service, tmp_path)
+    project = (
+        await client.post(
+            "/api/projects", json={"name": "P", "coordinator_conversation_id": old.hex}
+        )
+    ).json()
+
+    async def vanished(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(service, "set_conversation_tag", vanished)
+    response = await client.patch(
+        f"/api/projects/{project['id']}",
+        json={"name": "Q", "coordinator_conversation_id": new.hex},
+    )
+
+    assert response.status_code == 404
+    current = (await client.get(f"/api/projects/{project['id']}")).json()
+    assert current["name"] == "P"
+    assert current["coordinator_conversation_id"] == old.hex

@@ -45,7 +45,7 @@ Routes: `GET /api/projects`, `POST /api/projects`,
 - `F36.attention`: threads are grouped `needs_you` (waiting for confirmation), then `working`, `finished`, `idle`, newest-updated first within a group; non-members are left out.
 - `F36.remove-thread`: `DELETE .../threads/{conversation_id}` clears only the `project` tag; a second delete, or a delete through another project, is 404.
 - `F36.remove-coordinator`: removing the coordinator as a thread is 409; clearing it with `PATCH {"coordinator_conversation_id": null}` keeps it a member, now listed as a thread.
-- `F36.message-rest`: `POST .../messages` to a member saves the message, starts a run and answers `run_requested: true` with the previous status; a non-member is 404.
+- `F36.message-rest`: `POST .../messages` to a member saves the message, starts a run and answers `run: started` with the previous status; a non-member is 404.
 - `F36.message-refused`: `POST .../messages` to a thread waiting for confirmation is 409, saves nothing, and the thread keeps waiting.
 - `F36.persist-restart`: projects and membership survive a server restart.
 - `F36.delete`: `DELETE /api/projects/{id}` removes the record, then the threads endpoint is 404, and member conversations keep their tags.
@@ -71,7 +71,8 @@ Routes: `GET /api/projects`, `POST /api/projects`,
   `PATCH /api/conversations/{id}` with `tags` reaches the same membership but
   replaces the whole tag set (F04).
 - REST: `POST /api/projects/{project_id}/threads/{conversation_id}/messages`
-  with `{"text"}` answers `{conversation_id, previous_status, run_requested}`;
+  with `{"text"}` answers `{conversation_id, previous_status, run}`, where `run` is
+  `started`, `queued`, `waiting_for_confirmation` or `not_run`;
   409 when the thread is waiting for confirmation. It is the confirmation-safe
   counterpart of `POST /api/conversations/{id}/events` with `run: true`.
 - Agent tools (registered by the agent-server, not part of the default
@@ -252,7 +253,7 @@ Preconditions:
   W2=$(control-agent-server conversation start --no-run --title qa-f36-w2 --print-id)
   control-agent-server api PUT "/api/projects/$P2/threads/$W2" --expect 204
   control-agent-server api POST "/api/projects/$P2/threads/$W2/messages" --json '{"text": "Reply with the single word ok and finish."}' \
-    --expect 200 --check run_requested eq true --check previous_status eq idle --save F36.message-rest/post
+    --expect 200 --check run eq started --check previous_status eq idle --save F36.message-rest/post
   control-agent-server conversation wait "$W2" --until finished --timeout 180
   control-agent-server conversation events "$W2" --kinds MessageEvent --contains '"source": "user"' --expect-count 1
   control-agent-server api POST "/api/projects/$P2/threads/$W1/messages" --json '{"text": "hi"}' --expect 404 \
@@ -353,7 +354,8 @@ Preconditions:
   task progress yet.
 - The messages route refuses with 409 only when the thread is already
   waiting. If it reaches a confirmation while the message is being
-  delivered, the message is kept and `run_requested` is `false`. A `paused`
+  delivered, the message is kept and `run` is `waiting_for_confirmation`;
+  a run that was already active answers `queued`. A `paused`
   thread is resumed. Delivery to a running thread waits for its state lock,
   which a long tool call holds, so the tool waits up to 300 seconds and, on a
   timeout, tells the agent not to resend.

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -98,6 +98,9 @@ INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
 
 
 logger = get_logger(__name__)
+
+SendMessageRunOutcome = Literal["started", "queued", "not_run"]
+"""What ``EventService.send_message(run=True)`` did about running."""
 
 
 class ConversationRunLimitExceeded(RuntimeError):
@@ -896,12 +899,19 @@ class EventService:
         *,
         run_slot: RunSlot | None = None,
         refuse_pending_confirmation: bool = False,
-    ):
+    ) -> SendMessageRunOutcome | None:
         """Append a message and, with ``run``, start a run to handle it.
 
         With ``refuse_pending_confirmation`` a conversation waiting for
         confirmation keeps the message but is not run, and this raises
         ``ValueError("waiting_for_confirmation")`` (see :meth:`run`).
+
+        Returns:
+            ``None`` without ``run``. Otherwise ``"started"`` when a run was
+            started for the message; ``"queued"`` when a run was already
+            active, so it takes the message or a follow-up run is armed for
+            when it ends (that run may still stop at a confirmation first);
+            ``"not_run"`` when a stop or a closed service left it unrun.
         """
         if not self._conversation:
             raise ValueError("inactive_service")
@@ -912,9 +922,11 @@ class EventService:
         explicit_interrupt_generation = self._explicit_interrupt_generation
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.send_message, message)
+        outcome: SendMessageRunOutcome | None = None
         if run:
+            outcome = "not_run"
             if self._explicit_interrupt_generation != explicit_interrupt_generation:
-                return
+                return outcome
             (
                 did_mark_acp_prompt_superseded,
                 active_acp_prompt_has_latest_message,
@@ -934,13 +946,14 @@ class EventService:
                         self._explicit_interrupt_generation
                         != explicit_interrupt_generation
                     ):
-                        return
+                        return outcome
                     await self.run(
                         acp_internal_rerun_generation=explicit_interrupt_generation,
                         run_slot=run_slot,
                         refuse_pending_confirmation=refuse_pending_confirmation,
                     )
                     self._acp_internal_rerun_requested = False
+                    outcome = "started"
                 except ValueError as e:
                     if str(e) == "waiting_for_confirmation":
                         raise
@@ -952,6 +965,8 @@ class EventService:
                     # status — is what keeps a deliberate run=False append, or an
                     # IDLE reached via another path, from triggering an unwanted
                     # run. "inactive_service" is terminal and must not re-arm.
+                    if str(e) == "conversation_already_running":
+                        outcome = "queued"
                     if (
                         str(e) == "conversation_already_running"
                         and not active_acp_prompt_has_latest_message
@@ -968,6 +983,7 @@ class EventService:
                         refuse_pending_confirmation=refuse_pending_confirmation,
                     )
                     self._acp_internal_rerun_requested = False
+                    outcome = "started"
                 except ConversationRunLimitExceeded as exc:
                     # Nothing was interrupted here, so a capacity refusal is a
                     # clean backpressure signal. The message is already saved,
@@ -980,11 +996,14 @@ class EventService:
                 except ValueError as e:
                     if str(e) == "waiting_for_confirmation":
                         raise
+                    if str(e) == "conversation_already_running":
+                        outcome = "queued"
                     if (
                         str(e) == "conversation_already_running"
                         and not active_acp_prompt_has_latest_message
                     ):
                         self._rerun_requested = True
+        return outcome
 
     def _mark_running_acp_prompt_superseded_sync(self) -> tuple[bool, bool]:
         """Mark the currently running ACP prompt superseded if needed.

@@ -168,6 +168,23 @@ class ListProjectThreadsExecutor(
         )
 
 
+_RUN_OUTCOMES = {
+    "started": "It was {status}; a run was started for it.",
+    "queued": (
+        "A run was already active: it takes the message, or the thread runs "
+        "again when it ends, unless that run stops at a confirmation first."
+    ),
+    "waiting_for_confirmation": (
+        "It reached a confirmation while the message was being delivered, so "
+        "it was not run: the message waits for the person's decision on the "
+        "pending action."
+    ),
+    "not_run": (
+        "It was stopped while the message was being delivered, so it was not "
+        "run. Tell the person rather than resending."
+    ),
+}
+
 _WAITING_REFUSAL = (
     "Thread {id} is waiting for the person to approve or reject an action. "
     "Running it now would approve that action, so nothing was sent. Tell the "
@@ -244,7 +261,7 @@ class MessageProjectThreadExecutor(
                 raise
             try:
                 body = response.json()
-                run_requested = bool(body["run_requested"])
+                run = str(body["run"])
                 previous_status = str(body["previous_status"])
             except (ValueError, KeyError, TypeError) as exc:
                 raise ProjectToolError(
@@ -256,16 +273,9 @@ class MessageProjectThreadExecutor(
                 text=str(exc), is_error=True
             )
 
-        if not run_requested:
-            outcome = (
-                "It reached a confirmation while the message was being "
-                "delivered, so it was not run: the message waits for the "
-                "person's decision on the pending action."
-            )
-        elif previous_status == "running":
-            outcome = "It was running, so the message joins its current run."
-        else:
-            outcome = f"It was {previous_status}; a run was started for it."
+        outcome = _RUN_OUTCOMES.get(
+            run, f"The server reported run outcome {run!r}."
+        ).format(status=previous_status)
         text = (
             f"Message saved to thread {target_id}. {outcome} "
             "Check list_project_threads before reporting what it did.\n"
@@ -273,7 +283,7 @@ class MessageProjectThreadExecutor(
                 {
                     "conversation_id": target_id,
                     "previous_status": previous_status,
-                    "run_requested": run_requested,
+                    "run": run,
                 }
             )
         )
@@ -281,5 +291,5 @@ class MessageProjectThreadExecutor(
             text=text,
             conversation_id=target_id,
             previous_status=previous_status,
-            run_requested=run_requested,
+            run=run,
         )

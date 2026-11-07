@@ -15,6 +15,7 @@ import asyncio
 from collections.abc import Callable
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -133,16 +134,26 @@ class ProjectThreadMessageRequest(BaseModel):
     text: str = Field(..., min_length=1, description="The message to send.")
 
 
+ProjectThreadRunOutcome = Literal[
+    "started", "queued", "waiting_for_confirmation", "not_run"
+]
+
+
 class ProjectThreadMessageResponse(BaseModel):
     conversation_id: OpenHandsUUID
     previous_status: ConversationExecutionStatus = Field(
         description="The thread's execution status just before the message."
     )
-    run_requested: bool = Field(
+    run: ProjectThreadRunOutcome = Field(
         description=(
-            "Whether a run was started or queued to handle the message. False "
-            "when the thread reached a confirmation before it could run: the "
-            "message is saved and waits for the person's decision."
+            "What happened about running the thread. `started`: a run was "
+            "started for the message. `queued`: a run was already active; it "
+            "takes the message, or the thread runs again when it ends, unless "
+            "that run stops at a confirmation first. "
+            "`waiting_for_confirmation`: the thread reached a confirmation "
+            "while the message was being delivered, so it was not run and the "
+            "message waits for the person's decision. `not_run`: a stop "
+            "arrived meanwhile and the thread was left as it is."
         )
     )
 
@@ -202,6 +213,10 @@ def _without(current: PersistedProjects, project_id: UUID) -> PersistedProjects:
     return current.model_copy(update={"projects": remaining})
 
 
+def _find_or_none(persisted: PersistedProjects, project_id: UUID) -> ProjectItem | None:
+    return next((p for p in persisted.projects if p.id == project_id), None)
+
+
 def _find(persisted: PersistedProjects, project_id: UUID) -> ProjectItem:
     for project in persisted.projects:
         if project.id == project_id:
@@ -238,6 +253,24 @@ async def _join(
         conversation_id, PROJECT_TAG, project_id.hex
     )
     return tags is not None
+
+
+async def _join_or_undo(
+    service: ConversationService,
+    store: FileProjectsStore,
+    project_id: UUID,
+    conversation_id: UUID,
+    undo: Callable[[PersistedProjects], PersistedProjects],
+) -> None:
+    """Tag a coordinator just saved on a project; undo the save if that fails."""
+    try:
+        joined = await _join(service, project_id, conversation_id)
+    except Exception:
+        await _update(store, undo)
+        raise
+    if not joined:
+        await _update(store, undo)
+        raise HTTPException(status_code=404, detail="Conversation not found")
 
 
 def _replace_project(
@@ -312,11 +345,14 @@ async def create_project(
     await _update(store, apply)
     # Tag only once the record exists, so a refused write leaves no tag for
     # a project that was never saved.
-    if coordinator_id is not None and not await _join(
-        service, project.id, coordinator_id
-    ):
-        await _update(store, lambda current: _without(current, project.id))
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    if coordinator_id is not None:
+        await _join_or_undo(
+            service,
+            store,
+            project.id,
+            coordinator_id,
+            lambda current: _without(current, project.id),
+        )
     return project
 
 
@@ -373,14 +409,26 @@ async def update_project(
     if updated is None:
         # Deleted between the read above and the locked write.
         raise HTTPException(status_code=404, detail="Project not found")
-    if coordinator_id is not None and not await _join(
-        service, project_id, coordinator_id
-    ):
-        restore = {"coordinator_conversation_id": previous.coordinator_conversation_id}
-        await _update(
-            store, lambda current: _replace_project(current, project_id, restore)[0]
-        )
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    if coordinator_id is not None:
+        saved = updated
+
+        def undo(current: PersistedProjects) -> PersistedProjects:
+            # Undo only our own change: a later write to this project wins.
+            if _find_or_none(current, project_id) != saved:
+                return current
+            restore = previous.model_dump(
+                include={"name", "description", "coordinator_conversation_id"}
+            )
+            former = previous.coordinator_conversation_id
+            if former is not None and any(
+                p.coordinator_conversation_id == former
+                for p in current.projects
+                if p.id != project_id
+            ):
+                restore["coordinator_conversation_id"] = None
+            return _replace_project(current, project_id, restore)[0]
+
+        await _join_or_undo(service, store, project_id, coordinator_id, undo)
     return updated
 
 
@@ -530,9 +578,8 @@ async def message_project_thread(
     would approve its pending actions. A thread already waiting is refused
     with 409 and nothing is saved. A thread that reaches a confirmation while
     the message is being delivered keeps the message and is not run
-    (``run_requested: false``); the refusal is decided under the
-    conversation's run lock. A running thread takes the message into its
-    current run.
+    (``run: "waiting_for_confirmation"``); the refusal is decided under the
+    conversation's run lock.
     """
     _find(await _load(_store(request)), project_id)
     event_service = await service.get_event_service(conversation_id)
@@ -551,17 +598,20 @@ async def message_project_thread(
             detail="Conversation is waiting for confirmation",
         )
     message = Message(role="user", content=[TextContent(text=payload.text)])
-    run_requested = True
+    outcome: ProjectThreadRunOutcome
     try:
-        await event_service.send_message(
-            message, run=True, refuse_pending_confirmation=True
+        outcome = (
+            await event_service.send_message(
+                message, run=True, refuse_pending_confirmation=True
+            )
+            or "not_run"
         )
     except ValueError as e:
         if str(e) != "waiting_for_confirmation":
             raise
-        run_requested = False
+        outcome = "waiting_for_confirmation"
     return ProjectThreadMessageResponse(
         conversation_id=conversation_id,
         previous_status=previous_status,
-        run_requested=run_requested,
+        run=outcome,
     )

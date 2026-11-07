@@ -84,7 +84,7 @@ class _Server:
                 json={
                     "conversation_id": target,
                     "previous_status": status,
-                    "run_requested": True,
+                    "run": "started",
                 },
             )
         return httpx.Response(404, json={"detail": "Project not found"})
@@ -209,7 +209,7 @@ def test_message_posts_to_member_thread(tmp_path, status, attention):
     assert json.loads(post.content) == {"text": "Also add docs"}
     assert observation.conversation_id == thread["conversation_id"]
     assert observation.previous_status == status
-    assert observation.run_requested is True
+    assert observation.run == "started"
 
 
 def test_message_reports_confirmation_reached_during_delivery(tmp_path):
@@ -221,7 +221,7 @@ def test_message_reports_confirmation_reached_during_delivery(tmp_path):
             json={
                 "conversation_id": thread["conversation_id"],
                 "previous_status": "running",
-                "run_requested": False,
+                "run": "waiting_for_confirmation",
             },
         ),
     )
@@ -236,7 +236,7 @@ def test_message_reports_confirmation_reached_during_delivery(tmp_path):
     )
 
     assert not observation.is_error
-    assert observation.run_requested is False
+    assert observation.run == "waiting_for_confirmation"
     assert "it was not run" in observation.text
 
 
