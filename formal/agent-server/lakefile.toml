@@ -1,0 +1,6 @@
+name = "agent_server_formal"
+version = "0.1.0"
+defaultTargets = ["AgentServer"]
+
+[[lean_lib]]
+name = "AgentServer"
