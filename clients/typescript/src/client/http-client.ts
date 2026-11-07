@@ -246,7 +246,7 @@ export class HttpClient {
       requestInit.cache = options.cache;
     }
 
-    if (options.data && options.method !== 'GET') {
+    if (options.data !== undefined && options.data !== null && options.method !== 'GET') {
       if (options.data instanceof FormData) {
         delete headers['Content-Type'];
         requestInit.body = options.data;
