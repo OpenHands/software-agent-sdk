@@ -8,7 +8,12 @@ GUI consumes plus the file-locked persistence underneath it.
 
 import json
 import os
+import sys
 import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -16,7 +21,7 @@ from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
-from openhands.agent_server.persistence import reset_stores
+from openhands.agent_server.persistence import reset_stores, store as persistence_store
 
 
 @pytest.fixture
@@ -361,6 +366,94 @@ def test_workspaces_endpoints_accept_valid_session_api_key(client_with_auth):
     assert listed.status_code == 200
     assert added.status_code == 200
     assert deleted.status_code == 200
+
+
+@pytest.fixture
+def held_registry_lock(client, monkeypatch):
+    items = [{"id": p, "name": p, "path": p} for p in ("/a", "/b")]
+    assert client.post("/api/workspaces", json={"workspaces": items}).status_code == 200
+    assert (
+        client.post("/api/workspaces/parents", json={"parents": items}).status_code
+        == 200
+    )
+    lock_path = Path(os.environ["OH_PERSISTENCE_DIR"]) / ".workspaces.lock"
+    file_lock = persistence_store._file_lock
+    held = threading.Event()
+    release = threading.Event()
+    waiting = threading.Event()
+
+    def hold():
+        with file_lock(lock_path):
+            held.set()
+            # Release independently even if a regression blocks the server loop.
+            release.wait(timeout=8)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    try:
+        assert held.wait(timeout=2)
+
+        @contextmanager
+        def observed_lock(path):
+            waiting.set()
+            with file_lock(path):
+                yield
+
+        monkeypatch.setattr(persistence_store, "_file_lock", observed_lock)
+        yield waiting, release
+    finally:
+        release.set()
+        holder.join(timeout=10)
+        assert not holder.is_alive()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix flock contention")
+@pytest.mark.parametrize("method", ["POST", "DELETE"])
+@pytest.mark.parametrize("parents", [False, True])
+def test_workspace_lock_wait_keeps_server_responsive(
+    client, held_registry_lock, method, parents
+):
+    waiting, release = held_registry_lock
+    route = "/api/workspaces/parents" if parents else "/api/workspaces"
+    payload_key = "parents" if parents else "workspaces"
+    response_key = "workspaceParents" if parents else "workspaces"
+    before = client.get("/api/workspaces").json()
+    with client, ThreadPoolExecutor(max_workers=2) as pool:
+        try:
+            requests = [
+                pool.submit(
+                    client.request,
+                    method,
+                    route,
+                    **(
+                        {"json": {payload_key: [{"id": p, "name": p, "path": p}]}}
+                        if method == "POST"
+                        else {"params": {"path": p}}
+                    ),
+                )
+                for p in (("/c", "/d") if method == "POST" else ("/a", "/b"))
+            ]
+            assert waiting.wait(timeout=2)
+            started = time.monotonic()
+            alive = client.get("/alive")
+            assert alive.status_code == 200
+            assert time.monotonic() - started < 2
+            assert all(not request.done() for request in requests)
+            assert client.get("/api/workspaces").json() == before
+            release.set()
+            assert [r.result(timeout=5).status_code for r in requests] == [
+                200,
+                200,
+            ]
+            after = client.get("/api/workspaces").json()
+            expected_paths = ["/a", "/b", "/c", "/d"] if method == "POST" else []
+            assert (
+                sorted(item["path"] for item in after[response_key]) == expected_paths
+            )
+        finally:
+            release.set()
+    unchanged_key = "workspaces" if parents else "workspaceParents"
+    assert after[unchanged_key] == before[unchanged_key]
 
 
 def test_refused_deletes_on_fresh_directory_create_no_workspaces_file(client):

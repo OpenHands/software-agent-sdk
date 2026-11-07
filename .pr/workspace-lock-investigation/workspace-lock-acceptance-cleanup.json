@@ -1,0 +1,41 @@
+{
+  "ok": true,
+  "runs": [
+    {
+      "run": "20261014-085043-c022-map-f17",
+      "phase": "baseline",
+      "stopped_at": "2026-10-14T08:51:01Z",
+      "port_closed": true
+    },
+    {
+      "run": "20261014-085101-0c30-map-f17",
+      "phase": "baseline",
+      "stopped_at": "2026-10-14T08:51:20Z",
+      "port_closed": true
+    },
+    {
+      "run": "20261014-085253-c63b-map-f17",
+      "phase": "final",
+      "stopped_at": "2026-10-14T08:53:04Z",
+      "port_closed": true
+    },
+    {
+      "run": "20261014-085304-1fac-map-f17",
+      "phase": "final",
+      "stopped_at": "2026-10-14T08:53:14Z",
+      "port_closed": true
+    },
+    {
+      "run": "20261014-084827-9d57-map-f17",
+      "phase": "integrity",
+      "stopped_at": "2026-10-14T08:49:29Z",
+      "port_closed": true
+    },
+    {
+      "run": "20261014-084859-0d09-f17-shared",
+      "phase": "integrity",
+      "stopped_at": "2026-10-14T08:49:08Z",
+      "port_closed": true
+    }
+  ]
+}

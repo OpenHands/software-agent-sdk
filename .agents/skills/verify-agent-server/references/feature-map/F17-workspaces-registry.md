@@ -36,6 +36,7 @@ Routes: `GET /api/workspaces`, `POST /api/workspaces`, `DELETE /api/workspaces`,
 - `F17.lists-independent`: one path can be both a workspace and a parent; each delete route looks only at its own list (404 for a path that is only in the other) and deleting from one leaves the other.
 - `F17.persist-restart`: both lists, in order and with every field, read back identically after a server restart.
 - `F17.auth-required`: with a session key configured, all five routes answer 401 to a missing or wrong `X-Session-API-Key`, before validating the request, and change nothing.
+- `F17.lock-responsive`: while another process holds the registry lock and a mutation is confirmed waiting, `/alive`, the workspace list, and `/server_info` answer within two seconds; all four mutations preserve file bytes until release and then return the correct saved result, including missing-item deletes.
 - `F17.concurrent-adds`: parallel `POST`s of different workspaces and parents to one server all land, and parallel `DELETE`s of all of them all apply.
 - `F17.shared-dir`: two servers on one persistence directory share the registry: each sees the other's writes on its next request (nothing is cached), and parallel adds and deletes split across both servers all land (the `.workspaces.lock` file lock serializes them across processes).
 - `F17.ts-client`: the TypeScript `WorkspacesClient` lists, adds and deletes workspaces and parents through these routes, and its delete of an unknown path rejects with the server's 404.
@@ -448,6 +449,169 @@ Preconditions:
   invalid body and a delete without `path` (the key is checked before the
   request is validated); with the run's key the document is unchanged and
   nothing was stored.
+- **Responsive during lock contention (`F17.lock-responsive`).** Unix check
+  for #5974. A separate process acknowledges acquisition of the real lock;
+  `/proc/locks` must then identify a blocked server waiter for that inode.
+  Each of the four mutations, plus both missing-item deletes, is checked.
+  The holder releases on stdin closure and has a twenty-second safety limit.
+  This recipe restores the initial lists and needs no model.
+  ```sh
+  mkdir -p "$AGENT_SERVER_VERIFY_RUN/evidence/F17.lock-responsive"
+  control-agent-server doctor > "$AGENT_SERVER_VERIFY_RUN/evidence/F17.lock-responsive/doctor-before.json"
+  cat > "$F17/lock-responsive.py" <<'PY'
+  import concurrent.futures
+  import fcntl
+  import json
+  import os
+  import select
+  import subprocess
+  import sys
+  import time
+  from pathlib import Path
+
+  import httpx
+  import psutil
+
+  run = Path(os.environ["AGENT_SERVER_VERIFY_RUN"])
+  meta = json.loads((run / "run.json").read_text())
+  launcher = psutil.Process(meta["pid"])
+  pids = {launcher.pid, *(p.pid for p in launcher.children(recursive=True))}
+  registry = run / "home/.openhands/workspaces.json"
+  lock_path = registry.with_name(".workspaces.lock")
+  holder_code = """
+  import fcntl, select, sys
+  with open(sys.argv[1], 'a+') as lock:
+      fcntl.flock(lock, fcntl.LOCK_EX)
+      print('held', flush=True)
+      try:
+          select.select([sys.stdin], [], [], 20)
+      finally:
+          fcntl.flock(lock, fcntl.LOCK_UN)
+  """
+  client = httpx.Client(
+      base_url=os.environ["AGENT_SERVER_URL"],
+      headers={"X-Session-API-Key": os.environ["SESSION_API_KEY"]},
+      trust_env=False, timeout=2,
+  )
+  records = []
+  initial = client.get("/api/workspaces").json()
+  assert client.post("/api/workspaces", json={"workspaces": []}).status_code == 200
+  for parents in (False, True):
+      route = "/api/workspaces/parents" if parents else "/api/workspaces"
+      key = "workspaceParents" if parents else "workspaces"
+      payload_key = "parents" if parents else "workspaces"
+      for operation in ("POST", "DELETE", "DELETE-missing"):
+          item = {"id": "lock-probe", "name": "lock-probe",
+                  "path": f"/qa-f17-lock-{parents}-{operation}"}
+          if operation == "DELETE":
+              assert client.post(route, json={payload_key: [item]}).status_code == 200
+          before = client.get("/api/workspaces").json()
+          before_bytes = registry.read_bytes()
+          expected = json.loads(json.dumps(before))
+          if operation == "POST":
+              expected[key].append(item)
+          elif operation == "DELETE":
+              expected[key].remove(item)
+          record = {"route": route, "operation": operation, "phase": "arrange"}
+          records.append(record)
+          holder = subprocess.Popen(
+              [sys.executable, "-c", holder_code, str(lock_path)],
+              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+          )
+          pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+          try:
+              assert select.select([holder.stdout], [], [], 5)[0], "holder acknowledgment missing"
+              assert holder.stdout.readline().strip() == "held"
+              with lock_path.open("a+") as independent:
+                  try:
+                      fcntl.flock(independent, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                  except BlockingIOError:
+                      record["independent_lock_conflict"] = True
+                  else:
+                      raise AssertionError("holder did not acquire exclusive lock")
+              method = "POST" if operation == "POST" else "DELETE"
+              kwargs = ({"json": {payload_key: [item]}} if method == "POST"
+                        else {"params": {"path": item["path"]}})
+              update = pool.submit(client.request, method, route, timeout=25, **kwargs)
+              deadline = time.monotonic() + 5
+              inode = str(lock_path.stat().st_ino)
+              while time.monotonic() < deadline:
+                  waiters = [line for line in Path("/proc/locks").read_text().splitlines()
+                             if "->" in line
+                             and any(f"WRITE {pid} " in line for pid in pids)
+                             and line.split()[-3].endswith(":" + inode)]
+                  if waiters:
+                      break
+                  assert not update.done(), "mutation finished before lock wait"
+                  time.sleep(0.01)
+              else:
+                  raise AssertionError("kernel lock waiter not confirmed")
+              record["kernel_waiters"] = waiters
+              record["phase"] = "verify"
+              record["probes"] = []
+              for path in ("/alive", "/api/workspaces", "/server_info"):
+                  started = time.monotonic()
+                  response = client.get(path)
+                  elapsed = time.monotonic() - started
+                  record["probes"].append({"path": path, "status": response.status_code,
+                                            "elapsed_ms": round(elapsed * 1000, 2)})
+                  assert response.status_code == 200 and elapsed < 2, path
+                  if path == "/api/workspaces":
+                      assert response.json() == before
+                  assert not update.done(), "mutation completed before release"
+              assert registry.read_bytes() == before_bytes
+              record["bytes_unchanged_while_locked"] = True
+              holder.stdin.close()
+              holder.wait(timeout=5)
+              response = update.result(timeout=5)
+              record["mutation_status"] = response.status_code
+              assert response.status_code == (404 if operation == "DELETE-missing" else 200)
+              if method == "POST":
+                  assert response.json() == expected
+              elif operation == "DELETE":
+                  assert response.json() == {"deleted": True}
+              else:
+                  assert response.json() == {"detail": "Workspace parent not found" if parents
+                                             else "Workspace not found"}
+              assert client.get("/api/workspaces").json() == expected
+              saved = json.loads(registry.read_bytes())
+              assert saved["workspaces"] == expected["workspaces"]
+              assert saved["workspaceParents"] == expected["workspaceParents"]
+              record["result"] = "pass"
+          except Exception as error:
+              record["result"] = ("product-failure" if record["phase"] == "verify"
+                                  else "harness-failure")
+              record["error"] = f"{type(error).__name__}: {error}"
+          finally:
+              if not holder.stdin.closed:
+                  holder.stdin.close()
+              holder.wait(timeout=25)
+              pool.shutdown(wait=True)
+              with lock_path.open("a+") as released:
+                  fcntl.flock(released, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                  fcntl.flock(released, fcntl.LOCK_UN)
+              record["cleanup_lock_reacquired"] = True
+              record["holder_exit"] = holder.returncode
+              if operation == "POST":
+                  assert client.delete(route, params={"path": item["path"]}).status_code == 200
+          assert client.get("/api/workspaces").json() == initial
+  client.close()
+  artifact = run / "evidence/F17.lock-responsive/measurements.json"
+  artifact.parent.mkdir(parents=True, exist_ok=True)
+  artifact.write_text(json.dumps(records, indent=2) + "\n")
+  print(json.dumps(records))
+  assert all(record["result"] == "pass" for record in records), "lock responsiveness failed"
+  print("QA_F17_LOCK_OK")
+  PY
+  control-agent-server exec --timeout 120 --expect-output QA_F17_LOCK_OK \
+    --save F17.lock-responsive/program -- .venv/bin/python "$F17/lock-responsive.py"
+  control-agent-server doctor > "$AGENT_SERVER_VERIFY_RUN/evidence/F17.lock-responsive/doctor-after.json"
+  ```
+  All eighteen probes return 200 within two seconds while their mutation is
+  still waiting. File bytes remain unchanged until release. Each mutation then
+  returns 200, or 404 for an absent path, and both persisted lists match the
+  exact expected result. The transcript distinguishes product assertions from
+  lock-arrangement failures and records lock reacquisition after cleanup.
 - **Concurrent writes (`F17.concurrent-adds`).** Eight workspaces and eight
   parents posted in parallel, then all sixteen deleted in parallel.
   ```sh
@@ -477,10 +641,9 @@ Preconditions:
   ```
   Every parallel call succeeds (each `wait` returns its exit status); after
   the adds the lists hold 13 and 10 entries, after the deletes 5 and 2 again.
-  One process runs these handlers one at a time (they are `async` and block
-  the event loop while they read and write the file), so this bullet proves
-  that parallel callers lose nothing on one server, not that the file lock
-  works; `F17.shared-dir` puts a second process on the same file.
+  Mutation handlers run in worker threads and the file lock serializes their
+  read-modify-write operations. This bullet checks parallel callers on one
+  server; `F17.shared-dir` checks separate server processes using the same file.
 - **Two servers, one file (`F17.shared-dir`).** A second server whose
   `OH_PERSISTENCE_DIR` is this run's, then parallel writes split across both.
   ```sh
