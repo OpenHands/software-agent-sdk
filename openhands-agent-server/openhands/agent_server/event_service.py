@@ -2144,7 +2144,7 @@ class EventService:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None,
-            functools.partial(
+            partial(
                 conversation.react, emoji, target_event_id, removed=removed
             ),
         )
