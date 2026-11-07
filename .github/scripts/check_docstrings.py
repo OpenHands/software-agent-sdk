@@ -164,7 +164,9 @@ def get_docstrings_from_file(file: Path) -> list[tuple[str, str, int]]:
     Returns list of (name, docstring, lineno) tuples.
     """
     try:
-        source = file.read_text()
+        # The files are UTF-8; reading with the locale encoding makes a Windows
+        # contributor's run skip every file containing a non-ASCII character.
+        source = file.read_text(encoding="utf-8")
         tree = ast.parse(source)
     except (SyntaxError, UnicodeDecodeError) as e:
         print(f"Warning: Could not parse {file}: {e}", file=sys.stderr)
