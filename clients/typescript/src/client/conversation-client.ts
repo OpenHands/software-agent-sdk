@@ -22,6 +22,7 @@ import type {
   UpdateSecretsRequest,
 } from '../models/conversation';
 import type { ConfirmationPolicyBase } from '../types/base';
+import type { ReactionEmoji, ReactionEvent } from '../events/types';
 
 export interface ConversationClientOptions {
   host: string;
@@ -208,6 +209,28 @@ export class ConversationClient {
       ...event,
       ...(options.run === undefined ? {} : { run: options.run }),
     });
+  }
+
+  /**
+   * Put the person's emoji reaction on a message, or take it off with
+   * `removed: true`. Without `targetEventId` it goes on the agent's latest
+   * message. Does not run the agent. The server answers 409 while the
+   * `conversation_reactions` feature is off.
+   */
+  async react(
+    conversationId: string,
+    emoji: ReactionEmoji,
+    options: { targetEventId?: string; removed?: boolean } = {}
+  ): Promise<ReactionEvent> {
+    const response = await this.client.post<ReactionEvent>(
+      `/api/conversations/${conversationId}/reactions`,
+      {
+        emoji,
+        ...(options.targetEventId === undefined ? {} : { target_event_id: options.targetEventId }),
+        ...(options.removed === undefined ? {} : { removed: options.removed }),
+      }
+    );
+    return response.data;
   }
 
   async pauseConversation(conversationId: string): Promise<Success> {
