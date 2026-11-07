@@ -144,7 +144,10 @@ def test_root_conversation_proxy_preserves_canonical_path(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize("suffix", ["", "/", "/index.html"])
-def test_workspace_root_accepts_the_workspace_cookie(tmp_path, monkeypatch, suffix):
+@pytest.mark.parametrize("file_query", [None, "../../etc/passwd"])
+def test_workspace_root_accepts_the_workspace_cookie(
+    tmp_path, monkeypatch, suffix, file_query
+):
     app = create_app(
         Config(
             conversation_runtime="docker",
@@ -175,10 +178,13 @@ def test_workspace_root_accepts_the_workspace_cookie(tmp_path, monkeypatch, suff
     client = TestClient(app)
     assert client.get(path).status_code == 401
     client.cookies.set(WORKSPACE_SESSION_COOKIE_NAME, "outer-session-key")
-    response = client.get(path)
+    params = {"file_path": file_query} if file_query else None
+    response = client.get(path, params=params)
 
     assert response.status_code == 200
-    assert captured["upstream_path"] == path
+    assert captured["upstream_path"] == str(response.request.url).removeprefix(
+        "http://testserver"
+    )
 
 
 @pytest.mark.parametrize("is_git_repository", [False, True])
