@@ -28,13 +28,14 @@ from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
     EventSortOrder,
+    ReactionRequest,
     SendMessageRequest,
     Success,
 )
 from openhands.agent_server.openai.usage import token_usage_delta
 from openhands.sdk import Message
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import Event
+from openhands.sdk.event import Event, ReactionEvent
 
 
 event_read_router = APIRouter(
@@ -351,6 +352,39 @@ async def respond_to_confirmation(
     return Success()
 
 
+reaction_router = APIRouter(
+    prefix="/conversations/{conversation_id}/reactions", tags=["Events"]
+)
+
+
+@reaction_router.post(
+    "",
+    responses={
+        400: {"description": "There is no such message to react to"},
+        404: {"description": "Item not found"},
+    },
+)
+async def react_to_message(
+    request: ReactionRequest,
+    event_service: EventService = Depends(get_event_service),
+) -> ReactionEvent:
+    """Add or remove the person's emoji reaction on a message.
+
+    The reaction is saved as a `ReactionEvent` and streamed like other events;
+    it does not run the agent. Without `target_event_id` it goes on the
+    agent's latest message.
+    """
+    try:
+        return await event_service.react(
+            request.emoji, request.target_event_id, removed=request.removed
+        )
+    except ValueError as exc:
+        if str(exc) == "inactive_service":
+            raise
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
 event_router = APIRouter()
 event_router.include_router(event_read_router)
 event_router.include_router(event_write_router)
+event_router.include_router(reaction_router)

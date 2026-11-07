@@ -48,10 +48,15 @@ from openhands.sdk.event import (
     MessageEvent,
     ObservationEvent,
     PauseEvent,
+    ReactionEvent,
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
+from openhands.sdk.event.reaction import (
+    check_reaction_emoji,
+    find_reaction_target,
+)
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
@@ -2061,6 +2066,33 @@ class LocalConversation(BaseConversation):
                 sender=sender,
             )
             self._on_event(user_msg_event)
+
+    def react(
+        self,
+        emoji: str,
+        target_event_id: EventID | None = None,
+        *,
+        removed: bool = False,
+    ) -> ReactionEvent:
+        """Record the person's emoji reaction on a message, or remove it.
+
+        Without ``target_event_id`` it reacts to the agent's latest message.
+        The agent reacts through the ``react``/``unreact`` tools instead.
+        A reaction does not wake the agent.
+
+        Raises:
+            ValueError: The emoji is not allowed, or there is no such message.
+        """
+        checked = check_reaction_emoji(emoji)
+        with self._state:
+            target = find_reaction_target(
+                self._state.events, target_event_id, source="user"
+            )
+            event = ReactionEvent(
+                source="user", target_event_id=target.id, emoji=checked, removed=removed
+            )
+            self._on_event(event)
+        return event
 
     def _on_event_with_state_lock(self, event: Event) -> None:
         """Emit an event while holding the conversation state lock."""
