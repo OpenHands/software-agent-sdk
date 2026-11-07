@@ -880,6 +880,18 @@ def _add_exception_handlers(api: FastAPI) -> None:
                 exc.detail,
                 exc_info=(type(exc), exc, exc.__traceback__) if DEBUG else None,
             )
+            if (
+                exc.status_code == 504
+                and exc.headers
+                and exc.headers.get("x-should-retry") in ("true", "false")
+                and exc.detail
+                in ("Agent run timed out", "Conversation runtime timed out")
+            ):
+                return JSONResponse(
+                    status_code=504,
+                    content={"detail": exc.detail},
+                    headers=exc.headers,
+                )
             content = {
                 "detail": "Internal Server Error",
                 "exception": str(exc),

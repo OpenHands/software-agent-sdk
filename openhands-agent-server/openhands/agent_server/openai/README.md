@@ -13,6 +13,21 @@ input and output items with `store: false`. `previous_response_id` is rejected
 until the gateway can preserve exact response-turn lineage and branching
 semantics.
 
+If a run times out after the gateway saves the user message, the `504` response
+includes `X-Should-Retry: false` and `X-OpenHands-ServerConversation-ID`. The
+run continues. Use the conversation ID to inspect the run before you send a new
+turn. The gateway does not yet honor `Idempotency-Key`; a manual resend can
+repeat the turn.
+
+The Docker proxy gives the same retry signal after a read or write timeout.
+At that point it cannot tell whether the container accepted the turn. A
+connection or pool timeout occurs before the request is sent and stays
+retryable.
+An inner Docker server marks a 504 before message save with
+`X-Should-Retry: true`. The outer proxy treats an inner 504 without this
+header as unsafe to retry. This also protects turns sent to an older inner
+server that does not mark its timeout responses.
+
 Not yet supported on the Responses surface:
 
 - `previous_response_id` is rejected with `400`; replay input items instead.

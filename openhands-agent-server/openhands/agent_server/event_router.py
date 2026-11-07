@@ -275,7 +275,9 @@ async def run_gateway_message(
             timeout=deadline - time.monotonic(),
         )
     except TimeoutError as exc:
-        raise HTTPException(504, "Agent run timed out") from exc
+        raise HTTPException(
+            504, "Agent run timed out", headers={"x-should-retry": "true"}
+        ) from exc
     try:
         return await _run_gateway_message(request, event_service, deadline)
     finally:
@@ -292,14 +294,18 @@ async def _run_gateway_message(
                 timeout=max(0, deadline - time.monotonic())
             )
         except TimeoutError as exc:
-            raise HTTPException(504, "Agent run timed out") from exc
+            raise HTTPException(
+                504, "Agent run timed out", headers={"x-should-retry": "true"}
+            ) from exc
     state_before = await event_service.get_state()
     min_event_count = len(state_before.events) + 1
     usage_before = state_before.stats.get_combined_metrics().accumulated_token_usage
     run_slot = await event_service.reserve_run_slot()
     try:
         if time.monotonic() >= deadline:
-            raise HTTPException(504, "Agent run timed out")
+            raise HTTPException(
+                504, "Agent run timed out", headers={"x-should-retry": "true"}
+            )
         await event_service.send_message(
             request.create_message(), run=True, run_slot=run_slot
         )
@@ -309,11 +315,15 @@ async def _run_gateway_message(
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise HTTPException(504, "Agent run timed out")
+            raise HTTPException(
+                504, "Agent run timed out", headers={"x-should-retry": "false"}
+            )
         try:
             run_status = await event_service.wait_for_run_completion(timeout=remaining)
         except TimeoutError as exc:
-            raise HTTPException(504, "Agent run timed out") from exc
+            raise HTTPException(
+                504, "Agent run timed out", headers={"x-should-retry": "false"}
+            ) from exc
         state = await event_service.get_state()
         if len(state.events) > min_event_count and (
             run_status.is_terminal()
