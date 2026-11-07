@@ -152,10 +152,13 @@ ACP_FIELDS: dict[str, Any] = {
     ),
     "acp_file_secrets": NotOnProfile("a code-level spec for other ACP CLIs"),
     "agent_context": Nested(ACP_CONTEXT),
+    "verification": NotOnProfile(
+        "ACP runs no critic; the stored key serves OpenHands profiles"
+    ),
 }
 
 PROFILE_IDENTITY = {"schema_version", "id", "name", "revision", "agent_kind"}
-PROFILE_SCOPE = {"secret_refs"}
+PROFILE_SCOPE = {"secret_refs", "integration_refs"}
 
 SETTINGS_MODELS: dict[type[BaseModel], dict[str, Any]] = {
     OpenHandsAgentSettings: OPENHANDS_FIELDS,

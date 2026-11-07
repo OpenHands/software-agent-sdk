@@ -154,6 +154,8 @@ class PluginFormat(ABC):
         manifest = self.load_manifest(plugin_dir)
         skills = self.load_skills(plugin_dir)
         hooks = self.load_hooks(plugin_dir)
+        if hooks is not None:
+            _bind_plugin_root(hooks, plugin_dir)
         mcp_config = self.load_mcp_config(plugin_dir)
         agents = self.load_agents(plugin_dir)
         commands = self.load_commands(plugin_dir)
@@ -194,6 +196,28 @@ def _read_hooks_config(root: Path, plugin_dir: Path | None = None) -> HookConfig
     except Exception as e:
         logger.warning(f"Failed to load hooks from {hooks_json}: {e}")
         return None
+
+
+def _bind_plugin_root(hooks: HookConfig, plugin_dir: Path) -> None:
+    """Record ``plugin_dir`` as the owning root of every hook in ``hooks``.
+
+    The executor exports it to command hooks as ``PLUGIN_ROOT``, so a hook can
+    reach scripts bundled in its plugin wherever that plugin is cached. Resolved
+    here, as the MCP loader resolves ``${PLUGIN_ROOT}``, so the value is absolute
+    and bound to the plugin revision actually loaded.
+    """
+    plugin_root = str(plugin_dir.resolve())
+    for matchers in (
+        hooks.pre_tool_use,
+        hooks.post_tool_use,
+        hooks.user_prompt_submit,
+        hooks.session_start,
+        hooks.session_end,
+        hooks.stop,
+    ):
+        for matcher in matchers:
+            for hook in matcher.hooks:
+                hook.plugin_root = plugin_root
 
 
 def _read_command_definitions(
