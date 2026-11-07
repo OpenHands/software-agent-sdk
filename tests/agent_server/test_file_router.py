@@ -1575,11 +1575,30 @@ def test_tar_gz_response_includes_repo_metadata_headers(client, tmp_path):
     assert "x-archive-base-commit" not in resp.headers
 
 
-def test_archive_redacts_remote_credentials_in_header(client, tmp_path):
-    _repo_with_remote(
-        tmp_path / "repo",
-        "https://user:ghp_secrettoken@github.com/example/repo.git",
-    )
+@pytest.mark.parametrize(
+    ("remote_url", "expected_remote"),
+    [
+        pytest.param(
+            "https://user:ghp_secrettoken@github.com/example/repo.git",
+            "https://****@github.com/example/repo.git",
+            id="plain",
+        ),
+        pytest.param(
+            "HTTPS://user:ghp_secrettoken@github.com/example/repo.git",
+            "HTTPS://****@github.com/example/repo.git",
+            id="mixed_case",
+        ),
+        pytest.param(
+            "https://user:ghp_secrettoken@github.com/example/repo.git\nextra",
+            "https://****@github.com/example/repo.git\nextra",
+            id="multiline",
+        ),
+    ],
+)
+def test_archive_redacts_remote_credentials_in_header(
+    client, tmp_path, remote_url, expected_remote
+):
+    _repo_with_remote(tmp_path / "repo", remote_url)
 
     resp = client.get(
         "/api/file/archive",
@@ -1589,24 +1608,7 @@ def test_archive_redacts_remote_credentials_in_header(client, tmp_path):
     assert resp.status_code == 200, resp.text
     remote = resp.headers["x-archive-repo-remote"]
     assert "ghp_secrettoken" not in remote
-    assert remote == quote("https://****@github.com/example/repo.git", safe="")
-
-
-def test_archive_redacts_mixed_case_remote_credentials_in_header(client, tmp_path):
-    _repo_with_remote(
-        tmp_path / "repo",
-        "HTTPS://user:ghp_secrettoken@github.com/example/repo.git",
-    )
-
-    resp = client.get(
-        "/api/file/archive",
-        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
-    )
-
-    assert resp.status_code == 200, resp.text
-    remote = resp.headers["x-archive-repo-remote"]
-    assert "ghp_secrettoken" not in remote
-    assert remote == quote("HTTPS://****@github.com/example/repo.git", safe="")
+    assert remote == quote(expected_remote, safe="")
 
 
 def test_archive_redacts_remote_query_credentials_in_header(client, tmp_path):
@@ -1640,23 +1642,6 @@ def test_archive_literal_percent_is_encoded(client, tmp_path):
 
     assert resp.status_code == 200, resp.text
     assert "%252F" in resp.headers["x-archive-repo-remote"]
-
-
-def test_archive_redacts_multiline_remote_credentials_in_header(client, tmp_path):
-    _repo_with_remote(
-        tmp_path / "repo",
-        "https://user:ghp_secrettoken@github.com/example/repo.git\nextra",
-    )
-
-    resp = client.get(
-        "/api/file/archive",
-        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
-    )
-
-    assert resp.status_code == 200, resp.text
-    remote = resp.headers["x-archive-repo-remote"]
-    assert "ghp_secrettoken" not in remote
-    assert remote == quote("https://****@github.com/example/repo.git\nextra", safe="")
 
 
 def test_archive_detached_head_reports_detached_branch(client, tmp_path):

@@ -174,7 +174,14 @@ def _process_schema_node(
     # Handle arrays
     if node.get("type") == "array" and "items" in node:
         result["type"] = "array"
-        result["items"] = _process_schema_node(node["items"], defs, _visiting)
+        items = node["items"]
+        if isinstance(items, list):
+            # Draft-07 tuple form: one schema per position.
+            result["items"] = [
+                _process_schema_node(item, defs, _visiting) for item in items
+            ]
+        else:
+            result["items"] = _process_schema_node(items, defs, _visiting)
 
     # Handle enum
     if "enum" in node:
@@ -270,11 +277,12 @@ class Schema(DiscriminatedUnionMixin):
             desc: str | None = spec.get("description")
             field_name = fname
             field_alias = None
-            if fname in discriminator_fields:
+            if fname in discriminator_fields or fname.startswith("_"):
                 # MCP tool argument names are user-defined JSON object keys. If
                 # one collides with OpenHands' internal discriminator (e.g.
-                # "kind"), keep the external name as an alias and use a safe
-                # internal field name for Pydantic.
+                # "kind"), or is a name Pydantic refuses (a leading underscore
+                # means a private attribute), keep the external name as an
+                # alias and use a safe internal field name for Pydantic.
                 field_alias = fname
                 has_aliased_field = True
                 alias_specs[fname] = copy.deepcopy(spec)

@@ -9,6 +9,14 @@ from openhands.sdk.llm.utils.verified_models import VERIFIED_MODELS
 OPENHANDS_PROVIDER_PREFIX: Final[str] = "openhands/"
 LITELLM_PROXY_PREFIX: Final[str] = "litellm_proxy/"
 OPENHANDS_LLM_PROXY_BASE_URL: Final[str] = "https://llm-proxy.app.all-hands.dev"
+# Default agent identity (the SOUL line). The OpenHands LLM proxy only serves
+# requests whose leading system text starts with this exact sentence, so
+# system-less calls to it are rejected with a 403; see
+# ``LLM._apply_proxy_system_identity``.
+OPENHANDS_SYSTEM_IDENTITY: Final[str] = (
+    "You are OpenHands agent, a helpful AI assistant that can interact"
+    " with a computer to solve tasks."
+)
 DIGITALOCEAN_PROVIDER_PREFIX: Final[str] = "digitalocean/"
 DIGITALOCEAN_INFERENCE_BASE_URL: Final[str] = "https://inference.do-ai.run/v1"
 
@@ -66,6 +74,14 @@ def litellm_call_kwargs(model: str, base_url: str | None) -> LiteLLMCallKwargs:
                 "model": f"{litellm_prefix}{model.removeprefix(prefix)}",
                 "api_base": base_url or default_base_url,
             }
+    # A provider-prefixed model (e.g. ``anthropic/claude-...``) pointed at the
+    # OpenHands proxy must still route through it: keeping the vendor prefix
+    # makes LiteLLM use the vendor transport (Anthropic Messages), which the
+    # proxy's policy rejects even for identity-led requests. The proxy serves
+    # the bare and ``prod/`` names; the bare name is the canonical form.
+    if base_url is not None and is_openhands_proxy_base_url(base_url):
+        bare = model.split("/", 1)[-1] if "/" in model else model
+        return {"model": f"{LITELLM_PROXY_PREFIX}{bare}", "api_base": base_url}
     return {"model": model, "api_base": base_url}
 
 

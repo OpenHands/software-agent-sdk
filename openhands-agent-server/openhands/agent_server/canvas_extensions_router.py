@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, ValidationError
 from openhands.agent_server.canvas_extensions.backend import (
     BackendLogs,
     BackendRevisionRequest,
+    BackendSecretGrantRequest,
     BackendStatus,
     CanvasExtensionBackendManager,
 )
@@ -65,6 +66,14 @@ def _backend_manager(request: Request) -> CanvasExtensionBackendManager:
         manager = CanvasExtensionBackendManager()
         request.app.state.canvas_extension_backend_manager = manager
     return manager
+
+
+def _lifecycle_lock(request: Request, name: str) -> asyncio.Lock:
+    locks = getattr(request.app.state, "canvas_lifecycle_locks", None)
+    if locks is None:
+        locks = {}
+        request.app.state.canvas_lifecycle_locks = locks
+    return locks.setdefault(name, asyncio.Lock())
 
 
 async def _revoke_and_stop_backend(
@@ -163,6 +172,8 @@ class UpdateCanvasExtensionStateRequest(BaseModel):
     """Request body for updating canvas extension state (enable/disable)."""
 
     enabled: bool
+    revision: str | None = None
+    secret_refs: list[str] | None = None
 
 
 class UpdateCanvasExtensionStateResponse(BaseModel):
@@ -298,18 +309,69 @@ async def set_canvas_extension_enabled_endpoint(
     request: UpdateCanvasExtensionStateRequest,
     http_request: Request,
 ) -> UpdateCanvasExtensionStateResponse:
-    """Enable or disable an installed canvas extension."""
-    if not request.enabled:
-        await _revoke_and_stop_backend(http_request, extension_name)
-    fn = enable_canvas_extension if request.enabled else disable_canvas_extension
-    if not fn(name=extension_name):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Canvas extension '{extension_name}' is not installed",
-        )
-    return UpdateCanvasExtensionStateResponse(
-        name=extension_name, enabled=request.enabled
-    )
+    """Enable trusted code only after its managed backend is healthy."""
+    manager = _backend_manager(http_request)
+    lock = _lifecycle_lock(http_request, extension_name)
+    async with lock:
+        if not request.enabled:
+            await _revoke_and_stop_backend(http_request, extension_name)
+            if not disable_canvas_extension(name=extension_name):
+                raise HTTPException(404, "Canvas App is not installed")
+            return UpdateCanvasExtensionStateResponse(
+                name=extension_name, enabled=False
+            )
+        manifest = get_installed_canvas_extension_manifest(extension_name)
+        # Legacy toggle-only clients must not implicitly download or execute code.
+        if (
+            manifest
+            and manifest.backend
+            and (
+                request.revision is not None
+                or request.secret_refs is not None
+                or manifest.backend.secret_refs
+            )
+        ):
+            try:
+                if not request.revision or request.revision != manager.revision(
+                    extension_name
+                ):
+                    raise ValueError(
+                        "Review and approve the current revision before enabling"
+                    )
+                if request.secret_refs is not None:
+                    await manager.grant_secrets(
+                        extension_name,
+                        BackendSecretGrantRequest(
+                            revision=request.revision, secret_refs=request.secret_refs
+                        ),
+                    )
+                status = await manager.status(extension_name)
+                if (
+                    manifest.backend.secret_refs
+                    and status.secret_grant_revision != request.revision
+                ):
+                    raise ValueError(
+                        "Select and approve all required secrets before enabling"
+                    )
+                await manager.prepare(extension_name, request.revision)
+                status = await manager.start(extension_name, request.revision)
+                status = await manager.wait_until_ready(extension_name)
+                if status.state != "ready":
+                    raise ValueError(
+                        status.detail
+                        or "Backend failed; check its artifact and required secrets"
+                    )
+            except (ValueError, RuntimeError, OSError) as exc:
+                await _revoke_and_stop_backend(http_request, extension_name)
+                disable_canvas_extension(name=extension_name)
+                raise HTTPException(409, str(exc)) from exc
+            except BaseException:
+                await _revoke_and_stop_backend(http_request, extension_name)
+                disable_canvas_extension(name=extension_name)
+                raise
+        if not enable_canvas_extension(name=extension_name):
+            raise HTTPException(404, "Canvas App is not installed")
+        return UpdateCanvasExtensionStateResponse(name=extension_name, enabled=True)
 
 
 @canvas_extensions_router.delete(
@@ -485,3 +547,35 @@ def get_canvas_extension_icon_endpoint(
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+@canvas_extensions_router.post(
+    "/installed/{extension_name}/backend/secret-grant",
+    response_model=BackendStatus,
+    responses={409: {"description": "Grant does not match installed declaration"}},
+)
+async def grant_canvas_extension_backend_secrets_endpoint(
+    extension_name: CanvasExtensionNamePath,
+    body: BackendSecretGrantRequest,
+    request: Request,
+) -> BackendStatus:
+    """Explicitly grant named store credentials to trusted backend code."""
+    try:
+        return await _backend_manager(request).grant_secrets(extension_name, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@canvas_extensions_router.delete(
+    "/installed/{extension_name}/backend/secret-grant",
+    response_model=BackendStatus,
+)
+async def revoke_canvas_extension_backend_secrets_endpoint(
+    extension_name: CanvasExtensionNamePath,
+    request: Request,
+) -> BackendStatus:
+    """Revoke consent, terminate the process group and invalidate bridge sessions."""
+    async with _lifecycle_lock(request, extension_name):
+        disable_canvas_extension(name=extension_name)
+        await _backend_manager(request).revoke_secrets(extension_name)
+        return await _revoke_and_stop_backend(request, extension_name)

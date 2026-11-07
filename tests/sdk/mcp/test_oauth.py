@@ -12,9 +12,10 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-import httpx
+import httpx2
 import pytest
 from key_value.aio.stores.memory import MemoryStore
+from mcp.shared.auth import AuthorizationCodeResult
 
 from openhands.sdk.mcp.exceptions import MCPError
 from openhands.sdk.mcp.oauth import MCPOAuth, NonInteractiveMCPOAuth
@@ -86,17 +87,17 @@ async def _stored_state(
 
 def _authorization_server(
     metadata: dict[str, Any],
-) -> Callable[[httpx.Request], httpx.Response]:
+) -> Callable[[httpx2.Request], httpx2.Response]:
     """Serve discovery for ``metadata``; the MCP endpoint itself demands OAuth."""
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         if request.url.path == "/api/v4/mcp":
-            return httpx.Response(401)
+            return httpx2.Response(401)
         if request.url.path == "/.well-known/oauth-protected-resource/api/v4/mcp":
-            return httpx.Response(200, json=RESOURCE_METADATA)
+            return httpx2.Response(200, json=RESOURCE_METADATA)
         if request.url.path == "/.well-known/oauth-authorization-server":
-            return httpx.Response(200, json=metadata)
-        return httpx.Response(404)
+            return httpx2.Response(200, json=metadata)
+        return httpx2.Response(404)
 
     return handler
 
@@ -106,20 +107,20 @@ _discovery = _authorization_server(SERVER_METADATA)
 
 def _oauth(
     store: MemoryStore,
-    handler: Callable[[httpx.Request], httpx.Response],
+    handler: Callable[[httpx2.Request], httpx2.Response],
     oauth_class: type[MCPOAuth] = MCPOAuth,
     **kwargs: Any,
 ) -> tuple[MCPOAuth, list[str]]:
     """An ``MCPOAuth`` whose discovery client is served by ``handler``."""
     requested: list[str] = []
 
-    def recording(request: httpx.Request) -> httpx.Response:
+    def recording(request: httpx2.Request) -> httpx2.Response:
         requested.append(str(request.url))
         return handler(request)
 
-    def factory(headers=None, timeout=None, auth=None) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            transport=httpx.MockTransport(recording),
+    def factory(headers=None, timeout=None, auth=None) -> httpx2.AsyncClient:
+        return httpx2.AsyncClient(
+            transport=httpx2.MockTransport(recording),
             headers=headers,
             timeout=timeout,
             auth=auth,
@@ -139,16 +140,16 @@ def _consent(oauth: MCPOAuth) -> None:
     async def redirect(authorization_url: str) -> None:
         states.append(parse_qs(urlparse(authorization_url).query)["state"][0])
 
-    async def callback() -> tuple[str, str | None]:
-        return "auth-code", states[-1]
+    async def callback() -> AuthorizationCodeResult:
+        return AuthorizationCodeResult(code="auth-code", state=states[-1])
 
     oauth.context.redirect_handler = redirect
     oauth.context.callback_handler = callback
 
 
-async def _first_request(oauth: MCPOAuth) -> httpx.Request:
+async def _first_request(oauth: MCPOAuth) -> httpx2.Request:
     """The first request the auth flow emits for an MCP call."""
-    flow = oauth.async_auth_flow(httpx.Request("POST", MCP_URL, json={}))
+    flow = oauth.async_auth_flow(httpx2.Request("POST", MCP_URL, json={}))
     try:
         return await flow.__anext__()
     finally:
@@ -156,10 +157,10 @@ async def _first_request(oauth: MCPOAuth) -> httpx.Request:
 
 
 async def _serve_flow(
-    oauth: MCPOAuth, handler: Callable[[httpx.Request], httpx.Response]
+    oauth: MCPOAuth, handler: Callable[[httpx2.Request], httpx2.Response]
 ) -> None:
     """Answer every request the auth flow emits for an MCP call."""
-    flow = oauth.async_auth_flow(httpx.Request("POST", MCP_URL, json={}))
+    flow = oauth.async_auth_flow(httpx2.Request("POST", MCP_URL, json={}))
     try:
         request = await anext(flow)
         while True:
@@ -171,10 +172,10 @@ async def _serve_flow(
 
 
 async def _request_to(
-    oauth: MCPOAuth, handler: Callable[[httpx.Request], httpx.Response], url: str
-) -> httpx.Request:
+    oauth: MCPOAuth, handler: Callable[[httpx2.Request], httpx2.Response], url: str
+) -> httpx2.Request:
     """Drive the auth flow, answering with ``handler``, until it requests ``url``."""
-    flow = oauth.async_auth_flow(httpx.Request("POST", MCP_URL, json={}))
+    flow = oauth.async_auth_flow(httpx2.Request("POST", MCP_URL, json={}))
     try:
         request = await anext(flow)
         while str(request.url) != url:
@@ -186,7 +187,7 @@ async def _request_to(
         await flow.aclose()
 
 
-def _form(request: httpx.Request) -> dict[str, list[str]]:
+def _form(request: httpx2.Request) -> dict[str, list[str]]:
     return parse_qs(request.content.decode(), keep_blank_values=True)
 
 
@@ -210,8 +211,8 @@ async def test_expired_token_refreshes_against_the_discovered_endpoint():
 @pytest.mark.asyncio
 async def test_refresh_falls_back_to_the_default_endpoint_when_discovery_fails():
     # Arrange
-    def unreachable(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("unreachable", request=request)
+    def unreachable(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("unreachable", request=request)
 
     oauth, _ = _oauth(await _stored_state(time.time() - 60), unreachable)
 
@@ -247,12 +248,12 @@ async def test_non_interactive_client_fails_instead_of_authorizing_again():
     store = await _stored_state(time.time() - 60)
     requested: list[str] = []
 
-    def server(request: httpx.Request) -> httpx.Response:
+    def server(request: httpx2.Request) -> httpx2.Response:
         requested.append(str(request.url))
         if str(request.url) == TOKEN_ENDPOINT:
-            return httpx.Response(400, json={"error": "invalid_grant"})
+            return httpx2.Response(400, json={"error": "invalid_grant"})
         if str(request.url) == MCP_URL:
-            return httpx.Response(401)
+            return httpx2.Response(401)
         return _discovery(request)
 
     oauth, _ = _oauth(store, server, NonInteractiveMCPOAuth)
@@ -263,7 +264,7 @@ async def test_non_interactive_client_fails_instead_of_authorizing_again():
 
     # Assert: no authorization request or client registration, and the
     # stored state is left for the user to replace by authorizing again.
-    paths = {httpx.URL(url).path for url in requested}
+    paths = {httpx2.URL(url).path for url in requested}
     assert not paths & {"/oauth/authorize", "/register"}
     assert await store.get(key=f"{MCP_URL}/tokens", collection="mcp-oauth-token")
     assert await store.get(

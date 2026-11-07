@@ -71,32 +71,38 @@ def _preflight(
 # Workspace cookie routes accept any http(s) origin with credentials.
 
 
-def test_workspace_session_preflight_accepts_any_origin(tmp_path):
+@pytest.mark.parametrize(
+    "origin",
+    [REMOTE_ORIGIN, OTHER_ORIGIN, "https://random.example"],
+    ids=["remote", "other", "random"],
+)
+def test_workspace_session_preflight_accepts_any_origin(tmp_path, origin):
     client = _build_client(
         tmp_path, conversation_id=uuid4(), config=Config(session_api_keys=[SESSION_KEY])
     )
-    for origin in (REMOTE_ORIGIN, OTHER_ORIGIN, "https://random.example"):
-        resp = _preflight(client, "/api/auth/workspace-session", origin=origin)
-        assert resp.status_code == 200, origin
-        assert resp.headers["access-control-allow-origin"] == origin, origin
-        assert resp.headers["access-control-allow-credentials"] == "true", origin
+    resp = _preflight(client, "/api/auth/workspace-session", origin=origin)
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == origin
+    assert resp.headers["access-control-allow-credentials"] == "true"
 
 
-def test_workspace_static_preflight_accepts_any_origin(tmp_path):
+@pytest.mark.parametrize(
+    "origin", [REMOTE_ORIGIN, OTHER_ORIGIN], ids=["remote", "other"]
+)
+def test_workspace_static_preflight_accepts_any_origin(tmp_path, origin):
     cid = uuid4()
     client = _build_client(
         tmp_path, conversation_id=cid, config=Config(session_api_keys=[SESSION_KEY])
     )
-    for origin in (REMOTE_ORIGIN, OTHER_ORIGIN):
-        resp = _preflight(
-            client,
-            f"/api/conversations/{cid}/workspace/report.html",
-            origin=origin,
-            method="GET",
-        )
-        assert resp.status_code == 200, origin
-        assert resp.headers["access-control-allow-origin"] == origin, origin
-        assert resp.headers["access-control-allow-credentials"] == "true", origin
+    resp = _preflight(
+        client,
+        f"/api/conversations/{cid}/workspace/report.html",
+        origin=origin,
+        method="GET",
+    )
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == origin
+    assert resp.headers["access-control-allow-credentials"] == "true"
 
 
 def test_workspace_session_post_response_echoes_origin_no_cookie(tmp_path):
@@ -398,3 +404,41 @@ def test_localhost_middleware_other_origin_uses_allow_list():
     m = LocalhostCORSMiddleware(app=_noop_app, allow_origins=[GLOBAL_ORIGIN])
     assert m.is_allowed_origin(GLOBAL_ORIGIN)
     assert not m.is_allowed_origin(OTHER_ORIGIN)
+
+
+@pytest.mark.parametrize(
+    ("path", "origin", "allowed"),
+    [
+        ("/boom", GLOBAL_ORIGIN, True),
+        ("/boom", LOCALHOST_ORIGIN, True),
+        ("/boom", "https://preview.example.com", True),
+        ("/boom", OTHER_ORIGIN, False),
+        ("/api/conversations/c1/workspace/boom", OTHER_ORIGIN, True),
+        ("/api/conversations/c1/workspace/boom", "null", False),
+    ],
+)
+def test_unhandled_errors_preserve_cors_policy(path, origin, allowed):
+    app = create_app(
+        Config(
+            allow_cors_origins=[GLOBAL_ORIGIN],
+            allow_cors_origin_regex=r"https://preview\.example\.com",
+        )
+    )
+
+    @app.get(path)
+    async def boom():
+        raise RuntimeError("kaboom")
+
+    app.router.routes.insert(0, app.router.routes.pop())
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get(path, headers={"Origin": origin})
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Internal Server Error"
+    assert len(response.json()["error_id"]) == 32
+    if allowed:
+        assert response.headers["access-control-allow-origin"] == origin
+        assert response.headers["access-control-allow-credentials"] == "true"
+        assert "Origin" in response.headers["vary"]
+    else:
+        assert "access-control-allow-origin" not in response.headers
