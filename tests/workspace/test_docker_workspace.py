@@ -387,3 +387,19 @@ def test_failed_health_check_stops_container(monkeypatch):
     del excinfo
     gc.collect()  # let __del__ run while execute_command is still faked
     assert stopped_during_startup
+
+
+def test_exit_sends_completion_callback(mock_docker_workspace, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    workspace, _ = mock_docker_workspace()
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace.__exit__(None, None, None)
+
+        mock_client.post.assert_called_once()
+        assert mock_client.post.call_args.args[0] == "https://svc.test/complete"
