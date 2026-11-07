@@ -510,6 +510,19 @@ def test_str_replace_error_multiple_multiline_occurrences(editor):
     assert "[1, 7]" in error_msg  # Should show correct starting line numbers
 
 
+def test_str_replace_rejects_overlapping_occurrences(editor, tmp_path):
+    editor, _ = editor
+    # "aa" occurs at offsets 0 and 1 of "aaa", so it does not identify a single
+    # location and the replacement must be refused.
+    path = tmp_path / "overlap.txt"
+    path.write_text("aaa\n")
+
+    with pytest.raises(ToolError, match="Multiple occurrences"):
+        editor(command="str_replace", path=str(path), old_str="aa", new_str="b")
+
+    assert path.read_text() == "aaa\n"
+
+
 def test_str_replace_nonexistent_string(editor):
     editor, test_file = editor
     with pytest.raises(ToolError) as exc_info:
