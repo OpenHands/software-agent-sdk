@@ -36,7 +36,7 @@ Routes: `POST /api/conversations/{conversation_id}/ask_agent`,
 - `F10.navigate-empty`: `{}` or `{"event_id": null}` selects the empty tree (`leaf_event_id` null, `head_is_empty` true on disk); the next appended event becomes a new root (`parent_id` `__root__`).
 - `F10.navigate-errors`: an unknown `event_id` is 404 `Unknown event_id: ...` and an unknown conversation 404, a missing body 422, a missing key 401; none of them moves HEAD.
 - `F10.navigate-final-response`: after navigating back before the agent's answer, `agent_final_response` reports the active branch (empty), not the abandoned answer.
-- `F10.condense-llm`: on a finished DeepSeek conversation `POST /condense` answers 200 `{"success": true}` after recording one `CondensationRequest` and one `Condensation` with a summary, pushed live on the events socket; the status stays `finished`.
+- `F10.condense-llm`: on a finished DeepSeek conversation `POST /condense` answers 200 `{"success": true}` after recording one `CondensationRequest` and one `Condensation` with a summary, pushed live on the events socket; the status stays `finished`, with no new agent action, tool observation or user/assistant message.
 - `F10.condense-no-condenser`: an agent without a request-handling condenser (condenser disabled, or `no_op`) gets an error naming the cause, and no `CondensationRequest` or other event is recorded.
 - `F10.condense-status`: that refusal is a client error (4xx), not a 500.
 - `F10.condense-llm-failure`: when the condenser's model is unreachable, condense answers 500 with an `error_id`, leaves the `CondensationRequest` pending and records no `Condensation`.
@@ -375,6 +375,9 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   `LLMSummarizingCondenser` on DeepSeek flash.
   ```sh
   control-agent-server api GET "/api/conversations/$A" --quiet --check agent.condenser.kind eq LLMSummarizingCondenser
+  ACTIONS_BEFORE_CONDENSE=$(control-agent-server api GET "/api/conversations/$A/events/count" --query kind=openhands.sdk.event.llm_convertible.action.ActionEvent --field .)
+  OBSERVATIONS_BEFORE_CONDENSE=$(control-agent-server api GET "/api/conversations/$A/events/count" --query kind=openhands.sdk.event.llm_convertible.observation.ObservationEvent --field .)
+  MESSAGES_BEFORE_CONDENSE=$(control-agent-server api GET "/api/conversations/$A/events/count" --query kind=openhands.sdk.event.llm_convertible.message.MessageEvent --field .)
   control-agent-server ws start "/sockets/events/$A" --name qa-f10-condense --duration 180
   control-agent-server ws read qa-f10-condense --wait 15 --kinds ConversationStateUpdateEvent --contains full_state --expect-min 1
   control-agent-server api POST "/api/conversations/$A/condense" --expect 200 --check success eq true --timeout 180 --save F10.condense-llm/condense
@@ -385,10 +388,16 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   control-agent-server api GET "/api/conversations/$A/events/search" --query kind=$COND \
     --check items.0.summary matches '\S' --check items.0.forgotten_event_ids len-ge 1 --save F10.condense-llm/condensation
   control-agent-server api GET "/api/conversations/$A" --quiet --check execution_status eq finished
+  control-agent-server api GET "/api/conversations/$A/events/count" --query kind=openhands.sdk.event.llm_convertible.action.ActionEvent --check . eq "$ACTIONS_BEFORE_CONDENSE" --save F10.condense-llm/actions-unchanged
+  control-agent-server api GET "/api/conversations/$A/events/count" --query kind=openhands.sdk.event.llm_convertible.observation.ObservationEvent --check . eq "$OBSERVATIONS_BEFORE_CONDENSE" --save F10.condense-llm/observations-unchanged
+  control-agent-server api GET "/api/conversations/$A/events/count" --query kind=openhands.sdk.event.llm_convertible.message.MessageEvent --check . eq "$MESSAGES_BEFORE_CONDENSE" --save F10.condense-llm/messages-unchanged
   ```
   The call returns after the summary exists: one `CondensationRequest` and
   one `Condensation` (non-empty `summary`, at least one forgotten event id),
-  both pushed on the socket; `A` is still `finished`.
+  both pushed on the socket; `A` is still `finished`. Explicit condensation
+  only compacts history: it does not take another agent step, answer the last
+  request again, or execute a pending tool. The independent action, observation
+  and message counts above make an extra agent turn visible.
 - **No request-handling condenser (`F10.condense-no-condenser`).** `NC` has
   its condenser disabled, `NOOP` a `no_op` one.
   ```sh
@@ -547,6 +556,14 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   system prompt and the user's message); `A` stays `finished`.
 
 ## Gotchas
+
+- Explicit `condense` invokes the condenser directly, not `Agent.step`.
+  A queued action awaiting confirmation must remain unexecuted; compaction is
+  never approval. The finished-conversation recipe above verifies no extra
+  turn; also exercise an actual pending approval through F08 when changing
+  this path. For Insider Voice, end the call before condensation and reopen
+  it on the same controller to obtain the updated saved-context snapshot
+  (F35); do not create a replacement conversation to reduce context.
 
 - `fork` copies events with their original ids, so the same event id exists
   in the source and every fork; always scope event lookups by conversation.

@@ -201,7 +201,6 @@ describe('WebSocket Integration Tests', () => {
         );
 
         const conversationId = createResponse.data.id;
-        let connectionCount = 0;
         const receivedEvents: Event[] = [];
 
         const wsClient = new WebSocketCallbackClient({

@@ -982,6 +982,55 @@ class EventService:
                     ):
                         self._rerun_requested = True
 
+    async def send_message_if_idle(self, message: Message) -> None:
+        """Save a message and start a run for it only while nothing else runs.
+
+        For callers that must not act on the person's behalf beyond their own
+        request, such as Voice. Running a conversation that is waiting for
+        confirmation approves its pending actions, so a plain
+        ``send_message(run=True)`` racing a typed message into a confirmation
+        could approve a tool the person never saw. Here the check, the append
+        and the run start happen under the run lock, where no other run can
+        start or stop at a confirmation in between.
+
+        Only an idle, finished or paused conversation without unconfirmed
+        actions is admitted; anything else is refused and nothing is saved.
+
+        Raises:
+            ValueError: ``"conversation_already_running"`` (a run or ``/goal``
+                loop is active), ``"waiting_for_confirmation"`` (actions are
+                pending confirmation), the execution status value for any
+                other non-idle status, or ``"inactive_service"``. Nothing was
+                saved.
+            ConversationRunLimitExceeded: No run capacity. Nothing was saved.
+        """
+        await self.run(admit_message=message)
+
+    def _admit_message_sync(self, message: Message) -> None:
+        """Append ``message`` only if the conversation is idle (run lock held)."""
+        conversation = self._conversation
+        if conversation is None:
+            raise ValueError("inactive_service")
+        with conversation._state as state:
+            status = state.execution_status
+            if status == ConversationExecutionStatus.RUNNING:
+                raise ValueError("conversation_already_running")
+            # A paused conversation can still hold actions that were waiting
+            # for confirmation; the next run would execute them.
+            if (
+                status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                or ConversationState.get_unmatched_actions(state.active_branch())
+            ):
+                raise ValueError("waiting_for_confirmation")
+            if status not in (
+                ConversationExecutionStatus.IDLE,
+                ConversationExecutionStatus.FINISHED,
+                ConversationExecutionStatus.PAUSED,
+            ):
+                raise ValueError(status.value)
+            # Reentrant: the conversation takes the same state lock.
+            conversation.send_message(message)
+
     def _mark_running_acp_prompt_superseded_sync(self) -> tuple[bool, bool]:
         """Mark the currently running ACP prompt superseded if needed.
 
@@ -1548,6 +1597,7 @@ class EventService:
         *,
         run_slot: RunSlot | None = None,
         wait_for_capacity: bool = False,
+        admit_message: Message | None = None,
     ):
         """Run the conversation asynchronously in the background.
 
@@ -1558,6 +1608,10 @@ class EventService:
         subclasses) or whose agent only implements sync ``step()`` (no
         ``astep()`` override), the synchronous ``run()`` is executed
         in the thread pool as before.
+
+        With ``admit_message`` the message is saved under the run lock just
+        before the run starts, and only while the conversation is idle; see
+        :meth:`send_message_if_idle`, which also lists its refusals.
 
         Raises:
             ValueError: If the service is inactive or conversation is already running.
@@ -1583,6 +1637,10 @@ class EventService:
             if (self._run_task is not None and not self._run_task.done()) or (
                 await self._get_execution_status()
                 == ConversationExecutionStatus.RUNNING
+            ):
+                raise ValueError("conversation_already_running")
+            if admit_message is not None and (
+                self._goal_loop_task is not None and not self._goal_loop_task.done()
             ):
                 raise ValueError("conversation_already_running")
             if self._closing:
@@ -1627,7 +1685,18 @@ class EventService:
             ):
                 if new_owner:
                     owner.release()
+                if admit_message is not None:
+                    raise ValueError("inactive_service")
                 return
+            if admit_message is not None:
+                try:
+                    await loop.run_in_executor(
+                        None, self._admit_message_sync, admit_message
+                    )
+                except BaseException:
+                    if new_owner:
+                        owner.release()
+                    raise
             if new_owner:
                 self._run_session_slot = owner
             slot = owner.share()

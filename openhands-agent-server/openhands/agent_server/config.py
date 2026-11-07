@@ -243,6 +243,15 @@ class Config(BaseModel):
     (Typically inside a sandbox).
     """
 
+    voice_provider: Literal["openai", "codex"] = Field(
+        default="openai",
+        description="Voice broker provider; Codex app-server is an opt-in prototype.",
+    )
+    codex_voice_home: Path | None = Field(
+        default=None,
+        description="Dedicated Codex Voice sign-in home, separate from ordinary Codex.",
+    )
+
     session_api_keys: list[str] = Field(
         default_factory=_default_session_api_keys,
         description=(
