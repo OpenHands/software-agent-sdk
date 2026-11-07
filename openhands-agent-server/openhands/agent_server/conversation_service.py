@@ -48,6 +48,7 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
 )
 from openhands.agent_server.persistence import FileSecretsStore
+from openhands.agent_server.project_board import ThreadOutcomeSubscriber
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.telemetry import (
@@ -74,6 +75,7 @@ from openhands.sdk.conversation.title_utils import (
     extract_message_text,
     generate_title_from_message,
 )
+from openhands.sdk.conversation.types import THREAD_STATE_TAG_KEYS
 from openhands.sdk.credential import (
     CredentialAuthorizationRejected,
     CredentialBindingError,
@@ -1998,6 +2000,7 @@ class ConversationService:
         value: str | None,
         *,
         expected: str | None = None,
+        only_if_absent: bool = False,
     ) -> dict[str, str] | None:
         """Set or remove one tag, keeping the conversation's other tags.
 
@@ -2012,6 +2015,7 @@ class ConversationService:
             value: The new value, or ``None`` to remove the tag.
             expected: When given, change the tag only if it currently holds
                 this value.
+            only_if_absent: Change nothing when the tag is already set.
 
         Returns:
             The conversation's tags after the change, or ``None`` when the
@@ -2031,6 +2035,8 @@ class ConversationService:
             tags = dict(event_service.stored.tags)
             if expected is not None and tags.get(key) != expected:
                 raise ValueError(f"Tag '{key}' does not hold the expected value")
+            if only_if_absent and key in tags:
+                return tags
             if value is None:
                 if key not in tags:
                     return tags
@@ -2274,6 +2280,13 @@ class ConversationService:
                     "parent_conversation_id": parent_id,
                     "forked_from_conversation_id": None,
                     "forked_from_event_id": None,
+                    # Project membership carries over; the parent's own
+                    # resolved/turn state does not.
+                    "tags": {
+                        key: value
+                        for key, value in parent_stored.tags.items()
+                        if key not in THREAD_STATE_TAG_KEYS
+                    },
                 }
             )
             info, _ = await self._launch_prepared_conversation(
@@ -2598,6 +2611,13 @@ class ConversationService:
             # the caller instead of being silently logged on a later publish.
             await event_service.subscribe_to_events(
                 _EventSubscriber(service=event_service)
+            )
+            await event_service.subscribe_to_events(
+                ThreadOutcomeSubscriber(
+                    conversation_id=stored.id,
+                    tags=lambda: event_service.stored.tags,
+                    set_tag=self.set_conversation_tag,
+                )
             )
             if stored.autotitle and stored.title is None:
                 await event_service.subscribe_to_events(

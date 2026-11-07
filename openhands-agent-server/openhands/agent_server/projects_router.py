@@ -15,7 +15,7 @@ import asyncio
 from collections.abc import Callable
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -31,10 +31,15 @@ from openhands.agent_server.persistence import (
     ProjectItem,
     get_projects_store,
 )
+from openhands.agent_server.project_board import ResolvedBy, TurnOutcome
 from openhands.agent_server.utils import utc_now
 from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.conversation.types import PROJECT_TAG_KEY
+from openhands.sdk.conversation.types import (
+    PROJECT_TAG_KEY,
+    RESOLVED_TAG_KEY,
+    TURN_TAG_KEY,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.datetime import OpenHandsUUID
 
@@ -44,15 +49,24 @@ logger = get_logger(__name__)
 projects_router = APIRouter(prefix="/projects", tags=["Projects"])
 
 PROJECT_TAG = PROJECT_TAG_KEY
+# Set by OpenHands automations on the conversations they start.
+AUTOMATION_ID_TAG_KEY = "automationid"
 
 
 class ProjectAttention(str, Enum):
-    """What a thread needs from the person, derived from its execution status."""
+    """What a thread needs from the person.
+
+    Derived from the execution status, then refined by the thread's tags: a
+    finished thread whose last message asked something needs input, and a
+    resolved thread is resolved unless it is blocked on the person.
+    """
 
     NEEDS_YOU = "needs_you"
+    NEEDS_INPUT = "needs_input"
     WORKING = "working"
     FINISHED = "finished"
     IDLE = "idle"
+    RESOLVED = "resolved"
 
 
 _ATTENTION_BY_STATUS = {
@@ -105,6 +119,26 @@ class ProjectThread(BaseModel):
     title: str | None = None
     execution_status: ConversationExecutionStatus
     attention: ProjectAttention
+    resolved: ResolvedBy | None = Field(
+        default=None,
+        description=(
+            "`user` when the person resolved the thread, `auto` when the "
+            "server did because the critic scored the finished task at least "
+            "0.9. Backed by the `resolved` tag; a new user message clears it."
+        ),
+    )
+    turn: TurnOutcome | None = Field(
+        default=None,
+        description=(
+            "How the agent's last run ended: `asked` when its final message "
+            "asked the person something, `answered` otherwise. Backed by the "
+            "`turn` tag; a new user message clears it."
+        ),
+    )
+    automation_id: str | None = Field(
+        default=None,
+        description="The automation that started this thread, if any.",
+    )
     parent_conversation_id: OpenHandsUUID | None = None
     created_at: datetime
     updated_at: datetime
@@ -120,8 +154,8 @@ class ProjectThreadsResponse(BaseModel):
         default_factory=list,
         description=(
             "Every other member conversation, grouped by attention "
-            "(needs_you, working, finished, idle) and newest-updated first "
-            "within each group."
+            "(needs_you, needs_input, working, finished, idle, resolved) and "
+            "newest-updated first within each group."
         ),
     )
 
@@ -288,14 +322,39 @@ def _replace_project(
     return current.model_copy(update={"projects": projects}), updated
 
 
+def _tag_value(tags: dict[str, str], key: str, allowed: tuple[str, ...]) -> Any:
+    value = tags.get(key)
+    return value if value in allowed else None
+
+
+def _attention(
+    execution_status: ConversationExecutionStatus,
+    resolved: str | None,
+    turn: str | None,
+) -> ProjectAttention:
+    attention = _ATTENTION_BY_STATUS.get(execution_status, ProjectAttention.IDLE)
+    if attention == ProjectAttention.NEEDS_YOU:
+        return attention
+    if resolved is not None:
+        return ProjectAttention.RESOLVED
+    if attention == ProjectAttention.FINISHED and turn == "asked":
+        return ProjectAttention.NEEDS_INPUT
+    return attention
+
+
 def _thread(
     stored: StoredConversation, execution_status: ConversationExecutionStatus
 ) -> ProjectThread:
+    resolved = _tag_value(stored.tags, RESOLVED_TAG_KEY, ("user", "auto"))
+    turn = _tag_value(stored.tags, TURN_TAG_KEY, ("asked", "answered"))
     return ProjectThread(
         conversation_id=stored.id,
         title=stored.title,
         execution_status=execution_status,
-        attention=_ATTENTION_BY_STATUS.get(execution_status, ProjectAttention.IDLE),
+        attention=_attention(execution_status, resolved, turn),
+        resolved=resolved,
+        turn=turn,
+        automation_id=stored.tags.get(AUTOMATION_ID_TAG_KEY) or None,
         parent_conversation_id=stored.parent_conversation_id,
         created_at=stored.created_at,
         updated_at=stored.updated_at,

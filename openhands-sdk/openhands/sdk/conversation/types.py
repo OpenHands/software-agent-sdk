@@ -25,6 +25,19 @@ PROJECT_TAG_KEY = "project"
 """Tag whose value is the id (hex) of the agent-server project a conversation
 belongs to. Child conversations copy their parent's tags, so they join it too."""
 
+RESOLVED_TAG_KEY = "resolved"
+"""Tag marking a conversation's work as done: ``user`` when the person resolved
+it, ``auto`` when the server did from a confident critic score. A new user
+message removes it."""
+
+TURN_TAG_KEY = "turn"
+"""Tag recording how the agent's last turn ended: ``asked`` when its final
+message asked the person something, ``answered`` otherwise. A new user message
+removes it."""
+
+THREAD_STATE_TAG_KEYS = frozenset({RESOLVED_TAG_KEY, TURN_TAG_KEY})
+"""Tags that describe one conversation's state, so children do not copy them."""
+
 
 def _validate_tags(v: dict[str, str] | None) -> dict[str, str]:
     if v is None:

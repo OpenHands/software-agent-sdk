@@ -617,3 +617,60 @@ async def test_failed_coordinator_tag_undoes_the_whole_patch(
     current = (await client.get(f"/api/projects/{project['id']}")).json()
     assert current["name"] == "P"
     assert current["coordinator_conversation_id"] == old.hex
+
+
+@pytest.mark.asyncio
+async def test_resolved_and_turn_tags_refine_attention(client, service, tmp_path):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    cases = {
+        # title: (status, tags)
+        "question": (ConversationExecutionStatus.FINISHED, {"turn": "asked"}),
+        "answer": (ConversationExecutionStatus.FINISHED, {"turn": "answered"}),
+        "done": (
+            ConversationExecutionStatus.FINISHED,
+            {"turn": "answered", "resolved": "auto"},
+        ),
+        "closed-running": (ConversationExecutionStatus.RUNNING, {"resolved": "user"}),
+        "blocked": (
+            ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
+            {"resolved": "user"},
+        ),
+        "nightly": (
+            ConversationExecutionStatus.IDLE,
+            {"automationid": "auto-7", "turn": "bogus"},
+        ),
+    }
+    for title, (status, tags) in cases.items():
+        cid = await _start(
+            service, tmp_path, title=title, tags={"project": project["id"], **tags}
+        )
+        await _set_status(service, cid, status)
+
+    threads = (await client.get(f"/api/projects/{project['id']}/threads")).json()[
+        "threads"
+    ]
+
+    by_title = {t["title"]: t for t in threads}
+    assert {t: by_title[t]["attention"] for t in cases} == {
+        "question": "needs_input",
+        "answer": "finished",
+        "done": "resolved",
+        "closed-running": "resolved",
+        "blocked": "needs_you",
+        "nightly": "idle",
+    }
+    assert by_title["done"]["resolved"] == "auto"
+    assert by_title["question"]["turn"] == "asked"
+    assert by_title["nightly"]["turn"] is None  # unknown values are ignored
+    assert by_title["nightly"]["automation_id"] == "auto-7"
+    assert [t["attention"] for t in threads] == sorted(
+        (t["attention"] for t in threads),
+        key=[
+            "needs_you",
+            "needs_input",
+            "working",
+            "finished",
+            "idle",
+            "resolved",
+        ].index,
+    )

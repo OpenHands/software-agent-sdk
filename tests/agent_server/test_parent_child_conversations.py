@@ -317,7 +317,8 @@ async def _launch_child(
     services: dict[UUID, Any] = {}
     worktree_root = tmp_path / "conversation-worktrees"
     parent_request = _start_request(workspace_dir).model_copy(
-        update={"tags": {"source": "test"}}
+        # The parent's own resolved/turn state must not carry over.
+        update={"tags": {"source": "test", "resolved": "user", "turn": "asked"}}
     )
     with patch(
         "openhands.agent_server.conversation_service.EventService",

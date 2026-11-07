@@ -72,12 +72,13 @@ _LIST_DESCRIPTION = (
     "List the threads of the project this conversation coordinates or belongs "
     "to: every other conversation tagged with the same project, including the "
     "ones you started with start_child_conversation.\n\n"
-    "Threads come grouped by `attention`, which is derived from the thread's "
-    "execution status: `needs_you` (waiting for confirmation, paused, error or "
-    "stuck), `working` (running), `finished` and `idle`. `finished` means the "
-    "run ended; it does not say the task succeeded, so read the thread before "
-    "reporting an outcome. Call this again to refresh; a previous result is "
-    "not the current state."
+    "Threads come grouped by `attention`: `needs_you` (waiting for "
+    "confirmation, paused, error or stuck), `needs_input` (finished with a "
+    "question for the person), `working` (running), `finished`, `idle` and "
+    "`resolved` (the person or a confident critic marked it done). "
+    "`finished` means the run ended; it does not say the task succeeded, so "
+    "read the thread before reporting an outcome. Call this again to refresh; "
+    "a previous result is not the current state."
 )
 
 
