@@ -44,9 +44,8 @@ from openhands.agent_server.openai.models import (
     OpenAIUsage,
 )
 from openhands.agent_server.persistence import (
-    PersistedSettings,
     get_llm_profile_store,
-    get_settings_store,
+    load_settings_or_defaults,
 )
 from openhands.sdk import Message
 from openhands.sdk.conversation.request import (
@@ -278,7 +277,7 @@ def _create_conversation_request(
             status_code=status.HTTP_409_CONFLICT,
             detail="No active Agent Profile; activate one to use the gateway",
         )
-    settings = get_settings_store(config).load() or PersistedSettings()
+    settings = load_settings_or_defaults(config)
     try:
         additions = AgentLaunchAdditions(
             # An ACP server runs its own model.
