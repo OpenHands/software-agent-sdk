@@ -377,7 +377,48 @@ def test_run_safe_skips_cancelled_tool():
     assert not runner_called, "Tool should not have been executed"
     assert len(result) == 1
     assert isinstance(result[0], AgentErrorEvent)
+    assert result[0].origin is None
+    assert result[0].grouping_key is None
     assert "cancelled" in result[0].error.lower()
+
+
+def test_run_safe_records_origin_and_keeps_explicit_classification():
+    """ValueError stays agent-correctable; an unexpected error stays internal."""
+    from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
+
+    executor = ParallelToolExecutor(max_workers=1)
+    action = _make_action_event("my_tool", "tc-origin")
+    marker = "SECRET /tmp/hidden sk-ant-PARALLEL"
+
+    def raise_value(ae):
+        raise ValueError(marker)
+
+    def raise_runtime(ae):
+        raise RuntimeError(marker)
+
+    value_event = executor._run_safe(action, raise_value)[0]
+    runtime_event = executor._run_safe(action, raise_runtime)[0]
+    assert isinstance(value_event, AgentErrorEvent)
+    assert isinstance(runtime_event, AgentErrorEvent)
+    assert value_event.classification is not None
+    assert value_event.classification.kind == "agent_action"
+    assert runtime_event.classification is not None
+    assert runtime_event.classification.kind == "internal"
+    assert value_event.origin == runtime_event.origin
+    assert value_event.origin is not None
+    assert value_event.grouping_key != runtime_event.grouping_key
+    blob = " ".join(
+        filter(
+            None,
+            (
+                value_event.origin,
+                value_event.grouping_key,
+                runtime_event.grouping_key,
+            ),
+        )
+    )
+    assert marker not in blob
+    assert "SECRET" not in blob
 
 
 def test_run_safe_runs_without_token():

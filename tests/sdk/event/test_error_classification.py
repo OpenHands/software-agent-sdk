@@ -48,6 +48,8 @@ def test_conversation_error_classifies_sensitive_detail_without_serializing_it(
 
     assert event.classification is not None
     assert event.classification.kind == kind
+    assert event.origin is None
+    assert event.grouping_key is None
     if detail:
         assert detail not in event.classification.model_dump_json()
 
