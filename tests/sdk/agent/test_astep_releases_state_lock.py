@@ -11,6 +11,7 @@ lock for just the network call via
 import asyncio
 import json
 import threading
+from typing import Any
 
 import pytest
 from pydantic import PrivateAttr
@@ -20,8 +21,9 @@ from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.llm import LLM
+from openhands.sdk.llm import LLM, LLMResponse
 from openhands.sdk.llm.exceptions import LLMContentPolicyViolationError
+from openhands.sdk.testing import TestLLM
 
 
 class _LockProbingLLM(LLM):
@@ -113,27 +115,21 @@ async def test_direct_astep_without_lock_is_unaffected():
     assert llm._probe["worker_acquired_during_call"] is True
 
 
-class _PausingLLM(LLM):
+class _PausingLLM(TestLLM):
     """Pauses the conversation from another thread mid-``acompletion`` and
     records what ``base_state.json`` says right after the pause returns."""
 
     _convo_box: list = PrivateAttr(default_factory=list)
     _probe: dict = PrivateAttr(default_factory=dict)
 
-    def __init__(self):
-        super().__init__(model="test-model", usage_id="test-llm")
-
-    def uses_responses_api(self) -> bool:  # override gating
-        return False
-
-    async def acompletion(self, *, messages, tools=None, **kwargs):  # type: ignore[override]
+    async def acompletion(self, *args: Any, **kwargs: Any) -> LLMResponse:
         convo = self._convo_box[0]
         # The server's /pause handler calls pause() from another thread.
         await asyncio.to_thread(convo.pause)
         saved = json.loads(convo._state._fs.read(BASE_STATE))
         self._probe["saved_status"] = saved["execution_status"]
         self._probe["save_depth_during_call"] = convo._state._save_depth
-        raise LLMContentPolicyViolationError()
+        return await super().acompletion(*args, **kwargs)
 
 
 @pytest.mark.asyncio
@@ -141,7 +137,8 @@ async def test_pause_during_llm_call_is_persisted_at_once(tmp_path):
     """A pause applied while the step has released the lock for the network
     call is written to base_state.json at once, not at the end of the step
     (GET reads that file, and a crash in that window must not lose it)."""
-    llm = _PausingLLM()
+    llm = _PausingLLM.from_messages([LLMContentPolicyViolationError()])
+    assert isinstance(llm, _PausingLLM)
     agent = Agent(llm=llm, tools=[])
     convo = Conversation(
         agent=agent, persistence_dir=str(tmp_path), workspace=str(tmp_path)
