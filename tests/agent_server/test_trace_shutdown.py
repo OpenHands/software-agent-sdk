@@ -2,6 +2,7 @@ import threading
 
 import pytest
 from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.trace import ProxyTracerProvider
 
 from openhands.agent_server.api import api_lifespan, create_app
 from openhands.agent_server.config import Config
@@ -55,6 +56,9 @@ async def test_trace_flush_is_bounded_off_loop_and_best_effort(
 
 
 async def test_no_flush_when_tracing_is_not_configured(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "opentelemetry.trace.get_tracer_provider", lambda: ProxyTracerProvider()
+    )
     monkeypatch.setattr("openhands.agent_server.api.get_vscode_service", lambda: None)
     monkeypatch.setattr(
         "openhands.agent_server.api.get_tool_preload_service", lambda: None
