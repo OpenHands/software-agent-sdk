@@ -108,7 +108,11 @@ class PubSub[T]:
         await asyncio.gather(*[_notify(sid, sub) for sid, sub in subscribers])
 
     async def close(self):
-        await asyncio.gather(
-            *[subscriber.close() for subscriber in self._subscribers.values()]
+        results = await asyncio.gather(
+            *[subscriber.close() for subscriber in self._subscribers.values()],
+            return_exceptions=True,
         )
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error(f"Error closing subscriber: {result}", exc_info=result)
         self._subscribers.clear()
