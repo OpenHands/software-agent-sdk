@@ -12,13 +12,26 @@ starts with ``start_child_conversation`` join its project without another call.
 """
 
 import asyncio
+import mimetypes
 from collections.abc import Callable
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal
+from pathlib import Path
+from typing import Annotated, Any, BinaryIO, Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from openhands.agent_server._secrets_exposure import get_config
@@ -30,6 +43,15 @@ from openhands.agent_server.persistence import (
     PersistedProjects,
     ProjectItem,
     get_projects_store,
+)
+from openhands.agent_server.project_artifacts import (
+    MAX_ARTIFACT_BYTES,
+    ArtifactSource,
+    ArtifactTooLarge,
+    ProjectArtifact,
+    ProjectArtifactStore,
+    resolve_workspace_file,
+    valid_artifact_name,
 )
 from openhands.agent_server.project_board import ResolvedBy, TurnOutcome
 from openhands.agent_server.utils import utc_now
@@ -500,7 +522,8 @@ async def delete_project(project_id: UUID, request: Request) -> DeleteResponse:
     """Delete a project.
 
     Conversations are left as they are, including their ``project`` tag; the
-    project's threads endpoint answers 404 afterwards.
+    project's threads endpoint answers 404 afterwards. The project's artifacts
+    are deleted.
     """
     removed = False
 
@@ -513,6 +536,7 @@ async def delete_project(project_id: UUID, request: Request) -> DeleteResponse:
     await _update(_store(request), apply)
     if not removed:
         raise HTTPException(status_code=404, detail="Project not found")
+    await asyncio.to_thread(_artifacts(request).delete_project, project_id)
     return DeleteResponse()
 
 
@@ -674,3 +698,195 @@ async def message_project_thread(
         previous_status=previous_status,
         run=outcome,
     )
+
+
+# Artifacts
+
+
+class ProjectArtifactsResponse(BaseModel):
+    artifacts: list[ProjectArtifact] = Field(
+        default_factory=list, description="Newest-updated first."
+    )
+
+
+class SaveConversationArtifactRequest(BaseModel):
+    conversation_id: UUID = Field(
+        description="A member conversation whose workspace holds the file."
+    )
+    path: str = Field(
+        min_length=1,
+        description=(
+            "The file, relative to the conversation's working directory or "
+            "absolute inside it."
+        ),
+    )
+    name: str | None = Field(
+        default=None,
+        description="The artifact's name; the file's own name when left out.",
+    )
+
+
+def _artifacts(request: Request) -> ProjectArtifactStore:
+    return ProjectArtifactStore(_store(request).persistence_dir)
+
+
+def _artifact_name(name: str) -> str:
+    if not valid_artifact_name(name):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Invalid artifact name: use a flat file name of letters, "
+                "digits, spaces and ._()+-, not starting with a dot"
+            ),
+        )
+    return name
+
+
+async def _save_artifact(
+    store: ProjectArtifactStore,
+    project_id: UUID,
+    name: str,
+    stream: BinaryIO,
+    *,
+    source: ArtifactSource,
+    conversation_id: UUID | None = None,
+) -> ProjectArtifact:
+    try:
+        return await asyncio.to_thread(
+            store.save,
+            project_id,
+            name,
+            stream,
+            source=source,
+            conversation_id=conversation_id,
+        )
+    except ArtifactTooLarge:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Artifact is larger than {MAX_ARTIFACT_BYTES} bytes",
+        )
+
+
+@projects_router.get(
+    "/{project_id}/artifacts",
+    response_model=ProjectArtifactsResponse,
+    responses={404: {"description": "Project not found"}},
+)
+async def list_project_artifacts(
+    project_id: UUID, request: Request
+) -> ProjectArtifactsResponse:
+    """List the files the person uploaded to the project or its agents saved."""
+    _find(await _load(_store(request)), project_id)
+    artifacts = await asyncio.to_thread(_artifacts(request).list, project_id)
+    return ProjectArtifactsResponse(artifacts=artifacts)
+
+
+@projects_router.post(
+    "/{project_id}/artifacts",
+    response_model=ProjectArtifact,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        400: {"description": "Invalid artifact name"},
+        404: {"description": "Project not found"},
+        413: {"description": "File too large"},
+    },
+)
+async def upload_project_artifact(
+    project_id: UUID,
+    request: Request,
+    file: Annotated[UploadFile, File()],
+    name: Annotated[str | None, Form()] = None,
+) -> ProjectArtifact:
+    """Upload a file to the project. An artifact of the same name is replaced."""
+    _find(await _load(_store(request)), project_id)
+    artifact_name = _artifact_name(name or Path(file.filename or "").name)
+    return await _save_artifact(
+        _artifacts(request), project_id, artifact_name, file.file, source="user"
+    )
+
+
+@projects_router.post(
+    "/{project_id}/artifacts/from-conversation",
+    response_model=ProjectArtifact,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        400: {"description": "Invalid name, or path outside the workspace"},
+        404: {"description": "Project not found, or conversation not a member"},
+        413: {"description": "File too large"},
+    },
+)
+async def save_conversation_artifact(
+    project_id: UUID,
+    payload: SaveConversationArtifactRequest,
+    request: Request,
+    service: ConversationService = Depends(get_conversation_service),
+) -> ProjectArtifact:
+    """Copy a file from a member conversation's workspace into the project.
+
+    The path must stay inside the conversation's working directory, symlinks
+    included. An artifact of the same name is replaced.
+    """
+    _find(await _load(_store(request)), project_id)
+    event_service = await service.get_event_service(payload.conversation_id)
+    if (
+        event_service is None
+        or event_service.stored.tags.get(PROJECT_TAG) != project_id.hex
+    ):
+        raise HTTPException(status_code=404, detail="Conversation not in project")
+    working_dir = Path(event_service.stored.workspace.working_dir)
+    try:
+        source = await asyncio.to_thread(
+            resolve_workspace_file, working_dir, payload.path
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    artifact_name = _artifact_name(payload.name or source.name)
+    with open(source, "rb") as stream:
+        return await _save_artifact(
+            _artifacts(request),
+            project_id,
+            artifact_name,
+            stream,
+            source="agent",
+            conversation_id=payload.conversation_id,
+        )
+
+
+@projects_router.get(
+    "/{project_id}/artifacts/{name}",
+    response_class=FileResponse,
+    responses={404: {"description": "Project or artifact not found"}},
+)
+async def download_project_artifact(
+    project_id: UUID, name: str, request: Request
+) -> FileResponse:
+    """Download an artifact."""
+    _find(await _load(_store(request)), project_id)
+    found = await asyncio.to_thread(
+        _artifacts(request).get, project_id, _artifact_name(name)
+    )
+    if found is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    _, path = found
+    return FileResponse(
+        path=path,
+        filename=name,
+        media_type=mimetypes.guess_type(name)[0] or "application/octet-stream",
+    )
+
+
+@projects_router.delete(
+    "/{project_id}/artifacts/{name}",
+    response_model=DeleteResponse,
+    responses={404: {"description": "Project or artifact not found"}},
+)
+async def delete_project_artifact(
+    project_id: UUID, name: str, request: Request
+) -> DeleteResponse:
+    """Delete an artifact."""
+    _find(await _load(_store(request)), project_id)
+    if not await asyncio.to_thread(
+        _artifacts(request).delete, project_id, _artifact_name(name)
+    ):
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return DeleteResponse()

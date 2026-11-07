@@ -674,3 +674,117 @@ async def test_resolved_and_turn_tags_refine_attention(client, service, tmp_path
             "resolved",
         ].index,
     )
+
+
+# Artifacts
+
+
+@pytest.mark.asyncio
+async def test_upload_list_download_delete_artifact(client, persistence_dir):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    base = f"/api/projects/{project['id']}/artifacts"
+
+    uploaded = await client.post(
+        base, files={"file": ("notes.md", b"# Notes\n", "text/markdown")}
+    )
+    assert uploaded.status_code == 201
+    assert uploaded.json()["source"] == "user"
+    assert uploaded.json()["size"] == 8
+
+    listed = (await client.get(base)).json()["artifacts"]
+    assert [(a["name"], a["source"]) for a in listed] == [("notes.md", "user")]
+
+    downloaded = await client.get(f"{base}/notes.md")
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"# Notes\n"
+    assert downloaded.headers["content-type"].startswith("text/markdown")
+
+    assert (await client.delete(f"{base}/notes.md")).status_code == 200
+    assert (await client.get(base)).json()["artifacts"] == []
+    assert (await client.delete(f"{base}/notes.md")).status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", [".hidden", "../escape", "a/b.txt", ""])
+async def test_upload_refuses_unsafe_names(client, name):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+
+    response = await client.post(
+        f"/api/projects/{project['id']}/artifacts",
+        files={"file": ("ok.txt", b"x")},
+        data={"name": name} if name else {"name": ".."},
+    )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_save_from_member_workspace(client, service, tmp_path):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    member = await _start(service, tmp_path, tags={"project": project["id"]})
+    outsider = await _start(service, tmp_path)
+    workspace = tmp_path / "workspace"
+    (workspace / "out").mkdir()
+    (workspace / "out" / "report.md").write_text("done")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("nope")
+    (workspace / "link.txt").symlink_to(secret)
+    url = f"/api/projects/{project['id']}/artifacts/from-conversation"
+
+    saved = await client.post(
+        url, json={"conversation_id": member.hex, "path": "out/report.md"}
+    )
+    escaped = await client.post(
+        url, json={"conversation_id": member.hex, "path": "../secret.txt"}
+    )
+    via_link = await client.post(
+        url, json={"conversation_id": member.hex, "path": "link.txt"}
+    )
+    not_member = await client.post(
+        url, json={"conversation_id": outsider.hex, "path": "out/report.md"}
+    )
+
+    assert saved.status_code == 201
+    assert saved.json()["source"] == "agent"
+    assert saved.json()["conversation_id"] == member.hex
+    assert escaped.status_code == 400
+    assert via_link.status_code == 400
+    assert not_member.status_code == 404
+    names = [
+        a["name"]
+        for a in (await client.get(f"/api/projects/{project['id']}/artifacts")).json()[
+            "artifacts"
+        ]
+    ]
+    assert names == ["report.md"]
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_project_deletes_its_artifacts(client, persistence_dir):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    await client.post(
+        f"/api/projects/{project['id']}/artifacts", files={"file": ("a.txt", b"x")}
+    )
+    artifact_dir = persistence_dir / "project-artifacts" / project["id"]
+    assert artifact_dir.is_dir()
+
+    assert (await client.delete(f"/api/projects/{project['id']}")).status_code == 200
+
+    assert not artifact_dir.exists()
+    assert (
+        await client.get(f"/api/projects/{project['id']}/artifacts")
+    ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_upload_over_the_limit_is_refused(client, monkeypatch):
+    from openhands.agent_server import project_artifacts
+
+    monkeypatch.setattr(project_artifacts, "MAX_ARTIFACT_BYTES", 4)
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    base = f"/api/projects/{project['id']}/artifacts"
+
+    response = await client.post(base, files={"file": ("big.bin", b"12345")})
+
+    assert response.status_code == 413
+    assert (await client.get(base)).json()["artifacts"] == []

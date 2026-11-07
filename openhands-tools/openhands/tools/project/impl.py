@@ -27,6 +27,8 @@ from openhands.tools.project.definition import (
     MessageProjectThreadAction,
     MessageProjectThreadObservation,
     ProjectThreadSummary,
+    SaveProjectArtifactAction,
+    SaveProjectArtifactObservation,
 )
 
 
@@ -292,4 +294,58 @@ class MessageProjectThreadExecutor(
             conversation_id=target_id,
             previous_status=previous_status,
             run=run,
+        )
+
+
+class SaveProjectArtifactExecutor(
+    ToolExecutor[SaveProjectArtifactAction, SaveProjectArtifactObservation]
+):
+    """Copy a workspace file into the caller's project artifacts.
+
+    The server reads the file from this conversation's working directory and
+    refuses paths outside it, symlinks included.
+    """
+
+    def __init__(
+        self,
+        conv_state: "ConversationState",
+        server_url: str | None = None,
+        timeout: float = PROJECT_TOOL_TIMEOUT_SECONDS,
+        transport: httpx.BaseTransport | None = None,
+    ):
+        self._client = _ProjectClient(conv_state, server_url, timeout, transport)
+
+    def __call__(
+        self,
+        action: SaveProjectArtifactAction,
+        conversation: "LocalConversation | None" = None,  # noqa: ARG002
+    ) -> SaveProjectArtifactObservation:
+        try:
+            project_id = self._client.project_id()
+            payload: dict[str, Any] = {
+                "conversation_id": self._client.conv_state.id.hex,
+                "path": action.path,
+            }
+            if action.name:
+                payload["name"] = action.name
+            response = self._client.request(
+                "POST",
+                f"/api/projects/{project_id}/artifacts/from-conversation",
+                json=payload,
+            )
+            try:
+                body = response.json()
+                name = str(body["name"])
+                size = int(body["size"])
+            except (ValueError, KeyError, TypeError) as exc:
+                raise ProjectToolError(f"Unexpected artifact response: {exc}") from exc
+        except ProjectToolError as exc:
+            return SaveProjectArtifactObservation.from_text(
+                text=str(exc), is_error=True
+            )
+        return SaveProjectArtifactObservation.from_text(
+            text=f"Saved {action.path} as project artifact {name!r} ({size} bytes).",
+            project_id=project_id,
+            name=name,
+            size=size,
         )

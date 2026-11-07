@@ -1,10 +1,12 @@
 """Project coordinator tool package.
 
-Provides ``list_project_threads`` and ``message_project_thread``: server-executed
-tools that let a conversation see the threads of its agent-server project and
-send one of them a follow-up. Together with ``start_child_conversation`` (a
-child copies its parent's ``project`` tag) they give a project coordinator
-typed actions to start, follow and steer its threads.
+Provides ``list_project_threads``, ``message_project_thread`` and
+``save_project_artifact``: server-executed tools that let a conversation see
+the threads of its agent-server project, send one of them a follow-up, and
+save a file it made to the project's artifacts. Together with
+``start_child_conversation`` (a child copies its parent's ``project`` tag) they
+give a project coordinator typed actions to start, follow and steer its
+threads.
 
 Usage:
     from openhands.tools.project import (
@@ -33,10 +35,14 @@ from openhands.tools.project.definition import (
     MessageProjectThreadObservation,
     MessageProjectThreadTool,
     ProjectThreadSummary,
+    SaveProjectArtifactAction,
+    SaveProjectArtifactObservation,
+    SaveProjectArtifactTool,
 )
 from openhands.tools.project.impl import (
     ListProjectThreadsExecutor,
     MessageProjectThreadExecutor,
+    SaveProjectArtifactExecutor,
 )
 
 
@@ -50,4 +56,8 @@ __all__ = [
     "MessageProjectThreadObservation",
     "MessageProjectThreadTool",
     "ProjectThreadSummary",
+    "SaveProjectArtifactAction",
+    "SaveProjectArtifactExecutor",
+    "SaveProjectArtifactObservation",
+    "SaveProjectArtifactTool",
 ]

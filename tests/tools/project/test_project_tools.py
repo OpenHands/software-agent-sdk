@@ -346,3 +346,61 @@ def test_message_reads_project_at_call_time(tmp_path):
 
     assert before.is_error
     assert not after.is_error
+
+
+# save_project_artifact
+
+
+def _save(tmp_path, handler, tags=None, **action):
+    from openhands.tools.project import (
+        SaveProjectArtifactAction,
+        SaveProjectArtifactExecutor,
+    )
+
+    state = _conv_state(tmp_path, tags)
+    executor = SaveProjectArtifactExecutor(
+        state, server_url="http://server", transport=httpx.MockTransport(handler)
+    )
+    return state, executor(SaveProjectArtifactAction(**action))
+
+
+def test_save_artifact_posts_the_callers_id_and_path(tmp_path):
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(201, json={"name": "report.md", "size": 12})
+
+    state, observation = _save(tmp_path, handler, path="out/report.md")
+
+    assert not observation.is_error
+    assert observation.name == "report.md" and observation.size == 12
+    assert seen[0].url.path == (
+        f"/api/projects/{PROJECT_ID}/artifacts/from-conversation"
+    )
+    assert json.loads(seen[0].content) == {
+        "conversation_id": state.id.hex,
+        "path": "out/report.md",
+    }
+
+
+def test_save_artifact_reports_server_refusal(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400, json={"detail": "Path is outside the conversation's workspace"}
+        )
+
+    _, observation = _save(tmp_path, handler, path="/etc/passwd", name="x")
+
+    assert observation.is_error
+    assert "outside the conversation's workspace" in observation.text
+
+
+def test_save_artifact_needs_a_project(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request expected")
+
+    _, observation = _save(tmp_path, handler, tags={}, path="a.txt")
+
+    assert observation.is_error
+    assert "not part of a project" in observation.text

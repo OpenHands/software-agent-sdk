@@ -33,6 +33,9 @@ class ProjectThreadSummary(BaseModel):
     title: str | None = None
     execution_status: str
     attention: str
+    resolved: str | None = None
+    turn: str | None = None
+    automation_id: str | None = None
     parent_conversation_id: UnmaskedID | None = None
     updated_at: str | None = None
 
@@ -242,5 +245,108 @@ class MessageProjectThreadTool(
         ]
 
 
+# save_project_artifact
+
+
+class SaveProjectArtifactAction(Action):
+    """Save a file from this conversation's workspace as a project artifact."""
+
+    path: str = Field(
+        description=(
+            "The file to save, relative to the working directory or absolute inside it."
+        )
+    )
+    name: str | None = Field(
+        default=None,
+        description=(
+            "Name to save it under; the file's own name when left out. A flat "
+            "file name of letters, digits, spaces and ._()+-. An artifact of "
+            "the same name is replaced."
+        ),
+    )
+
+    @property
+    def visualize(self) -> Text:
+        content = Text()
+        content.append("Save project artifact", style="bold cyan")
+        content.append(f" {self.path}")
+        if self.name:
+            content.append(f" as {self.name}")
+        return content
+
+
+class SaveProjectArtifactObservation(Observation):
+    project_id: UnmaskedID | None = None
+    name: str | None = None
+    size: int | None = None
+
+    @property
+    def visualize(self) -> Text:
+        content = Text()
+        if self.is_error:
+            content.append("Saving project artifact failed", style="bold red")
+            content.append("\n")
+            content.append(self.text)
+            return content
+        content.append("Artifact saved", style="bold green")
+        if self.name:
+            content.append(f": {self.name}")
+        return content
+
+
+_SAVE_ARTIFACT_DESCRIPTION = (
+    "Save a file you made as an artifact of this conversation's project, so "
+    "the person finds it on the project board. Use it for deliverables that "
+    "do not belong in a source repository: reports, write-ups, images, "
+    "exports, data files. Do not use it for files that are committed to a "
+    "repository. The file is copied, so save it again after changing it."
+)
+
+
+class SaveProjectArtifactTool(
+    ToolDefinition[SaveProjectArtifactAction, SaveProjectArtifactObservation]
+):
+    """Tool that copies a workspace file into the caller's project artifacts."""
+
+    user_selectable: ClassVar[bool] = False
+
+    @classmethod
+    def create(
+        cls,
+        conv_state: "ConversationState",
+        server_url: str | None = None,
+        **params,
+    ) -> Sequence[Self]:
+        """Create the tool bound to the current conversation.
+
+        Args:
+            conv_state: State of the calling conversation; its ``project``
+                tag names the project the artifact is saved to.
+            server_url: Optional agent-server base URL. Defaults to the
+                agent-server running this tool.
+        """
+        if params:
+            raise ValueError(
+                f"SaveProjectArtifactTool does not accept parameters: {sorted(params)}"
+            )
+        from openhands.tools.project.impl import SaveProjectArtifactExecutor
+
+        return [
+            cls(
+                description=_SAVE_ARTIFACT_DESCRIPTION,
+                action_type=SaveProjectArtifactAction,
+                observation_type=SaveProjectArtifactObservation,
+                executor=SaveProjectArtifactExecutor(conv_state, server_url),
+                annotations=ToolAnnotations(
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=False,
+                ),
+            )
+        ]
+
+
 register_tool(ListProjectThreadsTool.name, ListProjectThreadsTool)
+register_tool(SaveProjectArtifactTool.name, SaveProjectArtifactTool)
 register_tool(MessageProjectThreadTool.name, MessageProjectThreadTool)
