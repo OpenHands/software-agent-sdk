@@ -10,7 +10,9 @@ Usage:
 
 Requirements:
   - LLM_BASE_URL: LiteLLM proxy URL (routes Claude Code requests)
-  - LLM_API_KEY: LiteLLM virtual API key
+  - ACP_LLM_API_KEY: LiteLLM virtual API key whose alias bypasses the proxy's
+    OpenHands-identity guardrail (Claude Code sends its own system prompt,
+    which the guardrail would 403). Falls back to LLM_API_KEY.
   - RUNTIME_API_KEY: API key for runtime API access
 """
 
@@ -29,10 +31,13 @@ from openhands.workspace import APIRemoteWorkspace
 logger = get_logger(__name__)
 
 
-# ACP agents (Claude Code) route through LiteLLM proxy
+# ACP agents (Claude Code) route through the OpenHands LiteLLM proxy. Claude
+# Code sends its own non-OpenHands system prompt, so the proxy's identity
+# guardrail would 403 it; ACP_LLM_API_KEY is a dedicated key whose LiteLLM
+# alias (`acp-llm-api-key`) is in the proxy's `ignored_key_aliases`.
 llm_base_url = os.getenv("LLM_BASE_URL")
-llm_api_key = os.getenv("LLM_API_KEY")
-assert llm_base_url and llm_api_key, "LLM_BASE_URL and LLM_API_KEY required"
+llm_api_key = os.getenv("ACP_LLM_API_KEY") or os.getenv("LLM_API_KEY")
+assert llm_base_url and llm_api_key, "LLM_BASE_URL and ACP_LLM_API_KEY (or LLM_API_KEY) required"
 
 # Set ANTHROPIC_* vars so Claude Code routes through LiteLLM
 os.environ["ANTHROPIC_BASE_URL"] = llm_base_url
