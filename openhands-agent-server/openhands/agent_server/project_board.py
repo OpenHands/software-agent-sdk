@@ -166,8 +166,10 @@ class ThreadOutcomeSubscriber(Subscriber[Event]):
         self._tail = asyncio.create_task(run())
 
     async def _reopen(self) -> None:
-        await self.set_tag(self.conversation_id, TURN_TAG_KEY, None)
-        await self.set_tag(self.conversation_id, RESOLVED_TAG_KEY, None)
+        # Most user messages find neither tag; each write is a metadata save.
+        for key in (TURN_TAG_KEY, RESOLVED_TAG_KEY):
+            if key in self.tags():
+                await self.set_tag(self.conversation_id, key, None)
 
     async def _record(self, text: str | None, score: float | None) -> None:
         await self.set_tag(self.conversation_id, TURN_TAG_KEY, classify_turn(text))

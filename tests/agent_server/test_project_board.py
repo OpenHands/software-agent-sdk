@@ -1,5 +1,6 @@
 """Tests for the thread-outcome tags a project board groups by."""
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -284,3 +285,26 @@ async def test_finished_run_tags_a_live_conversation(service, tmp_path):
 
 def test_thread_state_tags_are_the_board_tags():
     assert THREAD_STATE_TAG_KEYS == {"resolved", "turn"}
+
+
+@pytest.mark.asyncio
+async def test_service_registers_the_subscriber_for_every_conversation(
+    service, tmp_path
+):
+    cid = await _start(service, tmp_path, {"project": "p1", "turn": "asked"})
+    event_service = await service.get_event_service(cid)
+    assert event_service is not None
+
+    # A user message published through the conversation's own pub/sub reaches
+    # the registered subscriber, which reopens the thread.
+    await event_service._pub_sub(_message("user", "One more thing"))
+
+    async def turn_cleared() -> bool:
+        info = await service.get_conversation(cid)
+        return info is not None and "turn" not in info.tags
+
+    for _ in range(100):
+        if await turn_cleared():
+            break
+        await asyncio.sleep(0.01)
+    assert await turn_cleared()

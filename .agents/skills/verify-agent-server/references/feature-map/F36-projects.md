@@ -19,11 +19,16 @@ the pending action: the check is made under the thread's run lock. Deleting a pr
 changes or deletes conversations. A file the server cannot parse, or one
 written by a newer schema, is never overwritten: every route answers 409.
 
-Source: `openhands-agent-server/openhands/agent_server/projects_router.py`, `openhands-agent-server/openhands/agent_server/persistence/models.py`, `openhands-agent-server/openhands/agent_server/persistence/store.py`, `openhands-tools/openhands/tools/project/`
+Source: `openhands-agent-server/openhands/agent_server/projects_router.py`, `openhands-agent-server/openhands/agent_server/project_board.py`, `openhands-agent-server/openhands/agent_server/project_artifacts.py`, `openhands-agent-server/openhands/agent_server/persistence/models.py`, `openhands-agent-server/openhands/agent_server/persistence/store.py`, `openhands-tools/openhands/tools/project/`
 
 Needs: `llm`
 
-Routes: `GET /api/projects`, `POST /api/projects`,
+Routes: `GET /api/projects/{project_id}/artifacts`,
+`POST /api/projects/{project_id}/artifacts`,
+`POST /api/projects/{project_id}/artifacts/from-conversation`,
+`GET /api/projects/{project_id}/artifacts/{name}`,
+`DELETE /api/projects/{project_id}/artifacts/{name}`,
+`GET /api/projects`, `POST /api/projects`,
 `GET /api/projects/{project_id}`, `PATCH /api/projects/{project_id}`,
 `DELETE /api/projects/{project_id}`, `GET /api/projects/{project_id}/threads`,
 `PUT /api/projects/{project_id}/threads/{conversation_id}`,
@@ -47,6 +52,10 @@ Routes: `GET /api/projects`, `POST /api/projects`,
 - `F36.remove-coordinator`: removing the coordinator as a thread is 409; clearing it with `PATCH {"coordinator_conversation_id": null}` keeps it a member, now listed as a thread.
 - `F36.message-rest`: `POST .../messages` to a member saves the message, starts a run and answers `run: started` with the previous status; a non-member is 404.
 - `F36.message-refused`: `POST .../messages` to a thread waiting for confirmation is 409, saves nothing, and the thread keeps waiting.
+- `F36.turn`: when a member's run finishes, its `turn` tag says whether the agent's last message asked something (`asked`, attention `needs_input`) or not (`answered`); a new user message clears it.
+- `F36.resolved`: a `resolved` tag (`user` or `auto`) puts a member in the `resolved` group, reported as `resolved`; a new user message clears it. Children do not copy `resolved` or `turn`.
+- `F36.artifacts-rest`: a project's artifacts can be uploaded (multipart), listed with `source: user`, downloaded byte for byte and deleted; unsafe names are 400.
+- `F36.artifacts-tool`: a member with `save_project_artifact` saves a file from its workspace; the list shows it with `source: agent` and the conversation's id, and a path outside the workspace is refused.
 - `F36.persist-restart`: projects and membership survive a server restart.
 - `F36.delete`: `DELETE /api/projects/{id}` removes the record, then the threads endpoint is 404, and member conversations keep their tags.
 - `F36.corrupted-file`: an unparsable or future-schema `projects.json` makes reads and writes 409 and is never rewritten.
@@ -64,7 +73,23 @@ Routes: `GET /api/projects`, `POST /api/projects`,
 - REST: `GET /api/projects/{project_id}/threads` returns
   `{"project_id", "coordinator": ProjectThread | null, "threads": [ProjectThread]}`
   where a thread is `{conversation_id, title, execution_status, attention,
-  parent_conversation_id, created_at, updated_at}`.
+  resolved, turn, automation_id, parent_conversation_id, created_at,
+  updated_at}`. `attention` is `needs_you`, `needs_input`, `working`,
+  `finished`, `idle` or `resolved`.
+- Tags the server sets on project members (`openhands.agent_server.project_board`):
+  `turn=asked|answered` when a run finishes, and `resolved=auto` when the
+  critic scored the finished task at least 0.9 (never over `resolved=user`).
+  Clients resolve a thread by setting `resolved=user` with the conversation
+  `PATCH` (full tag set); a new user message removes both tags.
+- REST: `GET /api/projects/{project_id}/artifacts` lists
+  `{name, size, source, conversation_id, created_at, updated_at}` newest
+  first; `POST` there uploads (multipart `file`, optional `name` form field);
+  `POST .../artifacts/from-conversation` with `{conversation_id, path, name?}`
+  copies a member's workspace file; `GET`/`DELETE .../artifacts/{name}`
+  download and delete. Names are flat (letters, digits, spaces, `._()+-`,
+  no leading dot, no trailing dot or space, no Windows device names), and a
+  name differing from another only in case is 409. Files live in
+  `<persistence dir>/project-artifacts/<project id>/`, up to 100 MiB each.
 - REST: `PUT /api/projects/{project_id}/threads/{conversation_id}` (204) and
   `DELETE` on the same path (`{"deleted": true}`) change membership by setting
   or clearing the conversation's `project` tag; other tags are kept.
@@ -76,7 +101,8 @@ Routes: `GET /api/projects`, `POST /api/projects`,
   409 when the thread is waiting for confirmation. It is the confirmation-safe
   counterpart of `POST /api/conversations/{id}/events` with `run: true`.
 - Agent tools (registered by the agent-server, not part of the default
-  preset): `list_project_threads` and `message_project_thread` from
+  preset): `list_project_threads`, `message_project_thread` and
+  `save_project_artifact` from
   `openhands.tools.project`, alongside `start_child_conversation`. They read
   the project from the calling conversation's `project` tag and call this
   server through `OH_INTERNAL_SERVER_URL` with its session key. Name them in
@@ -260,6 +286,64 @@ Preconditions:
     --check detail eq 'Conversation not in project'
   ```
   The member runs and finishes; `W1` (removed earlier) is refused.
+- **How a turn ended (`F36.turn`).**
+  Requires: `F36.message-rest`
+  Needs: `llm`
+  ```sh
+  control-agent-server api POST "/api/projects/$P2/threads/$W2/messages" --json '{"text": "Ask me which colour I prefer, as one short question, then finish. Do not use tools."}' \
+    --expect 200 --check run eq started
+  control-agent-server conversation wait "$W2" --until finished --timeout 180
+  control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq asked --until-ok 10 --save F36.turn/asked
+  control-agent-server api GET "/api/projects/$P2/threads" --check threads contains '"attention": "needs_input"' --save F36.turn/threads
+  control-agent-server api POST "/api/projects/$P2/threads/$W2/messages" --json '{"text": "Blue. Reply with the single word noted and finish."}' \
+    --expect 200 --check run eq started
+  control-agent-server conversation wait "$W2" --until finished --timeout 180
+  control-agent-server api GET "/api/conversations/$W2" --check tags.turn eq answered --until-ok 10 --save F36.turn/answered
+  ```
+  A question finishes as `asked` and lists as `needs_input`; the answer
+  reopens the thread and the next run finishes as `answered`.
+- **Resolved (`F36.resolved`).**
+  Requires: `F36.turn`
+  Needs: `llm`
+  ```sh
+  control-agent-server api PATCH "/api/conversations/$W2" --json "{\"tags\": {\"project\": \"$P2\", \"turn\": \"answered\", \"resolved\": \"user\"}}" --expect 200
+  control-agent-server api GET "/api/projects/$P2/threads" --check threads contains '"resolved": "user"' \
+    --check threads contains '"attention": "resolved"' --save F36.resolved/threads
+  control-agent-server api POST "/api/projects/$P2/threads/$W2/messages" --json '{"text": "Reply with the single word reopened and finish."}' --expect 200
+  control-agent-server conversation wait "$W2" --until finished --timeout 180
+  control-agent-server api GET "/api/conversations/$W2" --check tags not-contains resolved --check tags.turn eq answered --until-ok 10 \
+    --save F36.resolved/reopened
+  ```
+  The person's resolve shows as `resolved: "user"`; a new message reopens the
+  thread. (`resolved=auto` needs a critic; the unit tests cover it.)
+- **Artifacts over REST (`F36.artifacts-rest`).**
+  Requires: `F36.coordinator`
+  ```sh
+  printf '# qa-f36 notes\n' > "$AGENT_SERVER_VERIFY_RUN/qa-f36-notes.md"
+  control-agent-server api POST "/api/projects/$P2/artifacts" --file "file=$AGENT_SERVER_VERIFY_RUN/qa-f36-notes.md" \
+    --expect 201 --check name eq qa-f36-notes.md --check source eq user --check size eq 15 --save F36.artifacts-rest/upload
+  control-agent-server api GET "/api/projects/$P2/artifacts" --check artifacts len-eq 1 --check artifacts.0.source eq user
+  control-agent-server api GET "/api/projects/$P2/artifacts/qa-f36-notes.md" --expect 200 --raw-out "$AGENT_SERVER_VERIFY_RUN/qa-f36-down.md"
+  cmp "$AGENT_SERVER_VERIFY_RUN/qa-f36-notes.md" "$AGENT_SERVER_VERIFY_RUN/qa-f36-down.md"
+  control-agent-server api POST "/api/projects/$P2/artifacts" --file "file=$AGENT_SERVER_VERIFY_RUN/qa-f36-notes.md" --form name=.hidden --expect 400
+  control-agent-server api DELETE "/api/projects/$P2/artifacts/qa-f36-notes.md" --expect 200 --check deleted eq true
+  control-agent-server api GET "/api/projects/$P2/artifacts" --check artifacts len-eq 0
+  ```
+  The download matches the upload byte for byte; a dot name is refused.
+- **Model-backed: an agent saves an artifact (`F36.artifacts-tool`).**
+  Requires: `F36.artifacts-rest`
+  Needs: `llm`
+  ```sh
+  ART=$(control-agent-server conversation start --no-run --title qa-f36-art --tag "project=$P2" \
+    --tools file_editor,save_project_artifact --print-id)
+  control-agent-server conversation send "$ART" --wait --timeout 300 --text 'Create the file qa-f36-report.md in the working directory containing the line f36 report. Then save it with save_project_artifact, then try save_project_artifact with path /etc/hostname, then finish.'
+  control-agent-server api GET "/api/projects/$P2/artifacts" --check artifacts len-eq 1 --check artifacts.0.name eq qa-f36-report.md \
+    --check artifacts.0.source eq agent --check artifacts.0.conversation_id eq "$(printf %s "$ART" | tr -d -)" \
+    --save F36.artifacts-tool/list
+  control-agent-server conversation events "$ART" --kinds ObservationEvent --contains "outside the conversation's workspace" --expect-min 1
+  ```
+  The file is copied in as an agent artifact; the path outside the workspace
+  is refused.
 - **No approval over REST (`F36.message-refused`).**
   Requires: `F36.attention`
   ```sh
@@ -349,9 +433,20 @@ Preconditions:
   the project routes merge for you.
 - A child copies its parent's tags when it is started. Tagging a parent later
   does not tag children it already has: add them with `PUT` too.
-- `attention` comes only from `execution_status`. `finished` means the run
-  ended, not that the task succeeded. There is no per-thread "ask" text or
-  task progress yet.
+- `attention` comes from `execution_status`, refined by the `turn` and
+  `resolved` tags. `finished` means the run ended, not that the task
+  succeeded. `turn` is a heuristic: the last paragraph of the agent's final
+  message, outside code, ends a sentence with `?`. The tags are written just
+  after the run's final state update, so poll (`--until-ok`) rather than read
+  once. There is no per-thread "ask" text or task progress yet.
+- A `resolved` thread is listed as `resolved` unless it is running
+  (`working`) or blocked on the person (`needs_you`).
+- `automation_id` comes from the `automationid` tag that OpenHands
+  automations set; children of an automation's thread copy it, so they group
+  with that automation. An automation's conversations join a project only when
+  it starts them with the project's `project` tag.
+- Artifacts are copies: saving the same name again replaces the file.
+  Deleting a project deletes its artifacts.
 - The messages route refuses with 409 only when the thread is already
   waiting. If it reaches a confirmation while the message is being
   delivered, the message is kept and `run` is `waiting_for_confirmation`;

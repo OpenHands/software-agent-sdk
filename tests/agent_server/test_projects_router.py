@@ -655,7 +655,7 @@ async def test_resolved_and_turn_tags_refine_attention(client, service, tmp_path
         "question": "needs_input",
         "answer": "finished",
         "done": "resolved",
-        "closed-running": "resolved",
+        "closed-running": "working",
         "blocked": "needs_you",
         "nightly": "idle",
     }
@@ -705,7 +705,10 @@ async def test_upload_list_download_delete_artifact(client, persistence_dir):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("name", [".hidden", "../escape", "a/b.txt", ""])
+@pytest.mark.parametrize(
+    "name",
+    [".hidden", "../escape", "a/b.txt", "", "notes.md\n", "trailing.", "NUL.txt"],
+)
 async def test_upload_refuses_unsafe_names(client, name):
     project = (await client.post("/api/projects", json={"name": "P"})).json()
 
@@ -788,3 +791,52 @@ async def test_upload_over_the_limit_is_refused(client, monkeypatch):
 
     assert response.status_code == 413
     assert (await client.get(base)).json()["artifacts"] == []
+
+
+@pytest.mark.asyncio
+async def test_names_differing_only_in_case_are_refused(client):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    base = f"/api/projects/{project['id']}/artifacts"
+
+    first = await client.post(base, files={"file": ("Report.md", b"a")})
+    second = await client.post(base, files={"file": ("report.md", b"b")})
+
+    assert first.status_code == 201
+    assert second.status_code == 409
+    assert [a["name"] for a in (await client.get(base)).json()["artifacts"]] == [
+        "Report.md"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_save_refuses_a_fifo_without_blocking(client, service, tmp_path):
+    import os
+
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    member = await _start(service, tmp_path, tags={"project": project["id"]})
+    os.mkfifo(tmp_path / "workspace" / "pipe")
+
+    response = await asyncio.wait_for(
+        client.post(
+            f"/api/projects/{project['id']}/artifacts/from-conversation",
+            json={"conversation_id": member.hex, "path": "pipe"},
+        ),
+        timeout=5,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Path is not a file"
+
+
+@pytest.mark.asyncio
+async def test_resolved_running_thread_is_working(client, service, tmp_path):
+    project = (await client.post("/api/projects", json={"name": "P"})).json()
+    cid = await _start(
+        service, tmp_path, tags={"project": project["id"], "resolved": "user"}
+    )
+    await _set_status(service, cid, ConversationExecutionStatus.RUNNING)
+
+    threads = (await client.get(f"/api/projects/{project['id']}/threads")).json()
+
+    assert threads["threads"][0]["attention"] == "working"
+    assert threads["threads"][0]["resolved"] == "user"

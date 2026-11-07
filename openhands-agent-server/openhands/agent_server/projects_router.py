@@ -46,11 +46,12 @@ from openhands.agent_server.persistence import (
 )
 from openhands.agent_server.project_artifacts import (
     MAX_ARTIFACT_BYTES,
+    ArtifactNameTaken,
     ArtifactSource,
     ArtifactTooLarge,
     ProjectArtifact,
     ProjectArtifactStore,
-    resolve_workspace_file,
+    open_workspace_file,
     valid_artifact_name,
 )
 from openhands.agent_server.project_board import ResolvedBy, TurnOutcome
@@ -355,7 +356,9 @@ def _attention(
     turn: str | None,
 ) -> ProjectAttention:
     attention = _ATTENTION_BY_STATUS.get(execution_status, ProjectAttention.IDLE)
-    if attention == ProjectAttention.NEEDS_YOU:
+    # A running thread is working even if a resolve has not been cleared yet:
+    # the tag is removed just after the new user message.
+    if attention in (ProjectAttention.NEEDS_YOU, ProjectAttention.WORKING):
         return attention
     if resolved is not None:
         return ProjectAttention.RESOLVED
@@ -765,6 +768,11 @@ async def _save_artifact(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"Artifact is larger than {MAX_ARTIFACT_BYTES} bytes",
         )
+    except ArtifactNameTaken as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Artifact {str(e)!r} differs from this name only in case",
+        )
 
 
 @projects_router.get(
@@ -799,6 +807,13 @@ async def upload_project_artifact(
 ) -> ProjectArtifact:
     """Upload a file to the project. An artifact of the same name is replaced."""
     _find(await _load(_store(request)), project_id)
+    # Starlette has already spooled the body; still refuse an oversized one
+    # before copying it again.
+    if (file.size or 0) > MAX_ARTIFACT_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Artifact is larger than {MAX_ARTIFACT_BYTES} bytes",
+        )
     artifact_name = _artifact_name(name or Path(file.filename or "").name)
     return await _save_artifact(
         _artifacts(request), project_id, artifact_name, file.file, source="user"
@@ -835,13 +850,11 @@ async def save_conversation_artifact(
         raise HTTPException(status_code=404, detail="Conversation not in project")
     working_dir = Path(event_service.stored.workspace.working_dir)
     try:
-        source = await asyncio.to_thread(
-            resolve_workspace_file, working_dir, payload.path
-        )
+        stream = await asyncio.to_thread(open_workspace_file, working_dir, payload.path)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    artifact_name = _artifact_name(payload.name or source.name)
-    with open(source, "rb") as stream:
+    with stream:
+        artifact_name = _artifact_name(payload.name or Path(payload.path).name)
         return await _save_artifact(
             _artifacts(request),
             project_id,
