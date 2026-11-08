@@ -57,6 +57,16 @@ loading must:
 
 (See `load_agents_from_dir` in `load.py`.)
 
+### Registration failures must be non-fatal
+
+If a parsed file-based or plugin definition cannot be registered (for example, its
+`skills` names a skill that does not exist), registration must:
+
+- log a warning naming the agent, its `source` and the error, and
+- skip that definition and keep registering the others.
+
+(See `_register_definition` in `registry.py`.)
+
 ## Invariant 2: resolution / precedence (“who wins”)
 
 ### Core rule: first registration wins
@@ -116,7 +126,12 @@ Supported YAML frontmatter keys (see `AgentDefinition.load` in `schema.py`):
 - `max_budget_per_run` (optional, positive number in USD)
 - `hooks` (optional hook configuration)
 - `profile_store_dir` (optional custom LLM profile directory)
-- `mcp_config` (optional MCP server map); `mcp_servers` is a deprecated alias
+- `mcp_config` (optional MCP server map); `mcp_servers` is a deprecated alias.
+  Ignored when the agent runs as a delegated sub-agent: `inherit_mcp_config`
+  (`scope.py`) gives every sub-agent exactly its parent's resolved MCP servers
+  (plugin servers merged, secrets expanded), and the child conversation is
+  created with `_mcp_config_from_parent=True` so it neither re-merges plugin
+  servers nor re-expands `${VAR}`. Declared servers never affect eligibility.
 - `permission_mode` (optional): `always_confirm`, `never_confirm`, or `confirm_risky`;
   omission inherits the parent confirmation policy
 - `condenser` (optional): omission uses the default summarizing condenser; `none` or

@@ -3,9 +3,10 @@
 import asyncio
 import contextlib
 import logging
+import sys
 import time
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
@@ -23,6 +24,7 @@ from openhands.agent_server.server_details_router import (
     mark_initialization_complete,
     server_details_router,
 )
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 
 
 @pytest_asyncio.fixture
@@ -89,6 +91,151 @@ async def test_bash_timeout_runs_sigterm_trap(
     assert marker.exists(), "SIGTERM trap did not run; cleanup skipped."
     assert "Command timed out" in caplog.text
     assert secret not in caplog.text
+
+
+posix_only = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Stop tests need the Unix process-group backend.",
+)
+
+
+async def _wait_for_command_exit(
+    client: httpx.AsyncClient, cmd_id: UUID, deadline: float = 8.0
+) -> list[dict]:
+    """Poll bash events until the command publishes a terminal output."""
+    end = time.monotonic() + deadline
+    while time.monotonic() < end:
+        items = (
+            await client.get(
+                "/api/bash/bash_events/search",
+                params={"command_id__eq": str(cmd_id)},
+            )
+        ).json()["items"]
+        if any(
+            e["kind"] == "BashOutput" and e.get("exit_code") is not None for e in items
+        ):
+            return items
+        await asyncio.sleep(0.1)
+    raise AssertionError(f"command {cmd_id} did not finish")
+
+
+@posix_only
+@pytest.mark.timeout(30)
+async def test_stop_bash_command_terminates_group_and_records_output(
+    client: httpx.AsyncClient,
+    tmp_path: Path,
+):
+    marker = tmp_path / "stop_cleanup_ran"
+    ready = tmp_path / "shell_ready"
+    resp = await client.post(
+        "/api/bash/start_bash_command",
+        json={
+            "command": (f"trap 'touch {marker}; exit 0' TERM; touch {ready}; sleep 30"),
+            "timeout": 60,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    cmd_id = resp.json()["id"]
+
+    # Wait until the shell has installed its TERM trap: stopping earlier
+    # would signal a shell that cannot run cleanup yet.
+    ready_deadline = time.monotonic() + 10
+    while not ready.exists():
+        assert time.monotonic() < ready_deadline, "shell never became ready"
+        await asyncio.sleep(0.1)
+
+    stop = await client.post(f"/api/bash/bash_commands/{cmd_id}/stop")
+    assert stop.status_code == 200, stop.text
+    assert stop.json() == {"success": True}
+
+    items = await _wait_for_command_exit(client, UUID(cmd_id))
+    assert any(e.get("exit_code") is not None for e in items)
+
+    await asyncio.sleep(0.2)  # let the trap's filesystem write land
+    assert marker.exists(), "SIGTERM trap did not run; stop skipped escalation."
+
+
+@posix_only
+@pytest.mark.timeout(30)
+async def test_stop_bash_command_terminates_descendants(
+    client: httpx.AsyncClient,
+):
+    """A background child holding the pipes must die with the group.
+
+    With a pid-only kill the surviving child would keep stdout open and
+    the command would never publish a terminal output; only a process
+    group signal finishes promptly.
+    """
+    resp = await client.post(
+        "/api/bash/start_bash_command",
+        json={"command": "sleep 60 & sleep 45", "timeout": 120},
+    )
+    assert resp.status_code == 200, resp.text
+    cmd_id = resp.json()["id"]
+
+    stop = await client.post(f"/api/bash/bash_commands/{cmd_id}/stop")
+    assert stop.status_code == 200, stop.text
+
+    items = await _wait_for_command_exit(client, UUID(cmd_id))
+    assert any(e.get("exit_code") is not None for e in items)
+
+
+@posix_only
+@pytest.mark.timeout(30)
+async def test_stop_bash_command_leaves_concurrent_command_running(
+    client: httpx.AsyncClient,
+):
+    first = (
+        await client.post(
+            "/api/bash/start_bash_command",
+            json={"command": "sleep 30", "timeout": 60},
+        )
+    ).json()["id"]
+    second = (
+        await client.post(
+            "/api/bash/start_bash_command",
+            json={"command": "sleep 30", "timeout": 60},
+        )
+    ).json()["id"]
+
+    stop = await client.post(f"/api/bash/bash_commands/{first}/stop")
+    assert stop.status_code == 200, stop.text
+    await _wait_for_command_exit(client, UUID(first))
+
+    others = (
+        await client.get(
+            "/api/bash/bash_events/search",
+            params={"command_id__eq": second},
+        )
+    ).json()["items"]
+    assert not any(
+        e["kind"] == "BashOutput" and e.get("exit_code") is not None for e in others
+    ), "concurrent command was affected by the stop"
+
+    stop_second = await client.post(f"/api/bash/bash_commands/{second}/stop")
+    assert stop_second.status_code == 200, stop_second.text
+    await _wait_for_command_exit(client, UUID(second))
+
+
+@posix_only
+@pytest.mark.timeout(30)
+async def test_stop_bash_command_idempotent_for_finished_and_unknown(
+    client: httpx.AsyncClient,
+):
+    unknown = await client.post(f"/api/bash/bash_commands/{uuid4()}/stop")
+    assert unknown.status_code == 404, unknown.text
+
+    cmd_id = (
+        await client.post(
+            "/api/bash/start_bash_command",
+            json={"command": "echo hi", "timeout": 10},
+        )
+    ).json()["id"]
+    await _wait_for_command_exit(client, UUID(cmd_id))
+
+    for _ in range(2):
+        stop = await client.post(f"/api/bash/bash_commands/{cmd_id}/stop")
+        assert stop.status_code == 200, stop.text
 
 
 async def test_bash_execution_error_log_omits_command(
@@ -160,6 +307,71 @@ async def test_search_bash_events_filters_and_paginates(tmp_path: Path):
     )
     assert [event.id for event in second_page.items] == [output_1.id]
     assert second_page.next_page_id is None
+
+
+async def test_search_bash_events_applies_order_gt_before_paging(tmp_path: Path):
+    """``order__gt`` must filter before ``limit`` cuts the page (#4388)."""
+    service = BashEventService(bash_events_dir=tmp_path / "bash_events")
+    command_id = uuid4()
+    outputs = [
+        BashOutput(
+            command_id=command_id,
+            order=order,
+            stdout=f"chunk {order}",
+            timestamp=_OLD.replace(microsecond=order + 1),
+        )
+        for order in range(5)
+    ]
+    for output in outputs:
+        service._save_event_to_file(output)
+
+    async def search(page_id: str | None = None):
+        return await service.search_bash_events(
+            kind__eq="BashOutput",
+            command_id__eq=command_id,
+            order__gt=1,
+            page_id=page_id,
+            limit=2,
+        )
+
+    first_page = await search()
+    assert [event.id for event in first_page.items] == [
+        outputs[2].id,
+        outputs[3].id,
+    ]
+    assert first_page.next_page_id is not None
+
+    second_page = await search(first_page.next_page_id)
+    assert [event.id for event in second_page.items] == [outputs[4].id]
+    assert second_page.next_page_id is None
+
+
+async def test_search_bash_events_no_cursor_when_rest_is_filtered(tmp_path: Path):
+    """A full page whose remaining files are all filtered out has no cursor."""
+    service = BashEventService(bash_events_dir=tmp_path / "bash_events")
+    command_id = uuid4()
+    other_command_id = uuid4()
+    target = BashOutput(
+        command_id=command_id,
+        order=3,
+        stdout="new",
+        timestamp=_OLD.replace(microsecond=1),
+    )
+    service._save_event_to_file(target)
+    # Older chunks of another command sort after the target but are filtered.
+    for order in range(3):
+        service._save_event_to_file(
+            BashOutput(
+                command_id=other_command_id,
+                order=order,
+                stdout="old",
+                timestamp=_OLD.replace(microsecond=order + 2),
+            )
+        )
+
+    page = await service.search_bash_events(kind__eq="BashOutput", order__gt=2, limit=1)
+    assert [event.id for event in page.items] == [target.id]
+    assert page.next_page_id is None
 
 
 async def test_search_bash_events_runs_blocking_scan_off_event_loop(
@@ -281,6 +493,35 @@ def test_delete_events_older_than_returns_correct_count(tmp_path: Path):
     assert len(service._get_event_files_by_pattern("*")) == 1
 
 
+async def test_search_bash_events_timestamp_bounds_honor_utc_offset(
+    tmp_path: Path,
+):
+    """A +02:00 bound selects the same events as its UTC spelling."""
+    service = BashEventService(bash_events_dir=tmp_path / "bash_events")
+    event = BashCommand(
+        command="echo tz", timestamp=datetime(2021, 6, 1, 10, tzinfo=UTC)
+    )
+    service._save_event_to_file(event)
+    plus_two = timezone(timedelta(hours=2))
+
+    async def search(
+        gte: datetime | None = None, lt: datetime | None = None
+    ) -> list[UUID]:
+        page = await service.search_bash_events(timestamp__gte=gte, timestamp__lt=lt)
+        return [e.id for e in page.items]
+
+    # 11:00+02:00 is 09:00Z (before the event); 12:30+02:00 is 10:30Z (after).
+    before = datetime(2021, 6, 1, 11, tzinfo=plus_two)
+    after = datetime(2021, 6, 1, 12, 30, tzinfo=plus_two)
+    assert await search(gte=before) == [event.id]
+    assert await search(lt=after) == [event.id]
+    assert await search(gte=after) == []
+    assert await search(lt=before) == []
+    # A naive bound is still read as UTC.
+    assert await search(gte=datetime(2021, 6, 1, 9)) == [event.id]
+    assert await search(gte=datetime(2021, 6, 1, 11)) == []
+
+
 # ---------------------------------------------------------------------------
 # run_retention_cleanup_loop
 # ---------------------------------------------------------------------------
@@ -310,3 +551,92 @@ async def test_run_retention_cleanup_loop_purges_old_events(tmp_path: Path):
     assert len(service._get_event_files_by_pattern("*")) == 0, (
         "Old event file should have been purged by the retention loop"
     )
+
+
+_SECRET_IN_COMMAND = "printf %s 'header.payload.signature' > /tmp/token"
+
+
+def _only_file(directory: Path) -> Path:
+    [path] = list(directory.iterdir())
+    return path
+
+
+@pytest.mark.asyncio
+async def test_event_files_are_encrypted_at_rest_with_a_cipher(tmp_path: Path):
+    """With a cipher, nothing of a command or its output is readable on the
+    volume; the service still serves the event."""
+    events_dir = tmp_path / "bash_events"
+    service = BashEventService(bash_events_dir=events_dir, cipher=Cipher("k" * 32))
+    command = BashCommand(command=_SECRET_IN_COMMAND)
+    output = BashOutput(command_id=command.id, stdout="ghp_" + "a" * 36)
+
+    service._save_event_to_file(command)
+    service._save_event_to_file(output)
+
+    for path in events_dir.iterdir():
+        text = path.read_text()
+        assert text.startswith(FERNET_TOKEN_PREFIX)
+        assert "header.payload.signature" not in text
+        assert "ghp_" not in text
+    loaded = await service.get_bash_event(command.id.hex)
+    assert isinstance(loaded, BashCommand)
+    assert loaded.command == _SECRET_IN_COMMAND
+    loaded_output = await service.get_bash_event(output.id.hex)
+    assert isinstance(loaded_output, BashOutput)
+    assert loaded_output.stdout == output.stdout
+
+
+@pytest.mark.asyncio
+async def test_plaintext_event_files_from_before_encryption_still_load(
+    tmp_path: Path,
+):
+    events_dir = tmp_path / "bash_events"
+    command = BashCommand(command="echo ok")
+    BashEventService(bash_events_dir=events_dir)._save_event_to_file(command)
+    assert _only_file(events_dir).read_text().startswith("{")
+
+    service = BashEventService(bash_events_dir=events_dir, cipher=Cipher("k" * 32))
+
+    loaded = await service.get_bash_event(command.id.hex)
+    assert isinstance(loaded, BashCommand)
+    assert loaded.command == "echo ok"
+
+
+@pytest.mark.asyncio
+async def test_event_files_survive_a_key_rotation(tmp_path: Path):
+    """A resume rotates the session key and keeps the old one as a previous
+    key, so events written before the rotation still read."""
+    events_dir = tmp_path / "bash_events"
+    command = BashCommand(command="echo ok")
+    BashEventService(
+        bash_events_dir=events_dir, cipher=Cipher("old-key" * 5)
+    )._save_event_to_file(command)
+
+    service = BashEventService(
+        bash_events_dir=events_dir,
+        cipher=Cipher("new-key" * 5, previous_keys=["old-key" * 5]),
+    )
+
+    loaded = await service.get_bash_event(command.id.hex)
+    assert isinstance(loaded, BashCommand)
+
+
+@pytest.mark.asyncio
+async def test_encrypted_event_file_is_skipped_without_a_usable_key(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    """No cipher, or the wrong key: the file is reported and skipped, never
+    raised on and never served as garbage."""
+    events_dir = tmp_path / "bash_events"
+    command = BashCommand(command="echo ok")
+    BashEventService(
+        bash_events_dir=events_dir, cipher=Cipher("k" * 32)
+    )._save_event_to_file(command)
+
+    caplog.set_level(logging.ERROR)
+    without_cipher = BashEventService(bash_events_dir=events_dir)
+    assert await without_cipher.get_bash_event(command.id.hex) is None
+    wrong_key = BashEventService(bash_events_dir=events_dir, cipher=Cipher("x" * 32))
+    assert await wrong_key.get_bash_event(command.id.hex) is None
+    assert "no cipher is configured" in caplog.text
+    assert "does not decrypt with any key" in caplog.text

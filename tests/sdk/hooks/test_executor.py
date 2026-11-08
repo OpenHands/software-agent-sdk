@@ -13,6 +13,7 @@ from openhands.sdk.hooks.config import HookDefinition, HookType
 from openhands.sdk.hooks.executor import HookExecutor
 from openhands.sdk.hooks.types import HookDecision, HookEvent, HookEventType
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
+from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.utils.metrics import Metrics
 from tests.command_utils import python_command
 
@@ -56,6 +57,36 @@ class TestHookExecutor:
         assert output_data["event_type"] == "PreToolUse"
         assert output_data["tool_name"] == "BashTool"
 
+    def test_null_decision_leaves_a_successful_hook_successful(
+        self, executor, sample_event
+    ):
+        hook = HookDefinition(command="""echo '{"decision": null}'""")
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.success
+        assert result.exit_code == 0
+        assert result.decision is None
+        assert not result.error
+
+    def test_non_string_decision_is_ignored_rather_than_fatal(
+        self, executor, sample_event
+    ):
+        """Any non-string decision means no decision, not a failed hook."""
+        hook = HookDefinition(command="""echo '{"decision": 1}'""")
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.success
+        assert result.decision is None
+
+    def test_string_decisions_still_parse(self, executor, sample_event):
+        hook = HookDefinition(command="""echo '{"decision": "allow"}'""")
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.decision == HookDecision.ALLOW
+
     def test_execute_blocking_exit_code(self, executor, sample_event):
         """Test that exit code 2 blocks the operation."""
         hook = HookDefinition(command=python_command("import sys; sys.exit(2)"))
@@ -95,6 +126,36 @@ class TestHookExecutor:
         assert result.success
         assert "SESSION=test-session" in result.stdout
         assert "TOOL=BashTool" in result.stdout
+
+    def test_execute_exports_plugin_root_over_inherited_value(
+        self, executor, sample_event, tmp_path, monkeypatch
+    ):
+        """A plugin hook sees its own root even when the parent env has one."""
+        monkeypatch.setenv("PLUGIN_ROOT", "/inherited/root")
+        plugin_root = str(tmp_path / "plugin")
+        hook = HookDefinition(
+            command=python_command("import os; print(os.environ['PLUGIN_ROOT'])"),
+            plugin_root=plugin_root,
+        )
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.success
+        assert result.stdout.strip() == plugin_root
+
+    def test_execute_without_plugin_root_sets_no_plugin_root(
+        self, executor, sample_event, monkeypatch
+    ):
+        """A hook that did not come from a plugin gets no PLUGIN_ROOT."""
+        monkeypatch.delenv("PLUGIN_ROOT", raising=False)
+        hook = HookDefinition(
+            command=python_command("import os; print('PLUGIN_ROOT' in os.environ)")
+        )
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.success
+        assert result.stdout.strip() == "False"
 
     def test_execute_timeout(self, executor, sample_event):
         """Test that timeout is enforced."""
@@ -693,6 +754,29 @@ class TestAgentHookExecution:
         assert hook_llm is not None
         assert hook_llm.timeout == 7
         assert executor.llm.timeout == parent_timeout
+
+    def test_agent_hook_inherits_llm_call_context(
+        self, tmp_path, mock_llm, sample_event
+    ):
+        context = LLMCallContext(
+            prompt_cache_key="parent-cache",
+            session_id="parent-session",
+        )
+        executor = HookExecutor(
+            working_dir=str(tmp_path),
+            llm=mock_llm,
+            llm_call_context=context,
+        )
+
+        with (
+            patch(self._AGENT_PATH),
+            patch(self._CONV_PATH, side_effect=RuntimeError("stop early")) as mock_conv,
+        ):
+            executor._execute_agent_hook(
+                HookDefinition(type=HookType.AGENT), sample_event
+            )
+
+        assert mock_conv.call_args.kwargs["_parent_llm_call_context"] is context
 
     def test_hook_metrics_under_usage_id(self, executor, sample_event):
         """Hook LLM uses per-hook usage_id and an isolated Metrics object."""

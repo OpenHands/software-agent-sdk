@@ -1124,36 +1124,32 @@ def test_auto_close_main_ignores_newer_comments_with_invalid_timestamps(
     assert closed == [("OpenHands/agent-sdk", 123, 45, False)]
 
 
-def test_parse_agent_json_handles_single_line_fenced_json():
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param('```json{"key":"value"}```', id="single_line_fenced_json"),
+        pytest.param('```json\n{"key":"value"}\n```', id="multiline_fenced_json"),
+        pytest.param('{"key":"value"}', id="plain_json"),
+    ],
+)
+def test_parse_agent_json_handles(text):
     module = load_module("issue_duplicate_check_openhands.py")
 
-    assert module.parse_agent_json('```json{"key":"value"}```') == {"key": "value"}
+    assert module.parse_agent_json(text) == {"key": "value"}
 
 
-def test_parse_agent_json_handles_multiline_fenced_json():
-    module = load_module("issue_duplicate_check_openhands.py")
-
-    assert module.parse_agent_json('```json\n{"key":"value"}\n```') == {"key": "value"}
-
-
-def test_parse_agent_json_handles_plain_json():
-    module = load_module("issue_duplicate_check_openhands.py")
-
-    assert module.parse_agent_json('{"key":"value"}') == {"key": "value"}
-
-
-def test_parse_agent_json_rejects_invalid_json():
-    module = load_module("issue_duplicate_check_openhands.py")
-
-    with pytest.raises(ValueError, match="No valid JSON object found"):
-        module.parse_agent_json("not json")
-
-
-def test_parse_agent_json_rejects_trailing_content():
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("not json", id="invalid_json"),
+        pytest.param('prefix {"key":"value"} suffix', id="trailing_content"),
+    ],
+)
+def test_parse_agent_json_rejects(text):
     module = load_module("issue_duplicate_check_openhands.py")
 
     with pytest.raises(ValueError, match="No valid JSON object found"):
-        module.parse_agent_json('prefix {"key":"value"} suffix')
+        module.parse_agent_json(text)
 
 
 def test_extract_first_item_handles_list_payload():

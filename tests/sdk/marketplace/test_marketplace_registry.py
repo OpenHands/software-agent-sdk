@@ -15,6 +15,7 @@ from openhands.sdk.marketplace import (
     PluginNotFoundError,
     PluginResolutionError,
 )
+from openhands.sdk.plugin.format.agent_plugins import MANIFEST_SCHEMA_URL
 
 
 def _create_marketplace(
@@ -384,3 +385,149 @@ def test_list_plugins_raises_when_all_marketplaces_fail(tmp_path: Path) -> None:
 
     with pytest.raises(PluginResolutionError, match="all marketplace fetches failed"):
         registry.list_plugins()
+
+
+def _write_skill(skill_dir: Path, name: str) -> None:
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {name} description\n---\n{name} body"
+    )
+
+
+def test_get_marketplace_reads_plain_skills_repository(tmp_path: Path) -> None:
+    """A source with no manifest lists the skills in its skills folders."""
+    repo = tmp_path / "repo"
+    _write_skill(repo / "skills" / "greet", "greet")
+    _write_skill(repo / ".skills" / "commit", "commit")
+    # Root-level folders and loose markdown are not read when skills/ exists.
+    _write_skill(repo / "stray", "stray")
+    (repo / "README.md").write_text("---\nname: readme\n---\nNot a skill")
+    registry = MarketplaceRegistry(
+        [MarketplaceRegistration(name="team", source=str(repo))]
+    )
+
+    marketplace, path = registry.get_marketplace("team")
+
+    assert path == repo
+    assert marketplace.plugins == []
+    assert [(s.name, s.source) for s in marketplace.skills] == [
+        ("greet", "./skills/greet"),
+        ("commit", "./.skills/commit"),
+    ]
+
+
+def test_get_marketplace_reads_skills_folder_named_by_repo_path(
+    tmp_path: Path,
+) -> None:
+    """A repo_path pointing at the skills folder itself finds its skills."""
+    repo = tmp_path / "repo"
+    _write_skill(repo / "skills" / "greet", "greet")
+    registry = MarketplaceRegistry(
+        [MarketplaceRegistration(name="team", source=str(repo), repo_path="skills/")]
+    )
+
+    marketplace, _ = registry.get_marketplace("team")
+
+    assert [(s.name, s.source) for s in marketplace.skills] == [("greet", "./greet")]
+
+
+@pytest.mark.parametrize(
+    ("manifest_path", "manifest"),
+    [
+        (".plugin/plugin.json", {"name": "tools"}),
+        ("plugin.json", {"$schema": MANIFEST_SCHEMA_URL, "name": "tools"}),
+        ("plugin.json", {"name": "tools"}),
+    ],
+    ids=["claude-code", "agent-plugins", "root-without-schema"],
+)
+def test_get_marketplace_warns_that_a_plugin_loads_only_its_skills(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    manifest_path: str,
+    manifest: dict,
+) -> None:
+    """A plugin registered as a marketplace keeps only its skills, and says so."""
+    repo = tmp_path / "repo"
+    (repo / manifest_path).parent.mkdir(parents=True)
+    (repo / manifest_path).write_text(json.dumps(manifest))
+    _write_skill(repo / "skills" / "greet", "greet")
+    registry = MarketplaceRegistry(
+        [MarketplaceRegistration(name="team", source=str(repo))]
+    )
+
+    marketplace, _ = registry.get_marketplace("team")
+
+    assert [s.name for s in marketplace.skills] == ["greet"]
+    assert f"'team' is a plugin ({manifest_path})" in caplog.text
+    assert "hooks, MCP servers, commands and agents are ignored" in caplog.text
+
+
+def test_get_marketplace_does_not_call_a_skills_repository_a_plugin(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Folders a plugin could also use do not make a skills repository a plugin."""
+    repo = tmp_path / "repo"
+    _write_skill(repo / "skills" / "greet", "greet")
+    (repo / "agents").mkdir()
+    (repo / "agents" / "helper.md").write_text(
+        "---\nname: helper\ndescription: helper description\n---\nhelper body"
+    )
+    (repo / "mcp.json").write_text(json.dumps({"mcpServers": {}}))
+    registry = MarketplaceRegistry(
+        [MarketplaceRegistration(name="team", source=str(repo))]
+    )
+
+    marketplace, _ = registry.get_marketplace("team")
+
+    assert [s.name for s in marketplace.skills] == ["greet"]
+    assert "is a plugin" not in caplog.text
+
+
+def test_get_marketplace_warns_about_a_duplicate_skill_name(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two folders with the same skill name keep the first, and say so."""
+    repo = tmp_path / "repo"
+    _write_skill(repo / "skills" / "a", "shared")
+    _write_skill(repo / ".skills" / "b", "shared")
+    registry = MarketplaceRegistry(
+        [MarketplaceRegistration(name="team", source=str(repo))]
+    )
+
+    marketplace, _ = registry.get_marketplace("team")
+
+    assert [(s.name, s.source) for s in marketplace.skills] == [
+        ("shared", "./skills/a")
+    ]
+    assert "Skill 'shared' in ./.skills/b" in caplog.text
+    assert "keeping ./skills/a" in caplog.text
+
+
+def test_get_marketplace_without_manifest_or_skills_still_fails(
+    tmp_path: Path,
+) -> None:
+    """Loose markdown is never read as skills, so this is still not a marketplace."""
+    repo = tmp_path / "repo"
+    (repo / "docs").mkdir(parents=True)
+    (repo / "README.md").write_text("---\nname: readme\n---\nNot a skill")
+    (repo / "docs" / "guide.md").write_text("---\nname: guide\n---\nNot a skill")
+    registry = MarketplaceRegistry(
+        [MarketplaceRegistration(name="team", source=str(repo))]
+    )
+
+    with pytest.raises(FileNotFoundError, match="manifest not found"):
+        registry.get_marketplace("team")
+
+
+def test_get_marketplace_keeps_rejecting_an_invalid_manifest(tmp_path: Path) -> None:
+    """A broken manifest is an error, not a cue to read the skills folder."""
+    repo = tmp_path / "repo"
+    _write_skill(repo / "skills" / "greet", "greet")
+    (repo / ".plugin").mkdir()
+    (repo / ".plugin" / "marketplace.json").write_text("{not json")
+    registry = MarketplaceRegistry(
+        [MarketplaceRegistration(name="team", source=str(repo))]
+    )
+
+    with pytest.raises(ValueError, match="Invalid JSON"):
+        registry.get_marketplace("team")

@@ -11,6 +11,12 @@ from pydantic import BaseModel, Field, PrivateAttr, SecretStr
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.secret import SecretSource, SecretValue, StaticSecret
+from openhands.sdk.utils.masking import (
+    PreserveDataUrls,
+    SkipSecretMasking,
+    field_has_marker,
+    field_is_literal,
+)
 from openhands.sdk.utils.models import OpenHandsModel
 
 
@@ -20,8 +26,14 @@ logger = get_logger(__name__)
 FAILED_LOOKUP_RETRY_SECONDS: Final[float] = 60.0
 
 
-def _mask_value(value: Any, mask: Callable[[str], str]) -> Any:
-    """Recursively mask every ``str`` reachable from ``value``."""
+def _mask_value(
+    value: Any,
+    mask: Callable[[str], str],
+    *,
+    skip_secret_masking: bool = False,
+    preserve_data_urls: bool = False,
+) -> Any:
+    """Recursively mask strings, respecting opaque payload field metadata."""
     match value:
         case Enum():
             # A str-subclass enum is a str, but masking it would downgrade the
@@ -29,20 +41,56 @@ def _mask_value(value: Any, mask: Callable[[str], str]) -> Any:
             # vocabulary is fixed, so it can never hold a secret anyway.
             return value
         case str():
+            if skip_secret_masking:
+                return value
+            if preserve_data_urls and value.startswith("data:") and ";base64," in value:
+                return value
             return mask(value)
         case BaseModel():
             return _mask_model(value, mask)
         case list():
-            return [_mask_value(item, mask) for item in value]
+            return [
+                _mask_value(
+                    item,
+                    mask,
+                    skip_secret_masking=skip_secret_masking,
+                    preserve_data_urls=preserve_data_urls,
+                )
+                for item in value
+            ]
         case tuple():
-            items = [_mask_value(item, mask) for item in value]
+            items = [
+                _mask_value(
+                    item,
+                    mask,
+                    skip_secret_masking=skip_secret_masking,
+                    preserve_data_urls=preserve_data_urls,
+                )
+                for item in value
+            ]
             # Rebuild a NamedTuple through its own constructor; tuple(items)
             # would downgrade it the same way masking an Enum member does.
             return type(value)(*items) if hasattr(value, "_fields") else tuple(items)
         case set() | frozenset():
-            return type(value)(_mask_value(item, mask) for item in value)
+            return type(value)(
+                _mask_value(
+                    item,
+                    mask,
+                    skip_secret_masking=skip_secret_masking,
+                    preserve_data_urls=preserve_data_urls,
+                )
+                for item in value
+            )
         case dict():
-            return {key: _mask_value(item, mask) for key, item in value.items()}
+            return {
+                key: _mask_value(
+                    item,
+                    mask,
+                    skip_secret_masking=skip_secret_masking,
+                    preserve_data_urls=preserve_data_urls,
+                )
+                for key, item in value.items()
+            }
         case _:
             return value
 
@@ -53,10 +101,16 @@ def _mask_model[ModelT: BaseModel](model: ModelT, mask: Callable[[str], str]) ->
     ``model_copy`` is used rather than a validate round-trip so private
     attributes survive and no field is re-coerced.
     """
-    updates = {
-        name: _mask_value(getattr(model, name), mask)
-        for name in type(model).model_fields
-    }
+    updates = {}
+    for name, field in type(model).model_fields.items():
+        updates[name] = _mask_value(
+            getattr(model, name),
+            mask,
+            skip_secret_masking=(
+                field_has_marker(field, SkipSecretMasking) or field_is_literal(field)
+            ),
+            preserve_data_urls=field_has_marker(field, PreserveDataUrls),
+        )
     return model.model_copy(update=updates)
 
 
@@ -260,7 +314,9 @@ class SecretRegistry(OpenHandsModel):
         masked_text = text
         with self._exported_values_lock:
             exported_values = tuple(self._exported_values.values())
-        for value in exported_values:
+        # Longest first so an overlapping shorter value cannot mask half of a
+        # longer one and leave the rest in cleartext.
+        for value in sorted(exported_values, key=len, reverse=True):
             if value:
                 masked_text = masked_text.replace(value, "<secret-hidden>")
 
@@ -296,19 +352,26 @@ class SecretRegistry(OpenHandsModel):
         return _mask_model(model, self.mask_secrets_in_output)
 
     def get_secret_infos(self) -> list[dict[str, str | None]]:
-        """Get secret information (name and description) for prompt inclusion.
+        """Get secret information (name, description, scope) for prompt inclusion.
 
         Returns:
-            List of dictionaries with 'name' and 'description' keys.
-            Returns an empty list if no secrets are registered.
-            Description will be None if not available.
+            List of dictionaries with 'name', 'description', 'scope', and
+            'scope_description' keys. Returns an empty list if no secrets are
+            registered. Values default to None when not available on a source.
         """
         if not self.secret_sources:
             return []
         secret_infos = []
         for name, source in self.secret_sources.items():
             description = source.description
-            secret_infos.append({"name": name, "description": description})
+            secret_infos.append(
+                {
+                    "name": name,
+                    "description": description,
+                    "scope": source.scope,
+                    "scope_description": source.scope_description,
+                }
+            )
         return secret_infos
 
     def get_secret_value(self, name: str) -> str | None:

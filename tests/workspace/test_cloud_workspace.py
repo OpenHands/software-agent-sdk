@@ -678,3 +678,19 @@ def test_callback_includes_registered_cost(monkeypatch):
 
         payload = mock_client.post.call_args.kwargs["json"]
         assert payload["cost"] == 1.25
+
+
+def test_get_secret_value_retries_at_most_three_times():
+    """A persistent 5xx is retried by _send_settings_request only."""
+    workspace = _make_local_workspace()
+    workspace._sandbox_id = "sandbox-123"
+    workspace._session_api_key = "session-key"
+    unavailable = httpx.Response(503, request=httpx.Request("GET", "https://x"))
+
+    with patch("httpx.Client") as MockClient, patch("time.sleep"):
+        client = MockClient.return_value.__enter__.return_value
+        client.request.return_value = unavailable
+
+        assert workspace._get_secret_value("github_token") is None
+
+    assert client.request.call_count == 3

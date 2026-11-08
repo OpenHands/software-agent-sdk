@@ -13,6 +13,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
+from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 
 
 @pytest.fixture
@@ -80,8 +81,30 @@ def test_remote_state_initialization(mock_client, conversation_id):
 
     # Events should be RemoteEventsList type
     from openhands.sdk.conversation.impl.remote_conversation import RemoteEventsList
+    from openhands.sdk.conversation.secret_registry import SecretRegistry
 
     assert isinstance(state.events, RemoteEventsList)
+    assert isinstance(state.secret_registry, SecretRegistry)
+
+
+def test_remote_state_polymorphic_fields_are_stable_across_reads(
+    mock_client, conversation_id, mock_agent
+):
+    """Reading a polymorphic field must not strip `kind` from the cached info."""
+    conversation_info = create_mock_conversation_info(
+        conversation_id,
+        mock_agent,
+        confirmation_policy={"kind": "AlwaysConfirm"},
+        security_analyzer={"kind": "LLMSecurityAnalyzer"},
+    )
+    setup_mock_responses(mock_client, conversation_info)
+
+    state = RemoteState(mock_client, conversation_id)
+
+    for _ in range(2):
+        assert isinstance(state.confirmation_policy, AlwaysConfirm)
+        assert isinstance(state.security_analyzer, LLMSecurityAnalyzer)
+        assert isinstance(state.agent, Agent)
 
 
 @pytest.mark.parametrize(

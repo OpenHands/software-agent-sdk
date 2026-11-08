@@ -19,6 +19,7 @@ from openhands.sdk.event.resume_transcript import (
 )
 from openhands.sdk.llm import ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.tool.builtins.finish import FinishAction
+from openhands.sdk.tool.schema import Action
 
 
 def _user(text: str) -> MessageEvent:
@@ -612,22 +613,40 @@ class TestIsPatchEdit:
         ev = _tool("tc-1")
         assert ev.is_patch_edit is False
 
-    def test_dict_content_with_old_text_is_patch(self) -> None:
-        # Persisted ACP events store content blocks as plain dicts (via
-        # ``_serialize_tool_content`` → ``model_dump``). The property must
-        # handle both attribute and dict access.
-        ev = _tool(
-            "tc-1",
-            content=[{"type": "diff", "old_text": "before", "new_text": "after"}],
-        )
-        assert ev.is_patch_edit is True
-
-    def test_dict_content_without_old_text_is_full_write(self) -> None:
-        ev = _tool(
-            "tc-1",
-            content=[{"type": "diff", "old_text": None, "new_text": "whole file"}],
-        )
-        assert ev.is_patch_edit is False
+    @pytest.mark.parametrize(
+        ("block", "expected"),
+        [
+            # Persisted ACP events store content blocks as plain dicts (via
+            # ``_serialize_tool_content`` → ``model_dump``). The property must
+            # handle both attribute and dict access.
+            pytest.param(
+                {"type": "diff", "old_text": "before", "new_text": "after"},
+                True,
+                id="dict_with_old_text_is_patch",
+            ),
+            pytest.param(
+                {"type": "diff", "old_text": None, "new_text": "whole file"},
+                False,
+                id="dict_without_old_text_is_full_write",
+            ),
+            # ACP's JSON wire format uses camelCase: ``oldText`` / ``newText``.
+            # When events arrive from an external API or websocket frame the
+            # dict keys keep that shape because ``content`` is ``list[Any]``.
+            pytest.param(
+                {"type": "diff", "oldText": "before", "newText": "after"},
+                True,
+                id="camel_case_oldText_is_patch",
+            ),
+            pytest.param(
+                {"type": "diff", "oldText": None, "newText": "whole file"},
+                False,
+                id="camel_case_without_oldText_is_full_write",
+            ),
+        ],
+    )
+    def test_dict_content_classification(self, block: dict, expected: bool) -> None:
+        ev = _tool("tc-1", content=[block])
+        assert ev.is_patch_edit is expected
 
     def test_model_validate_dict_content_classifies_correctly(self) -> None:
         # Regression for the QA reviewer's failure case: an event reconstructed
@@ -650,16 +669,22 @@ class TestIsPatchEdit:
         assert isinstance(ev.content[0], dict)
         assert ev.is_patch_edit is True
 
-    def test_raw_input_only_new_string_is_not_patch(self) -> None:
-        # A Write/create payload may carry only ``new_string`` — that's not
-        # a patch edit, it's a full-file write.
-        ev = _tool("tc-1", raw_input={"new_string": "whole file", "file_path": "/a"})
-        assert ev.is_patch_edit is False
-
-    def test_raw_input_empty_old_string_is_not_patch(self) -> None:
-        # An empty ``old_string`` has nothing to patch — it's effectively a
-        # create.
-        ev = _tool("tc-1", raw_input={"old_string": "", "new_string": "y"})
+    @pytest.mark.parametrize(
+        "raw_input",
+        [
+            # A Write/create payload may carry only ``new_string`` — that's not
+            # a patch edit, it's a full-file write.
+            pytest.param(
+                {"new_string": "whole file", "file_path": "/a"},
+                id="only_new_string",
+            ),
+            # An empty ``old_string`` has nothing to patch — it's effectively a
+            # create.
+            pytest.param({"old_string": "", "new_string": "y"}, id="empty_old_string"),
+        ],
+    )
+    def test_raw_input_without_old_string_is_not_patch(self, raw_input: dict) -> None:
+        ev = _tool("tc-1", raw_input=raw_input)
         assert ev.is_patch_edit is False
 
     def test_diff_content_takes_precedence_over_raw_input(self) -> None:
@@ -669,23 +694,6 @@ class TestIsPatchEdit:
             "tc-1",
             content=[{"type": "diff", "old_text": None, "new_text": "x"}],
             raw_input={"old_string": "abc", "new_string": "def"},
-        )
-        assert ev.is_patch_edit is False
-
-    def test_camel_case_oldText_alias_classifies_as_patch(self) -> None:
-        # ACP's JSON wire format uses camelCase: ``oldText`` / ``newText``.
-        # When events arrive from an external API or websocket frame the
-        # dict keys keep that shape because ``content`` is ``list[Any]``.
-        ev = _tool(
-            "tc-1",
-            content=[{"type": "diff", "oldText": "before", "newText": "after"}],
-        )
-        assert ev.is_patch_edit is True
-
-    def test_camel_case_without_oldText_is_full_write(self) -> None:
-        ev = _tool(
-            "tc-1",
-            content=[{"type": "diff", "oldText": None, "newText": "whole file"}],
         )
         assert ev.is_patch_edit is False
 
@@ -759,3 +767,111 @@ def test_role_labelling(role: str, label: str) -> None:
     out = render_resume_transcript([event])
     assert out is not None
     assert f"{label}: x" in out
+
+
+def test_action_event_message_property_and_custom_action_transcript() -> None:
+    """ActionEvent exposes transcript message from FinishAction and custom actions."""
+    finish_action = FinishAction(message="Task finished successfully.")
+    event_with_finish = ActionEvent(
+        source="agent",
+        thought=[TextContent(text="done")],
+        action=finish_action,
+        tool_name="finish",
+        tool_call_id="call-finish",
+        tool_call=MessageToolCall(
+            id="call-finish",
+            name="finish",
+            arguments='{"message": "Task finished successfully."}',
+            origin="completion",
+        ),
+        llm_response_id="resp-1",
+    )
+    assert finish_action.message == "Task finished successfully."
+    assert event_with_finish.message == "Task finished successfully."
+
+    transcript = render_resume_transcript([event_with_finish])
+    assert transcript is not None
+    assert "[AGENT]: Task finished successfully." in transcript
+
+    class CustomActionWithMessage(Action):
+        message: str = "custom summary here"
+
+    custom_msg_event = ActionEvent(
+        source="agent",
+        thought=[TextContent(text="calling custom with message")],
+        action=CustomActionWithMessage(),
+        tool_name="custom_with_msg",
+        tool_call_id="call-custom-msg",
+        tool_call=MessageToolCall(
+            id="call-custom-msg",
+            name="custom_with_msg",
+            arguments='{"message": "custom summary here"}',
+            origin="completion",
+        ),
+        llm_response_id="resp-2-msg",
+    )
+    assert isinstance(custom_msg_event.action, CustomActionWithMessage)
+    assert custom_msg_event.action.message == "custom summary here"
+    assert custom_msg_event.message == "custom summary here"
+    custom_transcript = render_resume_transcript([custom_msg_event])
+    assert custom_transcript is not None
+    assert "[AGENT]: custom summary here" in custom_transcript
+
+    class PropertyMessageAction(Action):
+        @property
+        def message(self) -> str:
+            return "property summary here"
+
+    property_event = ActionEvent(
+        source="agent",
+        thought=[TextContent(text="calling property message")],
+        action=PropertyMessageAction(),
+        tool_name="property_msg",
+        tool_call_id="call-property-msg",
+        tool_call=MessageToolCall(
+            id="call-property-msg",
+            name="property_msg",
+            arguments="{}",
+            origin="completion",
+        ),
+        llm_response_id="resp-2-property",
+    )
+    assert property_event.message == "property summary here"
+    property_transcript = render_resume_transcript([property_event])
+    assert property_transcript is not None
+    assert "[AGENT]: property summary here" in property_transcript
+
+    class CustomActionWithoutMessage(Action):
+        data: str = "custom"
+
+    custom_event = ActionEvent(
+        source="agent",
+        thought=[TextContent(text="calling custom")],
+        action=CustomActionWithoutMessage(),
+        tool_name="custom",
+        tool_call_id="call-custom",
+        tool_call=MessageToolCall(
+            id="call-custom",
+            name="custom",
+            arguments='{"data": "custom"}',
+            origin="completion",
+        ),
+        llm_response_id="resp-2",
+    )
+    assert custom_event.message is None
+
+    none_action_event = ActionEvent(
+        source="agent",
+        thought=[TextContent(text="no action")],
+        action=None,
+        tool_name="none",
+        tool_call_id="call-none",
+        tool_call=MessageToolCall(
+            id="call-none",
+            name="none",
+            arguments="{}",
+            origin="completion",
+        ),
+        llm_response_id="resp-3",
+    )
+    assert none_action_event.message is None

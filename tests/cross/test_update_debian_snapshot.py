@@ -13,20 +13,20 @@ snapshot = module_from_spec(SPEC)
 SPEC.loader.exec_module(snapshot)
 
 
-def test_eligible_snapshot_is_at_least_seven_days_old() -> None:
+def test_eligible_snapshot_is_at_least_three_days_old() -> None:
     now = datetime(2026, 9, 15, 12, 30, tzinfo=UTC)
 
     selected = snapshot.eligible_snapshot(now)
 
-    assert selected == datetime(2026, 9, 8, tzinfo=UTC)
-    assert now - selected >= timedelta(days=7)
+    assert selected == datetime(2026, 9, 12, tzinfo=UTC)
+    assert now - selected >= timedelta(days=3)
 
 
 def test_validate_snapshot_age_rejects_fresh_snapshot() -> None:
     now = datetime(2026, 9, 15, 12, 30, tzinfo=UTC)
 
     with pytest.raises(ValueError, match="minimum age"):
-        snapshot.validate_snapshot_age(now - timedelta(days=6), now)
+        snapshot.validate_snapshot_age(now - timedelta(days=2), now)
 
 
 def test_update_dockerfile_replaces_exactly_one_pin(tmp_path: Path) -> None:
@@ -60,7 +60,7 @@ def test_update_dockerfile_rejects_missing_pin(tmp_path: Path) -> None:
 
 def test_workflow_builds_and_scans_before_opening_pr() -> None:
     workflow = (
-        REPO_ROOT / ".github" / "workflows" / "update-debian-snapshot.yml"
+        REPO_ROOT / ".github" / "workflows" / "update-version-pins.yml"
     ).read_text()
 
     build = workflow.index("- name: Build binary-minimal")

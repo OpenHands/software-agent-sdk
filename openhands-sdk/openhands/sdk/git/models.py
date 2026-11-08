@@ -39,3 +39,19 @@ class GitCommit(BaseModel):
 class GitCommitsPage(BaseModel):
     commits: list[GitCommit]
     has_more: bool
+
+
+class GitProviderRepository(BaseModel):
+    id: str
+    full_name: str
+    git_provider: str
+    is_public: bool
+    stargazers_count: int | None = None
+    pushed_at: str | None = None
+    main_branch: str | None = None
+
+
+class GitProviderRepositoryPage(BaseModel):
+    items: list[GitProviderRepository]
+    next_page_id: str | None = None
+    missing_token: bool = False

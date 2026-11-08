@@ -1,7 +1,6 @@
 import base64
 import mimetypes
 import os
-import re
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -51,6 +50,27 @@ def _is_encodable(text: str, encoding: str) -> bool:
     except UnicodeEncodeError:
         return False
     return True
+
+
+def _uses_crlf(path: Path) -> bool:
+    """Return True if the file's first line ends with CRLF."""
+    with open(path, "rb") as f:
+        return f.readline().endswith(b"\r\n")
+
+
+def _occurrence_starts(text: str, needle: str) -> list[int]:
+    """Every start offset where ``needle`` occurs in ``text``, overlaps included.
+
+    ``str.find`` keeps the engine on its fast literal search; a regex
+    lookahead would report the same offsets but only by attempting a match at
+    every position.
+    """
+    starts: list[int] = []
+    index = text.find(needle)
+    while index != -1:
+        starts.append(index)
+        index = text.find(needle, index + 1)
+    return starts
 
 
 class FileEditor:
@@ -199,16 +219,16 @@ class FileEditor:
         # replacements
         file_content = self.read_file(path)
 
-        # Find all occurrences using regex
-        # Escape special regex characters in old_str to match it literally
-        pattern = re.escape(old_str)
+        # Find every occurrence, including overlapping ones ("aa" occurs twice
+        # in "aaa"), so an ambiguous old_str is refused instead of silently
+        # replacing its first match.
         occurrences = [
             (
-                file_content.count("\n", 0, match.start()) + 1,  # line number
-                match.group(),  # matched text
-                match.start(),  # start position
+                file_content.count("\n", 0, start) + 1,  # line number
+                old_str,  # matched text
+                start,  # start position
             )
-            for match in re.finditer(pattern, file_content)
+            for start in _occurrence_starts(file_content, old_str)
         ]
 
         if not occurrences:
@@ -219,14 +239,13 @@ class FileEditor:
             # meaningful leading/trailing whitespace (e.g. a Markdown hard line
             # break or intentional indentation) the caller asked to write.
             old_str = old_str.strip()
-            pattern = re.escape(old_str)
             occurrences = [
                 (
-                    file_content.count("\n", 0, match.start()) + 1,  # line number
-                    match.group(),  # matched text
-                    match.start(),  # start position
+                    file_content.count("\n", 0, start) + 1,  # line number
+                    old_str,  # matched text
+                    start,  # start position
                 )
-                for match in re.finditer(pattern, file_content)
+                for start in _occurrence_starts(file_content, old_str)
             ]
             if not occurrences:
                 raise ToolError(
@@ -414,11 +433,9 @@ class FileEditor:
             )
 
         file_content = self.read_file(path, start_line=start_line, end_line=end_line)
+        file_content = self._normalize_lines(file_content)
 
-        # Get the detected encoding
-        output = self._make_output(
-            "\n".join(file_content.splitlines()), str(path), start_line
-        )  # Remove extra newlines
+        output = self._make_output(file_content, str(path), start_line)
 
         # Prepend warning if we truncated the end_line
         if warning_message:
@@ -488,8 +505,12 @@ class FileEditor:
         content, fall back to UTF-8 so an edit may add characters (arrows, emoji,
         CJK, ...) the original single-byte encoding lacks, instead of failing and
         truncating the file. Note that the fallback transcodes the whole file to
-        UTF-8.
+        UTF-8. Editing through a symlink writes to the link's target: a rename
+        onto the link path would replace the link with a regular file.
         """
+        if path.is_symlink():
+            path = path.resolve()
+
         default = self._encoding_manager.default_encoding
         if encoding != default and not _is_encodable(file_text, encoding):
             logger.warning(
@@ -498,14 +519,18 @@ class FileEditor:
             )
             encoding = default
 
-        with self._temp_file(path, file_text, encoding) as tmp_path:
+        # file_text uses "\n", as read_file returns it; keep a CRLF file CRLF.
+        newline = "\r\n" if path.exists() and _uses_crlf(path) else None
+        with self._temp_file(path, file_text, encoding, newline) as tmp_path:
             # Preserve the original file's permission bits when it already exists.
             if path.exists():
                 os.chmod(tmp_path, os.stat(path).st_mode & 0o7777)
             Path.replace(tmp_path, path)
 
     @contextmanager
-    def _temp_file(self, path: Path, file_text: str, encoding: str) -> Iterator[Path]:
+    def _temp_file(
+        self, path: Path, file_text: str, encoding: str, newline: str | None = None
+    ) -> Iterator[Path]:
         """Write file_text to a fresh temp file beside path and yield its Path.
 
         The temp file is removed on any failure (write, chmod or replace), so the
@@ -519,6 +544,7 @@ class FileEditor:
             prefix=f".{path.name}.",
             suffix=".tmp",
             encoding=encoding,
+            newline=newline,
             delete=False,
         )
         tmp_path = Path(tmp.name)
@@ -573,6 +599,11 @@ class FileEditor:
                     break
                 new_lines.append(line)
                 history_lines.append(line)
+
+        # A final line without a trailing newline would fuse with the inserted
+        # content; terminate it first so the insert starts on its own line.
+        if new_lines and not new_lines[-1].endswith("\n"):
+            new_lines[-1] += "\n"
 
         # Insert new content
         for line in new_str_lines:
@@ -661,6 +692,12 @@ class FileEditor:
                 str(path),
                 f"The path {path} does not exist. Please provide a valid path.",
             )
+        # Checked here because some commands read the file (e.g. to detect its
+        # encoding) before they reach validate_file.
+        if path.is_file() and not os.access(path, os.R_OK):
+            raise FileValidationError(
+                path=str(path), reason="File is not readable (permission denied)."
+            )
         if command != "view":
             if path.is_dir():
                 raise EditorToolParameterInvalidError(
@@ -722,6 +759,12 @@ class FileEditor:
         # Check file type - allow image files
         file_extension = path.suffix.lower()
         if is_binary(str(path)) and file_extension not in IMAGE_EXTENSIONS:
+            # binaryornot samples only the first chunk, so a non-UTF-8 (e.g.
+            # cp1251) or non-ASCII text file can be misclassified as binary.
+            # Decode the whole file with the encoding the editor will use and
+            # accept it if it is clean text.
+            if self._is_decodable_text(path):
+                return
             raise FileValidationError(
                 path=str(path),
                 reason=(
@@ -729,6 +772,13 @@ class FileEditor:
                     "or edited by this tool."
                 ),
             )
+
+    def _is_decodable_text(self, path: Path) -> bool:
+        """Return True if the file decodes as clean text in a known encoding.
+
+        Used to override binaryornot misclassification of non-UTF-8 text files.
+        """
+        return self._encoding_manager.resolve_text_encoding(path) is not None
 
     @with_encoding
     def read_file(
@@ -774,6 +824,17 @@ class FileEditor:
         except Exception as e:
             raise ToolError(f"Ran into {e} while trying to read {path}") from None
 
+    def _normalize_lines(self, content: str) -> str:
+        """Rejoin a template snippet without folding exotic line separators.
+
+        ``read_file`` returns a snippet whose lines are separated by ``\\n``. The
+        ranged ``view`` path used to round-trip it through ``str.splitlines()``,
+        which also breaks on form feeds and Unicode separators that the rest of
+        the editor treats as ordinary characters, shifting line numbers. Joining
+        on ``\\n`` instead keeps every other character intact.
+        """
+        return "\n".join(content.split("\n"))
+
     def _make_output(
         self,
         snippet_content: str,
@@ -802,14 +863,17 @@ class FileEditor:
             truncate_notice=TEXT_FILE_CONTENT_TRUNCATED_NOTICE,
         )
 
+        # Split on "\n" only, matching how read_file/_count_lines define lines, so that
+        # characters splitlines() treats as breaks (\x0c, \u2028, ...) keep line numbers
+        # consistent with insert/view_range. A terminating newline ends the last line
+        # rather than adding a blank one, so drop the empty field it produces.
+        lines = snippet_content.split("\n")
+        if lines[-1] == "":
+            lines.pop()
         snippet_content = "\n".join(
-            [
-                f"{i + start_line:6}\t{line}"
-                for i, line in enumerate(snippet_content.split("\n"))
-            ]
+            [f"{i + start_line:6}\t{line}" for i, line in enumerate(lines)]
         )
-        return (
-            f"Here's the result of running `cat -n` on {snippet_description}:\n"
-            + snippet_content
-            + "\n"
-        )
+        output = f"Here's the result of running `cat -n` on {snippet_description}:\n"
+        if snippet_content:
+            output += snippet_content + "\n"
+        return output

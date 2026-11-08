@@ -7,11 +7,21 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
+import httpx
 from fastapi import HTTPException, status
+from pydantic import ValidationError
 
+from openhands.agent_server.agent_profiles_router import active_agent_profile
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.docker_runtime.hybrid import HybridConversationRegistry
+from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
+from openhands.agent_server.docker_runtime.routers import (
+    _container,
+    start_docker_conversation,
+)
 from openhands.agent_server.event_service import EventService
+from openhands.agent_server.launch import launch_http_exception
 from openhands.agent_server.openai.models import (
     OpenAIChatCompletionChoice,
     OpenAIChatCompletionChunk,
@@ -38,18 +48,21 @@ from openhands.agent_server.persistence import (
     get_llm_profile_store,
     get_settings_store,
 )
-from openhands.sdk import LLM, Message
-from openhands.sdk.context.agent_context import AgentContext
+from openhands.sdk import Message
 from openhands.sdk.conversation.request import (
+    AgentLaunchAdditions,
     SendMessageRequest,
     StartConversationRequest,
 )
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
-    ConversationState,
 )
+from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
+from openhands.sdk.llm import Metrics
 from openhands.sdk.llm.message import ImageContent, TextContent
-from openhands.sdk.settings import ACPAgentSettings, OpenHandsAgentSettings
+from openhands.sdk.llm.utils.metrics import TokenUsage
+from openhands.sdk.profiles import OpenHandsAgentProfile
+from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -77,7 +90,7 @@ class OpenAIResponseResult:
 class OpenAIAgentRunResult:
     conversation_id: UUID
     final_response: str
-    state: ConversationState
+    usage: TokenUsage | None
 
 
 def _profile_name_from_model(model: str) -> str:
@@ -89,9 +102,9 @@ def _profile_name_from_model(model: str) -> str:
     )
 
 
-def _load_profile_llm(profile_name: str, config: Config) -> LLM:
+def _require_llm_profile(profile_name: str, config: Config) -> None:
     try:
-        return get_llm_profile_store().load(profile_name, cipher=config.cipher)
+        get_llm_profile_store().load(profile_name, cipher=config.cipher)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -104,43 +117,6 @@ def _load_profile_llm(profile_name: str, config: Config) -> LLM:
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-
-
-def _append_system_suffix(existing: str | None, system_text: str) -> str:
-    return "\n\n".join(
-        text for text in ((existing or "").strip(), system_text.strip()) if text
-    )
-
-
-def _with_profile_llm_and_system_text(
-    agent_settings: OpenHandsAgentSettings | ACPAgentSettings,
-    llm: LLM,
-    system_text: str,
-) -> OpenHandsAgentSettings | ACPAgentSettings:
-    updated = agent_settings.model_copy(update={"llm": llm})
-    if not system_text:
-        return updated
-
-    if isinstance(updated, OpenHandsAgentSettings):
-        context = updated.agent_context
-        suffix = _append_system_suffix(context.system_message_suffix, system_text)
-        return updated.model_copy(
-            update={
-                "agent_context": context.model_copy(
-                    update={"system_message_suffix": suffix}
-                )
-            }
-        )
-
-    context = updated.agent_context or AgentContext()
-    suffix = _append_system_suffix(context.system_message_suffix, system_text)
-    return updated.model_copy(
-        update={
-            "agent_context": context.model_copy(
-                update={"system_message_suffix": suffix}
-            )
-        }
-    )
 
 
 def _content_to_sdk_parts(
@@ -295,19 +271,32 @@ def _create_conversation_request(
     config: Config,
     conversation_id: UUID | None,
 ) -> StartConversationRequest:
-    profile_name = _profile_name_from_model(model)
-    llm = _load_profile_llm(profile_name, config)
+    llm_profile = _profile_name_from_model(model)
+    _require_llm_profile(llm_profile, config)
+    profile = active_agent_profile(config, config.cipher)
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No active Agent Profile; activate one to use the gateway",
+        )
     settings = get_settings_store(config).load() or PersistedSettings()
-    agent_settings = _with_profile_llm_and_system_text(
-        settings.agent_settings,
-        llm,
-        system_text,
-    )
-    conversation_settings = settings.conversation_settings.model_copy(
-        update={"agent_settings": agent_settings}
-    )
-    return conversation_settings.create_request(
+    try:
+        additions = AgentLaunchAdditions(
+            # An ACP server runs its own model.
+            llm_profile_ref=(
+                llm_profile if isinstance(profile, OpenHandsAgentProfile) else None
+            ),
+            system_message_suffix_append=system_text or None,
+        )
+    except ValidationError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="System instructions are too long",
+        ) from None
+    return settings.conversation_settings.create_request(
         StartConversationRequest,
+        agent_profile_id=profile.id,
+        agent_launch_additions=additions,
         workspace=LocalWorkspace(working_dir=config.workspace_path),
         conversation_id=conversation_id,
         initial_message=SendMessageRequest(
@@ -355,8 +344,18 @@ def _response_id() -> str:
     return f"{_RESPONSE_ID_PREFIX}{uuid4().hex}"
 
 
+# A run also stops, without being terminal, when it waits for the user; the
+# fresh-conversation path sees this because its run task ends there.
+_STOPPED_RUN_STATUSES = frozenset(
+    {
+        ConversationExecutionStatus.PAUSED,
+        ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
+    }
+)
+
+
 # Reused Chat Completions conversations do not expose a request-specific run
-# task, so wait for both new events and a terminal state. Fresh conversations
+# task, so wait for both new events and a stopped state. Fresh conversations
 # use EventService.wait_for_run_completion() below.
 async def _wait_for_reused_conversation_completion(
     event_service: EventService,
@@ -374,7 +373,9 @@ async def _wait_for_reused_conversation_completion(
         enough_new_events = len(state.events) > min_event_count
         if last_status == ConversationExecutionStatus.RUNNING:
             observed_run = True
-        elif last_status.is_terminal() and (observed_run or enough_new_events):
+        elif (last_status.is_terminal() or last_status in _STOPPED_RUN_STATUSES) and (
+            observed_run or enough_new_events
+        ):
             return last_status
 
         if time.monotonic() >= deadline:
@@ -409,8 +410,7 @@ def _raise_for_terminal_error(status_value: ConversationExecutionStatus) -> None
         )
 
 
-def _openai_usage_from_state(state: ConversationState) -> OpenAIUsage:
-    token_usage = state.stats.get_combined_metrics().accumulated_token_usage
+def _openai_usage_from_tokens(token_usage: TokenUsage | None) -> OpenAIUsage:
     if token_usage is None:
         return OpenAIUsage(
             prompt_tokens=0,
@@ -427,8 +427,9 @@ def _openai_usage_from_state(state: ConversationState) -> OpenAIUsage:
     )
 
 
-def _openai_response_usage_from_state(state: ConversationState) -> OpenAIResponseUsage:
-    token_usage = state.stats.get_combined_metrics().accumulated_token_usage
+def _openai_response_usage_from_tokens(
+    token_usage: TokenUsage | None,
+) -> OpenAIResponseUsage:
     if token_usage is None:
         prompt_tokens = 0
         completion_tokens = 0
@@ -529,7 +530,7 @@ def iter_openai_chat_completion_sse(
 
 async def list_openai_models() -> OpenAIModelListResponse:
     try:
-        profiles = get_llm_profile_store().list_summaries()
+        profiles = await asyncio.to_thread(get_llm_profile_store().list_summaries)
     except TimeoutError:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -555,10 +556,40 @@ async def _run_agent(
     user_content: list[TextContent | ImageContent],
     conversation_service: ConversationService,
     reusable_conversation_id: UUID | None,
+    config: Config,
+    registry: DockerConversationRegistry | None,
 ) -> OpenAIAgentRunResult:
+    docker_owned = (
+        registry is not None
+        and reusable_conversation_id is not None
+        and registry.provisioning.manifest_path(reusable_conversation_id).is_file()
+    )
+    local_owned = (
+        isinstance(registry, HybridConversationRegistry)
+        and reusable_conversation_id is not None
+        and not docker_owned
+        and registry.conversation_dir(reusable_conversation_id)
+        .joinpath("meta.json")
+        .is_file()
+    )
+    if (
+        registry is not None
+        and not local_owned
+        and (config.conversation_runtime == "docker" or docker_owned)
+    ):
+        return await _run_docker_agent(
+            start_request=start_request,
+            user_content=user_content,
+            conversation_service=conversation_service,
+            reusable_conversation_id=reusable_conversation_id,
+            registry=registry,
+        )
+    if config.conversation_runtime == "docker" and registry is None:
+        raise HTTPException(503, "Docker conversation runtime is unavailable")
     event_service = None
     conversation_id = reusable_conversation_id
     min_event_count: int | None = None
+    usage_baseline = Metrics()
 
     if reusable_conversation_id is not None:
         event_service = await conversation_service.get_event_service(
@@ -567,16 +598,28 @@ async def _run_agent(
         if event_service is not None:
             state_before = await event_service.get_state()
             min_event_count = len(state_before.events) + 1
-            await event_service.send_message(
-                Message(role="user", content=user_content),
-                run=True,
-            )
+            usage_baseline = state_before.stats.get_combined_metrics().deep_copy()
+            # Claim capacity before saving the message: a 429 must leave
+            # nothing behind so an OpenAI client can retry the same request.
+            run_slot = await event_service.reserve_run_slot()
+            try:
+                await event_service.send_message(
+                    Message(role="user", content=user_content),
+                    run=True,
+                    run_slot=run_slot,
+                )
+            finally:
+                if run_slot is not None:
+                    run_slot.release()
     started_new_conversation = event_service is None
 
     if event_service is None:
-        conversation_info, _ = await conversation_service.start_conversation(
-            start_request
-        )
+        try:
+            conversation_info, _ = await conversation_service.start_conversation(
+                start_request
+            )
+        except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as exc:
+            raise launch_http_exception(exc) from exc
         conversation_id = conversation_info.id
         event_service = await conversation_service.get_event_service(
             conversation_info.id
@@ -606,12 +649,98 @@ async def _run_agent(
     _raise_for_terminal_error(status_value)
     state = await event_service.get_state()
     final_response = await event_service.get_agent_final_response()
+    metrics = state.stats.get_combined_metrics()
+    usage = metrics.diff(usage_baseline).accumulated_token_usage
     assert conversation_id is not None
     return OpenAIAgentRunResult(
         conversation_id=conversation_id,
         final_response=final_response,
-        state=state,
+        usage=usage,
     )
+
+
+async def _run_docker_agent(
+    *,
+    start_request: StartConversationRequest,
+    user_content: list[TextContent | ImageContent],
+    conversation_service: ConversationService,
+    reusable_conversation_id: UUID | None,
+    registry: DockerConversationRegistry,
+) -> OpenAIAgentRunResult:
+    docker_owned = (
+        reusable_conversation_id is not None
+        and registry.provisioning.manifest_path(reusable_conversation_id).is_file()
+    )
+    if not docker_owned:
+        if (
+            reusable_conversation_id is not None
+            and registry.conversation_dir(reusable_conversation_id)
+            .joinpath("meta.json")
+            .is_file()
+        ):
+            raise HTTPException(404, "Conversation not found")
+        docker_request = start_request.model_copy(
+            update={
+                "workspace": LocalWorkspace(working_dir="/workspace"),
+                "initial_message": None,
+            }
+        )
+        status_code, _, conversation_id = await start_docker_conversation(
+            docker_request.model_dump(mode="json", context={"expose_secrets": True}),
+            registry,
+        )
+        if status_code >= 400:
+            raise HTTPException(
+                status_code, "Conversation runtime rejected the request"
+            )
+        await conversation_service.refresh_persisted_conversation(conversation_id)
+    else:
+        assert reusable_conversation_id is not None
+        conversation_id = reusable_conversation_id
+
+    container = await _container(registry, conversation_id)
+    registry.attach_session(conversation_id)
+    try:
+        async with httpx.AsyncClient(timeout=130.0, trust_env=False) as client:
+            response = await client.post(
+                f"{container.host}/api/conversations/{conversation_id}/events/_gateway/run",
+                headers={"X-Session-API-Key": container.api_key},
+                json=SendMessageRequest(
+                    role="user", content=user_content, run=True
+                ).model_dump(mode="json"),
+            )
+        if response.is_error:
+            if response.status_code == 404:
+                try:
+                    detail = response.json().get("detail")
+                except (ValueError, AttributeError):
+                    detail = None
+                if detail == f"Conversation not found: {conversation_id}":
+                    raise HTTPException(404, detail)
+                raise HTTPException(
+                    502, "Conversation container does not provide the gateway route"
+                )
+            raise HTTPException(
+                response.status_code, "Conversation runtime rejected the gateway run"
+            )
+        result = response.json()
+        _raise_for_terminal_error(ConversationExecutionStatus(result["status"]))
+        await conversation_service.refresh_persisted_conversation(conversation_id)
+        return OpenAIAgentRunResult(
+            conversation_id=conversation_id,
+            final_response=result["final_response"],
+            usage=(
+                TokenUsage.model_validate(result["usage"])
+                if result["usage"] is not None
+                else None
+            ),
+        )
+    except httpx.TimeoutException as exc:
+        raise HTTPException(504, "Conversation runtime timed out") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Conversation container unreachable") from exc
+    finally:
+        registry.detach_session(conversation_id)
 
 
 async def run_chat_completion(
@@ -621,6 +750,7 @@ async def run_chat_completion(
     conversation_service: ConversationService,
     reusable_conversation_id: UUID | None,
     observability_overrides: dict[str, object] | None = None,
+    registry: DockerConversationRegistry | None = None,
 ) -> OpenAIChatCompletionResult:
     if request.stream:
         # SSE streaming needs incremental agent-event forwarding; add it separately.
@@ -642,6 +772,8 @@ async def run_chat_completion(
         user_content=_content_to_sdk_parts(user_message),
         conversation_service=conversation_service,
         reusable_conversation_id=reusable_conversation_id,
+        config=config,
+        registry=registry,
     )
     # EventService.get_agent_final_response() returns final text from the SDK's
     # get_agent_final_response(), so the gateway emits assistant text only.
@@ -660,7 +792,7 @@ async def run_chat_completion(
                 ),
             )
         ],
-        usage=_openai_usage_from_state(agent_result.state),
+        usage=_openai_usage_from_tokens(agent_result.usage),
     )
     return OpenAIChatCompletionResult(
         response=response,
@@ -674,6 +806,7 @@ async def run_response(
     config: Config,
     conversation_service: ConversationService,
     observability_overrides: dict[str, object] | None = None,
+    registry: DockerConversationRegistry | None = None,
 ) -> OpenAIResponseResult:
     if request.stream:
         raise HTTPException(
@@ -709,6 +842,8 @@ async def run_response(
         user_content=user_content,
         conversation_service=conversation_service,
         reusable_conversation_id=None,
+        config=config,
+        registry=registry,
     )
     completed_at = time.time()
     response = OpenAIResponse(
@@ -739,7 +874,7 @@ async def run_response(
         status="completed",
         tool_choice="none",
         tools=[],
-        usage=_openai_response_usage_from_state(agent_result.state),
+        usage=_openai_response_usage_from_tokens(agent_result.usage),
     )
     return OpenAIResponseResult(
         response=response,

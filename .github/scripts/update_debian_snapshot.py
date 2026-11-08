@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Advance the agent-server Debian snapshot after a seven-day observation period."""
+"""Advance the agent-server Debian snapshot after a three-day observation period."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 
-MINIMUM_AGE = timedelta(days=7)
+MINIMUM_AGE = timedelta(days=3)
 SNAPSHOT_RE = re.compile(r"(?m)^ARG DEBIAN_SNAPSHOT=(\d{8}T\d{6}Z)$")
 ARCHIVES = ("debian", "debian-security")
 

@@ -8,8 +8,9 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
+from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 from openhands.sdk.llm.utils.metrics import Metrics
-from openhands.sdk.llm.utils.telemetry import Telemetry
+from openhands.sdk.llm.utils.telemetry import Telemetry, normalize_usage
 
 
 PROXY_COST = 0.084930
@@ -79,22 +80,49 @@ def test_span_carries_cache_buckets(exporter):
     assert attrs["gen_ai.usage.cache_read_input_tokens"] == 7
 
 
-def test_span_cost_agrees_with_metrics(exporter):
+@pytest.mark.parametrize("cost", [0.0, PROXY_COST])
+def test_span_cost_agrees_with_metrics(exporter, cost):
     t = Telemetry(model_name="m", metrics=Metrics())
     t.on_request(telemetry_ctx={})
-    t.on_response(_response(_usage()))
+    usage = _usage()
+    usage.cost = 0.04
+    t.on_response(_response(usage, cost=cost))
 
     attrs = _attrs(exporter)
+    assert len(t.metrics.costs) == 1
+    assert attrs["gen_ai.usage.cost"] == cost
     assert attrs["gen_ai.usage.cost"] == pytest.approx(t.metrics.accumulated_cost)
 
 
-def test_cache_buckets_survive_absent_prompt_tokens_details():
+def test_cache_write_survives_absent_prompt_tokens_details():
     usage = Usage(
         prompt_tokens=100,
         completion_tokens=5,
         cache_creation_input_tokens=42,
     )
-    assert Telemetry._cache_buckets(usage)[1] == 42
+    snapshot = normalize_usage(usage)
+
+    assert snapshot is not None
+    assert snapshot.cache_write_tokens == 42
+
+
+def test_normalize_usage_cache_write_null_does_not_raise():
+    """litellm deletes None optional fields from the instance but keeps them in
+    ``model_fields_set`` (e.g. minimax-m3 reports ``cache_creation_tokens: null``).
+    """
+    usage = Usage(
+        prompt_tokens=100,
+        completion_tokens=5,
+        prompt_tokens_details={
+            "cached_tokens": 3,
+            "cache_creation_tokens": None,
+        },
+    )
+    snapshot = normalize_usage(usage)
+
+    assert snapshot is not None
+    assert snapshot.cache_write_tokens == 0
+    assert snapshot.cache_read_tokens == 3
 
 
 def test_span_closed_on_error(exporter):
@@ -110,3 +138,15 @@ def test_retry_does_not_leak_spans(exporter):
     t.on_request(telemetry_ctx={})  # retry re-enters without a response
     t.on_response(_response(_usage()))
     assert len(exporter.get_finished_spans()) == 2
+
+
+def test_unavailable_cost_is_absent_from_span_and_metrics(exporter):
+    t = Telemetry(model_name="unpriced-review-alias", metrics=Metrics())
+    t.on_request(telemetry_ctx={})
+    response = ModelResponse(model="unpriced-review-alias", usage=_usage())
+    provider = LLMProvider(model="unpriced-review-alias", name="openai", api_base=None)
+    with pytest.warns(UserWarning, match="Cost calculation failed"):
+        t.on_response(response, provider_info=provider)
+
+    assert "gen_ai.usage.cost" not in _attrs(exporter)
+    assert not t.metrics.costs

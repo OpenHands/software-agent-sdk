@@ -85,7 +85,7 @@ The tool defines:
 
 The Dockerfile is very simple:
 ```dockerfile
-FROM nikolaik/python-nodejs:python3.13-nodejs22-slim
+FROM nikolaik/python-nodejs:python3.13-nodejs24-slim
 
 # Copy custom tools into a directory outside the frozen binary
 COPY custom_tools /app/custom_tools

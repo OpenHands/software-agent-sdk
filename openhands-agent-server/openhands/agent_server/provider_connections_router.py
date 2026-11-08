@@ -16,7 +16,14 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 from openhands.agent_server._secrets_exposure import (
     get_cipher,
@@ -34,6 +41,8 @@ from openhands.sdk.llm.provider_connection_store import (
     ProviderConnectionNotFound,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.settings import OpenHandsAgentSettings
+from openhands.sdk.utils.pydantic_secrets import is_redacted_secret
 
 
 logger = get_logger(__name__)
@@ -47,6 +56,15 @@ def _now() -> int:
     return int(time.time())
 
 
+def _require_usable_api_key(v: SecretStr | None) -> SecretStr | None:
+    # The stored model turns a blank or redacted key into None, so accepting one
+    # would create a keyless connection (POST) or wipe/corrupt the shared key
+    # (PATCH). Refuse it up front; the message must not echo the value.
+    if v is not None and (not v.get_secret_value().strip() or is_redacted_secret(v)):
+        raise ValueError("api_key must be a real key, not blank or redacted")
+    return v
+
+
 class ProviderConnectionCreateRequest(BaseModel):
     display_name: str = Field(..., min_length=1, max_length=128)
     provider: str = Field(default="custom", min_length=1, max_length=128)
@@ -54,6 +72,8 @@ class ProviderConnectionCreateRequest(BaseModel):
     base_url: str | None = Field(default=None, max_length=2048)
 
     model_config = ConfigDict(extra="forbid")
+
+    _validate_api_key = field_validator("api_key")(_require_usable_api_key)
 
 
 class ProviderConnectionUpdateRequest(BaseModel):
@@ -63,6 +83,8 @@ class ProviderConnectionUpdateRequest(BaseModel):
     base_url: str | None = Field(default=None, max_length=2048)
 
     model_config = ConfigDict(extra="forbid")
+
+    _validate_api_key = field_validator("api_key")(_require_usable_api_key)
 
     @model_validator(mode="after")
     def _reject_null_required_fields(self) -> ProviderConnectionUpdateRequest:
@@ -107,7 +129,9 @@ def _linked_profile_names(connection_id: str) -> list[str]:
 
 def _active_settings_references_connection(config, connection_id: str) -> bool:
     settings = get_settings_store(config).load()
-    if settings is None:
+    if settings is None or not isinstance(
+        settings.agent_settings, OpenHandsAgentSettings
+    ):
         return False
     return settings.agent_settings.llm.provider_connection_id == connection_id
 
@@ -140,7 +164,7 @@ def _raise_if_connection_is_referenced(config, connection_id: str) -> None:
 
 
 @provider_connections_router.get("", response_model=list[ProviderConnectionResponse])
-async def list_provider_connections(
+def list_provider_connections(
     request: Request,
 ) -> list[ProviderConnectionResponse]:
     cipher = get_cipher(request)
@@ -153,7 +177,7 @@ async def list_provider_connections(
 @provider_connections_router.post(
     "", response_model=ProviderConnectionResponse, status_code=status.HTTP_201_CREATED
 )
-async def create_provider_connection(
+def create_provider_connection(
     request: Request, body: ProviderConnectionCreateRequest
 ) -> ProviderConnectionResponse:
     cipher = get_cipher(request)
@@ -185,7 +209,7 @@ async def create_provider_connection(
 @provider_connections_router.patch(
     "/{connection_id}", response_model=ProviderConnectionResponse
 )
-async def update_provider_connection(
+def update_provider_connection(
     request: Request, connection_id: str, body: ProviderConnectionUpdateRequest
 ) -> ProviderConnectionResponse:
     fields = body.model_fields_set
@@ -242,7 +266,7 @@ async def update_provider_connection(
 @provider_connections_router.delete(
     "/{connection_id}", response_model=ProviderConnectionResponse
 )
-async def delete_provider_connection(
+def delete_provider_connection(
     request: Request, connection_id: str
 ) -> ProviderConnectionResponse:
     config = get_config(request)

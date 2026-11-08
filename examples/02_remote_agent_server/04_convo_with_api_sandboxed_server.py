@@ -4,7 +4,7 @@ This example demonstrates building an agent-server image on-the-fly from the SDK
 codebase and launching it in a remote sandboxed environment via Runtime API.
 
 Usage:
-  uv run examples/24_remote_convo_with_api_sandboxed_server.py
+  uv run examples/02_remote_agent_server/04_convo_with_api_sandboxed_server.py
 
 Requirements:
   - LLM_API_KEY: API key for LLM access

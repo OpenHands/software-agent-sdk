@@ -11,6 +11,8 @@ body:
 
               We encourage you to open the discussion on the feature you need. You are always welcome to implement it, if you wish.
 
+              New AI providers are generally out of scope unless they are broadly popular and commonly used by OpenHands users. Requests below that bar may be marked out of scope and closed; please consider the existing generic provider interfaces first.
+
     - type: checkboxes
       attributes:
           label: Is there an existing feature request for this?

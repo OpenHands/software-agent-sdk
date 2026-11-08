@@ -23,6 +23,7 @@ const importWithoutWs = async <T>(modulePath: string): Promise<T> => {
 
 describe('package imports do not crash when `ws` is unavailable', () => {
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
     vi.resetModules();
   });
@@ -54,7 +55,8 @@ describe('package imports do not crash when `ws` is unavailable', () => {
     ).not.toThrow();
   });
 
-  it('WebSocketCallbackClient.start() reports the missing implementation via onError', async () => {
+  it('WebSocketCallbackClient.start() reports a missing global WebSocket via onError', async () => {
+    vi.stubGlobal('WebSocket', undefined);
     const { WebSocketCallbackClient } = await importWithoutWs<
       typeof import('../events/websocket-client')
     >('../events/websocket-client');
@@ -78,7 +80,8 @@ describe('package imports do not crash when `ws` is unavailable', () => {
     expect(captured?.message).toMatch(/WebSocket implementation not available/i);
   });
 
-  it('BashWebSocketClient.start() reports the missing implementation via onError', async () => {
+  it('BashWebSocketClient.start() reports a missing global WebSocket via onError', async () => {
+    vi.stubGlobal('WebSocket', undefined);
     const { BashWebSocketClient } = await importWithoutWs<
       typeof import('../events/bash-websocket-client')
     >('../events/bash-websocket-client');

@@ -7,12 +7,14 @@ from typing import cast
 import pytest
 from litellm import ChatCompletionToolParam
 
+from openhands.sdk.agent.utils import normalize_tool_call
 from openhands.sdk.llm.exceptions import (
     FunctionCallConversionError,
     FunctionCallValidationError,
 )
 from openhands.sdk.llm.mixins.fn_call_converter import (
     STOP_WORDS,
+    TERMINAL_COMMAND_PREFIX_ALIASES,
     convert_fncall_messages_to_non_fncall_messages,
     convert_non_fncall_messages_to_fncall_messages,
     convert_tool_call_to_string,
@@ -1014,3 +1016,182 @@ def test_security_risk_param_allowed_for_tool_that_does_not_declare_it():
     arguments = json.loads(assistant_msg["tool_calls"][0]["function"]["arguments"])
     assert arguments["message"] == "Hello!"
     assert arguments["security_risk"] == "LOW"
+
+
+def _single_tool_call(messages: list[dict]) -> dict:
+    assistant = next(m for m in messages if m.get("tool_calls"))
+    assert len(assistant["tool_calls"]) == 1
+    return assistant["tool_calls"][0]["function"]
+
+
+@pytest.mark.parametrize("alias", ["bash", "command", "execute", "execute_bash"])
+def test_convert_non_fncall_applies_shared_terminal_aliases(alias):
+    """Pure renames resolve to the registered tool with the arguments unchanged."""
+    messages = [
+        {"role": "user", "content": "List the files"},
+        {
+            "role": "assistant",
+            "content": (
+                f"<function={alias}>\n<parameter=command>ls</parameter>\n</function>"
+            ),
+        },
+    ]
+
+    tool_call = _single_tool_call(
+        convert_non_fncall_messages_to_fncall_messages(messages, FNCALL_TOOLS)
+    )
+
+    assert tool_call["name"] == "terminal"
+    assert json.loads(tool_call["arguments"]) == {"command": "ls"}
+
+
+@pytest.mark.parametrize("alias", sorted(TERMINAL_COMMAND_PREFIX_ALIASES))
+def test_convert_non_fncall_keeps_command_prefix_alias_name(alias):
+    """``git`` and ``reset`` validate against the terminal schema but keep their
+    name, so that ``normalize_tool_call`` prepends the executable. Renaming
+    here would run ``status`` instead of ``git status``."""
+    messages = [
+        {"role": "user", "content": "Check the repository"},
+        {
+            "role": "assistant",
+            "content": (
+                f"<function={alias}>\n<parameter=command>status</parameter>\n"
+                "</function>"
+            ),
+        },
+    ]
+
+    tool_call = _single_tool_call(
+        convert_non_fncall_messages_to_fncall_messages(messages, FNCALL_TOOLS)
+    )
+    arguments = json.loads(tool_call["arguments"])
+
+    assert tool_call["name"] == alias
+    assert arguments == {"command": "status"}
+
+    name, normalized = normalize_tool_call(tool_call["name"], arguments, {"terminal"})
+    assert name == "terminal"
+    assert normalized["command"] == f"{alias} status"
+
+
+def _first_tool_call_arguments(messages: list[dict]) -> dict:
+    assistant_msg = next(m for m in messages if m.get("tool_calls"))
+    return json.loads(assistant_msg["tool_calls"][0]["function"]["arguments"])
+
+
+def test_roundtrip_preserves_multiline_param_whitespace():
+    """A tool call rendered for a non-native model must parse back unchanged.
+
+    ``convert_tool_call_to_string`` wraps multiline strings in a newline on
+    each side; the parser should strip only that framing, not the indentation
+    of code in, for example, a file_editor ``new_str``.
+    """
+    tools: list[ChatCompletionToolParam] = [
+        {
+            "type": "function",
+            "function": {
+                "name": "file_editor",
+                "description": "Edit a file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"new_str": {"type": "string"}},
+                    "required": ["new_str"],
+                },
+            },
+        }
+    ]
+    new_str = "    if x:\n        return 1\n"
+    fncall_messages = [
+        {"role": "user", "content": "edit"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "file_editor",
+                        "arguments": json.dumps({"new_str": new_str}),
+                    },
+                }
+            ],
+        },
+    ]
+
+    non_fncall = convert_fncall_messages_to_non_fncall_messages(fncall_messages, tools)
+    back = convert_non_fncall_messages_to_fncall_messages(non_fncall, tools)
+
+    assert _first_tool_call_arguments(back) == {"new_str": new_str}
+
+
+@pytest.mark.parametrize(
+    ("param_schema", "written_value", "expected"),
+    [
+        pytest.param(
+            {"type": "string"},
+            "    def f():\n        return 1",
+            "    def f():\n        return 1",
+            id="unframed-multiline-keeps-indentation",
+        ),
+        pytest.param(
+            {"type": "string", "enum": ["create", "view"]},
+            "\ncreate \n",
+            "create",
+            id="framed-single-line-is-stripped",
+        ),
+        pytest.param(
+            {"type": "string"},
+            "\r\n    a()\r\n    b()\r\n",
+            "    a()\r\n    b()",
+            id="crlf-frame-is-removed",
+        ),
+        pytest.param(
+            {"type": "string"},
+            " \n    a()\n    b()\n ",
+            "    a()\n    b()",
+            id="space-padded-frame-is-removed",
+        ),
+        pytest.param(
+            {"type": "string"},
+            "\t\n    a()\n    b()\n\t",
+            "    a()\n    b()",
+            id="tab-padded-frame-is-removed",
+        ),
+    ],
+)
+def test_non_fncall_param_whitespace_follows_renderer_framing(
+    param_schema, written_value, expected
+):
+    """Multiline values keep their own whitespace; single-line values are stripped."""
+    tools: list[ChatCompletionToolParam] = [
+        {
+            "type": "function",
+            "function": {
+                "name": "param_tool",
+                "description": "Tool with a single parameter.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"value": param_schema},
+                    "required": ["value"],
+                },
+            },
+        }
+    ]
+    non_fncall_messages = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": (
+                "<function=param_tool>\n"
+                f"<parameter=value>{written_value}</parameter>\n"
+                "</function>"
+            ),
+        },
+    ]
+
+    fncall_messages = convert_non_fncall_messages_to_fncall_messages(
+        non_fncall_messages, tools
+    )
+
+    assert _first_tool_call_arguments(fncall_messages) == {"value": expected}

@@ -1,5 +1,6 @@
 import asyncio
 import bisect
+import importlib
 import json
 import os
 import threading
@@ -12,6 +13,7 @@ from urllib.parse import urlparse
 
 import httpx
 import websockets
+from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
 from websockets.exceptions import ConnectionClosed
 
 from openhands.sdk.agent.base import AgentBase
@@ -25,14 +27,19 @@ from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import (
     ConversationRunError,
+    RemoteConversationValueError,
     WebSocketConnectionError,
 )
-from openhands.sdk.conversation.secret_registry import SecretValue
+from openhands.sdk.conversation.secret_registry import (
+    SecretRegistry,
+    SecretValue,
+)
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.title_utils import generate_conversation_title
 from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationID,
+    ConversationTokenCallbackType,
     StuckDetectionThresholds,
     TraceMetadataValue,
 )
@@ -48,11 +55,18 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
 from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import DEBUG, get_logger
-from openhands.sdk.observability.laminar import OPERATION_METADATA_KEY, observe
+from openhands.sdk.observability.laminar import (
+    OPERATION_METADATA_KEY,
+    default_observability_span_name_from_env,
+    merge_observability_metadata,
+    observability_parent_span_context_from_env,
+    observe,
+)
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -68,6 +82,7 @@ CONVERSATIONS_PATH = "/api/conversations"
 FATAL_WS_CLOSE_CODES = frozenset({4001, 4004})
 _WEBSOCKET_AUTH_TYPE: Final = "auth"
 _WEBSOCKET_SESSION_API_KEY_FIELD: Final = "session_api_key"
+_WEBSOCKET_MAX_MESSAGE_SIZE: Final = 16 * 1024 * 1024
 
 
 def _agent_kind_mismatch_message(conversation_id: ConversationID) -> str:
@@ -83,6 +98,38 @@ def _validate_remote_agent(agent_data: dict) -> AgentBase:
 
         return ACPAgent.model_validate(agent_data)
     return AgentBase.model_validate(agent_data)
+
+
+def _token_delta_callback(
+    token_callbacks: list[ConversationTokenCallbackType],
+) -> ConversationCallbackType:
+    """Hand each streamed delta from the events socket to the token callbacks."""
+    on_token = BaseConversation.compose_callbacks(token_callbacks)
+
+    def callback(event: Event) -> None:
+        if isinstance(event, StreamingDeltaEvent):
+            delta = Delta(
+                content=event.content, reasoning_content=event.reasoning_content
+            )
+            on_token(
+                ModelResponseStream(
+                    id=event.id, choices=[StreamingChoices(index=0, delta=delta)]
+                )
+            )
+
+    return callback
+
+
+def _restore_tool_registrations(tool_module_qualnames: Mapping[str, str]) -> None:
+    """Import the tool modules persisted with a remote conversation."""
+    for tool_name, module_qualname in tool_module_qualnames.items():
+        try:
+            importlib.import_module(module_qualname)
+        except ImportError as exc:
+            raise ImportError(
+                f"Cannot attach to a conversation that uses tool {tool_name!r}: "
+                f"failed to import module {module_qualname!r}: {exc}"
+            ) from exc
 
 
 def _websocket_close_code(exc: ConnectionClosed) -> int | None:
@@ -158,10 +205,12 @@ class WebSocketCallbackClient:
         self._ready = threading.Event()
         self._loop = None
         self._task = None
+        self.failure_reason: str | None = None
 
     def start(self) -> None:
         if self._thread:
             return
+        self.failure_reason = None
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -243,7 +292,9 @@ class WebSocketCallbackClient:
         has_connected = False
         while not self._stop.is_set():
             try:
-                async with websockets.connect(ws_url) as ws:
+                async with websockets.connect(
+                    ws_url, max_size=_WEBSOCKET_MAX_MESSAGE_SIZE
+                ) as ws:
                     if self.api_key:
                         await ws.send(
                             json.dumps(
@@ -280,6 +331,18 @@ class WebSocketCallbackClient:
                                 "ws_event_processing_error", stack_info=True
                             )
             except ConnectionClosed as exc:
+                if any(
+                    frame is not None and frame.code == 1009
+                    for frame in (exc.rcvd, exc.sent)
+                ):
+                    self.failure_reason = (
+                        "WebSocket message too big (close code 1009) for conversation "
+                        f"{self.conversation_id}; the SDK receive limit is "
+                        f"{_WEBSOCKET_MAX_MESSAGE_SIZE} bytes."
+                    )
+                    logger.error(self.failure_reason)
+                    self._stop.set()
+                    break
                 if _is_fatal_websocket_close(exc):
                     logger.debug("ws_connection_closed_fatal", exc_info=True)
                     self._stop.set()
@@ -496,9 +559,16 @@ class RemoteEventsList(EventsListBase):
         return len(self._cached_events) - 1
 
     def create_default_callback(self) -> ConversationCallbackType:
-        """Create a default callback that adds events to this list."""
+        """Create a default callback that adds events to this list.
+
+        Streamed ``StreamingDeltaEvent`` frames are transient: the server never
+        stores them, so they reach the other callbacks but stay out of this
+        list, which keeps matching the server's event log.
+        """
 
         def callback(event: Event) -> None:
+            if isinstance(event, StreamingDeltaEvent):
+                return
             self.add_event(event)
 
         return callback
@@ -537,14 +607,16 @@ class RemoteState(ConversationStateProtocol):
         conversation_id: str,
         conversation_info_base_path: str = CONVERSATIONS_PATH,
         events_base_path: str = CONVERSATIONS_PATH,
+        initial_state: dict | None = None,
     ):
         self._client = client
         self._conversation_id = conversation_id
         self._conversation_info_base_path = conversation_info_base_path
         self._events = RemoteEventsList(client, conversation_id, events_base_path)
 
-        # Cache for state information to avoid REST calls
-        self._cached_state = None
+        # Cache for state information to avoid REST calls. Seeded with the
+        # ConversationInfo the server returned on create/attach, when known.
+        self._cached_state = initial_state
         self._lock = threading.RLock()
 
     def _get_conversation_info(self) -> dict:
@@ -574,10 +646,8 @@ class RemoteState(ConversationStateProtocol):
         with self._lock:
             # Handle full state snapshot
             if event.key == FULL_STATE_KEY:
-                # Update cached state with the full snapshot
-                if self._cached_state is None:
-                    self._cached_state = {}
-                self._cached_state.update(event.value)
+                # Snapshots omit null fields, so merging would retain cleared values.
+                self._cached_state = dict(event.value)
             else:
                 # Handle individual field updates
                 if self._cached_state is None:
@@ -684,6 +754,11 @@ class RemoteState(ConversationStateProtocol):
         return ConversationStats.model_validate(stats_data)
 
     @property
+    def max_budget_per_run(self) -> float | None:
+        """The server's limit on accumulated conversation LLM cost."""
+        return self._get_conversation_info().get("max_budget_per_run")
+
+    @property
     def hook_config(self) -> HookConfig | None:
         """Get hook configuration (fetched from remote)."""
         info = self._get_conversation_info()
@@ -691,6 +766,15 @@ class RemoteState(ConversationStateProtocol):
         if hook_config_data is not None:
             return HookConfig.model_validate(hook_config_data)
         return None
+
+    @property
+    def secret_registry(self) -> SecretRegistry:
+        """The secret registry for this conversation."""
+        info = self._get_conversation_info()
+        secret_registry_data = info.get("secret_registry")
+        if secret_registry_data is not None:
+            return SecretRegistry.model_validate(secret_registry_data)
+        return SecretRegistry()
 
     def model_dump(self, **_kwargs):
         """Get a dictionary representation of the remote state."""
@@ -732,6 +816,7 @@ class RemoteConversation(BaseConversation):
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
+        max_budget_per_run: float | None = None,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
@@ -748,6 +833,8 @@ class RemoteConversation(BaseConversation):
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        observability_parent_span_context: str | None = None,
+        token_callbacks: list[ConversationTokenCallbackType] | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -760,6 +847,9 @@ class RemoteConversation(BaseConversation):
             conversation_id: Optional existing conversation id to attach to
             callbacks: Optional callbacks to receive events (not yet streamed)
             max_iteration_per_run: Max iterations configured on server
+            max_budget_per_run: Optional hard cost ceiling (USD) enforced on
+                    the server. Only applied when creating a new conversation;
+                    read the current limit from ``max_budget_per_run``.
             stuck_detection: Whether to enable stuck detection on server
             stuck_detection_thresholds: Optional configuration for stuck detection
                       thresholds. Can be a StuckDetectionThresholds instance or
@@ -785,13 +875,30 @@ class RemoteConversation(BaseConversation):
             observability_tags: Optional root span tags for observability backends.
             observability_span_name: Optional child span name for observability
                       backends. The root span remains named "conversation".
+            token_callbacks: Optional callbacks invoked with each streamed token
+                      delta the server sends (agent LLM with ``stream=True``).
         """
+        super().__init__()
+        observability_metadata = merge_observability_metadata(observability_metadata)
+        observability_parent_span_context = (
+            observability_parent_span_context
+            or observability_parent_span_context_from_env()
+        )
+        default_span_name = default_observability_span_name_from_env()
+        if default_span_name and observability_span_name == "conversation":
+            observability_span_name = default_span_name
+
         # Client tool specs the server already has persisted for this
         # conversation (populated when re-attaching to an existing one). These
         # must be registered locally before the initial event sync so that
         # persisted ``ClientAction_*`` events can be deserialized.
         attached_client_tools: list[ClientToolSpec] = []
+        # Tool modules persisted with the existing conversation. Importing them
+        # registers the dynamic action types the persisted events reference, so
+        # this has to happen before ``_initialize_connection`` syncs events.
+        attached_tool_module_qualnames: Mapping[str, str] = {}
 
+        initial_state: dict | None = None
         should_create = conversation_id is None
         if conversation_id is not None:
             # Try to attach to existing conversation
@@ -806,6 +913,7 @@ class RemoteConversation(BaseConversation):
                 should_create = True
             else:
                 info = resp.json()
+                initial_state = info
                 agent_payload = info.get("agent")
                 if agent_payload is not None:
                     remote_agent = _validate_remote_agent(agent_payload)
@@ -817,6 +925,7 @@ class RemoteConversation(BaseConversation):
                     attached_client_tools.append(
                         ClientToolSpec.model_validate(raw_spec)
                     )
+                attached_tool_module_qualnames = info.get("tool_module_qualnames") or {}
 
         if should_create:
             # Import here to avoid circular imports
@@ -836,6 +945,7 @@ class RemoteConversation(BaseConversation):
                 ),
                 "initial_message": None,
                 "max_iterations": max_iteration_per_run,
+                "max_budget_per_run": max_budget_per_run,
                 "stuck_detection": stuck_detection,
                 # We need to convert RemoteWorkspace to LocalWorkspace for the server
                 "workspace": LocalWorkspace(
@@ -864,6 +974,7 @@ class RemoteConversation(BaseConversation):
                 if observability_tags is not None
                 else [],
                 "observability_span_name": observability_span_name,
+                "observability_parent_span_context": observability_parent_span_context,
                 "user_id": user_id,
             }
             if user_id:
@@ -886,9 +997,10 @@ class RemoteConversation(BaseConversation):
                 CONVERSATIONS_PATH,
                 json=payload,
             )
-            data = resp.json()
+            info = resp.json()
+            initial_state = info
             # Expect a ConversationInfo
-            cid = data.get("id") or data.get("conversation_id")
+            cid = info.get("id") or info.get("conversation_id")
             if not cid:
                 raise RuntimeError(
                     "Invalid response from server: missing conversation id"
@@ -898,12 +1010,18 @@ class RemoteConversation(BaseConversation):
             workspace.register_conversation(str(conversation_id))
 
         assert conversation_id is not None
+        # Register the persisted tools before connecting so that events synced
+        # during ``_initialize_connection`` can be deserialized. ``_from_info``
+        # does the same for the ``attach``/``create`` entry points.
+        _restore_tool_registrations(attached_tool_module_qualnames)
         self._initialize_connection(
             agent=agent,
             workspace=workspace,
             conversation_id=conversation_id,
             callbacks=callbacks,
+            token_callbacks=token_callbacks,
             max_iteration_per_run=max_iteration_per_run,
+            initial_state=initial_state,
             client_tools=[*(client_tools or []), *attached_client_tools],
             visualizer=visualizer,
         )
@@ -921,6 +1039,7 @@ class RemoteConversation(BaseConversation):
             metadata=observability_metadata,
             tags=observability_tags,
             conversation_tags=tags,
+            parent_span_context=observability_parent_span_context,
         )
         # All hooks (including SessionStart/SessionEnd) are executed server-side.
         # hook_config is sent in the creation payload.
@@ -939,10 +1058,27 @@ class RemoteConversation(BaseConversation):
     ) -> Self:
         """Submit a creation request and connect to the returned conversation.
 
-        The request selects the agent or saved server profile and all server
-        options. A supplied conversation ID follows the server's idempotency
-        contract; this method does not probe for an existing conversation.
+        The request selects the agent source (``agent``, ``agent_settings`` or a
+        saved ``agent_profile_id``) and all server options. A supplied
+        conversation ID follows the server's idempotency contract; this method
+        does not probe for an existing conversation.
         """
+        updates: dict[str, object] = {
+            "observability_metadata": merge_observability_metadata(
+                request.observability_metadata
+            ),
+        }
+        default_span_name = default_observability_span_name_from_env()
+        if default_span_name and request.observability_span_name == "conversation":
+            updates["observability_span_name"] = default_span_name
+        parent_span_context = (
+            request.observability_parent_span_context
+            or observability_parent_span_context_from_env()
+        )
+        if parent_span_context:
+            updates["observability_parent_span_context"] = parent_span_context
+        request = request.model_copy(update=updates)
+
         response = _send_request(
             workspace.client,
             "POST",
@@ -961,6 +1097,7 @@ class RemoteConversation(BaseConversation):
             metadata=request.observability_metadata,
             tags=request.observability_tags,
             conversation_tags=request.tags,
+            parent_span_context=request.observability_parent_span_context,
         )
         return conversation
 
@@ -996,6 +1133,7 @@ class RemoteConversation(BaseConversation):
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ),
     ) -> Self:
+        _restore_tool_registrations(info.get("tool_module_qualnames") or {})
         conversation = cls.__new__(cls)
         conversation._initialize_connection(
             agent=_validate_remote_agent(info["agent"]),
@@ -1003,6 +1141,7 @@ class RemoteConversation(BaseConversation):
             conversation_id=uuid.UUID(info["id"]),
             callbacks=callbacks,
             max_iteration_per_run=info["max_iterations"],
+            initial_state=info,
             client_tools=[
                 ClientToolSpec.model_validate(spec)
                 for spec in info.get("client_tools") or []
@@ -1020,13 +1159,17 @@ class RemoteConversation(BaseConversation):
         callbacks: list[ConversationCallbackType] | None,
         max_iteration_per_run: int,
         client_tools: list[ClientToolSpec],
+        initial_state: dict | None = None,
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ),
+        token_callbacks: list[ConversationTokenCallbackType] | None = None,
     ) -> None:
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
         self._callbacks = callbacks or []
+        if token_callbacks:
+            self._callbacks.append(_token_delta_callback(token_callbacks))
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
         self._client = workspace.client
@@ -1048,7 +1191,9 @@ class RemoteConversation(BaseConversation):
             ClientTool.from_spec(spec)
 
         # Initialize the remote state
-        self._state = RemoteState(self._client, str(self._id))
+        self._state = RemoteState(
+            self._client, str(self._id), initial_state=initial_state
+        )
 
         # Add default callback to maintain local event state
         default_callback = self._state.events.create_default_callback()
@@ -1129,13 +1274,40 @@ class RemoteConversation(BaseConversation):
         all_callbacks = self._callbacks + [run_complete_callback]
         composed_callback = BaseConversation.compose_callbacks(all_callbacks)
 
+        # Track which events the callbacks have seen, so that events the
+        # server recorded while the socket was reconnecting (and that only
+        # reached the cache through REST reconciliation) can be replayed to
+        # them once, without the live socket delivering them a second time.
+        delivered_ids: set[str] = set()
+        replayed_ids: set[str] = set()
+
+        def socket_callback(event: Event) -> None:
+            if event.id in replayed_ids:
+                replayed_ids.discard(event.id)
+                return
+            delivered_ids.add(event.id)
+            composed_callback(event)
+
+        def replay_missed_events() -> None:
+            self._state.events.reconcile()
+            replayed_ids.clear()
+            for event in self._state.events[:]:
+                if event.id in delivered_ids:
+                    continue
+                delivered_ids.add(event.id)
+                replayed_ids.add(event.id)
+                try:
+                    composed_callback(event)
+                except Exception:
+                    logger.exception("ws_replay_callback_error", stack_info=True)
+
         # Initialize WebSocket client for callbacks
         self._ws_client = WebSocketCallbackClient(
             host=self.workspace.host,
             conversation_id=str(self._id),
-            callback=composed_callback,
+            callback=socket_callback,
             api_key=self.workspace.api_key,
-            on_reconnect=self._state.events.reconcile,
+            on_reconnect=replay_missed_events,
         )
         self._ws_client.start()
 
@@ -1158,6 +1330,7 @@ class RemoteConversation(BaseConversation):
                     self._id,
                 )
             else:
+                failure_reason = self._ws_client.failure_reason
                 try:
                     self._ws_client.stop()
                 except Exception:
@@ -1167,12 +1340,16 @@ class RemoteConversation(BaseConversation):
                 raise WebSocketConnectionError(
                     conversation_id=self._id,
                     timeout=ws_timeout,
+                    message=failure_reason,
                 )
 
         # Reconcile events after WebSocket is ready to catch any events that
         # were emitted between the initial REST sync and WebSocket subscription.
         # This is the "reconciliation" part of the subscription handshake.
         self._state.events.reconcile()
+        # Callbacks are not replayed history: only events recorded after this
+        # point and missed by the socket are replayed on reconnect.
+        delivered_ids.update(event.id for event in self._state.events[:])
 
     def _create_llm_completion_log_callback(self) -> ConversationCallbackType:
         """Create a callback that writes LLM completion logs to client filesystem."""
@@ -1215,6 +1392,11 @@ class RemoteConversation(BaseConversation):
     def state(self) -> RemoteState:
         """Access to remote conversation state."""
         return self._state
+
+    @property
+    def max_budget_per_run(self) -> float | None:
+        """The server's limit on accumulated conversation LLM cost."""
+        return self._state.max_budget_per_run
 
     @property
     def conversation_stats(self):
@@ -1268,7 +1450,9 @@ class RemoteConversation(BaseConversation):
                 (only used when blocking=True). Default is 3600 seconds.
 
         Raises:
-            ConversationRunError: If the run fails or times out.
+            ConversationRunError: If the run fails or times out, including when
+                it ends in ``ERROR`` (e.g. the iteration limit) or ``STUCK``.
+                ``LocalConversation.run()`` returns with that status instead.
         """
         # Disarm and drain any stale terminal status events from previous runs
         # before arming for the new one. _run_armed gates full-state WS snapshots
@@ -1674,13 +1858,20 @@ class RemoteConversation(BaseConversation):
         conversation state by adding a condensation event to the history.
 
         Raises:
-            HTTPError: If the server returns an error (e.g., no condenser configured).
+            RemoteConversationValueError: If no condenser is configured. It is
+                both a ``ValueError`` and an ``httpx.HTTPStatusError`` (409).
+            httpx.HTTPStatusError: For other server errors.
         """
-        _send_request(
-            self._client,
-            "POST",
-            f"{CONVERSATIONS_PATH}/{self._id}/condense",
-        )
+        try:
+            _send_request(
+                self._client,
+                "POST",
+                f"{CONVERSATIONS_PATH}/{self._id}/condense",
+            )
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 409:
+                raise RemoteConversationValueError.from_http_error(error) from error
+            raise
 
     def fork(
         self,
@@ -1750,8 +1941,6 @@ class RemoteConversation(BaseConversation):
             self.agent.model_dump(context={"expose_secrets": True}),
         )
 
-        # Use server-returned tags (which include merged title) rather than
-        # the input tags, so the client-side object stays consistent.
         server_tags: dict[str, str] | None = fork_info.get("tags") or None
 
         return RemoteConversation(
@@ -1775,15 +1964,22 @@ class RemoteConversation(BaseConversation):
             event_id: Event to make the new HEAD, or ``None`` for the empty tree.
 
         Raises:
-            httpx.HTTPStatusError: If the server rejects the event id (e.g. 404
-                for an unknown event).
+            RemoteConversationValueError: If the server does not know the event
+                id. It is both a ``ValueError`` and an ``httpx.HTTPStatusError``
+                (404).
+            httpx.HTTPStatusError: For other server errors.
         """
-        _send_request(
-            self._client,
-            "POST",
-            f"{CONVERSATIONS_PATH}/{self._id}/navigate",
-            json={"event_id": event_id},
-        )
+        try:
+            _send_request(
+                self._client,
+                "POST",
+                f"{CONVERSATIONS_PATH}/{self._id}/navigate",
+                json={"event_id": event_id},
+            )
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 404:
+                raise RemoteConversationValueError.from_http_error(error) from error
+            raise
         self._state.refresh_from_server()
 
     def execute_tool(self, tool_name: str, action: "Action") -> "Observation":
@@ -1815,51 +2011,54 @@ class RemoteConversation(BaseConversation):
         The workspace owns the client and will close it during its own cleanup.
         Closing it here would prevent the workspace from making cleanup API calls.
         """
-        if self._cleanup_initiated:
+        if self._cleanup_complete:
             return
-        self._cleanup_initiated = True
+        first_attempt = not self._cleanup_initiated
+        if first_attempt:
+            self._cleanup_initiated = True
 
-        # Best-effort: hand the accumulated LLM cost to the workspace so it can
-        # be included in the automation completion callback. Only read cached
-        # state — close() also runs on the failure path, where a live fetch
-        # could block until timeout against an agent server that is already gone.
-        # The cache tracks this run: the agent server streams a "stats" update
-        # after every LLM response (EventService._setup_stats_streaming), so it
-        # holds the run's spend even on the failure path, which wakes run() from
-        # a per-field ERROR/STUCK update before the post-run full-state snapshot.
-        try:
-            cached = self._state._cached_state
-            # Require an actual "stats" entry: a cache built only from partial
-            # field updates — e.g. the subscribe-time push for a service with no
-            # live conversation — would otherwise yield 0.0 and record a run as
-            # free when its cost is really just unknown.
-            if cached is not None and "stats" in cached:
-                cost = self._state.stats.get_combined_metrics().accumulated_cost
-                self.workspace.register_cost(cost)
-        except Exception as e:
-            logger.debug(f"Could not register accumulated cost: {e}")
-
-        # SessionEnd hooks are executed server-side (via hook_config in payload).
-        try:
-            # Stop WebSocket client if it exists
-            if self._ws_client:
-                self._ws_client.stop()
-                self._ws_client = None
-        except Exception:
-            pass
-
-        self._end_observability_span()
-        if self.delete_on_close:
+            # Best-effort: hand the accumulated LLM cost to the workspace so it can
+            # be included in the automation completion callback. Only read cached
+            # state — close() also runs on the failure path, where a live fetch
+            # could block until timeout against an agent server that is already gone.
+            # The cache tracks this run: the agent server streams a "stats" update
+            # after every LLM response (EventService._setup_stats_streaming), so it
+            # holds the run's spend even on the failure path, which wakes run() from
+            # a per-field ERROR/STUCK update before the post-run full-state snapshot.
             try:
-                # trigger server-side delete_conversation to release resources
-                # like tmux sessions
-                _send_request(
-                    self._client,
-                    "DELETE",
-                    f"{CONVERSATIONS_PATH}/{self.id}",
-                )
+                cached = self._state._cached_state
+                # Require an actual "stats" entry: a cache built only from partial
+                # field updates — e.g. the subscribe-time push for a service with no
+                # live conversation — would otherwise yield 0.0 and record a run as
+                # free when its cost is really just unknown.
+                if cached is not None and "stats" in cached:
+                    cost = self._state.stats.get_combined_metrics().accumulated_cost
+                    self.workspace.register_cost(cost)
+            except Exception as e:
+                logger.debug(f"Could not register accumulated cost: {e}")
+
+            # SessionEnd hooks are executed server-side (via hook_config in payload).
+            try:
+                # Stop WebSocket client if it exists
+                if self._ws_client:
+                    self._ws_client.stop()
+                    self._ws_client = None
             except Exception:
                 pass
+
+            self._end_observability_span()
+            if self.delete_on_close:
+                try:
+                    # trigger server-side delete_conversation to release resources
+                    # like tmux sessions
+                    _send_request(
+                        self._client,
+                        "DELETE",
+                        f"{CONVERSATIONS_PATH}/{self.id}",
+                    )
+                except Exception:
+                    pass
+        self._cleanup_complete = True
 
     def __del__(self) -> None:
         try:

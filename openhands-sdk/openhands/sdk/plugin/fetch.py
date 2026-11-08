@@ -7,21 +7,48 @@ public interface.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from openhands.sdk.extensions.fetch import (
     ExtensionFetchError,
+    SourceType,
     fetch_with_resolution as _ext_fetch_with_resolution,
+    parse_extension_source,
 )
 from openhands.sdk.git.cached_repo import GitHelper
+from openhands.sdk.plugin.paths import get_pinned_plugin_cache_path
 from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 DEFAULT_CACHE_DIR = get_user_persistence_dir() / "cache" / "plugins"
+_FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
 class PluginFetchError(Exception):
     """Raised when fetching a plugin fails."""
+
+
+def _cached_pinned_plugin(
+    source: str, cache_dir: Path, ref: str, repo_path: str | None
+) -> Path | None:
+    try:
+        source_type, url = parse_extension_source(source)
+    except ExtensionFetchError:
+        return None
+    if source_type == SourceType.LOCAL:
+        return None
+
+    cached_root = get_pinned_plugin_cache_path(url, cache_dir, ref.lower())
+    if not cached_root.is_dir():
+        return None
+    if repo_path is None:
+        return cached_root
+
+    candidate = cached_root / repo_path.strip("/")
+    if candidate.is_dir() and candidate.resolve().is_relative_to(cached_root.resolve()):
+        return candidate
+    return None
 
 
 def fetch_plugin(
@@ -98,6 +125,11 @@ def fetch_plugin_with_resolution(
         PluginFetchError: If fetching fails or repo_path doesn't exist.
     """
     resolved_cache_dir = cache_dir if cache_dir is not None else DEFAULT_CACHE_DIR
+    if ref is not None and _FULL_SHA_RE.fullmatch(ref):
+        cached = _cached_pinned_plugin(source, resolved_cache_dir, ref, repo_path)
+        if cached is not None:
+            return cached, ref.lower()
+
     try:
         return _ext_fetch_with_resolution(
             source=source,
@@ -108,5 +140,6 @@ def fetch_plugin_with_resolution(
             git_helper=git_helper,
         )
     except ExtensionFetchError as exc:
-        msg = str(exc).replace("extension", "plugin")
+        msg = re.sub(r"\bextension\b", "plugin", str(exc))
+        msg = re.sub(r"\bExtension\b", "Plugin", msg)
         raise PluginFetchError(msg) from exc

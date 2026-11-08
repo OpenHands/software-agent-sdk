@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "name": "switches-explicit",
+  "llm_profile_ref": "default",
+  "revision": 0,
+  "disabled_skills": [],
+  "tools": [{ "name": "glob", "params": {} }],
+  "enable_sub_agents": true,
+  "__expected__": {
+    "tools": [
+      { "name": "glob", "params": {} },
+      { "name": "switch_llm", "params": {} }
+    ]
+  }
+}

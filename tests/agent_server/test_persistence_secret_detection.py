@@ -4,6 +4,7 @@ serialization pipeline, not a hardcoded field checklist.
 
 import logging
 import tempfile
+import warnings
 from base64 import urlsafe_b64encode
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from openhands.agent_server.persistence import (
     PersistedSettings,
     Secrets,
 )
+from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -143,3 +145,11 @@ def test_secrets_save_warns_without_cipher(persistence_dir, caplog):
     store.save(secrets)
 
     assert "PLAINTEXT" in caplog.text
+
+
+def test_llm_api_key_is_set_is_false_for_acp_settings():
+    settings = PersistedSettings(agent_settings=ACPAgentSettings())
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="ACPAgentSettings.llm")
+        assert settings.llm_api_key_is_set is False

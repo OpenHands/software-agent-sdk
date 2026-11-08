@@ -132,3 +132,20 @@ def test_get_sub_agents_exposes_full_frontmatter(client, tmp_path: Path):
     assert agent["condenser"] is not None
     # unknown frontmatter keys are preserved in metadata
     assert agent["metadata"]["custom_key"] == "custom_value"
+
+
+@pytest.mark.parametrize("enable_browser", [True, False])
+def test_get_sub_agents_follows_the_browser_setting(enable_browser: bool):
+    """The browser-only web-researcher is listed only while the browser is enabled."""
+    config = Config(session_api_keys=[], enable_browser=enable_browser)
+    client = TestClient(create_app(config), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/sub-agents",
+        json={"load_builtin": True, "load_user": False, "load_project": False},
+    )
+    assert response.status_code == 200
+    names = {a["name"] for a in response.json()["agents"]}
+
+    assert {"general-purpose", "code-explorer", "bash-runner"} <= names
+    assert ("web-researcher" in names) is enable_browser

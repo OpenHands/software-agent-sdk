@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -21,6 +22,7 @@ from openhands.sdk.subagent.registry import (
     register_plugin_agents,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 
 
 def setup_function() -> None:
@@ -149,6 +151,63 @@ def test_register_plugin_agents_skips_existing(tmp_path: Path) -> None:
     # Programmatic version still there
     factory = get_agent_factory("my-agent")
     assert factory.definition.description == "Programmatic"
+
+
+def test_register_file_agents_skips_agent_with_missing_skill(tmp_path: Path) -> None:
+    """An agent naming a missing skill is skipped; the other agents register."""
+    skills_dir = tmp_path / ".agents" / "skills"
+    skills_dir.mkdir(parents=True)
+    _create_skill_file(skills_dir, "real-skill", "Real skill content.")
+
+    agents_dir = tmp_path / ".agents" / "agents"
+    agents_dir.mkdir(parents=True)
+    bad_file = agents_dir / "bad-agent.md"
+    bad_file.write_text(
+        "---\nname: bad-agent\ndescription: Bad\nskills: missing-skill\n---\n\nBad."
+    )
+    (agents_dir / "good-agent.md").write_text(
+        "---\nname: good-agent\ndescription: Good\nskills: real-skill\n---\n\nGood."
+    )
+
+    with (
+        patch(
+            "openhands.sdk.subagent.load.Path.home", return_value=tmp_path / "no_user"
+        ),
+        patch("openhands.sdk.subagent.registry.logger") as mock_logger,
+    ):
+        registered = register_file_agents(tmp_path)
+
+    assert registered == ["good-agent"]
+    with pytest.raises(ValueError, match="Unknown agent 'bad-agent'"):
+        get_agent_factory("bad-agent")
+    agent = get_agent_factory("good-agent").factory_func(_make_test_llm())
+    assert agent.agent_context is not None
+    assert [s.name for s in agent.agent_context.skills] == ["real-skill"]
+
+    warning = mock_logger.warning.call_args.args[0]
+    assert "bad-agent" in warning
+    assert str(bad_file) in warning
+    assert "missing-skill" in warning
+
+
+def test_register_plugin_agents_skips_agent_with_missing_skill(
+    tmp_path: Path,
+) -> None:
+    """A plugin agent naming a missing skill is skipped; the others register."""
+    bad = AgentDefinition(
+        name="bad-plugin-agent",
+        description="Bad",
+        skills=["missing-skill"],
+    )
+    good = AgentDefinition(name="good-plugin-agent", description="Good")
+
+    with patch("openhands.sdk.subagent.registry.logger") as mock_logger:
+        registered = register_plugin_agents([bad, good], work_dir=tmp_path)
+
+    assert registered == ["good-plugin-agent"]
+    warning = mock_logger.warning.call_args.args[0]
+    assert "bad-plugin-agent" in warning
+    assert "missing-skill" in warning
 
 
 def test_register_agent_if_absent_existing() -> None:
@@ -503,6 +562,83 @@ def test_agent_definition_to_factory_model_profile(tmp_path: Path) -> None:
     assert agent.llm.stream is False
     # Metrics must be independent from the parent LLM
     assert agent.llm.metrics is not parent_llm.metrics
+
+
+_PROFILE_API_KEY = "sk-profile-secret"
+
+
+def _save_encrypted_profile(profile_dir: Path, cipher: Cipher) -> None:
+    """Persist profile ``enc`` with its API key encrypted at rest."""
+    LLMProfileStore(base_dir=profile_dir).save(
+        "enc",
+        LLM(model="gpt-4o", api_key=SecretStr(_PROFILE_API_KEY), usage_id="enc"),
+        include_secrets=True,
+        cipher=cipher,
+    )
+
+
+def test_agent_definition_to_factory_decrypts_profile_with_cipher(
+    tmp_path: Path,
+) -> None:
+    """An encrypted profile reaches the sub-agent LLM and condenser decrypted."""
+    cipher = Cipher("subagent-profile-key")
+    _save_encrypted_profile(tmp_path, cipher)
+    agent_def = AgentDefinition(
+        name="profile-agent", model="enc", profile_store_dir=str(tmp_path)
+    )
+
+    agent = agent_definition_to_factory(agent_def, cipher=cipher)(_make_test_llm())
+
+    assert isinstance(agent.llm.api_key, SecretStr)
+    assert agent.llm.api_key.get_secret_value() == _PROFILE_API_KEY
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert isinstance(agent.condenser.llm.api_key, SecretStr)
+    assert agent.condenser.llm.api_key.get_secret_value() == _PROFILE_API_KEY
+    stored = json.loads((tmp_path / "enc.json").read_text())
+    assert stored["api_key"].startswith(FERNET_TOKEN_PREFIX)
+
+
+def test_register_file_agents_decrypts_profile_with_cipher(tmp_path: Path) -> None:
+    """A Markdown agent naming an encrypted profile gets the decrypted key."""
+    cipher = Cipher("subagent-profile-key")
+    _save_encrypted_profile(tmp_path / "profiles", cipher)
+    agents_dir = tmp_path / ".agents" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "worker.md").write_text(
+        "---\n"
+        "name: profile-worker\n"
+        "description: Uses an encrypted profile\n"
+        "model: enc\n"
+        f"profile_store_dir: {tmp_path / 'profiles'}\n"
+        "---\n\n"
+        "Do the work.\n"
+    )
+
+    with patch(
+        "openhands.sdk.subagent.load.Path.home", return_value=tmp_path / "no_user"
+    ):
+        registered = register_file_agents(tmp_path, cipher=cipher)
+
+    assert registered == ["profile-worker"]
+    agent = get_agent_factory("profile-worker").factory_func(_make_test_llm())
+    assert isinstance(agent.llm.api_key, SecretStr)
+    assert agent.llm.api_key.get_secret_value() == _PROFILE_API_KEY
+
+
+def test_register_plugin_agents_decrypts_profile_with_cipher(tmp_path: Path) -> None:
+    """A plugin agent naming an encrypted profile gets the decrypted key."""
+    cipher = Cipher("subagent-profile-key")
+    _save_encrypted_profile(tmp_path, cipher)
+    plugin_agent = AgentDefinition(
+        name="plugin-profile-agent", model="enc", profile_store_dir=str(tmp_path)
+    )
+
+    registered = register_plugin_agents([plugin_agent], cipher=cipher)
+
+    assert registered == ["plugin-profile-agent"]
+    agent = get_agent_factory("plugin-profile-agent").factory_func(_make_test_llm())
+    assert isinstance(agent.llm.api_key, SecretStr)
+    assert agent.llm.api_key.get_secret_value() == _PROFILE_API_KEY
 
 
 def test_agent_definition_to_factory_model_profile_with_json_suffix(

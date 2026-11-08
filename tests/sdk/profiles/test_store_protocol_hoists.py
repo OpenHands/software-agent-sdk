@@ -255,6 +255,16 @@ def test_build_seed_profile_openhands_branch():
     fallback = build_seed_profile(settings, active_llm_profile=None)
     assert isinstance(fallback, OpenHandsAgentProfile)
     assert fallback.llm_profile_ref == SEED_PROFILE_NAME
+    assert fallback.persona is None
+
+
+def test_build_seed_profile_copies_persona():
+    settings = validate_agent_settings(
+        {"agent_kind": "openhands", "persona": "You triage issues."}
+    )
+    profile = build_seed_profile(settings, active_llm_profile="my-llm")
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.persona == "You triage issues."
 
 
 def test_build_seed_profile_disables_nothing_even_with_inline_global_skills():
@@ -262,7 +272,7 @@ def test_build_seed_profile_disables_nothing_even_with_inline_global_skills():
     deny-list, so the migrated default profile launches with all discovered
     skills. Freezing by name was the #4017 launch-break: an inline global skill
     absent from the launch catalog would have dangled. See the seed->resolve
-    regression in test_resolver.py."""
+    regression in test_resolve_legacy_parity.py."""
     settings = validate_agent_settings(
         {
             "agent_kind": "openhands",

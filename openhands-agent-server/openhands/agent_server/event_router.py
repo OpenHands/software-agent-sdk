@@ -2,9 +2,12 @@
 Local Event router for OpenHands SDK.
 """
 
+import asyncio
 import logging
+import time
 from datetime import datetime
 from typing import Annotated, Any, cast
+from uuid import UUID
 
 from fastapi import (
     APIRouter,
@@ -13,9 +16,14 @@ from fastapi import (
     Query,
     status,
 )
+from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from openhands.agent_server.dependencies import get_event_service
+from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.dependencies import (
+    get_conversation_service,
+    get_event_service,
+)
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
@@ -23,7 +31,9 @@ from openhands.agent_server.models import (
     SendMessageRequest,
     Success,
 )
+from openhands.agent_server.openai.usage import token_usage_delta
 from openhands.sdk import Message
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import Event
 
 
@@ -34,6 +44,7 @@ event_write_router = APIRouter(
     prefix="/conversations/{conversation_id}/events", tags=["Events"]
 )
 logger = logging.getLogger(__name__)
+_GATEWAY_RUN_TIMEOUT_SECONDS = 120.0
 
 
 # Read methods
@@ -210,19 +221,126 @@ async def batch_get_conversation_events(
     return events
 
 
-@event_write_router.post("")
+@event_write_router.post(
+    "",
+    responses={429: {"description": "Message saved but server run capacity is full"}},
+)
 async def send_message(
     request: SendMessageRequest,
     event_service: EventService = Depends(get_event_service),
 ) -> Success:
-    """Send a message to a conversation"""
+    """Send a message to a conversation.
+
+    If starting the run returns 429, the message is already saved. Retry the
+    conversation's /run endpoint instead of resending the message.
+    """
     message = Message(role=request.role, content=request.content)
     await event_service.send_message(message, request.run)
     return Success()
 
 
+async def _gateway_context(
+    conversation_id: UUID,
+    http_request: Request,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> tuple[EventService, float]:
+    deadline = time.monotonic() + _GATEWAY_RUN_TIMEOUT_SECONDS
+    event_service = await get_event_service(
+        conversation_id, http_request, conversation_service
+    )
+    return event_service, deadline
+
+
+@event_write_router.post("/_gateway/run", include_in_schema=False)
+async def _gateway_run_endpoint(
+    request: SendMessageRequest,
+    context: tuple[EventService, float] = Depends(_gateway_context),
+) -> dict[str, Any]:
+    event_service, deadline = context
+    return await run_gateway_message(request, event_service, deadline=deadline)
+
+
+async def run_gateway_message(
+    request: SendMessageRequest,
+    event_service: EventService,
+    *,
+    deadline: float | None = None,
+) -> dict[str, Any]:
+    """Run one gateway turn at a time for this conversation."""
+    if deadline is None:
+        deadline = time.monotonic() + _GATEWAY_RUN_TIMEOUT_SECONDS
+    try:
+        await asyncio.wait_for(
+            event_service._gateway_run_lock.acquire(),
+            timeout=deadline - time.monotonic(),
+        )
+    except TimeoutError as exc:
+        raise HTTPException(504, "Agent run timed out") from exc
+    try:
+        return await _run_gateway_message(request, event_service, deadline)
+    finally:
+        event_service._gateway_run_lock.release()
+
+
+async def _run_gateway_message(
+    request: SendMessageRequest, event_service: EventService, deadline: float
+) -> dict[str, Any]:
+    """Save the message only after run capacity is available."""
+    if event_service._run_task is not None:
+        try:
+            await event_service.wait_for_run_completion(
+                timeout=max(0, deadline - time.monotonic())
+            )
+        except TimeoutError as exc:
+            raise HTTPException(504, "Agent run timed out") from exc
+    state_before = await event_service.get_state()
+    min_event_count = len(state_before.events) + 1
+    usage_before = state_before.stats.get_combined_metrics().accumulated_token_usage
+    run_slot = await event_service.reserve_run_slot()
+    try:
+        if time.monotonic() >= deadline:
+            raise HTTPException(504, "Agent run timed out")
+        await event_service.send_message(
+            request.create_message(), run=True, run_slot=run_slot
+        )
+    finally:
+        if run_slot is not None:
+            run_slot.release()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise HTTPException(504, "Agent run timed out")
+        try:
+            run_status = await event_service.wait_for_run_completion(timeout=remaining)
+        except TimeoutError as exc:
+            raise HTTPException(504, "Agent run timed out") from exc
+        state = await event_service.get_state()
+        if len(state.events) > min_event_count and (
+            run_status.is_terminal()
+            or run_status
+            in (
+                ConversationExecutionStatus.PAUSED,
+                ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
+            )
+        ):
+            break
+        await asyncio.sleep(0.1)
+    usage = token_usage_delta(
+        usage_before, state.stats.get_combined_metrics().accumulated_token_usage
+    )
+    return {
+        "status": run_status.value,
+        "final_response": await event_service.get_agent_final_response(),
+        "usage": usage.model_dump(mode="json") if usage is not None else None,
+    }
+
+
 @event_write_router.post(
-    "/respond_to_confirmation", responses={404: {"description": "Item not found"}}
+    "/respond_to_confirmation",
+    responses={
+        404: {"description": "Item not found"},
+        429: {"description": "Server conversation run capacity is full"},
+    },
 )
 async def respond_to_confirmation(
     request: ConfirmationResponseRequest,

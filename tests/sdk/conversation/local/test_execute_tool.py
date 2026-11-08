@@ -79,15 +79,15 @@ class ExecuteToolTestTool(
 @pytest.fixture(autouse=True)
 def _tool_registry_snapshot():
     registry_snapshot = dict(tool_registry._REG)
-    module_snapshot = dict(tool_registry._MODULE_QUALNAMES)
+    tool_class_snapshot = dict(tool_registry._TOOL_CLASSES)
     register_tool_public(ExecuteToolTestTool.name, ExecuteToolTestTool)
     try:
         yield
     finally:
         tool_registry._REG.clear()
         tool_registry._REG.update(registry_snapshot)
-        tool_registry._MODULE_QUALNAMES.clear()
-        tool_registry._MODULE_QUALNAMES.update(module_snapshot)
+        tool_registry._TOOL_CLASSES.clear()
+        tool_registry._TOOL_CLASSES.update(tool_class_snapshot)
 
 
 class ExecuteToolDummyAgent(AgentBase):

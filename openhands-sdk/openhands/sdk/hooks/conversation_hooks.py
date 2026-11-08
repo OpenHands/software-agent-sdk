@@ -15,7 +15,7 @@ from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.hooks.executor import HookResult
 from openhands.sdk.hooks.manager import HookManager
 from openhands.sdk.hooks.types import HookEventType
-from openhands.sdk.llm import TextContent
+from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.logger import get_logger
 
 
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from openhands.sdk.conversation.conversation_stats import ConversationStats
     from openhands.sdk.conversation.state import ConversationState
     from openhands.sdk.llm import LLM
+    from openhands.sdk.llm.call_context import LLMCallContext
 
 logger = get_logger(__name__)
 
@@ -65,6 +66,9 @@ class HookEventProcessor:
         self.original_callback = original_callback
         self._conversation_state: ConversationState | None = None
         self.emit_hook_events = emit_hook_events
+        # SessionStart additional_context collected by run_session_start() and
+        # delivered later by inject_pending_additional_context(); see those methods.
+        self._pending_additional_context: list[str] = []
 
     def set_conversation_state(self, state: "ConversationState") -> None:
         """Set conversation state for blocking support."""
@@ -337,6 +341,45 @@ class HookEventProcessor:
             if result.error:
                 logger.warning(f"SessionStart hook error: {result.error}")
 
+        # Collect additional_context for delivery to the agent, but do not emit
+        # it here. run_session_start() runs while plugins load, before the agent
+        # emits its SystemPromptEvent, so emitting now would place a user message
+        # ahead of the system prompt and break the system-first invariant (and the
+        # prompt cache, which only applies to a leading system message). The
+        # conversation flushes it with inject_pending_additional_context() once
+        # init_state() has emitted the system prompt.
+        self._pending_additional_context.extend(
+            r.additional_context for r in results if r.additional_context
+        )
+
+    def inject_pending_additional_context(self) -> None:
+        """Deliver collected SessionStart additional_context to the agent.
+
+        Emits the context as a single ``MessageEvent``. Call this after the
+        agent's ``SystemPromptEvent`` is in the log so the system prompt stays
+        first in the request, mirroring the ``UserPromptSubmit`` path (which
+        extends the existing user turn rather than prepending a new one). The
+        pending context is cleared on delivery, so re-running SessionStart hooks
+        (for example when runtime plugin hooks merge) does not deliver it twice.
+        """
+        if not self._pending_additional_context or not self.original_callback:
+            return
+
+        additional_context = "\n".join(self._pending_additional_context)
+        self._pending_additional_context = []
+        logger.debug(
+            f"SessionStart hook injecting context: {additional_context[:100]}..."
+        )
+        self.original_callback(
+            MessageEvent(
+                source="environment",
+                llm_message=Message(
+                    role="user",
+                    content=[TextContent(text=additional_context)],
+                ),
+            )
+        )
+
     def run_session_end(self) -> None:
         """Run SessionEnd hooks. Call before conversation is closed."""
         hooks = self.hook_manager.config.get_hooks_for_event(HookEventType.SESSION_END)
@@ -394,6 +437,7 @@ def create_hook_callback(
     emit_hook_events: bool = True,
     llm: "LLM | None" = None,
     llm_getter: "Callable[[], LLM | None] | None" = None,
+    llm_call_context: "LLMCallContext | None" = None,
     persistence_dir: str | None = None,
     visualizer: type[ConversationVisualizerBase]
     | ConversationVisualizerBase
@@ -412,6 +456,7 @@ def create_hook_callback(
         llm: LLM instance inherited from the parent conversation, used by agent hooks.
         llm_getter: Callable returning the conversation's current LLM. Preferred
             over ``llm`` so agent hooks follow switch_llm()/switch_profile().
+        llm_call_context: Runtime context inherited by agent hook conversations.
         persistence_dir: Directory used to persist agent hook sub-conversation events.
         visualizer: Visualizer instance passed to agent hook sub-conversations.
         conversation_stats: Parent conversation stats that should include hook spend.
@@ -425,6 +470,7 @@ def create_hook_callback(
         session_id=session_id,
         llm=llm,
         llm_getter=llm_getter,
+        llm_call_context=llm_call_context,
         persistence_dir=persistence_dir,
         visualizer=visualizer,
         conversation_stats=conversation_stats,

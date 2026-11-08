@@ -64,6 +64,21 @@ def _make_stored(state: ConversationState) -> StoredConversation:
     )
 
 
+def test_tool_module_qualnames_are_returned_to_attaching_clients():
+    agent = Agent(
+        llm=LLM(model="gpt-4o", api_key=SecretStr("test-key"), usage_id="test-llm"),
+        tools=[],
+    )
+    state = _make_state(agent)
+    stored = _make_stored(state).model_copy(
+        update={"tool_module_qualnames": {"TerminalTool": "example.terminal"}}
+    )
+
+    info = _compose_conversation_info(stored, state)
+
+    assert info.tool_module_qualnames == {"TerminalTool": "example.terminal"}
+
+
 def test_current_model_id_is_lifted_from_acp_agent():
     """When the ACP agent has resolved a model, it surfaces on the response."""
     agent = ACPAgent(acp_command=["echo", "test"])

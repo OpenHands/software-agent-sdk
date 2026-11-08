@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "name": "switches",
+  "llm_profile_ref": "default",
+  "revision": 0,
+  "disabled_skills": [],
+  "enable_sub_agents": true,
+  "enable_switch_llm_tool": false,
+  "__expected__": {
+    "tools": [
+      { "name": "terminal", "params": {} },
+      { "name": "file_editor", "params": {} },
+      { "name": "task_tracker", "params": {} },
+      { "name": "browser_tool_set", "params": {} },
+      { "name": "task_tool_set", "params": {} }
+    ]
+  }
+}

@@ -161,12 +161,31 @@ def generate_detailed_results(model_results: list[ModelTestResults]) -> str:
     return "\n".join(sections)
 
 
+def derive_report_title(consolidated: ConsolidatedResults) -> str:
+    """Derive the report heading from the test types that actually ran.
+
+    A run is labelled by its single test type when every result instance shares
+    that type; mixed or integration-only runs fall back to the default
+    "Integration Tests Results" heading for backward compatibility.
+    """
+    test_types = {
+        instance.test_type
+        for result in consolidated.model_results
+        for instance in result.test_instances
+    }
+    if test_types == {"behavior"}:
+        return "# 🧪 Behavior Tests Results"
+    if test_types == {"condenser"}:
+        return "# 🧪 Condenser Tests Results"
+    return "# 🧪 Integration Tests Results"
+
+
 def generate_markdown_report(consolidated: ConsolidatedResults) -> str:
     """Generate complete markdown report from consolidated results."""
 
     # Header
     report_lines = [
-        "# 🧪 Integration Tests Results",
+        derive_report_title(consolidated),
         "",
         f"**Overall Success Rate**: {consolidated.overall_success_rate:.1%}",
         f"**Total Cost**: {format_cost(consolidated.total_cost_all_models)}",

@@ -17,7 +17,6 @@ from openhands.sdk.context.prompts.sections.dynamic import (
 )
 from openhands.sdk.context.prompts.sections.planning import PlanningSection
 from openhands.sdk.context.prompts.sections.static import (
-    BrowserSection,
     CodeQualitySection,
     EfficiencySection,
     EnvironmentSetupSection,
@@ -25,6 +24,7 @@ from openhands.sdk.context.prompts.sections.static import (
     FileSystemSection,
     MemorySection,
     ModelSpecificSection,
+    PersonaSection,
     ProblemSolvingSection,
     ProcessManagementSection,
     PullRequestsSection,
@@ -33,6 +33,7 @@ from openhands.sdk.context.prompts.sections.static import (
     SecuritySection,
     SelfDocumentationSection,
     SoulSection,
+    ToolGuidanceSection,
     TroubleshootingSection,
     VersionControlSection,
 )
@@ -40,7 +41,6 @@ from openhands.sdk.context.prompts.sections.static import (
 
 __all__ = [
     "AvailableSkillsSection",
-    "BrowserSection",
     "CodeQualitySection",
     "CustomSecretsSection",
     "CustomSuffixSection",
@@ -52,6 +52,7 @@ __all__ = [
     "MemoryContextSection",
     "MemorySection",
     "ModelSpecificSection",
+    "PersonaSection",
     "PlanningSection",
     "ProblemSolvingSection",
     "ProcessManagementSection",
@@ -62,6 +63,7 @@ __all__ = [
     "SecuritySection",
     "SelfDocumentationSection",
     "SoulSection",
+    "ToolGuidanceSection",
     "TroubleshootingSection",
     "VersionControlSection",
 ]

@@ -5,6 +5,8 @@ from openhands.sdk.profiles.agent_profile import (
     ACPAgentProfile,
     AgentProfile,
     AgentProfileBase,
+    AgentProfileInfo,
+    AgentProfileListResponse,
     LaunchedAgentProfile,
     OpenHandsAgentProfile,
     ProfileVerificationSettings,
@@ -27,10 +29,7 @@ from openhands.sdk.profiles.profile_refs import (
 )
 from openhands.sdk.profiles.resolver import (
     AgentProfileDiagnostics,
-    DanglingMcpServerRef,
     ProfileNotFound,
-    resolve_agent_profile,
-    resolve_agent_profile_dry_run,
 )
 from openhands.sdk.profiles.seed import (
     SEED_PROFILE_NAME,
@@ -43,10 +42,11 @@ __all__ = [
     "ACPAgentProfile",
     "AgentProfile",
     "AgentProfileBase",
+    "AgentProfileInfo",
+    "AgentProfileListResponse",
     "AgentProfileDiagnostics",
     "AgentProfileStore",
     "AgentProfileStoreProtocol",
-    "DanglingMcpServerRef",
     "LaunchedAgentProfile",
     "OpenHandsAgentProfile",
     "ProfileLimitExceeded",
@@ -60,8 +60,6 @@ __all__ = [
     "delete_llm_profile",
     "find_referrers",
     "rename_llm_profile",
-    "resolve_agent_profile",
-    "resolve_agent_profile_dry_run",
     "safe_validation_error_detail",
     "save_profile_preserving_identity",
     "validate_agent_profile",

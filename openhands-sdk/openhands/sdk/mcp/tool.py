@@ -15,7 +15,13 @@ if TYPE_CHECKING:
 import mcp.types
 from litellm import ChatCompletionToolParam
 from openai.types.responses import FunctionToolParam
-from pydantic import Field, ValidationError
+from pydantic import (
+    Field,
+    SerializerFunctionWrapHandler,
+    ValidationError,
+    field_serializer,
+    field_validator,
+)
 
 from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
@@ -42,6 +48,44 @@ logger = get_logger(__name__)
 # Default timeout for MCP tool execution in seconds
 MCP_TOOL_TIMEOUT_SECONDS = 300
 
+# mcp 2.x dumps its snake_case attribute names unless by_alias=True; mcp 1.x
+# only reads the camelCase wire names. Keys inside inputSchema/outputSchema
+# are user JSON Schema and must never be renamed.
+_MCP_TOOL_WIRE_KEYS: Final[dict[str, str]] = {
+    "input_schema": "inputSchema",
+    "output_schema": "outputSchema",
+    "meta": "_meta",
+}
+_MCP_NESTED_WIRE_KEYS: Final[dict[str, dict[str, str]]] = {
+    "annotations": {
+        "read_only_hint": "readOnlyHint",
+        "destructive_hint": "destructiveHint",
+        "idempotent_hint": "idempotentHint",
+        "open_world_hint": "openWorldHint",
+    },
+    "execution": {"task_support": "taskSupport"},
+    "icons": {"mime_type": "mimeType"},
+}
+
+
+def _mcp_tool_to_wire_keys(data: Any) -> Any:
+    """Normalize a serialized mcp.types.Tool to the MCP spec's camelCase keys."""
+    if not isinstance(data, dict):
+        return data
+    out = {_MCP_TOOL_WIRE_KEYS.get(k, k): v for k, v in data.items()}
+    for key, renames in _MCP_NESTED_WIRE_KEYS.items():
+        value = out.get(key)
+        if isinstance(value, dict):
+            out[key] = {renames.get(k, k): v for k, v in value.items()}
+        elif isinstance(value, list):
+            out[key] = [
+                {renames.get(k, k): v for k, v in item.items()}
+                if isinstance(item, dict)
+                else item
+                for item in value
+            ]
+    return out
+
 
 # NOTE: We don't define MCPToolAction because it
 # will be a pydantic BaseModel dynamically created from the MCP tool schema.
@@ -59,16 +103,21 @@ class MCPToolExecutor(ToolExecutor):
     tool_name: str
     client: MCPClient
     timeout: float
+    server_tool_name: str
 
     def __init__(
         self,
         tool_name: str,
         client: MCPClient,
         timeout: float = MCP_TOOL_TIMEOUT_SECONDS,
+        server_tool_name: str | None = None,
     ):
         self.tool_name = tool_name
         self.client = client
         self.timeout = timeout
+        # The name the server knows the tool by, when the agent sees it under
+        # a server prefix.
+        self.server_tool_name = server_tool_name or tool_name
 
     @observe(name="MCPToolExecutor.call_tool", span_type="TOOL")
     async def call_tool(self, action: MCPToolAction) -> MCPToolObservation:
@@ -109,7 +158,7 @@ class MCPToolExecutor(ToolExecutor):
                 f"Calling MCP tool {self.tool_name} with args: {action.model_dump()}"
             )
             result: mcp.types.CallToolResult = await self.client.call_tool_mcp(
-                name=self.tool_name, arguments=action.to_mcp_arguments()
+                name=self.server_tool_name, arguments=action.to_mcp_arguments()
             )
             return MCPToolObservation.from_call_tool_result(
                 tool_name=self.tool_name, result=result
@@ -223,7 +272,7 @@ def _create_mcp_action_type(action_type: mcp.types.Tool) -> type[Schema]:
 
     cache_key = (
         action_type.name,
-        json.dumps(action_type.inputSchema, sort_keys=True, separators=(",", ":")),
+        json.dumps(action_type.input_schema, sort_keys=True, separators=(",", ":")),
     )
     with _mcp_dynamic_action_type_lock:
         mcp_action_type = _mcp_dynamic_action_type.get(cache_key)
@@ -232,7 +281,7 @@ def _create_mcp_action_type(action_type: mcp.types.Tool) -> type[Schema]:
             return mcp_action_type
 
         model_name = f"MCP{to_camel_case(action_type.name)}Action"
-        mcp_action_type = Schema.from_mcp_schema(model_name, action_type.inputSchema)
+        mcp_action_type = Schema.from_mcp_schema(model_name, action_type.input_schema)
         _mcp_dynamic_action_type[cache_key] = mcp_action_type
         if len(_mcp_dynamic_action_type) > _MCP_ACTION_TYPE_CACHE_MAX:
             _mcp_dynamic_action_type.popitem(last=False)
@@ -243,6 +292,20 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
     """MCP Tool that wraps an MCP client and provides tool functionality."""
 
     mcp_tool: mcp.types.Tool = Field(description="The MCP tool definition.")
+
+    @field_validator("mcp_tool", mode="before")
+    @classmethod
+    def _read_either_mcp_spelling(cls, v: Any) -> Any:
+        return _mcp_tool_to_wire_keys(v)
+
+    @field_serializer("mcp_tool", mode="wrap")
+    def _write_mcp_wire_spelling(
+        self, v: mcp.types.Tool, handler: SerializerFunctionWrapHandler
+    ):
+        # Persisted events outlive the resolved mcp major; always write the
+        # spec's wire names so every mcp version can read them back. No return
+        # annotation, so the OpenAPI schema keeps referencing mcp.types.Tool.
+        return _mcp_tool_to_wire_keys(handler(v))
 
     @property
     def name(self) -> str:  # type: ignore[override]
@@ -333,7 +396,7 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         try:
             annotations = (
                 ToolAnnotations.model_validate(
-                    mcp_tool.annotations.model_dump(exclude_none=True)
+                    mcp_tool.annotations.model_dump(exclude_none=True, by_alias=True)
                 )
                 if mcp_tool.annotations
                 else None
@@ -358,6 +421,27 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
             )
             raise e
 
+    def with_server_prefix(self, server_name: str) -> "MCPToolDefinition":
+        """Return this tool named ``{server_name}_{name}``.
+
+        This is the name a multi-server MCP config gives a server's tools; the
+        server is still called by the tool's own name.
+        """
+        executor = self.executor
+        assert isinstance(executor, MCPToolExecutor)
+        name = f"{server_name}_{self.name}"
+        return self.model_copy(
+            update={
+                "mcp_tool": self.mcp_tool.model_copy(update={"name": name}),
+                "executor": MCPToolExecutor(
+                    tool_name=name,
+                    client=executor.client,
+                    timeout=executor.timeout,
+                    server_tool_name=executor.server_tool_name,
+                ),
+            }
+        )
+
     def to_mcp_tool(
         self,
         input_schema: dict[str, Any] | None = None,
@@ -367,7 +451,7 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
             raise ValueError("MCPTool.to_mcp_tool does not support overriding schemas")
 
         return super().to_mcp_tool(
-            input_schema=self.mcp_tool.inputSchema,
+            input_schema=self.mcp_tool.input_schema,
             output_schema=self.observation_type.to_mcp_schema()
             if self.observation_type
             else None,
@@ -389,7 +473,7 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
 
         See: https://github.com/OpenHands/software-agent-sdk/issues/3955
         """
-        schema = copy.deepcopy(self.mcp_tool.inputSchema)
+        schema = copy.deepcopy(self.mcp_tool.input_schema)
         # Resolve any $ref / anyOf nodes (unlikely in raw MCP schemas but
         # keeps the contract consistent with the parent implementation).
         schema = _process_schema_node(schema, schema.get("$defs", {}))

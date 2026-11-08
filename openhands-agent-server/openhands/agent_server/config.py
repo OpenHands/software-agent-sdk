@@ -2,9 +2,18 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, ClassVar, Final, Literal
+from typing import Any, ClassVar, Final, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 from openhands.agent_server.conversation_lease import DEFAULT_LEASE_TTL_SECONDS
 from openhands.agent_server.env_parser import (
@@ -61,12 +70,21 @@ def _default_secret_key() -> SecretStr | None:
     return None
 
 
+def _is_blank_secret(value: object) -> bool:
+    if isinstance(value, SecretStr):
+        value = value.get_secret_value()
+    return isinstance(value, str) and not value.strip()
+
+
 def _default_web_url() -> str | None:
     web_url = os.getenv("OH_WEB_URL")
     if web_url:
         return web_url
 
     return None
+
+
+DEFAULT_CONVERSATION_IMAGE = "ghcr.io/openhands/agent-server:latest-python"
 
 
 class WebhookSpec(BaseModel):
@@ -81,8 +99,9 @@ class WebhookSpec(BaseModel):
         ),
     )
     base_url: str = Field(
-        description="The base URL of the webhook service. Events will be sent to "
-        "{base_url}/events and conversation info to {base_url}/conversations"
+        description="The base URL of the webhook service. Event batches are sent "
+        "to {base_url}/events/{conversation_id.hex} (the conversation id without "
+        "dashes) and conversation info to {base_url}/conversations"
     )
     headers: dict[str, str] = Field(default_factory=dict)
     flush_delay: float = Field(
@@ -90,8 +109,8 @@ class WebhookSpec(BaseModel):
         gt=0,
         description=(
             "The delay in seconds after which buffered events will be flushed to "
-            "the webhook, even if the buffer is not full. Timer is reset on each "
-            "new event."
+            "the webhook, even if the buffer is not full. The timer starts when "
+            "the first event is queued and is not reset by later events."
         ),
     )
 
@@ -186,8 +205,11 @@ class TelemetrySpec(BaseModel):
         default=None,
         description=(
             "Key used to pseudonymize conversation identifiers. Falls back to "
-            "a per-process random salt, which keeps pseudonyms stable within a "
-            "run but unlinkable across runs."
+            "the server's secret key (OH_SECRET_KEY, which defaults to the "
+            "first session API key), so pseudonyms stay stable and linkable "
+            "across restarts until that key changes. Only when there is no "
+            "secret key either is a random key generated per process, which "
+            "makes pseudonyms unlinkable across runs."
         ),
     )
     max_queue_size: int = Field(
@@ -328,8 +350,9 @@ class Config(BaseModel):
         ge=1,
         description=(
             "Maximum number of conversations that can execute agent steps "
-            "concurrently.  Controls the size of the dedicated thread pool "
-            "used for conversation.run() calls."
+            "concurrently, across native async runs and synchronous runs. "
+            "Creating a conversation also reserves capacity during initialization. "
+            "When full, create and run requests are rejected with HTTP 429."
         ),
     )
     secret_key: SecretStr | None = Field(
@@ -340,18 +363,104 @@ class Config(BaseModel):
             "be restored between restarts."
         ),
     )
+    previous_secret_keys: list[SecretStr] = Field(
+        default_factory=list,
+        description=(
+            "Earlier values of secret_key, used only to decrypt. Values saved "
+            "under one of them stay readable and are re-encrypted under "
+            "secret_key when next saved (the settings and secrets stores are "
+            "re-encrypted at startup). To rotate, set the new key as "
+            "secret_key and put the old one here. Prefer setting OH_SECRET_KEY "
+            "explicitly: while secret_key falls back to the first session API "
+            "key, rotating that session key also rotates the encryption key, "
+            "so the old session key must go here. Set with "
+            "OH_PREVIOUS_SECRET_KEYS as a JSON list, or "
+            "OH_PREVIOUS_SECRET_KEYS_0, OH_PREVIOUS_SECRET_KEYS_1, ..."
+        ),
+    )
     web_url: str | None = Field(
         default_factory=_default_web_url,
         description=(
             "The URL where this agent server instance is available externally"
         ),
     )
+    app_backend_public_url: str | None = Field(
+        default=None,
+        description=(
+            "Separate browser origin that exposes authenticated Canvas App backends"
+        ),
+    )
+    trust_forwarded_headers: bool = Field(
+        default=False,
+        description=(
+            "Trust X-Forwarded-Proto/X-Forwarded-Host from the immediate peer "
+            "when deriving a request origin or secure-context decision. Enable "
+            "only when a reverse proxy or load balancer terminates TLS in front "
+            "of this server and strips client-supplied values for those headers. "
+            "Left disabled, a client can spoof them to assert an origin the "
+            "server did not actually receive."
+        ),
+    )
     conversation_runtime: Literal["local", "docker"] = "local"
-    conversation_image: str = "ghcr.io/openhands/agent-server:latest-python"
+    conversation_runtime_selectable: bool = Field(
+        default=False,
+        description=(
+            "Serve both the local and the docker runtime and let each start "
+            "request pick one with `conversation_runtime`; requests that leave "
+            "it unset use this server's `conversation_runtime`. Requires a "
+            "Docker daemon and "
+            "`OH_SECRET_KEY`."
+        ),
+    )
+    conversation_image: str = DEFAULT_CONVERSATION_IMAGE
+    conversation_image_has_browser: bool | None = Field(
+        default=None,
+        description=(
+            "Whether conversation_image ships the browser (chromium) stack. "
+            "Unset means true for any tag or digest of the stock agent-server "
+            "image except its -minimal flavor, and false for other images."
+        ),
+    )
+    enable_browser: bool = Field(
+        default=True,
+        description=(
+            "Whether conversations may get the browser tool set. When false, "
+            "launches leave it out even where chromium is available."
+        ),
+    )
     conversation_container_memory: str | None = "4g"
     conversation_container_cpus: float | None = Field(default=2.0, gt=0)
     conversation_container_pids_limit: int | None = Field(default=512, gt=0)
     conversation_container_startup_timeout: float = Field(default=120, gt=0)
+    conversation_storage_disk_budget: float | None = Field(
+        default=None,
+        gt=0,
+        lt=1,
+        description=(
+            "Fraction of the conversation-storage filesystem that may be in use "
+            "before stopped conversations shed the gitignored directories of "
+            "their workspaces (node_modules, .venv, build output), least "
+            "recently active first. Tracked files, untracked work, ignored "
+            "files and nested checkouts are kept; a resumed conversation "
+            "reinstalls what was shed. Only workspaces the server created are "
+            "touched. Unset (the default) disables it."
+        ),
+    )
+    conversation_storage_retention_days: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Days a stopped conversation may stay inactive before its runtime "
+            "(sandbox home and workspace) is deleted and the conversation is "
+            "archived: its history and encryption identity are kept, so it "
+            "stays readable but can no longer be resumed. A workspace the "
+            "server did not create is never deleted. Unset (the default) keeps "
+            "runtimes until the conversation is deleted. Leave it unset when "
+            "the server runs in a sandbox that its provider pauses: no pass "
+            "runs while paused, so the first pass after a resume archives "
+            "every conversation that crossed the limit in the meantime."
+        ),
+    )
 
     acp_skill_sourcing: ACPSkillSourcing = Field(
         default="native",
@@ -363,7 +472,8 @@ class Config(BaseModel):
             "container runtimes, where that host configuration is absent): also "
             "inject the user/org/public/marketplace skills the server "
             "discovers. Project/repository skills are never injected either way "
-            "— the CLI reads AGENTS.md itself (#4019). Set explicitly per "
+            "— the CLI reads AGENTS.md itself (#4019). Skills a client supplies "
+            "at launch are kept in both modes. Set explicitly per "
             "deployment; the agent-server image sets 'openhands_managed'."
         ),
     )
@@ -419,20 +529,64 @@ class Config(BaseModel):
         ),
     )
     model_config: ClassVar[ConfigDict] = {"frozen": True}
+    _secret_key_was_blank: bool = PrivateAttr(default=False)
+
+    @field_validator("session_api_keys")
+    @classmethod
+    def _drop_empty_session_api_keys(cls, value: list[str]) -> list[str]:
+        # An empty key (e.g. ``OH_SESSION_API_KEYS_0=``) is never a real
+        # credential; keeping it would make an empty string authenticate.
+        return [key for key in value if key]
+
+    @field_validator("secret_key")
+    @classmethod
+    def _empty_secret_key_is_unset(cls, value: SecretStr | None) -> SecretStr | None:
+        """Treat a blank secret key (e.g. ``OH_SECRET_KEY=`` or whitespace only)
+        as unset, so the session-key fallback applies instead of encrypting with
+        a key anyone can guess."""
+        if _is_blank_secret(value):
+            return _default_secret_key()
+        return value
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _remember_blank_secret_key(
+        cls, data: Any, handler: ModelWrapValidatorHandler[Self]
+    ) -> Self:
+        config = handler(data)
+        if isinstance(data, dict) and _is_blank_secret(data.get("secret_key")):
+            config._secret_key_was_blank = True
+        return config
+
+    @property
+    def secret_key_was_blank(self) -> bool:
+        """Whether a blank secret key was configured (and so treated as unset)."""
+        return self._secret_key_was_blank
 
     @property
     def cipher(self) -> Cipher | None:
-        cipher = getattr(self, "_cipher", None)
-        if cipher is None:
-            if self.secret_key is None:
+        if self.secret_key is None:
+            if getattr(self, "_cipher", None) is not False:
                 _logger.warning(
                     "⚠️ OH_SECRET_KEY was not defined. Secrets will not "
                     "be persisted between restarts."
                 )
-                cipher = None
-            else:
-                cipher = Cipher(self.secret_key.get_secret_value())
+                setattr(self, "_cipher", False)
+            return None
+        keys = (
+            self.secret_key.get_secret_value(),
+            tuple(key.get_secret_value() for key in self.previous_secret_keys),
+        )
+        cipher = getattr(self, "_cipher", None)
+        # ``model_copy`` carries the cached cipher over, so rebuild it when the
+        # copy was given other keys (e.g. by ``POST /api/init``).
+        if (
+            not isinstance(cipher, Cipher)
+            or getattr(self, "_cipher_keys", None) != keys
+        ):
+            cipher = Cipher(keys[0], previous_keys=keys[1])
             setattr(self, "_cipher", cipher)
+            setattr(self, "_cipher_keys", keys)
         return cipher
 
 
@@ -446,6 +600,22 @@ def _read_config_file(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"Config file must contain a JSON object: {path}")
     return data
+
+
+def export_session_api_key(config: Config) -> None:
+    """Publish the server's first session key to the process environment.
+
+    In-process callers of this server read the key from the environment:
+    the ``start_child_conversation`` tool and the managed LLM key refresh look
+    at ``OH_SESSION_API_KEYS_0`` / ``SESSION_API_KEY``, which is the contract
+    the Docker and remote runtimes meet by setting one of them before the
+    server boots. A key delivered through a config file or ``POST /api/init``
+    exists only in :class:`Config` until it is exported here. The effective
+    key always wins, so a dormant process that booted with one key and was
+    initialized with another ends up with the one it authenticates with.
+    """
+    if config.session_api_keys:
+        os.environ[V1_SESSION_API_KEY_ENV] = config.session_api_keys[0]
 
 
 def load_config(config_path: Path | None = None) -> Config:
@@ -465,7 +635,8 @@ def load_config(config_path: Path | None = None) -> Config:
     if env_data is MISSING:
         data = file_data
     else:
-        data = merge(file_data, env_data)
+        # An explicit environment null (OH_<FIELD>_IS_NONE=1) clears a file value.
+        data = merge(file_data, env_data, none_overrides=True)
 
     if not data:
         return Config()
