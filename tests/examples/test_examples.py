@@ -62,6 +62,8 @@ _EXCLUDED_EXAMPLES = {
     "examples/02_remote_agent_server/05_vscode_with_docker_sandboxed_server.py",
     # Requires a Kubernetes cluster with agent-sandbox and the agent-sandbox extra
     "examples/02_remote_agent_server/17_convo_with_agent_sandbox_server.py",
+    # Requires KVM or Apple Silicon and the smolmachines extra
+    "examples/02_remote_agent_server/18_convo_with_smolmachines_sandboxed_server.py",
 }
 
 
