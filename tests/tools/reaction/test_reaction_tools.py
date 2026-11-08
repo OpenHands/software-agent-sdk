@@ -267,26 +267,39 @@ def test_execute_tool_from_a_worker_does_not_wait_for_the_run_loops_lock(
     conversation,
 ):
     # The run loop holds the state lock across a step while it waits for a
-    # tool on a worker thread; recording the reaction there must not wait for
-    # that lock.
+    # tool on a worker thread; that tool's direct calls must not wait for the
+    # lock. Their events are recorded by the run loop once the step returns.
     _user_message(conversation)
-    result: dict[str, object] = {}
+    results: list[object] = []
 
-    def worker() -> None:
-        result["observation"] = conversation.execute_tool(
-            "react", ReactAction(emoji="eyes")
-        )
+    def worker(emoji: str) -> None:
+        results.append(conversation.execute_tool("react", ReactAction(emoji=emoji)))
 
     conversation._step_holds_state_lock = True
     try:
         with conversation._state:
-            thread = threading.Thread(target=worker)
-            thread.start()
-            thread.join(timeout=5)
-            assert not thread.is_alive(), "execute_tool waited for the lock"
+            threads = [
+                threading.Thread(target=worker, args=(emoji,))
+                for emoji in ("eyes", "tada")
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+                assert not thread.is_alive(), "execute_tool waited for the lock"
+            assert not [
+                e for e in conversation.state.events if isinstance(e, ReactionEvent)
+            ]
+            # What the run loop does right after the step.
+            conversation._step_holds_state_lock = False
+            conversation._emit_deferred_events()
     finally:
         conversation._step_holds_state_lock = False
 
-    assert [
-        e.emoji for e in conversation.state.events if isinstance(e, ReactionEvent)
-    ] == ["eyes"]
+    assert len(results) == 2
+    # Both reactions are on the active branch, one after the other.
+    on_branch = [
+        e for e in conversation.state.active_branch() if isinstance(e, ReactionEvent)
+    ]
+    assert sorted(e.emoji for e in on_branch) == ["eyes", "tada"]
+    assert on_branch[1].parent_id == on_branch[0].id

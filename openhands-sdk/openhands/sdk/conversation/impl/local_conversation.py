@@ -3,6 +3,7 @@ import atexit
 import contextlib
 import copy
 import json
+import threading
 import uuid
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -226,6 +227,12 @@ class LocalConversation(BaseConversation):
     # it must skip re-acquiring the lock the run loop holds while blocked
     # awaiting that tool (#3485).
     _step_holds_state_lock: bool
+    # Events a direct tool call (execute_tool) asked to record while a step
+    # held the state lock. Like the events of the step's own parallel tool
+    # calls, they are emitted by the run loop once the step returns, so every
+    # event is still written by one thread at a time, in order.
+    _deferred_events: list[Event]
+    _deferred_events_lock: threading.Lock
     # Plugin lazy loading state
     _plugin_specs: list[PluginSource] | None
     _resolved_plugins: list[ResolvedPluginSource] | None
@@ -352,6 +359,8 @@ class LocalConversation(BaseConversation):
         self._arun_task = None
         self._cancel_token = None
         self._step_holds_state_lock = False
+        self._deferred_events = []
+        self._deferred_events_lock = threading.Lock()
 
         # Store plugin specs for lazy loading (no IO in constructor)
         # Plugins will be loaded on first run() or send_message() call
@@ -2231,6 +2240,7 @@ class LocalConversation(BaseConversation):
                         )
                     finally:
                         self._step_holds_state_lock = False
+                        self._emit_deferred_events()
                     iteration += 1
 
                     # Check for non-finished terminal conditions
@@ -2510,6 +2520,7 @@ class LocalConversation(BaseConversation):
                             )
                         finally:
                             self._step_holds_state_lock = False
+                            self._emit_deferred_events()
                         iteration += 1
 
                         # astep releases the state lock for the LLM call, so a
@@ -3381,7 +3392,8 @@ class LocalConversation(BaseConversation):
 
         The observation is returned, not recorded; events the observation
         asks to record (``Observation.follow_up_events``, such as a reaction)
-        are added to the conversation.
+        are added to the conversation. During a step running on another
+        thread they are added when that step returns.
 
         Returns:
             The observation returned by the tool execution
@@ -3406,16 +3418,31 @@ class LocalConversation(BaseConversation):
             raise NotImplementedError(f"Tool '{tool_name}' has no executor")
         observation = tool(action, self)
         follow_ups = observation.follow_up_events()
-        if follow_ups:
-            # Called from a tool worker thread while run() holds the state
-            # lock for the step, re-acquiring it would deadlock; the run loop
-            # is parked on this tool, as in switch_llm (#3485).
-            skip_lock = self._step_holds_state_lock and not self._state.owned()
-            lock = contextlib.nullcontext() if skip_lock else self._state
-            with lock:
-                for event in follow_ups:
-                    self._on_event(event)
+        if not follow_ups:
+            return observation
+        if self._step_holds_state_lock and not self._state.owned():
+            # A step holds the state lock on another thread, possibly waiting
+            # for this very call (a tool on a worker thread), so waiting for
+            # the lock could deadlock. Hand the events to the run loop instead,
+            # as the step's parallel tool calls do with theirs.
+            with self._deferred_events_lock:
+                self._deferred_events.extend(follow_ups)
+            return observation
+        with self._state:
+            for event in follow_ups:
+                self._on_event(event)
         return observation
+
+    def _emit_deferred_events(self) -> None:
+        """Record the events direct tool calls deferred during a step.
+
+        Called by the run loop right after each step, while it holds the
+        state lock, so they land after the step's own events.
+        """
+        with self._deferred_events_lock:
+            events, self._deferred_events = self._deferred_events, []
+        for event in events:
+            self._on_event(event)
 
     def __del__(self) -> None:
         """Ensure cleanup happens when conversation is destroyed."""
