@@ -454,3 +454,54 @@ def test_python_fallback_expands_brace_patterns(tmp_path):
 )
 def test_expand_braces(pattern, expected):
     assert _expand_braces(pattern) == expected
+
+
+def test_ripgrep_failure_is_reported_as_an_error_not_as_no_match(monkeypatch, tmp_path):
+    """A ripgrep run that could not search must not claim the files are absent.
+
+    An unparsable glob, or a directory the sandbox cannot list, makes ripgrep
+    exit 2 with empty stdout; the executor used to report "No files found",
+    which is a factual claim about the filesystem for a search that never ran.
+    """
+    import subprocess
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=2,
+            stdout="",
+            stderr="rg: error parsing glob '**/*.{py'",
+        )
+
+    monkeypatch.setattr(
+        "openhands.tools.glob.impl._check_ripgrep_available", lambda: True
+    )
+    monkeypatch.setattr("openhands.tools.glob.impl.subprocess.run", fake_run)
+    executor = GlobExecutor(working_dir=str(tmp_path))
+
+    observation = executor(GlobAction(pattern="**/*.{py"))
+
+    assert observation.is_error is True
+    assert "error parsing glob" in observation.text
+    assert "No files found" not in observation.text
+
+
+def test_ripgrep_no_match_still_reports_no_files(monkeypatch, tmp_path):
+    """ripgrep exits 1 when nothing matches; that stays a normal empty result."""
+    import subprocess
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args, returncode=1, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(
+        "openhands.tools.glob.impl._check_ripgrep_available", lambda: True
+    )
+    monkeypatch.setattr("openhands.tools.glob.impl.subprocess.run", fake_run)
+    executor = GlobExecutor(working_dir=str(tmp_path))
+
+    observation = executor(GlobAction(pattern="**/*.py"))
+
+    assert observation.is_error is False
+    assert "No files found" in observation.text
