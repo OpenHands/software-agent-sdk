@@ -1186,6 +1186,39 @@ def test_mcp_server_crud_endpoints_enforce_key_preconditions(client_with_setting
     assert plaintext["github"]["url"] == "https://github.example/mcp"
 
 
+def test_mcp_server_create_rejects_server_without_command_or_url(
+    client_with_settings,
+):
+    for body in ({}, {"enabled": True}, {"description": "No endpoint"}):
+        response = client_with_settings.post("/api/settings/mcp/qa-empty", json=body)
+        assert response.status_code == 422, response.text
+        assert "require 'command' or 'url'" in response.text
+
+    mcp_config = client_with_settings.get("/api/settings").json()["agent_settings"][
+        "mcp_config"
+    ]
+    assert "qa-empty" not in mcp_config
+
+
+def test_mcp_server_patch_rejects_removing_command_from_untyped_server(
+    client_with_settings,
+):
+    created = client_with_settings.post(
+        "/api/settings/mcp/local", json={"command": "uvx", "args": ["fetch"]}
+    )
+    assert created.status_code == 201, created.text
+
+    patched = client_with_settings.patch(
+        "/api/settings/mcp/local", json={"command": None}
+    )
+    assert patched.status_code == 422, patched.text
+
+    mcp_config = client_with_settings.get("/api/settings").json()["agent_settings"][
+        "mcp_config"
+    ]
+    assert mcp_config["local"]["command"] == "uvx"
+
+
 def test_mcp_server_crud_endpoints_normalize_key_paths(client_with_settings):
     server = {"transport": "http", "url": "https://github.example/mcp"}
     created = client_with_settings.post("/api/settings/mcp/github", json=server)
@@ -1663,6 +1696,165 @@ def test_patch_settings_switch_agent_kind_from_openhands_to_acp(client_with_sett
     assert body["agent_settings"]["acp_command"] == ["echo", "hello"]
 
 
+@pytest.mark.parametrize(
+    ("seed", "switch"),
+    [
+        ({}, {"agent_kind": "acp", "acp_server": "codex"}),
+        (
+            {"agent_kind": "acp", "acp_server": "codex"},
+            {"agent_kind": "openhands"},
+        ),
+    ],
+    ids=["openhands-to-acp", "acp-to-openhands"],
+)
+def test_patch_settings_kind_switch_preserves_mcp_catalog(
+    client_with_settings, seed, switch
+):
+    server = {
+        "transport": "http",
+        "url": "https://example.invalid/mcp",
+        "headers": {"X-Api-Key": "mcp-key"},
+        "auth": {"strategy": "bearer", "value": "mcp-token"},
+    }
+    seeded = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {**seed, "mcp_config": {"example": server}}},
+    )
+    assert seeded.status_code == 200
+
+    switched = client_with_settings.patch(
+        "/api/settings", json={"agent_settings_diff": switch}
+    )
+
+    assert switched.status_code == 200
+    assert switched.json()["agent_settings"]["agent_kind"] == switch["agent_kind"]
+    persisted = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]
+    assert persisted["agent_kind"] == switch["agent_kind"]
+    example = persisted["mcp_config"]["example"]
+    assert example["url"] == server["url"]
+    assert example["headers"] == server["headers"]
+    assert example["auth"] == server["auth"]
+
+
+@pytest.mark.parametrize(
+    ("mcp_patch", "expected_servers", "keep_enabled"),
+    [
+        ({"other": None}, {"keep"}, True),
+        ({"keep": {"enabled": False}}, {"keep", "other"}, False),
+        (
+            {"new": {"transport": "http", "url": "https://new.invalid/mcp"}},
+            {"keep", "other", "new"},
+            True,
+        ),
+        (None, set(), None),
+    ],
+    ids=["delete-server", "sparse-server-patch", "add-server", "delete-catalog"],
+)
+def test_patch_settings_kind_switch_applies_mcp_patch(
+    client_with_settings, mcp_patch, expected_servers, keep_enabled
+):
+    def server(name):
+        return {"transport": "http", "url": f"https://{name}.invalid/mcp"}
+
+    seeded = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "mcp_config": {"keep": server("keep"), "other": server("other")}
+            }
+        },
+    )
+    assert seeded.status_code == 200
+
+    switched = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_kind": "acp",
+                "acp_server": "codex",
+                "mcp_config": mcp_patch,
+            }
+        },
+    )
+
+    assert switched.status_code == 200
+    agent_settings = switched.json()["agent_settings"]
+    assert agent_settings["agent_kind"] == "acp"
+    assert set(agent_settings["mcp_config"]) == expected_servers
+    if keep_enabled is not None:
+        keep = agent_settings["mcp_config"]["keep"]
+        assert keep["enabled"] is keep_enabled
+        assert keep["url"] == "https://keep.invalid/mcp"
+
+
+@pytest.mark.parametrize(
+    ("seed", "switch"),
+    [
+        ({}, {"agent_kind": "acp", "acp_server": "codex"}),
+        (
+            {"agent_kind": "acp", "acp_server": "codex"},
+            {"agent_kind": "openhands"},
+        ),
+    ],
+    ids=["openhands-to-acp", "acp-to-openhands"],
+)
+def test_patch_settings_kind_switch_preserves_server_wide_settings(
+    client_with_settings, temp_persistence_dir, seed, switch
+):
+    seeded = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                **seed,
+                "agent_context": {"load_memory": True},
+                "verification": {"critic_api_key": "critic-key"},
+            }
+        },
+    )
+    assert seeded.status_code == 200
+
+    switched = client_with_settings.patch(
+        "/api/settings", json={"agent_settings_diff": switch}
+    )
+
+    assert switched.status_code == 200
+    persisted = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]
+    assert persisted["agent_kind"] == switch["agent_kind"]
+    assert persisted["agent_context"]["load_memory"] is True
+    assert persisted["verification"]["critic_api_key"] == "critic-key"
+    assert "critic-key" not in (temp_persistence_dir / "settings.json").read_text()
+
+
+def test_patch_settings_stores_critic_key_on_acp_settings(
+    client_with_settings, temp_persistence_dir
+):
+    switched = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"agent_kind": "acp", "acp_server": "codex"}},
+    )
+    assert switched.status_code == 200
+
+    saved = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"verification": {"critic_api_key": "typed-key"}}},
+    )
+
+    assert saved.status_code == 200
+    assert saved.json()["agent_settings"]["verification"]["critic_api_key"] == (
+        "**********"
+    )
+    persisted = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]
+    assert persisted["agent_kind"] == "acp"
+    assert persisted["verification"]["critic_api_key"] == "typed-key"
+    assert "typed-key" not in (temp_persistence_dir / "settings.json").read_text()
+
+
 def test_patch_settings_same_kind_restated_still_deep_merges(client_with_settings):
     """Re-stating the current ``agent_kind`` is NOT a variant switch: the diff
     must still deep-merge so unrelated fields survive.
@@ -1803,7 +1995,12 @@ def test_secret_upsert_rejects_unusable_value_without_changing_existing(
     assert stored.status_code == 200
     assert stored.text == "original-value"
     assert client_with_settings.get("/api/settings/secrets").json()["secrets"] == [
-        {"name": "MY_SECRET", "description": "Original"}
+        {
+            "name": "MY_SECRET",
+            "description": "Original",
+            "scope": None,
+            "scope_description": None,
+        }
     ]
 
 
@@ -2014,7 +2211,12 @@ def test_secret_upsert_updates_existing(client_with_settings):
     assert get_response.status_code == 200
     assert get_response.text == "updated-value"
     assert client_with_settings.get("/api/settings/secrets").json()["secrets"] == [
-        {"name": "MY_SECRET", "description": "Updated"}
+        {
+            "name": "MY_SECRET",
+            "description": "Updated",
+            "scope": None,
+            "scope_description": None,
+        }
     ]
 
 

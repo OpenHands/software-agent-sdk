@@ -105,6 +105,7 @@ class SkillInfo(BaseModel):
     type: Literal["repo", "knowledge", "agentskills"]
     content: str
     triggers: list[str] = Field(default_factory=list)
+    paths: list[str] = Field(default_factory=list)
     source: str | None = None
     description: str | None = None
     is_agentskills_format: bool = False
@@ -819,6 +820,9 @@ class Skill(BaseModel):
             type=self.get_skill_type(),
             content=self.content,
             triggers=self.get_triggers(),
+            paths=list(self.trigger.paths)
+            if isinstance(self.trigger, PathTrigger)
+            else [],
             source=self.source,
             description=self.description,
             is_agentskills_format=self.is_agentskills_format,
@@ -1125,7 +1129,7 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
                     all_skills.append(skill)
                     seen_names.add(skill.name)
                     logger.debug(f"Loaded third-party skill: {skill.name} from {path}")
-            except (SkillError, OSError, yaml.YAMLError) as e:
+            except (SkillError, OSError, UnicodeDecodeError, yaml.YAMLError) as e:
                 logger.warning(f"Failed to load third-party skill from {path}: {e}")
 
     # Load nested third-party files (e.g. server/AGENTS.md) as directory-scoped

@@ -24,7 +24,7 @@ jobs:
                   set -euo pipefail
                   artifacts="$(git ls-tree -r --name-only HEAD -- .pr)"
                   if [ -n "$artifacts" ]; then
-                    echo "::error::Release contains temporary .pr artifacts. Merge the cleanup PR and update the release PR before releasing."
+                    echo "::error::Release contains temporary .pr artifacts. Refresh the release branch so the update that merges main also removes .pr/; see 'Refreshing a release branch' in .github/workflows/README-RELEASE.md."
                     printf '%s\n' "$artifacts"
                     exit 1
                   fi

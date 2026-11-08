@@ -39,7 +39,8 @@ Routes: `GET /api/profiles`, `GET /api/profiles/{name}`,
 - `F20.validate-live`: `validate` with a working DeepSeek flash config answers `{valid: true, error: null}`, also when the key is the `gAAAAA` token from an `encrypted` read; the draft is not saved.
 - `F20.validate-rejects`: `validate` answers 200 `valid: false` with a typed error for a model the provider does not serve (`LLMBadRequestError`) and for an invalid DeepSeek key, without echoing the key.
 - `F20.validate-bad-key-type`: an invalid DeepSeek key (provider HTTP 401) is reported as `LLMAuthenticationError`, like any other provider's 401.
-- `F20.validate-provider-errors`: with retries off, a provider 401 is `valid: false` `LLMAuthenticationError`, a 500 or an unreachable `base_url` is `valid: false` `LLMServiceUnavailableError`, and a 429 or a per-attempt timeout is `valid: true` (transient; the timeout verdict arrives after one attempt of the posted `timeout`, long before the hung provider would answer); the provider receives a system message `Reply with one token.`, a user `ping` and `max_tokens: 1`.
+- `F20.validate-provider-errors`: with retries off, a provider 401 is `valid: false` `LLMAuthenticationError`, a 500 or an unreachable `base_url` is `valid: false` `LLMServiceUnavailableError`, and a transient 429 or a per-attempt timeout is `valid: true`; the timeout verdict arrives after one attempt of the posted `timeout`, long before the hung provider would answer; the provider receives a system message `Reply with one token.`, a user `ping` and `max_tokens: 1`.
+- `F20.validate-quota-exhausted`: a provider 429 whose JSON `error.type` and `error.code` are `insufficient_quota` fails validation with `LLMRateLimitError`, even when the human-readable message does not repeat the machine code; an ordinary 429 remains transient.
 - `F20.validate-subscription-login`: `validate` of an `auth_type: subscription` config on a server with no stored OpenAI subscription login answers 200 `valid: false` (`ValueError`, `OpenAI subscription login is required`) at once, not a 500.
 - `F20.validate-unreachable-bounded`: `validate` of a config whose `base_url` refuses connections answers `valid: false` within 30 seconds with the default retry policy.
 - `F20.validate-hang-bounded`: `validate` of a config whose provider never answers returns a verdict within 30 seconds with the default timeout and retry policy.
@@ -58,7 +59,8 @@ Routes: `GET /api/profiles`, `GET /api/profiles/{name}`,
 - `F20.delete-guarded`: deleting a profile that an agent profile references is 409 naming the referrer, and the profile stays.
 - `F20.delete`: `DELETE /api/profiles/{name}` removes the file and the list entry and clears `active_profile` in both views, leaves the applied `agent_settings.llm` in place, and answers 200 again for a name that is already gone.
 - `F20.json-alias-guard`: a name with a `.json` suffix addresses the same profile (`GET /api/profiles/<name>.json` reads `<name>`), and deleting through that alias is refused with 409 while an agent profile references `<name>`, as it is for the plain name.
-- `F20.secret-key-rotation`: after the server's secret key changes, activating a profile whose stored key can no longer be decrypted is refused instead of silently applying a keyless LLM.
+- `F20.secret-key-previous-keys`: after a rotation that keeps the old key in `OH_PREVIOUS_SECRET_KEYS`, a profile saved under the old key still reads its key, and once re-saved it reads without the old key.
+- `F20.secret-key-rotation`: after the server's secret key changes and the old key is lost (not in `OH_PREVIOUS_SECRET_KEYS`), activating or re-saving a profile whose stored key can no longer be decrypted is refused (409) instead of silently applying a keyless LLM or overwriting the key.
 
 ## How to get to it (agent POV)
 
@@ -413,7 +415,7 @@ Preconditions:
   generic `Internal Server Error`; the route's message is in `exception`),
   `qa-busy` does not exist afterwards, and the same save succeeds at once
   when the lock is free.
-- **Lock wait blocks the server (`F20.store-busy-responsive`), known bug.**
+- **Lock wait does not block the server (`F20.store-busy-responsive`).**
   Probe `/alive` once with the lock free (positive control), hold the lock
   again, start a save in the background, and probe `/alive` while the save
   waits. The five-second pause only lets the background save reach the
@@ -435,15 +437,13 @@ Preconditions:
   wait "$SAVER"
   wait "$LOCKER"
   control-agent-server api GET /api/profiles/qa-busy --expect 404
-  control-agent-server assert --json "$F20/busy-alive.json" --check elapsed_ms le 3000  # bug: value.status eq 200 && value.elapsed_ms ge 15000
+  control-agent-server assert --json "$F20/busy-alive.json" --check elapsed_ms le 3000
   ```
-  Expected `/alive` to answer within 3 seconds while the save waits, as it
-  does with the lock free. Today it answers 200 only when the save gives up,
-  about 25 seconds later, so the bound marked `# bug` fails: every
-  profile route is an `async def` that calls the synchronous, file-locked
-  `LLMProfileStore` on the event loop (`profiles_router.py`), so a 30-second
-  lock wait freezes the whole server, liveness and readiness probes
-  included. Before the bound is checked, `wait "$SAVER"` proves the
+  `/alive` answers within 3 seconds while the save waits, as it does with
+  the lock free: the profile routes are plain `def` handlers, so FastAPI
+  runs the synchronous, file-locked `LLMProfileStore` in its threadpool
+  and the lock wait never holds the event loop (`profiles_router.py`).
+  Before the bound is checked, `wait "$SAVER"` proves the
   background save really waited and was refused with 503, both background
   processes have ended (so later bullets find the lock free), and `qa-busy`
   was not created.
@@ -521,9 +521,10 @@ Preconditions:
   that text nor the `authentication_error` type, so clients cannot tell a bad
   key from a bad request.
 - **Provider failures (`F20.validate-provider-errors`).** Script an
-  `llm-stub` to answer 401, 500, 429 and to hang, and point a draft with
-  retries off at it and at a closed port.
+  `llm-stub` to answer 401, 500, a transient 429 and to hang, and point a
+  draft with retries off at it and at a closed port.
   ```sh
+  BEFORE_PROFILES=$(control-agent-server api GET /api/profiles --field profiles)
   STUB=$(control-agent-server fixture llm-stub --name qa-f20-stub --step status:401 --print-path)
   STUB_LLM="{\"model\": \"openai/qa-stub\", \"base_url\": \"$STUB/v1\", \"api_key\": \"qa-stub-key\", \"num_retries\": 0}"
   control-agent-server api POST /api/profiles/qa-stub/validate --json "{\"llm\": $STUB_LLM}" --timeout 60 --expect 200 \
@@ -546,18 +547,45 @@ Preconditions:
   control-agent-server api POST /api/profiles/qa-unreachable/validate --timeout 60 --expect 200 \
     --json '{"llm": {"model": "openai/qa-unreachable", "base_url": "http://127.0.0.1:9/v1", "api_key": "qa-key", "num_retries": 0}}' \
     --check valid eq false --check error.type eq LLMServiceUnavailableError --save F20.validate-provider-errors/unreachable
-  control-agent-server api GET /api/profiles --check profiles len-eq 4
+  control-agent-server api GET /api/profiles --check profiles eq "$BEFORE_PROFILES"
   ```
   The stub's first request carries the system message `Reply with one
   token.` directly before the user `ping` (the repository's system-first
   invariant), and `max_tokens: 1`; 401 maps to
   `LLMAuthenticationError`, 500 and the closed port to
-  `LLMServiceUnavailableError` (`valid: false`), while 429 and the 3-second
-  timeout are transient (`valid: true`). The timeout verdict arrives in about
+  `LLMServiceUnavailableError` (`valid: false`). A transient 429 and the
+  3-second timeout remain non-blocking (`valid: true`). The timeout verdict arrives in about
   3 seconds (under the 15-second bound) although the stub, which logged
   exactly one request on its `hang` step, would only answer after 30 s; a
   server that ignored the posted `timeout` would wait for that reply and
   fail the bound. Nothing is saved.
+- **Exhausted quota (`F20.validate-quota-exhausted`), known bug.** An
+  OpenAI-compatible provider distinguishes a transient 429 from exhausted
+  quota through the response's structured `error.type` and `error.code`.
+  ```sh
+  QUOTA_PROFILES=$(control-agent-server api GET /api/profiles --field profiles)
+  QUOTA_STUB=$(control-agent-server fixture llm-stub --name qa-f20-quota --step status:429 --print-path)
+  QUOTA_LLM="{\"model\":\"openai/qa-quota\",\"base_url\":\"$QUOTA_STUB/v1\",\"api_key\":\"qa-quota-key\",\"num_retries\":0}"
+  control-agent-server api POST /api/profiles/qa-quota/validate --json "{\"llm\":$QUOTA_LLM}" --timeout 60 --expect 200 \
+    --check valid eq true --check error missing --save F20.validate-quota-exhausted/transient-control
+  control-agent-server fixture llm-stub --name qa-f20-quota \
+    --step 'status:429:{"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota","code":"insufficient_quota"}}'
+  control-agent-server api POST /api/profiles/qa-quota/validate --json "{\"llm\":$QUOTA_LLM}" --timeout 60 --expect 200 \
+    --save F20.validate-quota-exhausted/quota-exhausted > "$F20/quota-result.json"
+  control-agent-server sink read --name qa-f20-quota --contains insufficient_quota --expect-min 1 --expect-max 1 \
+    --save F20.validate-quota-exhausted/provider-request
+  control-agent-server api GET /api/profiles --check profiles eq "$QUOTA_PROFILES"
+  control-agent-server assert --json "$F20/quota-result.json" --check response.body.valid eq false \
+    --check response.body.error.type eq LLMRateLimitError  # bug: value.status eq 200 && value.response.body.valid eq true && value.response.body.error missing
+  ```
+  Expected: exhausted quota blocks validation (#5768), with a typed error,
+  while the transient positive control succeeds and neither draft is saved.
+  Today the real HTTP error is reduced to its human-readable message before
+  `is_quota_exhaustion_error` checks for `insufficient_quota`. The structured
+  code is lost, so this response incorrectly returns `valid: true` and no
+  error ([OpenHands/software-agent-sdk#6185](https://github.com/OpenHands/software-agent-sdk/issues/6185)).
+  The existing unit test embeds the JSON code directly in a mocked
+  exception string and does not exercise that provider-to-SDK mapping.
 - **Subscription without a login (`F20.validate-subscription-login`).**
   Pre-flight a ChatGPT-subscription config (`auth_type: subscription`, the
   Agent Canvas subscription path) on this run, whose private home holds no
@@ -900,8 +928,31 @@ Preconditions:
   store key, so an alias delete or rename also clears or moves
   `active_profile` and cascades `llm_profile_ref`. Cleanup removes the agent
   profile and the profile, and checks the list no longer has it.
-- **Secret key rotation (`F20.secret-key-rotation`), known bug.** Save a
-  profile, restart with a new secret key, then activate it.
+- **Supported key rotation (`F20.secret-key-previous-keys`).** Save a
+  profile, restart with a new secret key keeping the old one in
+  `OH_PREVIOUS_SECRET_KEYS`, read and re-save it, then restart without the
+  old key.
+  ```sh
+  control-agent-server api POST /api/profiles/qa-previous --json '{"llm": {"model": "openai/qa-previous", "api_key": "sk-qa-f20-previous"}}' --expect 201
+  control-agent-server restart --rotate-secret-key --keep-previous-secret-key
+  control-agent-server api GET /api/profiles/qa-previous --header 'X-Expose-Secrets: plaintext' --expect 200 --check config.api_key eq sk-qa-f20-previous --check api_key_set eq true --save F20.secret-key-previous-keys/detail-under-new-key
+  control-agent-server api POST /api/profiles/qa-previous --json '{"llm": {"model": "openai/qa-previous", "api_key": "sk-qa-f20-previous"}}' --expect 2xx --save F20.secret-key-previous-keys/resave
+  control-agent-server restart
+  control-agent-server api GET /api/profiles/qa-previous --header 'X-Expose-Secrets: plaintext' --expect 200 --check config.api_key eq sk-qa-f20-previous --save F20.secret-key-previous-keys/detail-without-old-key
+  control-agent-server api GET /api/settings --max-chars 200 --check active_profile eq deepseek-flash --check llm_api_key_is_set eq true
+  control-agent-server api DELETE /api/profiles/qa-previous --expect 200
+  ```
+  With the old key listed, the profile saved under it reads its key under
+  the new one (decryption tries the new key, then each previous key), and a
+  save writes it under the new key, so after the plain `restart`, which drops
+  the old key, it still reads. The settings' LLM key was re-encrypted at
+  startup, so it is still set. Profiles are re-encrypted only when saved: a
+  profile never re-saved, such as `deepseek-flash` here, needs the old key
+  listed; without it, it takes the lost-key path below. Run just before
+  `F20.secret-key-rotation`.
+- **Secret key lost (`F20.secret-key-rotation`).** Save a
+  profile, restart with a new secret key without keeping the old one, then
+  activate and re-save it.
   ```sh
   control-agent-server api POST /api/profiles/qa-rotate --json '{"llm": {"model": "openai/qa-rotate", "api_key": "sk-qa-f20-rotate"}}' --expect 201
   control-agent-server api GET /api/profiles/qa-rotate --header 'X-Expose-Secrets: plaintext' --expect 200 --check config.api_key eq sk-qa-f20-rotate
@@ -910,27 +961,34 @@ Preconditions:
   control-agent-server state cat home/.openhands/profiles/qa-rotate.json --check api_key matches '^gAAAAA'
   control-agent-server api GET /api/profiles/qa-rotate --header 'X-Expose-Secrets: plaintext' --expect 2xx,4xx --save F20.secret-key-rotation/detail
   control-agent-server api GET /api/profiles --expect 2xx,4xx --save F20.secret-key-rotation/list
-  control-agent-server api POST /api/profiles/qa-rotate/activate --expect 4xx --save F20.secret-key-rotation/activate  # bug: status eq 200 && response.body.message contains 'activated and applied'
+  control-agent-server api POST /api/profiles/qa-rotate/activate --expect 409 --check detail contains "Profile 'qa-rotate' is encrypted with a different key" --save F20.secret-key-rotation/activate
+  control-agent-server api POST /api/profiles/qa-rotate --json '{"llm": {"model": "openai/qa-rotate"}}' --expect 409 --check detail contains "Profile 'qa-rotate' is encrypted with a different key" --save F20.secret-key-rotation/resave
+  control-agent-server state cat home/.openhands/profiles/qa-rotate.json --check api_key matches '^gAAAAA'
   control-agent-server api GET /api/settings --max-chars 200 --check active_profile eq deepseek-flash
   control-agent-server state cat home/.openhands/settings.json --max-chars 200 --check agent_settings.llm.api_key matches '^gAAAAA'
   ```
   Before the restart the key reads back and `deepseek-flash` is active with
-  a key (positive control). Expected the activation to be refused (4xx)
-  while the stored key cannot be decrypted, leaving `deepseek-flash` active
-  and the settings' old ciphertext in place. Today the file still holds the
-  old token, `GET` by name says `api_key_set: false` with a `null` key while
-  the list still says `api_key_set: true`, and the activation marked
-  `# bug` answers 200 `activated and applied to current settings` after
-  writing an LLM with `api_key: null` over the settings' stored key
-  (`llm_api_key_is_set` becomes `false`), so the next conversation fails at
-  the provider. The cipher returns `None`
-  for a token it cannot decrypt instead of raising
-  (`openhands-sdk/openhands/sdk/utils/cipher.py`), and the profile store
-  loads that silently. The same happens without `OH_SECRET_KEY` when only
-  the session key rotates, because the first session key is then the cipher
-  (checked on a `launch --no-secret-key` run: after `restart --rotate-key`
-  a plaintext read returns `null` and `api_key_set: false`). Run last: every
-  stored secret of this run is now unreadable.
+  a key (positive control). After it the stored key cannot be decrypted:
+  the profile file still holds the old token, `GET` by name says
+  `api_key_set: false` with a `null` key (reads stay lenient), and the list
+  still says `api_key_set: true` (see Gotchas). Activation is refused with
+  409 `Profile 'qa-rotate' is encrypted with a different key` (the detail
+  goes on to say to restore the key or add it to `OH_PREVIOUS_SECRET_KEYS`) before
+  anything is written, instead of applying an LLM with `api_key: null` over
+  the settings' stored key, so `deepseek-flash` stays active and the
+  settings keep their old ciphertext. Saving the keyless config read back
+  under the new key is refused the same way and the profile keeps its old
+  token, so restoring the original key recovers it; deleting the profile
+  and saving it again with a new key is the way forward under the new key.
+  The profile store loads with strict decryption on activation
+  (`LLMProfileStore.load(..., strict=True)` in
+  `openhands-sdk/openhands/sdk/llm/llm_profile_store.py`) and refuses to
+  overwrite a profile holding a token the cipher cannot decrypt. The same
+  applies without `OH_SECRET_KEY` when only the session key rotates,
+  because the first session key is then the cipher (after
+  `restart --rotate-key` a plaintext read returns `null` and
+  `api_key_set: false`). Run last: every stored secret of this run is now
+  unreadable.
 
 ## Gotchas
 
@@ -981,17 +1039,17 @@ Preconditions:
   (`F20.json-alias-guard`).
 - `launch` sets `OH_SECRET_KEY`. `--no-secret-key` alone still leaves a
   cipher, derived from the first session key (and `restart --rotate-key` then
-  loses every stored key, as in `F20.secret-key-rotation`); only
+  leaves every stored key undecryptable, as in `F20.secret-key-rotation`); only
   `--no-auth --no-secret-key` gives a server without a cipher
   (`F20.no-cipher`).
 - 5xx answers from these routes (503 store busy, 503 encryption not
   available) carry `detail: "Internal Server Error"`; the route's own message
   is in `exception` (the server's 5xx handler rewrites `detail`). Assert the
   status and `exception`, not `detail`.
-- Profile routes are `async def` handlers that call the synchronous,
-  file-locked store; while the lock is held elsewhere the whole server stops
-  answering for up to 30 seconds (`F20.store-busy-responsive`). Never hold
-  the lock (`flock` on `profiles/.profiles.lock`) longer than a bullet needs.
+- Profile routes wait for the store lock in a worker thread, so a held lock
+  delays only the profile request (up to the 30-second timeout), not the
+  rest of the server (`F20.store-busy-responsive`). Still, never hold the
+  lock (`flock` on `profiles/.profiles.lock`) longer than a bullet needs.
 - A corrupted profile file is skipped by the list without an error (a
   warning in the log), but `GET` and `activate` by name are 400. While
   `settings.json` is unreadable, `GET /api/profiles` reports

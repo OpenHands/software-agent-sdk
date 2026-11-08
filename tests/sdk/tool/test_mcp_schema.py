@@ -449,6 +449,22 @@ def test_boolean_schema_nodes_are_normalized(node, expected):
     json.dumps(result)
 
 
+def test_tuple_form_items_does_not_raise():
+    node = {
+        "type": "object",
+        "properties": {
+            "pair": {
+                "type": "array",
+                "items": [{"type": "string"}, {"type": "integer"}],
+            }
+        },
+    }
+
+    result = _process_schema_node(node, {})
+
+    assert result["properties"]["pair"]["type"] == "array"
+
+
 def test_anyof_with_false_does_not_clobber_concrete_type():
     """A ``false`` member in ``anyOf`` must not become the representative type.
 
