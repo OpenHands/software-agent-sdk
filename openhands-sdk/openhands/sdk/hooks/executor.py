@@ -552,16 +552,28 @@ class HookExecutor:
                 )
 
         try:
-            # Execute the hook command synchronously
-            result = subprocess.run(
+            # Execute the hook command synchronously, in its own session so a
+            # timeout stops the commands the shell started, not just the shell.
+            with subprocess.Popen(
                 command,
                 shell=True,
                 cwd=self.working_dir,
                 env=hook_env,
-                input=event_json,
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=hook.timeout,
+                start_new_session=os.name != "nt",
+            ) as process:
+                try:
+                    stdout, stderr = process.communicate(
+                        event_json, timeout=hook.timeout
+                    )
+                except subprocess.TimeoutExpired:
+                    self.async_process_manager._terminate_process(process)
+                    raise
+            result = subprocess.CompletedProcess(
+                command, process.returncode, stdout, stderr
             )
 
             # Parse the result
