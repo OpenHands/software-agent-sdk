@@ -513,6 +513,20 @@ def convert_fncall_messages_to_non_fncall_messages(
     return converted_messages
 
 
+def _unframe_param_value(raw: str) -> str:
+    """Undo the newline framing of ``convert_tool_call_to_string``.
+
+    Single-line content is stripped. Content that is still multiline once
+    stripped keeps its own indentation and trailing newline and loses only the
+    frame on each side: one newline (LF or CRLF) and any spaces or tabs
+    between it and the tag.
+    """
+    unframed = re.sub(r"\A[ \t]*\r?\n", "", raw)
+    unframed = re.sub(r"\r?\n[ \t]*\Z", "", unframed)
+    stripped = unframed.strip()
+    return unframed if "\n" in stripped else stripped
+
+
 def _extract_and_validate_params(
     matching_tool: ChatCompletionToolParamFunctionChunk,
     param_matches: Iterable[re.Match],
@@ -528,7 +542,7 @@ def _extract_and_validate_params(
 
     for param_match in param_matches:
         param_name = param_match.group(1)
-        param_value: Any = param_match.group(2).strip()
+        param_value: Any = _unframe_param_value(param_match.group(2))
 
         # security_risk is excluded here for the same reason it's excluded from
         # missing_params below: read-only tools (e.g. finish) never declare it
@@ -631,13 +645,26 @@ def _normalize_parameter_tags(fn_body: str) -> str:
     )
 
 
-# Tool name aliases for legacy model compatibility
-TOOL_NAME_ALIASES: dict[str, str] = {
-    "str_replace_editor": "file_editor",
+# Legacy tool names that some models emit, mapped to the registered tool name.
+# This is the single table for both tool-call paths: the non-native converter
+# below and ``openhands.sdk.agent.utils.normalize_tool_call``.
+TOOL_NAME_ALIASES: Final[dict[str, str]] = {
     "bash": "terminal",
+    "command": "terminal",
+    "execute": "terminal",
     "execute_bash": "terminal",
+    "git": "terminal",
+    "reset": "terminal",
     "str_replace": "file_editor",
+    "str_replace_editor": "file_editor",
 }
+
+# Aliases that are themselves executables. Unlike ``bash``, whose ``command``
+# passes through unchanged, these must be prepended to the command argument
+# (``git`` + ``status`` -> ``git status``). Only ``normalize_tool_call``
+# rewrites arguments, so the converter resolves their schema but keeps the
+# emitted name for it.
+TERMINAL_COMMAND_PREFIX_ALIASES: Final[frozenset[str]] = frozenset({"git", "reset"})
 
 
 def _find_tool(
@@ -664,8 +691,10 @@ def _resolve_tool_name(
 
     # Try aliases if tool not found (some models use legacy names)
     if not matching_tool and fn_name in TOOL_NAME_ALIASES:
-        fn_name = TOOL_NAME_ALIASES[fn_name]
-        matching_tool = _find_tool(tools, fn_name)
+        alias_target = TOOL_NAME_ALIASES[fn_name]
+        matching_tool = _find_tool(tools, alias_target)
+        if fn_name not in TERMINAL_COMMAND_PREFIX_ALIASES:
+            fn_name = alias_target
 
     if not matching_tool:
         available_tools = [

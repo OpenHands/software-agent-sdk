@@ -23,7 +23,7 @@ import pytest
 from openhands.sdk.agent import Agent
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.prompts.presets import create_registry
-from openhands.sdk.context.prompts.section import Platform, PromptContext
+from openhands.sdk.context.prompts.section import Platform, PromptContext, SecretInfo
 from openhands.sdk.context.prompts.sections.dynamic import (
     AvailableSkillsSection,
     CustomSecretsSection,
@@ -300,20 +300,136 @@ def test_custom_suffix_section() -> None:
 def test_custom_secrets_section() -> None:
     section = CustomSecretsSection()
     assert section.guard(PromptContext()) is False
-    out = section.render(PromptContext(secret_infos=(("GITHUB_TOKEN", None),))) or ""
+    out = (
+        section.render(PromptContext(secret_infos=(SecretInfo("GITHUB_TOKEN"),))) or ""
+    )
     assert out.startswith("<CUSTOM_SECRETS>") and out.endswith("</CUSTOM_SECRETS>")
     assert "* **$GITHUB_TOKEN**" in out
     described = (
-        section.render(PromptContext(secret_infos=(("API_KEY", "prod key"),))) or ""
+        section.render(PromptContext(secret_infos=(SecretInfo("API_KEY", "prod key"),)))
+        or ""
     )
     assert "* **$API_KEY** - prod key" in described
+
+
+def test_custom_secrets_section_no_scope_is_flat() -> None:
+    # With no scopes set the rendered list is byte-identical to the legacy
+    # flat rendering (no headings, no scope descriptions).
+    section = CustomSecretsSection()
+    legacy = (
+        section.render(
+            PromptContext(
+                secret_infos=(
+                    SecretInfo("GITHUB_TOKEN", None),
+                    SecretInfo("API_KEY", "prod key"),
+                )
+            )
+        )
+        or ""
+    )
+    # Legacy-shape tuple input (name, description) renders identically.
+    tuple_input = (
+        section.render(
+            PromptContext(
+                secret_infos=(("GITHUB_TOKEN", None), ("API_KEY", "prod key")),  # pyright: ignore[reportArgumentType]
+            )
+        )
+        or ""
+    )
+    assert legacy == tuple_input
+    assert "###" not in legacy.split("You have access to the following")[1]
+    assert "* **$GITHUB_TOKEN**\n\n* **$API_KEY** - prod key" in legacy
+
+
+def test_custom_secrets_section_groups_by_scope() -> None:
+    section = CustomSecretsSection()
+    out = (
+        section.render(
+            PromptContext(
+                secret_infos=(
+                    SecretInfo(
+                        "LINEAR_API_KEY",
+                        "Linear API key",
+                        scope="personal",
+                        scope_description="The user's own credentials.",
+                    ),
+                    SecretInfo(
+                        "LINEAR_API_KEY_2",
+                        "Linear API key",
+                        scope="organization",
+                        scope_description="Shared service-account credentials.",
+                    ),
+                )
+            )
+        )
+        or ""
+    )
+    list_block = out.split("You have access to the following environment variables")[1]
+    # First-appearance order: personal first, then organization.
+    assert list_block.index("### personal") < list_block.index("### organization")
+    assert "The user's own credentials." in list_block
+    assert "Shared service-account credentials." in list_block
+    # Each scope description is rendered exactly once.
+    assert list_block.count("The user's own credentials.") == 1
+    assert "* **$LINEAR_API_KEY** - Linear API key" in list_block
+    assert "* **$LINEAR_API_KEY_2** - Linear API key" in list_block
+
+
+def test_custom_secrets_section_unscoped_secret_goes_last() -> None:
+    section = CustomSecretsSection()
+    out = (
+        section.render(
+            PromptContext(
+                secret_infos=(
+                    SecretInfo(
+                        "SHARED",
+                        "shared",
+                        scope="organization",
+                        scope_description="Shared creds.",
+                    ),
+                    SecretInfo(
+                        "PERSONAL", "personal", scope=None, scope_description=None
+                    ),
+                )
+            )
+        )
+        or ""
+    )
+    list_block = out.split("You have access to the following environment variables")[1]
+    # The unscoped secret appears after the organization group.
+    assert list_block.index("### organization") < list_block.index("* **$PERSONAL**")
+    assert "### None" not in list_block
+
+
+def test_custom_secrets_section_conflicting_scope_description_warns(
+    caplog,
+) -> None:
+    section = CustomSecretsSection()
+    out = (
+        section.render(
+            PromptContext(
+                secret_infos=(
+                    SecretInfo("A", None, scope="org", scope_description="first"),
+                    SecretInfo("B", None, scope="org", scope_description="second"),
+                )
+            )
+        )
+        or ""
+    )
+    list_block = out.split("You have access to the following environment variables")[1]
+    # The first non-empty scope_description wins.
+    assert "first" in list_block
+    assert "second" not in list_block
+    assert any(
+        "Conflicting scope_description" in record.message for record in caplog.records
+    )
 
 
 def test_dynamic_sections_render_into_dynamic_block() -> None:
     ctx = PromptContext(
         now="2025-01-01T00:00:00+00:00",
         custom_suffix="Follow conventions.",
-        secret_infos=(("GITHUB_TOKEN", None),),
+        secret_infos=(SecretInfo("GITHUB_TOKEN"),),
     )
     blocks = create_registry().build(ctx)
     assert "<CURRENT_DATETIME>" in (blocks.dynamic or "")

@@ -514,12 +514,12 @@ async def proxy_app_backend_websocket(
     upstream_path = f"/{path}" if path else "/"
     if query:
         upstream_path = f"{upstream_path}?{query}"
-    await websocket.accept()
     try:
         await bridge_websocket(
             websocket,
             _target(endpoint),
             upstream_path=upstream_path,
+            accept_client=True,
         )
     finally:
         await store.detach_socket(session, task)

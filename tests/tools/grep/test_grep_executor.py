@@ -25,34 +25,26 @@ def test_grep_executor_initialization():
         assert executor.working_dir == Path(temp_dir).resolve()
 
 
-def test_grep_executor_prefers_ripgrep_backend(monkeypatch):
-    monkeypatch.setattr(grep_impl, "_check_ripgrep_available", lambda: True)
-    monkeypatch.setattr(grep_impl, "_check_grep_available", lambda: True)
+@pytest.mark.parametrize(
+    ("ripgrep_available", "grep_available", "expected_backend"),
+    [
+        pytest.param(True, True, "ripgrep", id="prefers_ripgrep"),
+        pytest.param(False, True, "grep", id="falls_back_to_system_grep"),
+        pytest.param(False, False, "python", id="falls_back_to_python"),
+    ],
+)
+def test_grep_executor_selects_search_backend(
+    monkeypatch, ripgrep_available, grep_available, expected_backend
+):
+    monkeypatch.setattr(
+        grep_impl, "_check_ripgrep_available", lambda: ripgrep_available
+    )
+    monkeypatch.setattr(grep_impl, "_check_grep_available", lambda: grep_available)
 
     with tempfile.TemporaryDirectory() as temp_dir:
         executor = GrepExecutor(working_dir=temp_dir)
 
-    assert executor._search_backend == "ripgrep"
-
-
-def test_grep_executor_falls_back_to_system_grep(monkeypatch):
-    monkeypatch.setattr(grep_impl, "_check_ripgrep_available", lambda: False)
-    monkeypatch.setattr(grep_impl, "_check_grep_available", lambda: True)
-
-    with tempfile.TemporaryDirectory() as temp_dir:
-        executor = GrepExecutor(working_dir=temp_dir)
-
-    assert executor._search_backend == "grep"
-
-
-def test_grep_executor_falls_back_to_python_when_no_binary_exists(monkeypatch):
-    monkeypatch.setattr(grep_impl, "_check_ripgrep_available", lambda: False)
-    monkeypatch.setattr(grep_impl, "_check_grep_available", lambda: False)
-
-    with tempfile.TemporaryDirectory() as temp_dir:
-        executor = GrepExecutor(working_dir=temp_dir)
-
-    assert executor._search_backend == "python"
+    assert executor._search_backend == expected_backend
 
 
 def test_grep_executor_basic_search():
@@ -425,6 +417,40 @@ def test_grep_executor_invalid_regex():
 
         assert observation.is_error is True
         assert "Invalid regex pattern" in observation.text
+
+
+@pytest.mark.skipif(not _check_ripgrep_available(), reason="ripgrep not available")
+def test_pattern_starting_with_dash(tmp_path):
+    (tmp_path / "flags.txt").write_text("run with -foo enabled\n")
+    (tmp_path / "other.txt").write_text("nothing here\n")
+
+    observation = GrepExecutor(working_dir=str(tmp_path))(GrepAction(pattern="-foo"))
+
+    assert observation.is_error is False
+    assert [Path(match).name for match in observation.matches] == ["flags.txt"]
+
+
+@pytest.mark.skipif(not _check_ripgrep_available(), reason="ripgrep not available")
+def test_ripgrep_pattern_cannot_inject_flags(tmp_path):
+    (tmp_path / "a.txt").write_text("alpha\n")
+    (tmp_path / "b.txt").write_text("beta\n")
+
+    observation = GrepExecutor(working_dir=str(tmp_path))(GrepAction(pattern="--files"))
+
+    assert observation.matches == []
+
+
+@pytest.mark.skipif(not _check_ripgrep_available(), reason="ripgrep not available")
+def test_ripgrep_regex_error_is_not_reported_as_no_match(tmp_path):
+    # Python's re accepts look-ahead, so the pattern passes validation, but
+    # ripgrep's default engine rejects it and exits with status 2.
+    (tmp_path / "a.txt").write_text("foobar\n")
+
+    observation = GrepExecutor(working_dir=str(tmp_path))(
+        GrepAction(pattern="foo(?=bar)")
+    )
+
+    assert [Path(m).name for m in observation.matches] == ["a.txt"]
 
 
 def test_grep_executor_concurrent():
