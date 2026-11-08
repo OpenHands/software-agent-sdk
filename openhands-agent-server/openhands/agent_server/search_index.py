@@ -97,8 +97,10 @@ class SearchIndex:
     CREATE TABLE IF NOT EXISTS conversations (
         conv_id TEXT PRIMARY KEY,
         title TEXT,
-        last_event_ts TEXT
+        last_event_ts TEXT,
+        dir_mtime REAL
     );
+
     CREATE TABLE IF NOT EXISTS messages (
         event_id TEXT PRIMARY KEY,
         conv_id TEXT NOT NULL,
@@ -252,25 +254,41 @@ class SearchIndex:
         return {"conversations": convs, "messages": msgs}
 
 
-def backfill(index: SearchIndex, conversations_path: Path) -> dict:
+def backfill(
+    index: SearchIndex, conversations_path: Path, *, incremental: bool = False
+) -> dict:
     """Index every conversation found under ``conversations_path``.
 
     Idempotent: events already present are skipped, so re-running after new
-    conversations appear only processes the delta.
+    conversations appear only processes the delta. With ``incremental=True``,
+    conversations whose directory mtime is unchanged since the last run are
+    skipped entirely (cheap periodic sync).
     """
     indexed_events = 0
     conv_count = 0
+    skipped = 0
     for conv_dir in sorted(conversations_path.glob(f"*/")):
         meta_file = conv_dir / _META_FILE
         if not meta_file.is_file():
             continue
         conv_id = conv_dir.name
+        dir_mtime = conv_dir.stat().st_mtime
+        if incremental:
+            row = index._conn.execute(
+                "SELECT dir_mtime FROM conversations WHERE conv_id=?", (conv_id,)
+            ).fetchone()
+            if row is not None and row[0] == dir_mtime:
+                skipped += 1
+                continue
         conv_count += 1
         try:
             meta = json.loads(meta_file.read_text())
         except json.JSONDecodeError:
             continue
         index.index_conversation(conv_id, meta.get("title"))
+        index._conn.execute(
+            "UPDATE conversations SET dir_mtime=? WHERE conv_id=?", (dir_mtime, conv_id)
+        )
         events_dir = conv_dir / _EVENTS_DIR
         if not events_dir.is_dir():
             continue
@@ -281,4 +299,9 @@ def backfill(index: SearchIndex, conversations_path: Path) -> dict:
                 continue
             if index.index_event(conv_id, event):
                 indexed_events += 1
-    return {"conversations_seen": conv_count, "events_indexed": indexed_events}
+    index._conn.commit()
+    return {
+        "conversations_seen": conv_count,
+        "events_indexed": indexed_events,
+        "skipped_unchanged": skipped,
+    }

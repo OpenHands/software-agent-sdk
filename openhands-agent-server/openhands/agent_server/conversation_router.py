@@ -36,6 +36,8 @@ from openhands.agent_server.models import (
     AgentResponseResult,
     AskAgentRequest,
     AskAgentResponse,
+    ContentSearchHit,
+    ContentSearchResponse,
     ConversationInfo,
     ConversationPage,
     ConversationRuntimeInfo,
@@ -200,6 +202,37 @@ async def search_conversations(
         update={"items": [_with_runtime_info(request, item) for item in page.items]}
     )
     return page
+
+
+@conversation_catalog_router.get("/search-content", include_in_schema=False)
+@conversation_router.get("/search-content")
+async def search_conversation_content(
+    query: Annotated[
+        str,
+        Query(
+            title="Full-text query matched against conversation titles and message "
+            "text (FTS5 prefix match per token, AND across tokens)",
+            min_length=1,
+        ),
+    ],
+    limit: Annotated[int, Query(title="Max hits to return", gt=0, le=100)] = 50,
+    request: Request = None,
+) -> ContentSearchResponse:
+    """Full-text content search over conversation history (local only).
+
+    Returns matching message rows with snippets. ``capped`` tells the caller
+    when the limit cut results off so the UI can show an honest hint.
+    """
+    service = getattr(request.app.state, "content_search_service", None)
+    if service is None:
+        raise HTTPException(status_code=503, detail="content search unavailable")
+    hits = service.search(query, limit)
+    capped = len(hits) >= limit
+    return ContentSearchResponse(
+        results=[ContentSearchHit(**h) for h in hits],
+        total=len(hits),
+        capped=capped,
+    )
 
 
 @conversation_catalog_router.get("/count", include_in_schema=False)

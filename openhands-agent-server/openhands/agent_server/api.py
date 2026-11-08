@@ -65,6 +65,7 @@ from openhands.agent_server.dependencies import (
     check_session_api_key,
     check_workspace_session,
 )
+from openhands.agent_server.search_service import ContentSearchService
 from openhands.agent_server.event_service import ConversationRunLimitExceeded
 from openhands.agent_server.experimental_features_router import (
     experimental_features_router,
@@ -442,6 +443,21 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             api.state.conversation_service = service
 
             config = api.state.config
+            content_search_service = getattr(
+                api.state, "content_search_service", None
+            )
+            if content_search_service is not None:
+                try:
+                    content_search_service.sync()
+                    stats = content_search_service.stats()
+                    logger.info(
+                        "Content search index ready: %s conversations, %s messages",
+                        stats["conversations"],
+                        stats["messages"],
+                    )
+                except Exception:
+                    logger.exception("Content search index initial sync failed; "
+                                     "search will retry on first query")
             retention_task: asyncio.Task | None = None
             if config.bash_events_retention_seconds is not None:
                 retention_task = asyncio.create_task(
@@ -959,6 +975,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     app.state.conversation_registry = create_conversation_registry(config)
     app.state.canvas_extension_backend_manager = CanvasExtensionBackendManager()
     app.state.app_backend_session_store = AppBackendSessionStore()
+    app.state.content_search_service = ContentSearchService(config)
 
     _add_api_routes(app)
     _setup_static_files(app, config)

@@ -409,6 +409,31 @@ class ConversationPage(BaseModel):
     next_page_id: str | None = None
 
 
+class ContentSearchHit(BaseModel):
+    """One matching message/title row from the content index."""
+
+    conversation_id: str = Field(description="Conversation this hit belongs to")
+    title: str | None = Field(
+        default=None, description="Conversation title at index time"
+    )
+    event_id: str = Field(description="Event whose text matched (synthetic for titles)")
+    source: str = Field(description="'title' or the event's source (user/agent/…)")
+    timestamp: str | None = Field(default=None, description="Event timestamp")
+    snippet: str = Field(
+        description="Short text around the best match, no highlighting markup"
+    )
+
+
+class ContentSearchResponse(BaseModel):
+    results: list[ContentSearchHit]
+    total: int = Field(description="Number of hits returned (capped by the limit)")
+    capped: bool = Field(
+        description="True when the limit cut results off (caller should show a "
+        "'showing first N' hint)"
+    )
+
+
+
 INCLUDE_SKILLS_PARAM_TITLE = (
     "Whether to include ``agent.agent_context.skills`` in the response. "
     "Default ``false`` (breaking change as of this release): skills are "
