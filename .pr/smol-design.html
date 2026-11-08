@@ -1,0 +1,30 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SmolWorkspace contribution</title>
+<style>body{font:17px/1.6 system-ui;max-width:850px;margin:60px auto;padding:0 24px;color:#17212b}h1,h2{line-height:1.2}code,pre{font-family:ui-monospace,monospace;background:#f1f4f6}pre{padding:20px;overflow:auto}table{border-collapse:collapse;width:100%}th,td{padding:12px;border:1px solid #d4dce2;text-align:left}.status{border-left:4px solid #a76912;padding:12px 20px;background:#fff7e8}a{color:#145783}</style>
+<h1>One ephemeral local VM per workspace</h1>
+<p>SmolWorkspace adds an optional execution provider to <code>openhands-workspace</code>. It starts the existing Agent Server in a local microVM and inherits the remote command, file, Git and conversation clients.</p>
+<p class="status">Release gate: a published Smol wheel must include atomic loopback publication and pass the OpenHands image and conversation tests. Current validation is recorded in <a href="smol-validation.md">smol-validation.md</a>.</p>
+<h2>Public interface</h2>
+<table><tr><th>Existing interfaces</th><th>Additive interface</th></tr><tr><td>RemoteWorkspace connects to a supplied server. DockerWorkspace owns a container.</td><td>SmolWorkspace owns a local ephemeral VM and derives its endpoint and credentials.</td></tr></table>
+<pre>from openhands.workspace import SmolWorkspace
+
+with SmolWorkspace(server_image="registry/image@sha256:...") as workspace:
+    result = workspace.execute_command("pwd")</pre>
+<h2>Ownership and transport</h2>
+<pre>Conversation / inherited RemoteWorkspace
+    │ HTTP + WebSocket, generated session key
+    ▼
+127.0.0.1 : allocated port (listener retained by Smol)
+    │
+    ▼
+Agent Server : 8000 inside the microVM
+    │ OH_CONVERSATION_RUNTIME=local
+    ▼
+Guest tools + private guest filesystem</pre>
+<p>A private helper process owns the native Smol handle. Constructor settings travel through stdin; native output is discarded. The parent enforces startup and shutdown budgets, checks health and authenticated execution, and initializes the inherited remote client. The helper deletes the exact owned VM on close or failed creation. If native code blocks, the parent terminates the helper and attempts exact-identifier cleanup within the remaining budget.</p>
+<h2>Compatibility and credentials</h2>
+<p>The export and dependency are optional and lazy. Existing providers and Agent Server are unchanged. Serialized construction settings contain the workspace discriminator and start a fresh VM when reconstructed. Environment values, runtime handles, endpoint and generated authentication are excluded from dumps and repr. Host mounts, attach, cloud, persistence and pause/resume are outside this interface.</p>
+<h2>Prerequisite contribution</h2>
+<p>The Smol engine binds a loopback TCP listener on port zero and registers that same listener with its shared acceptor. Its local control socket returns the actual port, which is persisted under the machine lock. The Python SDK exposes this as <code>Machine.publish_atomic</code> and an async counterpart. This avoids a free-port probe followed by a separate bind.</p>
+<h2>Verification</h2>
+<p>Default provider tests use a fake Smol SDK. Opt-in tests exercise real image startup, isolation, authentication, commands, file round trips, Git, cleanup and a deterministic conversation fixture in guest loopback. Published-wheel, image-digest and host-architecture evidence is required for each advertised platform.</p>
+</html>

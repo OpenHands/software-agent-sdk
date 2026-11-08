@@ -2965,6 +2965,9 @@ dependencies = [
 agent-sandbox = [
     { name = "k8s-agent-sandbox" },
 ]
+smol = [
+    { name = "smolmachines" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -2973,8 +2976,9 @@ requires-dist = [
     { name = "openhands-agent-server", editable = "openhands-agent-server" },
     { name = "openhands-sdk", editable = "openhands-sdk" },
     { name = "pydantic", specifier = ">=2.13.5" },
+    { name = "smolmachines", marker = "extra == 'smol'", specifier = ">=1.32.4,<1.34" },
 ]
-provides-extras = ["agent-sandbox"]
+provides-extras = ["smol", "agent-sandbox"]
 
 [[package]]
 name = "opentelemetry-api"
@@ -7087,6 +7091,16 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68a0e064b6af791aa332cf192da575fd474ed7d6f16a2/six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81", size = 34031, upload-time = "2024-12-04T17:35:28.174Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
+]
+
+[[package]]
+name = "smolmachines"
+version = "1.32.4"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e6/e0/a2764fd636260c62224d424887139fbe5be29d7cc29cf2c5544b310ad274/smolmachines-1.32.4-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:1ec9dd6371ce3363e70bc5c059735dc058fd6e8b8e36e1074af23e5a2cc58cb4", size = 43890694, upload-time = "2026-10-28T11:40:25.177Z" },
+    { url = "https://files.pythonhosted.org/packages/17/c3/4503faf3a6237a4fccc6a1f23e0b982790fb68f496e4cf089f298fe5622a/smolmachines-1.32.4-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:a3c070c83e5f8f18a1833483595fcc49277c39cc4b5276237b84283d5ab5b4f2", size = 42419704, upload-time = "2026-10-28T11:40:29.037Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/ec/0e037854cc9cf08a85dc98e51485f9cefed9404183c82dfd78a91dcff355/smolmachines-1.32.4-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:dcbd0f51c26fb51ee19c7bd87ac0c11ca17d09fabf3bc593121cad43cd95bf56", size = 44489257, upload-time = "2026-10-28T11:40:34.446Z" },
 ]
 
 [[package]]
