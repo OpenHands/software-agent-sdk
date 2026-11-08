@@ -32,6 +32,7 @@ from openhands.sdk.conversation.types import (
     ASK_TAG_KEY,
     BOARD_TAG_KEYS,
     CONVERSATION_SENDER_PREFIX,
+    GOAL_LOOP_SENDER,
     PROJECT_TAG_KEY,
     RESOLVED_TAG_KEY,
     TURN_TAG_KEY,
@@ -202,6 +203,10 @@ class ConversationOutcomeSubscriber(Subscriber[Event]):
 
     def _handle(self, event: Event) -> None:
         if isinstance(event, MessageEvent):
+            if event.source == "user" and event.sender == GOAL_LOOP_SENDER:
+                # A /goal loop's nudge continues the current turn: the person
+                # did not write it and its starter stays the same.
+                return
             if event.source == "user" and _is_awareness_note(event):
                 # A copy for the coordinator's awareness, saved without a run:
                 # it neither answers the coordinator nor starts a turn.

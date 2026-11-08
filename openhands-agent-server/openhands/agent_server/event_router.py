@@ -236,7 +236,9 @@ async def batch_get_conversation_events(
                 "for confirmation; nothing was saved"
             )
         },
-        422: {"description": "The sender conversation cannot send this message"},
+        # 422 also answers when the sender conversation cannot send this
+        # message; declaring it here would replace FastAPI's validation
+        # error schema in the published contract.
         429: {"description": "Message saved but server run capacity is full"},
     },
 )

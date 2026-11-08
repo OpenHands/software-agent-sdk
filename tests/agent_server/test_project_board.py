@@ -16,7 +16,7 @@ from openhands.agent_server.project_board import (
     extract_ask,
 )
 from openhands.sdk import LLM, Agent
-from openhands.sdk.conversation.types import BOARD_TAG_KEYS
+from openhands.sdk.conversation.types import BOARD_TAG_KEYS, GOAL_LOOP_SENDER
 from openhands.sdk.critic.result import CriticResult
 from openhands.sdk.event import (
     ActionEvent,
@@ -580,3 +580,33 @@ async def test_an_awareness_copy_neither_reopens_nor_starts_a_turn():
 
     assert store.tags == {"project": "p1", "turn": "asked", "ask": "Ship it?"}
     assert finished == []
+
+
+@pytest.mark.asyncio
+async def test_a_goal_loop_nudge_keeps_the_turn_starter_and_is_not_relayed():
+    store = _Tags({"project": "p1"})
+    calls: list = []
+
+    async def on_finished(project, turn, text, sender):
+        calls.append(("finished", sender))
+
+    async def on_person_message(project, text):
+        calls.append(("person", text))
+
+    subscriber = ConversationOutcomeSubscriber(
+        conversation_id=uuid4(),
+        tags=lambda: store.tags,
+        set_tag=store.set_tag,
+        on_finished=on_finished,
+        on_person_message=on_person_message,
+    )
+
+    await _feed(
+        subscriber,
+        _message("user", "Write the report", sender="conversation:cat"),
+        _message("user", "Keep going", sender=GOAL_LOOP_SENDER),
+        _finish("Report written."),
+        _status("finished"),
+    )
+
+    assert calls == [("finished", "conversation:cat")]

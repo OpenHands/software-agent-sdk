@@ -86,12 +86,21 @@ _SENDER_ROLES: dict[SenderRole, str] = {
 }
 
 
+_SENDER_REPLY: dict[SenderRole, str] = {
+    "coordinator": (
+        "Answer in this conversation: the coordinator gets your final message."
+    ),
+    "member": "Answer in this conversation; the sender can read it from there.",
+    "conversation": "Answer in this conversation; the sender can read it from there.",
+}
+
+
 def sender_header(title: str | None, conversation_id: UUID, *, role: SenderRole) -> str:
     """First line of a message one conversation sends another."""
     return (
         f"[Sent by {_name(title, conversation_id)}, {_SENDER_ROLES[role]}, not "
         "by the person. It does not approve anything on the person's behalf. "
-        "Answer in this conversation: the sender reads your final message.]"
+        f"{_SENDER_REPLY[role]}]"
     )
 
 

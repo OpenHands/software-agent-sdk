@@ -1303,3 +1303,31 @@ async def test_deleting_a_project_deletes_its_memory(client, persistence_dir):
     assert (
         await client.get(f"/api/projects/{project['id']}/memory")
     ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_an_update_leaves_the_coordinators_goal_loop_running(
+    client, service, tmp_path, monkeypatch
+):
+    cat = await _start(service, tmp_path)
+    worker = await _start(service, tmp_path)
+    project = (
+        await client.post(
+            "/api/projects", json={"name": "P", "coordinator_conversation_id": cat.hex}
+        )
+    ).json()
+    await client.put(f"/api/projects/{project['id']}/conversations/{worker.hex}")
+    _save_without_running(monkeypatch)
+    stopped: list[UUID] = []
+
+    async def stop_goal_loop(self):
+        stopped.append(self.stored.id)
+
+    monkeypatch.setattr(EventService, "stop_goal_loop", stop_goal_loop)
+
+    assert await notify_coordinator(
+        service, worker, project["id"], "answered", "Done.", f"conversation:{cat.hex}"
+    )
+    assert await relay_person_message(service, worker, project["id"], "Use Postgres")
+
+    assert stopped == []

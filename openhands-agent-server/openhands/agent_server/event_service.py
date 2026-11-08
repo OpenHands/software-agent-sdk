@@ -63,7 +63,10 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
-from openhands.sdk.conversation.types import ConversationCallbackType
+from openhands.sdk.conversation.types import (
+    GOAL_LOOP_SENDER,
+    ConversationCallbackType,
+)
 from openhands.sdk.credential import (
     CredentialBindingError,
     CredentialNeedsReauthentication,
@@ -911,6 +914,7 @@ class EventService:
         run_slot: RunSlot | None = None,
         refuse_pending_confirmation: bool = False,
         sender: str | None = None,
+        keep_goal_loop: bool = False,
     ) -> SendMessageRunOutcome | None:
         """Append a message and, with ``run``, start a run to handle it.
 
@@ -920,6 +924,9 @@ class EventService:
         With ``refuse_pending_confirmation`` a conversation waiting for
         confirmation keeps the message but is not run, and this raises
         ``ValueError("waiting_for_confirmation")`` (see :meth:`run`).
+
+        ``keep_goal_loop`` leaves an active ``/goal`` loop running, for
+        messages the server delivers rather than the person writes.
 
         Returns:
             ``None`` without ``run``. Otherwise ``"started"`` when a run was
@@ -932,7 +939,7 @@ class EventService:
             raise ValueError("inactive_service")
         # A normal user message supersedes any active /goal loop in this
         # conversation. The goal loop's own messages pass _from_goal_loop=True.
-        if not _from_goal_loop:
+        if not (_from_goal_loop or keep_goal_loop):
             await self.stop_goal_loop()
         explicit_interrupt_generation = self._explicit_interrupt_generation
         loop = asyncio.get_running_loop()
@@ -1989,7 +1996,12 @@ class EventService:
         try:
             await _emit_status(active=True, status="running")
             nudge = RESUME_PROMPT if resume else controller.start()
-            await self.send_message(_user(nudge), run=False, _from_goal_loop=True)
+            await self.send_message(
+                _user(nudge),
+                run=False,
+                _from_goal_loop=True,
+                sender=GOAL_LOOP_SENDER,
+            )
             while True:
                 try:
                     await self.run()
@@ -2035,7 +2047,10 @@ class EventService:
                 # feedback (score + what's missing), not just the final one.
                 await _emit_status(active=True, status="running", verdict=step.verdict)
                 await self.send_message(
-                    _user(step.followup), run=False, _from_goal_loop=True
+                    _user(step.followup),
+                    run=False,
+                    _from_goal_loop=True,
+                    sender=GOAL_LOOP_SENDER,
                 )
         except asyncio.CancelledError:
             logger.info("Goal loop cancelled")

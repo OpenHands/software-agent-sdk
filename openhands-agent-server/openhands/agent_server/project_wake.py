@@ -122,6 +122,7 @@ async def _deliver(
             run=run,
             refuse_pending_confirmation=run,
             sender=conversation_sender(member_id),
+            keep_goal_loop=True,
         )
     except ValueError as exc:
         if str(exc) != "waiting_for_confirmation":

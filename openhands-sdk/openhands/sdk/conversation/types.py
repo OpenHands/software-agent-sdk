@@ -52,6 +52,12 @@ The rest is the sending conversation's id (hex). A ``sender`` of ``None`` means
 the person wrote the message."""
 
 
+GOAL_LOOP_SENDER = "goal_loop"
+"""``sender`` of the messages a ``/goal`` loop sends its own conversation: the
+goal and each round's follow-up. They continue the person's turn; they are not
+the person's words."""
+
+
 def conversation_sender(conversation_id: uuid.UUID) -> str:
     """The ``sender`` recorded on a message another conversation sent."""
     return f"{CONVERSATION_SENDER_PREFIX}{conversation_id.hex}"

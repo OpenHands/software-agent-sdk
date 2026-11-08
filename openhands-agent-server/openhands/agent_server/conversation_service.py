@@ -2603,6 +2603,9 @@ class ConversationService:
         )
 
         get_settings_store(config)
+        # Likewise the projects store: board callbacks, the coordinator relay
+        # and a child's memory note read it without a config.
+        get_projects_store(config)
         return ConversationService(
             conversations_dir=config.conversations_path,
             webhook_specs=config.webhooks,
