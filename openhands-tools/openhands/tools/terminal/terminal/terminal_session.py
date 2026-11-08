@@ -93,6 +93,9 @@ def _remove_echoed_line(command_output: str, command: str) -> str:
     )
 
 
+_PS1_SUFFIX_ECHO_MARKER = "$oh1 = $?"
+
+
 def _remove_powershell_echo(command_output: str, command: str) -> str:
     command_output = command_output.lstrip()
     command = command.lstrip()
@@ -100,6 +103,12 @@ def _remove_powershell_echo(command_output: str, command: str) -> str:
     if command and command in first_line:
         _, separator, rest = command_output.partition("\n")
         command_output = rest if separator else ""
+    # PowerShell echoes the metadata suffix line back; it is input, not output.
+    command_output = "".join(
+        line
+        for line in command_output.splitlines(keepends=True)
+        if _PS1_SUFFIX_ECHO_MARKER not in line
+    )
     return re.sub(r"(?:\r?\n)?PS [^\r\n]*>\s*$", "", command_output).lstrip()
 
 

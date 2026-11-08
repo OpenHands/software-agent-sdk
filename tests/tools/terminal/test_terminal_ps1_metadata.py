@@ -393,3 +393,18 @@ def test_issue_2416_missing_ps1_metadata_graceful_fallback():
     assert obs.exit_code == -1
     assert "139 passed" in obs.text
     assert "PS1 metadata" in obs.metadata.suffix
+
+
+def test_echoed_metadata_suffix_is_not_command_output():
+    """PowerShell echoes the suffix line back; it must not reach the observation."""
+    from openhands.tools.terminal.terminal.terminal_session import (
+        _remove_powershell_echo,
+    )
+
+    output = 'Write-Output hi\n$oh1 = $?; $oh2 = $LASTEXITCODE; Write-Host "x"\nhi\n'
+
+    cleaned = _remove_powershell_echo(output, "Write-Output hi")
+
+    assert "$oh1 = $?" not in cleaned
+    assert "Write-Host" not in cleaned
+    assert cleaned.strip() == "hi"
