@@ -28,7 +28,7 @@ async def service(tmp_path) -> AsyncIterator[ConversationService]:
 
 def _set_reactions(enabled: bool) -> None:
     def apply(settings: PersistedSettings) -> PersistedSettings:
-        settings.features = {"conversation_reactions": enabled}
+        settings.experimental_features = {"conversation_reactions": enabled}
         return settings
 
     get_settings_store().update(apply)

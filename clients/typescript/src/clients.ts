@@ -71,7 +71,7 @@ export type {
 } from './client/agent-profiles-client';
 export type { MetaProfilesClientOptions } from './client/meta-profiles-client';
 export type {
-  FeatureFlag,
+  ExperimentalFeature,
   SettingsClientOptions,
   ExposeSecretsMode,
   LLMProfileSummary,

@@ -62,7 +62,9 @@ from openhands.agent_server.dependencies import (
     check_workspace_session,
 )
 from openhands.agent_server.event_service import ConversationRunLimitExceeded
-from openhands.agent_server.features_router import features_router
+from openhands.agent_server.experimental_features_router import (
+    experimental_features_router,
+)
 from openhands.agent_server.file_router import file_discovery_router, file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
@@ -627,7 +629,7 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(acp_router)
     api_router.include_router(provider_connections_router)
     api_router.include_router(mcp_router)
-    api_router.include_router(features_router)
+    api_router.include_router(experimental_features_router)
     api_router.include_router(settings_router)
     api_router.include_router(workspaces_router)
     api_router.include_router(profiles_router)

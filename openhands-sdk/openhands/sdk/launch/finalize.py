@@ -68,7 +68,7 @@ def finalize(
     additions: AgentLaunchAdditions | None = None,
     extra_suffixes: Sequence[str] = (),
     client_tools: Sequence[Tool] = (),
-    feature_tools: Sequence[Tool] = (),
+    experimental_feature_tools: Sequence[Tool] = (),
     load_memory: bool = False,
     managed_secrets: Collection[str] = (),
     launched_at: datetime | None = None,
@@ -80,7 +80,7 @@ def finalize(
     sourcing, launch additions, client tools and credentials the runtime
     manages itself.
 
-    ``feature_tools`` are tools the user turned on through a feature flag.
+    ``experimental_feature_tools`` are tools the user turned on through a feature flag.
     Only an OpenHands :class:`~openhands.sdk.agent.Agent` gets them: an ACP
     agent runs its own tools, so it is left as it is.
     """
@@ -109,8 +109,8 @@ def finalize(
         agent = _without_context_secrets(agent, managed_secrets)
     if client_tools:
         agent = _with_client_tools(agent, client_tools)
-    if feature_tools and not isinstance(agent, ACPAgent):
-        agent = _with_client_tools(agent, feature_tools)
+    if experimental_feature_tools and not isinstance(agent, ACPAgent):
+        agent = _with_client_tools(agent, experimental_feature_tools)
     return LaunchedAgent(agent=agent, profile=profile, _token=_FINALIZE_TOKEN)
 
 

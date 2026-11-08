@@ -2,13 +2,13 @@
 
 A feature is a capability the user turns on or off for themselves, such as
 emoji reactions. Each one is a yes/no switch stored in
-``PersistedSettings.features``. The tools a feature gives the agent are chosen
+``PersistedSettings.experimental_features``. The tools a feature gives the agent are chosen
 when a conversation starts, so they follow the switch for conversations started
 after it; a route that checks the switch (such as the person's reactions)
 follows it at once. Child conversations reuse their parent's agent and tools.
 Unknown keys are refused, so the list below is the whole set.
 
-To add a feature, append a :class:`FeatureDefinition` to ``FEATURES`` and read
+To add a feature, append a :class:`ExperimentalFeatureDefinition` to ``EXPERIMENTAL_FEATURES`` and read
 it where it takes effect with :func:`is_enabled`.
 """
 
@@ -20,11 +20,11 @@ from pydantic import BaseModel, Field
 from openhands.sdk.tool.spec import Tool
 
 
-FeatureKey = Literal["conversation_reactions"]
+ExperimentalFeatureKey = Literal["conversation_reactions"]
 
 
-class FeatureDefinition(BaseModel):
-    key: FeatureKey
+class ExperimentalFeatureDefinition(BaseModel):
+    key: ExperimentalFeatureKey
     label: str
     description: str
     default: bool = False
@@ -34,21 +34,21 @@ class FeatureDefinition(BaseModel):
     )
 
 
-class FeatureFlag(BaseModel):
+class ExperimentalFeature(BaseModel):
     """A feature and whether it is on for this user."""
 
-    key: FeatureKey
+    key: ExperimentalFeatureKey
     label: str
     description: str
     default: bool
     enabled: bool
 
 
-class FeatureFlagUpdate(BaseModel):
+class ExperimentalFeatureUpdate(BaseModel):
     enabled: bool
 
 
-CONVERSATION_REACTIONS = FeatureDefinition(
+CONVERSATION_REACTIONS = ExperimentalFeatureDefinition(
     key="conversation_reactions",
     label="Conversation reactions",
     description=(
@@ -60,33 +60,39 @@ CONVERSATION_REACTIONS = FeatureDefinition(
     tools=("react", "unreact"),
 )
 
-FEATURES: tuple[FeatureDefinition, ...] = (CONVERSATION_REACTIONS,)
-FEATURES_BY_KEY: dict[str, FeatureDefinition] = {f.key: f for f in FEATURES}
+EXPERIMENTAL_FEATURES: tuple[ExperimentalFeatureDefinition, ...] = (
+    CONVERSATION_REACTIONS,
+)
+EXPERIMENTAL_FEATURES_BY_KEY: dict[str, ExperimentalFeatureDefinition] = {
+    f.key: f for f in EXPERIMENTAL_FEATURES
+}
 
 
-def is_enabled(features: Mapping[str, bool], key: FeatureKey) -> bool:
+def is_enabled(features: Mapping[str, bool], key: ExperimentalFeatureKey) -> bool:
     stored = features.get(key)
-    return FEATURES_BY_KEY[key].default if stored is None else stored
+    return EXPERIMENTAL_FEATURES_BY_KEY[key].default if stored is None else stored
 
 
-def feature_flags(features: Mapping[str, bool]) -> list[FeatureFlag]:
+def experimental_feature_flags(
+    features: Mapping[str, bool],
+) -> list[ExperimentalFeature]:
     return [
-        FeatureFlag(
+        ExperimentalFeature(
             key=f.key,
             label=f.label,
             description=f.description,
             default=f.default,
             enabled=is_enabled(features, f.key),
         )
-        for f in FEATURES
+        for f in EXPERIMENTAL_FEATURES
     ]
 
 
-def feature_tools(features: Mapping[str, bool]) -> list[Tool]:
+def experimental_feature_tools(features: Mapping[str, bool]) -> list[Tool]:
     """Tools to add to an OpenHands agent for the features that are on."""
     return [
         Tool(name=name)
-        for f in FEATURES
+        for f in EXPERIMENTAL_FEATURES
         if is_enabled(features, f.key)
         for name in f.tools
     ]

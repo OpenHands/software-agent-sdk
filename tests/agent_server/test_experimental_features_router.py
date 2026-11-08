@@ -8,8 +8,10 @@ from fastapi import FastAPI
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.features import feature_tools
-from openhands.agent_server.features_router import features_router
+from openhands.agent_server.experimental_features import experimental_feature_tools
+from openhands.agent_server.experimental_features_router import (
+    experimental_features_router,
+)
 from openhands.agent_server.models import StartConversationRequest
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.sdk import LLM, Agent
@@ -24,7 +26,7 @@ async def client() -> AsyncIterator[httpx.AsyncClient]:
     app.state.config = Config(
         static_files_path=None, session_api_keys=[], secret_key=None
     )
-    app.include_router(features_router, prefix="/api")
+    app.include_router(experimental_features_router, prefix="/api")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
@@ -62,7 +64,7 @@ async def test_turning_a_feature_on_and_off_is_saved(client):
     assert off.json()["enabled"] is False
     stored = get_settings_store().load()
     assert stored is not None
-    assert stored.features == {"conversation_reactions": False}
+    assert stored.experimental_features == {"conversation_reactions": False}
 
 
 @pytest.mark.asyncio
@@ -72,12 +74,16 @@ async def test_unknown_features_are_refused(client):
     )
 
     assert response.status_code == 404
-    assert (get_settings_store().load() or PersistedSettings()).features == {}
+    assert (
+        get_settings_store().load() or PersistedSettings()
+    ).experimental_features == {}
 
 
 def test_feature_tools_follow_the_flags():
-    assert feature_tools({}) == []
-    assert [t.name for t in feature_tools({"conversation_reactions": True})] == [
+    assert experimental_feature_tools({}) == []
+    assert [
+        t.name for t in experimental_feature_tools({"conversation_reactions": True})
+    ] == [
         "react",
         "unreact",
     ]
@@ -88,12 +94,12 @@ def _runtime() -> LaunchRuntime:
 
 
 def test_finalize_adds_feature_tools_to_openhands_agents_only():
-    tools = feature_tools({"conversation_reactions": True})
+    tools = experimental_feature_tools({"conversation_reactions": True})
     agent = Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[])
     acp = ACPAgent(acp_command=["echo"])
 
-    launched = finalize(agent, _runtime(), feature_tools=tools)
-    launched_acp = finalize(acp, _runtime(), feature_tools=tools)
+    launched = finalize(agent, _runtime(), experimental_feature_tools=tools)
+    launched_acp = finalize(acp, _runtime(), experimental_feature_tools=tools)
 
     assert [t.name for t in launched.agent.tools] == ["react", "unreact"]
     assert launched_acp.agent.tools == acp.tools
@@ -116,7 +122,7 @@ async def test_new_conversations_get_reaction_tools_only_while_on(tmp_path):
         off, _ = await service.start_conversation(request())
 
         def turn_on(settings: PersistedSettings) -> PersistedSettings:
-            settings.features = {"conversation_reactions": True}
+            settings.experimental_features = {"conversation_reactions": True}
             return settings
 
         get_settings_store().update(turn_on)

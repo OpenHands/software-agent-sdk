@@ -18,9 +18,9 @@ and the REST route accepts reactions; while it is off, the route answers 409
 and new conversations do not get the tools. Flags are listed with
 `GET /api/settings/experimental` and switched with
 `PATCH /api/settings/experimental/{key}` `{"enabled": bool}`, stored in
-`PersistedSettings.features`, and read when a conversation starts.
+`PersistedSettings.experimental_features`, and read when a conversation starts.
 
-Source: `openhands-sdk/openhands/sdk/event/reaction.py`, `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py` (`react`), `openhands-sdk/openhands/sdk/agent/agent.py` (`follow_up_events`), `openhands-tools/openhands/tools/reaction/`, `openhands-agent-server/openhands/agent_server/event_router.py`, `openhands-agent-server/openhands/agent_server/features.py`, `openhands-agent-server/openhands/agent_server/features_router.py`, `openhands-sdk/openhands/sdk/launch/finalize.py` (`feature_tools`)
+Source: `openhands-sdk/openhands/sdk/event/reaction.py`, `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py` (`react`), `openhands-sdk/openhands/sdk/agent/agent.py` (`follow_up_events`), `openhands-tools/openhands/tools/reaction/`, `openhands-agent-server/openhands/agent_server/event_router.py`, `openhands-agent-server/openhands/agent_server/experimental_features.py`, `openhands-agent-server/openhands/agent_server/experimental_features_router.py`, `openhands-sdk/openhands/sdk/launch/finalize.py` (`experimental_feature_tools`)
 
 Needs: `llm`
 

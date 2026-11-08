@@ -26,7 +26,7 @@ from openhands.agent_server.dependencies import (
     get_event_service,
 )
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.features import is_enabled
+from openhands.agent_server.experimental_features import is_enabled
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
     EventSortOrder,
@@ -391,7 +391,7 @@ async def react_to_message(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cannot read the settings file to check the feature flag",
         )
-    if not is_enabled(settings.features, "conversation_reactions"):
+    if not is_enabled(settings.experimental_features, "conversation_reactions"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Conversation reactions are turned off",

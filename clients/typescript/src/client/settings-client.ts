@@ -23,7 +23,7 @@ import type {
 import type { MCPServer, MCPServerPatch } from '../models/mcp-settings';
 
 /** A user-facing feature flag and whether it is on (`GET /api/settings/experimental`). */
-export interface FeatureFlag {
+export interface ExperimentalFeature {
   key: string;
   label: string;
   description: string;
@@ -59,9 +59,9 @@ export class SettingsClient {
     });
   }
 
-  /** List the features the user can turn on or off, and whether each is on. */
-  async listExperimentalFeatures(): Promise<FeatureFlag[]> {
-    const response = await this.client.get<FeatureFlag[]>('/api/settings/experimental');
+  /** List the experimental features the user can turn on or off, and whether each is on. */
+  async listExperimentalFeatures(): Promise<ExperimentalFeature[]> {
+    const response = await this.client.get<ExperimentalFeature[]>('/api/settings/experimental');
     return response.data;
   }
 
@@ -69,8 +69,8 @@ export class SettingsClient {
    * Turn one feature on or off. It applies to conversations started after the
    * change. An unknown key is a 404.
    */
-  async updateExperimentalFeature(key: string, enabled: boolean): Promise<FeatureFlag> {
-    const response = await this.client.patch<FeatureFlag>(
+  async updateExperimentalFeature(key: string, enabled: boolean): Promise<ExperimentalFeature> {
+    const response = await this.client.patch<ExperimentalFeature>(
       `/api/settings/experimental/${encodeURIComponent(key)}`,
       { enabled }
     );
