@@ -24,7 +24,11 @@ from openhands.sdk.event import (
     ObservationEvent,
     ReactionEvent,
 )
-from openhands.sdk.event.reaction import check_reaction_emoji, find_reaction_target
+from openhands.sdk.event.reaction import (
+    ReactionEmoji,
+    check_reaction_emoji,
+    find_reaction_target,
+)
 from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
 from openhands.sdk.tool import Tool
 from openhands.sdk.tool.builtins.finish import FinishAction
@@ -272,7 +276,7 @@ def test_execute_tool_from_a_worker_does_not_wait_for_the_run_loops_lock(
     _user_message(conversation)
     results: list[object] = []
 
-    def worker(emoji: str) -> None:
+    def worker(emoji: ReactionEmoji) -> None:
         results.append(conversation.execute_tool("react", ReactAction(emoji=emoji)))
 
     conversation._step_holds_state_lock = True
@@ -291,8 +295,7 @@ def test_execute_tool_from_a_worker_does_not_wait_for_the_run_loops_lock(
                 e for e in conversation.state.events if isinstance(e, ReactionEvent)
             ]
             # What the run loop does right after the step.
-            conversation._step_holds_state_lock = False
-            conversation._emit_deferred_events()
+            conversation._end_step()
     finally:
         conversation._step_holds_state_lock = False
 
@@ -303,3 +306,56 @@ def test_execute_tool_from_a_worker_does_not_wait_for_the_run_loops_lock(
     ]
     assert sorted(e.emoji for e in on_branch) == ["eyes", "tada"]
     assert on_branch[1].parent_id == on_branch[0].id
+
+
+class _PausingLock:
+    """A lock that, on a worker's first acquire, lets the main thread run
+    first, to land a step's end between the worker's steps."""
+
+    def __init__(self, worker_reached, step_ended):
+        self._lock = threading.Lock()
+        self._worker_reached = worker_reached
+        self._step_ended = step_ended
+
+    def __enter__(self):
+        if threading.current_thread() is not threading.main_thread():
+            if not self._worker_reached.is_set():
+                self._worker_reached.set()
+                assert self._step_ended.wait(timeout=5)
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self._lock.release()
+
+
+def test_execute_tool_racing_the_end_of_a_step_keeps_its_reaction(conversation):
+    # A direct call that sees a step running must not queue its events after
+    # that step has drained the queue: they would never be recorded although
+    # the call returned success. Here the step ends just as the call reaches
+    # the queue.
+    _user_message(conversation)
+    worker_reached, step_ended = threading.Event(), threading.Event()
+    conversation._deferred_events_lock = _PausingLock(worker_reached, step_ended)
+    results: list[object] = []
+
+    def worker() -> None:
+        results.append(conversation.execute_tool("react", ReactAction(emoji="eyes")))
+
+    thread = threading.Thread(target=worker)
+    conversation._step_holds_state_lock = True
+    try:
+        with conversation._state:
+            thread.start()
+            assert worker_reached.wait(timeout=5)
+            conversation._end_step()
+        step_ended.set()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    finally:
+        conversation._step_holds_state_lock = False
+
+    assert len(results) == 1
+    assert not conversation._deferred_events
+    saved = [e for e in conversation.state.events if isinstance(e, ReactionEvent)]
+    assert [e.emoji for e in saved] == ["eyes"]

@@ -2239,8 +2239,7 @@ class LocalConversation(BaseConversation):
                             self, on_event=self._on_event, on_token=self._on_token
                         )
                     finally:
-                        self._step_holds_state_lock = False
-                        self._emit_deferred_events()
+                        self._end_step()
                     iteration += 1
 
                     # Check for non-finished terminal conditions
@@ -2519,8 +2518,7 @@ class LocalConversation(BaseConversation):
                                 on_token=self._on_token,
                             )
                         finally:
-                            self._step_holds_state_lock = False
-                            self._emit_deferred_events()
+                            self._end_step()
                         iteration += 1
 
                         # astep releases the state lock for the LLM call, so a
@@ -3420,26 +3418,34 @@ class LocalConversation(BaseConversation):
         follow_ups = observation.follow_up_events()
         if not follow_ups:
             return observation
-        if self._step_holds_state_lock and not self._state.owned():
-            # A step holds the state lock on another thread, possibly waiting
-            # for this very call (a tool on a worker thread), so waiting for
-            # the lock could deadlock. Hand the events to the run loop instead,
-            # as the step's parallel tool calls do with theirs.
-            with self._deferred_events_lock:
+        # Decide and queue under the queue lock: the run loop clears the step
+        # flag and drains the queue under the same lock, so events queued for
+        # a step are never left behind when that step ends.
+        with self._deferred_events_lock:
+            if self._step_holds_state_lock and not self._state.owned():
+                # A step holds the state lock on another thread, possibly
+                # waiting for this very call (a tool on a worker thread), so
+                # waiting for the lock could deadlock. Hand the events to the
+                # run loop instead, as the step's parallel tool calls do.
                 self._deferred_events.extend(follow_ups)
-            return observation
+                return observation
         with self._state:
             for event in follow_ups:
                 self._on_event(event)
         return observation
 
-    def _emit_deferred_events(self) -> None:
-        """Record the events direct tool calls deferred during a step.
+    def _end_step(self) -> None:
+        """End a step: clear its flag and record the events direct tool
+        calls deferred during it.
 
         Called by the run loop right after each step, while it holds the
-        state lock, so they land after the step's own events.
+        state lock, so they land after the step's own events. Clearing the
+        flag and draining happen under the queue lock that ``execute_tool``
+        decides under, so a call either queues before the drain or records
+        its events itself once the state lock is free.
         """
         with self._deferred_events_lock:
+            self._step_holds_state_lock = False
             events, self._deferred_events = self._deferred_events, []
         for event in events:
             self._on_event(event)
