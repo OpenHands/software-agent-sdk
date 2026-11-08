@@ -1,3 +1,4 @@
+import pytest
 from litellm.exceptions import (
     APIConnectionError,
     BadRequestError,
@@ -138,18 +139,15 @@ def test_is_context_window_exceeded_negative():
     )
 
 
-def test_looks_like_auth_error_positive():
-    assert (
-        looks_like_auth_error(BadRequestError("Invalid API key", MODEL, PROVIDER))
-        is True
-    )
-
-
-def test_looks_like_auth_error_negative():
-    assert (
-        looks_like_auth_error(BadRequestError("Something else", MODEL, PROVIDER))
-        is False
-    )
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        pytest.param("Invalid API key", True, id="positive"),
+        pytest.param("Something else", False, id="negative"),
+    ],
+)
+def test_looks_like_auth_error(message: str, expected: bool):
+    assert looks_like_auth_error(BadRequestError(message, MODEL, PROVIDER)) is expected
 
 
 def test_is_prompt_cache_too_small_positive():
@@ -184,47 +182,50 @@ def test_is_prompt_cache_too_small_context_window_not_cache_too_small():
     assert is_context_window_exceeded(ctx_error) is True
 
 
-def test_is_quota_exhaustion_error_usage_limit_reached():
-    """OpenAI's ``usage_limit_reached`` is a hard quota outcome, not a transient 429."""
-    error = RateLimitError(
-        message=(
-            'RateLimitError: OpenAIException - {"error":{"type":"usage_limit_reached",'
-            '"message":"The usage limit has been reached","plan_type":"team"}}'
+@pytest.mark.parametrize(
+    ("message", "llm_provider", "model", "expected"),
+    [
+        # OpenAI's usage_limit_reached is a hard quota outcome, not a transient 429.
+        pytest.param(
+            (
+                "RateLimitError: OpenAIException - "
+                '{"error":{"type":"usage_limit_reached",'
+                '"message":"The usage limit has been reached","plan_type":"team"}}'
+            ),
+            "openai",
+            "gpt-5.6-sol",
+            True,
+            id="usage_limit_reached",
         ),
-        llm_provider="openai",
-        model="gpt-5.6-sol",
-    )
-    assert is_quota_exhaustion_error(error) is True
-
-
-def test_is_quota_exhaustion_error_insufficient_quota():
-    error = RateLimitError(
-        message=(
-            'RateLimitError: OpenAIException - {"error":{"type":"insufficient_quota",'
-            '"message":"You exceeded your current quota"}}'
+        pytest.param(
+            (
+                "RateLimitError: OpenAIException - "
+                '{"error":{"type":"insufficient_quota",'
+                '"message":"You exceeded your current quota"}}'
+            ),
+            "openai",
+            "gpt-5.6-sol",
+            True,
+            id="insufficient_quota",
         ),
-        llm_provider="openai",
-        model="gpt-5.6-sol",
-    )
-    assert is_quota_exhaustion_error(error) is True
-
-
-def test_is_quota_exhaustion_error_transient_rate_limit():
-    """A plain transient 429 is NOT a quota exhaustion error."""
-    error = RateLimitError(
-        message="RateLimitError: Rate limit exceeded",
-        llm_provider="openai",
-        model="gpt-5.6-sol",
-    )
-    assert is_quota_exhaustion_error(error) is False
-
-
-def test_is_quota_exhaustion_error_transient_quota_metric():
-    error = RateLimitError(
-        message=(
-            "Quota exceeded for quota metric Generate Content API requests per minute"
+        pytest.param(
+            "RateLimitError: Rate limit exceeded",
+            "openai",
+            "gpt-5.6-sol",
+            False,
+            id="transient_rate_limit",
         ),
-        llm_provider="vertex_ai",
-        model="gemini-test",
-    )
-    assert is_quota_exhaustion_error(error) is False
+        pytest.param(
+            "Quota exceeded for quota metric Generate Content API requests per minute",
+            "vertex_ai",
+            "gemini-test",
+            False,
+            id="transient_quota_metric",
+        ),
+    ],
+)
+def test_is_quota_exhaustion_error(
+    message: str, llm_provider: str, model: str, expected: bool
+):
+    error = RateLimitError(message=message, llm_provider=llm_provider, model=model)
+    assert is_quota_exhaustion_error(error) is expected

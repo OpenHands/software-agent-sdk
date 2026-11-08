@@ -39,9 +39,9 @@ class EmptyMCPClient:
 
 
 class RecordingMCPToolProvider:
-    """Records the MCP config that reaches tool creation, and starts nothing."""
+    """Records each MCP server that reaches tool creation, and starts nothing."""
 
-    def __init__(self, created: list[dict[str, MCPServer]]):
+    def __init__(self, created: dict[str, MCPServer]):
         self.created = created
         self.client = EmptyMCPClient()
 
@@ -53,7 +53,7 @@ class RecordingMCPToolProvider:
         on_tools_changed: Any = None,
         on_tools_reconciled: Any = None,
     ) -> MCPClient:
-        self.created.append(mcp_config)
+        self.created.update(mcp_config)
         self.client._tools_reconciled_callback = on_tools_reconciled
         return cast(MCPClient, self.client)
 
@@ -179,7 +179,7 @@ class TestMCPServers:
     """``mcp.json`` servers reach actual tool creation, fully expanded."""
 
     def test_servers_reach_tool_creation(self, agent: Agent, workspace: Path):
-        created: list[dict[str, MCPServer]] = []
+        created: dict[str, MCPServer] = {}
         conversation = conversation_with(
             "full-package",
             agent,
@@ -192,13 +192,13 @@ class TestMCPServers:
 
         assert set(conversation.agent.mcp_config) == {"local-tools", "remote-api"}
         assert created, "plugin MCP servers never reached create_tools()"
-        assert set(created[-1]) == {"local-tools", "remote-api"}
+        assert set(created) == {"local-tools", "remote-api"}
         conversation.close()
 
     def test_placeholders_are_expanded_on_the_constructed_server(
         self, agent: Agent, workspace: Path, plugin_data_root: Path
     ):
-        created: list[dict[str, MCPServer]] = []
+        created: dict[str, MCPServer] = {}
         conversation = conversation_with(
             "full-package",
             agent,
@@ -212,7 +212,7 @@ class TestMCPServers:
         data = str(
             get_plugin_data_dir(fixture("full-package"), data_root=plugin_data_root)
         )
-        server = created[-1]["local-tools"]
+        server = created["local-tools"]
         assert server.args == ["--root", root, "--cache", f"{data}/cache"]
         assert env_of(server)["TOOLS_STATE"] == f"{data}/state"
         assert server.cwd == f"{data}/work"
@@ -224,7 +224,7 @@ class TestMCPServers:
         self, agent: Agent, workspace: Path
     ):
         """§7.2.1: the transport the entry declares is the one tools connect with."""
-        created: list[dict[str, MCPServer]] = []
+        created: dict[str, MCPServer] = {}
         conversation = conversation_with(
             "full-package",
             agent,
@@ -234,8 +234,8 @@ class TestMCPServers:
 
         conversation._ensure_agent_ready()
 
-        assert created[-1]["local-tools"].transport == "stdio"
-        assert created[-1]["remote-api"].transport == "streamable-http"
+        assert created["local-tools"].transport == "stdio"
+        assert created["remote-api"].transport == "streamable-http"
         conversation.close()
 
     def test_placeholders_are_left_untouched_elsewhere(
@@ -246,7 +246,7 @@ class TestMCPServers:
         The configured ``Host`` is gone by this point: the client generates that
         one itself, so it never reaches the server that gets built.
         """
-        created: list[dict[str, MCPServer]] = []
+        created: dict[str, MCPServer] = {}
         conversation = conversation_with(
             "full-package",
             agent,
@@ -256,8 +256,8 @@ class TestMCPServers:
 
         conversation._ensure_agent_ready()
 
-        stdio = created[-1]["local-tools"]
-        remote = created[-1]["remote-api"]
+        stdio = created["local-tools"]
+        remote = created["remote-api"]
         assert stdio.command == str(fixture("full-package") / "bin" / "serve.sh")
         assert "${PLUGIN_ROOT}" in env_of(stdio)
         assert remote.url == "https://api.example.com/mcp?root=${PLUGIN_ROOT}"
@@ -328,7 +328,7 @@ class TestFailureBoundaries:
     def test_broken_entries_do_not_stop_the_conversation(
         self, agent: Agent, workspace: Path
     ):
-        created: list[dict[str, MCPServer]] = []
+        created: dict[str, MCPServer] = {}
         conversation = conversation_with(
             "partial-failures",
             agent,
@@ -341,7 +341,7 @@ class TestFailureBoundaries:
         assert conversation.agent.agent_context is not None
         assert [s.name for s in conversation.agent.agent_context.skills] == ["good"]
         assert set(conversation.agent.mcp_config) == {"good-server"}
-        assert set(created[-1]) == {"good-server"}
+        assert set(created) == {"good-server"}
         conversation.close()
 
     @pytest.mark.parametrize(
@@ -367,7 +367,7 @@ class TestFailureBoundaries:
         self, agent: Agent, workspace: Path
     ):
         """An ``mcp.json`` targeting another version disables MCP, not the plugin."""
-        created: list[dict[str, MCPServer]] = []
+        created: dict[str, MCPServer] = {}
         conversation = conversation_with(
             "mcp-version-mismatch",
             agent,

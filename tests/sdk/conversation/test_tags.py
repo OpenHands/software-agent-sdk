@@ -27,24 +27,18 @@ def test_validate_tags_empty_dict():
     assert _validate_tags({}) == {}
 
 
-def test_validate_tags_invalid_key_uppercase():
+@pytest.mark.parametrize(
+    "tags",
+    [
+        pytest.param({"Env": "prod"}, id="uppercase"),
+        pytest.param({"my-key": "value"}, id="hyphen"),
+        pytest.param({"my_key": "value"}, id="underscore"),
+        pytest.param({"my key": "value"}, id="spaces"),
+    ],
+)
+def test_validate_tags_invalid_key(tags: dict[str, str]):
     with pytest.raises(ValueError, match="lowercase alphanumeric"):
-        _validate_tags({"Env": "prod"})
-
-
-def test_validate_tags_invalid_key_with_hyphen():
-    with pytest.raises(ValueError, match="lowercase alphanumeric"):
-        _validate_tags({"my-key": "value"})
-
-
-def test_validate_tags_invalid_key_with_underscore():
-    with pytest.raises(ValueError, match="lowercase alphanumeric"):
-        _validate_tags({"my_key": "value"})
-
-
-def test_validate_tags_invalid_key_with_spaces():
-    with pytest.raises(ValueError, match="lowercase alphanumeric"):
-        _validate_tags({"my key": "value"})
+        _validate_tags(tags)
 
 
 def test_validate_tags_value_max_length():
@@ -59,14 +53,16 @@ def test_validate_tags_value_exceeds_max_length():
         _validate_tags({"key": long_value})
 
 
-def test_validate_tags_numeric_key():
-    result = _validate_tags({"123": "value"})
-    assert result == {"123": "value"}
-
-
-def test_validate_tags_alphanumeric_key():
-    result = _validate_tags({"abc123": "value"})
-    assert result == {"abc123": "value"}
+@pytest.mark.parametrize(
+    "key",
+    [
+        pytest.param("123", id="numeric"),
+        pytest.param("abc123", id="alphanumeric"),
+    ],
+)
+def test_validate_tags_accepts_key(key: str):
+    result = _validate_tags({key: "value"})
+    assert result == {key: "value"}
 
 
 def test_tags_in_pydantic_model():

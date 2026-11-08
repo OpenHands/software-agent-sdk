@@ -1,0 +1,22 @@
+{
+  "__expected__": {
+    "agent_kind": "openhands",
+    "llm.model": "fixture-v8-mcp-llm",
+    "mcp_config.good.command": "uvx",
+    "mcp_config.good.args": ["mcp-server-fetch"]
+  },
+  "schema_version": 8,
+  "agent_kind": "openhands",
+  "llm": {
+    "model": "fixture-v8-mcp-llm"
+  },
+  "mcp_config": {
+    "good": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    },
+    "qa-empty": {
+      "enabled": true
+    }
+  }
+}

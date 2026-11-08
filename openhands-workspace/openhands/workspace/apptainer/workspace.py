@@ -200,21 +200,27 @@ class ApptainerWorkspace(RemoteWorkspace):
 
         # Run container
         self._instance_name = f"agent-server-{uuid.uuid4()}"
-        self._start_container()
+        try:
+            self._start_container()
 
-        # Set host for RemoteWorkspace to use
-        object.__setattr__(self, "host", f"http://localhost:{self.host_port}")
-        # Apptainer inherits SESSION_API_KEY from environment by default
-        # We need to match it if present
-        session_api_key = os.environ.get("SESSION_API_KEY")
-        object.__setattr__(self, "api_key", session_api_key)
+            # Set host for RemoteWorkspace to use
+            object.__setattr__(self, "host", f"http://localhost:{self.host_port}")
+            # Apptainer inherits SESSION_API_KEY from environment by default
+            # We need to match it if present
+            session_api_key = os.environ.get("SESSION_API_KEY")
+            object.__setattr__(self, "api_key", session_api_key)
 
-        # Wait for container to be healthy
-        self._wait_for_health(timeout=self.health_check_timeout)
-        logger.info("Apptainer workspace is ready at %s", self.host)
+            # Wait for container to be healthy
+            self._wait_for_health(timeout=self.health_check_timeout)
+            logger.info("Apptainer workspace is ready at %s", self.host)
 
-        # Now initialize the parent RemoteWorkspace with the container URL
-        super().model_post_init(context)
+            # Now initialize the parent RemoteWorkspace with the container URL
+            super().model_post_init(context)
+        except BaseException:
+            # A failed startup never returns a workspace to clean up, so stop
+            # the `apptainer run` process that may already be running.
+            self.cleanup()
+            raise
 
     def _prepare_sif_image(self) -> str:
         """Prepare the SIF image file from server_image."""
@@ -310,10 +316,12 @@ class ApptainerWorkspace(RemoteWorkspace):
             str(self.host_port),
         ]
 
-        # Start the server process in the background in separate process group
+        # Start the server process in the background in separate process group.
+        # Without a log thread nothing reads a pipe, and a full pipe would block
+        # the server, so its output is discarded instead.
         self._process = subprocess.Popen(
             server_cmd,
-            stdout=subprocess.PIPE,
+            stdout=subprocess.PIPE if self.detach_logs else subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
             text=True,
             start_new_session=True,
@@ -372,8 +380,11 @@ class ApptainerWorkspace(RemoteWorkspace):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[no-untyped-def]
-        """Context manager exit - cleans up the Apptainer container."""
-        self.cleanup()
+        """Send the completion callback, then clean up the Apptainer container."""
+        try:
+            super().__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            self.cleanup()
 
     def __del__(self) -> None:
         """Clean up the Apptainer container when the workspace is destroyed."""
