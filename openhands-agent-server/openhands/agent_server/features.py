@@ -1,4 +1,4 @@
-"""User-facing feature flags.
+"""User-facing experimental features (feature flags).
 
 A feature is a capability the user turns on or off for themselves, such as
 emoji reactions. Each one is a yes/no switch stored in

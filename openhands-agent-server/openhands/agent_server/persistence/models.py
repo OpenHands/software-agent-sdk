@@ -202,7 +202,7 @@ class PersistedSettings(BaseModel):
         description=(
             "Feature flags the user turned on or off, by feature key. A key "
             "that is absent uses the feature's default. Changed through "
-            "PATCH /api/settings/features/{key}; see "
+            "PATCH /api/settings/experimental/{key}; see "
             "openhands.agent_server.features for the known features."
         ),
     )

@@ -2304,17 +2304,19 @@ describe('Auxiliary API clients', () => {
     ) as typeof fetch;
 
     const client = new SettingsClient({ host: 'http://example.com' });
-    await expect(client.listFeatures()).resolves.toEqual([{ ...flag, enabled: false }]);
-    await expect(client.updateFeature('conversation_reactions', true)).resolves.toEqual(flag);
+    await expect(client.listExperimentalFeatures()).resolves.toEqual([{ ...flag, enabled: false }]);
+    await expect(client.updateExperimentalFeature('conversation_reactions', true)).resolves.toEqual(
+      flag
+    );
 
     expect(global.fetch).toHaveBeenNthCalledWith(
       1,
-      'http://example.com/api/settings/features',
+      'http://example.com/api/settings/experimental',
       expect.objectContaining({ method: 'GET' })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       2,
-      'http://example.com/api/settings/features/conversation_reactions',
+      'http://example.com/api/settings/experimental/conversation_reactions',
       expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ enabled: true }) })
     );
   });

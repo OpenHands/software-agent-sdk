@@ -16,19 +16,19 @@ Reactions sit behind the user-facing feature flag `conversation_reactions`
 OpenHands-agent conversation gets `react` and `unreact` without naming them,
 and the REST route accepts reactions; while it is off, the route answers 409
 and new conversations do not get the tools. Flags are listed with
-`GET /api/settings/features` and switched with
-`PATCH /api/settings/features/{key}` `{"enabled": bool}`, stored in
+`GET /api/settings/experimental` and switched with
+`PATCH /api/settings/experimental/{key}` `{"enabled": bool}`, stored in
 `PersistedSettings.features`, and read when a conversation starts.
 
 Source: `openhands-sdk/openhands/sdk/event/reaction.py`, `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py` (`react`), `openhands-sdk/openhands/sdk/agent/agent.py` (`follow_up_events`), `openhands-tools/openhands/tools/reaction/`, `openhands-agent-server/openhands/agent_server/event_router.py`, `openhands-agent-server/openhands/agent_server/features.py`, `openhands-agent-server/openhands/agent_server/features_router.py`, `openhands-sdk/openhands/sdk/launch/finalize.py` (`feature_tools`)
 
 Needs: `llm`
 
-Routes: `POST /api/conversations/{conversation_id}/reactions`, `GET /api/settings/features`, `PATCH /api/settings/features/{key}`
+Routes: `POST /api/conversations/{conversation_id}/reactions`, `GET /api/settings/experimental`, `PATCH /api/settings/experimental/{key}`
 
 ## Sub-features
 
-- `F37.flag`: `GET /api/settings/features` lists `conversation_reactions` with `enabled: false` on a fresh server; `PATCH .../conversation_reactions` `{"enabled": true}` returns it on and the list agrees; an unknown key is 404.
+- `F37.flag`: `GET /api/settings/experimental` lists `conversation_reactions` with `enabled: false` on a fresh server; `PATCH .../conversation_reactions` `{"enabled": true}` returns it on and the list agrees; an unknown key is 404.
 - `F37.flag-gates`: with the flag off, `POST .../reactions` is 409 and a new conversation has no `react`/`unreact`; with it on, a new conversation started without naming them has both tools.
 - `F37.rest`: `POST .../reactions` with `{emoji, target_event_id}` saves a user `ReactionEvent` on that message and returns it; `removed: true` saves the removal; the conversation stays `idle`.
 - `F37.rest-validation`: an emoji outside the set is 422, an unknown target is 400, and leaving out the target with no agent message yet is 400; nothing is saved.
@@ -67,13 +67,13 @@ Preconditions:
 
 - **The feature flag (`F37.flag`, `F37.flag-gates`).**
   ```sh
-  control-agent-server api GET /api/settings/features \
+  control-agent-server api GET /api/settings/experimental \
     --check 0.key eq conversation_reactions --check 0.enabled eq false --save F37.flag/list
   OFF=$(control-agent-server conversation start --no-autotitle --tools none --print-id)
   control-agent-server api POST "/api/conversations/$OFF/reactions" --json '{"emoji": "eyes"}' --expect 409
-  control-agent-server api PATCH /api/settings/features/conversation_reactions --json '{"enabled": true}' \
+  control-agent-server api PATCH /api/settings/experimental/conversation_reactions --json '{"enabled": true}' \
     --expect 200 --check enabled eq true
-  control-agent-server api PATCH /api/settings/features/time_travel --json '{"enabled": true}' --expect 404
+  control-agent-server api PATCH /api/settings/experimental/time_travel --json '{"enabled": true}' --expect 404
   ON=$(control-agent-server conversation start --no-autotitle --tools none --print-id)
   control-agent-server api GET "/api/conversations/$ON" --check agent.tools len-eq 2 --save F37.flag-gates/tools
   control-agent-server api GET "/api/conversations/$OFF" --check agent.tools len-eq 0

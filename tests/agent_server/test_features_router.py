@@ -32,7 +32,7 @@ async def client() -> AsyncIterator[httpx.AsyncClient]:
 
 @pytest.mark.asyncio
 async def test_features_are_listed_off_by_default(client):
-    response = await client.get("/api/settings/features")
+    response = await client.get("/api/settings/experimental")
 
     assert response.status_code == 200
     assert response.json() == [
@@ -49,11 +49,11 @@ async def test_features_are_listed_off_by_default(client):
 @pytest.mark.asyncio
 async def test_turning_a_feature_on_and_off_is_saved(client):
     on = await client.patch(
-        "/api/settings/features/conversation_reactions", json={"enabled": True}
+        "/api/settings/experimental/conversation_reactions", json={"enabled": True}
     )
-    listed_on = await client.get("/api/settings/features")
+    listed_on = await client.get("/api/settings/experimental")
     off = await client.patch(
-        "/api/settings/features/conversation_reactions", json={"enabled": False}
+        "/api/settings/experimental/conversation_reactions", json={"enabled": False}
     )
 
     assert on.status_code == 200
@@ -68,7 +68,7 @@ async def test_turning_a_feature_on_and_off_is_saved(client):
 @pytest.mark.asyncio
 async def test_unknown_features_are_refused(client):
     response = await client.patch(
-        "/api/settings/features/time_travel", json={"enabled": True}
+        "/api/settings/experimental/time_travel", json={"enabled": True}
     )
 
     assert response.status_code == 404

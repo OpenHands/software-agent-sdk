@@ -32,8 +32,8 @@
     },
     {
       "endpoints": [
-        "GET /api/settings/features",
-        "PATCH /api/settings/features/{}",
+        "GET /api/settings/experimental",
+        "PATCH /api/settings/experimental/{}",
         "POST /api/conversations/{}/reactions"
       ],
       "reason": "Client-ahead API for user feature flags and conversation reactions, added with the Agent Server endpoints in the same PR.",

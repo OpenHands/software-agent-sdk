@@ -1,4 +1,4 @@
-"""Routes for user-facing feature flags (see :mod:`openhands.agent_server.features`)."""
+"""Routes for user-facing experimental features (see :mod:`.features`)."""
 
 import asyncio
 
@@ -14,7 +14,7 @@ from openhands.agent_server.features import (
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 
 
-features_router = APIRouter(prefix="/settings/features", tags=["Settings"])
+features_router = APIRouter(prefix="/settings/experimental", tags=["Settings"])
 
 
 @features_router.get("", response_model=list[FeatureFlag])
