@@ -540,7 +540,7 @@ def _read_execution_status_sync(
     Validating the full ``ConversationState`` costs an agent, LLM config,
     workspace, secret registry and stats blob to reach one enum field.
     """
-    with suppress(OSError, ValueError):
+    with suppress(OSError, ValueError, AttributeError):
         with open(base_state_path, "rb") as f:
             payload = json.loads(f.read())
         return ConversationExecutionStatus(

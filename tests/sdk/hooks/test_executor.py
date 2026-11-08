@@ -1,6 +1,9 @@
 """Tests for hook executor."""
 
+import contextlib
 import json
+import os
+import signal
 import subprocess
 from unittest import mock
 from unittest.mock import MagicMock, patch
@@ -192,6 +195,32 @@ class TestHookExecutor:
 
         assert result.blocked
         assert "error message" in result.stderr
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX process semantics")
+    def test_timed_out_hook_does_not_leave_its_child_running(
+        self, executor, sample_event, tmp_path
+    ):
+        pid_file = tmp_path / "child.pid"
+        # The trailing ``; true`` stops the shell from exec-ing the child, so
+        # the child is a separate process the timeout has to reach.
+        hook = HookDefinition(
+            command=f"sh -c 'echo $$ > {pid_file}; exec sleep 30'; true",
+            timeout=1,
+        )
+
+        result = executor.execute(hook, sample_event)
+        assert "timed out" in (result.error or "")
+
+        child_pid = int(pid_file.read_text())
+        try:
+            os.kill(child_pid, 0)
+            child_alive = True
+        except ProcessLookupError:
+            child_alive = False
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(child_pid, signal.SIGKILL)
+        assert not child_alive
 
 
 class TestAsyncHookExecution:
