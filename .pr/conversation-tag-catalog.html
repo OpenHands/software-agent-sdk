@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conversation tag catalog</title>
+<style>
+  body { margin: 3rem auto; max-width: 55rem; padding: 0 1rem; font: 1rem/1.6 system-ui; color: #182338; }
+  h1 { margin-bottom: .35em; } a { color: #234c9d; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: .55rem; text-align: left; border-bottom: 1px solid #cdd5e2; }
+  th { background: #eef3fa; } code { color: #183c76; }
+  svg { width: 100%; height: auto; background: #f6f8fc; border-radius: .4rem; }
+</style>
+<main>
+<h1>Conversation tag catalog</h1>
+<p>Clients can discover tags without downloading conversation rows and use the
+same exact-match filters for search and count.</p>
+<table>
+  <thead><tr><th>Surface</th><th>Before</th><th>After</th></tr></thead>
+  <tbody>
+    <tr><td><code>GET /api/conversations/search</code> and <code>/count</code></td>
+      <td>Status filter</td><td>Optional repeated <code>tags__contains=key=value</code>,
+      with AND semantics and HTTP 400 for malformed items</td></tr>
+    <tr><td><code>GET /api/conversations/tags</code></td><td>Clients paged through search</td>
+      <td>An array of distinct <code>{key, value, count}</code> entries</td></tr>
+    <tr><td>TypeScript client</td><td>Search sent an ignored <code>tag</code> option</td>
+      <td>Search and count send <code>tags__contains</code>. <code>listConversationTags()</code> reads the list.</td></tr>
+  </tbody>
+</table>
+<h2>How the catalog stays current</h2>
+<svg viewBox="0 0 660 154" role="img" aria-label="Previously search and count filtered by status. Now they also share exact tag matching, and the tag list aggregates stored tags.">
+  <g font-family="system-ui" font-size="15" fill="#182338">
+    <text x="22" y="30" font-weight="bold">Before</text>
+    <text x="125" y="30">search and count</text><text x="300" y="30">→</text>
+    <a href="https://github.com/OpenHands/software-agent-sdk/blob/51ad22388a154d48353fac7a82cfd5255dbeefc1/openhands-agent-server/openhands/agent_server/conversation_service.py#L1199"><text x="340" y="30" fill="#234c9d">status filter</text></a>
+    <path d="M22 51H638" stroke="#cdd5e2"/>
+    <text x="22" y="82" font-weight="bold">After</text>
+    <text x="125" y="82">search and count</text><text x="300" y="82">→</text>
+    <a href="https://github.com/yyo2002/software-agent-sdk/blob/yyo2002/feat-conversation-tag-filter/openhands-agent-server/openhands/agent_server/conversation_service.py#L550"><text x="340" y="82" fill="#a54c16">matches_filters</text></a>
+    <text x="125" y="119">list tags</text><text x="300" y="119">→</text>
+    <a href="https://github.com/yyo2002/software-agent-sdk/blob/yyo2002/feat-conversation-tag-filter/openhands-agent-server/openhands/agent_server/conversation_service.py#L1294"><text x="340" y="119" fill="#a54c16">count StoredConversation.tags pairs</text></a>
+  </g>
+</svg>
+<p>PATCH already refreshes the catalog after saving. Tag enumeration uses that
+record directly, and search applies the filter before pagination.</p>
+<p><a href="https://github.com/yyo2002/software-agent-sdk/blob/yyo2002/feat-conversation-tag-filter/openhands-agent-server/openhands/agent_server/conversation_router.py#L161">Query parser and routes</a> ·
+<a href="https://github.com/yyo2002/software-agent-sdk/blob/yyo2002/feat-conversation-tag-filter/openhands-agent-server/openhands/agent_server/conversation_service.py#L1926">PATCH update</a> ·
+<a href="https://github.com/yyo2002/software-agent-sdk/blob/yyo2002/feat-conversation-tag-filter/clients/typescript/src/models/conversation.ts#L181">Client types</a> ·
+<a href="https://github.com/yyo2002/software-agent-sdk/blob/yyo2002/feat-conversation-tag-filter/tests/cross/test_remote_conversation_live_server.py#L980">HTTP regression</a></p>
+</main>

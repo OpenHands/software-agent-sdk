@@ -24,13 +24,15 @@ import {
   ACPAgentConfig,
   ACPConversationInfo,
   ACPConversationSearchResponse,
+  ConversationCountRequest,
   ConversationInfo,
   ConversationSearchRequest,
   ConversationSearchResponse,
+  ConversationTagCount,
   CreateACPConversationRequest,
   UpdateConversationRequest,
 } from '../models/conversation';
-import { AgentBase, ConversationExecutionStatus, ConversationID, Success } from '../types/base';
+import { AgentBase, ConversationID, Success } from '../types/base';
 
 export class ACPConversationNamespace {
   constructor(private readonly manager: ConversationManager) {}
@@ -41,7 +43,7 @@ export class ACPConversationNamespace {
     return this.manager.searchACPConversations(options);
   }
 
-  countConversations(options: { status?: ConversationExecutionStatus } = {}): Promise<number> {
+  countConversations(options: ConversationCountRequest = {}): Promise<number> {
     return this.manager.countACPConversations(options);
   }
 
@@ -148,12 +150,16 @@ export class ConversationManager {
   /**
    * Count conversations matching the provided filters.
    */
-  async countConversations(
-    options: { status?: ConversationExecutionStatus } = {}
-  ): Promise<number> {
+  async countConversations(options: ConversationCountRequest = {}): Promise<number> {
     const response = await this.client.get<number>('/api/conversations/count', {
       params: options as Record<string, unknown>,
     });
+    return response.data;
+  }
+
+  /** List distinct tags with the number of conversations carrying each tag. */
+  async listConversationTags(): Promise<ConversationTagCount[]> {
+    const response = await this.client.get<ConversationTagCount[]>('/api/conversations/tags');
     return response.data;
   }
 
@@ -172,7 +178,9 @@ export class ConversationManager {
   /**
    * Get all conversations (convenience method)
    */
-  async getAllConversations(options?: { tag?: string[] }): Promise<ConversationInfo[]> {
+  async getAllConversations(
+    options?: Pick<ConversationSearchRequest, 'tags__contains'>
+  ): Promise<ConversationInfo[]> {
     const conversations: ConversationInfo[] = [];
     let nextPageId: string | undefined;
 
@@ -180,7 +188,7 @@ export class ConversationManager {
       const response = await this.searchConversations({
         page_id: nextPageId,
         limit: 100,
-        ...(options?.tag ? { tag: options.tag } : {}),
+        tags__contains: options?.tags__contains,
       });
 
       conversations.push(...response.items);
@@ -280,11 +288,9 @@ export class ConversationManager {
   /**
    * Count ACP-capable conversations.
    */
-  async countACPConversations(
-    options: { status?: ConversationExecutionStatus } = {}
-  ): Promise<number> {
+  async countACPConversations(options: ConversationCountRequest = {}): Promise<number> {
     const response = await this.client.get<number>('/api/conversations/count', {
-      params: options,
+      params: options as Record<string, unknown>,
     });
     return response.data;
   }

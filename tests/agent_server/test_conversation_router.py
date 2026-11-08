@@ -150,7 +150,7 @@ def test_search_conversations_default_params(
 
         # Verify service was called with default parameters
         mock_conversation_service.search_conversations.assert_called_once_with(
-            None, 100, None, ConversationSortOrder.CREATED_AT_DESC
+            None, 100, None, ConversationSortOrder.CREATED_AT_DESC, tag_filters=[]
         )
     finally:
         client.app.dependency_overrides.clear()
@@ -228,6 +228,7 @@ def test_search_conversations_with_all_params(
             50,
             ConversationExecutionStatus.IDLE,
             ConversationSortOrder.UPDATED_AT_DESC,
+            tag_filters=[],
         )
     finally:
         client.app.dependency_overrides.clear()
@@ -298,7 +299,9 @@ def test_count_conversations_no_filter(client, mock_conversation_service):
         assert response.json() == 5
 
         # Verify service was called with no status filter
-        mock_conversation_service.count_conversations.assert_called_once_with(None)
+        mock_conversation_service.count_conversations.assert_called_once_with(
+            None, tag_filters=[]
+        )
     finally:
         client.app.dependency_overrides.clear()
 
@@ -324,7 +327,7 @@ def test_count_conversations_with_status_filter(client, mock_conversation_servic
 
         # Verify service was called with status filter
         mock_conversation_service.count_conversations.assert_called_once_with(
-            ConversationExecutionStatus.RUNNING
+            ConversationExecutionStatus.RUNNING, tag_filters=[]
         )
     finally:
         client.app.dependency_overrides.clear()

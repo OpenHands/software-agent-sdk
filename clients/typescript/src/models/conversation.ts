@@ -178,12 +178,22 @@ export interface UpdateSecretsRequest {
   secrets: Record<string, SecretObject>;
 }
 
-export interface ConversationSearchRequest {
+export interface ConversationCountRequest {
+  status?: ConversationExecutionStatus;
+  /** Repeatable key=value filters. Every tag must match exactly. */
+  tags__contains?: string[];
+}
+
+export interface ConversationSearchRequest extends ConversationCountRequest {
   page_id?: string;
   limit?: number;
-  status?: ConversationExecutionStatus;
   sort_order?: ConversationSortOrder;
-  tag?: string[];
+}
+
+export interface ConversationTagCount {
+  key: string;
+  value: string;
+  count: number;
 }
 
 export interface AskAgentRequest {
