@@ -975,6 +975,86 @@ def test_remote_fork_title_stays_out_of_tags(server_env, tags: dict[str, str] | 
         source.close()
 
 
+def test_conversation_tag_filters_and_catalog(server_env, monkeypatch):
+    agent = Agent(llm=LLM(model="gpt-4o-mini", usage_id="test"), tools=[])
+    payload = {
+        "agent": agent.model_dump(mode="json"),
+        "workspace": {"working_dir": str(server_env["workspace_path"])},
+    }
+    base = "/api/conversations"
+    with httpx.Client(base_url=server_env["host"], timeout=10) as client:
+        conversation_ids = []
+        for tags in (
+            {"team": "infra", "env": "prod", "ref": "a=b"},
+            {"team": "infra", "env": ""},
+            {"team": "Infra", "env": "prod"},
+            {},
+        ):
+            result = client.post(base, json={**payload, "tags": tags})
+            assert result.status_code == 201
+            conversation_ids.append(result.json()["id"])
+        first, second, third, _ = conversation_ids
+
+        def matching_ids(*filters: str) -> set[str]:
+            params = {"tags__contains": filters}
+            search = client.get(f"{base}/search", params=params).raise_for_status()
+            ids = {item["id"] for item in search.json()["items"]}
+            count = client.get(f"{base}/count", params=params).raise_for_status()
+            assert count.json() == len(ids)
+            return ids
+
+        assert matching_ids("team=infra") == {first, second}
+        assert matching_ids("team=infra", "env=prod") == {first}
+        assert matching_ids("env=") == {second}
+        assert matching_ids("ref=a=b") == {first}
+        assert matching_ids("team=infra", "team=Infra") == set()
+
+        for endpoint in ("search", "count"):
+            for malformed in ("team", "=infra"):
+                response = client.get(
+                    f"{base}/{endpoint}",
+                    params=[
+                        ("tags__contains", "team=infra"),
+                        ("tags__contains", malformed),
+                    ],
+                )
+                assert response.status_code == 400
+
+        client.post(f"{base}/prepare-for-sandbox-pause").raise_for_status()
+        original_open = Path.open
+
+        def guard_state_file(path, mode="r", *args, **kwargs):
+            assert path.name != "base_state.json" or "r" not in mode
+            return original_open(path, mode, *args, **kwargs)
+
+        def listed_tags():
+            with monkeypatch.context() as guard:
+                guard.setattr(Path, "open", guard_state_file)
+                return client.get(f"{base}/tags").raise_for_status().json()
+
+        assert listed_tags() == [
+            {"key": "env", "value": "", "count": 1},
+            {"key": "env", "value": "prod", "count": 2},
+            {"key": "ref", "value": "a=b", "count": 1},
+            {"key": "team", "value": "Infra", "count": 1},
+            {"key": "team", "value": "infra", "count": 2},
+        ]
+
+        client.patch(
+            f"{base}/{first}", json={"tags": {"team": "app"}}
+        ).raise_for_status()
+        assert matching_ids("team=infra", "env=prod") == set()
+        assert matching_ids("team=app") == {first}
+        assert matching_ids("env=prod") == {third}
+        assert listed_tags() == [
+            {"key": "env", "value": "", "count": 1},
+            {"key": "env", "value": "prod", "count": 1},
+            {"key": "team", "value": "Infra", "count": 1},
+            {"key": "team", "value": "app", "count": 1},
+            {"key": "team", "value": "infra", "count": 1},
+        ]
+
+
 def test_remote_conversation_created_from_agent_settings(server_env):
     from openhands.sdk.conversation.request import StartConversationRequest
     from openhands.sdk.workspace import LocalWorkspace

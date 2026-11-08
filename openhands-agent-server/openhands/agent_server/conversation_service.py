@@ -3,6 +3,7 @@ import importlib
 import json
 import logging
 import os
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
@@ -40,6 +41,7 @@ from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
+    ConversationTagCount,
     LaunchedAgentProfile,
     StartChildConversationRequest,
     StartChildConversationResponse,
@@ -544,6 +546,17 @@ class _ConversationRecord:
     # metadata-only updates (``meta.json``, e.g. auto-title) must also
     # invalidate it.
     stored_signature: int | None = None
+
+    def matches_filters(
+        self,
+        execution_status: ConversationExecutionStatus | None,
+        tag_filters: list[tuple[str, str]] | None,
+    ) -> bool:
+        return (
+            execution_status is None or self.execution_status == execution_status
+        ) and all(
+            self.stored.tags.get(key) == value for key, value in tag_filters or ()
+        )
 
 
 @dataclass
@@ -1166,12 +1179,15 @@ class ConversationService:
         limit: int = 100,
         execution_status: ConversationExecutionStatus | None = None,
         sort_order: ConversationSortOrder = ConversationSortOrder.CREATED_AT_DESC,
+        *,
+        tag_filters: list[tuple[str, str]] | None = None,
     ) -> ConversationPage:
         items, next_page_id = await self._search_conversations(
             page_id=page_id,
             limit=limit,
             execution_status=execution_status,
             sort_order=sort_order,
+            tag_filters=tag_filters,
         )
         return ConversationPage(
             items=items,
@@ -1202,6 +1218,7 @@ class ConversationService:
         limit: int,
         execution_status: ConversationExecutionStatus | None,
         sort_order: ConversationSortOrder,
+        tag_filters: list[tuple[str, str]] | None = None,
     ) -> tuple[list[ConversationInfo], str | None]:
         if self._event_services is None:
             raise ValueError("inactive_service")
@@ -1217,7 +1234,7 @@ class ConversationService:
         records = [
             (conversation_id, record)
             for conversation_id, record in self._conversation_records.items()
-            if execution_status is None or record.execution_status == execution_status
+            if record.matches_filters(execution_status, tag_filters)
         ]
         if sort_order in (
             ConversationSortOrder.CREATED_AT,
@@ -1258,27 +1275,34 @@ class ConversationService:
     async def count_conversations(
         self,
         execution_status: ConversationExecutionStatus | None = None,
-    ) -> int:
-        return await self._count_conversations(execution_status=execution_status)
-
-    async def _count_conversations(
-        self,
-        execution_status: ConversationExecutionStatus | None,
+        *,
+        tag_filters: list[tuple[str, str]] | None = None,
     ) -> int:
         """Count conversations matching the given filters."""
-        if self._event_services is None:
-            raise ValueError("inactive_service")
         await self._reconcile_active_records()
-
-        if execution_status is None:
+        if execution_status is not None:
+            await self._refresh_execution_statuses()
+        elif not tag_filters:
             return len(self._conversation_records)
 
-        await self._refresh_execution_statuses()
         return sum(
             1
             for record in self._conversation_records.values()
-            if record.execution_status == execution_status
+            if record.matches_filters(execution_status, tag_filters)
         )
+
+    def list_conversation_tags(self) -> list[ConversationTagCount]:
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        counts = Counter(
+            tag
+            for record in self._conversation_records.values()
+            for tag in record.stored.tags.items()
+        )
+        return [
+            ConversationTagCount(key=key, value=value, count=count)
+            for (key, value), count in sorted(counts.items())
+        ]
 
     async def batch_get_conversations(
         self, conversation_ids: list[UUID]

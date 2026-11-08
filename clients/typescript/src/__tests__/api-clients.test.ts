@@ -2541,6 +2541,49 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('filters conversations with repeated tags and lists tag counts', async () => {
+    const tags = [{ key: 'team', value: 'infra', count: 1 }];
+    const pages = [
+      { items: [{ id: 'c1' }], next_page_id: 'page-2' },
+      { items: [{ id: 'c2' }], next_page_id: null },
+    ];
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      const path = new URL(url).pathname;
+      const body = path.endsWith('/tags') ? tags : path.endsWith('/count') ? 1 : pages.shift();
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    }) as typeof fetch;
+
+    const host = 'http://example.com';
+    const manager = new ConversationManager({ host });
+    const client = new ConversationClient({ host });
+    const filters = { tags__contains: ['team=infra', 'ref=a=b'] };
+    await expect(manager.getAllConversations(filters)).resolves.toEqual([
+      { id: 'c1' },
+      { id: 'c2' },
+    ]);
+    await expect(client.countConversations(filters)).resolves.toBe(1);
+    await expect(manager.listConversationTags()).resolves.toEqual(tags);
+    await expect(client.listConversationTags()).resolves.toEqual(tags);
+
+    const urls = (global.fetch as Mock).mock.calls.map(([url]) => new URL(url));
+    expect(urls.map((url) => url.pathname)).toEqual([
+      '/api/conversations/search',
+      '/api/conversations/search',
+      '/api/conversations/count',
+      '/api/conversations/tags',
+      '/api/conversations/tags',
+    ]);
+    expect(urls[1].searchParams.get('page_id')).toBe('page-2');
+    for (const url of urls.slice(0, 3)) {
+      expect(url.searchParams.getAll('tags__contains')).toEqual(filters.tags__contains);
+      expect(url.searchParams.has('tag')).toBe(false);
+    }
+  });
+
   it('ConversationClient wraps SDK v1.23.0 conversation endpoints', async () => {
     const event = {
       id: 'event-1',

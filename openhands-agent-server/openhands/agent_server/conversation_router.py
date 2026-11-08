@@ -41,6 +41,7 @@ from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
     ConversationSortOrder,
+    ConversationTagCount,
     ForkConversationRequest,
     NavigateConversationRequest,
     SetConfirmationPolicyRequest,
@@ -157,10 +158,33 @@ def _with_runtime_info(
     )
 
 
+def _parse_tag_filters(
+    tags__contains: Annotated[
+        list[str] | None,
+        Query(title="Filter by repeatable key=value tags. Every tag must match."),
+    ] = None,
+) -> list[tuple[str, str]]:
+    filters = []
+    for item in tags__contains or ():
+        key, separator, value = item.partition("=")
+        if not separator or not key:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="Invalid tags__contains filter. Expected key=value.",
+            )
+        filters.append((key, value))
+    return filters
+
+
+_TagFilters = Annotated[list[tuple[str, str]], Depends(_parse_tag_filters)]
+_TAG_FILTER_ERROR = "Invalid tags__contains filter"
+
+
 @conversation_catalog_router.get("/search", include_in_schema=False)
-@conversation_router.get("/search")
+@conversation_router.get("/search", responses={400: {"description": _TAG_FILTER_ERROR}})
 async def search_conversations(
     request: Request,
+    tag_filters: _TagFilters,
     page_id: Annotated[
         str | None,
         Query(title="Optional next_page_id from the previously returned page"),
@@ -182,7 +206,7 @@ async def search_conversations(
 ) -> ConversationPage:
     """Search / List conversations"""
     page = await conversation_service.search_conversations(
-        page_id, limit, status, sort_order
+        page_id, limit, status, sort_order, tag_filters=tag_filters
     )
     if not include_skills:
         # ``model_copy`` rather than in-place mutation so we never
@@ -203,8 +227,9 @@ async def search_conversations(
 
 
 @conversation_catalog_router.get("/count", include_in_schema=False)
-@conversation_router.get("/count")
+@conversation_router.get("/count", responses={400: {"description": _TAG_FILTER_ERROR}})
 async def count_conversations(
+    tag_filters: _TagFilters,
     status: Annotated[
         ConversationExecutionStatus | None,
         Query(title="Optional filter by conversation execution status"),
@@ -212,8 +237,18 @@ async def count_conversations(
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> int:
     """Count conversations matching the given filters"""
-    count = await conversation_service.count_conversations(status)
-    return count
+    return await conversation_service.count_conversations(
+        status, tag_filters=tag_filters
+    )
+
+
+@conversation_catalog_router.get("/tags", include_in_schema=False)
+@conversation_router.get("/tags")
+async def list_conversation_tags(
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> list[ConversationTagCount]:
+    """List distinct conversation tags and their conversation counts."""
+    return conversation_service.list_conversation_tags()
 
 
 @conversation_router.get(

@@ -43,6 +43,33 @@ def test_public_openapi_export_is_deterministic() -> None:
     assert first.endswith("\n")
 
 
+def test_conversation_tag_contract() -> None:
+    document = build_public_openapi()
+    paths = document["paths"]
+    for endpoint in ("search", "count"):
+        operation = paths[f"/api/conversations/{endpoint}"]["get"]
+        tag_filter = next(
+            param
+            for param in operation["parameters"]
+            if param["name"] == "tags__contains"
+        )
+        assert tag_filter["in"] == "query"
+        assert not tag_filter["required"]
+        assert {"type": "array", "items": {"type": "string"}} in (
+            tag_filter["schema"]["anyOf"]
+        )
+        assert "400" in operation["responses"]
+
+    tags = paths["/api/conversations/tags"]["get"]
+    result = tags["responses"]["200"]["content"]["application/json"]["schema"]
+    assert result["type"] == "array"
+    model = document["components"]["schemas"][_schema_ref_name(result["items"])]
+    assert set(model["required"]) == {"key", "value", "count"}
+    assert model["properties"]["key"]["type"] == "string"
+    assert model["properties"]["value"]["type"] == "string"
+    assert model["properties"]["count"]["type"] == "integer"
+
+
 def test_mcp_contract_has_named_maps_variants_and_discriminators() -> None:
     document = build_public_openapi()
     schemas = document["components"]["schemas"]

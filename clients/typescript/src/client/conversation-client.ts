@@ -1,6 +1,6 @@
 import { HttpClient, HttpError } from './http-client';
 import { getCachedAgentServerInfo } from './agent-server-compatibility';
-import { ConversationExecutionStatus, LLM, Success } from '../types/base';
+import { LLM, Success } from '../types/base';
 import type {
   AgentResponseResult,
   AskAgentResponse,
@@ -9,10 +9,12 @@ import type {
   ConversationEventCountOptions,
   ConversationEventPage,
   ConversationEventSearchOptions,
+  ConversationCountRequest,
   ConversationInfo,
   ConversationRuntimeInfo,
   ConversationSearchRequest,
   ConversationSearchResponse,
+  ConversationTagCount,
   ForkConversationRequest,
   NavigateConversationRequest,
   SetConfirmationPolicyRequest,
@@ -123,12 +125,16 @@ export class ConversationClient {
     return response.data;
   }
 
-  async countConversations(
-    options: { status?: ConversationExecutionStatus } = {}
-  ): Promise<number> {
+  async countConversations(options: ConversationCountRequest = {}): Promise<number> {
     const response = await this.client.get<number>('/api/conversations/count', {
       params: options as Record<string, unknown>,
     });
+    return response.data;
+  }
+
+  /** List distinct tags with the number of conversations carrying each tag. */
+  async listConversationTags(): Promise<ConversationTagCount[]> {
+    const response = await this.client.get<ConversationTagCount[]>('/api/conversations/tags');
     return response.data;
   }
 

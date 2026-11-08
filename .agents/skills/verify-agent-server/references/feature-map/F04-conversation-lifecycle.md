@@ -4,7 +4,7 @@ How an agent or its host creates conversations and finds them again: start a
 conversation from the saved settings, a stored Agent Profile or an inline
 agent (optionally with a client-chosen id, a parent, a git worktree,
 start-time secrets and observability headers), read one, several or a page of
-them, count them by status, rename and retag them, read the agent's final
+them, count them by status or tags, list tag counts, rename and retag them, read the agent's final
 answer, and delete them while keeping the workspace. The catalog survives a
 server restart. Running, pausing and run capacity (429) live in the run family;
 the events socket and event search live in the events family.
@@ -14,6 +14,7 @@ Source: `openhands-agent-server/openhands/agent_server/conversation_router.py`, 
 Needs: `llm`, `git`
 
 Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
+`GET /api/conversations/tags`,
 `GET /api/conversations/{conversation_id}`,
 `GET /api/conversations/{conversation_id}/agent_final_response`,
 `POST /api/conversations/{conversation_id}/children`,
@@ -46,6 +47,7 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - `F04.search-page`: `limit` and `next_page_id` page newest first by default; `sort_order=CREATED_AT` reverses it; skills are trimmed unless `include_skills=true`; bad limits and sort orders are 422.
 - `F04.search-filter`: `status` filters search and count consistently; an unknown status is 422.
 - `F04.count`: `GET /api/conversations/count` equals the number of conversations search lists.
+- `F04.tag-catalog`: search and count require exact matches for every `tags__contains` item. The tag list counts distinct pairs and reflects PATCH immediately.
 - `F04.patch-title`: PATCH `title` is stripped, stored in `meta.json`, bumps `updated_at` and moves the conversation to the top of `UPDATED_AT_DESC`.
 - `F04.patch-tags`: PATCH `tags` replaces the whole map in `meta.json` and `base_state.json` and pushes a `tags` state update on the events socket.
 - `F04.patch-errors`: an empty or 201-character title, a bad tag key and a malformed id are 422; no key is 401; the stored values are untouched.
@@ -79,7 +81,9 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - REST reads: `GET /api/conversations/{conversation_id}`,
   `GET /api/conversations?ids=..&ids=..` (fewer than 100),
   `GET /api/conversations/search` (`page_id`, `limit` 1..100, `status`,
-  `sort_order`, `include_skills`), `GET /api/conversations/count` (`status`),
+  `sort_order`, `include_skills`, `tags__contains`),
+  `GET /api/conversations/count` (`status`, `tags__contains`),
+  `GET /api/conversations/tags`,
   `GET /api/conversations/{conversation_id}/agent_final_response`.
 - REST writes: `PATCH /api/conversations/{conversation_id}` (`title`, `tags`),
   `DELETE /api/conversations/{conversation_id}`.
@@ -96,7 +100,7 @@ Routes: `GET /api/conversations/search`, `GET /api/conversations/count`,
 - TypeScript client (`clients/typescript/src/client/conversation-client.ts`):
   `createConversation` (retries once with the same `conversation_id` when the
   server advertises `idempotent_conversation_create_v1`),
-  `searchConversations`, `countConversations`, `getConversations`,
+  `searchConversations`, `countConversations`, `listConversationTags`, `getConversations`,
   `getConversation`, `getAgentFinalResponse`, `updateConversation`,
   `deleteConversation`; `ConversationManager` wraps them
   (`getAllConversations` pages through search).
@@ -574,6 +578,22 @@ EOF
   control-agent-server api GET /api/conversations/count --auth none --expect 401
   ```
   Count grows on create (first bullets) and shrinks on delete (Delete bullet).
+- **Tag catalog (`F04.tag-catalog`).** Search and count share exact tag matching.
+  The catalog includes tag counts and drops removed tags on the next request.
+
+  Requires: `F04.create-settings`
+  ```sh
+  control-agent-server api PATCH "/api/conversations/$CID" --json '{"tags":{"qa":"f04","catalog":"tag-proof"}}' --check success eq true
+  control-agent-server api GET /api/conversations/search --query tags__contains=qa=f04 --query tags__contains=catalog=tag-proof --check items len-eq 1 --check items.0.id eq "$CID"
+  control-agent-server api GET /api/conversations/count --query tags__contains=qa=f04 --query tags__contains=catalog=tag-proof --check . eq 1
+  control-agent-server api GET /api/conversations/tags --check . contains tag-proof --save F04.tag-catalog/before
+  control-agent-server api GET /api/conversations/search --query tags__contains=invalid --expect 400
+  control-agent-server api GET /api/conversations/count --query tags__contains=invalid --expect 400
+  control-agent-server api PATCH "/api/conversations/$CID" --json '{"tags":{"qa":"f04"}}' --check success eq true
+  control-agent-server api GET /api/conversations/search --query tags__contains=catalog=tag-proof --check items len-eq 0
+  control-agent-server api GET /api/conversations/count --query tags__contains=catalog=tag-proof --check . eq 0
+  control-agent-server api GET /api/conversations/tags --check . not-contains tag-proof --save F04.tag-catalog/after
+  ```
 - **Rename (`F04.patch-title`).** The SDK's `set_title()` request.
 
   Requires: `F04.create-settings`

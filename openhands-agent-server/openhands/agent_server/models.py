@@ -392,6 +392,14 @@ class ConversationPage(BaseModel):
     next_page_id: str | None = None
 
 
+class ConversationTagCount(BaseModel):
+    """Number of conversations carrying a specific tag."""
+
+    key: str
+    value: str
+    count: int
+
+
 INCLUDE_SKILLS_PARAM_TITLE = (
     "Whether to include ``agent.agent_context.skills`` in the response. "
     "Default ``false`` (breaking change as of this release): skills are "
