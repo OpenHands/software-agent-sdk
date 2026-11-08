@@ -38,16 +38,19 @@ def _write_py(path: Path, body: str) -> Path:
     return path
 
 
-def test_clean_file_passes(checker, tmp_path: Path):
-    """A file with no forbidden calls produces no violations."""
-    f = _write_py(tmp_path / "clean.py", "x = 1\n")
-    assert checker.main([str(f)]) == 0
-
-
-def test_new_violation_fails(checker, tmp_path: Path):
-    """A getattr call not in the baseline is rejected."""
-    f = _write_py(tmp_path / "bad.py", 'v = getattr(obj, "attr")\n')
-    assert checker.main([str(f)]) == 1
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        pytest.param("x = 1\n", 0, id="clean_file"),
+        pytest.param('v = getattr(obj, "attr")\n', 1, id="new_violation"),
+        pytest.param('setattr(obj, "attr", 1)\n', 1, id="setattr"),
+        pytest.param('value = obj.__dict__.get("attr")\n', 1, id="dunder_dict_get"),
+        pytest.param('value = data.get("key")\n', 0, id="regular_dict_get"),
+    ],
+)
+def test_check_without_baseline(checker, tmp_path: Path, source, expected):
+    f = _write_py(tmp_path / "case.py", source)
+    assert checker.main([str(f)]) == expected
 
 
 def test_baselined_violation_passes(checker, tmp_path: Path):
@@ -116,26 +119,6 @@ def test_update_baseline_idempotent(checker, tmp_path: Path):
     checker.main([str(f), "--update-baseline"])
     second = json.loads(checker.BASELINE_FILE.read_text())
     assert first == second
-
-
-def test_setattr_also_detected(checker, tmp_path: Path):
-    """setattr is also forbidden."""
-    f = _write_py(tmp_path / "set.py", 'setattr(obj, "attr", 1)\n')
-    assert checker.main([str(f)]) == 1
-
-
-def test_dunder_dict_get_also_detected(checker, tmp_path: Path):
-    """Direct instance dictionary lookup is also forbidden."""
-    f = _write_py(tmp_path / "dict_get.py", 'value = obj.__dict__.get("attr")\n')
-
-    assert checker.main([str(f)]) == 1
-
-
-def test_regular_dict_get_is_allowed(checker, tmp_path: Path):
-    """Ordinary mapping access is not dynamic attribute access."""
-    f = _write_py(tmp_path / "dict_get.py", 'value = data.get("key")\n')
-
-    assert checker.main([str(f)]) == 0
 
 
 def test_deleted_baselined_file_is_stale(checker, tmp_path: Path):

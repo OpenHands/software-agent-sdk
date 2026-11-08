@@ -356,6 +356,17 @@ def test_rename_same_name_missing_raises(agent_store: AgentProfileStore) -> None
         agent_store.rename("ghost", "ghost")
 
 
+def test_rename_case_only_change(
+    agent_store: AgentProfileStore, openhands_profile: OpenHandsAgentProfile
+) -> None:
+    agent_store.save(openhands_profile)
+
+    agent_store.rename("oh", "OH")
+
+    assert agent_store.list() == ["OH.json"]
+    assert agent_store.load("OH").name == "OH"
+
+
 def test_rename_invalid_name_raises(
     agent_store: AgentProfileStore, openhands_profile: OpenHandsAgentProfile
 ) -> None:
@@ -437,6 +448,24 @@ def test_list_summaries_skips_invalid_filename(
     (agent_store.base_dir / "bad@name.json").write_text('{"name": "x"}')
 
     assert [s["name"] for s in agent_store.list_summaries()] == ["oh"]
+
+
+def test_list_summaries_skips_undecodable_file(
+    agent_store: AgentProfileStore, openhands_profile: OpenHandsAgentProfile
+) -> None:
+    agent_store.save(openhands_profile)
+    (agent_store.base_dir / "binary.json").write_bytes(b"\xff\xfe\x00garbage")
+
+    assert [s["name"] for s in agent_store.list_summaries()] == ["oh"]
+
+
+def test_set_llm_profile_ref_skips_undecodable_file(
+    agent_store: AgentProfileStore,
+) -> None:
+    (agent_store.base_dir / "binary.json").write_bytes(b"\xff\xfe\x00garbage")
+
+    # A corrupt file must not abort the cascade for the profiles that are fine.
+    agent_store.set_llm_profile_ref("binary", "new")
 
 
 # ── max_profiles ────────────────────────────────────────────────────────────

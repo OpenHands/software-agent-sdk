@@ -231,6 +231,8 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             "rg",
             "-l",
             "-i",
+            # -e keeps a pattern that starts with "-" from being read as a flag.
+            "-e",
             action.pattern,
             str(search_path),
             "--sortr=modified",
@@ -246,6 +248,12 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             check=False,
             env=sanitized_env(),
         )
+        if result.returncode not in (0, 1):
+            logger.warning(
+                "ripgrep failed with exit code %s; falling back to Python search",
+                result.returncode,
+            )
+            return self._execute_with_python_search(action, search_path)
 
         matches = []
         if result.stdout:

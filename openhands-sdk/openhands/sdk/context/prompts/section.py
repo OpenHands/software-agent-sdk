@@ -18,6 +18,7 @@ __all__ = [
     "PromptBlocks",
     "PromptContext",
     "PromptSection",
+    "SecretInfo",
 ]
 
 
@@ -49,6 +50,21 @@ class Platform(StrEnum):
         return cls.OTHER
 
 
+class SecretInfo(NamedTuple):
+    """One advertised secret entry, consumed by ``CustomSecretsSection``.
+
+    ``scope`` groups secrets when rendering (the SDK attaches no meaning to the
+    value); ``scope_description`` is shown once above the group. Both default
+    to ``None`` to preserve the legacy flat rendering when no secret carries a
+    scope.
+    """
+
+    name: str
+    description: str | None = None
+    scope: str | None = None
+    scope_description: str | None = None
+
+
 class PromptContext(BaseModel):
     """Frozen snapshot of everything that shapes a system prompt.
 
@@ -71,12 +87,12 @@ class PromptContext(BaseModel):
     secret_names: tuple[str, ...] = Field(default_factory=tuple)
     # Resolved dynamic-tier data (skills gated + secrets merged before assembly),
     # consumed by the dynamic sections. ``repo_skills`` is (name, content) pairs;
-    # ``secret_infos`` is (name, description) pairs.
+    # ``secret_infos`` carries name, description, scope, and scope_description.
     repo_skills: tuple[tuple[str, str], ...] = Field(default_factory=tuple)
     available_skills_prompt: str | None = None
     custom_suffix: str | None = None
     memory_context: str | None = None
-    secret_infos: tuple[tuple[str, str | None], ...] = Field(default_factory=tuple)
+    secret_infos: tuple[SecretInfo, ...] = Field(default_factory=tuple)
 
     @field_validator("template_kwargs", mode="after")
     @classmethod
