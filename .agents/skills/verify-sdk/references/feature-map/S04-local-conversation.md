@@ -201,12 +201,12 @@ Scripted bullets use the SDK's `TestLLM` (`--script`, or `make_llm(script=...)` 
     --check custom_saw_every_event eq true --check custom_events eq 6 --check custom_printed eq 0 \
     --check action_rendering contains "$ echo shown-in-panel" --check observation_rendering contains "shown-in-panel"
   ```
-- **Fork (`S04.fork`).** A priced source run (0.28) is forked with tags, another agent and a (deprecated, ignored) title; the fork continues while the source stays as it was; a second fork keeps metrics and a chosen id; the fork reloads from disk.
+- **Fork (`S04.fork`).** A priced source run (0.28) is forked with tags, another agent and a title, which is accepted and ignored; the fork continues while the source stays as it was; a second fork keeps metrics and a chosen id; the fork reloads from disk.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S04/views --arg fork \
     --check new_id eq true --check copied_events eq 6 --check fork_status eq idle \
-    --check title missing --check title_deprecated eq true --check tags.team eq verify --check fork_model eq openai/gpt-4.1-mini \
+    --check title missing --check tags.team eq verify --check fork_model eq openai/gpt-4.1-mini \
     --check source_cost eq 0.28 --check fork_cost_before_run eq 0 --check kept_metrics_cost eq 0.28 \
     --check chosen_id_kept eq true --check fork_events_after_run eq 9 --check source_events_after_fork_run eq 6 \
     --check fork_request_had_source_history eq true --check same_workspace eq true \

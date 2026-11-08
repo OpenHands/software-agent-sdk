@@ -15,7 +15,6 @@ right after answering), register_extra / remove_extra (change the tool list
 and send notifications/tools/list_changed).
 """
 
-import asyncio
 import base64
 import os
 import sys
@@ -144,10 +143,9 @@ def die() -> str:
 
 
 async def _notify() -> None:
-    loop = asyncio.get_running_loop()
-    loop.create_task(
-        get_context().send_notification(mcp_types.ToolListChangedNotification())
-    )
+    # Send inside the request: fastmcp 4 relates the notification to the
+    # in-flight request, so one sent after the answer is dropped.
+    await get_context().send_notification(mcp_types.ToolListChangedNotification())
 
 
 @mcp.tool()

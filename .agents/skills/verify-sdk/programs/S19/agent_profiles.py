@@ -15,23 +15,27 @@ from pydantic import SecretStr
 from sdk_verify import emit, make_llm, run_paths
 
 from openhands.sdk import LLM, Conversation, OpenHandsAgentSettings, Tool
+from openhands.sdk.launch import (
+    LaunchRuntime,
+    LaunchStores,
+    UnresolvedProfileReferences,
+    finalize,
+    preview_launch,
+    resolve,
+)
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import (
     AGENT_PROFILE_SCHEMA_VERSION,
     ACPAgentProfile,
     AgentProfileStore,
-    DanglingMcpServerRef,
     OpenHandsAgentProfile,
     ProfileLimitExceeded,
-    ProfileNotFound,
     ProfileReferenced,
     build_seed_profile,
     delete_llm_profile,
     find_referrers,
     rename_llm_profile,
-    resolve_agent_profile,
-    resolve_agent_profile_dry_run,
     save_profile_preserving_identity,
     validate_agent_profile,
 )
@@ -204,6 +208,10 @@ def _():
 
 @section("resolve")
 def _():
+    # Since 1.60 a launch is resolve() (where the stores live) then finalize()
+    # (where the agent runs); preview_launch() reports the same verdict.
+    stores = LaunchStores(llm_profiles=llms, mcp_config=MCP, skills=lambda: SKILLS)
+    runtime = LaunchRuntime()
     p = OpenHandsAgentProfile(
         name="coder",
         llm_profile_ref="fast",
@@ -212,56 +220,43 @@ def _():
         persona="Pirate",
         tools=[Tool(name="terminal")],
     )
-    settings = resolve_agent_profile(
-        p, llm_store=llms, mcp_config=MCP, available_skills=SKILLS
-    )
-    all_mcp = resolve_agent_profile(
-        OpenHandsAgentProfile(name="all", llm_profile_ref="fast"),
-        llm_store=llms,
-        mcp_config=MCP,
-        available_skills=SKILLS,
-    )
-    none_mcp = resolve_agent_profile(
+    resolved = resolve(p, stores)
+    settings = resolved.settings
+    all_mcp = resolve(
+        OpenHandsAgentProfile(name="all", llm_profile_ref="fast"), stores
+    ).settings
+    none_mcp = resolve(
         OpenHandsAgentProfile(name="none", llm_profile_ref="fast", mcp_server_refs=[]),
-        llm_store=llms,
-        mcp_config=MCP,
-        available_skills=SKILLS,
-    )
+        stores,
+    ).settings
     errors = {}
     try:
-        resolve_agent_profile(
-            OpenHandsAgentProfile(name="x", llm_profile_ref="ghost"),
-            llm_store=llms,
-            mcp_config=MCP,
-            available_skills=None,
-        )
-    except ProfileNotFound:
-        errors["missing_llm"] = "ProfileNotFound"
+        resolve(OpenHandsAgentProfile(name="x", llm_profile_ref="ghost"), stores)
+    except UnresolvedProfileReferences as exc:
+        errors["missing_llm"] = type(exc).__name__
+        errors["missing_llm_ref"] = exc.llm_profile_ref
     try:
-        resolve_agent_profile(
+        resolve(
             OpenHandsAgentProfile(
                 name="x", llm_profile_ref="fast", mcp_server_refs=["gone"]
             ),
-            llm_store=llms,
-            mcp_config=MCP,
-            available_skills=None,
+            stores,
         )
-    except DanglingMcpServerRef:
-        errors["dangling_mcp"] = "DanglingMcpServerRef"
-    dry = resolve_agent_profile_dry_run(
-        OpenHandsAgentProfile(
-            name="x", llm_profile_ref="ghost", mcp_server_refs=["gone"]
-        ),
-        llm_store=llms,
-        mcp_config=MCP,
-        available_skills=SKILLS,
+    except UnresolvedProfileReferences as exc:
+        errors["dangling_mcp"] = type(exc).__name__
+        errors["dangling_mcp_refs"] = exc.mcp_server_refs
+    both = OpenHandsAgentProfile(
+        name="x", llm_profile_ref="ghost", mcp_server_refs=["gone"]
     )
+    try:
+        resolve(both, stores)
+    except UnresolvedProfileReferences as exc:
+        errors["both_problems"] = len(exc.problems)
+    dry = preview_launch(both, stores, runtime)
     dry_json = dry.model_dump_json()
-    ok_dry = resolve_agent_profile_dry_run(
-        p, llm_store=llms, mcp_config=MCP, available_skills=SKILLS
-    )
-    # Launch the resolved settings: the built agent runs a scripted turn.
-    agent = settings.create_agent()
+    ok_dry = preview_launch(p, stores, runtime)
+    # Launch the resolved profile: the finalized agent runs a scripted turn.
+    agent = finalize(resolved, runtime).agent
     agent = agent.model_copy(
         update={"llm": make_llm([{"finish": "resolved agent ran"}])}
     )
@@ -286,6 +281,7 @@ def _():
         "dry_has_secret": "sk-fast" in dry_json
         or "sk-fast" in ok_dry.model_dump_json(),
         "dry_dump": json.loads(dry_json),
+        "ok_dry_valid": ok_dry.valid,
         "launched_status": status,
     }
 

@@ -17,7 +17,6 @@ import io
 import json
 import sys
 import uuid
-import warnings
 from contextlib import redirect_stdout
 
 from pydantic import SecretStr
@@ -160,21 +159,16 @@ elif mode == "fork":
         source.run()
         source_events = len(source.state.events)
         source_cost = source.conversation_stats.get_combined_metrics().accumulated_cost
-        # LocalConversation.fork(title=) is deprecated and ignored since #4814:
-        # titles live on the agent server's StoredConversation, not in tags.
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            fork = source.fork(
-                title="Follow-up fork",
-                tags={"team": "verify"},
-                agent=Agent(
-                    llm=priced(fork_server, "openai/gpt-4.1-mini"),
-                    tools=[Tool(name=TerminalTool.name)],
-                ),
-            )
-        title_deprecated = any(
-            issubclass(w.category, DeprecationWarning) and "title" in str(w.message)
-            for w in caught
+        # LocalConversation.fork(title=) is accepted and ignored: titles live on
+        # the agent server's StoredConversation, not in tags (#4814; the
+        # deprecation warning was removed in 1.60).
+        fork = source.fork(
+            title="Follow-up fork",
+            tags={"team": "verify"},
+            agent=Agent(
+                llm=priced(fork_server, "openai/gpt-4.1-mini"),
+                tools=[Tool(name=TerminalTool.name)],
+            ),
         )
         copied = len(fork.state.events)
         status = fork.state.execution_status.value
@@ -194,7 +188,6 @@ elif mode == "fork":
             "source_events": source_events,
             "fork_status": status,
             "title": fork.state.tags.get("title"),
-            "title_deprecated": title_deprecated,
             "tags": fork.state.tags,
             "fork_model": fork.agent.llm.model,
             "source_model": source.agent.llm.model,

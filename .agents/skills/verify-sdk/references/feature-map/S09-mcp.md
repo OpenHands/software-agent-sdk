@@ -133,11 +133,12 @@ Every server here is `programs/S09/mcp_server.py`, a small FastMCP server the pr
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
   control-sdk program S09/client --arg recovery \
-    --check transient_first.1 eq true --check transient_first.0 contains "503 Service Unavailable" \
+    --check transient_first.1 eq true --check transient_first.0 contains "Server returned an error response" \
     --check transient_second.1 eq false --check transient_second.0 contains count=1 \
     --check transient_third.0 contains count=2 \
     --check closed_client.1 eq true --check closed_client.0 contains "has been closed and cannot be reconnected"
   ```
+  Expected: the first call fails, the next one reaches the server (count=1), the third keeps the session (count=2), and a closed client refuses calls. Since the `mcp` 2 client (#6540) the first error no longer names the status: `mcp.client.streamable_http` turns any non-JSON-RPC non-2xx answer into "Server returned an error response".
 - **A lost session: server restart or exit (`S09.session-recovery`).** The HTTP server is killed and restarted on the same port; the stdio server exits after answering `die`.
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)
@@ -146,7 +147,7 @@ Every server here is `programs/S09/mcp_server.py`, a small FastMCP server the pr
     --check http_after_restart_again.1 eq false --check http_after_restart_again.0 contains count=1 \
     --check stdio_after_exit_again.1 eq false --check stdio_after_exit_again.0 contains count=1
   ```
-  Expected: at most one failed call, then the client reconnects (a new session or process, so the counter starts again). Known failure (reproduced 2026-10-13, not yet filed): neither recovers. After the restart every call returns `Error calling MCP tool counter: Session terminated`; after the stdio server exits, every call returns `Error calling MCP tool counter: ` (empty), so the server's tools stay broken for the rest of the conversation. `MCPToolExecutor.call_tool` reconnects only when `client.is_connected()` is false, which stays true in both cases.
+  Expected: at most one failed call, then the client reconnects (a new session or process, so the counter starts again). Known failure (reproduced 2026-10-13 and again 2026-11-08 with the `mcp` 2 client, not yet filed): neither recovers. After the restart every call returns `Error calling MCP tool counter: Session not found` (`Session terminated` before #6540); after the stdio server exits, every call returns `Error calling MCP tool counter: Connection closed` (empty before), so the server's tools stay broken for the rest of the conversation. `MCPToolExecutor.call_tool` reconnects only when `client.is_connected()` is false, which stays true in both cases.
 - **Config model, secrets, schemas, arguments and serialization without an agent (`S09.config-model`, `S09.config-secrets`, `S09.schema-conversion`, `S09.argument-validation`, `S09.observation`, `S09.tool-serialization`).**
   ```sh
   export SDK_VERIFY_RUN=$(control-sdk new --field run)

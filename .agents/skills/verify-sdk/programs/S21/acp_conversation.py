@@ -240,6 +240,15 @@ if mode == "turn":
             "second_error": second_error,
             "finish_messages": [e.action.message for e in fins],
             "finish_reasoning": [e.reasoning_content for e in fins],
+            # Since #6452 thoughts said before a tool call ride their own agent
+            # message ahead of the call; the finish keeps only later thoughts.
+            "agent_reasoning": [
+                e.llm_message.reasoning_content
+                for e in conversation.state.events
+                if type(e).__name__ == "MessageEvent"
+                and e.source == "agent"
+                and e.llm_message.reasoning_content
+            ],
             "tool_events": [f"{e.tool_call_id}:{e.status}" for e in tools],
             "tool_event_errors": [e.is_error for e in tools],
             "tool_titles": sorted({e.title for e in tools}),
