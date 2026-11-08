@@ -244,6 +244,10 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             cmd,
             capture_output=True,
             text=True,
+            # rg always emits UTF-8; decoding it with the host code page raises
+            # in subprocess's reader thread and leaves stdout as None.
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
             check=False,
             env=sanitized_env(),
@@ -269,6 +273,10 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             ["grep", "-R", "-I", "-l", "-i", action.pattern, str(search_path)],
             capture_output=True,
             text=True,
+            # rg always emits UTF-8; decoding it with the host code page raises
+            # in subprocess's reader thread and leaves stdout as None.
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
             check=False,
             env=sanitized_env(),
