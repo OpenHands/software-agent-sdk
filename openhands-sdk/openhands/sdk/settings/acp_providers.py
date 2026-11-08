@@ -5,7 +5,7 @@ Each record captures the static properties that are known at configuration time
 
 - ``key``                   settings discriminator (``ACPAgentSettings.acp_server``)
 - ``display_name``          human-readable label for UI display
-- ``default_command``       default ``npx``-based launch command
+- ``default_command``       default ACP launch command (npm or native)
 - ``api_key_env_var``       env var the subprocess expects for its API key
 - ``base_url_env_var``      env var for proxy/base-URL routing (or ``None``)
 - ``default_session_mode``  ACP mode ID that disables permission prompts,
@@ -475,6 +475,26 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # ``~/.gemini`` (ignoring XDG), so only HOME relocates its state.
             data_dir_env_var="HOME",
         ),
+        "antigravity": ACPProviderInfo(
+            key="antigravity",
+            display_name="Google Antigravity",
+            # The official CLI includes a native ACP server from v1.5.0.
+            # It must be installed by the user; do not bake its large
+            # non-npm binary into the default agent-server image.
+            default_command=("agy", "acp"),
+            api_key_env_var="GEMINI_API_KEY",
+            base_url_env_var=None,
+            # Verified against agy 1.5.3: default, accept-edits and plan.
+            # Keep the permission-respecting default.
+            default_session_mode="default",
+            agent_name_patterns=("antigravity",),
+            supports_set_session_model=True,
+            supports_runtime_model_switch=True,
+            session_meta_key=None,
+            binary_name="agy",
+            # The Google sign-in cache is stored under ~/.gemini/.
+            data_dir_env_var="HOME",
+        ),
         "kimi-code": ACPProviderInfo(
             key="kimi-code",
             display_name="Kimi Code",
@@ -610,7 +630,9 @@ def detect_acp_provider_by_command(
 
     Each provider's :attr:`~ACPProviderInfo.agent_name_patterns` fragments
     (``"codex-acp"``, ``"claude-agent"``, ``"gemini-cli"``, ``"pi-acp"``) are
-    prefixes of its npm-package / binary basename, so we can pick the provider
+    prefixes of its npm-package / binary basename. Native launchers whose
+    name differs from ``agentInfo.name`` are also matched by exact binary
+    basename (e.g. ``agy`` for Antigravity), so we can pick the provider
     *before* the server starts and reports its name (when the subprocess
     environment, e.g. a relocated data dir, must already be set).
 
@@ -638,6 +660,12 @@ def detect_acp_provider_by_command(
         if any(
             base.startswith(pat) for base in bases for pat in info.agent_name_patterns
         ):
+            return info
+        # Native, non-npm launchers may have a short binary name that must
+        # not be used as a substring of the runtime agent name (e.g. "agy").
+        # Match that launcher exactly instead.
+        launcher = info.default_command[0].rsplit("/", 1)[-1].lower()
+        if launcher != "npx" and launcher in bases:
             return info
     return None
 

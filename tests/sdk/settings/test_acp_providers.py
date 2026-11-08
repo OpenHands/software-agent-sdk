@@ -38,8 +38,26 @@ class TestACPProviderInfo:
             assert isinstance(info, ACPProviderInfo)
 
     def test_default_commands_prefer_offline_cache(self):
-        for info in ACP_PROVIDERS.values():
-            assert info.default_command[:3] == ("npx", "-y", "--prefer-offline")
+        for key, info in ACP_PROVIDERS.items():
+            if key == "antigravity":
+                # Google's standalone CLI ships its own native ACP server.
+                assert info.default_command == ("agy", "acp")
+            else:
+                assert info.default_command[:3] == ("npx", "-y", "--prefer-offline")
+
+    def test_antigravity_metadata(self):
+        info = ACP_PROVIDERS["antigravity"]
+        assert info.display_name == "Google Antigravity"
+        assert info.api_key_env_var == "GEMINI_API_KEY"
+        assert info.base_url_env_var is None
+        assert info.default_session_mode == "default"
+        assert info.agent_name_patterns == ("antigravity",)
+        assert info.supports_set_session_model is True
+        assert info.supports_runtime_model_switch is True
+        assert info.session_meta_key is None
+        assert info.binary_name == "agy"
+        assert info.data_dir_env_var == "HOME"
+        assert info.file_secrets == ()
 
     def test_claude_code_metadata(self):
         info = ACP_PROVIDERS["claude-code"]
@@ -261,6 +279,12 @@ class TestDetectACPProviderByCommand:
             # Identity, not just a matching key: detect_acp_provider_by_command
             # must resolve back to the very same ACP_PROVIDERS entry.
             assert detected is info, key
+
+    def test_detects_native_antigravity_launcher_without_short_name_collision(self):
+        info = detect_acp_provider_by_command(["/usr/local/bin/agy", "acp"])
+        assert info is ACP_PROVIDERS["antigravity"]
+        assert detect_acp_provider_by_command(["/usr/bin/my-agy-wrapper"]) is None
+        assert detect_acp_provider_by_agent_name("some-random-agy-utility") is None
 
     def test_tolerates_version_pin(self):
         info = detect_acp_provider_by_command(

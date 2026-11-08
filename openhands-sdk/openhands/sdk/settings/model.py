@@ -1493,12 +1493,19 @@ class ConversationSettings(BaseModel):
 
 
 ACPServerKind = Literal[
-    "claude-code", "codex", "gemini-cli", "kimi-code", "pi", "opencode", "custom"
+    "claude-code",
+    "codex",
+    "gemini-cli",
+    "antigravity",
+    "kimi-code",
+    "pi",
+    "opencode",
+    "custom",
 ]
 """Known ACP backend servers the GUI can pick from.
 
 ``custom`` means the user supplies the raw ``acp_command`` themselves;
-the other choices map to a default npx command stored in
+the other choices map to a default ACP launch command stored in
 :data:`~openhands.sdk.settings.acp_providers.ACP_PROVIDERS`.
 """
 
